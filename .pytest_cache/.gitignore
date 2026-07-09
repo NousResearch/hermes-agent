@@ -1,0 +1,2 @@
+# Created by pytest automatically.
+*

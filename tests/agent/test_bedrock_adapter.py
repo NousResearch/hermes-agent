@@ -322,12 +322,15 @@ class TestConvertMessagesToConverse:
         system, msgs = convert_messages_to_converse(messages)
         assert msgs[-1]["role"] == "user"
 
-    def test_empty_content_gets_placeholder(self):
+    def test_empty_content_message_is_dropped(self):
         from agent.bedrock_adapter import convert_messages_to_converse
         messages = [{"role": "user", "content": ""}]
         system, msgs = convert_messages_to_converse(messages)
-        # Empty string should get a space placeholder
-        assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
+        # Empty user messages are dropped, not padded with a placeholder.
+        # (Nothing to say = nothing to send. Sentinel padding wastes cache
+        # prefix and can confuse the model into treating placeholder text
+        # as real content.)
+        assert msgs == []
 
     def test_image_data_url_converted(self):
         from agent.bedrock_adapter import convert_messages_to_converse
@@ -1305,22 +1308,26 @@ class TestIsAnthropicBedrockModel:
 
 
 class TestEmptyTextBlockFix:
-    """Test that empty text blocks are replaced with space placeholders."""
+    """Test that empty/whitespace content is dropped, not smuggled through
+    with a placeholder. Bedrock rejects whitespace-only text blocks, so the
+    correct answer is to omit them entirely — the caller then decides whether
+    to drop the whole message."""
 
-    def test_none_content_gets_space(self):
+    def test_none_content_drops(self):
         from agent.bedrock_adapter import _convert_content_to_converse
-        blocks = _convert_content_to_converse(None)
-        assert blocks[0]["text"] == " "
+        assert _convert_content_to_converse(None) == []
 
-    def test_empty_string_gets_space(self):
+    def test_empty_string_drops(self):
         from agent.bedrock_adapter import _convert_content_to_converse
-        blocks = _convert_content_to_converse("")
-        assert blocks[0]["text"] == " "
+        assert _convert_content_to_converse("") == []
 
-    def test_whitespace_only_gets_space(self):
+    def test_whitespace_only_drops(self):
         from agent.bedrock_adapter import _convert_content_to_converse
-        blocks = _convert_content_to_converse("   ")
-        assert blocks[0]["text"] == " "
+        assert _convert_content_to_converse("   ") == []
+
+    def test_whitespace_only_part_drops(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        assert _convert_content_to_converse([{"type": "text", "text": "\n\n"}]) == []
 
     def test_real_text_preserved(self):
         from agent.bedrock_adapter import _convert_content_to_converse
@@ -1712,3 +1719,75 @@ class TestRequireBoto3VersionCheck:
         with patch.dict("sys.modules", {"boto3": fake_boto3}):
             result = _require_boto3()
             assert result is fake_boto3
+
+
+
+
+class TestNonWhitespaceContract:
+    """Regression: Bedrock Converse rejects whitespace-only text blocks
+    anywhere in the message tree — tool results, system, assistant, user
+    parts alike. Any placeholder we insert must contain non-whitespace.
+    Ref: retro-session ValidationException, msgs=14 ~47k tokens."""
+
+    def _scan(self, blocks, path, bad):
+        for b in blocks:
+            if "text" in b and (not isinstance(b["text"], str) or not b["text"].strip()):
+                bad.append((path, b))
+            if "toolResult" in b:
+                for cb in b["toolResult"].get("content", []):
+                    if "text" in cb and (not isinstance(cb["text"], str) or not cb["text"].strip()):
+                        bad.append((path + ".toolResult", cb))
+
+    def test_empty_tool_result_becomes_nonwhitespace(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        msgs = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "t1", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "t1", "content": ""},
+        ]
+        _, converse = convert_messages_to_converse(msgs)
+        bad = []
+        for i, m in enumerate(converse):
+            self._scan(m["content"], f"msg[{i}]", bad)
+        assert not bad, f"whitespace-only blocks left: {bad}"
+
+    def test_whitespace_only_tool_result_becomes_nonwhitespace(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        msgs = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "t1", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "t1", "content": "\n\n   \n"},
+        ]
+        _, converse = convert_messages_to_converse(msgs)
+        bad = []
+        for i, m in enumerate(converse):
+            self._scan(m["content"], f"msg[{i}]", bad)
+        assert not bad, f"whitespace-only blocks left: {bad}"
+
+    def test_whitespace_only_assistant_text_becomes_nonwhitespace(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        msgs = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "   \n"},
+            {"role": "user", "content": "ok"},
+        ]
+        _, converse = convert_messages_to_converse(msgs)
+        bad = []
+        for i, m in enumerate(converse):
+            self._scan(m["content"], f"msg[{i}]", bad)
+        assert not bad, f"whitespace-only blocks left: {bad}"
+
+    def test_whitespace_only_user_part_becomes_nonwhitespace(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        msgs = [
+            {"role": "user", "content": [{"type": "text", "text": "\t\n"}]},
+        ]
+        _, converse = convert_messages_to_converse(msgs)
+        bad = []
+        for i, m in enumerate(converse):
+            self._scan(m["content"], f"msg[{i}]", bad)
+        assert not bad, f"whitespace-only blocks left: {bad}"

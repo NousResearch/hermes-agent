@@ -490,6 +490,27 @@ def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
     return result
 
 
+def _ensure_nonempty_text(text) -> str:
+    """Guarantee a non-whitespace text payload for Bedrock Converse.
+
+    Bedrock's Converse API rejects any text content block whose ``text``
+    field is empty, ``None``, or whitespace-only:
+        ValidationException: text content blocks must contain non-whitespace text
+
+    General policy is to *drop* empty content instead of forging a placeholder
+    (see convert_messages_to_converse). This helper is the last-resort path
+    for tool results only, where a matching toolUse in a prior assistant turn
+    forces the toolResult to exist for the pair to remain valid — dropping it
+    would create an orphan tool_use and Bedrock would reject that as well.
+    """
+    TOOL_EMPTY_SENTINEL = "[tool returned no output]"
+    if text is None:
+        return TOOL_EMPTY_SENTINEL
+    if not isinstance(text, str):
+        text = str(text)
+    return text if text.strip() else TOOL_EMPTY_SENTINEL
+
+
 def _convert_content_to_converse(content) -> List[Dict]:
     """Convert OpenAI message content (string or list) to Converse content blocks.
 
@@ -497,26 +518,31 @@ def _convert_content_to_converse(content) -> List[Dict]:
       - Plain text strings → [{"text": "..."}]
       - Content arrays with text/image_url parts → mixed text/image blocks
 
-    Filters out empty text blocks — Bedrock's Converse API rejects messages
-    where a text content block has an empty ``text`` field (ValidationException:
-    "text content blocks must be non-empty"). Ref: issue #9486.
+    Empty / whitespace-only text is *silently dropped* — Bedrock's Converse API
+    rejects text content blocks that are empty or whitespace-only, and the
+    caller (convert_messages_to_converse) is responsible for deciding what to
+    do with a message whose content collapsed to nothing (typically: drop the
+    whole message so we don't send meaningless turns and waste cache prefix).
+    Returns an empty list when nothing survives.
     """
     if content is None:
-        return [{"text": " "}]
+        return []
     if isinstance(content, str):
-        return [{"text": content}] if content.strip() else [{"text": " "}]
+        return [{"text": content}] if content.strip() else []
     if isinstance(content, list):
         blocks = []
         for part in content:
             if isinstance(part, str):
-                blocks.append({"text": part})
+                if part.strip():
+                    blocks.append({"text": part})
                 continue
             if not isinstance(part, dict):
                 continue
             part_type = part.get("type", "")
             if part_type == "text":
-                text = part.get("text", "")
-                blocks.append({"text": text if text else " "})
+                text_val = part.get("text", "")
+                if isinstance(text_val, str) and text_val.strip():
+                    blocks.append({"text": text_val})
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""
@@ -538,8 +564,12 @@ def _convert_content_to_converse(content) -> List[Dict]:
                     # Remote URL — Converse doesn't support URLs directly,
                     # include as text reference for the model.
                     blocks.append({"text": f"[Image: {url}]"})
-        return blocks if blocks else [{"text": " "}]
-    return [{"text": str(content)}]
+        return blocks
+    if isinstance(content, str):
+        return [{"text": content}] if content.strip() else []
+    # Anything else: coerce to string, drop if that's whitespace-only
+    coerced = str(content)
+    return [{"text": coerced}] if coerced.strip() else []
 
 
 def convert_messages_to_converse(
@@ -575,8 +605,10 @@ def convert_messages_to_converse(
             elif isinstance(content, list):
                 for part in content:
                     if isinstance(part, dict) and part.get("type") == "text":
-                        system_blocks.append({"text": part.get("text", "")})
-                    elif isinstance(part, str):
+                        text_val = part.get("text", "")
+                        if text_val and text_val.strip():
+                            system_blocks.append({"text": text_val})
+                    elif isinstance(part, str) and part.strip():
                         system_blocks.append({"text": part})
             continue
 
@@ -587,7 +619,7 @@ def convert_messages_to_converse(
             tool_result_block = {
                 "toolResult": {
                     "toolUseId": tool_call_id,
-                    "content": [{"text": result_content}],
+                    "content": [{"text": _ensure_nonempty_text(result_content)}],
                 }
             }
             # In Converse, tool results go in a "user" role message
@@ -626,7 +658,11 @@ def convert_messages_to_converse(
                 })
 
             if not content_blocks:
-                content_blocks = [{"text": " "}]
+                # No text and no tool calls survived — drop the message entirely
+                # rather than send an empty/placeholder turn. This preserves
+                # cache prefix quality and avoids polluting the model's view
+                # with meaningless assistant turns.
+                continue
 
             # Merge with previous assistant message if needed (strict alternation)
             if converse_msgs and converse_msgs[-1]["role"] == "assistant":
@@ -640,6 +676,11 @@ def convert_messages_to_converse(
 
         if role == "user":
             content_blocks = _convert_content_to_converse(content)
+            if not content_blocks:
+                # Drop empty user messages (no text, no images) rather than
+                # forge a placeholder — they add nothing but noise and
+                # potential validation failures.
+                continue
             # Merge with previous user message if needed (strict alternation)
             if converse_msgs and converse_msgs[-1]["role"] == "user":
                 converse_msgs[-1]["content"].extend(content_blocks)
@@ -650,13 +691,15 @@ def convert_messages_to_converse(
                 })
             continue
 
-    # Converse requires the first message to be from the user
+    # Converse requires the first message to be from the user. This only
+    # fires if the entire conversation collapsed to an assistant-first shape
+    # after dropping empties, which is pathological but harmless to guard.
     if converse_msgs and converse_msgs[0]["role"] != "user":
-        converse_msgs.insert(0, {"role": "user", "content": [{"text": " "}]})
+        converse_msgs.insert(0, {"role": "user", "content": [{"text": "[conversation start]"}]})
 
-    # Converse requires the last message to be from the user
+    # Converse requires the last message to be from the user.
     if converse_msgs and converse_msgs[-1]["role"] != "user":
-        converse_msgs.append({"role": "user", "content": [{"text": " "}]})
+        converse_msgs.append({"role": "user", "content": [{"text": "[continue]"}]})
 
     return (system_blocks if system_blocks else None, converse_msgs)
 

@@ -81,6 +81,9 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|auto-lowered\s+compression\s+threshold"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
     r"|preflight\s+compression"
+    r"|pre-api\s+compression"
+    r"|compression\s+aborted"
+    r"|run\s+/compress\s+to\s+retry"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
@@ -8986,6 +8989,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+
+        # Profile-local context-hygiene watchdogs may request a silent session
+        # boundary by writing state/pending_self_reset.json.  Older builds only
+        # wrote the file, so the user still had to send /new or a wake word.
+        # Consume it here on the next real inbound message, rotate the cached
+        # agent/session via the normal /new machinery, suppress the reset banner,
+        # and then let THIS user message continue into the fresh session.
+        if not is_internal:
+            _pending_self_reset_path = _hermes_home / "state" / "pending_self_reset.json"
+            try:
+                _pending_map = json.loads(_pending_self_reset_path.read_text()) if _pending_self_reset_path.exists() else {}
+            except Exception:
+                _pending_map = {}
+            if isinstance(_pending_map, dict) and _quick_key in _pending_map:
+                _pending_entry = _pending_map.get(_quick_key) or {}
+                _pending_sid = str(_pending_entry.get("session_id") or "") if isinstance(_pending_entry, dict) else ""
+                _current_entry = getattr(self.session_store, "_entries", {}).get(_quick_key)
+                _current_sid = str(getattr(_current_entry, "session_id", "") or "")
+                _should_reset = not _pending_sid or not _current_sid or _pending_sid == _current_sid
+                _pending_map.pop(_quick_key, None)
+                try:
+                    _tmp = _pending_self_reset_path.with_suffix(".tmp")
+                    _tmp.write_text(json.dumps(_pending_map, ensure_ascii=False, indent=2))
+                    _tmp.replace(_pending_self_reset_path)
+                except Exception:
+                    logger.debug("Failed to update pending_self_reset map", exc_info=True)
+                if _should_reset and not (event.text or "").strip().startswith("/"):
+                    logger.info(
+                        "Consuming pending self-reset for %s (reason=%s)",
+                        _quick_key,
+                        (_pending_entry or {}).get("reason") if isinstance(_pending_entry, dict) else "",
+                    )
+                    try:
+                        await self._handle_reset_command(dataclasses.replace(event, text="/new"))
+                    except Exception:
+                        logger.warning("Pending self-reset failed for %s", _quick_key, exc_info=True)
+
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -18678,8 +18718,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _persist_user_message_override = message
                 # The empty-message case is the auto-resume startup turn
                 # synthesized by _schedule_resume_pending_sessions — there is
-                # no NEW user message to address, so tell the model to report
-                # recovery instead of the (nonexistent) "new message".
+                # no NEW user message to address.  This must still continue the
+                # interrupted objective autonomously; asking "what next?" turns
+                # a gateway restart into a user-operated recovery procedure.
                 if message:
                     _resume_guidance = (
                         "Address the user's NEW message below FIRST and focus "
@@ -18687,16 +18728,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 else:
                     _resume_guidance = (
-                        "Report to the user that the session was restored "
-                        "successfully and ask what they would like to do next."
+                        "Report briefly that the session was restored, then "
+                        "continue autonomously with the safest recoverable next "
+                        "step from the transcript, todos, handoff/state files, "
+                        "or other available context. Do NOT ask what to do next "
+                        "unless an explicit owner/approval gate or missing "
+                        "required context blocks every safe action."
                     )
                 message = (
                     f"[System note: The previous turn was interrupted by "
                     f"{_reason_phrase}; the gateway is now back online. "
                     f"Any restart/shutdown command in the history has already "
                     f"run — do NOT re-execute or verify it. {_resume_guidance} "
-                    f"Do NOT re-execute old tool calls — skip any unfinished "
-                    f"work from the conversation history.]"
+                    f"Do NOT re-execute old tool calls blindly; reconstruct current "
+                    f"state first, then resume unfinished safe work from the "
+                    f"conversation history without repeating dangerous or "
+                    f"externally mutating actions.]"
                     + (f"\n\n{message}" if message else "")
                 )
             elif _has_fresh_tool_tail:
@@ -18749,11 +18796,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"[System note: The previous turn was interrupted by "
                     f"{_sn_reason_phrase}; the gateway is now back online. "
                     f"Any restart/shutdown command in the history has already "
-                    f"run — do NOT re-execute or verify it. Report to the user "
-                    f"that the session was restored successfully and ask what "
-                    f"they would like to do next. Do NOT re-execute old tool "
-                    f"calls — skip any unfinished work from the conversation "
-                    f"history.]"
+                    f"run — do NOT re-execute or verify it. Report briefly that "
+                    f"the session was restored, then continue autonomously with "
+                    f"the safest recoverable next step from the transcript, "
+                    f"todos, handoff/state files, or other available context. "
+                    f"Do NOT ask what to do next unless an explicit owner/approval "
+                    f"gate or missing required context blocks every safe action. "
+                    f"Do NOT re-execute old tool calls blindly; reconstruct current "
+                    f"state first, then resume unfinished safe work from the "
+                    f"conversation history without repeating dangerous or "
+                    f"externally mutating actions.]"
                 )
 
             _approval_session_key = session_key or ""

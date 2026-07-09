@@ -69,9 +69,14 @@ interface HandoffResult {
  */
 export async function uploadComposerAttachment(
   attachment: ComposerAttachment,
-  opts: { remote: boolean; requestGateway: GatewayRequest; sessionId: string }
+  opts: {
+    recoverSession?: (sessionId: string) => Promise<null | string>
+    remote: boolean
+    requestGateway: GatewayRequest
+    sessionId: string
+  }
 ): Promise<ComposerAttachment> {
-  const { remote, requestGateway, sessionId } = opts
+  const { recoverSession, remote, requestGateway, sessionId } = opts
   const path = attachment.path ?? ''
   const label = attachment.label || pathLabel(path)
 
@@ -133,12 +138,29 @@ export async function uploadComposerAttachment(
     }
   }
 
-  const result = await requestGateway<FileAttachResponse>('file.attach', {
-    name: label,
-    path,
-    session_id: sessionId,
-    ...(dataUrl ? { data_url: dataUrl } : {})
-  })
+  const attachFile = (attachSessionId: string) =>
+    requestGateway<FileAttachResponse>('file.attach', {
+      name: label,
+      path,
+      session_id: attachSessionId,
+      ...(dataUrl ? { data_url: dataUrl } : {})
+    })
+
+  let attachedSessionId = sessionId
+  let result: FileAttachResponse
+
+  try {
+    result = await attachFile(attachedSessionId)
+  } catch (err) {
+    const recoveredSessionId = isSessionNotFoundError(err) ? await recoverSession?.(sessionId) : null
+
+    if (!recoveredSessionId) {
+      throw err
+    }
+
+    attachedSessionId = recoveredSessionId
+    result = await attachFile(attachedSessionId)
+  }
 
   if (!result.attached || !result.ref_text) {
     throw new Error(result.message || `Could not attach ${label}`)
@@ -146,7 +168,7 @@ export async function uploadComposerAttachment(
 
   return {
     ...attachment,
-    attachedSessionId: sessionId,
+    attachedSessionId,
     refText: result.ref_text,
     uploadState: undefined
   }
@@ -198,6 +220,28 @@ export function usePromptActions({
 }: PromptActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+
+  const recoverSessionForAttachment = useCallback(
+    async () => {
+      if (!selectedStoredSessionIdRef.current) {
+        return null
+      }
+
+      const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+        session_id: selectedStoredSessionIdRef.current,
+        source: 'desktop'
+      })
+
+      const recoveredId = resumed?.session_id || null
+
+      if (recoveredId) {
+        activeSessionIdRef.current = recoveredId
+      }
+
+      return recoveredId
+    },
+    [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
+  )
 
   const appendSessionTextMessage = useCallback(
     (sessionId: string, role: ChatMessage['role'], text: string) => {
@@ -270,7 +314,12 @@ export function usePromptActions({
         }
 
         if (attachment.kind === 'image' || attachment.kind === 'file') {
-          const nextAttachment = await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId })
+          const nextAttachment = await uploadComposerAttachment(attachment, {
+            recoverSession: recoverSessionForAttachment,
+            remote,
+            requestGateway,
+            sessionId
+          })
 
           // Update-only: never resurrect a chip the user removed mid-upload.
           if (updateComposerAttachments) {
@@ -287,7 +336,7 @@ export function usePromptActions({
 
       return synced
     },
-    [requestGateway]
+    [recoverSessionForAttachment, requestGateway]
   )
 
   // Stage a freshly dropped file as soon as it lands (when a session already
@@ -309,7 +358,14 @@ export function usePromptActions({
       try {
         // Update-only: if the user removed the chip while this was uploading,
         // don't resurrect it — just drop the staged result on the floor.
-        updateComposerAttachment(await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId }))
+        updateComposerAttachment(
+          await uploadComposerAttachment(attachment, {
+            recoverSession: recoverSessionForAttachment,
+            remote,
+            requestGateway,
+            sessionId
+          })
+        )
       } catch (err) {
         // Leave the chip in place so submit-time sync can retry (or the user can
         // remove it) and flag the card; also toast so a hard failure (unreadable
@@ -318,7 +374,7 @@ export function usePromptActions({
         notifyError(err, copy.dropFiles)
       }
     },
-    [copy.dropFiles, requestGateway]
+    [copy.dropFiles, recoverSessionForAttachment, requestGateway]
   )
 
   const composerAttachments = useStore($composerAttachments)

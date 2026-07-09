@@ -1,0 +1,7 @@
+name: jiuwenmemory
+version: 1.0.0
+description: "JiuwenMemory REST memory provider for Hermes Agent."
+requires_env: []
+hooks:
+  - sync_turn
+  - on_memory_write

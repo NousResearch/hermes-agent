@@ -3993,6 +3993,15 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
 
+    # ── JiuwenMemory ──
+    "JIUWENMEMORY_API_KEY": {
+        "description": "JiuwenMemory API key (optional for local unauthenticated deployments)",
+        "prompt": "JiuwenMemory API key",
+        "tools": ["jiuwenmemory_search"],
+        "password": True,
+        "category": "tool",
+    },
+
     # ── ByteRover ──
     "BRV_API_KEY": {
         "description": "ByteRover API key (optional, for cloud sync — local-first by default)",

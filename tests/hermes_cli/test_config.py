@@ -815,6 +815,7 @@ class TestMemoryProviderEnvVarsRegistry:
         "SUPERMEMORY_API_KEY": "supermemory_search",
         "MEM0_API_KEY": "mem0_search",
         "RETAINDB_API_KEY": "retaindb_search",
+        "JIUWENMEMORY_API_KEY": "jiuwenmemory_search",
         "BRV_API_KEY": "brv_query",
         "OPENVIKING_API_KEY": "viking_search",
     }

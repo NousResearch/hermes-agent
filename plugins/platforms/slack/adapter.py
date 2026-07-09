@@ -50,6 +50,7 @@ from gateway.platforms._shared import (
 )
 from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices, inline_document_text
+from plugins.platforms.slack import documents
 from plugins.platforms.slack.adapter_config_readers import (
     _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from gateway.platforms.base import (
@@ -1029,6 +1030,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
+        self._document_limit = documents.document_limit()
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
         self._socket_mode_task: Optional[asyncio.Task] = None
@@ -1410,6 +1412,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         self, exc: Exception, *, file_obj: Optional[dict[str, Any]] = None) -> Optional[str]:
         """Translate Slack download exceptions into user-facing attachment diagnostics."""
         file_label = _attachment_label(file_obj)
+        if isinstance(exc, documents.DocumentTooLarge):
+            return exc.notice(file_label)
         response = getattr(exc, "response", None)
         api_detail = self._describe_slack_api_error(response, file_obj=file_obj)
         if api_detail:
@@ -4893,7 +4897,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         self, kind: str, f: dict[str, Any], url: str, mimetype: str, team_id: str
     ) -> Optional[tuple[str, str, str]]:
         """Download+cache one inbound file; ``(cached_path, media_type, text_injection)``
-        or None when skipped (oversized/unknown-size document)."""
+        with the text injection empty for non-text files."""
         if kind == "image":
             ext = "." + mimetype.split("/")[-1].split(";")[0]
             if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
@@ -4923,18 +4927,14 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         self, f: dict[str, Any], url: str, mimetype: str, team_id: str
     ) -> Optional[tuple[str, str, str]]:
         """Document branch of :meth:`_cache_slack_file`: any extension is accepted (authorization
-        is the gate); Slack's bot upload cap is 20 MB; small text-like files are injected."""
+        is the gate); small text-like files are injected."""
         original_filename = f.get("name", "")
         ext = os.path.splitext(original_filename)[1].lower() if original_filename else ""
         if not ext and mimetype:
             mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
             ext = mime_to_ext.get(mimetype, "")
-        # Any extension accepted (authorization is the gate); Slack bot upload cap is 20 MB.
-        file_size = f.get("size", 0)
-        if not file_size or file_size > 20 * 1024 * 1024:
-            logger.warning("[Slack] Document too large or unknown size: %s", file_size)
-            return None
-        raw_bytes = await self._download_slack_file_bytes(url, team_id=team_id)
+        documents.check_size(f.get("size"), self._document_limit)
+        raw_bytes = await self._download_slack_file_bytes(url, team_id=team_id, max_bytes=self._document_limit)
         cached_path = await cache_document_from_bytes_async(
             raw_bytes, original_filename or f"document{ext or '.bin'}")
         doc_mime = SUPPORTED_DOCUMENT_TYPES.get(ext, mimetype or "application/octet-stream")
@@ -6413,7 +6413,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         return self.config.token or ""
 
     async def _download_slack_file_bytes(
-        self, url: str, team_id: str = "", *, html_label: str = "file bytes") -> bytes:
+        self, url: str, team_id: str = "", *, html_label: str = "file bytes", max_bytes: int | None = None) -> bytes:
         """Download a Slack file with the bot token (3 attempts on 429/5xx/timeout). URL must pass
         ``is_safe_url`` AND the Slack-CDN allowlist (token exfiltration); redirects are
         re-validated; an HTML body (sign-in page) is rejected so bogus bytes are never cached."""
@@ -6439,13 +6439,11 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                     while True:
                         # httpx drops Authorization across origins. Enterprise Grid
                         # needs it on files-origin, but never send it off Slack's CDN.
-                        response = await client.get(
-                            download_url, headers={"Authorization": f"Bearer {bot_token}"})
-                        if response.status_code not in (301, 302, 303, 307, 308):
-                            break
-                        target = redirect_target_from_response(response)
-                        if not target:
-                            break  # raise_for_status reports the malformed redirect.
+                        async with documents.file_response(client, download_url, bot_token, max_bytes) as response:
+                            target = (redirect_target_from_response(response)
+                                      if response.status_code in (301, 302, 303, 307, 308) else None)
+                            if not target:
+                                return await documents.read_file(response, html_label, max_bytes)
                         if not is_safe_url(target):
                             raise ValueError(
                                 "Blocked unsafe Slack file redirect (SSRF protection): "
@@ -6458,14 +6456,6 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                             raise ValueError("Too many Slack file redirects (maximum 3)")
                         download_url = target
                         redirect_count += 1
-                    response.raise_for_status()
-                    ct = response.headers.get("content-type", "")
-                    if "text/html" in ct:
-                        raise ValueError(
-                            f"Slack returned HTML instead of {html_label} (content-type: {ct}); "
-                            "check bot token scopes and file permissions, or a cross-origin "
-                            "redirect dropped the token (Enterprise Grid files-origin)")
-                    return response.content
                 except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                         raise

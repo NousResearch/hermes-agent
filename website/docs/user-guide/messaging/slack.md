@@ -605,6 +605,17 @@ platforms:
 - The card stream is stopped exactly once when the turn finalizes, including
   on interrupt/disconnect, so no dangling live indicator is left behind.
 
+### Inbound document size limit
+
+Slack documents are capped at 20 MiB by default. Hermes checks both Slack's
+declared size and the actual streamed response body, so missing or inaccurate
+metadata cannot bypass the limit. Configure the cap under `gateway`:
+
+```yaml
+gateway:
+  max_inbound_document_bytes: 20971520  # 20 MiB; 0 or a negative value disables the cap
+```
+
 ### Session Isolation
 
 ```yaml

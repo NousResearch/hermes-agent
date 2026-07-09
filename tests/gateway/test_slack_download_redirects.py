@@ -42,6 +42,11 @@ def adapter(monkeypatch):
     return adapter
 
 
+@pytest.fixture(params=[None, 64], ids=["media", "bounded-document"])
+def download(adapter, request):
+    return lambda: asyncio.run(adapter._download_slack_file_bytes(START, max_bytes=request.param))
+
+
 @pytest.fixture
 def install_transport(monkeypatch):
     def install(handler):
@@ -53,8 +58,34 @@ def install_transport(monkeypatch):
     return install
 
 
+@pytest.mark.parametrize("headers,reason", [
+    ({"content-length": "5"}, "5"), ({"content-encoding": "gzip"}, "Content-Encoding"),
+])
+def test_document_refuses_headers_without_reading_body(adapter, install_transport, headers, reason):
+    closed = []
+
+    class Unread(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            pytest.fail("unexpected body read")
+            yield b""
+
+        async def aclose(self):
+            closed.append(True)
+
+    def serve(req):
+        assert req.headers["accept-encoding"] == "identity"
+        if str(req.url) == START:
+            return httpx.Response(302, headers={"location": ORIGIN}, stream=Unread())
+        return httpx.Response(200, headers=headers, stream=Unread())
+
+    install_transport(serve)
+    with pytest.raises(ValueError, match=reason):
+        asyncio.run(adapter._download_slack_file_bytes(START, max_bytes=4))
+    assert len(closed) == 2
+
+
 @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
-def test_enterprise_grid_redirect_retains_bearer(adapter, install_transport, status):
+def test_enterprise_grid_redirect_retains_bearer(download, install_transport, status):
     requests = []
 
     def serve(request):
@@ -67,7 +98,7 @@ def test_enterprise_grid_redirect_retains_bearer(adapter, install_transport, sta
         return httpx.Response(200, headers={"content-type": "image/png"}, content=IMAGE)
 
     install_transport(serve)
-    assert asyncio.run(adapter._download_slack_file_bytes(START)) == IMAGE
+    assert download() == IMAGE
     assert [request.headers.get("Authorization") for request in requests] == [
         f"Bearer {TOKEN}", f"Bearer {TOKEN}",
     ]
@@ -77,7 +108,7 @@ def test_enterprise_grid_redirect_retains_bearer(adapter, install_transport, sta
     "https://evil.example.com/file", "https://files.slack.com.evil.example.com/file",
     "http://files-origin.slack.com/file", "https://169.254.169.254/latest/meta-data/",
 ])
-def test_redirect_refuses_untrusted_target(adapter, install_transport, target):
+def test_redirect_refuses_untrusted_target(download, install_transport, target):
     requests = []
 
     def serve(request):
@@ -89,11 +120,11 @@ def test_redirect_refuses_untrusted_target(adapter, install_transport, target):
 
     install_transport(serve)
     with pytest.raises(ValueError, match="Blocked"):
-        asyncio.run(adapter._download_slack_file_bytes(START))
+        download()
     assert [str(request.url) for request in requests] == [START]
 
 
-def test_redirect_rejects_slack_host_resolving_private(adapter, install_transport, monkeypatch):
+def test_redirect_rejects_slack_host_resolving_private(download, install_transport, monkeypatch):
     requests = []
 
     def resolve(host, *args, **kwargs):
@@ -108,11 +139,11 @@ def test_redirect_rejects_slack_host_resolving_private(adapter, install_transpor
 
     install_transport(serve)
     with pytest.raises(ValueError, match="Blocked"):
-        asyncio.run(adapter._download_slack_file_bytes(START))
+        download()
     assert len(requests) == 1
 
 
-def test_every_redirect_checks_cdn_allowlist(adapter, install_transport):
+def test_every_redirect_checks_cdn_allowlist(download, install_transport):
     requests = []
 
     def serve(request):
@@ -123,11 +154,11 @@ def test_every_redirect_checks_cdn_allowlist(adapter, install_transport):
 
     install_transport(serve)
     with pytest.raises(ValueError, match="Blocked non-Slack-CDN"):
-        asyncio.run(adapter._download_slack_file_bytes(START))
+        download()
     assert [str(request.url) for request in requests] == [START, ORIGIN]
 
 
-def test_relative_redirects_allow_three_hops(adapter, install_transport):
+def test_relative_redirects_allow_three_hops(download, install_transport):
     requests = []
 
     def serve(request):
@@ -138,11 +169,11 @@ def test_relative_redirects_allow_three_hops(adapter, install_transport):
         return httpx.Response(200, content=IMAGE)
 
     install_transport(serve)
-    assert asyncio.run(adapter._download_slack_file_bytes(START)) == IMAGE
+    assert download() == IMAGE
     assert [request.url.path for request in requests[1:]] == ["/hop-1", "/hop-2", "/hop-3"]
 
 
-def test_redirect_loop_is_bounded(adapter, install_transport):
+def test_redirect_loop_is_bounded(download, install_transport):
     requests = []
 
     def serve(request):
@@ -151,12 +182,12 @@ def test_redirect_loop_is_bounded(adapter, install_transport):
 
     install_transport(serve)
     with pytest.raises(ValueError, match="Too many Slack file redirects"):
-        asyncio.run(adapter._download_slack_file_bytes(START))
+        download()
     assert len(requests) == 4
 
 
 @pytest.mark.parametrize("failure", [429, 503, "timeout"])
-def test_redirected_download_retries_from_original_url(adapter, install_transport, monkeypatch, failure):
+def test_redirected_download_retries_from_original_url(download, install_transport, monkeypatch, failure):
     requests = []
     sleep = AsyncMock()
     monkeypatch.setattr(asyncio, "sleep", sleep)
@@ -173,13 +204,13 @@ def test_redirected_download_retries_from_original_url(adapter, install_transpor
         return httpx.Response(200, content=IMAGE)
 
     install_transport(serve)
-    assert asyncio.run(adapter._download_slack_file_bytes(START)) == IMAGE
+    assert download() == IMAGE
     assert [str(request.url) for request in requests] == [START, ORIGIN] * 3
     assert [call.args for call in sleep.await_args_list] == [(1.5,), (3.0,)]
 
 
-def test_html_reject_explains_enterprise_grid_redirect(adapter, install_transport):
+def test_html_reject_explains_enterprise_grid_redirect(download, install_transport):
     install_transport(lambda request: httpx.Response(
         200, headers={"content-type": "text/html"}, content=b"sign in"))
     with pytest.raises(ValueError):
-        asyncio.run(adapter._download_slack_file_bytes(START))
+        download()

@@ -46,12 +46,7 @@ import {
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import {
-  $activeGatewayProfile,
-  $freshSessionRequest,
-  $profileScope,
-  refreshActiveProfile
-} from '../store/profile'
+import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
@@ -176,7 +171,7 @@ function sessionMessagesSignature(messages: SessionMessage[]): string {
   for (const m of messages) {
     hash = hashString(hash, m.role)
     hash = hashString(hash, String(m.timestamp ?? ''))
-    hash = hashString(hash, typeof m.content === 'string' ? m.content : JSON.stringify(m.content) ?? '')
+    hash = hashString(hash, typeof m.content === 'string' ? m.content : (JSON.stringify(m.content) ?? ''))
   }
 
   return `${messages.length}:${hash}`
@@ -852,7 +847,7 @@ export function DesktopController() {
     // window's gateway (the overlay has none) so it survives restart.
     setPetOverlayScaleHandler(scale => setPetScale(requestGatewayRef.current, scale))
     // Mail icon: $sessions is ordered most-recent-first; the pet is global (not
-    // per session) so "most recent" is the right target. main.cjs already raised
+    // per session) so "most recent" is the right target. main.ts already raised
     // the window before forwarding this.
     setPetOverlayOpenAppHandler(() => {
       const recent = $sessions.get()[0]

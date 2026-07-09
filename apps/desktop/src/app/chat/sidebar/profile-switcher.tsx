@@ -22,17 +22,21 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { CodeEditor } from '@/components/chat/code-editor'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
+import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   $profileColors,
@@ -106,6 +110,7 @@ export function ProfileRail() {
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
+  const [pendingSoul, setPendingSoul] = useState<null | string>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Too many profiles for the square strip → collapse to the select. Declared
@@ -277,6 +282,7 @@ export function ProfileRail() {
                       key={profile.name}
                       label={profile.name}
                       onDelete={() => setPendingDelete(profile)}
+                      onEditSoul={() => setPendingSoul(profile.name)}
                       onRecolor={color => setProfileColor(profile.name, color)}
                       onRename={() => setPendingRename(profile)}
                       onSelect={() => selectProfile(profile.name)}
@@ -322,7 +328,86 @@ export function ProfileRail() {
         open={pendingDelete !== null}
         profile={pendingDelete}
       />
+
+      <EditSoulDialog onClose={() => setPendingSoul(null)} profileName={pendingSoul} />
     </div>
+  )
+}
+
+// Right-click → Edit SOUL.md for a sidebar profile — the same in-app markdown
+// editor as the memory-graph node edit, so a profile's persona is editable
+// without opening the Manage overlay.
+function EditSoulDialog({ onClose, profileName }: { onClose: () => void; profileName: null | string }) {
+  const { t } = useI18n()
+  const p = t.profiles
+  const [content, setContent] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!profileName) {
+      return
+    }
+
+    let cancelled = false
+    setLoading(true)
+    setContent('')
+
+    getProfileSoul(profileName)
+      .then(soul => !cancelled && setContent(soul.content))
+      .catch(err => !cancelled && notifyError(err, p.failedLoadSoul))
+      .finally(() => !cancelled && setLoading(false))
+
+    return () => void (cancelled = true)
+  }, [p, profileName])
+
+  const save = async () => {
+    if (!profileName) {
+      return
+    }
+
+    setSaving(true)
+
+    try {
+      await updateProfileSoul(profileName, content)
+      notify({ kind: 'success', title: p.soulSaved, message: profileName })
+      onClose()
+    } catch (err) {
+      notifyError(err, p.failedSaveSoul)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog onOpenChange={open => !open && !saving && onClose()} open={profileName !== null}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{profileName} · SOUL.md</DialogTitle>
+        </DialogHeader>
+        <div className="h-80">
+          {!loading && profileName && (
+            <CodeEditor
+              filePath="SOUL.md"
+              framed
+              initialValue={content}
+              key={profileName}
+              onCancel={() => !saving && onClose()}
+              onChange={setContent}
+              onSave={() => void save()}
+            />
+          )}
+        </div>
+        <DialogFooter>
+          <Button disabled={saving} onClick={onClose} type="button" variant="ghost">
+            {t.common.cancel}
+          </Button>
+          <Button disabled={saving || loading} onClick={() => void save()}>
+            {saving ? p.saving : p.saveSoul}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -427,6 +512,7 @@ interface ProfileSquareProps {
   onSelect: () => void
   onRecolor: (color: null | string) => void
   onRename: () => void
+  onEditSoul: () => void
   onDelete: () => void
 }
 
@@ -441,7 +527,16 @@ const LONG_PRESS_MS = 450
 // right-click to rename/delete. The button carries both the tooltip and
 // context-menu triggers via nested asChild Slots, so a single element keeps the
 // dnd listeners, hover tip, and right-click menu.
-function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, onSelect }: ProfileSquareProps) {
+function ProfileSquare({
+  active,
+  color,
+  label,
+  onDelete,
+  onEditSoul,
+  onRecolor,
+  onRename,
+  onSelect
+}: ProfileSquareProps) {
   const { t } = useI18n()
   const p = t.profiles
   const hue = color ?? 'var(--ui-text-quaternary)'
@@ -565,8 +660,12 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
             <span>{p.color}</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={onRename}>
+            <Codicon name="text-size" size="0.875rem" />
+            <span>{p.renameMenu}</span>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={onEditSoul}>
             <Codicon name="edit" size="0.875rem" />
-            <span>{p.rename}</span>
+            <span>{p.editSoul}</span>
           </ContextMenuItem>
           <ContextMenuItem
             className="text-destructive focus:text-destructive"

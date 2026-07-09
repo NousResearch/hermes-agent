@@ -669,7 +669,16 @@ if AIOHTTP_AVAILABLE:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
-        return await handler(request)
+        try:
+            return await handler(request)
+        except web.HTTPRequestEntityTooLarge:
+            # aiohttp's client_max_size tripped mid-read (chunked bodies carry
+            # no Content-Length) — return a proper 413 instead of letting the
+            # handler's broad JSON except turn it into 400 "Invalid JSON".
+            return web.json_response(
+                _openai_error("Request body too large.", code="body_too_large"),
+                status=413,
+            )
 else:
     body_limit_middleware = None  # type: ignore[assignment]
 

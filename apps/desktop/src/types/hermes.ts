@@ -399,6 +399,7 @@ export interface SessionRuntimeInfo {
   cwd?: string
   desktop_contract?: number
   fast?: boolean
+  install_warning?: string
   model?: string
   personality?: string
   provider?: string
@@ -509,7 +510,15 @@ export interface AnalyticsResponse {
     summary: AnalyticsSkillsSummary
     top_skills: AnalyticsSkillEntry[]
   }
+  /** Per-tool-name call counts. Absent on older backends. */
+  tools?: AnalyticsToolEntry[]
   totals: AnalyticsTotals
+}
+
+export interface AnalyticsToolEntry {
+  count: number
+  percentage: number
+  tool: string
 }
 
 export interface AnalyticsSkillEntry {
@@ -640,6 +649,10 @@ export interface SkillInfo {
   description: string
   enabled: boolean
   name: string
+  /** Total observed activity (use + view + patch). Absent on older backends. */
+  usage?: number
+  /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed. */
+  provenance?: 'agent' | 'bundled' | 'hub'
 }
 
 export interface ToolsetInfo {
@@ -894,6 +907,9 @@ export interface SkillHubSource {
   label: string
   available?: boolean
   rate_limited?: boolean
+  // False when the centralized index already covers this source, so the UI's
+  // per-source search fan-out skips it (avoids redundant external API calls).
+  searchable?: boolean
 }
 
 /** A searchable/installable hub skill from `GET /api/skills/hub/search`. */

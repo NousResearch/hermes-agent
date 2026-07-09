@@ -306,7 +306,13 @@ def sanitize_tool_call_arguments(
             try:
                 json.loads(arguments)
             except json.JSONDecodeError:
-                tool_call_id = tool_call.get("id")
+                # Use the canonical ``call_id || id`` precedence so both the
+                # scan for an existing tool result and any inserted stub key
+                # on the same id the rest of the pipeline uses. Keying on bare
+                # ``id`` here would fail to find a result built with ``call_id``
+                # (Codex Responses format) and insert a duplicate stub that
+                # itself becomes an orphan (#58168).
+                tool_call_id = _ra().AIAgent._get_tool_call_id_static(tool_call) or None
                 function_name = function.get("name", "?")
                 preview = arguments[:80]
                 log.warning(
@@ -464,6 +470,21 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     # Pass 1: drop stray tool messages that don't follow a known
     # assistant tool_call_id. Uses a rolling set of known ids refreshed
     # on each assistant message.
+    #
+    # Both ``id`` AND ``call_id`` are registered for every assistant
+    # tool_call. In the Codex Responses API format the two differ
+    # (``id`` = ``fc_...`` response-item id, ``call_id`` = ``call_...``
+    # the function-call id), and a tool result's ``tool_call_id`` may be
+    # matched against *either* depending on which code path built it
+    # (the OpenAI-compatible path stores ``tc.id``; codex paths store
+    # ``call_id``). Registering only ``id`` — as this pass did before —
+    # made a valid tool result look orphaned whenever the assistant
+    # tool_call carried a distinct ``call_id`` (or only ``call_id``); the
+    # pass then dropped it, leaving the assistant tool_call unanswered and
+    # producing an HTTP 400 on strict providers (DeepSeek, Kimi). Matching
+    # on the *superset* of both keys achieves the same tolerance as
+    # ``_get_tool_call_id_static``'s ``call_id || id`` — a match set must
+    # accept every legitimate reference, not just the canonical one (#58168).
     known_tool_ids: set = set()
     filtered: List[Dict] = []
     for msg in collapsed:
@@ -474,14 +495,23 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         if role == "assistant":
             known_tool_ids = set()
             for tc in (msg.get("tool_calls") or []):
-                tc_id = tc.get("id") if isinstance(tc, dict) else None
-                if tc_id:
-                    known_tool_ids.add(tc_id)
+                if not isinstance(tc, dict):
+                    continue
+                for key in ("id", "call_id"):
+                    tc_id = tc.get(key)
+                    if tc_id:
+                        known_tool_ids.add(tc_id)
             filtered.append(msg)
         elif role == "tool":
             tc_id = msg.get("tool_call_id")
             if tc_id and tc_id in known_tool_ids:
                 filtered.append(msg)
+                # Consume the id so a SECOND tool result carrying the same
+                # tool_call_id (duplicate from a retry/crash/session-resume
+                # glitch) falls into the drop branch below instead of being
+                # replayed — strict providers (DeepSeek) reject a duplicate
+                # tool_call_id with HTTP 400 (#58327). Credit: #55436.
+                known_tool_ids.discard(tc_id)
             else:
                 repairs += 1
         else:
@@ -699,7 +729,14 @@ def recover_with_credential_pool(
     # that seeded the pool.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
-    if current_provider and pool_provider and current_provider != pool_provider:
+    # Guard: skip credential pool recovery when the pool is scoped to a
+    # different provider than the agent.  Only guard when the pool has a
+    # known provider — an empty pool provider means "unscoped" (applies to
+    # any provider).  An empty agent provider is treated as a mismatch
+    # because swapping the pool's credentials would set base_url/api_key
+    # without fixing the empty provider field, leaving the agent in a
+    # corrupted state (provider="" model="").
+    if pool_provider and current_provider != pool_provider:
         # Custom endpoints use two naming conventions for the SAME provider:
         # the agent carries the generic ``custom`` label while the pool is
         # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string
@@ -1238,6 +1275,12 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_activated = False
         agent._fallback_index = 0
 
+        # Reset the stale-call circuit breaker (#58962): the streak measured
+        # the FALLBACK provider we're leaving; the restored primary deserves
+        # a fresh stream attempt before the breaker can trip again.
+        from agent.chat_completion_helpers import _reset_stale_streak
+        _reset_stale_streak(agent)
+
         # Undo the fallback's identity rewrite so the prompt is
         # byte-identical to the stored copy again (prefix cache match).
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
@@ -1521,6 +1564,17 @@ def anthropic_prompt_cache_policy(
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
+    # Kimi / Moonshot family via OpenRouter: same cache_control wire format
+    # as Claude on OpenRouter (envelope layout).  Without this branch
+    # moonshotai/kimi-k2.6 falls through to (False, False), serving ~1%
+    # cache hits on 64K-token prompts and re-billing the full prompt on
+    # every turn.  Observed within-turn progression with cache enabled:
+    # 1% → 67% → 84% → 97% (#25970).  Reuses the canonical family matcher
+    # (covers bare k1./k2./k25 release slugs the substring check missed).
+    from agent.anthropic_adapter import _model_name_is_kimi_family
+    is_kimi = (
+        _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
+    )
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
     # Nous Portal proxies to OpenRouter behind the scenes — identical
     # OpenAI-wire envelope cache_control semantics. Treat it as an
@@ -1534,7 +1588,7 @@ def anthropic_prompt_cache_policy(
 
     if is_native_anthropic:
         return True, True
-    if (is_openrouter or is_nous_portal) and is_claude:
+    if (is_openrouter or is_nous_portal) and (is_claude or is_kimi):
         return True, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter
@@ -1955,6 +2009,14 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
 
+    # ── Reset the cross-turn stale-call circuit breaker (#58962) ──
+    # The breaker's error text tells the user to "switch models ... then
+    # retry"; without this reset the streak stays latched and the freshly
+    # selected (healthy) provider would keep short-circuiting before any
+    # stream is even attempted.
+    from agent.chat_completion_helpers import _reset_stale_streak
+    _reset_stale_streak(agent)
+
     # ── Update _primary_runtime so the change persists across turns ──
     _cc = agent.context_compressor if hasattr(agent, "context_compressor") and agent.context_compressor else None
     agent._primary_runtime = {
@@ -2064,12 +2126,12 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
 
-    # Check plugin hooks for a block directive before executing anything.
+    # Check plugin hooks for a block or approval directive before executing.
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
         try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            block_message = get_pre_tool_call_block_message(
+            from hermes_cli.plugins import resolve_pre_tool_block
+            block_message = resolve_pre_tool_block(
                 function_name,
                 function_args,
                 task_id=effective_task_id or "",
@@ -2080,7 +2142,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 middleware_trace=list(_tool_middleware_trace),
             )
         except Exception:
-            pass
+            block_message = None
     if block_message is not None:
         result = json.dumps({"error": block_message}, ensure_ascii=False)
         try:
@@ -2358,6 +2420,41 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         filtered.append(msg)
     messages = filtered
 
+    # --- Drop empty / malformed tool_calls arrays on assistant messages ---
+    # An assistant message carrying ``tool_calls: []`` (an empty array) — or a
+    # non-list value under the key — is semantically identical to an assistant
+    # message with no tool calls, but strict OpenAI-compatible providers reject
+    # the empty array outright: DeepSeek v4 returns HTTP 400 "Invalid
+    # 'messages[N].tool_calls': empty array. Expected an array with minimum
+    # length 1, but got an empty array instead." (#58755, follow-up to #56980).
+    # Empty arrays reach here from session resume, host-fed histories, or the
+    # consecutive-assistant merge in ``repair_message_sequence`` (which
+    # preserves a pre-existing ``[]`` on the surviving turn). This is the final
+    # pre-API chokepoint, so normalize defensively — and, per the #56980
+    # review, do it HERE on the per-call copy rather than in
+    # ``repair_message_sequence``, which would destructively rewrite the
+    # persisted trajectory. Shallow-copy the message before dropping the key so
+    # stored history (and prompt caching) stays byte-stable.
+    normalized: List[Dict[str, Any]] = []
+    dropped_empty_tool_calls = 0
+    for msg in messages:
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and "tool_calls" in msg
+            and not (isinstance(msg["tool_calls"], list) and msg["tool_calls"])
+        ):
+            msg = {k: v for k, v in msg.items() if k != "tool_calls"}
+            dropped_empty_tool_calls += 1
+        normalized.append(msg)
+    if dropped_empty_tool_calls:
+        messages = normalized
+        _ra().logger.debug(
+            "Pre-call sanitizer: dropped empty/invalid tool_calls on %d "
+            "assistant message(s)",
+            dropped_empty_tool_calls,
+        )
+
     # --- Repair tool_calls whose function.name is empty/missing ---
     # Some providers (and partially-streamed responses) emit a tool_call with
     # id="call_xxx" but function.name="". Downstream Responses-API adapters
@@ -2453,6 +2550,50 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         _ra().logger.debug(
             "Pre-call sanitizer: added %d stub tool result(s)",
             len(missing_results),
+        )
+
+    # 3. Deduplicate tool_call_ids. Strict providers (DeepSeek) reject a
+    # payload where the same tool_call_id appears more than once with HTTP 400
+    # "Duplicate value for 'tool_call_id'" (#58327). Duplicates can arise from
+    # retries, crash/resume glitches, or a compression window that re-emits a
+    # tool result. This is the final pre-API chokepoint, so dedup defensively
+    # here even though repair_message_sequence also consumes matched ids.
+    #   (a) collapse duplicate tool_calls WITHIN an assistant message
+    #   (b) drop later tool result messages reusing an already-seen id
+    seen_assistant_call_ids: set = set()
+    seen_result_call_ids: set = set()
+    deduped: List[Dict[str, Any]] = []
+    removed_dupes = 0
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            kept_tcs = []
+            for tc in msg.get("tool_calls") or []:
+                cid = _ra().AIAgent._get_tool_call_id_static(tc)
+                if cid and cid in seen_assistant_call_ids:
+                    removed_dupes += 1
+                    continue
+                if cid:
+                    seen_assistant_call_ids.add(cid)
+                kept_tcs.append(tc)
+            if len(kept_tcs) != len(msg.get("tool_calls") or []):
+                msg = {**msg, "tool_calls": kept_tcs}
+            deduped.append(msg)
+        elif role == "tool":
+            cid = (msg.get("tool_call_id") or "").strip()
+            if cid and cid in seen_result_call_ids:
+                removed_dupes += 1
+                continue
+            if cid:
+                seen_result_call_ids.add(cid)
+            deduped.append(msg)
+        else:
+            deduped.append(msg)
+    if removed_dupes:
+        messages = deduped
+        _ra().logger.debug(
+            "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
+            removed_dupes,
         )
     return messages
 

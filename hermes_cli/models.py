@@ -48,7 +48,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("google/gemini-3.1-pro-preview",          ""),
     ("google/gemini-3.5-flash",                ""),
     # xAI
-    ("x-ai/grok-4.3",                          ""),
+    ("x-ai/grok-4.5",                          ""),
     # DeepSeek
     ("deepseek/deepseek-v4-pro",               ""),
     ("deepseek/deepseek-v4-flash",             ""),
@@ -67,7 +67,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Xiaomi
     ("xiaomi/mimo-v2.5-pro",                   ""),
     # Tencent
-    ("tencent/hy3-preview",                    ""),
+    ("tencent/hy3",                            ""),
     # StepFun
     ("stepfun/step-3.7-flash",                 ""),
     # NVIDIA
@@ -78,9 +78,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
-    ("openrouter/owl-alpha",                   "free"),
     ("poolside/laguna-m.1:free",               "free"),
-    ("tencent/hy3-preview:free",               "free"),
+    ("tencent/hy3:free",                       "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
     ("inclusionai/ring-2.6-1t:free",           "free"),
@@ -114,6 +113,7 @@ def _codex_curated_models() -> list[str]:
 #  grok-4-1-fast{,-reasoning,-non-reasoning}, grok-code-fast-1 → grok-4.3).
 _XAI_STATIC_FALLBACK: list[str] = [
     "grok-build-0.1",
+    "grok-4.5",
     "grok-4.3",
     "grok-4.20-0309-reasoning",
     "grok-4.20-0309-non-reasoning",
@@ -122,6 +122,7 @@ _XAI_STATIC_FALLBACK: list[str] = [
 
 # Callable via xAI OAuth but omitted from models.dev and /v1/models listings.
 _XAI_CURATED_EXTRAS: list[str] = [
+    "grok-4.5",  # GA 2026-07 — kept until the models.dev disk cache refreshes
     "grok-composer-2.5-fast",
 ]
 
@@ -192,7 +193,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3.1-pro-preview",
         "google/gemini-3.5-flash",
         # xAI
-        "x-ai/grok-4.3",
+        "x-ai/grok-4.5",
         # DeepSeek
         "deepseek/deepseek-v4-pro",
         "deepseek/deepseek-v4-flash",
@@ -211,7 +212,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # Xiaomi
         "xiaomi/mimo-v2.5-pro",
         # Tencent
-        "tencent/hy3-preview",
+        "tencent/hy3",
         # StepFun
         "stepfun/step-3.7-flash",
         # NVIDIA
@@ -2783,7 +2784,7 @@ def _payload_items(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def copilot_default_headers() -> dict[str, str]:
+def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
     """Standard headers for Copilot API requests.
 
     Includes Openai-Intent and x-initiator headers that opencode and the
@@ -2791,13 +2792,13 @@ def copilot_default_headers() -> dict[str, str]:
     """
     try:
         from hermes_cli.copilot_auth import copilot_request_headers
-        return copilot_request_headers(is_agent_turn=True)
+        return copilot_request_headers(is_agent_turn=is_agent_turn)
     except ImportError:
         return {
             "Editor-Version": COPILOT_EDITOR_VERSION,
             "User-Agent": "HermesAgent/1.0",
             "Openai-Intent": "conversation-edits",
-            "x-initiator": "agent",
+            "x-initiator": "agent" if is_agent_turn else "user",
         }
 
 

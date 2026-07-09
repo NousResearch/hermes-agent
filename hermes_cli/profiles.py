@@ -224,6 +224,25 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "logs",                 # gateway logs
 })
 
+# Allow-list for ``export_profile("default")``: when HERMES_HOME equals the
+# cwd (Docker/custom deployments), the default profile home is the working
+# directory and contains arbitrary user files that should NOT be bundled
+# into the export. The set below identifies the *known Hermes profile
+# artifacts* at the root of HERMES_HOME; everything else is excluded.
+# Sensitive runtime infrastructure (``state.db``, ``logs/``, ``auth.*``,
+# other profiles) is intentionally *not* in this list so the export stays
+# a portable, credential-free snapshot of the user-facing surface
+# (#58394). Add new artifacts here when introduced in ``hermes_constants``.
+_DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
+    # Configuration / persona
+    "config.yaml", "SOUL.md", "MEMORY.md", "USER.md", "todo.json",
+    "system_prompt.md", "AGENTS.md", "CLAUDE.md", ".cursorrules",
+    # User-facing skill, cron, and session artifacts
+    "skills", "cron", "scripts", "sessions",
+    # Plugin / memory surfaces (per-profile overrides live here)
+    "plugins", "memories", "knowledge", "preferences",
+})
+
 # Names that cannot be used as profile aliases
 _RESERVED_NAMES = frozenset({
     "hermes", "default", "test", "tmp", "root", "sudo",
@@ -1042,6 +1061,7 @@ def create_profile(
         shutil.copytree(
             source_dir,
             profile_dir,
+            symlinks=True,
             ignore=_clone_all_copytree_ignore(source_dir),
         )
         # Strip runtime files
@@ -1076,7 +1096,7 @@ def create_profile(
             # same agent capabilities as the source profile.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+                shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:
@@ -1488,11 +1508,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if has_wrapper:
         items.append(f"Command alias ({wrapper_path})")
 
-    print(f"\nThis will permanently delete:")
+    print("\nThis will permanently delete:")
     for item in items:
         print(f"  • {item}")
     if gw_running:
-        print(f"  ⚠ Gateway is running — it will be stopped.")
+        print("  ⚠ Gateway is running — it will be stopped.")
 
     # Confirmation
     if not yes:
@@ -1716,7 +1736,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
                     capture_output=True, check=False, timeout=10,
                 )
                 plist_path.unlink(missing_ok=True)
-                print(f"✓ Launchd service removed")
+                print("✓ Launchd service removed")
     except Exception as e:
         print(f"⚠ Service cleanup: {e}")
     finally:
@@ -1843,8 +1863,18 @@ def get_active_profile_name() -> str:
 def _default_export_ignore(root_dir: Path):
     """Return an *ignore* callable for :func:`shutil.copytree`.
 
-    At the root level it excludes everything in ``_DEFAULT_EXPORT_EXCLUDE_ROOT``.
-    At all levels it excludes ``__pycache__``, sockets, and temp files.
+    Two-tier filtering:
+
+    * **Root-level allow-list** — only entries whose name appears in
+      ``_DEFAULT_EXPORT_INCLUDE_ROOT`` survive. Everything else (such as
+      an unrelated ``x11-dev/`` directory in a Docker deployment where
+      HERMES_HOME equals the cwd) is excluded. Blacklisting was tried
+      first and proved unable to anticipate every non-Hermes file the
+      user may have lying alongside HERMES_HOME (#58394).
+    * **Universal exclusions at any depth** — ``__pycache__``, sockets,
+      temp files; plus npm lockfiles, which may appear at the root.
+
+    All other profile artifacts are copied through untouched.
     """
 
     def _ignore(directory: str, contents: list) -> set:
@@ -1856,9 +1886,12 @@ def _default_export_ignore(root_dir: Path):
             # npm lockfiles can appear at root
             elif entry in {"package.json", "package-lock.json"}:
                 ignored.add(entry)
-        # Root-level exclusions
+        # Root-level allow-list: drop everything that isn't a known
+        # Hermes profile artifact.
         if Path(directory) == root_dir:
-            ignored.update(c for c in contents if c in _DEFAULT_EXPORT_EXCLUDE_ROOT)
+            ignored.update(
+                entry for entry in contents if entry not in _DEFAULT_EXPORT_INCLUDE_ROOT
+            )
         return ignored
 
     return _ignore
@@ -1890,6 +1923,7 @@ def export_profile(name: str, output_path: str) -> Path:
             shutil.copytree(
                 profile_dir,
                 staged,
+                symlinks=True,
                 ignore=_default_export_ignore(profile_dir),
             )
             result = shutil.make_archive(base, "gztar", tmpdir, "default")
@@ -1902,6 +1936,7 @@ def export_profile(name: str, output_path: str) -> Path:
         shutil.copytree(
             profile_dir,
             staged,
+            symlinks=True,
             ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
         )
         result = shutil.make_archive(base, "gztar", tmpdir, canon)

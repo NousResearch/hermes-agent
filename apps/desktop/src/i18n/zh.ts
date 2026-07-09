@@ -25,7 +25,9 @@ export const zh: Translations = {
     docs: '文档',
     done: '完成',
     error: '错误',
+    expand: '展开',
     failed: '失败',
+    formatJson: '格式化 JSON',
     free: '免费',
     loading: '加载中…',
     notSet: '未设置',
@@ -38,6 +40,7 @@ export const zh: Translations = {
     set: '设置',
     skip: '跳过',
     update: '更新',
+    tryHint: term => `试试“${term}”`,
     on: '开',
     off: '关'
   },
@@ -113,6 +116,7 @@ export const zh: Translations = {
     copyDetailFailed: '无法复制通知详情',
     backendOutOfDateTitle: '后端版本过旧',
     backendOutOfDateMessage: '你的 Hermes 后端早于当前桌面构建，可能无法正常工作。请更新以保持一致。',
+    installMethodUnsupportedTitle: '不受支持的安装方式',
     updateHermes: '更新 Hermes',
     updateReadyTitle: '有可用更新',
     updateReadyMessage: count => `有 ${count} 项新更改可用。`,
@@ -160,8 +164,7 @@ export const zh: Translations = {
   },
 
   remoteDisplayBanner: {
-    message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`,
-    dismiss: '关闭'
+    message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
   },
 
   titlebar: {
@@ -368,6 +371,9 @@ export const zh: Translations = {
       colorModeDesc: '选择固定模式，或让 Hermes 跟随系统设置。',
       toolViewTitle: '工具调用显示',
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
+      uiScaleTitle: '界面缩放',
+      uiScaleDesc: (percent: number) =>
+        `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
       embedsTitle: '内嵌预览',
@@ -687,8 +693,6 @@ export const zh: Translations = {
       enterValueFirst: '请先输入一个值。',
       couldNotSave: '无法保存凭据。',
       remove: '移除',
-      or: '或',
-      escToCancel: '按 esc 取消',
       getKey: '获取密钥',
       saving: '保存中'
     },
@@ -820,7 +824,22 @@ export const zh: Translations = {
       catalogInstallStarted: name => `正在安装 ${name}… 完成后对新会话生效。`,
       catalogInstallFailed: name => `安装 ${name} 失败`,
       catalogEnvPrompt: name => `${name} 需要凭据`,
-      catalogEnvRequired: '安装前请填写必需的值。'
+      catalogEnvRequired: '安装前请填写必需的值。',
+      capabilitySummary: (tools, prompts, resources) =>
+        `已启用 ${[`${tools} 个工具`, ...(prompts ? [`${prompts} 个提示`] : []), ...(resources ? [`${resources} 个资源`] : [])].join('、')}`,
+      statusConnecting: '连接中…',
+      statusNeedsAuth: '需要认证',
+      statusError: '错误',
+      statusOff: '关闭',
+      allServers: '所有服务器',
+      authenticatedTitle: '已认证',
+      authenticatedMessage: (server, count) => `${server}：${count} 个工具`,
+      waitingForBrowser: '等待浏览器…',
+      authenticate: '认证',
+      unsavedConnect: '未保存 — 保存 mcp.json 以连接。',
+      enableTool: tool => `启用 ${tool}`,
+      disableTool: tool => `禁用 ${tool}`,
+      noOutput: '暂无输出。'
     },
     model: {
       loading: '正在加载模型配置...',
@@ -943,6 +962,7 @@ export const zh: Translations = {
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
+    tabMcp: 'MCP',
     tabHub: '浏览技能中心',
     all: '全部',
     searchSkills: '搜索技能…',
@@ -968,8 +988,32 @@ export const zh: Translations = {
     toolsetDisabled: '工具集已禁用',
     appliesToNewSessions: name => `${name} 将应用于新会话。`,
     failedToUpdate: name => `更新 ${name} 失败`,
+    sortMostUsed: '最常用',
+    sortAlpha: 'A–Z',
+    sortMostUsedDesc: '↓ 最常用',
+    sortLeastUsedAsc: '↑ 最少用',
+    enableAll: '全部启用',
+    disableAll: '全部停用',
+    disableUnused: '禁用未使用',
+    bulkUpdated: count => `已为新会话更新 ${count} 项。`,
+    bulkNoChange: '没有需要更改的内容。',
+    usageCount: count => `已使用 ${count} 次`,
+    provenance: {
+      agent: '习得',
+      bundled: '内置',
+      hub: '技能中心'
+    },
+    emptyNoneFound: noun => `未找到${noun}`,
+    emptyNothingMatches: query => `没有匹配“${query}”的内容。`,
+    emptyNoneAvailable: noun => `暂无可用的${noun}。`,
+    changesApplyNewSessions: '更改将应用于新会话。',
+    skillUpdated: '技能已更新',
+    edit: '编辑',
+    archive: '归档',
+    skillArchivedTitle: '技能已归档',
+    skillArchivedMessage: '可通过 hermes curator restore 恢复。',
     hub: {
-      searchPlaceholder: '搜索技能中心（官方、GitHub、社区）…',
+      searchPlaceholder: '搜索技能中心',
       search: '搜索',
       searching: '搜索中…',
       connectingHubs: '正在连接技能中心…',
@@ -983,6 +1027,7 @@ export const zh: Translations = {
       install: '安装',
       installing: '安装中…',
       uninstall: '卸载',
+      uninstalling: '卸载中…',
       updateAll: '更新已安装',
       updating: '更新中…',
       preview: '预览',
@@ -1070,7 +1115,6 @@ export const zh: Translations = {
     ageHours: hours => `${hours} 小时前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
-    tokensK: k => `${k}k 词元`,
     tokens: value => `${value} 词元`
   },
 
@@ -1087,7 +1131,7 @@ export const zh: Translations = {
     appearance: '外观',
     settings: '设置',
     changeTheme: '更改主题',
-    changeColorMode: '更改颜色模式...',
+    changeColorMode: '更改颜色模式…',
     pets: {
       title: '宠物',
       placeholder: '搜索宠物…',
@@ -1133,7 +1177,8 @@ export const zh: Translations = {
       startOver: '重新开始'
     },
     installTheme: {
-      title: '安装主题...',
+      title: '安装主题…',
+      pageTitle: '安装主题',
       placeholder: '搜索 VS Code Marketplace...',
       loading: '正在搜索 Marketplace...',
       error: '无法连接到 Marketplace。',
@@ -1397,9 +1442,9 @@ export const zh: Translations = {
     allProfiles: '全部配置档案',
     showAllProfiles: '显示全部配置档案',
     switchToProfile: name => `切换到 ${name}`,
-    manageProfiles: '管理配置档案...',
+    manageProfiles: '管理配置档案…',
     actionsFor: name => `${name} 的操作`,
-    color: '颜色...',
+    color: '颜色…',
     colorFor: name => `${name} 的颜色`,
     setColor: color => `设置颜色 ${color}`,
     autoColor: '自动',
@@ -1412,6 +1457,8 @@ export const zh: Translations = {
     env: 'env',
     defaultBadge: '默认',
     rename: '重命名',
+    renameMenu: '重命名…',
+    editSoul: '编辑 SOUL.md…',
     copySetup: '复制安装命令',
     copying: '复制中…',
     modelLabel: '模型',

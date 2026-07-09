@@ -51,7 +51,11 @@ def _ensure_telegram_mock():
 _ensure_telegram_mock()
 
 # Now we can safely import
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import (  # noqa: E402
+    TelegramAdapter,
+    _TELEGRAM_VIDEO_THUMB_MAX_BYTES,
+    _ensure_video_thumbnail,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -919,6 +923,126 @@ class TestSendVideo:
         assert result.success is True
         assert result.message_id == "200"
         connected_adapter._bot.send_video.assert_called_once()
+        call_kwargs = connected_adapter._bot.send_video.call_args[1]
+        assert call_kwargs["supports_streaming"] is True
+        assert getattr(call_kwargs["video"], "name", None) == str(test_file)
+
+    @pytest.mark.asyncio
+    async def test_send_video_local_mode_passes_path_and_metadata(self, connected_adapter, tmp_path, monkeypatch):
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
+        thumb = tmp_path / "thumb.jpg"
+        thumb.write_bytes(b"jpeg")
+        connected_adapter.config.extra["local_mode"] = True
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter._probe_video_metadata",
+            lambda path: {"width": 1920, "height": 1080, "duration": 42},
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter._ensure_video_thumbnail",
+            lambda path: str(thumb),
+        )
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 202
+        connected_adapter._bot.send_video = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_video(
+            chat_id="12345",
+            video_path=str(test_file),
+            caption="Check this out",
+        )
+
+        assert result.success is True
+        call_kwargs = connected_adapter._bot.send_video.call_args[1]
+        assert call_kwargs["video"] == str(test_file)
+        assert call_kwargs["thumbnail"] == str(thumb)
+        assert call_kwargs["supports_streaming"] is True
+        assert call_kwargs["width"] == 1920
+        assert call_kwargs["height"] == 1080
+        assert call_kwargs["duration"] == 42
+
+    @pytest.mark.asyncio
+    async def test_send_video_retries_without_rejected_thumbnail(self, connected_adapter, tmp_path, monkeypatch):
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
+        thumb = tmp_path / "thumb.jpg"
+        thumb.write_bytes(b"jpeg")
+        connected_adapter.config.extra["local_mode"] = True
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter._probe_video_metadata",
+            lambda path: {"width": 1920, "height": 1080, "duration": 42},
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter._ensure_video_thumbnail",
+            lambda path: str(thumb),
+        )
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 203
+        connected_adapter._bot.send_video = AsyncMock(
+            side_effect=[Exception("Bad Request: wrong thumbnail"), mock_msg]
+        )
+
+        result = await connected_adapter.send_video(
+            chat_id="12345",
+            video_path=str(test_file),
+        )
+
+        assert result.success is True
+        assert connected_adapter._bot.send_video.await_count == 2
+        first_call = connected_adapter._bot.send_video.await_args_list[0].kwargs
+        second_call = connected_adapter._bot.send_video.await_args_list[1].kwargs
+        assert first_call["thumbnail"] == str(thumb)
+        assert "thumbnail" not in second_call
+        assert second_call["video"] == str(test_file)
+        assert second_call["supports_streaming"] is True
+
+    def test_ensure_video_thumbnail_fits_portrait_and_size_limit(self, tmp_path, monkeypatch):
+        video = tmp_path / "portrait.mp4"
+        video.write_bytes(b"fake video")
+        cache_dir = tmp_path / "cache"
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.get_video_cache_dir",
+            lambda: cache_dir,
+        )
+
+        def fake_run(cmd, check, capture_output, timeout):
+            assert "scale=320:320:force_original_aspect_ratio=decrease" in cmd
+            out = tmp_path / cmd[-1]
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"jpeg")
+            return MagicMock()
+
+        monkeypatch.setattr("plugins.platforms.telegram.adapter.subprocess.run", fake_run)
+
+        thumb = _ensure_video_thumbnail(str(video))
+
+        assert thumb is not None
+        assert os.path.exists(thumb)
+        assert os.path.getsize(thumb) <= _TELEGRAM_VIDEO_THUMB_MAX_BYTES
+
+    def test_ensure_video_thumbnail_drops_oversized_output(self, tmp_path, monkeypatch):
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"fake video")
+        cache_dir = tmp_path / "cache"
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.get_video_cache_dir",
+            lambda: cache_dir,
+        )
+
+        def fake_run(cmd, check, capture_output, timeout):
+            out = tmp_path / cmd[-1]
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"x" * (_TELEGRAM_VIDEO_THUMB_MAX_BYTES + 1))
+            return MagicMock()
+
+        monkeypatch.setattr("plugins.platforms.telegram.adapter.subprocess.run", fake_run)
+
+        thumb = _ensure_video_thumbnail(str(video))
+
+        assert thumb is None
+        assert not any(cache_dir.glob("telegram-thumb-*.jpg"))
 
     @pytest.mark.asyncio
     async def test_send_video_file_not_found(self, connected_adapter):

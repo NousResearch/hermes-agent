@@ -26,6 +26,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
+| **Meta Model API** | `MODEL_API_KEY` (or `META_API_KEY` / `META_MODEL_API_KEY`) in `~/.hermes/.env` (provider: `meta-ai`; aliases: `meta`, `muse`, `llama-api`, `model-api`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **xAI (Grok) — Responses API** | `XAI_API_KEY` in `~/.hermes/.env` (provider: `xai`) |
@@ -512,6 +513,25 @@ model:
 ```
 
 The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi-serving.com/v1`).
+
+### Meta Model API (Muse Spark)
+
+Muse Spark and other Meta models via the [Meta Model API](https://dev.meta.ai/) — OpenAI-compatible API, API key authentication. Reasoning uses top-level `reasoning_effort` (`minimal` / `low` / `medium` / `high` / `xhigh`); Hermes maps `max` → `xhigh` and never sends `none` (Meta returns HTTP 400 for that value).
+
+```bash
+# Meta Model API (Muse Spark)
+hermes chat --provider meta-ai --model muse-spark-1.1
+# Requires: MODEL_API_KEY (or META_API_KEY / META_MODEL_API_KEY) in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "meta-ai"
+  default: "muse-spark-1.1"
+```
+
+The base URL can be overridden with `META_BASE_URL` (default: `https://api.meta.ai/v1`). Aliases: `meta`, `muse`, `llama-api`, `model-api`.
 
 ### StepFun
 

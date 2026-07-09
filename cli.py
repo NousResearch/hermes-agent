@@ -10367,10 +10367,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         try:
             from tools.tts_tool import text_to_speech_tool
             from tools.voice_mode import play_audio_file
+            from hermes_cli.voice_interaction import prepare_spoken_text
 
-            # Strip markdown and non-speech content for cleaner TTS
-            tts_text = text[:4000] if len(text) > 4000 else text
-            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)   # fenced code blocks
+            # Clean final answers into a speech-friendly transcript. This avoids
+            # reading markdown tables, JSON, code blocks, and raw technical
+            # symbols aloud while preserving the displayed text unchanged.
+            tts_text = prepare_spoken_text(text[:4000] if len(text) > 4000 else text)
             tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # [text](url) -> text
             tts_text = re.sub(r'https?://\S+', '', tts_text)      # URLs
             tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)  # bold
@@ -10699,6 +10701,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         with self._approval_lock:
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
             response_queue = queue.Queue()
+
+            # Approval-aware voice behavior: speak the request at the same time
+            # the modal is shown, before tool execution blocks waiting for the
+            # user's decision.
+            if self._voice_tts:
+                try:
+                    self._voice_speak_response("I need approval to run that command.")
+                except Exception as exc:
+                    logger.debug("voice approval prompt skipped: %s", exc)
 
             self._approval_state = {
                 "command": command,
@@ -11245,6 +11256,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     "[Voice input — respond concisely and conversationally, "
                     "2-3 sentences max. No code blocks or markdown.] "
                 )
+
+            # Phase A voice acknowledgement: for likely slow/approval/tool work,
+            # speak a tiny non-committal phrase before the agent can begin tool
+            # execution. The useful answer remains Phase B after reasoning/tools.
+            if self._voice_tts and self._voice_mode:
+                try:
+                    from hermes_cli.voice_interaction import choose_voice_acknowledgement
+                    ack = choose_voice_acknowledgement(message)
+                    if ack:
+                        self._voice_speak_response(ack)
+                except Exception as exc:
+                    logger.debug("voice acknowledgement skipped: %s", exc)
 
             def run_agent():
                 nonlocal result

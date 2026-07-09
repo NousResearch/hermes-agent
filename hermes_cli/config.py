@@ -1783,6 +1783,9 @@ DEFAULT_CONFIG = {
         "elevenlabs": {
             "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
             "model_id": "eleven_multilingual_v2",
+            # Optional ElevenLabs pronunciation dictionary locators. Values may
+            # be bare IDs or {pronunciation_dictionary_id, version_id} objects.
+            "pronunciation_dictionary_locators": [],
         },
         "openai": {
             "model": "gpt-4o-mini-tts",
@@ -1835,7 +1838,7 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "elevenlabs_scribe" | "elevenlabs_scribe_realtime"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -1861,6 +1864,15 @@ DEFAULT_CONFIG = {
         "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
+        "stt_provider": "",          # Optional alias: local_whisper | elevenlabs_scribe | elevenlabs_scribe_realtime
+        "tts_profile": "fast_interactive",  # fast_interactive | technical_clear | narrative_summary
+        "expressive_tags_enabled": False,
+        "expressive_tag_model_allowlist": [],
+        "tts_profiles": {
+            "fast_interactive": {"streaming": True, "normalize": True, "expressive_tags": False},
+            "technical_clear": {"streaming": False, "normalize": True, "expressive_tags": False},
+            "narrative_summary": {"streaming": True, "normalize": True, "expressive_tags": True},
+        },
     },
     
     "human_delay": {

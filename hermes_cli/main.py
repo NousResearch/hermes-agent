@@ -12329,6 +12329,23 @@ def cmd_dashboard(args):
             print("  Or drop --skip-build to build automatically.")
             sys.exit(1)
         print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
+    else:
+        # HERMES_WEB_DIST is set without --skip-build: the build is skipped
+        # (the env var points at a caller-managed dist), so validate it the
+        # same way the --skip-build branch does — otherwise the server starts
+        # and serves 404s with no obvious cause (same failure mode as #23817,
+        # via the env-var path).
+        _dist_root = Path(os.environ["HERMES_WEB_DIST"]).expanduser()
+        if not (_dist_root / "index.html").exists():
+            print(f"✗ HERMES_WEB_DIST is set but no web dist found at: {_dist_root}")
+            print("  Pre-build first:  npm install --workspace web && npm run build -w web")
+            print("  Or unset HERMES_WEB_DIST to build and use the default web UI dist.")
+            sys.exit(1)
+        # Write the expanded path back: web_server reads HERMES_WEB_DIST raw
+        # at import (no expanduser), so a validated "~/dist" would otherwise
+        # pass here and still 404 there.
+        os.environ["HERMES_WEB_DIST"] = str(_dist_root)
+        print(f"→ Using web dist from HERMES_WEB_DIST: {_dist_root}")
 
     # Discover and load plugins so any DashboardAuthProvider plugin
     # (e.g. plugins/dashboard_auth/nous) registers BEFORE start_server's

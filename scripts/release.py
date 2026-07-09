@@ -57,6 +57,7 @@ AUTHOR_MAP = {
     "AndreasHiltner@users.noreply.github.com": "AndreasHiltner",  # PR #56854 salvage (gateway: route multiplex profile responses through the profile's own adapter — 53-site _adapter_for_source sweep)
     "allenliang2022@users.noreply.github.com": "allenliang2022",  # PR #56932 test coverage folded into #56909 salvage (408 → retryable timeout)
     "m888.braun@hotmail.com": "ManniBr",  # PR #57417 partial salvage (gateway: fail-closed adapter resolution for unregistered secondary profiles)
+    "poowis2011@hotmail.com": "Umi4Life",  # PR #47377 salvage (agent: emit one-shot fallback switch notice on successful fallback so gateway users see model/provider change; #35419)
     "austin@openvm067.space": "austinlaw076",  # PR #57563 partial salvage (auth: lazy per-profile Anthropic OAuth file; gateway: whatsapp_cloud/line added to port-binding platform set)
     "sunsky.lau@gmail.com": "liuhao1024",  # PR #56993 salvage (gateway: process-level HERMES_HOME for pid/lock/status identity files; #56986)
     "gauravsaxena.jaipur@gmail.com": "gauravsaxena1997",  # PR #59868 partial salvage (agent: guard response.text against httpx.ResponseNotRead in _summarize_api_error; #59769)
@@ -1933,6 +1934,8 @@ AUTHOR_MAP = {
     "wafy.081107@gmail.com": "mahdiwafy",  # PR #60347 salvage (session messages pagination)
     "codeforgenet@icloud.com": "CodeForgeNet",  # PR #47437 salvage (compact_rows blob skip)
     "i@dex.moe": "dexhunter",  # PR #60339 salvage (skills snapshot manifest speedup)
+    "1torhan@protonmail.com": "uzaylisak",  # PR #29988 salvage (detect_local_server_type process-lifetime cache)
+    "zhchl@hermes-agent.local": "8294",  # PR #50572 salvage (honor config context_length on banner)
 }
 
 

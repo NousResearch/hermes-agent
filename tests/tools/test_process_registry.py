@@ -1186,7 +1186,7 @@ class TestProcessToolHandler:
 # format_process_notification + drain_notifications (shared helpers)
 # =========================================================================
 
-from tools.process_registry import format_process_notification
+from tools.process_registry import format_completion_output, format_process_notification
 
 
 def test_format_completion_event():
@@ -1231,6 +1231,26 @@ def test_format_external_sigterm_does_not_claim_agent_kill():
     assert "proc_external exited" in result
     assert "terminated by" not in result
     assert "exit code 143, SIGTERM" in result
+
+
+def test_format_completion_output_empty_for_user():
+    result = format_completion_output("", for_agent=False)
+    assert "No buffered stdout captured" in result
+    assert "files or logs" in result
+
+
+def test_format_completion_event_empty_output_gets_hint():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_empty",
+        "command": "sleep 5",
+        "exit_code": 0,
+        "output": "",
+    }
+    result = format_process_notification(evt)
+    assert result is not None
+    assert "No buffered stdout captured" in result
+    assert 'process(action="log", session_id=...)' in result
 
 
 def test_format_watch_match_event():

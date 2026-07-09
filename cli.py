@@ -15703,7 +15703,8 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     if not goal_text:
         return
 
-    max_turns = task.goal_max_turns or _DEF_TURNS
+    _env_turns = (os.environ.get("HERMES_KANBAN_GOAL_MAX_TURNS") or "").strip()
+    max_turns = task.goal_max_turns or (int(_env_turns) if _env_turns.isdigit() and int(_env_turns) > 0 else 0) or _DEF_TURNS
 
     def _run_turn(prompt: str) -> str:
         result = cli.agent.run_conversation(

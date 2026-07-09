@@ -18,6 +18,11 @@ import zlib from 'node:zlib'
 const GALLERY_QUERY_URL = 'https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery'
 const VSIX_ASSET_TYPE = 'Microsoft.VisualStudio.Services.VSIXPackage'
 const MAX_VSIX_BYTES = 40 * 1024 * 1024 // 40 MB — themes are tiny; this is paranoia.
+// Cap the *inflated* size of any single zip entry. MAX_VSIX_BYTES bounds the
+// compressed archive, but a small deflated entry can inflate to gigabytes (a
+// decompression bomb) in the Electron main process. Themes are JSON and tiny;
+// 16 MB inflated per entry is already generous.
+const MAX_ENTRY_BYTES = 16 * 1024 * 1024 // 16 MB inflated per entry.
 const MAX_REDIRECTS = 5
 const REQUEST_TIMEOUT_MS = 20_000
 
@@ -247,8 +252,8 @@ function readCentralDirectory(buf) {
   return records
 }
 
-/** Inflate a single entry to a string. */
-function extractEntry(buf, record) {
+/** Inflate a single entry to a string, bounding the inflated output. */
+function extractEntry(buf, record, maxBytes = MAX_ENTRY_BYTES) {
   // The local header's name/extra lengths can differ from the central record,
   // so re-read them here to locate the compressed payload.
   if (buf.readUInt32LE(record.localOffset) !== 0x04034b50) {
@@ -261,7 +266,19 @@ function extractEntry(buf, record) {
   const data = buf.subarray(dataStart, dataStart + record.compressedSize)
 
   // 0 = stored, 8 = deflate. Theme files are one or the other.
-  return record.method === 0 ? data.toString('utf8') : zlib.inflateRawSync(data).toString('utf8')
+  if (record.method === 0) {
+    // Stored entries are their own uncompressed size; reject an oversized one
+    // before materializing it as a string.
+    if (data.length > maxBytes) {
+      throw new Error('Zip entry exceeds the extraction size limit.')
+    }
+
+    return data.toString('utf8')
+  }
+
+  // maxOutputLength makes zlib throw ERR_BUFFER_TOO_LARGE once the inflated
+  // output would exceed the cap, instead of allocating unbounded memory.
+  return zlib.inflateRawSync(data, { maxOutputLength: maxBytes }).toString('utf8')
 }
 
 /** Normalize a package.json theme path to its zip entry name. */

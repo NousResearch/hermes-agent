@@ -1,0 +1,80 @@
+# generated: 2026-07-09T09:54:27+0700
+# last_updated: 2026-07-09T09:54:27+0700
+# project: hermes-agent
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: /Users/agent/Desktop/workspace/opensource/hermes-agent/_bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog -> in-progress: Automatically when first story is created (via create-story)
+#   - in-progress -> done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# Action Item Status:
+#   - open: Committed during a retrospective, not yet addressed
+#   - in-progress: Actively being worked on
+#   - done: Completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Retrospective appends its action items to action_items; sprint-status surfaces open ones
+
+generated: "2026-07-09T09:54:27+0700"
+last_updated: "2026-07-09T09:54:27+0700"
+project: hermes-agent
+project_key: NOKEY
+tracking_system: file-system
+story_location: /Users/agent/Desktop/workspace/opensource/hermes-agent/_bmad-output/implementation-artifacts
+
+development_status:
+  epic-2: backlog
+  2-1-create-and-validate-project-bindings: backlog
+  2-2-mount-project-local-bmad-skills-for-a-binding: backlog
+  2-3-enforce-bound-project-cwd-for-workflow-actions: backlog
+  2-4-invoke-bmad-planning-workflows-from-hermes: backlog
+  2-5-materialize-sprint-status-into-project-work-items: backlog
+  2-6-create-phase-task-and-product-work-lanes: backlog
+  epic-2-retrospective: optional
+  epic-3: backlog
+  3-2-register-and-diagnose-workflow-provider-bindings-from-hermes: backlog
+  3-4a-start-and-inspect-provider-workflow-runs-from-hermes: backlog
+  3-4b-send-provider-decision-commands-from-hermes: backlog
+  3-4c-resume-retry-and-cancel-provider-workflow-runs-from-hermes: backlog
+  3-6a-validate-profile-routed-workflow-event-ingress: backlog
+  3-6b-persist-workflow-event-idempotency-receipts-and-duplicate-diagnostics: backlog
+  3-6c-map-accepted-workflow-events-to-project-work: backlog
+  3-8-surface-workflow-event-delivery-and-outbox-health-in-hermes: backlog
+  epic-3-retrospective: optional
+  epic-4: backlog
+  4-1-run-story-workflow: backlog
+  4-2-block-story-workflow-for-done-verification: backlog
+  4-3-capture-human-gate-decisions-and-evidence: backlog
+  epic-4-retrospective: optional
+  epic-5: backlog
+  5-1-render-unified-story-timeline: backlog
+  5-2a-reconcile-bmad-materialization-drift: backlog
+  5-2b-reconcile-provider-workflow-and-event-delivery-drift: backlog
+  5-2c-reconcile-github-and-done-verification-conflicts: backlog
+  5-3-surface-operational-diagnostics-and-recovery-paths: backlog
+  epic-5-retrospective: optional

@@ -682,8 +682,10 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
                     content_parts.append(str(part))
             content = "\n".join(content_parts)
 
-        # Build message HTML
-        msg_class = f"message message-{role} active"
+        # Build message HTML. Escape the role once: it feeds both an attribute
+        # (class) and text, and for tool/MCP messages it is externally influenced.
+        safe_role = _escape_html(role)
+        msg_class = f"message message-{safe_role} active"
         # Delay animation for initial items
         delay_style = f' style="animation-delay: {min(i * 0.05, 1.0)}s"' if i < 10 else ""
         
@@ -691,7 +693,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
         
         html = f'<div class="{msg_class}"{delay_style}>'
         html += f'  <div class="message-header">'
-        html += f'    <div class="role-badge">{chevron_html} {role_icon} {role}</div>'
+        html += f'    <div class="role-badge">{chevron_html} {role_icon} {safe_role}</div>'
         html += f'    <div class="timestamp">{timestamp}</div>'
         html += '  </div>'
         html += '  <div class="message-body">'
@@ -706,7 +708,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
                 <div class="tool-call">
                     <div class="tool-call-header">
                         {ICON_CHEVRON_RIGHT.replace('class="', 'class="chevron ')}
-                        {ICON_WRENCH} Tool Call: {fn_name}
+                        {ICON_WRENCH} Tool Call: {_escape_html(fn_name)}
                     </div>
                     <div class="tool-call-content">
                         <pre><code>{_escape_html(args)}</code></pre>

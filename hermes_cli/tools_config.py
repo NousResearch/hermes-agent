@@ -4503,3 +4503,5 @@ def tools_disable_enable_command(args):
     if successful:
         verb = "Disabled" if action == "disable" else "Enabled"
         _print_success(f"{verb}: {', '.join(successful)}")
+        from hermes_cli.change_impact import print_advisory, toolset_change_advisory
+        print_advisory(toolset_change_advisory(platform))

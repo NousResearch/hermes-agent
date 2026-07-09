@@ -8065,6 +8065,8 @@ def set_config_value(key: str, value: str):
     if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
+        from hermes_cli.change_impact import advisory_for_config_key, print_advisory
+        print_advisory(advisory_for_config_key(key.upper()))
         return
     
     # Otherwise it goes to config.yaml
@@ -8127,6 +8129,8 @@ def set_config_value(key: str, value: str):
     else:
         _display_value = value
     print(f"✓ Set {key} = {_display_value} in {config_path}")
+    from hermes_cli.change_impact import advisory_for_config_key, print_advisory
+    print_advisory(advisory_for_config_key(key))
 
 
 # =============================================================================

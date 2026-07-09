@@ -321,6 +321,7 @@ discord:
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
+  force_thread_channels: []       # Free-response channels where threads are forced
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   channel_prompts: {}             # Per-channel ephemeral system prompts
@@ -374,7 +375,7 @@ discord:
 
 If a thread's parent channel is in this list, the thread also becomes mention-free.
 
-Free-response channels also **skip auto-threading** — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface. If you want threading behavior, don't list the channel as free-response (use normal `@mention` flow instead).
+Free-response channels also **skip auto-threading** — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface. If you need auto-threading in a free-response channel, add its ID to [`force_thread_channels`](#discordforce_thread_channels) instead.
 
 #### `discord.auto_thread`
 
@@ -382,7 +383,7 @@ Free-response channels also **skip auto-threading** — the bot replies inline r
 
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating. Set [`thread_require_mention`](#discordthread_require_mention) to `true` to disable this in-thread shortcut for multi-bot setups.
 
-Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead.
+Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead. To override this for specific free-response channels, use [`force_thread_channels`](#discordforce_thread_channels).
 
 #### `discord.reactions`
 
@@ -428,6 +429,34 @@ discord:
 ```
 
 Useful for channels dedicated to bot interaction where threads would add unnecessary noise.
+
+#### `discord.force_thread_channels`
+
+**Type:** string or list — **Default:** `[]`
+
+Channel IDs where auto-threading is forced, even if the channel is also in `free_response_channels` (which normally skips auto-threading). Accepts either a comma-separated string or a YAML list:
+
+```yaml
+# String format
+discord:
+  force_thread_channels: "1234567890,9876543210"
+
+# List format
+discord:
+  force_thread_channels:
+    - 1234567890
+    - 9876543210
+```
+
+A single wildcard `"*"` forces auto-threading on **all** free-response channels:
+
+```yaml
+discord:
+  free_response_channels: "*"
+  force_thread_channels: "*"   # all free-response channels get threads
+```
+
+This only has an effect when `auto_thread` is `true` (the default). Channels explicitly listed in `no_thread_channels` still skip threading regardless of this setting.
 
 #### `discord.channel_prompts`
 

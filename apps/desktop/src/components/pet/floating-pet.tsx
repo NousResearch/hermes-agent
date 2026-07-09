@@ -7,7 +7,7 @@ import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
 import { PetHeartField } from '@/components/chat/vibe-hearts'
 import { persistString, storedString } from '@/lib/storage'
 import { $petAtRest, $petBubble, $petControls, $petInfo, $petRoam, $petRoamDir, clearPetUnread, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
-import { resetPetGallery, setPetEnabled, setPetScale } from '@/store/pet-gallery'
+import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
 import { $petOverlayActive, initPetOverlayBridge, popOutPet, restorePetOverlay } from '@/store/pet-overlay'
 import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
@@ -491,7 +491,7 @@ export function FloatingPet() {
             aria-label="Hide pet"
             onClick={e => {
               e.stopPropagation()
-              void setPetEnabled(requestGateway, false, { noneAvailable: '', fallback: '' })
+              setPetInfo({ enabled: false })
             }}
             onPointerDown={e => e.stopPropagation()}
             onPointerUp={e => e.stopPropagation()}

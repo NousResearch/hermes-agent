@@ -23,7 +23,11 @@ from hermes_cli.models import (
     _PROVIDER_LABELS,
     provider_model_ids,
 )
-from agent.model_metadata import get_model_context_length
+from agent.model_metadata import (
+    get_model_context_length,
+    _PROVIDER_PREFIXES,
+    _strip_provider_prefix,
+)
 
 
 _META_ENV = (
@@ -65,6 +69,20 @@ class TestMetaAiAliases:
             "META_MODEL_API_KEY",
         )
         assert pconfig.base_url_env_var == "META_BASE_URL"
+
+
+class TestMetaAiProviderPrefixes:
+    """provider:model strings like meta:muse-spark-1.1 must strip correctly."""
+
+    def test_prefixes_include_meta_variants(self):
+        for prefix in ("meta-ai", "meta", "muse", "model-api", "llama-api"):
+            assert prefix in _PROVIDER_PREFIXES, f"{prefix} missing from _PROVIDER_PREFIXES"
+
+    def test_strip_meta_prefix(self):
+        assert _strip_provider_prefix("meta:muse-spark-1.1") == "muse-spark-1.1"
+        assert _strip_provider_prefix("meta-ai:muse-spark-1.1") == "muse-spark-1.1"
+        assert _strip_provider_prefix("muse:muse-spark-1.1") == "muse-spark-1.1"
+        assert _strip_provider_prefix("model-api:muse-spark-1.1") == "muse-spark-1.1"
 
 
 class TestMetaAiConfigRegistry:
@@ -212,3 +230,27 @@ class TestMetaAiModelMetadata:
             )
 
         assert result == 1_048_576
+
+    def test_muse_spark_variants_resolve(self):
+        """All muse-spark ID forms should resolve to 1M via substring matching."""
+        with patch(
+            "agent.model_metadata.get_cached_context_length",
+            return_value=None,
+        ), patch(
+            "agent.model_metadata.fetch_endpoint_model_metadata",
+            return_value={},
+        ), patch(
+            "agent.models_dev.lookup_models_dev_context",
+            return_value=None,
+        ), patch(
+            "agent.model_metadata.fetch_model_metadata",
+            return_value={},
+        ):
+            for model_id in ("muse-spark-1.1", "muse-spark-1.0", "muse-spark"):
+                result = get_model_context_length(
+                    model_id,
+                    base_url="https://api.meta.ai/v1",
+                    api_key="meta-test-key",
+                    provider="meta-ai",
+                )
+                assert result == 1_048_576, f"{model_id} should be 1M"

@@ -516,7 +516,13 @@ The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi-se
 
 ### Meta Model API (Muse Spark)
 
-Muse Spark and other Meta models via the [Meta Model API](https://dev.meta.ai/) — OpenAI-compatible API, API key authentication. Reasoning uses top-level `reasoning_effort` (`minimal` / `low` / `medium` / `high` / `xhigh`); Hermes maps `max` → `xhigh` and never sends `none` (Meta returns HTTP 400 for that value).
+Muse Spark and other Meta models via the [Meta Model API](https://dev.meta.ai/) — OpenAI-compatible Chat Completions, Messages, and Responses APIs with Bearer auth (`MODEL_API_KEY`). Hermes uses the Chat Completions surface by default (`https://api.meta.ai/v1`).
+
+- **Model**: `muse-spark-1.1` — multimodal input (text, image, video, PDF), text output
+- **Context**: 1,048,576 tokens, no long-context premium, prompt caching automatic (reports `cached_tokens`)
+- **Features**: parallel tool calling, structured output (`response_format` `json_schema`), token counting, file handling via `file_id`, search grounding (`web_search`)
+- **Pricing**: $1.25 input / $0.15 cached input / $4.25 output per 1M tokens, plus optional web search $2.50/1K queries
+- **Reasoning**: model always reasons internally; control depth with `reasoning_effort` (`minimal` / `low` / `medium` / `high` / `xhigh`). `none` is not supported and returns HTTP 400 — Hermes maps `none` / disabled → `minimal` and `max` → `xhigh`.
 
 ```bash
 # Meta Model API (Muse Spark)
@@ -531,7 +537,7 @@ model:
   default: "muse-spark-1.1"
 ```
 
-The base URL can be overridden with `META_BASE_URL` (default: `https://api.meta.ai/v1`). Aliases: `meta`, `muse`, `llama-api`, `model-api`. Hermes sets a high default max tokens for this provider because Muse Spark spends completion budget on hidden reasoning tokens before visible output.
+The base URL can be overridden with `META_BASE_URL` (default: `https://api.meta.ai/v1`). Aliases: `meta`, `muse`, `llama-api`, `model-api`. Hermes sets a high default max tokens (16384) for this provider because Muse Spark's reasoning tokens count toward `max_tokens` / `max_output_tokens` — low caps can finish with empty visible content while reasoning is still in-progress. See https://dev.meta.ai/docs/features/reasoning/
 
 ### StepFun
 

@@ -54,6 +54,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "arcee",
     "gmi",
     "tencent-tokenhub",
+    "meta-ai",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -68,6 +69,10 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
     "qwen-portal", "novita-ai", "novitaai",
+    # Meta Model API (Muse Spark) — provider prefix + user-facing aliases
+    # so `meta:muse-spark-1.1` / `muse:muse-spark-1.1` / etc. strip correctly
+    # for cache lookups and server queries.
+    "meta", "muse", "model-api", "llama-api",
 })
 
 

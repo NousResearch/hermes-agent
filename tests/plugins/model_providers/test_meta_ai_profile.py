@@ -7,9 +7,15 @@ and never emits ``none`` (Meta returns HTTP 400 for that value).
 
 When reasoning is disabled (``enabled: false``) or effort is ``none``,
 the profile emits ``reasoning_effort=minimal`` so the request stays
-valid while staying at the lowest thinking tier.
+valid while staying at the lowest thinking tier.  For Responses API
+mode (if user forces api_mode override), also emits nested
+``reasoning.effort`` in extra_body.
 
 Empty / missing effort omits the field so the model uses its default.
+Vision: Muse Spark supports image, video, PDF in user messages.
+
+Ref: https://dev.meta.ai/docs/features/reasoning/
+     https://dev.meta.ai/docs/getting-started/models/
 """
 
 from __future__ import annotations
@@ -66,9 +72,19 @@ class TestMetaAiProfileBasics:
     def test_hostname(self, meta_ai_profile):
         assert meta_ai_profile.get_hostname() == "api.meta.ai"
 
+    def test_supports_vision(self, meta_ai_profile):
+        # Per https://dev.meta.ai/docs/getting-started/models/ :
+        # Input modalities: Text, image, video, PDF
+        assert meta_ai_profile.supports_vision is True
+
 
 class TestMetaAiReasoningEffort:
-    """``build_api_kwargs_extras`` emits correct top-level ``reasoning_effort``."""
+    """``build_api_kwargs_extras`` emits correct reasoning effort.
+
+    Hermes uses Chat Completions by default (top-level reasoning_effort).
+    When Responses API mode is forced via api_mode context, extra_body also
+    carries reasoning.effort.
+    """
 
     # ── standard levels pass through ──────────────────────────
 
@@ -77,8 +93,9 @@ class TestMetaAiReasoningEffort:
         extra_body, top_level = meta_ai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort},
         )
-        assert extra_body == {}
+        # Chat Completions default: top-level only, extra_body empty
         assert top_level == {"reasoning_effort": effort}
+        assert extra_body == {}
 
     # ── max → xhigh ───────────────────────────────────────────
 
@@ -87,8 +104,8 @@ class TestMetaAiReasoningEffort:
         extra_body, top_level = meta_ai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort},
         )
-        assert extra_body == {}
         assert top_level == {"reasoning_effort": "xhigh"}
+        assert extra_body == {}
 
     # ── disabled / none → minimal (never emit none) ───────────
 
@@ -96,8 +113,9 @@ class TestMetaAiReasoningEffort:
         extra_body, top_level = meta_ai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": False},
         )
-        assert extra_body == {}
         assert top_level == {"reasoning_effort": "minimal"}
+        # Disabled also populates extra_body for Responses fallback
+        assert extra_body == {"reasoning": {"effort": "minimal"}}
 
     def test_disabled_ignores_effort_field(self, meta_ai_profile):
         """Even if effort is high, disabled forces minimal."""
@@ -111,9 +129,9 @@ class TestMetaAiReasoningEffort:
         extra_body, top_level = meta_ai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "none"},
         )
-        assert extra_body == {}
         assert top_level == {"reasoning_effort": "minimal"}
         assert top_level.get("reasoning_effort") != "none"
+        assert extra_body == {}
 
     # ── empty / missing effort → omit ─────────────────────────
 
@@ -125,15 +143,17 @@ class TestMetaAiReasoningEffort:
         assert top_level == {}
 
     def test_empty_effort_emits_nothing(self, meta_ai_profile):
-        _, top_level = meta_ai_profile.build_api_kwargs_extras(
+        extra_body, top_level = meta_ai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": ""},
         )
+        assert extra_body == {}
         assert top_level == {}
 
     def test_no_effort_key_emits_nothing(self, meta_ai_profile):
-        _, top_level = meta_ai_profile.build_api_kwargs_extras(
+        extra_body, top_level = meta_ai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True},
         )
+        assert extra_body == {}
         assert top_level == {}
 
     # ── case / whitespace normalization ───────────────────────
@@ -151,6 +171,24 @@ class TestMetaAiReasoningEffort:
             reasoning_config={"enabled": True, "effort": effort},
         )
         assert top_level == {"reasoning_effort": expected}
+
+    # ── Responses API mode also populates extra_body ──────────
+
+    def test_responses_api_mode_populates_extra_body(self, meta_ai_profile):
+        extra_body, top_level = meta_ai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            api_mode="codex_responses",
+        )
+        assert top_level == {"reasoning_effort": "high"}
+        assert extra_body == {"reasoning": {"effort": "high"}}
+
+    def test_chat_completions_mode_leaves_extra_body_empty(self, meta_ai_profile):
+        extra_body, top_level = meta_ai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            api_mode="chat_completions",
+        )
+        assert top_level == {"reasoning_effort": "high"}
+        assert extra_body == {}
 
 
 class TestMetaAiFullKwargsIntegration:
@@ -170,7 +208,8 @@ class TestMetaAiFullKwargsIntegration:
         )
         assert kwargs["model"] == "muse-spark-1.1"
         assert kwargs["reasoning_effort"] == "xhigh"
-        assert "extra_body" not in kwargs or "reasoning" not in kwargs.get("extra_body", {})
+        # Chat completions path should NOT have extra_body.reasoning
+        assert "reasoning" not in kwargs.get("extra_body", {})
 
     def test_full_kwargs_with_disabled(self, meta_ai_profile):
         from agent.transports.chat_completions import ChatCompletionsTransport

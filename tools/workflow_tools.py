@@ -10,10 +10,16 @@ from typing import Any
 import yaml
 
 from hermes_cli import workflows_assistant, workflows_db as wfdb
+from hermes_cli import workflows_dispatcher
 from hermes_cli.config import load_config
 from hermes_cli.workflows_capabilities import require_implemented_primitives
-from hermes_cli.workflows_spec import WorkflowSpec, validate_graph
+from hermes_cli.workflows_spec import (
+    WorkflowSpec,
+    reject_unknown_spec_fields,
+    validate_graph,
+)
 from tools.registry import registry, tool_error, tool_result
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +96,22 @@ def _spec_from_args(args: dict) -> WorkflowSpec:
 def _spec_from_object(value: Any) -> WorkflowSpec:
     if not isinstance(value, dict):
         raise ValueError("spec must be an object")
+    reject_unknown_spec_fields(value)
     spec = WorkflowSpec.model_validate(value)
     validate_graph(spec)
     require_implemented_primitives(spec)
     return spec
+
+
+def _dispatch_in_gateway_enabled() -> bool:
+    try:
+        cfg = load_config()
+    except Exception:
+        return True
+    workflow_cfg = cfg.get("workflow") if isinstance(cfg, dict) else {}
+    if not isinstance(workflow_cfg, dict):
+        workflow_cfg = {}
+    return is_truthy_value(workflow_cfg.get("dispatch_in_gateway"), default=True)
 
 
 def _definition_record(conn, workflow_id: str, version: int | None = None):
@@ -231,9 +249,12 @@ def _handle_deploy(args: dict, **_kw) -> str:
         created_by = (
             str(args.get("created_by") or "workflow_tool").strip() or "workflow_tool"
         )
+        auto_bump = bool(args.get("auto_bump", False))
         with _connect_initialized() as conn:
-            wfdb.deploy_definition(conn, spec, created_by=created_by)
-            record = _definition_record(conn, spec.id, spec.version)
+            deployed_version = wfdb.deploy_definition(
+                conn, spec, created_by=created_by, auto_bump=auto_bump
+            )
+            record = _definition_record(conn, spec.id, deployed_version)
         return tool_result(_definition_to_dict(record, include_spec=True))
     except Exception as exc:
         logger.exception("workflow_deploy failed")
@@ -253,14 +274,29 @@ def _handle_run(args: dict, **_kw) -> str:
                 input_data=input_data,
                 trigger_type="manual",
             )
+        # Advance cheap nodes inline (same as CLI run / dashboard Run) so
+        # simple graphs finish immediately and agent_task nodes materialize
+        # their Kanban tasks without waiting for the next dispatcher tick.
+        try:
+            workflows_dispatcher.tick(limit=1)
+        except Exception:
+            logger.debug("workflow_run initial tick failed", exc_info=True)
+        with _connect_initialized() as conn:
             execution = wfdb.get_execution(conn, execution_id)
-        return tool_result({
+        payload = {
             "execution_id": execution.execution_id,
             "input": execution.input,
             "status": execution.status,
             "version": execution.version,
             "workflow_id": execution.workflow_id,
-        })
+        }
+        if execution.status in {"queued", "waiting"} and not _dispatch_in_gateway_enabled():
+            payload["dispatcher_hint"] = (
+                "workflow.dispatch_in_gateway is off — nothing advances this "
+                "execution automatically. Call workflow_tick (or run `hermes "
+                "workflow tick`) to advance it."
+            )
+        return tool_result(payload)
     except Exception as exc:
         logger.exception("workflow_run failed")
         return tool_error(f"workflow_run: {_error_text(exc)}")
@@ -273,10 +309,32 @@ def _handle_execution_show(args: dict, **_kw) -> str:
     try:
         with _connect_initialized() as conn:
             execution = wfdb.get_execution(conn, execution_id)
-        return tool_result(_execution_to_dict(execution))
+            payload = _execution_to_dict(execution)
+            if args.get("include_node_runs"):
+                payload["node_runs"] = wfdb.list_node_runs(conn, execution_id)
+            if args.get("include_events"):
+                payload["events"] = wfdb.list_events(conn, execution_id)
+        return tool_result(payload)
     except Exception as exc:
         logger.exception("workflow_execution_show failed")
         return tool_error(f"workflow_execution_show: {_error_text(exc)}")
+
+
+def _handle_tick(args: dict, **_kw) -> str:
+    try:
+        raw_limit = args.get("limit", 10)
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            raise ValueError("limit must be an integer") from None
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+        wfdb.init_db()
+        processed = workflows_dispatcher.tick(limit=limit)
+        return tool_result({"processed": processed})
+    except Exception as exc:
+        logger.exception("workflow_tick failed")
+        return tool_error(f"workflow_tick: {_error_text(exc)}")
 
 
 def _handle_cancel(args: dict, **_kw) -> str:
@@ -379,6 +437,10 @@ _WORKFLOW_DEPLOY_SCHEMA = {
                 "type": "string",
                 "description": "Optional deployment source; defaults to workflow_tool.",
             },
+            "auto_bump": {
+                "type": "boolean",
+                "description": "On checksum conflict, redeploy as the next version instead of erroring. Defaults to false.",
+            },
         },
         "required": [],
     },
@@ -400,13 +462,36 @@ _WORKFLOW_RUN_SCHEMA = {
 
 _WORKFLOW_EXECUTION_SHOW_SCHEMA = {
     "name": "workflow_execution_show",
-    "description": "Show a workflow execution's status, input, and context.",
+    "description": "Show a workflow execution's status, input, and context; optionally include per-node runs and the event timeline.",
     "parameters": {
         "type": "object",
         "properties": {
             "execution_id": {"type": "string", "description": "Workflow execution id."},
+            "include_node_runs": {
+                "type": "boolean",
+                "description": "Include per-node run records (status, output, errors, linked Kanban tasks). Defaults to false.",
+            },
+            "include_events": {
+                "type": "boolean",
+                "description": "Include the execution's event timeline. Defaults to false.",
+            },
         },
         "required": ["execution_id"],
+    },
+}
+
+_WORKFLOW_TICK_SCHEMA = {
+    "name": "workflow_tick",
+    "description": "Advance queued workflow executions (fires due schedules, resumes waits/retries, collects finished agent tasks). Returns the number processed.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Max executions to advance this call. Defaults to 10.",
+            },
+        },
+        "required": [],
     },
 }
 
@@ -492,6 +577,14 @@ registry.register(
     toolset="workflow",
     schema=_WORKFLOW_CANCEL_SCHEMA,
     handler=_handle_cancel,
+    check_fn=_check_workflow_mode,
+    emoji="🔁",
+)
+registry.register(
+    name="workflow_tick",
+    toolset="workflow",
+    schema=_WORKFLOW_TICK_SCHEMA,
+    handler=_handle_tick,
     check_fn=_check_workflow_mode,
     emoji="🔁",
 )

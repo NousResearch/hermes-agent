@@ -571,7 +571,7 @@ class CLICommandsMixin:
         home = gw_config.get_home_channel(platform)
         if not home or not home.chat_id:
             _cprint(f"  No home channel configured for {platform_name}.")
-            _cprint(f"  Set one with /sethome on the destination chat first.")
+            _cprint("  Set one with /sethome on the destination chat first.")
             return True
 
         # Refuse mid-turn: an in-flight agent run would race with the
@@ -626,7 +626,7 @@ class CLICommandsMixin:
             return True
 
         _cprint(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).")
-        _cprint(f"  Waiting for the gateway to pick it up...")
+        _cprint("  Waiting for the gateway to pick it up...")
 
         # Poll-block on terminal state. Tick every 0.5s; bail at ~60s.
         import time as _time
@@ -1514,6 +1514,29 @@ class CLICommandsMixin:
         if output:
             print(output)
 
+    def _handle_workflow_command(self, cmd: str):
+        """Handle the /workflow command — delegate to the shared workflow CLI.
+
+        Mirrors ``_handle_kanban_command``: strip the leading ``/workflow``
+        and hand the remainder to ``workflows.run_slash`` which returns a
+        single formatted string.
+        """
+        from hermes_cli.workflows import run_slash
+
+        rest = cmd.strip()
+        if rest.startswith("/"):
+            rest = rest.lstrip("/")
+        for prefix in ("workflows", "workflow"):
+            if rest.startswith(prefix):
+                rest = rest[len(prefix):].lstrip()
+                break
+        try:
+            output = run_slash(rest)
+        except Exception as exc:  # pragma: no cover - defensive
+            output = f"(._.) workflow error: {exc}"
+        if output:
+            print(output)
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from cli import ChatConsole
@@ -1872,7 +1895,7 @@ class CLICommandsMixin:
                     sys_name = _plat.system()
                     chrome_cmd = manual_chrome_debug_command(_port, sys_name)
                     if chrome_cmd:
-                        print(f"     Launch a Chromium-family browser manually:")
+                        print("     Launch a Chromium-family browser manually:")
                         print(f"     {chrome_cmd}")
                     else:
                         print("     No supported Chromium-family browser executable found in this environment")

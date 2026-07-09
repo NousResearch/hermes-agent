@@ -270,12 +270,58 @@ def _definition_record(
     return _record_from_row(row)
 
 
+def _register_schedules(
+    conn: sqlite3.Connection,
+    spec: WorkflowSpec,
+    *,
+    now: int,
+) -> None:
+    """Replace this workflow's schedule rows with the given spec's triggers."""
+    conn.execute(
+        "DELETE FROM workflow_schedules WHERE workflow_id = ?",
+        (spec.id,),
+    )
+    if not spec.enabled:
+        return
+    for trigger in spec.triggers:
+        if trigger.type != "schedule":
+            continue
+        expr = _schedule_expr(trigger)
+        if not expr:
+            continue
+        conn.execute(
+            """
+            INSERT INTO workflow_schedules (
+                workflow_id, version, trigger_id, schedule, enabled,
+                next_run_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+            """,
+            (
+                spec.id,
+                spec.version,
+                trigger.id,
+                expr,
+                _next_cron_run(expr, now),
+                now,
+                now,
+            ),
+        )
+
+
 def deploy_definition(
     conn: sqlite3.Connection,
     spec: WorkflowSpec,
     *,
     created_by: str | None = None,
-) -> None:
+    auto_bump: bool = False,
+) -> int:
+    """Deploy a definition; return the version actually deployed.
+
+    Same version + same checksum is an idempotent no-op. Same version +
+    different checksum raises unless ``auto_bump`` is set, in which case the
+    spec is redeployed as ``max(existing versions) + 1``. Every surface (CLI,
+    model tools, dashboard) shares this one explicit contract.
+    """
     raw = _spec_json(spec)
     checksum = _checksum(raw)
     now = int(time.time())
@@ -285,9 +331,17 @@ def deploy_definition(
             (spec.id, spec.version),
         ).fetchone()
         if existing is not None and existing["checksum"] != checksum:
-            raise ValueError(
-                f"workflow definition {spec.id} v{spec.version} already exists with different checksum; bump version"
-            )
+            if not auto_bump:
+                raise ValueError(
+                    f"workflow definition {spec.id} v{spec.version} already exists with different checksum; bump version"
+                )
+            max_version = conn.execute(
+                "SELECT MAX(version) FROM workflow_definitions WHERE workflow_id = ?",
+                (spec.id,),
+            ).fetchone()[0]
+            spec = spec.model_copy(update={"version": int(max_version or spec.version) + 1})
+            raw = _spec_json(spec)
+            checksum = _checksum(raw)
 
         inserted = conn.execute(
             """
@@ -308,36 +362,34 @@ def deploy_definition(
             ),
         ).rowcount > 0
         if not inserted:
-            return
+            return spec.version
 
+        _register_schedules(conn, spec, now=now)
+    return spec.version
+
+
+def set_definition_enabled(
+    conn: sqlite3.Connection,
+    workflow_id: str,
+    enabled: bool,
+    *,
+    version: int | None = None,
+) -> WorkflowDefinitionRecord:
+    """Enable or disable a deployed definition (latest version by default).
+
+    Disabling removes the workflow's schedule rows and blocks new manual
+    runs; enabling re-registers schedules from the stored spec.
+    """
+    record = _definition_record(conn, workflow_id, version)
+    now = int(time.time())
+    with write_txn(conn):
         conn.execute(
-            "DELETE FROM workflow_schedules WHERE workflow_id = ?",
-            (spec.id,),
+            "UPDATE workflow_definitions SET enabled = ? WHERE workflow_id = ? AND version = ?",
+            (1 if enabled else 0, workflow_id, record.version),
         )
-        if spec.enabled:
-            for trigger in spec.triggers:
-                if trigger.type != "schedule":
-                    continue
-                expr = _schedule_expr(trigger)
-                if not expr:
-                    continue
-                conn.execute(
-                    """
-                    INSERT INTO workflow_schedules (
-                        workflow_id, version, trigger_id, schedule, enabled,
-                        next_run_at, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
-                    """,
-                    (
-                        spec.id,
-                        spec.version,
-                        trigger.id,
-                        expr,
-                        _next_cron_run(expr, now),
-                        now,
-                        now,
-                    ),
-                )
+        spec = record.spec.model_copy(update={"enabled": enabled})
+        _register_schedules(conn, spec, now=now)
+    return _definition_record(conn, workflow_id, record.version)
 
 
 def get_definition_record(
@@ -405,6 +457,11 @@ def start_execution(
     now: int | None = None,
 ) -> str:
     definition = _definition_record(conn, workflow_id, version)
+    if not definition.enabled:
+        raise ValueError(
+            f"workflow {workflow_id} v{definition.version} is disabled; "
+            "enable it with `hermes workflow enable` or redeploy with enabled: true"
+        )
     execution_id = f"wfexec_{secrets.token_hex(8)}"
     created_at = int(time.time()) if now is None else now
     with write_txn(conn):
@@ -428,6 +485,26 @@ def start_execution(
             ),
         )
     return execution_id
+
+
+def list_executions(
+    conn: sqlite3.Connection,
+    workflow_id: str | None = None,
+    *,
+    limit: int | None = None,
+) -> list[WorkflowExecution]:
+    """List executions newest-first, optionally scoped to one workflow."""
+    query = "SELECT execution_id FROM workflow_executions"
+    params: list[Any] = []
+    if workflow_id:
+        query += " WHERE workflow_id = ?"
+        params.append(workflow_id)
+    query += " ORDER BY created_at DESC, execution_id DESC"
+    if limit is not None and limit > 0:
+        query += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    return [get_execution(conn, row["execution_id"]) for row in rows]
 
 
 def get_execution(conn: sqlite3.Connection, execution_id: str) -> WorkflowExecution:
@@ -575,6 +652,31 @@ def list_node_runs(conn: sqlite3.Connection, execution_id: str) -> list[dict[str
     return result
 
 
+def list_events(conn: sqlite3.Connection, execution_id: str) -> list[dict[str, Any]]:
+    """Return an execution's event timeline (oldest first), raising on unknown id."""
+    get_execution(conn, execution_id)
+    rows = conn.execute(
+        """
+        SELECT id, execution_id, node_run_id, kind, payload_json, created_at
+          FROM workflow_events
+         WHERE execution_id = ?
+         ORDER BY id
+        """,
+        (execution_id,),
+    ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "execution_id": row["execution_id"],
+            "node_run_id": row["node_run_id"],
+            "kind": row["kind"],
+            "payload": _json_loads_or_empty(row["payload_json"]),
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
 def _kanban_task_refs(task_refs: list[Any]) -> list[tuple[str, str | None]]:
     refs: list[tuple[str, str | None]] = []
     for ref in task_refs:
@@ -654,6 +756,16 @@ def cancel_execution(
             (now, execution_id, *terminal_statuses),
         ).rowcount > 0
         if cancelled:
+            # Terminalize in-flight node runs so a cancelled execution's
+            # drill-down doesn't show nodes eternally "waiting".
+            conn.execute(
+                """
+                UPDATE workflow_node_runs
+                   SET status = 'cancelled', completed_at = ?, wait_until = NULL
+                 WHERE execution_id = ? AND status IN ('waiting', 'queued')
+                """,
+                (now, execution_id),
+            )
             append_event(conn, execution_id, "execution_cancelled", {"source": source})
 
     if cancelled:

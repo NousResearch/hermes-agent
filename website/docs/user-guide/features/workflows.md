@@ -118,22 +118,22 @@ The equivalent CLI path uses a JSON object as input:
 hermes workflow run <workflow_id> --input /path/to/input.json --json
 ```
 
-The CLI run command creates a queued execution. Advance queued local nodes manually with:
+`run` (CLI, dashboard, and the `workflow_run` tool alike) advances the execution one dispatcher tick immediately, so cheap all-local graphs finish inline and `agent_task` nodes create their Kanban cards right away. Anything still `queued`/`waiting` after that is advanced by the gateway dispatcher, or manually:
 
 ```bash
 hermes workflow tick --limit 10 --json
 ```
 
-For unattended dispatch, run the gateway dispatcher instead:
+`workflow.dispatch_in_gateway` defaults to `true` (matching `kanban.dispatch_in_gateway`), so a running gateway advances schedules, waits, retries, and completed agent tasks unattended. Tune or opt out with:
 
 ```bash
-hermes config set workflow.dispatch_in_gateway true
+hermes config set workflow.dispatch_in_gateway false   # opt out; tick manually
 hermes config set workflow.tick_interval_seconds 30
 hermes config set workflow.max_executions_per_tick 50
 hermes gateway restart
 ```
 
-`workflow.dispatch_in_gateway` defaults to `false`, so a gateway will not tick workflows until you opt in.
+If dispatch is off (or no gateway is running), the CLI prints a warning after `run`, the dashboard shows a stall banner on queued/waiting executions, and `hermes workflow status` reports what would advance them.
 
 ## Monitor execution and linked worker tasks
 
@@ -144,13 +144,16 @@ When a workflow reaches an `agent_task` node, Hermes creates or reuses a linked 
 CLI inspection commands:
 
 ```bash
-hermes workflow executions list --workflow <workflow_id> --json
+hermes workflow status
+hermes workflow executions list --workflow <workflow_id> [--limit N] --json
 hermes workflow executions show <execution_id> --json
+hermes workflow executions node-runs <execution_id> [--json]
+hermes workflow executions events <execution_id> [--json]
 hermes kanban list --workflow-template-id <workflow_id>
 hermes kanban list --workflow-template-id <workflow_id> --step-key <node_id>
 ```
 
-There is no standalone `hermes workflow events` CLI command yet. Use `hermes workflow executions show ... --json` for execution state, or inspect the dashboard timeline for recorded events.
+Executions list newest-first. The same drill-downs are available in chat via the `/workflow` slash command (`/workflow status`, `/workflow executions show <id>`, ...) and to agents through the `workflow_execution_show` tool's `include_node_runs` / `include_events` flags.
 
 ## Advanced: YAML definitions
 
@@ -195,22 +198,31 @@ edges:
     to: research
 ```
 
-Definitions are data stored in SQLite after deploy, not executable scripts. Unknown YAML keys may validate because the internal models allow forward-compatible extras, but only the fields documented here have runtime behavior. Do not rely on unknown keys in production workflows.
+Definitions are data stored in SQLite after deploy, not executable scripts. Validation is strict about field names: unknown or typo'd keys (e.g. `result_contarct`) are rejected at validate/deploy/draft time with a did-you-mean hint, so a misspelled field can never silently no-op. A `description` field is accepted at the workflow, trigger, and node level for human notes.
 
 ## CLI reference
 
 ```bash
 hermes workflow init
 hermes workflow validate <file.yaml>
-hermes workflow deploy <file.yaml> [--json]
+hermes workflow deploy <file.yaml> [--bump] [--json]
 hermes workflow list [--json]
-hermes workflow show <workflow_id> [--json]
+hermes workflow show <workflow_id> [--version N] [--json]
+hermes workflow enable <workflow_id> [--version N]
+hermes workflow disable <workflow_id> [--version N]
 hermes workflow run <workflow_id> [--input <input.json>] [--json]
-hermes workflow executions list [--workflow <workflow_id>] [--json]
+hermes workflow executions list [--workflow <workflow_id>] [--limit N] [--json]
 hermes workflow executions show <execution_id> [--json]
+hermes workflow executions node-runs <execution_id> [--json]
+hermes workflow executions events <execution_id> [--json]
 hermes workflow executions cancel <execution_id>
 hermes workflow tick [--limit N] [--json]
+hermes workflow status [--json]
 ```
+
+Deploying the same `id` + `version` with identical content is an idempotent no-op. Deploying changed content at an existing version errors by default; pass `--bump` to redeploy as the next version instead (the dashboard's Deploy button always auto-bumps; the `workflow_deploy` tool takes `auto_bump`).
+
+The `/workflow` slash command exposes the run/inspect verbs (`status`, `list`, `show`, `enable`, `disable`, `run`, `executions`, `tick`) in the interactive CLI and messaging platforms.
 
 ## Schema reference
 
@@ -221,7 +233,8 @@ A workflow file is a YAML object with these supported top-level fields:
 | `id` | Yes | Stable id, lowercase letters/digits/underscore/hyphen, starts with a letter, max 64 chars. |
 | `name` | Yes | Human-readable name. |
 | `version` | Yes | Integer version, minimum `1`. Deployed definitions are keyed by `id` + `version`. |
-| `enabled` | No | Defaults to `true`. Disabled definitions deploy but do not create schedule rows. |
+| `enabled` | No | Defaults to `true`. Disabled definitions deploy but block new runs (manual and scheduled) and create no schedule rows. Toggle later with `hermes workflow enable|disable`. |
+| `description` | No | Free-form human note; no runtime behavior. Also accepted on triggers and nodes. |
 | `max_node_runs` | No | Loop guard, defaults to `500`. |
 | `triggers` | No | List of trigger specs. |
 | `nodes` | Yes | Mapping of node id to node spec. Node ids use lowercase letters/digits/underscore/hyphen, start with a letter, max 64 chars. |
@@ -232,7 +245,7 @@ A workflow file is a YAML object with these supported top-level fields:
 | Type | Fields | Runtime behavior |
 |---|---|---|
 | `manual` | `id`, `input` | Run with `hermes workflow run` or the dashboard run form. The CLI/dashboard run input is the execution input; trigger `input` is for external launchers and is not merged by the CLI. |
-| `schedule` | `id`, `cron` or `schedule`, `input` | Deploy creates a row in `workflow_schedules`; dispatcher starts executions when due. Uses cron syntax accepted by `croniter`. |
+| `schedule` | `id`, `cron` or `schedule`, `input` | Deploy creates a row in `workflow_schedules`; dispatcher starts executions when due. Uses cron syntax accepted by `croniter`; expressions are validated at `workflow validate` time. Schedules evaluate in the **server's local timezone** — `0 9 * * *` means 9am where the dispatcher runs. |
 | `webhook` | `id`, `input` | Declared for future/external launchers; built-in validate/deploy reject it until a launcher is available. |
 | `kanban_event` | `id`, `input` | Declared for future/external launchers; built-in validate/deploy reject it until Kanban event launching is available. |
 
@@ -284,7 +297,7 @@ Common fields on node specs:
 | `catch` | Node id to run after supported node execution failures once retries are exhausted. Some validation, render, or setup errors can fail the execution directly. |
 | `retry` | `{max_attempts, delay_seconds, backoff_seconds, multiplier}` for retrying supported node execution failures. Some validation, render, or setup errors are not retryable node attempts. |
 
-The schema also accepts `workspace: {cwd, env}` for forward compatibility, but the bundled dispatcher does not use it today. For Kanban workers, use `agent_task.workspace_kind` and `agent_task.workspace_path`.
+The schema declares `workspace: {cwd, env}` for forward compatibility, but no runtime consumes it yet, so validate/deploy **reject** nodes that set it (the same declared-but-unimplemented treatment as `webhook` triggers) — user intent must never silently no-op. For Kanban workers, use `agent_task.workspace_kind` and `agent_task.workspace_path`.
 
 #### `pass`
 
@@ -350,7 +363,7 @@ Supported `agent_task` fields:
 | `model` | Optional model override for this cell. Passed to the Kanban worker as `-m`; omit to use the selected profile's default model. Legacy `model_override` is still accepted on input. |
 | `prompt` | String/list/object rendered with safe templates, then used as the Kanban task body. Required. |
 | `result_contract` | Optional mapping of required output keys to flat types (`string`, `number`, `boolean`, `array`, `object`) or enum strings like `approved|rejected`. Dispatcher blocks the cell if the completed Kanban result does not match. |
-| `title` | Kanban task title. Defaults to `<workflow name>: <node id>`. |
+| `title` | Kanban task title. String titles support `${ ... }` template placeholders like prompts. Defaults to `<workflow name>: <node id>`. |
 | `workspace_kind` | Passed to Kanban, e.g. `scratch` or `worktree`. Defaults to `scratch` when omitted. |
 | `workspace_path` | Optional Kanban workspace path. This field is not templated. |
 | `skills` | Skills to load for the worker. |
@@ -496,8 +509,9 @@ This is intentional safety: templates can only copy values out of the workflow c
 - Conditions use an explicit operator allowlist.
 - Templates only resolve dotted data paths.
 - Agent work happens by creating Kanban tasks; the workflow engine itself does not run terminal commands.
-- Unknown YAML keys may be accepted for forward compatibility but are not behavior.
+- Unknown YAML keys are rejected at ingestion (validate/deploy/draft) so typos fail loudly; previously stored definitions always load.
 - The dispatcher uses claim locks and idempotent Kanban task creation so repeated ticks do not duplicate `agent_task` cards.
+- Dashboard **display** responses redact secret-looking keys in execution inputs/contexts, node runs, and events. Definition specs are returned as authored (unredacted) because the builder round-trips them for editing — don't paste secrets into workflow specs; use profile-local credentials instead.
 
 Normal Hermes tool safety still applies inside the Kanban worker that picks up an `agent_task` card: profile config, toolsets, command approvals, workspace selection, and model behavior all come from Kanban/agent runtime.
 
@@ -507,7 +521,7 @@ When a workflow reaches an `agent_task` node, the dispatcher creates or reuses a
 
 | Kanban field | Source |
 |---|---|
-| `title` | node `title`, or `<workflow name>: <node id>` |
+| `title` | rendered node `title` (templates supported), or `<workflow name>: <node id>` |
 | `body` | rendered node `prompt` |
 | `assignee` | node `profile` |
 | `workspace_kind`, `workspace_path` | node fields |
@@ -527,7 +541,7 @@ The workflow execution stays `waiting` while the Kanban task is open. On later t
 
 - Validation and deploy reject primitives that are declared in the schema but not implemented in the bundled runtime. Today, `manual` and `schedule` triggers are implemented; `webhook` and `kanban_event` triggers are rejected by built-in validation until a launcher is available.
 - `send_message` and `subworkflow` nodes are declared for forward compatibility but are rejected by built-in validation/deploy until the dispatcher has a built-in message sender and subworkflow runner.
-- There is no standalone `hermes workflow events` CLI command yet.
+- The `workspace: {cwd, env}` node field is declared but unimplemented and is rejected at validate/deploy.
 - Workflows do not run arbitrary Python, shell, JavaScript, or model-generated code.
-- `workflow.dispatch_in_gateway` defaults to `false`; a deployed workflow will not advance unattended until dispatch is enabled.
-- Unknown YAML keys may validate for forward compatibility but do not imply runtime behavior.
+- Schedule triggers evaluate in the server's local timezone.
+- Unattended advancement requires a running gateway (dispatch is on by default) or an external `hermes workflow tick` loop; the workflow dispatcher is not a standalone daemon.

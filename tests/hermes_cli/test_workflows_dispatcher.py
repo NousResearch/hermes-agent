@@ -578,6 +578,143 @@ def test_agent_task_text_prompt_interpolates_inline_templates(tmp_path, monkeypa
     assert "${ node.prepare.output.repo }" not in task.body
 
 
+def test_agent_task_title_interpolates_inline_templates(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    wfdb.init_db()
+
+    spec = WorkflowSpec.model_validate({
+        "id": "title_prompt_demo",
+        "name": "Title Prompt Demo",
+        "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {
+            "research": {
+                "type": "agent_task",
+                "profile": "researcher",
+                "title": "Research ${ input.topic }",
+                "prompt": "Research ${ input.topic } and return JSON only.",
+            },
+        },
+    })
+
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        wfdb.start_execution(
+            conn,
+            spec.id,
+            input_data={"topic": "ai"},
+            trigger_type="manual",
+        )
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+
+    with kb.connect() as kconn:
+        task = kb.list_tasks(kconn)[0]
+
+    assert task.title == "Research ai"
+    assert "${ input.topic }" not in task.title
+
+
+def test_agent_task_title_falls_back_to_literal_on_missing_template_path(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    wfdb.init_db()
+
+    spec = WorkflowSpec.model_validate({
+        "id": "title_fallback_demo",
+        "name": "Title Fallback Demo",
+        "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {
+            "research": {
+                "type": "agent_task",
+                "profile": "researcher",
+                "title": "Research ${ input.missing }",
+                "prompt": "Return JSON only.",
+            },
+        },
+    })
+
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        wfdb.start_execution(conn, spec.id, input_data={}, trigger_type="manual")
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+
+    with kb.connect() as kconn:
+        task = kb.list_tasks(kconn)[0]
+
+    assert task.title == "Research ${ input.missing }"
+
+
+def test_waiting_on_unresumable_join_fails_execution(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    wfdb.init_db()
+
+    spec = WorkflowSpec.model_validate({
+        "id": "stuck_join_demo",
+        "name": "Stuck Join Demo",
+        "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {
+            "fork": {"type": "parallel"},
+            "merge": {"type": "join"},
+        },
+        "edges": [],
+    })
+
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        exec_id = wfdb.start_execution(conn, spec.id, input_data={}, trigger_type="manual")
+        token = "test-claim-token"
+        conn.execute(
+            """
+            UPDATE workflow_executions
+               SET status = 'queued', claim_lock = ?, claim_expires = ?, updated_at = ?
+             WHERE execution_id = ?
+            """,
+            (token, 200, 100, exec_id),
+        )
+        result = EngineResult(
+            status="waiting",
+            context={"input": {}, "node": {}, "workflow": {"id": spec.id, "version": 1}},
+            waiting_nodes=["merge"],
+        )
+        assert workflows_dispatcher._finish(
+            conn,
+            execution_id=exec_id,
+            token=token,
+            result=result,
+            spec=spec,
+            now=100,
+        )
+
+    with wfdb.connect() as conn:
+        execution = wfdb.get_execution(conn, exec_id)
+        event = conn.execute(
+            """
+            SELECT payload_json FROM workflow_events
+             WHERE execution_id = ? AND kind = 'execution_failed'
+            """,
+            (exec_id,),
+        ).fetchone()
+    assert execution.status == "failed"
+    assert event is not None
+    payload = json.loads(event["payload_json"])
+    assert "unresumable" in payload["error"]["message"].lower()
+    assert payload["error"]["waiting_nodes"] == ["merge"]
+
+
 def test_agent_task_structured_prompt_remains_supported_and_pretty_printed(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -1212,7 +1349,7 @@ def test_disabling_scheduled_workflow_removes_schedule_rows(tmp_path, monkeypatc
 
 
 def test_waiting_result_persists_and_is_not_retried(tmp_path, monkeypatch):
-    exec_id = _start_execution(tmp_path, monkeypatch)
+    exec_id = _start_spec_execution(tmp_path, monkeypatch, _wait_spec())
     calls = []
 
     def waiting_result(spec, input_data):
@@ -1387,6 +1524,46 @@ def test_failed_node_without_catch_fails_execution_and_records_attempt(tmp_path,
     assert len(runs) == 1
     assert runs[0]["status"] == "failed"
     assert json.loads(runs[0]["error"]) == execution.context["error"]
+
+
+def test_failed_node_emits_node_failed_event(tmp_path, monkeypatch):
+    exec_id = _start_spec_execution(tmp_path, monkeypatch, _fail_spec())
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+
+    _execution, _claim, events = _execution_state(exec_id)
+    node_failed = [e for e in events if e["kind"] == "node_failed"]
+    assert len(node_failed) == 1
+    payload = json.loads(node_failed[0]["payload_json"])
+    assert payload["node_id"] == "flaky"
+    assert payload["error"]["node"] == "flaky"
+
+
+def test_fire_due_schedules_drops_stale_disabled_schedule(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    spec = WorkflowSpec.model_validate({
+        "id": "sched_demo", "name": "Sched Demo", "version": 1,
+        "triggers": [{"type": "schedule", "id": "daily", "cron": "0 9 * * *"}],
+        "nodes": {"start": {"type": "pass", "output": {"ok": True}}},
+    })
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        # Simulate config drift: definition disabled after the schedule row
+        # was registered (e.g. direct DB edit or a crash mid-toggle).
+        conn.execute("UPDATE workflow_definitions SET enabled = 0 WHERE workflow_id = 'sched_demo'")
+        conn.execute("UPDATE workflow_schedules SET next_run_at = 50 WHERE workflow_id = 'sched_demo'")
+
+    # The stale schedule must not kill the tick — it gets dropped instead.
+    assert workflows_dispatcher.tick(limit=5, now=100) == 0
+
+    with wfdb.connect() as conn:
+        remaining = conn.execute(
+            "SELECT count(*) FROM workflow_schedules WHERE workflow_id = 'sched_demo'"
+        ).fetchone()[0]
+        executions = conn.execute("SELECT count(*) FROM workflow_executions").fetchone()[0]
+    assert remaining == 0
+    assert executions == 0
 
 
 def test_retry_backoff_multiplier_sets_next_wait_until(tmp_path, monkeypatch):

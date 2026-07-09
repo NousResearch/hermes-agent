@@ -167,6 +167,24 @@ class GatewaySlashCommandsMixin:
         if _qe is not None:
             _qe.pop(session_key, None)
 
+        # The old conversation's in-flight async delegations end WITH it
+        # (#55578): after the reset rotates the session id, their completions
+        # would have no live owner — a dangling subagent can only burn tokens
+        # and park an orphaned payload on the shared queue. Interrupt by the
+        # expiring durable session id (delegations dispatched from gateway
+        # chats are pinned to it via parent_session_id) and by the routing
+        # key as a fallback for older records.
+        try:
+            from tools.async_delegation import interrupt_for_session
+
+            interrupt_for_session(
+                session_key=session_key,
+                parent_session_id=str(getattr(old_entry, "session_id", "") or ""),
+                reason="session_reset",
+            )
+        except Exception:
+            pass
+
         try:
             from tools.env_passthrough import clear_env_passthrough
             clear_env_passthrough()
@@ -231,9 +249,13 @@ class GatewaySlashCommandsMixin:
             "session_key": session_key,
         })
 
-        # Resolve session config info to surface to the user
+        # Resolve session config info to surface to the user, scoped to the
+        # profile serving this source so a multiplexed /reset //new banner
+        # reports the profile's model, not the base config's (#59003).
         try:
-            session_info = self._format_session_info()
+            session_info = await asyncio.to_thread(
+                self._reset_notice_session_info, source
+            )
         except Exception:
             session_info = ""
 
@@ -369,6 +391,29 @@ class GatewaySlashCommandsMixin:
             f"Tier: user\n"
             f"Slash commands you can run: {runnable_str}"
         )
+
+    async def _handle_workflow_command(self, event: MessageEvent) -> str:
+        """Handle /workflow — delegate to the shared workflow CLI.
+
+        Read/inspect/advance operations against workflows.db; run in a
+        thread pool so the gateway event loop stays responsive. Safe while
+        an agent is running because it never touches agent state.
+        """
+        import asyncio
+        from hermes_cli.workflows import run_slash
+
+        text = (event.text or "").strip()
+        if text.startswith("/"):
+            text = text.lstrip("/")
+        for prefix in ("workflows", "workflow"):
+            if text.startswith(prefix):
+                text = text[len(prefix):].lstrip()
+                break
+
+        try:
+            return await asyncio.to_thread(run_slash, text)
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"⚠ workflow error: {exc}"
 
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.
@@ -3632,6 +3677,13 @@ class GatewaySlashCommandsMixin:
         _pending_notes = getattr(self, "_pending_model_notes", None)
         if isinstance(_pending_notes, dict):
             _pending_notes.pop(session_key, None)
+        # Clear per-session model cache too, for the same reason — the
+        # resumed conversation must resolve from current config, not a
+        # stale value cached under this session_key before the switch
+        # (mirrors /new and the compression-exhausted auto-reset, #58403).
+        _lrm = getattr(self, "_last_resolved_model", None)
+        if isinstance(_lrm, dict):
+            _lrm.pop(session_key, None)
 
         # Evict any cached agent for this session so the next message
         # rebuilds with the correct session_id end-to-end — mirrors

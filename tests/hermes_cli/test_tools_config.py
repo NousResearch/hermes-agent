@@ -253,6 +253,80 @@ def test_get_platform_tools_x_search_auto_enabled_when_xai_oauth_present(monkeyp
         assert "x_search" in enabled, f"x_search missing for {plat}"
 
 
+# ─── #35527: platform-restricted default-off toolsets (discord/discord_admin)
+# are stripped by _DEFAULT_OFF_TOOLSETS even when the user explicitly opts in
+# via the platform's native composite. The composite ``hermes-discord``
+# contains both ``discord`` and ``discord_admin`` tools, so configuring it is
+# an explicit opt-in that should survive the default-off strip. ───────────────
+
+
+def test_discord_composite_only_enables_discord_toolsets():
+    """Layer 1: ``platform_toolsets.discord: [hermes-discord]`` is an explicit
+    opt-in to the full Discord bundle (which includes the ``discord`` and
+    ``discord_admin`` tools). They must not be silently stripped."""
+    config = {"platform_toolsets": {"discord": ["hermes-discord"]}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled, "discord toolset missing from hermes-discord composite"
+    assert "discord_admin" in enabled, "discord_admin toolset missing from composite"
+
+
+def test_discord_composite_plus_configurable_enables_discord_toolsets():
+    """Layer 2: mixing the composite with a configurable key (e.g. spotify)
+    still opts into the Discord toolsets carried by the composite."""
+    config = {"platform_toolsets": {"discord": ["hermes-discord", "spotify"]}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" in enabled
+
+
+def test_discord_composite_plus_partial_explicit_enables_sibling():
+    """Layer 3: ``[hermes-discord, discord]`` lists discord explicitly but
+    discord_admin arrives only via the composite. Both must survive."""
+    config = {"platform_toolsets": {"discord": ["hermes-discord", "discord"]}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" in enabled
+
+
+def test_discord_unconfigured_keeps_discord_toolsets_off():
+    """Layer 4 (guard): an unconfigured discord platform keeps the platform
+    toolsets OFF by default — explicit configuration is required to opt in."""
+    enabled = _get_platform_tools({}, "discord")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_empty_list_keeps_discord_toolsets_off():
+    """Layer 4 (guard): an explicit empty list means 'nothing' — the Discord
+    toolsets must not be auto-added even though the fix keys off explicit
+    configuration."""
+    config = {"platform_toolsets": {"discord": []}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_toolsets_do_not_leak_to_other_platforms():
+    """Layer 4 (guard): discord/discord_admin are platform-restricted — they
+    must never appear on a non-discord platform even when that platform is
+    explicitly configured."""
+    config = {"platform_toolsets": {"telegram": ["hermes-telegram", "discord"]}}
+    enabled = _get_platform_tools(config, "telegram")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_explicit_workaround_still_works():
+    """Regression guard: the documented workaround of listing toolsets
+    explicitly must keep working after the fix."""
+    config = {
+        "platform_toolsets": {"discord": ["hermes-discord", "discord", "discord_admin"]}
+    }
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" in enabled
+
+
 def test_get_platform_tools_x_search_auto_enabled_when_xai_api_key_present(monkeypatch):
     """x_search toolset auto-enables when XAI_API_KEY is set, even without
     OAuth tokens — the API-key path is a supported credential source."""

@@ -12,7 +12,7 @@ from typing import Any
 from hermes_cli import kanban_db as kb
 from hermes_cli import workflows_db as wfdb
 from hermes_cli.workflows_engine import EngineResult, run_in_memory_until_waiting
-from hermes_cli.workflows_prompts import render_agent_prompt
+from hermes_cli.workflows_prompts import render_agent_prompt, render_prompt_text
 from hermes_cli.workflows_spec import WorkflowSpec
 
 
@@ -107,15 +107,22 @@ def _fire_due_schedules(conn: sqlite3.Connection, *, now: int) -> None:
             (now,),
         ).fetchall()
         for row in rows:
-            wfdb.start_execution(
-                conn,
-                row["workflow_id"],
-                input_data=_schedule_input(conn, row),
-                trigger_type="schedule",
-                trigger_id=row["trigger_id"],
-                version=row["version"],
-                now=now,
-            )
+            try:
+                wfdb.start_execution(
+                    conn,
+                    row["workflow_id"],
+                    input_data=_schedule_input(conn, row),
+                    trigger_type="schedule",
+                    trigger_id=row["trigger_id"],
+                    version=row["version"],
+                    now=now,
+                )
+            except (KeyError, ValueError):
+                # Definition deleted or disabled after the schedule row was
+                # registered — drop the stale schedule instead of failing the
+                # whole tick forever.
+                conn.execute("DELETE FROM workflow_schedules WHERE id = ?", (row["id"],))
+                continue
             conn.execute(
                 """
                 UPDATE workflow_schedules
@@ -192,6 +199,23 @@ def _render_agent_prompt(node: Any, context: dict[str, Any]) -> str:
     return render_agent_prompt(node.prompt, context)
 
 
+def _render_agent_task_title(
+    node: Any,
+    *,
+    spec: WorkflowSpec,
+    node_id: str,
+    context: dict[str, Any],
+) -> str:
+    raw = (node.title or f"{spec.name}: {node_id}").strip()
+    if not isinstance(node.title, str) or not node.title.strip():
+        return raw
+    try:
+        rendered = render_prompt_text(node.title, context).strip()
+    except (KeyError, ValueError):
+        return raw
+    return rendered or raw
+
+
 def _create_or_get_agent_task(
     *,
     execution_id: str,
@@ -204,7 +228,7 @@ def _create_or_get_agent_task(
     with kb.connect_closing(board=board) as kconn:
         task_id = kb.create_task(
             kconn,
-            title=(node.title or f"{spec.name}: {node_id}").strip(),
+            title=_render_agent_task_title(node, spec=spec, node_id=node_id, context=context),
             body=_render_agent_prompt(node, context),
             assignee=node.profile,
             created_by=f"workflow:{execution_id}",
@@ -618,14 +642,21 @@ def _persist_failed_attempt(
             """,
             (_json_dumps(error), now, now, queued["id"]),
         )
-        return
-    conn.execute(
-        """
-        INSERT INTO workflow_node_runs (
-            execution_id, node_id, status, error, started_at, completed_at
-        ) VALUES (?, ?, 'failed', ?, ?, ?)
-        """,
-        (execution_id, node_id, _json_dumps(error), now, now),
+    else:
+        conn.execute(
+            """
+            INSERT INTO workflow_node_runs (
+                execution_id, node_id, status, error, started_at, completed_at
+            ) VALUES (?, ?, 'failed', ?, ?, ?)
+            """,
+            (execution_id, node_id, _json_dumps(error), now, now),
+        )
+    _append_event(
+        conn,
+        execution_id,
+        "node_failed",
+        {"node_id": node_id, "error": error},
+        now,
     )
 
 
@@ -740,6 +771,44 @@ def _emit_progress_events(
         emitted_nodes.add(node_id)
 
 
+def _fail_if_waiting_unresumable(
+    conn: sqlite3.Connection,
+    *,
+    execution_id: str,
+    result: EngineResult,
+) -> EngineResult:
+    if result.status != "waiting":
+        return result
+    rows = conn.execute(
+        """
+        SELECT node_id, wait_until, kanban_task_id
+          FROM workflow_node_runs
+         WHERE execution_id = ? AND status = 'waiting'
+        """,
+        (execution_id,),
+    ).fetchall()
+    stuck_nodes = [row["node_id"] for row in rows]
+    if not stuck_nodes:
+        stuck_nodes = list(result.waiting_nodes)
+    if not stuck_nodes:
+        return result
+    resumable = any(
+        row["wait_until"] is not None or row["kanban_task_id"] is not None
+        for row in rows
+    )
+    if resumable:
+        return result
+    return EngineResult(
+        status="failed",
+        context=result.context,
+        waiting_nodes=[],
+        error={
+            "message": "workflow waiting on unresumable node(s): " + ", ".join(stuck_nodes),
+            "waiting_nodes": stuck_nodes,
+        },
+    )
+
+
 def _finish(
     conn: sqlite3.Connection,
     *,
@@ -838,17 +907,6 @@ def _finish(
                 else:
                     result.context = _context_with_error(result.context, error)
 
-        final_event = {
-            "succeeded": "execution_succeeded",
-            "waiting": "execution_waiting",
-            "failed": "execution_failed",
-        }[result.status]
-        final_payload: dict[str, Any] = {}
-        if result.status == "waiting":
-            final_payload = {"waiting_nodes": result.waiting_nodes}
-        elif result.status == "failed":
-            final_payload = {"error": result.error or {}}
-
         _persist_successful_queued_attempts(
             conn,
             execution_id=execution_id,
@@ -864,6 +922,11 @@ def _finish(
                 now=now,
                 existing_events=existing_events,
             )
+            result = _fail_if_waiting_unresumable(
+                conn,
+                execution_id=execution_id,
+                result=result,
+            )
         except _AgentTaskMaterializationError as exc:
             result = _materialization_failure_result(
                 conn,
@@ -872,6 +935,13 @@ def _finish(
                 exc=exc,
                 now=now,
             )
+        if result.status == "succeeded":
+            final_event = "execution_succeeded"
+            final_payload = {}
+        elif result.status == "waiting":
+            final_event = "execution_waiting"
+            final_payload = {"waiting_nodes": result.waiting_nodes}
+        else:
             final_event = "execution_failed"
             final_payload = {"error": result.error or {}}
         _append_event(conn, execution_id, final_event, final_payload, now)

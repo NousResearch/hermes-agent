@@ -24,7 +24,11 @@ from hermes_cli.workflows_capabilities import (
     workflow_capabilities,
 )
 from hermes_cli.workflows_redaction import redact_sensitive
-from hermes_cli.workflows_spec import WorkflowSpec, validate_graph
+from hermes_cli.workflows_spec import (
+    WorkflowSpec,
+    reject_unknown_spec_fields,
+    validate_graph,
+)
 from utils import is_truthy_value
 
 router = APIRouter()
@@ -133,6 +137,7 @@ def _load_spec_from_payload(payload: Any) -> WorkflowSpec:
     if isinstance(payload, dict) and "spec" in payload:
         payload = payload["spec"]
     raw = _yaml_or_object(payload, what="workflow spec")
+    reject_unknown_spec_fields(raw)
     spec = WorkflowSpec.model_validate(raw)
     validate_graph(spec)
     require_implemented_primitives(spec)
@@ -207,39 +212,18 @@ def _execution_to_dict(execution: wfdb.WorkflowExecution) -> dict[str, Any]:
     )
 
 
-def _event_to_dict(row) -> dict[str, Any]:
-    try:
-        payload = json.loads(row["payload_json"] or "{}")
-    except (TypeError, ValueError):
+def _event_to_dict(event: dict[str, Any]) -> dict[str, Any]:
+    payload = event.get("payload")
+    if not isinstance(payload, (dict, list)):
         payload = {}
     return {
-        "created_at": row["created_at"],
-        "execution_id": row["execution_id"],
-        "id": row["id"],
-        "kind": row["kind"],
-        "node_run_id": row["node_run_id"],
+        "created_at": event["created_at"],
+        "execution_id": event["execution_id"],
+        "id": event["id"],
+        "kind": event["kind"],
+        "node_run_id": event["node_run_id"],
         "payload": redact_sensitive(payload),
     }
-
-
-def _list_executions(conn, workflow_id: str | None = None) -> list[wfdb.WorkflowExecution]:
-    if workflow_id:
-        rows = conn.execute(
-            """
-            SELECT execution_id FROM workflow_executions
-             WHERE workflow_id = ?
-             ORDER BY created_at, execution_id
-            """,
-            (workflow_id,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT execution_id FROM workflow_executions
-             ORDER BY created_at, execution_id
-            """
-        ).fetchall()
-    return [wfdb.get_execution(conn, row["execution_id"]) for row in rows]
 
 
 def _input_from_payload(payload: Any) -> dict[str, Any]:
@@ -405,7 +389,7 @@ def workflow_status() -> dict[str, Any]:
     if not isinstance(workflow_cfg, dict):
         workflow_cfg = {}
     dispatch_enabled = is_truthy_value(
-        workflow_cfg.get("dispatch_in_gateway"), default=False
+        workflow_cfg.get("dispatch_in_gateway"), default=True
     )
     interval = _workflow_tick_interval_seconds(workflow_cfg)
     warning = None
@@ -493,20 +477,10 @@ async def deploy_definition(request: Request) -> dict[str, Any]:
 
         def _deploy():
             with _connect_initialized() as conn:
-                try:
-                    wfdb.deploy_definition(conn, spec, created_by="dashboard")
-                    return _definition_record(conn, spec.id, spec.version)
-                except ValueError as exc:
-                    if "already exists with different checksum" not in str(exc):
-                        raise
-                    versions = [
-                        record.version
-                        for record in wfdb.list_definitions(conn)
-                        if record.workflow_id == spec.id
-                    ]
-                    bumped = spec.model_copy(update={"version": (max(versions) if versions else spec.version) + 1})
-                    wfdb.deploy_definition(conn, bumped, created_by="dashboard")
-                    return _definition_record(conn, bumped.id, bumped.version)
+                deployed_version = wfdb.deploy_definition(
+                    conn, spec, created_by="dashboard", auto_bump=True
+                )
+                return _definition_record(conn, spec.id, deployed_version)
 
         record = await asyncio.to_thread(_deploy)
     except (json.JSONDecodeError, yaml.YAMLError, ValidationError, ValueError) as exc:
@@ -573,9 +547,15 @@ async def run_workflow(
 
 
 @router.get("/executions")
-def list_executions(workflow_id: str | None = Query(default=None)) -> dict[str, Any]:
+def list_executions(
+    workflow_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> dict[str, Any]:
     with _connect_initialized() as conn:
-        executions = [_execution_to_dict(e) for e in _list_executions(conn, workflow_id)]
+        executions = [
+            _execution_to_dict(e)
+            for e in wfdb.list_executions(conn, workflow_id, limit=limit)
+        ]
     return {"executions": executions}
 
 
@@ -619,16 +599,7 @@ def cancel_execution(execution_id: str) -> dict[str, Any]:
 def list_events(execution_id: str) -> dict[str, Any]:
     try:
         with _connect_initialized() as conn:
-            wfdb.get_execution(conn, execution_id)
-            rows = conn.execute(
-                """
-                SELECT id, execution_id, node_run_id, kind, payload_json, created_at
-                  FROM workflow_events
-                 WHERE execution_id = ?
-                 ORDER BY id
-                """,
-                (execution_id,),
-            ).fetchall()
+            events = wfdb.list_events(conn, execution_id)
     except KeyError as exc:
         raise _http_404(exc) from exc
-    return {"events": [_event_to_dict(row) for row in rows]}
+    return {"events": [_event_to_dict(event) for event in events]}

@@ -274,6 +274,16 @@ Create and manage scheduled cron jobs that run agent prompts on a recurring sche
 - **Trigger now** — immediately execute a job outside its normal schedule
 - **Delete** — permanently remove a cron job
 
+### Workflows
+
+Visual builder and execution monitor for the [workflow graph engine](workflows.md), shipped as the `workflows/dashboard` built-in plugin at `/workflows`.
+
+- **Describe → draft** — type a plain-language goal and let the assistant draft a validated workflow spec; refine it with follow-up instructions
+- **Builder** — cell table + graph view (React Flow) with a cell editor for routing, prompts, and result contracts; an Advanced YAML panel round-trips the same spec
+- **Validate / Deploy** — a readiness checklist plus one-click deploy (version conflicts auto-bump to the next version)
+- **Run & observe** — start executions, watch the node-run cards and event timeline live, follow linked Kanban tasks, and cancel non-terminal runs
+- **Dispatcher readiness** — shows whether the gateway dispatcher is advancing runs; queued/waiting executions display an explicit warning when nothing will advance them
+
 ### Profiles
 
 Create and manage [profiles](../profiles.md) — isolated Hermes instances with their own config, skills, and sessions.

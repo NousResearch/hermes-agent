@@ -7,7 +7,7 @@ import pytest
 from gateway import run as gateway_run
 from gateway.config import GatewayConfig
 from gateway.delivery import DeliveryRouter
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _WORKFLOW_DISPATCH_LIMIT_DEFAULT
 from hermes_cli.config import DEFAULT_CONFIG
 from hermes_cli import workflows_dispatcher
 
@@ -38,10 +38,9 @@ def test_workflow_dispatcher_disabled_does_not_tick(monkeypatch):
     [
         {"dispatch_in_gateway": "false"},
         {"dispatch_in_gateway": "0"},
-        "not-a-dict",
     ],
 )
-def test_workflow_dispatcher_string_false_and_non_dict_config_do_not_tick(
+def test_workflow_dispatcher_string_false_does_not_tick(
     monkeypatch,
     workflow_cfg,
 ):
@@ -57,6 +56,27 @@ def test_workflow_dispatcher_string_false_and_non_dict_config_do_not_tick(
     asyncio.run(runner._workflow_dispatcher_watcher(initial_delay=0, sleep=fail_sleep))
 
     assert calls == []
+
+
+@pytest.mark.parametrize("workflow_cfg", [None, "not-a-dict", {}])
+def test_workflow_dispatcher_missing_or_malformed_config_defaults_on(
+    monkeypatch,
+    workflow_cfg,
+):
+    """dispatch_in_gateway defaults on — absent/malformed config still ticks."""
+    runner = _runner()
+    calls = []
+
+    cfg = {} if workflow_cfg is None else {"workflow": workflow_cfg}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr(workflows_dispatcher, "tick", lambda *, limit: calls.append(limit) or 0)
+
+    async def fake_sleep(_delay):
+        runner._running = False
+
+    asyncio.run(runner._workflow_dispatcher_watcher(initial_delay=0, sleep=fake_sleep))
+
+    assert calls == [_WORKFLOW_DISPATCH_LIMIT_DEFAULT]
 
 
 @pytest.mark.parametrize("enabled_value", ["true", "1"])
@@ -247,9 +267,29 @@ def test_start_schedules_workflow_dispatcher_watcher(tmp_path):
     assert "_workflow_dispatcher_watcher" in scheduled
 
 
-def test_workflow_config_defaults_are_disabled():
-    assert DEFAULT_CONFIG["workflow"] == {
-        "dispatch_in_gateway": False,
-        "tick_interval_seconds": 30,
-        "max_executions_per_tick": 50,
-    }
+def test_gateway_workflow_slash_command_delegates_to_run_slash(monkeypatch):
+    from types import SimpleNamespace
+
+    runner = _runner()
+    seen = []
+
+    def fake_run_slash(rest: str) -> str:
+        seen.append(rest)
+        return "workflow output"
+
+    monkeypatch.setattr("hermes_cli.workflows.run_slash", fake_run_slash)
+
+    event = SimpleNamespace(text="/workflow executions list --limit 5")
+    result = asyncio.run(GatewayRunner._handle_workflow_command(runner, event))
+
+    assert result == "workflow output"
+    assert seen == ["executions list --limit 5"]
+
+
+def test_workflow_dispatch_default_matches_kanban():
+    """Both embedded dispatchers ship default-on so deployed work advances
+    unattended; the two defaults must not drift apart again."""
+    assert DEFAULT_CONFIG["workflow"]["dispatch_in_gateway"] is True
+    assert DEFAULT_CONFIG["kanban"].get("dispatch_in_gateway", True) is True
+    assert DEFAULT_CONFIG["workflow"]["tick_interval_seconds"] >= 1
+    assert DEFAULT_CONFIG["workflow"]["max_executions_per_tick"] >= 1

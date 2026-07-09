@@ -12,7 +12,11 @@ AIAgent = None
 from pydantic import BaseModel, Field, ValidationError
 
 from hermes_cli.workflows_capabilities import require_implemented_primitives
-from hermes_cli.workflows_spec import WorkflowSpec, validate_graph
+from hermes_cli.workflows_spec import (
+    WorkflowSpec,
+    reject_unknown_spec_fields,
+    validate_graph,
+)
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 Runner = Callable[[str], str]
@@ -109,6 +113,7 @@ def _parse_assistant_dict(data: dict[str, Any]) -> WorkflowDraftResult:
     try:
         if "spec" not in data:
             raise AssistantValidationError("assistant payload requires spec")
+        reject_unknown_spec_fields(data["spec"])
         spec = WorkflowSpec.model_validate(data["spec"])
         validate_graph(spec)
         _ensure_supported_primitives(spec)
@@ -315,6 +320,8 @@ def _validation_error_summary(error: AssistantValidationError) -> str:
     text = str(error)
     if "invalid JSON" in text:
         return "invalid JSON"
+    if "unknown field" in text:
+        return "unknown workflow field"
     if "unsupported" in text:
         return "unsupported workflow primitive"
     if "requires a non-empty result_contract" in text:

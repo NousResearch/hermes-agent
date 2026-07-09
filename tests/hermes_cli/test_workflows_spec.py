@@ -405,3 +405,109 @@ def test_edge_from_alias_and_field_name_both_populate_from_():
 
     assert by_alias.from_ == "start"
     assert by_name.from_ == "start"
+
+
+def test_schedule_trigger_rejects_unparsable_cron():
+    spec = _minimal_spec()
+    spec["triggers"] = [{"type": "schedule", "id": "sched", "cron": "not a cron"}]
+
+    with pytest.raises(ValueError, match="invalid cron expression on trigger 'sched'"):
+        validate_graph(WorkflowSpec.model_validate(spec))
+
+
+def test_schedule_trigger_accepts_valid_cron_and_expr_alias():
+    spec = _minimal_spec()
+    spec["triggers"] = [{"type": "schedule", "id": "sched", "cron": "0 9 * * 1-5"}]
+    validate_graph(WorkflowSpec.model_validate(spec))
+
+    spec["triggers"] = [{"type": "schedule", "id": "sched", "expr": "*/5 * * * *"}]
+    validate_graph(WorkflowSpec.model_validate(spec))
+
+
+def test_unknown_workflow_field_rejected_with_suggestion():
+    from hermes_cli.workflows_spec import reject_unknown_spec_fields
+
+    raw = _minimal_spec()
+    raw["verion"] = 2
+
+    with pytest.raises(ValueError, match=r"unknown field 'verion' on workflow; did you mean 'version'\?"):
+        reject_unknown_spec_fields(raw)
+
+
+def test_unknown_node_field_typo_rejected_with_location():
+    from hermes_cli.workflows_spec import unknown_spec_field_errors
+
+    raw = _minimal_spec()
+    raw["nodes"]["start"]["result_contarct"] = {"ok": "boolean"}
+
+    errors = unknown_spec_field_errors(raw)
+
+    assert len(errors) == 1
+    assert "unknown field 'result_contarct' on node 'start'" in errors[0]
+    assert "result_contract" in errors[0]
+
+
+def test_unknown_trigger_edge_retry_and_workspace_fields_rejected():
+    from hermes_cli.workflows_spec import unknown_spec_field_errors
+
+    raw = _minimal_spec()
+    raw["triggers"][0]["cronn"] = "0 9 * * *"
+    raw["edges"][0]["too"] = "done"
+    raw["nodes"]["start"]["retry"] = {"max_attempt": 2}
+    raw["nodes"]["start"]["workspace"] = {"cwdd": "/tmp"}
+
+    errors = unknown_spec_field_errors(raw)
+
+    joined = "; ".join(errors)
+    assert "unknown field 'cronn' on trigger [0]" in joined
+    assert "unknown field 'too' on edge [0]" in joined
+    assert "unknown field 'max_attempt' on node 'start' retry" in joined
+    assert "unknown field 'cwdd' on node 'start' workspace" in joined
+
+
+def test_known_fields_aliases_and_descriptions_pass_strict_check():
+    from hermes_cli.workflows_spec import unknown_spec_field_errors
+
+    raw = {
+        "id": "strict_ok",
+        "name": "Strict OK",
+        "version": 1,
+        "description": "workflow-level note",
+        "max_node_runs": 10,
+        "enabled": True,
+        "triggers": [
+            {"type": "manual", "id": "manual", "description": "trigger note"},
+            {"type": "schedule", "id": "sched", "expr": "0 9 * * *", "input": {}},
+        ],
+        "nodes": {
+            "work": {
+                "type": "agent_task",
+                "profile": "worker",
+                "prompt": "Return JSON only.",
+                "result_contract": {"ok": "boolean"},
+                "provider_override": "openai",
+                "model_override": "gpt-5.5",
+                "description": "node note",
+                "retry": {"max_attempts": 2, "delay_seconds": 1},
+            },
+            "done": {"type": "pass"},
+        },
+        "edges": [{"from": "work", "to": "done"}],
+    }
+
+    assert unknown_spec_field_errors(raw) == []
+
+
+def test_load_spec_from_object_strict_ingestion():
+    from hermes_cli.workflows_spec import load_spec_from_object
+
+    with pytest.raises(ValueError, match="workflow spec must be an object"):
+        load_spec_from_object("not a mapping")
+
+    raw = _minimal_spec()
+    raw["nodes"]["start"]["outputt"] = {}
+    with pytest.raises(ValueError, match="unknown field 'outputt'"):
+        load_spec_from_object(raw)
+
+    spec = load_spec_from_object(_minimal_spec())
+    assert spec.id == "demo"

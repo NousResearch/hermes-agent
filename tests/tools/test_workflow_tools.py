@@ -13,6 +13,7 @@ WORKFLOW_TOOL_NAMES = {
     "workflow_run",
     "workflow_execution_show",
     "workflow_cancel",
+    "workflow_tick",
 }
 
 
@@ -470,7 +471,9 @@ def test_workflow_run_creates_execution_with_provided_input(_isolated_workflow_h
     assert "error" not in payload
     assert payload["workflow_id"] == spec.id
     assert payload["version"] == spec.version
-    assert payload["status"] == "queued"
+    # workflow_run ticks once inline (same as CLI run / dashboard Run), so a
+    # cheap all-pass workflow completes immediately.
+    assert payload["status"] == "succeeded"
     assert payload["input"] == {"x": 1}
 
     with wfdb.connect() as conn:
@@ -478,7 +481,7 @@ def test_workflow_run_creates_execution_with_provided_input(_isolated_workflow_h
 
     assert execution.workflow_id == spec.id
     assert execution.version == spec.version
-    assert execution.status == "queued"
+    assert execution.status == "succeeded"
     assert execution.input == {"x": 1}
 
 
@@ -603,3 +606,139 @@ def test_shared_cancel_execution_records_source(_isolated_workflow_home):
     assert again.status == "cancelled"
     assert cancelled_again is False
     assert [json.loads(row["payload_json"]) for row in rows] == [{"source": "unit"}]
+
+
+def _start_queued_execution(workflow_id: str) -> str:
+    """Seed a queued execution without workflow_run's inline tick."""
+    from hermes_cli import workflows_db as wfdb
+
+    with wfdb.connect() as conn:
+        return wfdb.start_execution(
+            conn, workflow_id, input_data={}, trigger_type="manual"
+        )
+
+
+def test_workflow_tick_tool_advances_queued_execution(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    spec = _deploy_demo_workflow()
+    execution_id = _start_queued_execution(spec.id)
+
+    from hermes_cli import workflows_db as wfdb
+    from tools.registry import registry
+
+    payload = json.loads(registry.dispatch("workflow_tick", {}))
+
+    assert "error" not in payload
+    assert payload == {"processed": 1}
+    with wfdb.connect() as conn:
+        assert wfdb.get_execution(conn, execution_id).status == "succeeded"
+
+    # Nothing left to advance.
+    assert json.loads(registry.dispatch("workflow_tick", {"limit": 5})) == {"processed": 0}
+
+
+@pytest.mark.parametrize("bad_limit", [0, -1, "nope"])
+def test_workflow_tick_tool_rejects_bad_limit(_isolated_workflow_home, bad_limit):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from tools.registry import registry
+
+    payload = json.loads(registry.dispatch("workflow_tick", {"limit": bad_limit}))
+
+    assert "error" in payload
+    assert "limit must be" in payload["error"]
+
+
+def test_workflow_execution_show_includes_node_runs_and_events(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    spec = _deploy_demo_workflow()
+
+    from tools.registry import registry
+
+    run_payload = json.loads(
+        registry.dispatch("workflow_run", {"workflow_id": spec.id})
+    )
+    execution_id = run_payload["execution_id"]
+
+    bare = json.loads(
+        registry.dispatch("workflow_execution_show", {"execution_id": execution_id})
+    )
+    assert "node_runs" not in bare
+    assert "events" not in bare
+
+    full = json.loads(
+        registry.dispatch(
+            "workflow_execution_show",
+            {
+                "execution_id": execution_id,
+                "include_node_runs": True,
+                "include_events": True,
+            },
+        )
+    )
+    assert "error" not in full
+    assert isinstance(full["node_runs"], list)
+    kinds = [event["kind"] for event in full["events"]]
+    assert "execution_started" in kinds
+    assert "execution_succeeded" in kinds
+
+
+def test_workflow_deploy_auto_bump_on_checksum_conflict(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    _deploy_demo_workflow()
+
+    from tools.registry import registry
+
+    changed = {
+        "id": "demo",
+        "name": "Demo Changed",
+        "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {"start": {"type": "pass", "output": {"ok": True}}},
+    }
+
+    rejected = json.loads(
+        registry.dispatch("workflow_deploy", {"definition": changed})
+    )
+    assert "error" in rejected
+    assert "different checksum" in rejected["error"]
+
+    bumped = json.loads(
+        registry.dispatch(
+            "workflow_deploy", {"definition": changed, "auto_bump": True}
+        )
+    )
+    assert "error" not in bumped
+    assert bumped["version"] == 2
+    assert bumped["name"] == "Demo Changed"
+
+
+def test_workflow_validate_rejects_unknown_fields_with_suggestion(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from tools.registry import registry
+
+    payload = json.loads(
+        registry.dispatch(
+            "workflow_validate",
+            {
+                "definition": {
+                    "id": "typo_demo",
+                    "name": "Typo Demo",
+                    "version": 1,
+                    "triggers": [{"type": "manual", "id": "manual"}],
+                    "nodes": {
+                        "work": {
+                            "type": "agent_task",
+                            "profile": "worker",
+                            "prompt": "Return JSON only.",
+                            "result_contarct": {"ok": "boolean"},
+                        }
+                    },
+                    "edges": [],
+                }
+            },
+        )
+    )
+
+    assert "error" in payload
+    assert "unknown field 'result_contarct' on node 'work'" in payload["error"]
+    assert "result_contract" in payload["error"]

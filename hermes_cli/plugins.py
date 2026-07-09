@@ -795,6 +795,53 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- secret source registration -------------------------------------------
+
+    def register_secret_source(self, source) -> None:
+        """Register an external secret-manager backend.
+
+        ``source`` must be an instance of
+        :class:`agent.secret_sources.base.SecretSource`.  Registered
+        sources run during ``load_hermes_dotenv()`` startup — after
+        ``~/.hermes/.env`` loads, before Hermes reads credentials — when
+        their ``secrets.<source.name>`` config section is enabled.  The
+        orchestrator (``agent.secret_sources.registry.apply_all``) owns
+        ordering, mapped-vs-bulk precedence, conflict warnings, and
+        provenance; the source only fetches.
+
+        NOTE ON TIMING: plugin discovery happens later in startup than
+        the first ``load_hermes_dotenv()`` call, so a plugin-registered
+        source is not consulted by the initial env load of the process
+        that discovers it.  It IS consulted by every subsequently
+        spawned Hermes process (gateway children, cron sessions,
+        subagents), and immediately after a
+        ``reset_secret_source_cache()`` re-pull.  Plugin sources are
+        therefore best for supplying credentials to the running fleet;
+        the bundled sources cover first-process bootstrap.
+
+        Contract requirements (rejected with a warning otherwise):
+        inherit from ``SecretSource``, ``api_version`` matching
+        ``SECRET_SOURCE_API_VERSION``, lowercase unique ``name``,
+        ``shape`` of ``"mapped"`` or ``"bulk"``, unique ``scheme`` (when
+        set), and a ``fetch()`` that never raises and never prompts.
+        See the base-module docstring for the full contract.
+        """
+        from agent.secret_sources.base import SecretSource
+        from agent.secret_sources.registry import register_source
+
+        if not isinstance(source, SecretSource):
+            logger.warning(
+                "Plugin '%s' tried to register a secret source that does "
+                "not inherit from SecretSource. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        if register_source(source):
+            logger.info(
+                "Plugin '%s' registered secret source: %s",
+                self.manifest.name, source.name,
+            )
+
     # -- TTS provider registration -------------------------------------------
 
     def register_tts_provider(self, provider) -> None:
@@ -1236,10 +1283,6 @@ class PluginManager:
         """
         if self._discovered and not force:
             return
-        # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): troubleshooting run
-        # with all customizations disabled. Skip plugin discovery entirely so
-        # no third-party code (hooks, tools, platforms) loads. Mark as
-        # discovered so callers see a clean empty registry, not a retry loop.
         if env_var_enabled("HERMES_SAFE_MODE"):
             logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
             self._discovered = True
@@ -2034,6 +2077,13 @@ def has_hook(hook_name: str) -> bool:
 _thread_tool_whitelist = threading.local()
 
 
+@dataclass(frozen=True)
+class _PreToolCallDirective:
+    action: Optional[str] = None
+    message: Optional[str] = None
+    rule_key: Optional[str] = None
+
+
 def set_thread_tool_whitelist(
     allowed: Optional[Set[str]],
     deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
@@ -2046,7 +2096,7 @@ def clear_thread_tool_whitelist() -> None:
     _thread_tool_whitelist.allowed = None
 
 
-def get_pre_tool_call_directive(
+def _get_pre_tool_call_directive_details(
     tool_name: str,
     args: Optional[Dict[str, Any]],
     task_id: str = "",
@@ -2055,7 +2105,7 @@ def get_pre_tool_call_directive(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
-) -> tuple[Optional[str], Optional[str]]:
+) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for a blocking or approval directive.
 
     Plugins that need to enforce policy (rate limiting, security
@@ -2063,6 +2113,7 @@ def get_pre_tool_call_directive(
 
         {"action": "block",   "message": "Reason the tool was blocked"}
         {"action": "approve", "message": "Why this needs human confirmation"}
+        {"action": "approve", "message": "...", "rule_key": "write_file:ssh"}
 
     from their ``pre_tool_call`` callback.
 
@@ -2075,18 +2126,19 @@ def get_pre_tool_call_directive(
       decision on ANY tool, not just terminal command strings. The caller is
       responsible for invoking the gate (see
       :func:`tools.approval.request_tool_approval`).
+    - ``rule_key`` is optional and only honored for ``approve`` directives. It
+      lets plugins choose the allowlist grain for `[a]lways` approvals.
 
     The first valid directive wins. Invalid or irrelevant hook return values
     are silently ignored so existing observer-only hooks are unaffected.
-
-    Returns:
-        ``(directive, message)`` where ``directive`` is ``"block"``,
-        ``"approve"``, or ``None``.
     """
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
-        return ("block", fmt.format(tool_name=tool_name))
+        return _PreToolCallDirective(
+            action="block",
+            message=fmt.format(tool_name=tool_name),
+        )
 
     hook_results = invoke_hook(
         "pre_tool_call",
@@ -2112,9 +2164,38 @@ def get_pre_tool_call_directive(
         # an approve directive can carry an optional reason.
         if action == "block" and not message:
             continue
-        return (action, message)
+        rule_key = result.get("rule_key") if action == "approve" else None
+        rule_key = rule_key.strip() if isinstance(rule_key, str) else None
+        if not rule_key:
+            rule_key = None
+        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key)
 
-    return (None, None)
+    return _PreToolCallDirective()
+
+
+def get_pre_tool_call_directive(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Check ``pre_tool_call`` hooks for a blocking or approval directive.
+
+    Backward-compatible public helper: returns ``(directive, message)`` where
+    ``directive`` is ``"block"``, ``"approve"``, or ``None``. Internal callers
+    that need approve-specific metadata use
+    :func:`_get_pre_tool_call_directive_details`.
+    """
+    details = _get_pre_tool_call_directive_details(
+        tool_name, args, task_id=task_id, session_id=session_id,
+        tool_call_id=tool_call_id, turn_id=turn_id,
+        api_request_id=api_request_id, middleware_trace=middleware_trace,
+    )
+    return (details.action, details.message)
 
 
 def get_pre_tool_call_block_message(
@@ -2166,18 +2247,20 @@ def resolve_pre_tool_block(
     times out is fail-closed to a block; ``block`` blocks with its message;
     anything else proceeds.
     """
-    directive, message = get_pre_tool_call_directive(
+    details = _get_pre_tool_call_directive_details(
         tool_name, args, task_id=task_id, session_id=session_id,
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
     )
-    if directive == "block":
-        return message
-    if directive == "approve":
+    if details.action == "block":
+        return details.message
+    if details.action == "approve":
         try:
             from tools.approval import request_tool_approval
             result = request_tool_approval(
-                tool_name, message or "", rule_key=tool_name,
+                tool_name,
+                details.message or "",
+                rule_key=details.rule_key or tool_name,
             )
         except Exception:
             # Fail-closed: if the gate itself errors, block rather than

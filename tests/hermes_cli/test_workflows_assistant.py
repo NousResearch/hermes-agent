@@ -272,6 +272,26 @@ def test_draft_workflow_uses_repair_attempt_after_invalid_json() -> None:
     assert "Previous assistant output failed validation" in calls[1]
 
 
+def test_draft_with_unknown_spec_field_triggers_repair() -> None:
+    """A typo'd field in the LLM draft must fail strict ingestion and route
+    through the repair loop instead of deploying a silently no-op'd spec."""
+    calls: list[str] = []
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        payload = _valid_payload()
+        if len(calls) == 1:
+            node = next(iter(payload["spec"]["nodes"].values()))
+            node["result_contarct"] = {"ok": "boolean"}
+        return json.dumps(payload)
+
+    result = draft_workflow("make a workflow", runner=runner, repair_attempts=1)
+
+    assert len(calls) == 2
+    assert "unknown workflow field" in calls[1]
+    assert result.spec is not None
+
+
 def test_draft_workflow_repair_attempts_zero_fails_after_one_call() -> None:
     calls = 0
 

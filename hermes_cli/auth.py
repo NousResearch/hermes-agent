@@ -701,14 +701,29 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     if detected and detected.get("base_url"):
         # Persist the detection result keyed on the API key hash.
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
-        state["detected_endpoint"] = {
+        detected_endpoint = {
             "base_url": detected["base_url"],
             "endpoint_id": detected.get("id", ""),
             "model": detected.get("model", ""),
             "label": detected.get("label", ""),
             "key_hash": key_hash,
         }
-        _save_provider_state(auth_store, "zai", state)
+        # Persist failure (disk full, permissions, lock timeout) must not
+        # break resolution — detection already succeeded; worst case the
+        # next start re-probes.
+        try:
+            with _auth_store_lock():
+                # Reload auth_store under lock to avoid overwriting concurrent changes
+                auth_store = _load_auth_store()
+                state_under_lock = _load_provider_state(auth_store, "zai") or {}
+                state_under_lock["detected_endpoint"] = detected_endpoint
+                # set_active=False: this runs from credential-pool env seeding
+                # (agent/credential_pool.py) for ANY user with a Z.AI key in env,
+                # and caching a probe result must not flip their active provider.
+                _store_provider_state(auth_store, "zai", state_under_lock, set_active=False)
+                _save_auth_store(auth_store)
+        except Exception as exc:
+            logger.warning("Z.AI: could not persist detected endpoint (%s); will re-probe next start", exc)
         logger.info("Z.AI: auto-detected endpoint %s (%s)", detected["label"], detected["base_url"])
         return detected["base_url"]
 
@@ -1494,6 +1509,33 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
                 continue
             if has_usable_secret(os.getenv(env_var, "")):
                 return True
+
+    # 4. Check persisted credential-pool entries that came from EXPLICIT flows
+    # the user initiated inside Hermes (manual add / device-code / PKCE), plus
+    # env-backed pool entries. This intentionally excludes ambient borrowed
+    # sources like gh_cli / claude_code / qwen-cli.
+    try:
+        for entry in read_credential_pool(normalized):
+            if not isinstance(entry, dict):
+                continue
+            source = str(entry.get("source") or "").strip().lower()
+            if not source:
+                continue
+            if source.startswith("env:"):
+                # A stale env-seeded pool entry survives in auth.json after
+                # the user deletes the env var (#55790) — only count it when
+                # the referenced var still resolves to a usable secret NOW.
+                env_var = entry.get("source", "").split(":", 1)[1].strip()
+                if env_var and has_usable_secret(os.getenv(env_var, "")):
+                    return True
+                continue
+            if (
+                source in {"device_code", "loopback_pkce", "hermes_pkce", "manual"}
+                or source.startswith("manual:")
+            ):
+                return True
+    except Exception:
+        pass
 
     return False
 
@@ -4860,6 +4902,58 @@ def _quarantine_nous_oauth_state(
     reason: str,
 ) -> None:
     """Keep routing metadata but remove dead OAuth material so it is not replayed."""
+    # Forensic logging BEFORE we clear the token material. A NAS-hosted Fly agent
+    # can take a terminal invalid_grant and get quarantined here silently: the
+    # only downstream signal is a "No access token found" WARNING once the pool
+    # is already empty, which is too late to root-cause. The Fly log drain is
+    # WARNING-only, so this MUST be logger.warning (INFO never reaches the drain).
+    #
+    # Redaction safety: emit ONLY the 12-char SHA-256 hex prefix of the refresh
+    # token (correlates to NAS's refreshTokenHash without leaking the secret) plus
+    # sizes/booleans. NEVER pass a raw token/agent_key into the log call — Hermes
+    # has a known bug class where credential-shaped literals get corrupted in logs.
+    forensic: Dict[str, Any] = {
+        "reason": reason,
+        "error_code": error.code,
+        # No session_id field exists on Nous state; provenance is client_id +
+        # agent_key_id (both non-secret routing identifiers).
+        "client_id": state.get("client_id"),
+        "agent_key_id": state.get("agent_key_id"),
+        "refresh_token_fp": _token_fingerprint(state.get("refresh_token")),
+    }
+
+    # On-disk integrity of the auth store at the moment of quarantine.
+    try:
+        auth_path = _auth_file_path()
+        forensic["auth_json_path"] = str(auth_path)
+        try:
+            st = os.stat(auth_path)
+            forensic["auth_json_size"] = st.st_size
+            forensic["auth_json_mtime"] = st.st_mtime
+            forensic["auth_json_exists"] = True
+        except FileNotFoundError:
+            forensic["auth_json_exists"] = False
+    except Exception as exc:  # pragma: no cover - never let logging break quarantine
+        forensic["auth_json_stat_error"] = repr(exc)
+
+    # Was the token already past its own expiry when it was rejected?
+    already_expired: Optional[bool] = None
+    expires_at_raw = state.get("expires_at")
+    if isinstance(expires_at_raw, str) and expires_at_raw:
+        try:
+            parsed = datetime.fromisoformat(expires_at_raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            already_expired = parsed < datetime.now(timezone.utc)
+        except ValueError:
+            already_expired = None
+    forensic["token_already_expired"] = already_expired
+
+    logger.warning(
+        "Nous OAuth state quarantined (terminal auth death): %s",
+        json.dumps(forensic, sort_keys=True, ensure_ascii=False),
+    )
+
     for key in (
         "access_token",
         "refresh_token",
@@ -5914,6 +6008,75 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
             return base_status
 
     return _snapshot_nous_pool_status()
+
+
+# Enum values reported on the dashboard /api/status as ``nous_session_valid``.
+# NAS's health sweep re-mints the bootstrap session ONLY on "terminal"; "valid"
+# and "unknown" are no-ops. Keep this set small and stable — NAS parses it with
+# a permissive schema, so new members are non-breaking but should stay rare.
+NOUS_SESSION_VALID = "valid"
+NOUS_SESSION_TERMINAL = "terminal"
+NOUS_SESSION_UNKNOWN = "unknown"
+
+
+def get_nous_session_validity() -> str:
+    """Classify the Nous bootstrap session for the dashboard /api/status probe.
+
+    Returns one of:
+      - ``"valid"``    — a usable Nous credential is present (login healthy).
+      - ``"terminal"`` — the Nous session has taken a terminal auth failure
+        (invalid_grant / quarantined / relogin required). This is the sole
+        signal NAS acts on to re-mint a hosted-agent bootstrap session.
+      - ``"unknown"``  — indeterminate (no Nous provider state, or a transient/
+        non-terminal error). Never triggers a re-mint.
+
+    Determinable with NO working token — it reads local auth-store state only,
+    which is exactly the condition a dead hosted box is in.
+
+    ANTI-FLAP CONTRACT: only a *terminal* failure maps to "terminal". A normal
+    mid-rotation blip, a transient network error, or a merely-expiring token
+    must NOT report "terminal" (that would trigger a spurious NAS re-mint on a
+    healthy box). We key "terminal" on the auth layer's own terminal signal
+    (`relogin_required`) plus a persisted quarantine marker, never on a bare
+    "not logged in".
+    """
+    # A persisted quarantine marker is the strongest, most stable terminal
+    # signal: the refresh path writes `last_auth_error.relogin_required=True`
+    # into the Nous provider state when it clears dead tokens (the exact path
+    # that produced the incident's "No access token found"). Read it directly
+    # so we report "terminal" even after the in-memory AuthError is long gone.
+    try:
+        state = get_provider_auth_state("nous")
+    except Exception:
+        state = None
+
+    if state:
+        last_err = state.get("last_auth_error")
+        if isinstance(last_err, dict) and last_err.get("relogin_required"):
+            # Only terminal while there is no usable credential left. If a later
+            # successful login repopulated tokens, the stale marker must not
+            # keep reporting terminal.
+            if not (state.get("access_token") or state.get("refresh_token")):
+                return NOUS_SESSION_TERMINAL
+
+    try:
+        status = get_nous_auth_status()
+    except Exception:
+        # Status computation itself failed — indeterminate, not terminal.
+        return NOUS_SESSION_UNKNOWN
+
+    if status.get("logged_in"):
+        return NOUS_SESSION_VALID
+
+    # Not logged in. Distinguish a terminal (relogin-required) failure from a
+    # transient / indeterminate one. Only the former is actionable by NAS.
+    if status.get("relogin_required"):
+        return NOUS_SESSION_TERMINAL
+
+    # No Nous provider state at all, or a non-terminal not-logged-in condition
+    # (e.g. a transient refresh error that did not set relogin_required). Treat
+    # as unknown so a healthy box mid-blip never triggers a re-mint.
+    return NOUS_SESSION_UNKNOWN
 
 
 def get_codex_auth_status() -> Dict[str, Any]:

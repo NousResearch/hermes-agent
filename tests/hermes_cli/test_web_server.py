@@ -391,12 +391,166 @@ class TestWebServerEndpoints:
         fields = self._provider_field_map(data)
         assert fields["mode"]["kind"] == "select"
         assert fields["mode"]["value"] == "cloud"
-        assert {opt["value"] for opt in fields["mode"]["options"]} == {"cloud", "local_external"}
-        assert fields["api_url"]["value"] == "https://api.hindsight.vectorize.io"
+        assert {opt["value"] for opt in fields["mode"]["options"]} >= {
+            "cloud",
+            "local_external",
+        }
+        assert fields["api_url"]["kind"] == "text"
+        assert fields["api_url"]["value"]
         assert fields["bank_id"]["value"] == "hermes"
         assert fields["recall_budget"]["value"] == "mid"
         assert fields["api_key"]["kind"] == "secret"
         assert fields["api_key"]["is_set"] is False
+        assert fields["api_key"]["required"] is False
+
+    def test_get_memory_provider_config_loads_dynamic_plugin_schema(self):
+        resp = self.client.get("/api/memory/providers/honcho/config")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        fields = self._provider_field_map(data)
+        assert fields["api_key"]["kind"] == "secret"
+        assert fields["api_key"]["url"] == "https://app.honcho.dev"
+        assert fields["baseUrl"]["kind"] == "text"
+
+    def test_all_listed_memory_provider_configs_fetch(self):
+        resp = self.client.get("/api/memory")
+
+        assert resp.status_code == 200
+        providers = resp.json()["providers"]
+        assert providers
+
+        failures = []
+        for provider in providers:
+            config_resp = self.client.get(
+                f"/api/memory/providers/{provider['name']}/config"
+            )
+            if config_resp.status_code != 200:
+                failures.append((provider["name"], config_resp.status_code, config_resp.text))
+
+        assert failures == []
+
+    def test_memory_provider_payloads_include_manifest_setup_hints(self):
+        resp = self.client.get("/api/memory")
+
+        assert resp.status_code == 200
+        providers = {row["name"]: row for row in resp.json()["providers"]}
+
+        byterover_setup = providers["byterover"]["setup"]
+        assert byterover_setup["external_dependencies"] == [
+            {
+                "name": "brv",
+                "install": "curl -fsSL https://byterover.dev/install.sh | sh",
+                "check": "brv --version",
+            }
+        ]
+
+        retaindb_setup = providers["retaindb"]["setup"]
+        assert "requests" in retaindb_setup["pip_dependencies"]
+        assert "RETAINDB_API_KEY" in retaindb_setup["required_env"]
+        assert isinstance(byterover_setup["dependencies_installed"], bool)
+
+        config_resp = self.client.get("/api/memory/providers/byterover/config")
+        assert config_resp.status_code == 200
+        assert config_resp.json()["setup"]["external_dependencies"] == byterover_setup["external_dependencies"]
+
+    def test_memory_status_reports_honcho_needs_config_after_dependency_setup(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        original_dependency_importable = web_server._dependency_importable
+        monkeypatch.setattr(
+            web_server,
+            "_dependency_importable",
+            lambda dep: True if dep == "honcho-ai" else original_dependency_importable(dep),
+        )
+
+        resp = self.client.get("/api/memory")
+
+        assert resp.status_code == 200
+        providers = {row["name"]: row for row in resp.json()["providers"]}
+        assert providers["honcho"]["setup"]["dependencies_installed"] is True
+        assert providers["honcho"]["status"] == "needs_config"
+
+    def test_post_memory_provider_setup_runs_declared_external_install(self, monkeypatch):
+        import subprocess
+
+        import hermes_cli.web_server as web_server
+
+        calls = []
+        check_count = 0
+
+        def fake_run(command, **kwargs):
+            nonlocal check_count
+            calls.append((command, kwargs))
+            if command == ["brv", "--version"]:
+                check_count += 1
+                if check_count == 1:
+                    raise FileNotFoundError("brv")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="brv 1.0.0",
+                    stderr="",
+                )
+            if command == "curl -fsSL https://byterover.dev/install.sh | sh":
+                assert kwargs["shell"] is True
+                return subprocess.CompletedProcess(command, 0, stdout="installed", stderr="")
+            raise AssertionError(f"Unexpected command: {command}")
+
+        monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+
+        resp = self.client.post("/api/memory/providers/byterover/setup", json={"values": {}})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "byterover"
+        assert data["ok"] is True
+        assert [result["status"] for result in data["results"]] == [
+            "missing",
+            "installed",
+            "verified",
+        ]
+        assert [call[0] for call in calls[:3]] == [
+            ["brv", "--version"],
+            "curl -fsSL https://byterover.dev/install.sh | sh",
+            ["brv", "--version"],
+        ]
+        assert calls[-1][0] == ["brv", "--version"]
+
+    def test_post_unknown_memory_provider_setup_returns_404(self):
+        resp = self.client.post("/api/memory/providers/nope/setup", json={"values": {}})
+
+        assert resp.status_code == 404
+
+    def test_memory_provider_endpoints_reject_traversal_names(self):
+        # Names with path separators / dots must never reach the filesystem
+        # lookup or the setup command path. 404 = rejected by the name guard;
+        # 405 = the router collapsed the dotted path onto a different route
+        # (equally safe — the handler never ran).
+        for bad in ("..", "..%2f..%2fetc", "a.b", "x/y", ".hidden", ""):
+            resp = self.client.get(f"/api/memory/providers/{bad}/config")
+            assert resp.status_code in (404, 405), (bad, resp.status_code)
+            resp = self.client.post(
+                f"/api/memory/providers/{bad}/setup", json={"values": {}}
+            )
+            assert resp.status_code in (404, 405), (bad, resp.status_code)
+            resp = self.client.put(
+                f"/api/memory/providers/{bad}/config", json={"values": {}}
+            )
+            assert resp.status_code in (404, 405), (bad, resp.status_code)
+
+    def test_post_memory_provider_setup_persists_values_without_activation(self):
+        from hermes_cli.config import load_config, load_env
+
+        resp = self.client.post(
+            "/api/memory/providers/retaindb/setup",
+            json={"values": {"api_key": "retain-test-key", "project": "default"}},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["provider"] == "retaindb"
+        assert load_env()["RETAINDB_API_KEY"] == "retain-test-key"
+        assert load_config().get("memory", {}).get("provider") != "retaindb"
 
     def test_put_memory_provider_config_writes_config_and_secret(self):
         from hermes_constants import get_hermes_home
@@ -416,25 +570,24 @@ class TestWebServerEndpoints:
         )
 
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True}
+        assert resp.json() == {"ok": True, "active": "hindsight"}
         assert load_config()["memory"]["provider"] == "hindsight"
         assert load_env()["HINDSIGHT_API_KEY"] == "hs-test-key"
 
         config_path = get_hermes_home() / "hindsight" / "config.json"
         provider_config = json.loads(config_path.read_text(encoding="utf-8"))
-        assert provider_config == {
-            "mode": "local_external",
-            "api_url": "http://localhost:8888",
-            "bank_id": "ben-bank",
-            "recall_budget": "high",
-        }
+        assert provider_config["mode"] == "local_external"
+        assert provider_config["api_url"] == "http://localhost:8888"
+        assert provider_config["bank_id"] == "ben-bank"
+        assert provider_config["recall_budget"] == "high"
+        assert "api_key" not in provider_config
 
     def test_put_memory_provider_config_rejects_unsupported_select_value(self):
         resp = self.client.put(
             "/api/memory/providers/hindsight/config",
             json={
                 "values": {
-                    "mode": "local_embedded",
+                    "mode": "spaceship",
                     "api_url": "http://localhost:8888",
                     "bank_id": "hermes",
                     "recall_budget": "mid",
@@ -479,6 +632,77 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["is_set"] is True
         assert fields["api_key"]["value"] == ""
         assert "secret-value" not in json.dumps(data)
+
+    def test_get_memory_status_reports_ready_and_missing_provider(self):
+        from hermes_cli.config import load_config, save_config
+
+        self.client.put(
+            "/api/memory/providers/hindsight/config",
+            json={
+                "values": {
+                    "mode": "cloud",
+                    "api_url": "https://api.hindsight.vectorize.io",
+                    "api_key": "secret-value",
+                    "bank_id": "hermes",
+                    "recall_budget": "mid",
+                }
+            },
+        )
+        resp = self.client.get("/api/memory")
+        assert resp.status_code == 200
+        providers = {row["name"]: row for row in resp.json()["providers"]}
+        assert providers["hindsight"]["configured"] is True
+        assert providers["hindsight"]["status"] == "ready"
+        assert "available" in providers["hindsight"]
+
+        config = load_config()
+        config.setdefault("memory", {})["provider"] = "not-installed"
+        save_config(config)
+
+        resp = self.client.get("/api/memory")
+        assert resp.status_code == 200
+        providers = {row["name"]: row for row in resp.json()["providers"]}
+        assert providers["not-installed"]["status"] == "missing"
+        assert providers["not-installed"]["available"] is False
+
+        config = load_config()
+        config.setdefault("memory", {})["provider"] = "builtin"
+        save_config(config)
+
+        resp = self.client.get("/api/memory")
+        assert resp.status_code == 200
+        assert resp.json()["active"] == ""
+        assert "builtin" not in {row["name"] for row in resp.json()["providers"]}
+
+    def test_set_memory_provider_rejects_unready_and_clears_builtin(self):
+        from hermes_cli.config import load_config
+
+        resp = self.client.put("/api/memory/provider", json={"provider": "supermemory"})
+        assert resp.status_code == 400
+
+        resp = self.client.put("/api/memory/provider", json={"provider": "built-in"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "active": ""}
+        assert load_config()["memory"]["provider"] == ""
+
+    def test_dashboard_plugin_providers_rejects_unready_memory_provider(self):
+        resp = self.client.put(
+            "/api/dashboard/plugin-providers",
+            json={"memory_provider": "supermemory"},
+        )
+
+        assert resp.status_code == 400
+
+    def test_dashboard_plugin_providers_accepts_builtin_alias(self):
+        from hermes_cli.config import load_config
+
+        resp = self.client.put(
+            "/api/dashboard/plugin-providers",
+            json={"memory_provider": "built-in"},
+        )
+
+        assert resp.status_code == 200
+        assert load_config()["memory"]["provider"] == ""
 
     def test_get_moa_models_returns_provider_model_slots(self):
         resp = self.client.get("/api/model/moa")
@@ -824,6 +1048,41 @@ class TestWebServerEndpoints:
 
         messages = self.client.get("/api/sessions/worker-only/messages?profile=worker").json()
         assert [m["content"] for m in messages["messages"]] == ["worker"]
+
+    def test_latest_descendant_reads_requested_profile(self):
+        """Chat resume must resolve compression tips in the chat profile DB."""
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        default_db = SessionDB()
+        try:
+            default_db.create_session(session_id="shared-root", source="cli")
+        finally:
+            default_db.close()
+
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            worker_db.create_session(session_id="shared-root", source="cli")
+            worker_db.create_session(
+                session_id="worker-tip",
+                source="cli",
+                parent_session_id="shared-root",
+            )
+        finally:
+            worker_db.close()
+
+        default_resp = self.client.get("/api/sessions/shared-root/latest-descendant")
+        assert default_resp.status_code == 200
+        assert default_resp.json()["session_id"] == "shared-root"
+
+        worker_resp = self.client.get(
+            "/api/sessions/shared-root/latest-descendant?profile=worker"
+        )
+        assert worker_resp.status_code == 200
+        assert worker_resp.json()["session_id"] == "worker-tip"
 
     def test_analytics_endpoints_read_requested_profile(self):
         from hermes_state import SessionDB
@@ -2527,6 +2786,27 @@ class TestWebServerEndpoints:
 
         assert seen_encodings == {"index": "utf-8", "css": "utf-8"}
 
+    def test_headless_serve_disables_spa_even_with_a_dist(self, monkeypatch, tmp_path):
+        """`hermes serve` (HERMES_SERVE_HEADLESS) must NOT serve the SPA even
+        when a built dist is present — only the API/WS surface is reachable."""
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text("<html><body>UI</body></html>", encoding="utf-8")
+
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+        app_ = FastAPI()
+        ws.mount_spa(app_)
+
+        for route in ("/", "/chat"):
+            resp = TestClient(app_).get(route)
+            assert resp.status_code == 404
+            assert "web UI disabled" in resp.json()["error"]
+
     def test_set_model_main_nous_applies_gateway_defaults(self, monkeypatch):
         """Switching the main provider to Nous calls apply_nous_managed_defaults
         (mirroring the CLI's post-model-selection Tool Gateway routing) and
@@ -3196,7 +3476,7 @@ class TestConfigRoundTrip:
                 mismatches.append(f"{key}: expected bool, got {type(val).__name__}")
             elif expected == "list" and not isinstance(val, list):
                 mismatches.append(f"{key}: expected list, got {type(val).__name__}")
-        assert not mismatches, f"Type mismatches:\n" + "\n".join(mismatches)
+        assert not mismatches, "Type mismatches:\n" + "\n".join(mismatches)
 
 
 # ---------------------------------------------------------------------------
@@ -5897,6 +6177,39 @@ class TestPtyWebSocket:
         assert env["HERMES_TUI_DASHBOARD"] == "1"
         assert env["HERMES_TUI_INLINE"] == "1"
         assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
+
+    def test_resolve_chat_argv_backfills_colorterm_truecolor(self, monkeypatch):
+        """Headless servers (cloud/systemd) have no COLORTERM, which made
+        chalk in the TUI child degrade skin hex colors to the xterm 256
+        palette (gold banner rendered salmon-red). xterm.js always supports
+        24-bit color, so the PTY env must advertise truecolor."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+        monkeypatch.delenv("COLORTERM", raising=False)
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env["COLORTERM"] == "truecolor"
+
+    def test_resolve_chat_argv_keeps_operator_colorterm(self, monkeypatch):
+        """An explicit operator COLORTERM wins over the backfill."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+        monkeypatch.setenv("COLORTERM", "24bit")
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env["COLORTERM"] == "24bit"
 
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 from collections.abc import Mapping
 from typing import Any, Literal
 
+from croniter import croniter
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _NODE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -31,7 +33,9 @@ class TriggerSpec(BaseModel):
     id: str | None = None
     cron: str | None = None
     schedule: str | None = None
+    expr: str | None = None
     input: dict[str, Any] = Field(default_factory=dict)
+    description: str | None = None
 
 
 class RetrySpec(BaseModel):
@@ -90,6 +94,7 @@ class NodeSpec(BaseModel):
     catch: str | None = None
     workspace: WorkspaceSpec | None = None
     seconds: int = Field(default=0, ge=0)
+    description: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -147,6 +152,7 @@ class WorkflowSpec(BaseModel):
     triggers: list[TriggerSpec] = Field(default_factory=list)
     nodes: dict[str, NodeSpec] = Field(default_factory=dict)
     edges: list[EdgeSpec] = Field(default_factory=list)
+    description: str | None = None
 
     @field_validator("nodes", mode="before")
     @classmethod
@@ -156,6 +162,100 @@ class WorkflowSpec(BaseModel):
                 if not isinstance(node_id, str) or not _NODE_ID_RE.fullmatch(node_id):
                     raise ValueError(f"invalid node id: {node_id!r}")
         return nodes
+
+
+def _model_field_names(model_cls: type[BaseModel]) -> set[str]:
+    names: set[str] = set()
+    for name, field in model_cls.model_fields.items():
+        names.add(name)
+        if field.alias:
+            names.add(field.alias)
+        alias = field.validation_alias
+        if isinstance(alias, str):
+            names.add(alias)
+        elif isinstance(alias, AliasChoices):
+            names.update(str(choice) for choice in alias.choices)
+    return names
+
+
+_WORKFLOW_FIELDS = _model_field_names(WorkflowSpec)
+_TRIGGER_FIELDS = _model_field_names(TriggerSpec)
+_NODE_FIELDS = _model_field_names(NodeSpec)
+_EDGE_FIELDS = _model_field_names(EdgeSpec)
+_RETRY_FIELDS = _model_field_names(RetrySpec)
+_WORKSPACE_FIELDS = _model_field_names(WorkspaceSpec)
+
+
+def _collect_unknown_keys(
+    raw: Mapping,
+    allowed: set[str],
+    where: str,
+    errors: list[str],
+) -> None:
+    for key in raw:
+        key_text = str(key)
+        if key_text in allowed:
+            continue
+        matches = difflib.get_close_matches(key_text, sorted(allowed), n=1)
+        hint = f"; did you mean {matches[0]!r}?" if matches else ""
+        errors.append(f"unknown field {key_text!r} {where}{hint}")
+
+
+def unknown_spec_field_errors(raw: Any) -> list[str]:
+    """Return errors for unrecognized keys anywhere in a raw workflow object.
+
+    The Pydantic models keep ``extra="allow"`` so previously-stored specs
+    always load; strictness is enforced here, at ingestion time only
+    (validate/deploy/draft), so a typo like ``result_contarct`` fails loudly
+    instead of silently no-opping the user's intent.
+    """
+    errors: list[str] = []
+    if not isinstance(raw, Mapping):
+        return errors
+    _collect_unknown_keys(raw, _WORKFLOW_FIELDS, "on workflow", errors)
+
+    triggers = raw.get("triggers")
+    if isinstance(triggers, list):
+        for index, trigger in enumerate(triggers):
+            if isinstance(trigger, Mapping):
+                _collect_unknown_keys(trigger, _TRIGGER_FIELDS, f"on trigger [{index}]", errors)
+
+    nodes = raw.get("nodes")
+    if isinstance(nodes, Mapping):
+        for node_id, node in nodes.items():
+            if not isinstance(node, Mapping):
+                continue
+            _collect_unknown_keys(node, _NODE_FIELDS, f"on node {node_id!r}", errors)
+            retry = node.get("retry")
+            if isinstance(retry, Mapping):
+                _collect_unknown_keys(retry, _RETRY_FIELDS, f"on node {node_id!r} retry", errors)
+            workspace = node.get("workspace")
+            if isinstance(workspace, Mapping):
+                _collect_unknown_keys(workspace, _WORKSPACE_FIELDS, f"on node {node_id!r} workspace", errors)
+
+    edges = raw.get("edges")
+    if isinstance(edges, list):
+        for index, edge in enumerate(edges):
+            if isinstance(edge, Mapping):
+                _collect_unknown_keys(edge, _EDGE_FIELDS, f"on edge [{index}]", errors)
+    return errors
+
+
+def reject_unknown_spec_fields(raw: Any) -> None:
+    """Raise ValueError when a raw workflow object contains unknown fields."""
+    errors = unknown_spec_field_errors(raw)
+    if errors:
+        raise ValueError("; ".join(errors))
+
+
+def load_spec_from_object(raw: Any) -> "WorkflowSpec":
+    """Strictly parse and validate a raw workflow object (shared ingestion path)."""
+    if not isinstance(raw, Mapping):
+        raise ValueError("workflow spec must be an object")
+    reject_unknown_spec_fields(raw)
+    spec = WorkflowSpec.model_validate(raw)
+    validate_graph(spec)
+    return spec
 
 
 def _blank_prompt(value: Any) -> bool:
@@ -209,9 +309,17 @@ def _cycle_path(spec: WorkflowSpec) -> list[str] | None:
 
 def validate_graph(spec: WorkflowSpec) -> None:
     for trigger in spec.triggers:
-        expr = trigger.cron or trigger.schedule or getattr(trigger, "expr", None)
-        if trigger.type == "schedule" and not expr:
-            raise ValueError("schedule trigger requires cron or schedule")
+        expr = trigger.cron or trigger.schedule or trigger.expr
+        if trigger.type == "schedule":
+            if not expr:
+                raise ValueError("schedule trigger requires cron or schedule")
+            trigger_label = trigger.id or "schedule"
+            try:
+                croniter(expr, 0)
+            except ValueError as exc:
+                raise ValueError(
+                    f"invalid cron expression on trigger {trigger_label!r}: {expr!r} ({exc})"
+                ) from exc
 
     if not spec.nodes:
         raise ValueError("workflow must define at least one node")

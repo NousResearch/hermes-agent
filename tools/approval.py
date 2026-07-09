@@ -463,6 +463,53 @@ def detect_hardline_command(command: str) -> tuple:
     return (False, None)
 
 
+def _match_user_deny_rule(command: str) -> str | None:
+    """Return the matching ``approvals.deny`` glob, or None.
+
+    ``approvals.deny`` in config.yaml is a user-defined list of fnmatch
+    globs that block a command unconditionally — like the hardline floor,
+    a deny match fires BEFORE the yolo / mode=off bypass. It is the
+    user-editable counterpart to the code-shipped hardline blocklist:
+    "never let the agent run this, even under yolo".
+
+    Matching is case-insensitive and runs over the same normalized /
+    deobfuscated command variants the dangerous-pattern detector uses, so
+    quoting tricks (``r\\m``, ``git st""atus``) can't sidestep a rule any
+    more easily than they sidestep detection. Empty/absent list = no-op.
+    """
+    try:
+        deny_patterns = _get_approval_config().get("deny") or []
+    except Exception:
+        return None
+    if not deny_patterns:
+        return None
+    globs = [p.strip() for p in deny_patterns
+             if isinstance(p, str) and p.strip()]
+    if not globs:
+        return None
+    for command_variant in _command_detection_variants(command):
+        candidate = command_variant.lower().strip()
+        for pattern in globs:
+            if fnmatch.fnmatchcase(candidate, pattern.lower()):
+                return pattern
+    return None
+
+
+def _user_deny_block_result(pattern: str) -> dict:
+    """Build the standard block result for an ``approvals.deny`` match."""
+    return {
+        "approved": False,
+        "user_deny": True,
+        "message": (
+            f"BLOCKED: this command matches the user-defined deny rule "
+            f"'{pattern}' (approvals.deny in config.yaml). It cannot be "
+            "executed via the agent — not even with --yolo, /yolo, or "
+            "approvals.mode=off. Do NOT retry or rephrase this command; "
+            "the user has explicitly forbidden it."
+        ),
+    }
+
+
 def _hardline_block_result(description: str) -> dict:
     """Build the standard block result for a hardline match."""
     return {
@@ -2059,6 +2106,72 @@ def _run_approval_gate(
         return {"approved": True, "message": None}
 
     if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
+        # Interactive gateway round-trip when a notify callback is
+        # registered for this session (Discord/Telegram/Slack embed +
+        # buttons, same mechanism as check_dangerous_command). Blocks the
+        # agent thread until the user answers; the agent never sees
+        # "approval_required" on this path — it gets a definitive
+        # approved/BLOCKED outcome.
+        notify_cb = None
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key)
+
+        if notify_cb is not None:
+            from agent.redact import redact_sensitive_text
+            approval_data = {
+                "command": redact_sensitive_text(display_target),
+                "pattern_key": pattern_key,
+                "pattern_keys": [pattern_key],
+                "description": redact_sensitive_text(description),
+                "allow_permanent": True,
+            }
+            decision = _await_gateway_decision(
+                session_key, notify_cb, approval_data, surface="gateway"
+            )
+            if decision.get("notify_failed"):
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "pattern_key": pattern_key,
+                    "description": description,
+                }
+            resolved = decision["resolved"]
+            choice = decision["choice"]
+            deny_reason = decision.get("reason")
+
+            if not resolved or choice is None or choice == "deny":
+                if not resolved:
+                    reason = "timed out without user response"
+                    timeout_addendum = " Silence is not consent."
+                else:
+                    reason = "denied by user"
+                    timeout_addendum = ""
+                reason_addendum = ""
+                if resolved and deny_reason:
+                    reason_addendum = f' Reason given by the user: "{deny_reason}".'
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Action {reason}.{reason_addendum} The user "
+                        f"has NOT consented to this action. Do NOT retry it, "
+                        f"do NOT rephrase it, and do NOT attempt the same "
+                        f"outcome via a different path.{timeout_addendum}"
+                    ),
+                    "pattern_key": pattern_key,
+                    "description": description,
+                    "user_consent": False,
+                }
+
+            if choice == "session":
+                approve_session(session_key, pattern_key)
+            elif choice == "always":
+                approve_session(session_key, pattern_key)
+                approve_permanent(pattern_key)
+                save_permanent_allowlist(_permanent_approved)
+            return {"approved": True, "message": None}
+
+        # No notify callback (e.g. API server without an attached chat):
+        # queue for /approve /deny review, agent sees approval_required.
         submit_pending(session_key, {
             "command": display_target,
             "pattern_key": pattern_key,
@@ -2145,6 +2258,15 @@ def check_dangerous_command(command: str, env_type: str,
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
+
+    # User-defined deny rules (approvals.deny in config.yaml): like the
+    # hardline floor, these fire BEFORE the yolo bypass — a deny rule is the
+    # user saying "never, even under yolo".
+    deny_pattern = _match_user_deny_rule(command)
+    if deny_pattern is not None:
+        logger.warning("User deny rule %r blocked command: %s",
+                       deny_pattern, command[:200])
+        return _user_deny_block_result(deny_pattern)
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
@@ -2450,6 +2572,15 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    # User-defined deny rules (approvals.deny in config.yaml): like the
+    # hardline floor, these fire BEFORE the yolo / mode=off bypass — a deny
+    # rule is the user saying "never, even under yolo".
+    deny_pattern = _match_user_deny_rule(command)
+    if deny_pattern is not None:
+        logger.warning("User deny rule %r blocked command: %s",
+                       deny_pattern, command[:200])
+        return _user_deny_block_result(deny_pattern)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

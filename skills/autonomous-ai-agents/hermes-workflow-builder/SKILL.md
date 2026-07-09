@@ -90,7 +90,7 @@ Only write YAML by hand for advanced/manual requests or when draft/refine toolin
 If manual authoring is needed:
 
 1. Draft a compact cell table.
-2. Write YAML under `.hermes/workflows/<workflow-id>.yaml` unless the user specifies another path.
+2. Write YAML under `.hermes/workflows/<workflow-id>.yaml` unless the user specifies another path (a convention for tidy repos only — validate/deploy accept any path).
 3. Validate and fix until green:
 
 ```bash
@@ -108,9 +108,14 @@ hermes workflow show <workflow-id> --json
 
 ```bash
 hermes workflow run <workflow-id> --input /path/to/input.json --json
-hermes workflow tick --limit 10 --json
 hermes workflow executions show <execution-id> --json
+hermes workflow executions node-runs <execution-id> --json
 ```
+
+`run` advances one dispatcher tick inline; a running gateway advances the
+rest (`workflow.dispatch_in_gateway` defaults to true). If the execution
+stays `queued`/`waiting` with no gateway, advance it manually with
+`hermes workflow tick --limit 10 --json` and check `hermes workflow status`.
 
 ## Common pitfalls
 

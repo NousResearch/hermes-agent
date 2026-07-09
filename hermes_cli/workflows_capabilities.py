@@ -69,6 +69,14 @@ def implemented_primitive_errors(spec: Any) -> list[str]:
         node_type = getattr(node, "type", None)
         if node_type not in IMPLEMENTED_NODE_TYPES:
             errors.append(f"unsupported node type: {node_type} on node {node_id}")
+        # `workspace` (cwd/env) is declared for forward compatibility but no
+        # runtime consumes it yet — reject it so user intent never silently
+        # no-ops. The implemented per-node knobs are workspace_kind/workspace_path.
+        if getattr(node, "workspace", None) is not None:
+            errors.append(
+                f"unsupported node field: workspace on node {node_id} "
+                "(not implemented; use workspace_kind/workspace_path)"
+            )
     return errors
 
 

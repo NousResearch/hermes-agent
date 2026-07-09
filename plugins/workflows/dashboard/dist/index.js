@@ -539,7 +539,7 @@
     if (payload.status) return payload.status;
     if (kind.indexOf("node_succeeded") !== -1) return "succeeded";
     if (kind.indexOf("node_failed") !== -1) return "failed";
-    if (kind.indexOf("node_started") !== -1 || kind.indexOf("node_running") !== -1) return "running";
+    if (kind.indexOf("execution_blocked") !== -1) return "blocked";
     if (kind.indexOf("execution_waiting") !== -1) return "waiting";
     return "";
   }
@@ -1352,6 +1352,21 @@
       return function () { clearTimeout(timer); };
     }, [error, status]);
 
+    useEffect(function () {
+      // Live-refresh a non-terminal execution so waits, retries, and agent
+      // task completions surface without a manual reload.
+      const executionId = selectedExecution && selectedExecution.execution_id;
+      const executionStatus = selectedExecution && selectedExecution.status;
+      if (!executionId || (executionStatus !== "queued" && executionStatus !== "waiting")) return undefined;
+      const timer = setInterval(function () {
+        loadExecution(executionId).catch(function () {});
+        api("/executions").then(function (res) {
+          setExecutions(asArray(res.executions));
+        }).catch(function () {});
+      }, 5000);
+      return function () { clearInterval(timer); };
+    }, [selectedExecution && selectedExecution.execution_id, selectedExecution && selectedExecution.status]);
+
     function validateDefinition() {
       setValidating(true);
       setError("");
@@ -1911,8 +1926,26 @@
       );
     }
 
+    function renderExecutionStallWarning() {
+      // Unmissable at the moment it matters: a queued/waiting execution with
+      // no active ticker will never advance — say so on the execution itself,
+      // not only in the Dispatcher tab.
+      if (!selectedExecution) return null;
+      const executionStatus = safeString(selectedExecution.status);
+      if (executionStatus !== "queued" && executionStatus !== "waiting") return null;
+      const dispatcher = workflowStatus && workflowStatus.dispatcher ? workflowStatus.dispatcher : null;
+      if (!dispatcher || dispatcher.dispatch_in_gateway === true) return null;
+      const warning = dispatcher.warning || "Set workflow.dispatch_in_gateway: true to let the gateway advance runs; fallback: hermes workflow tick.";
+      return h("div", { className: "hermes-workflows-panel hermes-workflows-dispatcher-readiness is-warning" },
+        h("strong", null, "This execution will not advance automatically."),
+        h("p", null, safeString(warning))
+      );
+    }
+
     function renderTimeline() {
       return h("div", { className: "hermes-workflows-timeline" },
+        h("p", { className: "hermes-workflows-privacy-note" }, PRIVACY_NOTE),
+        renderExecutionStallWarning(),
         selectedExecution ? h("div", { className: "hermes-workflows-event" },
           h("div", { className: "hermes-workflows-item-title" },
             h("strong", null, safeString(selectedExecution.execution_id)),

@@ -16,6 +16,7 @@ import {
   buildPollPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
+  appendMediaFailureNote,
   extractBridgeEvent,
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
@@ -322,6 +323,64 @@ import {
     ],
   );
   console.log('  ✓ encrypted poll upserts are wrapped into Baileys aggregation shape');
+}
+
+// -- media download failure containment (port of nanoclaw#2895) -----------
+{
+  assert.equal(appendMediaFailureNote('hello', []), 'hello');
+  assert.equal(
+    appendMediaFailureNote('check this out', ['image']),
+    'check this out\n[image could not be downloaded]',
+  );
+  // Regression guard: an uncaptioned failed image must still produce a
+  // non-empty body, or the empty-message guard drops the whole message.
+  assert.equal(appendMediaFailureNote('', ['image']), '[image could not be downloaded]');
+  assert.equal(
+    appendMediaFailureNote('', ['image', 'document']),
+    '[image could not be downloaded] [document could not be downloaded]',
+  );
+  console.log('  ✓ appendMediaFailureNote formats failure notes');
+}
+
+{
+  // A throwing downloadMedia (expired CDN URL) must not reject out of
+  // extractBridgeEvent — before this guard the whole upsert batch died and
+  // the message was silently dropped.
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'img-fail-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 123,
+      message: { imageMessage: { caption: '', mimetype: 'image/jpeg' } },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15551234567@s.whatsapp.net',
+    senderNumber: '15551234567',
+    downloadMedia: async () => { throw new Error('Failed to fetch stream from https://mmg.whatsapp.net/x'); },
+    cacheDirs: { image: mkdtempSync(path.join(tmpdir(), 'wa-media-')) },
+  });
+  assert.equal(event.hasMedia, true);
+  assert.equal(event.mediaUrls.length, 0);
+  assert.equal(event.body, '[image could not be downloaded]');
+  console.log('  ✓ failed media download is contained and surfaced in body');
+}
+
+{
+  // Captioned message keeps the caption and appends the failure note.
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'doc-fail-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 123,
+      message: { documentMessage: { caption: 'see attached', fileName: 'q.pdf', mimetype: 'application/pdf' } },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15551234567@s.whatsapp.net',
+    senderNumber: '15551234567',
+    downloadMedia: async () => { throw new Error('boom'); },
+    cacheDirs: { document: mkdtempSync(path.join(tmpdir(), 'wa-media-')) },
+  });
+  assert.equal(event.body, 'see attached\n[document could not be downloaded]');
+  assert.equal(event.mediaUrls.length, 0);
+  console.log('  ✓ captioned failed download keeps caption and appends note');
 }
 
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

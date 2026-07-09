@@ -8,6 +8,7 @@ __pycache__/
 .venv
 .vscode/
 .env
+.op.env
 .env.local
 .env.development.local
 .env.test.local
@@ -64,7 +65,10 @@ ignored/
 environments/benchmarks/evals/
 
 # Web UI build output
-hermes_cli/web_dist/
+hermes_cli/web_dist/fonts/
+hermes_cli/web_dist/fonts-terminal/
+hermes_cli/web_dist/assets/Mondwest-*
+hermes_cli/web_dist/assets/Rules*
 apps/desktop/build/
 apps/desktop/dist/
 apps/desktop/release/

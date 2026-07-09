@@ -56,6 +56,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
+| `hermes workflow` | Workflow graph definitions, validation, deployment, and executions. |
 | `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
@@ -117,7 +118,7 @@ Common options:
 | `--pass-session-id` | Pass the session ID into the system prompt. |
 | `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and use built-in defaults. Credentials in `.env` are still loaded. Useful for isolated CI runs, reproducible bug reports, and third-party integrations. |
 | `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, persistent memory, and preloaded skills. Combine with `--ignore-user-config` for a fully isolated run. |
-| `--safe-mode` | Troubleshooting mode: disable ALL customizations — user config, rules/memory injection, plugins, and MCP servers (implies `--ignore-user-config` and `--ignore-rules`). Use to isolate whether a problem comes from your setup or from Hermes itself. |
+| `--safe-mode` | Troubleshooting mode: disable ALL customizations — user config, rules/memory injection, plugins, shell hooks, and MCP servers (implies `--ignore-user-config` and `--ignore-rules`). Use to isolate whether a problem comes from your setup or from Hermes itself. |
 | `--source <tag>` | Session source tag for filtering (default: `cli`). Use `tool` for third-party integrations that should not appear in user session lists. |
 | `--max-turns <N>` | Maximum tool-calling iterations per conversation turn (default: 90, or `agent.max_turns` in config). |
 
@@ -617,6 +618,41 @@ Board resolution order (highest precedence first): `--board <slug>` flag → `HE
 All actions are also available as a slash command in the gateway (`/kanban …`), with the same argument surface — including `boards` subcommands and the `--board` flag.
 
 For the full design — comparison with Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise, eight collaboration patterns, four user stories, concurrency correctness proof — see `docs/hermes-kanban-v1-spec.pdf` in the repository or the [Kanban user guide](/user-guide/features/kanban).
+
+## `hermes workflow`
+
+```bash
+hermes workflow <action> [options]
+```
+
+Named, versioned workflow graphs with branching, waits, fan-out, and Kanban-backed `agent_task` steps. Definitions are stored in `~/.hermes/workflows.db` after deploy. The command is singular today (`workflow`, not `workflows`).
+
+| Action | Purpose |
+|--------|---------|
+| `init` | Create `workflows.db` if missing. Idempotent. |
+| `validate <file.yaml>` | Validate a workflow YAML/JSON file without deploying. |
+| `deploy <file.yaml>` | Validate and deploy a workflow definition. `--json` for machine output. |
+| `list` | List deployed workflow definitions. `--json` for machine output. |
+| `show <workflow_id>` | Show the latest deployed definition for a workflow id. `--json` includes the full spec. |
+| `run <workflow_id>` | Start a manual execution. `--input <input.json>` supplies a JSON object (defaults to `{}`). `--json` prints the new execution id and status. |
+| `executions list` | List workflow executions. `--workflow <workflow_id>` filters to one definition. `--json` for machine output. |
+| `executions show <execution_id>` | Show one execution's status, input, and context. `--json` for machine output. |
+| `executions cancel <execution_id>` | Cancel a non-terminal execution and block any linked Kanban agent tasks. |
+| `tick` | Advance queued workflow executions locally. `--limit N` (default `10`). `--json` prints `{"processed": N}`. |
+
+Examples:
+
+```bash
+hermes workflow validate examples/workflows/research-triage.yaml
+hermes workflow deploy examples/workflows/research-triage.yaml
+hermes workflow run research-triage --input ./input.json --json
+hermes workflow tick --limit 10
+hermes workflow executions show wfexec_abc123 --json
+```
+
+**Dispatcher note:** `workflow.dispatch_in_gateway` defaults to `false`. Until you opt in (`hermes config set workflow.dispatch_in_gateway true` and restart the gateway), scheduled triggers, waits, and completed `agent_task` nodes only advance when something calls `hermes workflow tick` (the dashboard run button triggers one tick best-effort).
+
+For the schema, condition DSL, template rules, dashboard builder, and Kanban integration details, see the [Workflows user guide](/user-guide/features/workflows).
 
 ## `hermes project`
 
@@ -1289,7 +1325,7 @@ Provider plugin selections are saved to `config.yaml`:
 
 General plugin disabled list is stored in `config.yaml` under `plugins.disabled`.
 
-See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md).
+See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../developer-guide/plugins/index.md).
 
 ## `hermes tools`
 
@@ -1364,7 +1400,8 @@ Subcommands:
 | `browse` | Interactive session picker with search and resume. |
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
 | `delete <session-id>` | Delete one session. |
-| `prune` | Delete old sessions. |
+| `prune` | Delete sessions matching filters: time bounds `--older-than`/`--newer-than`/`--before`/`--after` (durations like `5h`/`2d`, bare days, or ISO timestamps); attributes `--source`, `--title`, `--model`, `--provider`, `--branch`, `--end-reason`, `--user`, `--chat-id`, `--chat-type`, `--cwd`; numeric bounds `--min/--max-messages`, `--min/--max-tokens`, `--min/--max-cost`, `--min/--max-tool-calls`; plus `--include-archived`, `--dry-run`, `--yes`. Default: older than 90 days. |
+| `archive` | Bulk-archive (soft-hide, no deletion) sessions matching the same filters as `prune`. Requires at least one filter. |
 | `stats` | Show session-store statistics. |
 | `rename <session-id> <title>` | Set or change a session title. |
 

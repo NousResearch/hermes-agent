@@ -134,6 +134,40 @@ def _assert_pass_spec(spec: dict) -> None:
     assert spec["nodes"]["start"]["type"] == "pass"
 
 
+def test_validate_rejects_unknown_spec_fields_with_suggestion(client):
+    typo = copy.deepcopy(PASS_SPEC)
+    typo["nodes"]["start"]["outputt"] = {"oops": True}
+
+    r = client.post("/api/plugins/workflows/definitions/validate", json={"spec": typo})
+
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert "unknown field 'outputt' on node 'start'" in detail
+    assert "output" in detail
+
+
+def test_executions_list_supports_limit_and_newest_first(client):
+    _deploy(client, PASS_SPEC)
+    ids = []
+    for _ in range(3):
+        r = client.post(
+            f"/api/plugins/workflows/definitions/{PASS_SPEC['id']}/run", json={"input": {}}
+        )
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["execution"]["execution_id"])
+
+    r = client.get("/api/plugins/workflows/executions?limit=2")
+
+    assert r.status_code == 200, r.text
+    executions = r.json()["executions"]
+    assert len(executions) == 2
+    listed = [e["execution_id"] for e in executions]
+    assert set(listed).issubset(set(ids))
+    # Newest-first: created_at is non-increasing down the list.
+    times = [e["created_at"] for e in executions]
+    assert times == sorted(times, reverse=True)
+
+
 def test_prompt_assistant_drafts_text_prompt(client):
     r = client.post(
         "/api/plugins/workflows/prompt-assistant/draft",
@@ -270,9 +304,11 @@ def test_status_endpoint_defaults_when_workflow_config_missing(client, monkeypat
 
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["dispatcher"]["dispatch_in_gateway"] is False
+    # dispatch_in_gateway defaults on — a missing workflow section behaves
+    # like the shipped default, not like an opt-out.
+    assert body["dispatcher"]["dispatch_in_gateway"] is True
     assert body["dispatcher"]["tick_interval_seconds"] == 30.0
-    assert body["dispatcher"]["warning"]
+    assert body["dispatcher"]["warning"] is None
 
 
 def test_status_endpoint_handles_non_dict_workflow_config(client, monkeypatch):
@@ -284,9 +320,9 @@ def test_status_endpoint_handles_non_dict_workflow_config(client, monkeypatch):
 
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["dispatcher"]["dispatch_in_gateway"] is False
+    assert body["dispatcher"]["dispatch_in_gateway"] is True
     assert body["dispatcher"]["tick_interval_seconds"] == 30.0
-    assert body["dispatcher"]["warning"]
+    assert body["dispatcher"]["warning"] is None
 
 
 def test_status_endpoint_treats_string_false_as_disabled(client, monkeypatch):
@@ -795,6 +831,47 @@ def test_dashboard_bundle_runs_selected_or_active_definition_version():
     assert "const runVersion = selectedRunVersion(workflowId)" in run_workflow
     assert '"/run" + versionQuery(runVersion)' in run_workflow
         
+
+def test_dashboard_execution_timeline_warns_when_stalled():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    warn_start = bundle.index("function renderExecutionStallWarning(")
+    warn_end = bundle.index("function renderTimeline(", warn_start)
+    warn_body = bundle[warn_start:warn_end]
+
+    # Fires only for non-terminal executions with dispatch off.
+    assert '"queued"' in warn_body and '"waiting"' in warn_body
+    assert "dispatch_in_gateway === true" in warn_body
+    assert "will not advance automatically" in warn_body
+    # And it is rendered inside the execution timeline, not only the
+    # dispatcher tab.
+    timeline_start = bundle.index("function renderTimeline(")
+    timeline_end = bundle.index("function renderNodeRunPreview(", timeline_start)
+    assert "renderExecutionStallWarning()" in bundle[timeline_start:timeline_end]
+
+
+def test_dashboard_live_refreshes_non_terminal_executions():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+
+    assert "Live-refresh a non-terminal execution" in bundle
+    assert "setInterval" in bundle
+    assert "clearInterval(timer)" in bundle
+
+
+def test_dashboard_event_status_maps_only_emitted_kinds():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    status_start = bundle.index("function eventStatus(")
+    status_end = bundle.index("function statusByNode(", status_start)
+    status_body = bundle[status_start:status_end]
+
+    # These kinds are actually emitted by the dispatcher today.
+    assert "node_succeeded" in status_body
+    assert "node_failed" in status_body
+    assert "execution_blocked" in status_body
+    assert "execution_waiting" in status_body
+    # Dead mappings for never-emitted kinds must not come back.
+    assert "node_started" not in status_body
+    assert "node_running" not in status_body
+
 
 def _dashboard_helper_js() -> str:
     bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
@@ -2033,7 +2110,9 @@ def test_run_endpoint_creates_execution_and_list_show_return_it(client):
     execution = r.json()["execution"]
     assert execution["workflow_id"] == "dashboard_demo"
     assert execution["input"] == {"value": 7}
-    assert execution["status"] in {"queued", "running", "waiting", "succeeded"}
+    # Engine/DB status vocabulary — "running" is intentionally absent
+    # (executions are queued/waiting/succeeded/failed/blocked/cancelled).
+    assert execution["status"] in {"queued", "waiting", "succeeded"}
 
     with wfdb.connect() as conn:
         stored = wfdb.get_execution(conn, execution["execution_id"])

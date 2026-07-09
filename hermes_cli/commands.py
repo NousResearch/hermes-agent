@@ -210,6 +210,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                             "archive", "tail", "dispatch", "stats", "notify-subscribe",
                             "notify-list", "notify-unsubscribe", "log", "runs",
                             "heartbeat", "assignees", "context", "specify", "gc")),
+    CommandDef("workflow", "Workflow graph runs (status, list, run, executions, tick)",
+               "Tools & Skills", aliases=("workflows",), args_hint="[subcommand]",
+               subcommands=("status", "list", "show", "enable", "disable", "run",
+                            "executions", "tick")),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
@@ -1163,7 +1167,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - workflow: workflow-run inspection; reached via /hermes workflow on Slack
+#     so it doesn't displace an existing native slash at the cap.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "workflow"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

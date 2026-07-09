@@ -291,6 +291,7 @@ TOOLSETS = {
             "workflow_run",
             "workflow_execution_show",
             "workflow_cancel",
+            "workflow_tick",
         ],
         "includes": [],
     },

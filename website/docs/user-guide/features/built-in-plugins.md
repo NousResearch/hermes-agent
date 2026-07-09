@@ -9,7 +9,7 @@ description: "Plugins shipped with Hermes Agent that run automatically via lifec
 
 Hermes ships a small set of plugins bundled with the repository. They live under `<repo>/plugins/<name>/` and load automatically alongside user-installed plugins in `~/.hermes/plugins/`. They use the same plugin surface as third-party plugins — hooks, tools, slash commands — just maintained in-tree.
 
-See the [Plugins](/user-guide/features/plugins) page for the general plugin system, and [Build a Hermes Plugin](/guides/build-a-hermes-plugin) to write your own.
+See the [Plugins](/user-guide/features/plugins) page for the general plugin system, and [Build a Hermes Plugin](/developer-guide/plugins) to write your own.
 
 ## How discovery works
 
@@ -67,6 +67,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
 | `hermes-achievements` | dashboard tab | Steam-style collectible badges generated from your real Hermes session history |
 | `kanban/dashboard` | dashboard tab | Kanban board UI for the multi-agent dispatcher — tasks, comments, fan-out, board switching. See [Kanban Multi-Agent](./kanban.md). |
+| `workflows/dashboard` | dashboard tab | Visual workflow builder + execution monitor for the workflow graph engine — draft/refine with the assistant, validate, deploy, run, inspect node runs and events. See [Workflows](./workflows.md). |
 
 Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engine/*`) are listed separately on [Memory Providers](./memory-providers.md) — they're managed through `hermes memory` and `hermes plugins` respectively. The full per-plugin detail for the two long-running hooks-based plugins follows.
 
@@ -286,7 +287,7 @@ Adds a **Steam-style achievements tab to the dashboard** — 60+ collectible, ti
 
 ## Adding a bundled plugin
 
-Bundled plugins are written exactly like any other Hermes plugin — see [Build a Hermes Plugin](/guides/build-a-hermes-plugin). The only differences are:
+Bundled plugins are written exactly like any other Hermes plugin — see [Build a Hermes Plugin](/developer-guide/plugins). The only differences are:
 
 - Directory lives at `<repo>/plugins/<name>/` instead of `~/.hermes/plugins/<name>/`
 - Manifest source is reported as `bundled` in `hermes plugins list`

@@ -229,9 +229,11 @@ def test_run_input_creates_execution_and_lists_it(workflow_home, tmp_path, capsy
     run_payload = json.loads(out)
     execution_id = run_payload["execution_id"]
     assert execution_id.startswith("wfexec_")
+    # `run` ticks once inline (same as the dashboard Run button), so a
+    # cheap all-pass workflow completes immediately.
     assert run_payload == {
         "execution_id": execution_id,
-        "status": "queued",
+        "status": "succeeded",
         "version": 1,
         "workflow_id": "code-change-review",
     }
@@ -251,15 +253,26 @@ def test_run_input_creates_execution_and_lists_it(workflow_home, tmp_path, capsy
     assert err == ""
     show_payload = json.loads(out)
     assert show_payload["execution_id"] == execution_id
-    assert show_payload["context"] == {"input": {"reviewer": "bot"}, "node": {}}
+    assert show_payload["context"]["input"] == {"reviewer": "bot"}
+    assert show_payload["context"]["node"]["done"]["output"] == {"finished": True}
+
+
+def _start_queued_execution(workflow_id: str, input_data: dict | None = None) -> str:
+    """Seed a queued execution without the run command's inline tick."""
+    wfdb.init_db()
+    with wfdb.connect() as conn:
+        return wfdb.start_execution(
+            conn,
+            workflow_id,
+            input_data=input_data or {},
+            trigger_type="manual",
+        )
 
 
 def test_tick_json_advances_cheap_workflow_to_success(workflow_home, tmp_path, capsys):
     spec_path = _write_workflow(tmp_path / "workflow.yaml")
     assert _run(["deploy", str(spec_path)], capsys)[0] == 0
-    rc, out, _err = _run(["run", "code-change-review", "--json"], capsys)
-    assert rc == 0
-    execution_id = json.loads(out)["execution_id"]
+    execution_id = _start_queued_execution("code-change-review")
 
     rc, out, err = _run(["tick", "--limit", "10", "--json"], capsys)
 
@@ -278,9 +291,7 @@ def test_tick_json_advances_cheap_workflow_to_success(workflow_home, tmp_path, c
 def test_cancel_queued_execution(workflow_home, tmp_path, capsys):
     spec_path = _write_workflow(tmp_path / "workflow.yaml")
     assert _run(["deploy", str(spec_path)], capsys)[0] == 0
-    rc, out, _err = _run(["run", "code-change-review", "--json"], capsys)
-    assert rc == 0
-    execution_id = json.loads(out)["execution_id"]
+    execution_id = _start_queued_execution("code-change-review")
 
     rc, out, err = _run(["executions", "cancel", execution_id], capsys)
 
@@ -332,3 +343,124 @@ def test_cancel_does_not_overwrite_terminal_status_race(
     assert f"Execution {execution_id} already succeeded." in out
     with wfdb.connect() as conn:
         assert original_get_execution(conn, execution_id).status == "succeeded"
+
+
+def test_deploy_bump_flag_redeploys_changed_spec_as_next_version(workflow_home, tmp_path, capsys):
+    spec_path = _write_workflow(tmp_path / "workflow.yaml")
+    assert _run(["deploy", str(spec_path)], capsys)[0] == 0
+
+    changed = spec_path.read_text(encoding="utf-8").replace(
+        "name: Code Change Review", "name: Code Change Review v2"
+    )
+    spec_path.write_text(changed, encoding="utf-8")
+
+    rc, _out, err = _run(["deploy", str(spec_path)], capsys)
+    assert rc == 1
+    assert "different checksum" in err
+
+    rc, out, err = _run(["deploy", str(spec_path), "--bump"], capsys)
+    assert rc == 0
+    assert err == ""
+    assert "Deployed workflow code-change-review v2 (bumped from v1)" in out
+
+
+def test_enable_disable_toggle_blocks_and_allows_runs(workflow_home, tmp_path, capsys):
+    spec_path = _write_workflow(tmp_path / "workflow.yaml")
+    assert _run(["deploy", str(spec_path)], capsys)[0] == 0
+
+    rc, out, err = _run(["disable", "code-change-review"], capsys)
+    assert rc == 0
+    assert err == ""
+    assert "now disabled" in out
+
+    rc, _out, err = _run(["run", "code-change-review", "--json"], capsys)
+    assert rc == 1
+    assert "is disabled" in err
+
+    rc, out, err = _run(["enable", "code-change-review"], capsys)
+    assert rc == 0
+    assert "now enabled" in out
+
+    rc, out, err = _run(["run", "code-change-review", "--json"], capsys)
+    assert rc == 0
+    assert json.loads(out)["status"] == "succeeded"
+
+
+def test_executions_node_runs_and_events_drilldowns(workflow_home, tmp_path, capsys):
+    spec_path = _write_workflow(tmp_path / "workflow.yaml")
+    assert _run(["deploy", str(spec_path)], capsys)[0] == 0
+    rc, out, _err = _run(["run", "code-change-review", "--json"], capsys)
+    assert rc == 0
+    execution_id = json.loads(out)["execution_id"]
+
+    rc, out, err = _run(["executions", "events", execution_id, "--json"], capsys)
+    assert rc == 0
+    assert err == ""
+    events = json.loads(out)["events"]
+    kinds = [event["kind"] for event in events]
+    assert "execution_started" in kinds
+    assert "execution_succeeded" in kinds
+
+    rc, out, err = _run(["executions", "node-runs", execution_id, "--json"], capsys)
+    assert rc == 0
+    assert err == ""
+    payload = json.loads(out)
+    assert payload["execution_id"] == execution_id
+    assert isinstance(payload["node_runs"], list)
+
+    rc, _out, err = _run(["executions", "events", "missing", "--json"], capsys)
+    assert rc == 1
+    assert "workflow execution not found" in err
+
+
+def test_executions_list_newest_first_with_limit(workflow_home, tmp_path, capsys):
+    spec_path = _write_workflow(tmp_path / "workflow.yaml")
+    assert _run(["deploy", str(spec_path)], capsys)[0] == 0
+    wfdb.init_db()
+    with wfdb.connect() as conn:
+        ids = [
+            wfdb.start_execution(
+                conn, "code-change-review", input_data={}, trigger_type="manual", now=100 + i
+            )
+            for i in range(3)
+        ]
+
+    rc, out, err = _run(["executions", "list", "--limit", "2", "--json"], capsys)
+    assert rc == 0
+    assert err == ""
+    rows = json.loads(out)
+    assert [row["execution_id"] for row in rows] == list(reversed(ids))[:2]
+
+
+def test_status_reports_dispatcher_and_counts(workflow_home, tmp_path, capsys):
+    spec_path = _write_workflow(tmp_path / "workflow.yaml")
+    assert _run(["deploy", str(spec_path)], capsys)[0] == 0
+    _start_queued_execution("code-change-review")
+
+    rc, out, err = _run(["status", "--json"], capsys)
+
+    assert rc == 0
+    assert err == ""
+    payload = json.loads(out)
+    assert isinstance(payload["dispatcher"]["dispatch_in_gateway"], bool)
+    assert payload["definitions"] == 1
+    assert payload["executions_by_status"] == {"queued": 1}
+
+
+def test_run_slash_help_status_and_errors(workflow_home, tmp_path, capsys):
+    output = wc.run_slash("")
+    assert output.startswith("/workflow — workflow graph engine")
+    assert "/workflow executions events" in output
+
+    output = wc.run_slash("status")
+    assert "Definitions: 0" in output
+
+    output = wc.run_slash("list")
+    assert "(no workflows deployed)" in output
+
+    output = wc.run_slash("bogus-verb")
+    assert output.startswith("⚠ /workflow usage error")
+
+    spec_path = _write_workflow(tmp_path / "workflow.yaml")
+    assert "Deployed workflow" in wc.run_slash(f"deploy {spec_path}")
+    assert "code-change-review v1 enabled" in wc.run_slash("list")

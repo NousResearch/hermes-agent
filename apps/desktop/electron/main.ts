@@ -194,11 +194,10 @@ const IS_WSL = isWslEnvironment()
 const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
 const APP_ROOT = app.getAppPath()
 
-// Preload script path: in dev we load the .ts source directly (tsx handles
-// the transform); in prod we load the bundled .js from dist/.
-const PRELOAD_PATH = IS_PACKAGED
-  ? path.join(APP_ROOT, 'dist', 'electron-preload.js')
-  : path.join(import.meta.dirname, 'preload.ts')
+// Preload must be plain JS — Electron's sandbox can't run .ts, and tsx's
+// ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
+// Dev (`npm run dev`) and prod both load the esbuild output from dist/.
+const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
 
 function hiddenWindowsChildOptions(options: any = {}): ExecFileSyncOptionsWithStringEncoding {
   if (!IS_WINDOWS || Object.prototype.hasOwnProperty.call(options, 'windowsHide')) {

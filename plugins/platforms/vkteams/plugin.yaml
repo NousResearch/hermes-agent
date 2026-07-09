@@ -1,0 +1,53 @@
+name: vkteams-platform
+label: VK Teams
+kind: platform
+version: 1.0.0
+description: >
+  VK Teams corporate-messenger gateway adapter for Hermes Agent.
+  Talks to the VK Teams Bot API (https://teams.vk.com/botapi/) — a
+  Telegram-like HTTP bot API — via long polling (/events/get) and plain
+  HTTP calls. Lightweight — no external SDK, only httpx (already a
+  Hermes dependency).
+
+  Works with both the SaaS cloud (https://myteam.mail.ru/bot/v1) and
+  on-premise VK Teams installations: every on-premise server has its
+  own unique API base URL (send /start to Metabot to discover it) —
+  set it via VKTEAMS_API_BASE.
+author: dn.ivanov
+# ``requires_env`` and ``optional_env`` entries are surfaced in the
+# ``hermes config`` UI via the platform-plugin env var injector in
+# ``hermes_cli/config.py``.
+requires_env:
+  - name: VKTEAMS_BOT_TOKEN
+    description: "Bot token issued by Metabot (/newbot)"
+    prompt: "VK Teams bot token"
+    password: true
+optional_env:
+  - name: VKTEAMS_API_BASE
+    description: "Bot API base URL (default: https://myteam.mail.ru/bot/v1; on-premise servers have their own — ask Metabot with /start)"
+    prompt: "VK Teams API base URL"
+    password: false
+  - name: VKTEAMS_ALLOWED_USERS
+    description: "Comma-separated user IDs/emails allowed to talk to the bot (allowlist)"
+    prompt: "Allowed VK Teams user IDs (comma-separated)"
+    password: false
+  - name: VKTEAMS_ALLOW_ALL_USERS
+    description: "Allow any user to talk to the bot (dev only — disables allowlist)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: VKTEAMS_HOME_CHANNEL
+    description: "Default chat ID for cron / notification delivery (a group the bot is in, or a user who already messaged the bot)"
+    prompt: "Home channel chat ID (or empty)"
+    password: false
+  - name: VKTEAMS_HOME_CHANNEL_NAME
+    description: "Human label for the home channel (defaults to the chat ID)"
+    prompt: "Home channel display name (or empty)"
+    password: false
+  - name: VKTEAMS_PARSE_MODE
+    description: "Outgoing message formatting: MarkdownV2 (default), HTML, or none for plain text"
+    prompt: "Parse mode (MarkdownV2/HTML/none)"
+    password: false
+  - name: VKTEAMS_POLL_TIME
+    description: "Long-poll hold time in seconds for /events/get (default: 25)"
+    prompt: "Long-poll time in seconds"
+    password: false

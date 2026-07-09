@@ -211,7 +211,7 @@ class TestGatewayConfigPluginPlatform:
         data = {
             "platforms": {
                 "telegram": {"enabled": True, "token": "test-token"},
-                "irc": {"enabled": True, "extra": {"server": "irc.libera.chat"}},
+                "irc": {"enabled": True, "extra": {"server": "irc.example.net"}},
             }
         }
         cfg = GatewayConfig.from_dict(data)

@@ -82,7 +82,7 @@ class TestIRCAdapterInit:
         cfg = PlatformConfig(
             enabled=True,
             extra={
-                "server": "irc.libera.chat",
+                "server": "irc.example.net",
                 "port": 6697,
                 "nickname": "hermes",
                 "channel": "#hermes-dev",
@@ -91,7 +91,7 @@ class TestIRCAdapterInit:
         )
         adapter = IRCAdapter(cfg)
 
-        assert adapter.server == "irc.libera.chat"
+        assert adapter.server == "irc.example.net"
         assert adapter.port == 6697
         assert adapter.nickname == "hermes"
         assert adapter.channel == "#hermes-dev"

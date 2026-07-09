@@ -12,7 +12,7 @@ Configuration in config.yaml::
         irc:
           enabled: true
           extra:
-            server: irc.libera.chat
+            server: irc.example.net
             port: 6697
             nickname: hermes-bot
             channel: "#hermes"
@@ -21,6 +21,10 @@ Configuration in config.yaml::
             nickserv_password: ""     # optional NickServ identification
             allowed_users: []         # empty = allow all, or list of nicks
             max_message_length: 450   # IRC line limit (safe default)
+
+    ⚠ Note: Many public IRC networks (e.g. Libera.Chat) prohibit
+      LLM-driven autonomous clients. For production use, run a local
+      IRCd such as Ergo (https://github.com/ergochat/ergo).
 
 Or via environment variables (overrides config.yaml):
     IRC_SERVER, IRC_PORT, IRC_NICKNAME, IRC_CHANNEL, IRC_USE_TLS,
@@ -560,10 +564,10 @@ def interactive_setup() -> None:
             return
 
     print_info("Connect Hermes to an IRC network. Uses Python stdlib — no extra packages needed.")
-    print_info("   Works with Libera.Chat, OFTC, your own ZNC/InspIRCd, etc.")
+    print_info("   ⚠ Many public IRC networks (e.g. Libera.Chat) prohibit LLM-driven autonomous clients.")
     print()
 
-    server = prompt("IRC server hostname (e.g. irc.libera.chat)", default=existing_server or "")
+    server = prompt("IRC server hostname (e.g. irc.example.net; prefer a local IRCd for production)", default=existing_server or "")
     if not server:
         print_warning("Server is required — skipping IRC setup")
         return

@@ -98,7 +98,7 @@ class TestIRCFreshInstallDiscovery:
 
         plat = _register_irc_platform()
         try:
-            monkeypatch.setenv("IRC_SERVER", "irc.libera.chat")
+            monkeypatch.setenv("IRC_SERVER", "irc.example.net")
             monkeypatch.setenv("IRC_CHANNEL", "#hermes")
             monkeypatch.setenv("IRC_NICKNAME", "hermes-bot")
 
@@ -115,7 +115,7 @@ class TestIRCFreshInstallDiscovery:
         try:
             monkeypatch.delenv("IRC_CHANNEL", raising=False)
             monkeypatch.delenv("IRC_NICKNAME", raising=False)
-            monkeypatch.setenv("IRC_SERVER", "irc.libera.chat")
+            monkeypatch.setenv("IRC_SERVER", "irc.example.net")
 
             status = gateway_mod._platform_status(plat)
             assert status == "not configured"
@@ -225,7 +225,7 @@ class TestIRCGatewaySetupFreshInstall:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _register_irc_platform()
         try:
-            monkeypatch.setenv("IRC_SERVER", "irc.libera.chat")
+            monkeypatch.setenv("IRC_SERVER", "irc.example.net")
             monkeypatch.setenv("IRC_CHANNEL", "#hermes")
             monkeypatch.setenv("IRC_NICKNAME", "hermes-bot")
 

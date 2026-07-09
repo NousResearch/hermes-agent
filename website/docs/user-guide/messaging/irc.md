@@ -1,6 +1,8 @@
 # IRC
 
-The IRC adapter connects Hermes to any IRC server and relays messages between an IRC channel (or direct messages) and the agent. It speaks the IRC protocol over Python's stdlib `asyncio` — **no external dependencies, no SDK, no daemon**. It works with public networks like [Libera.Chat](https://libera.chat/) and any self-hosted ircd.
+The IRC adapter connects Hermes to any IRC server and relays messages between an IRC channel (or direct messages) and the agent. It speaks the IRC protocol over Python's stdlib `asyncio` — **no external dependencies, no SDK, no daemon**.
+
+> ⚠ **Warning:** Many public IRC networks (including [Libera.Chat](https://libera.chat/news/bot-policy-update)) prohibit LLM-driven autonomous clients. For production use, [run a local IRCd](https://github.com/ergochat/ergo) or use a network that explicitly allows agentic connections.
 
 IRC is plain text: there is no voice, image, file, thread, reaction, typing, or streaming support — replies are sent as `PRIVMSG` lines, with long messages split to fit the IRC line limit.
 
@@ -8,7 +10,7 @@ IRC is plain text: there is no voice, image, file, thread, reaction, typing, or 
 
 ## Prerequisites
 
-- An IRC server to connect to (e.g. `irc.libera.chat`)
+- An IRC server to connect to (e.g. `irc.example.net`; prefer a local IRCd for production)
 - A channel to join (e.g. `#hermes`) — comma-separate to join several
 - A nickname for the bot (default: `hermes-bot`)
 - Optional: a registered nick + NickServ password if your network requires identification
@@ -25,7 +27,7 @@ gateway:
     irc:
       enabled: true
       extra:
-        server: irc.libera.chat
+        server: irc.example.net
         port: 6697
         nickname: hermes-bot
         channel: "#hermes"
@@ -40,7 +42,7 @@ gateway:
 
 | Variable | Required | Description |
 |----------|:--------:|-------------|
-| `IRC_SERVER` | ✅ | IRC server hostname (e.g. `irc.libera.chat`) |
+| `IRC_SERVER` | ✅ | IRC server hostname (e.g. `irc.example.net`; prefer a local IRCd for production) |
 | `IRC_CHANNEL` | ✅ | Channel(s) to join — comma-separate for multiple |
 | `IRC_NICKNAME` | ✅ | Bot nickname (default: `hermes-bot`) |
 | `IRC_PORT` | — | Server port (default: `6697` with TLS, `6667` without) |

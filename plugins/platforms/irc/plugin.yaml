@@ -12,7 +12,7 @@ author: Nous Research
 # platform-plugin env var injector in ``hermes_cli/config.py``.
 requires_env:
   - name: IRC_SERVER
-    description: "IRC server hostname (e.g. irc.libera.chat)"
+    description: "IRC server hostname (e.g. irc.example.net; see docs about public network policies)"
     prompt: "IRC server"
     password: false
   - name: IRC_CHANNEL

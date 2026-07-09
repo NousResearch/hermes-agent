@@ -682,6 +682,18 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     # before the cache lookup, so localhost and 127.0.0.1 share a cache entry.
     normalized = _localhost_to_ipv4(normalized)
 
+    # Short-circuit for known public provider hosts to avoid probing
+    # local-only endpoints (/api/tags, /v1/props, /version) that return 404.
+    # This reduces noise in egress logs and monitoring dashboards.
+    try:
+        url = normalized if "://" in normalized else f"https://{normalized}"
+        host = urlparse(url).hostname or ""
+        # Known public provider hosts that should never be probed
+        if host in {"api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com"}:
+            return None
+    except Exception:
+        pass  # On any parse error, fall through to normal detection
+
     server_url = normalized
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]

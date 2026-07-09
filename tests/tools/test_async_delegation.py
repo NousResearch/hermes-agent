@@ -113,6 +113,22 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+def test_completion_event_preserves_explicit_empty_toolsets():
+    def runner():
+        return {"status": "completed", "summary": "done"}
+
+    res = ad.dispatch_async_delegation(
+        goal="compute X", context=None, toolsets=[],
+        role="leaf", model="test-model", session_key="",
+        runner=runner, max_async_children=3,
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["toolsets"] == []
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",
@@ -351,6 +367,59 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     assert evt["type"] == "async_delegation"
     assert evt["session_key"] == "post-compress-tip"
     assert evt["origin_ui_session_id"] == "origin-tab"
+
+
+def test_background_batch_completion_event_preserves_route_summary(monkeypatch):
+    import json
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "sess"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    fake_child._subagent_id = "s1"
+
+    def child_result(task_index, goal, child=None, parent_agent=None, **kw):
+        return {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": f"done: {goal}",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "model": "m",
+        }
+
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
+    monkeypatch.setattr(dt, "_run_single_child", child_result)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+
+    out = dt.delegate_task(
+        tasks=[
+            {"goal": "Summarize prompt only"},
+            {"goal": "Research docs", "route_override": "strong-worker"},
+        ],
+        router_mode="auto",
+        background=True,
+        parent_agent=parent,
+    )
+    parsed = json.loads(out)
+    assert parsed["status"] == "dispatched"
+    assert parsed["route_summary"]["requires_verifier"] is True
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["route_summary"] == parsed["route_summary"]
+    assert evt["route_summary"]["routes"][0]["toolsets"] == []
 
 
 def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):

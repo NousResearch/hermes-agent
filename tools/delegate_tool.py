@@ -19,6 +19,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 import os
@@ -129,6 +130,260 @@ _MIN_SPAWN_DEPTH = 1
 # No upper ceiling on spawn depth — like max_concurrent_children, depth has a
 # floor of 1 and no ceiling. Deeper trees multiply API cost, so the default
 # stays flat (MAX_DEPTH = 1); raising the config knob is an explicit opt-in.
+
+
+_EXECUTION_ROUTE_KEYWORDS = {
+    "browser": (
+        "browser", "click", "login", "logged-in", "screenshot", "captcha",
+        "ui", "web app", "page visually", "dom", "form",
+    ),
+    "web": (
+        "http://", "https://", "web", "research", "source", "cite",
+        "docs", "documentation", "news", "current", "search", "article",
+    ),
+    "code": (
+        "code", "repo", "test", "pytest", "patch", "edit", "fix",
+        "implement", "refactor", ".py", ".ts", ".tsx", ".js", "git",
+    ),
+    "file": (
+        "read", "inspect", "file", "directory", "search", "grep",
+        "scan", "find", "path", "diff",
+    ),
+    "deterministic": (
+        "count", "parse", "json", "jsonl", "csv", "sqlite", "sql",
+        "log", "extract", "convert", "transform", "summarize rows",
+    ),
+    "strong": (
+        "root cause", "architecture", "security", "threat", "review",
+        "hard", "ambiguous", "race", "deadlock", "design", "tradeoff",
+    ),
+}
+_ROUTE_OVERRIDE_TOOLSETS = {
+    "deterministic": ["terminal", "file"],
+    "cheap-worker": [],
+    "strong-worker": ["terminal", "file"],
+}
+
+_EDIT_INTENT_KEYWORDS = (
+    "add", "change", "edit", "fix", "implement", "modify", "patch",
+    "refactor", "remove", "rewrite", "update", "write",
+)
+
+_READ_ONLY_INTENT_KEYWORDS = (
+    "audit", "inspect", "read", "review", "scan", "summarize", "summarise",
+)
+
+_PATH_RE = re.compile(
+    r"(?<![\w@:-])(?:"
+    r"(?:\./|/)?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*"
+    r"\.(?:py|pyi|js|jsx|ts|tsx|mjs|cjs|mts|cts|json|jsonl|ya?ml|toml|md|txt|sql|sh|bash|css|html|go|rs|java|c|cc|cpp|h|hpp|env|ini|conf|lock)"
+    r"|(?:\./|/)?[A-Za-z0-9_.-]*(?:Dockerfile|Makefile|Procfile|Brewfile|Gemfile)"
+    r")"
+)
+
+
+def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in text for needle in needles)
+
+
+def _infer_execution_route(goal: str, context: Optional[str] = None) -> Dict[str, Any]:
+    """Infer a safe execution depth/toolset for a delegated subtask.
+
+    This is deliberately deterministic and conservative.  It does not choose a
+    different model/provider; it only narrows toolsets and adds a context hint so
+    the child knows why it was routed.  Explicit user/model-provided toolsets
+    still win in _prepare_routed_task().
+    """
+    text = f"{goal or ''}\n{context or ''}".lower()
+
+    browser = _contains_any(text, _EXECUTION_ROUTE_KEYWORDS["browser"])
+    web = _contains_any(text, _EXECUTION_ROUTE_KEYWORDS["web"])
+    code = _contains_any(text, _EXECUTION_ROUTE_KEYWORDS["code"])
+    fileish = _contains_any(text, _EXECUTION_ROUTE_KEYWORDS["file"])
+    deterministic = _contains_any(text, _EXECUTION_ROUTE_KEYWORDS["deterministic"])
+    strong = _contains_any(text, _EXECUTION_ROUTE_KEYWORDS["strong"])
+
+    if code or deterministic:
+        toolsets = ["terminal", "file"]
+    elif browser:
+        toolsets = ["browser"]
+    elif web:
+        toolsets = ["web"]
+    elif fileish or strong:
+        toolsets = ["terminal", "file"] if strong else ["file"]
+    else:
+        toolsets = []
+
+    if strong:
+        depth = "strong-worker"
+    elif deterministic:
+        depth = "deterministic"
+    else:
+        depth = "cheap-worker"
+
+    reasons: list[str] = []
+    for label, matched in (
+        ("browser", browser),
+        ("web", web),
+        ("code", code),
+        ("file", fileish),
+        ("deterministic", deterministic),
+        ("strong", strong),
+    ):
+        if matched:
+            reasons.append(label)
+
+    return {
+        "depth": depth,
+        "toolsets": toolsets,
+        "rationale": ", ".join(reasons) if reasons else "default cheap-worker route",
+    }
+
+
+def _route_from_override(override: str, inferred: Dict[str, Any]) -> Dict[str, Any]:
+    """Return route metadata for an explicit per-task route_override."""
+    route = dict(inferred)
+    route["depth"] = override
+    route["override"] = True
+    route["rationale"] = f"override: {override}; inferred: {inferred.get('rationale', 'unknown')}"
+    if override in _ROUTE_OVERRIDE_TOOLSETS:
+        override_toolsets = _ROUTE_OVERRIDE_TOOLSETS[override]
+        route["toolsets"] = list(override_toolsets)
+    return route
+
+
+def _prepare_routed_task(
+    task: Dict[str, Any],
+    *,
+    fallback_toolsets: Optional[List[str]],
+    router_mode: Optional[str],
+) -> Dict[str, Any]:
+    """Apply execution-router metadata to one task when router_mode='auto'."""
+    if router_mode != "auto":
+        return dict(task)
+
+    routed = dict(task)
+    inferred = _infer_execution_route(
+        str(routed.get("goal") or ""),
+        str(routed.get("context") or ""),
+    )
+    override = str(routed.get("route_override") or "").strip().lower()
+    route = _route_from_override(override, inferred) if override else inferred
+    route.setdefault("override", False)
+    routed["_execution_route"] = route
+
+    explicit_toolsets = routed.get("toolsets")
+    explicit_toolsets_present = "toolsets" in routed and routed.get("toolsets") is not None
+    if explicit_toolsets_present and not override:
+        return routed
+    if explicit_toolsets_present:
+        pass
+    elif fallback_toolsets is not None:
+        routed["toolsets"] = list(fallback_toolsets)
+    else:
+        if "toolsets" in route:
+            inferred_toolsets = route.get("toolsets") or []
+            routed["toolsets"] = list(inferred_toolsets)
+
+    toolsets_label = routed["toolsets"] if "toolsets" in routed else "inherit"
+
+    hint = (
+        "[EXECUTION ROUTER]\n"
+        f"Depth: {route['depth']}\n"
+        f"Toolsets: {toolsets_label}\n"
+        f"Rationale: {route['rationale']}\n"
+        f"Override: {override or 'none'}\n"
+        "Requires verifier: true\n"
+        "Stay within this routed scope. If the task needs stronger reasoning, "
+        "say so in the summary instead of expanding scope silently."
+    )
+    existing_context = str(routed.get("context") or "").strip()
+    routed["context"] = f"{existing_context}\n\n{hint}" if existing_context else hint
+    return routed
+
+
+def _normalise_task_path(path: str) -> str:
+    return path.strip().strip("`'\".,;:)").removeprefix("./").lstrip("/")
+
+
+def _extract_explicit_paths(task: Dict[str, Any]) -> List[str]:
+    text = f"{task.get('goal') or ''}\n{task.get('context') or ''}"
+    paths = []
+    seen = set()
+    for match in _PATH_RE.finditer(text):
+        path = _normalise_task_path(match.group(0))
+        if path and path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def _task_has_edit_intent(task: Dict[str, Any]) -> bool:
+    text = f"{task.get('goal') or ''}\n{task.get('context') or ''}".lower()
+    route = task.get("_execution_route") or {}
+    has_edit_keyword = _contains_any(text, _EDIT_INTENT_KEYWORDS)
+    read_only = _contains_any(text, _READ_ONLY_INTENT_KEYWORDS) and not has_edit_keyword
+    route_is_code = "code" in str(route.get("rationale") or "").lower()
+    return bool((has_edit_keyword or route_is_code) and not read_only)
+
+
+def _detect_parallel_edit_conflicts(tasks: List[Dict[str, Any]]) -> Optional[str]:
+    """Return an error string when parallel tasks appear to edit the same path."""
+    exact_path_to_tasks: Dict[str, List[int]] = {}
+    basename_mentions: Dict[str, List[tuple[int, str]]] = {}
+    full_path_mentions: Dict[str, List[tuple[int, str]]] = {}
+    for index, task in enumerate(tasks):
+        if not _task_has_edit_intent(task):
+            continue
+        for path in _extract_explicit_paths(task):
+            exact_path_to_tasks.setdefault(path, []).append(index)
+            basename = path.rsplit("/", 1)[-1]
+            if "/" in path:
+                full_path_mentions.setdefault(basename, []).append((index, path))
+            else:
+                basename_mentions.setdefault(basename, []).append((index, path))
+
+    conflicts: Dict[str, List[int]] = {
+        path: idxs for path, idxs in exact_path_to_tasks.items() if len(set(idxs)) > 1
+    }
+    for basename, basename_entries in basename_mentions.items():
+        related = basename_entries + full_path_mentions.get(basename, [])
+        related_tasks = [idx for idx, _ in related]
+        if len(set(related_tasks)) > 1:
+            conflicts.setdefault(basename, []).extend(related_tasks)
+
+    if not conflicts:
+        return None
+    details = "; ".join(
+        f"{path} in tasks {', '.join(str(i) for i in sorted(set(idxs)))}"
+        for path, idxs in sorted(conflicts.items())
+    )
+    return (
+        "router_mode='auto' refused parallel delegation because multiple edit-like "
+        f"tasks mention the same explicit path: {details}. Split these tasks, "
+        "serialize them, or give one task the shared edit scope."
+    )
+
+
+def _build_route_summary(tasks: List[Dict[str, Any]], router_mode: str) -> Optional[Dict[str, Any]]:
+    if router_mode != "auto":
+        return None
+    routes = []
+    for index, task in enumerate(tasks):
+        route = task.get("_execution_route") or {}
+        routes.append({
+            "task_index": index,
+            "depth": route.get("depth", "unknown"),
+            "toolsets": task.get("toolsets") or [],
+            "rationale": route.get("rationale", ""),
+            "override": bool(route.get("override", False)),
+            "requires_verifier": True,
+        })
+    return {
+        "mode": "auto",
+        "routes": routes,
+        "requires_verifier": bool(routes),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1116,13 +1371,13 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
-    if toolsets:
+    if toolsets is not None:
         # Intersect with parent — subagent must not gain tools the parent lacks.
         # Expand composite toolsets (e.g. hermes-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
-        if _get_inherit_mcp_toolsets():
+        if child_toolsets and _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
             )
@@ -2345,6 +2600,7 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    router_mode: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2453,7 +2709,17 @@ def delegate_task(
     if not task_list:
         return tool_error("No tasks provided.")
 
-    # Validate each task has a goal
+    if router_mode is None:
+        router_mode = "none"
+    elif not isinstance(router_mode, str):
+        return tool_error("router_mode must be 'none' or 'auto'.")
+    else:
+        router_mode = router_mode.strip().lower()
+    if router_mode not in {"none", "auto"}:
+        return tool_error("router_mode must be 'none' or 'auto'.")
+
+    # Validate each task has a goal and valid optional router override
+    valid_route_overrides = set(_ROUTE_OVERRIDE_TOOLSETS.keys())
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
             return tool_error(
@@ -2461,6 +2727,29 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        route_override = str(task.get("route_override") or "").strip().lower()
+        if route_override and route_override not in valid_route_overrides:
+            return tool_error(
+                "route_override must be one of: "
+                + ", ".join(sorted(valid_route_overrides))
+                + "."
+            )
+
+    route_summary = None
+    if router_mode == "auto":
+        task_list = [
+            _prepare_routed_task(
+                task,
+                fallback_toolsets=None,
+                router_mode=router_mode,
+            )
+            for task in task_list
+        ]
+        if len(task_list) > 1:
+            conflict_error = _detect_parallel_edit_conflicts(task_list)
+            if conflict_error:
+                return tool_error(conflict_error)
+        route_summary = _build_route_summary(task_list, router_mode)
 
     overall_start = time.monotonic()
     results = []
@@ -2489,9 +2778,7 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
+                toolsets=(t["toolsets"] if "toolsets" in t else None),
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
@@ -2751,10 +3038,13 @@ def delegate_task(
 
         total_duration = round(time.monotonic() - overall_start, 2)
 
-        return {
+        payload = {
             "results": results,
             "total_duration_seconds": total_duration,
         }
+        if route_summary:
+            payload["route_summary"] = route_summary
+        return payload
 
     # ----- Background dispatch: run the WHOLE batch as one async unit -----
     # When background is true, the entire fan-out runs on the daemon executor
@@ -2885,6 +3175,8 @@ def delegate_task(
                 "goals": _goals,
                 "note": note,
             }
+            if route_summary:
+                payload["route_summary"] = route_summary
             return json.dumps(payload, ensure_ascii=False)
 
         # Pool at capacity / schedule failure — children are still attached
@@ -3262,7 +3554,10 @@ def _build_top_level_description() -> str:
         "delegation.orchestrator_enabled=false.\n"
         "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "- Results are always returned as an array, one entry per task.\n"
+        "- For mixed-complexity batches with no explicit per-task toolsets, "
+        "set router_mode='auto' so Hermes narrows each child to deterministic, "
+        "cheap-worker, or strong-worker scope and adds a route hint to context."
     )
 
 
@@ -3389,6 +3684,14 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "route_override": {
+                            "type": "string",
+                            "enum": ["deterministic", "cheap-worker", "strong-worker"],
+                            "description": (
+                                "Per-task execution depth override used only when router_mode='auto'. "
+                                "Forces the router depth while preserving explicit task toolsets."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3401,6 +3704,18 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "router_mode": {
+                "type": "string",
+                "enum": ["none", "auto"],
+                "description": (
+                    "Optional execution router. Use 'auto' when a batch has "
+                    "mixed-complexity subtasks and no explicit per-task "
+                    "toolsets: Hermes will infer narrow toolsets and add a "
+                    "depth hint (deterministic, cheap-worker, strong-worker) "
+                    "to each child's context. Explicit toolsets are preserved. "
+                    "Default 'none'."
+                ),
             },
             "background": {
                 "type": "boolean",
@@ -3472,6 +3787,7 @@ registry.register(
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
+        router_mode=args.get("router_mode"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),

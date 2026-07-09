@@ -175,7 +175,7 @@ def dispatch_async_delegation(
         "delegation_id": delegation_id,
         "goal": goal,
         "context": context,
-        "toolsets": list(toolsets) if toolsets else None,
+        "toolsets": list(toolsets) if toolsets is not None else None,
         "role": role,
         "model": model,
         "session_key": session_key,
@@ -365,7 +365,7 @@ def dispatch_async_delegation_batch(
         "goal": combined_goal,
         "goals": list(goals),
         "context": context,
-        "toolsets": list(toolsets) if toolsets else None,
+        "toolsets": list(toolsets) if toolsets is not None else None,
         "role": role,
         "model": model,
         "session_key": session_key,
@@ -481,6 +481,7 @@ def _finalize_batch(
         # The full per-task results list — the formatter renders a
         # consolidated multi-task block from this.
         "results": combined.get("results") or [],
+        "route_summary": combined.get("route_summary"),
         "error": combined.get("error"),
         "total_duration_seconds": combined.get("total_duration_seconds"),
         "dispatched_at": dispatched_at,

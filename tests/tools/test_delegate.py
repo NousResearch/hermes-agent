@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import unittest
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -31,6 +32,10 @@ from tools.delegate_tool import (
     _build_child_progress_callback,
     _build_child_system_prompt,
     _extract_output_tail,
+    _build_route_summary,
+    _detect_parallel_edit_conflicts,
+    _infer_execution_route,
+    _prepare_routed_task,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -154,6 +159,258 @@ class TestChildSystemPrompt(unittest.TestCase):
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+
+class TestExecutionRouter(unittest.TestCase):
+    def test_infers_code_edit_route(self):
+        route = _infer_execution_route(
+            "Add pytest coverage and patch src/router.py for failing repo tests",
+            "",
+        )
+        self.assertEqual(route["depth"], "cheap-worker")
+        self.assertEqual(route["toolsets"], ["terminal", "file"])
+
+    def test_infers_strong_debug_route(self):
+        route = _infer_execution_route(
+            "Find root cause of a security-sensitive architecture bug",
+            "",
+        )
+        self.assertEqual(route["depth"], "strong-worker")
+        self.assertEqual(route["toolsets"], ["terminal", "file"])
+
+    def test_strong_web_research_keeps_web_toolset(self):
+        route = _infer_execution_route(
+            "Review security-sensitive current docs and cite sources",
+            "https://example.com/docs",
+        )
+        self.assertEqual(route["depth"], "strong-worker")
+        self.assertEqual(route["toolsets"], ["web"])
+
+    def test_infers_web_research_route(self):
+        route = _infer_execution_route(
+            "Research current docs and cite sources for the API change",
+            "https://example.com/docs",
+        )
+        self.assertEqual(route["depth"], "cheap-worker")
+        self.assertEqual(route["toolsets"], ["web"])
+
+    def test_code_edit_beats_browser_signal(self):
+        route = _infer_execution_route(
+            "Fix UI bug in src/App.tsx after browser screenshot review",
+            "",
+        )
+        self.assertEqual(route["toolsets"], ["terminal", "file"])
+
+    def test_prepare_routed_task_preserves_top_level_toolsets(self):
+        task = {"goal": "Patch src/router.py"}
+        routed = _prepare_routed_task(task, fallback_toolsets=["browser"], router_mode="auto")
+        self.assertEqual(routed["toolsets"], ["browser"])
+
+    def test_prepare_routed_task_preserves_explicit_empty_toolsets(self):
+        task = {"goal": "Patch src/router.py", "toolsets": []}
+        routed = _prepare_routed_task(task, fallback_toolsets=["browser"], router_mode="auto")
+        self.assertEqual(routed["toolsets"], [])
+        self.assertNotIn("[EXECUTION ROUTER]", routed.get("context", ""))
+
+    def test_prepare_routed_task_preserves_top_level_empty_toolsets(self):
+        task = {"goal": "Patch src/router.py"}
+        routed = _prepare_routed_task(task, fallback_toolsets=[], router_mode="auto")
+        self.assertEqual(routed["toolsets"], [])
+
+    def test_prepare_routed_task_preserves_explicit_toolsets(self):
+        task = {"goal": "Research a logged-in website", "toolsets": ["browser"]}
+        routed = _prepare_routed_task(task, fallback_toolsets=["terminal"], router_mode="auto")
+        self.assertEqual(routed["toolsets"], ["browser"])
+        self.assertNotIn("[EXECUTION ROUTER]", routed.get("context", ""))
+
+    def test_prepare_routed_task_adds_route_hint_when_auto(self):
+        task = {"goal": "Count JSON rows in local logs", "context": "Use ./events.jsonl"}
+        routed = _prepare_routed_task(task, fallback_toolsets=None, router_mode="auto")
+        self.assertEqual(routed["toolsets"], ["terminal", "file"])
+        self.assertIn("[EXECUTION ROUTER]", routed["context"])
+        self.assertIn("deterministic", routed["context"])
+
+    def test_prepare_routed_task_records_empty_default_toolsets(self):
+        task = {"goal": "Summarize this short prompt"}
+        routed = _prepare_routed_task(task, fallback_toolsets=None, router_mode="auto")
+        self.assertEqual(routed["_execution_route"]["depth"], "cheap-worker")
+        self.assertEqual(routed["toolsets"], [])
+        self.assertIn("Toolsets: []", routed["context"])
+
+    def test_schema_exposes_router_mode(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("router_mode", props)
+        self.assertEqual(props["router_mode"]["enum"], ["none", "auto"])
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("route_override", task_props)
+        self.assertEqual(
+            task_props["route_override"]["enum"],
+            ["deterministic", "cheap-worker", "strong-worker"],
+        )
+
+    def test_route_override_forces_depth_and_default_toolsets(self):
+        task = {
+            "goal": "Review current docs and cite sources",
+            "route_override": "strong-worker",
+        }
+        routed = _prepare_routed_task(task, fallback_toolsets=None, router_mode="auto")
+        self.assertEqual(routed["_execution_route"]["depth"], "strong-worker")
+        self.assertEqual(routed["toolsets"], ["terminal", "file"])
+        self.assertIn("Override: strong-worker", routed["context"])
+
+    def test_route_override_can_force_empty_toolsets(self):
+        task = {
+            "goal": "Review the provided prompt only",
+            "route_override": "cheap-worker",
+        }
+        routed = _prepare_routed_task(task, fallback_toolsets=None, router_mode="auto")
+        self.assertEqual(routed["_execution_route"]["depth"], "cheap-worker")
+        self.assertEqual(routed["toolsets"], [])
+        self.assertIn("Toolsets: []", routed["context"])
+
+    def test_route_override_preserves_explicit_toolsets(self):
+        task = {
+            "goal": "Review logged-in UI",
+            "toolsets": ["browser"],
+            "route_override": "strong-worker",
+        }
+        routed = _prepare_routed_task(task, fallback_toolsets=None, router_mode="auto")
+        self.assertEqual(routed["toolsets"], ["browser"])
+        self.assertEqual(routed["_execution_route"]["depth"], "strong-worker")
+
+    def test_parallel_edit_conflict_detects_same_explicit_path(self):
+        tasks = [
+            _prepare_routed_task(
+                {"goal": "Patch tools/router.py to add option"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+            _prepare_routed_task(
+                {"goal": "Edit ./tools/router.py tests for option"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+        ]
+        conflict = _detect_parallel_edit_conflicts(tasks)
+        self.assertIsNotNone(conflict)
+        self.assertIn("tools/router.py", conflict)
+
+    def test_parallel_edit_conflict_detects_basename_paths(self):
+        tasks = [
+            _prepare_routed_task(
+                {"goal": "Patch router.py to add option"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+            _prepare_routed_task(
+                {"goal": "Edit router.py tests for option"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+        ]
+        conflict = _detect_parallel_edit_conflicts(tasks)
+        self.assertIsNotNone(conflict)
+        self.assertIn("router.py", conflict)
+
+    def test_parallel_edit_conflict_detects_extensionless_special_files(self):
+        tasks = [
+            _prepare_routed_task(
+                {"goal": "Patch Dockerfile base image"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+            _prepare_routed_task(
+                {"goal": "Edit ./Dockerfile build args"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+        ]
+        conflict = _detect_parallel_edit_conflicts(tasks)
+        self.assertIsNotNone(conflict)
+        self.assertIn("Dockerfile", conflict)
+
+    def test_parallel_edit_conflict_detects_full_path_vs_basename(self):
+        tasks = [
+            _prepare_routed_task(
+                {"goal": "Patch src/router.py"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+            _prepare_routed_task(
+                {"goal": "Edit router.py"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+        ]
+        conflict = _detect_parallel_edit_conflicts(tasks)
+        self.assertIsNotNone(conflict)
+        self.assertIn("router.py", conflict)
+
+    def test_parallel_edit_conflict_allows_distinct_full_paths_with_same_basename(self):
+        tasks = [
+            _prepare_routed_task(
+                {"goal": "Patch src/config.py"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+            _prepare_routed_task(
+                {"goal": "Edit tests/config.py"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+        ]
+        self.assertIsNone(_detect_parallel_edit_conflicts(tasks))
+
+    def test_parallel_edit_conflict_detects_mjs_paths(self):
+        tasks = [
+            _prepare_routed_task(
+                {"goal": "Patch src/config.mjs"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+            _prepare_routed_task(
+                {"goal": "Edit ./src/config.mjs"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+        ]
+        conflict = _detect_parallel_edit_conflicts(tasks)
+        self.assertIsNotNone(conflict)
+        self.assertIn("src/config.mjs", conflict)
+
+    def test_parallel_edit_conflict_ignores_read_only_same_path(self):
+        tasks = [
+            _prepare_routed_task(
+                {"goal": "Inspect tools/router.py for API shape"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+            _prepare_routed_task(
+                {"goal": "Read ./tools/router.py and summarize behavior"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+        ]
+        self.assertIsNone(_detect_parallel_edit_conflicts(tasks))
+
+    def test_build_route_summary_reports_task_routes(self):
+        tasks = [
+            _prepare_routed_task(
+                {"goal": "Count rows in data/events.jsonl"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+            _prepare_routed_task(
+                {"goal": "Research docs", "route_override": "strong-worker"},
+                fallback_toolsets=None,
+                router_mode="auto",
+            ),
+        ]
+        summary = _build_route_summary(tasks, router_mode="auto")
+        self.assertEqual(summary["mode"], "auto")
+        self.assertEqual(summary["routes"][0]["depth"], "deterministic")
+        self.assertEqual(summary["routes"][1]["depth"], "strong-worker")
+        self.assertTrue(summary["requires_verifier"])
 
 
 class TestStripBlockedTools(unittest.TestCase):
@@ -316,6 +573,112 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("could not be parsed as JSON", result["error"])
         mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_router_mode_rejects_non_string_value(self, mock_run):
+        parent = _make_mock_parent()
+        bad_router_mode: Any = True
+        result = json.loads(
+            delegate_task(goal="Summarize", router_mode=bad_router_mode, parent_agent=parent)
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("router_mode must be 'none' or 'auto'", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_router_mode_rejects_parallel_same_path_edit_conflict(self, mock_run):
+        parent = _make_mock_parent()
+        result = json.loads(
+            delegate_task(
+                tasks=[
+                    {"goal": "Patch tools/router.py to add option"},
+                    {"goal": "Edit ./tools/router.py tests for option"},
+                ],
+                router_mode="auto",
+                parent_agent=parent,
+            )
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("router_mode='auto' refused parallel delegation", result["error"])
+        self.assertIn("tools/router.py", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.async_delegation.dispatch_async_delegation_batch")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_router_mode_background_dispatch_includes_route_summary(self, mock_build, mock_dispatch):
+        child = MagicMock()
+        child._delegate_saved_tool_names = []
+        mock_build.return_value = child
+        mock_dispatch.return_value = {"status": "dispatched", "delegation_id": "dg-1"}
+        parent = _make_mock_parent()
+        result = json.loads(
+            delegate_task(
+                tasks=[
+                    {"goal": "Count rows in events.jsonl"},
+                    {"goal": "Research docs", "route_override": "strong-worker"},
+                ],
+                router_mode="auto",
+                background=True,
+                parent_agent=parent,
+            )
+        )
+
+        self.assertEqual(result["status"], "dispatched")
+        self.assertIn("route_summary", result)
+        self.assertTrue(result["route_summary"]["requires_verifier"])
+        self.assertEqual(result["route_summary"]["routes"][1]["depth"], "strong-worker")
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_router_mode_success_includes_route_summary_and_preserves_explicit_task_toolsets(self, mock_run):
+        mock_run.side_effect = [
+            {"task_index": 0, "status": "completed", "summary": "A", "api_calls": 1, "duration_seconds": 1.0},
+            {"task_index": 1, "status": "completed", "summary": "B", "api_calls": 1, "duration_seconds": 1.0},
+        ]
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["browser", "terminal", "file"]
+        result = json.loads(
+            delegate_task(
+                tasks=[
+                    {"goal": "Patch src/router.py", "toolsets": ["browser"]},
+                    {"goal": "Research docs", "route_override": "strong-worker"},
+                ],
+                router_mode="auto",
+                parent_agent=parent,
+            )
+        )
+
+        self.assertIn("route_summary", result)
+        self.assertTrue(result["route_summary"]["requires_verifier"])
+        self.assertEqual(result["route_summary"]["routes"][0]["toolsets"], ["browser"])
+        self.assertEqual(result["route_summary"]["routes"][1]["depth"], "strong-worker")
+        first_child_call = mock_run.call_args_list[0]
+        self.assertEqual(first_child_call.kwargs["child"].enabled_toolsets, ["browser"])
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_router_mode_empty_toolset_route_does_not_inherit_parent_tools(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "A",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["browser", "terminal", "file"]
+        result = json.loads(
+            delegate_task(
+                goal="Summarize this prompt only",
+                router_mode="auto",
+                parent_agent=parent,
+            )
+        )
+
+        self.assertEqual(result["route_summary"]["routes"][0]["toolsets"], [])
+        child_call = mock_run.call_args
+        child = child_call.args[2] if len(child_call.args) > 2 else child_call.kwargs["child"]
+        self.assertEqual(child.enabled_toolsets, [])
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_capped_at_3(self, mock_run):
@@ -1859,6 +2222,28 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             ["web", "browser", "mcp-MiniMax"],
         )
 
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_agent_empty_toolsets_do_not_preserve_parent_mcp_toolsets(self, mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["browser", "mcp-MiniMax"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test explicitly no tools",
+                context=None,
+                toolsets=[],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(MockAgent.call_args[1]["enabled_toolsets"], [])
+
     @patch(
         "tools.delegate_tool._load_config",
         return_value={"inherit_mcp_toolsets": False},
@@ -2265,6 +2650,22 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertEqual(captured["goal"], "test")
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
+
+    def test_router_mode_forwarded_from_live_dispatch_path(self):
+        from run_agent import AIAgent
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task", return_value='{"status":"ok"}') as mock_delegate:
+            result = AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "tasks": [{"goal": "Patch tools/router.py"}],
+                    "router_mode": "auto",
+                },
+            )
+
+        self.assertEqual(json.loads(result)["status"], "ok")
+        self.assertEqual(mock_delegate.call_args.kwargs["router_mode"], "auto")
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""

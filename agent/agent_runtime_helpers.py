@@ -1826,8 +1826,60 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # Without this guard the old provider's URL (e.g. Ollama's localhost
         # address) would persist silently after switching to a cloud provider
         # that returns an empty base_url string.
+        #
+        # Security extension (#61296): a non-empty base_url from a DIFFERENT
+        # registered provider is just as dangerous as an empty stale URL.
+        # It gets paired with the new provider's API key, silently
+        # cross-wiring credentials and routing them to the wrong endpoint.
+        # Reject any incoming URL whose host matches the canonical
+        # endpoint of a *different* registered provider; legitimate
+        # URLs (matching the new provider's canonical endpoint, or
+        # user-defined custom endpoints with no canonical owner) pass
+        # through.
         if base_url:
-            agent.base_url = base_url
+            from providers import list_providers
+            from utils import base_url_host_matches as _host_matches
+            from utils import base_url_hostname as _hostname_of
+            _collides = False
+            for _prof in list_providers():
+                if _prof.name == new_provider:
+                    continue  # same provider's canonical URL is fine
+                if not _prof.base_url:
+                    continue
+                # base_url_host_matches expects a BARE hostname on its
+                # second arg (e.g. "ollama.com"), not a full URL — extract
+                # the provider's canonical host first.
+                _prof_host = _hostname_of(_prof.base_url)
+                if not _prof_host:
+                    continue
+                if _host_matches(base_url, _prof_host):
+                    logger.warning(
+                        "switch_model: incoming base_url=%r matches canonical "
+                        "endpoint of provider %r (different from new_provider=%r); "
+                        "discarding the stale URL to avoid credential cross-wiring (#61296).",
+                        base_url, _prof.name, new_provider,
+                    )
+                    _collides = True
+                    break
+            if _collides:
+                # Discard the stale URL entirely — clearing agent.base_url
+                # to "" prevents the new provider's API key from being paired
+                # with the old endpoint either via agent.base_url directly
+                # or via any caller that snapshots it before our switch.
+                # Use "" (not None) so downstream str-typed APIs (e.g.
+                # get_model_context_length) keep working.
+                agent.base_url = ""
+                # Mark on the function-local so the later _client_kwargs
+                # construction honors the discard — we cannot use
+                # ``agent.base_url == ""`` as a sentinel because empty
+                # string is the cleared value, indistinguishable from
+                # "never set" in a Python truthiness check.
+                _base_url_discarded = True
+            else:
+                agent.base_url = base_url
+                _base_url_discarded = False
+        else:
+            _base_url_discarded = False
         agent.api_mode = api_mode
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
@@ -1915,7 +1967,18 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent._client_kwargs = {}
         else:
             effective_key = api_key or agent.api_key
-            effective_base = base_url or agent.base_url
+            # Trust agent.base_url as the source of truth — after the
+            # #61296 guard cleared it on a cross-wired base_url,
+            # we must NOT fall back to the rejected parameter (which
+            # would resurface the stale URL in _client_kwargs even
+            # though we already discarded it from agent.base_url). The
+            # ``_base_url_discarded`` flag tracks the cleared state
+            # because ``agent.base_url == ""`` is indistinguishable from
+            # "never set" in a Python truthiness check.
+            if _base_url_discarded:
+                effective_base = ""
+            else:
+                effective_base = agent.base_url if agent.base_url else (base_url or "")
             agent._client_kwargs = {
                 "api_key": effective_key,
                 "base_url": effective_base,

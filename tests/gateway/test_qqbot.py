@@ -182,7 +182,7 @@ class TestVoiceAttachmentSSRFProtection:
             adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
             adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after client creation"))
 
-            connected = asyncio.run(adapter.connect())
+            connected = asyncio.run(adapter.connect(is_reconnect=True))
 
         assert connected is False
         assert async_client_cls.call_count == 1

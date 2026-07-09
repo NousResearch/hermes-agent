@@ -307,7 +307,7 @@ export const en: Translations = {
       apiKeys: 'Tools & Keys',
       keysTools: 'Tools',
       keysSettings: 'Settings',
-      mcp: 'MCP',
+      mcp: 'MCP Connectors',
       archivedChats: 'Archived Chats',
       about: 'About',
       notifications: 'Notifications'
@@ -775,7 +775,7 @@ export const en: Translations = {
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
-    tabMcp: 'Connectors',
+    tabMcp: 'MCP Connectors',
     tabHub: 'Browse Hub',
     all: 'All',
     searchSkills: 'Search skills...',

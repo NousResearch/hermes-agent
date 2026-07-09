@@ -6,7 +6,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, Bell, Download, Globe, Info, KeyRound, RefreshCw, Settings2, Upload, Wrench, Zap } from '@/lib/icons'
+import { Archive, Bell, Download, Globe, Info, KeyRound, Link2, RefreshCw, Settings2, Upload, Wrench, Zap } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -185,6 +185,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       id: 'keys',
       label: t.settings.nav.apiKeys,
       onSelect: () => setActiveView('keys')
+    },
+    {
+      active: false,
+      icon: Link2,
+      id: 'mcp',
+      label: t.settings.nav.mcp,
+      onSelect: () => navigate(`${SKILLS_ROUTE}?tab=mcp`)
     },
     {
       active: activeView === 'sessions',

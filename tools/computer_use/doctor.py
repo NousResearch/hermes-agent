@@ -140,7 +140,7 @@ def _drive_health_report(
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait()
+            proc.wait(timeout=10)
 
     try:
         resp = json.loads(call_line)

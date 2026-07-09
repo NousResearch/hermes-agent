@@ -263,3 +263,89 @@ class TestRuntimeErrorOnShutdown:
                 assert True  # reached = clean exit
 
         asyncio.run(_test())
+
+    # --- RuntimeError from t.cancel() in finally blocks ---
+    #
+    # t.cancel() internally calls loop.call_soon(callback), which checks
+    # loop.is_closed() and raises RuntimeError("Event loop is closed").
+    # asyncio.Task is a C extension type so we can't monkey-patch cancel().
+    # Instead, we test the guard by verifying that the production code
+    # has try/except RuntimeError around every t.cancel() call in the
+    # finally blocks of _wait_for_lifecycle_event and
+    # _wait_for_reconnect_or_shutdown.
+
+    def test_wait_for_lifecycle_event_cancel_is_guarded(self):
+        """Verify _wait_for_lifecycle_event's finally block wraps t.cancel()
+        in try/except RuntimeError to handle closed event loops."""
+        import inspect
+        from tools.mcp_tool import MCPServerTask
+
+        source = inspect.getsource(MCPServerTask._wait_for_lifecycle_event)
+        # Find the finally block and verify every t.cancel() is guarded
+        # by try/except RuntimeError.
+        lines = source.split('\n')
+        in_finally = False
+        guarded_cancel_count = 0
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped == 'finally:':
+                in_finally = True
+            if in_finally and 't.cancel()' in stripped and not stripped.startswith('#'):
+                # The line before should be 'try:', and within the try block
+                # t.cancel() should be followed by 'except RuntimeError'
+                # Check: there's a try: before this cancel, and except RuntimeError after
+                prev_lines = [lines[j].strip() for j in range(max(0, i-2), i)]
+                next_lines = [lines[j].strip() for j in range(i+1, min(len(lines), i+4))]
+                assert 'try:' in prev_lines, (
+                    f"t.cancel() at line {i} not guarded by try: "
+                    f"(prev lines: {prev_lines})"
+                )
+                assert any('RuntimeError' in nl for nl in next_lines), (
+                    f"t.cancel() at line {i} not followed by except RuntimeError: "
+                    f"(next lines: {next_lines})"
+                )
+                guarded_cancel_count += 1
+            if in_finally and stripped and not stripped.startswith(('for', 'if', 'try', 'except', 'pass', '#', 't.', 'await')) and 'finally' not in stripped and guarded_cancel_count > 0:
+                # We've left the finally block pattern
+                in_finally = False
+
+        assert guarded_cancel_count >= 1, (
+            f"Expected at least 1 guarded t.cancel() call in "
+            f"_wait_for_lifecycle_event's finally block, found {guarded_cancel_count}"
+        )
+
+    def test_wait_for_reconnect_cancel_is_guarded(self):
+        """Verify _wait_for_reconnect_or_shutdown's finally block wraps
+        t.cancel() in try/except RuntimeError to handle closed event loops."""
+        import inspect
+        from tools.mcp_tool import MCPServerTask
+
+        source = inspect.getsource(
+            MCPServerTask._wait_for_reconnect_or_shutdown
+        )
+        lines = source.split('\n')
+        in_finally = False
+        guarded_cancel_count = 0
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped == 'finally:':
+                in_finally = True
+            if in_finally and 't.cancel()' in stripped and not stripped.startswith('#'):
+                prev_lines = [lines[j].strip() for j in range(max(0, i-2), i)]
+                next_lines = [lines[j].strip() for j in range(i+1, min(len(lines), i+4))]
+                assert 'try:' in prev_lines, (
+                    f"t.cancel() at line {i} not guarded by try: "
+                    f"(prev lines: {prev_lines})"
+                )
+                assert any('RuntimeError' in nl for nl in next_lines), (
+                    f"t.cancel() at line {i} not followed by except RuntimeError: "
+                    f"(next lines: {next_lines})"
+                )
+                guarded_cancel_count += 1
+            if in_finally and stripped and not stripped.startswith(('for', 'if', 'try', 'except', 'pass', '#', 't.', 'await')) and 'finally' not in stripped and guarded_cancel_count > 0:
+                in_finally = False
+
+        assert guarded_cancel_count >= 1, (
+            f"Expected at least 1 guarded t.cancel() call in "
+            f"_wait_for_reconnect_or_shutdown's finally block, found {guarded_cancel_count}"
+        )

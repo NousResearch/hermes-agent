@@ -36,6 +36,7 @@ import platform
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -49,6 +50,34 @@ from typing import Any, Dict, List, Optional
 from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
+
+
+def _inject_venv_env(env: dict) -> None:
+    """Inject VIRTUAL_ENV + venv bin/PATH so background processes use the
+    hermes venv's python (with torch, sklearn, GPU hook, etc.).
+
+    The foreground terminal tool gets this via the session snapshot, but
+    background spawns use ``bash -lic`` with ``os.environ`` — the gateway
+    process doesn't have VIRTUAL_ENV set, so ``python3`` resolves to the
+    system interpreter which lacks hermes venv packages.
+    """
+    venv_root = getattr(sys, "prefix", "")
+    if not venv_root or venv_root == os.path.normpath(sys.base_prefix):
+        # sys.prefix == base_prefix means we're not in a venv; nothing to inject
+        return
+    venv_bin = os.path.join(venv_root, "bin")
+    if not os.path.isdir(venv_bin):
+        return
+    env["VIRTUAL_ENV"] = venv_root
+    # Prepend venv/bin to PATH so `python3` resolves to the venv's python
+    path_key = "PATH"
+    for k in env:
+        if k.upper() == "PATH":
+            path_key = k
+            break
+    current_path = env.get(path_key, "")
+    if venv_bin not in current_path:
+        env[path_key] = f"{venv_bin}:{current_path}" if current_path else venv_bin
 
 
 # Checkpoint file for crash recovery (gateway only)
@@ -717,6 +746,7 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
+                _inject_venv_env(pty_env)
                 pty_proc = _PtyProcessCls.spawn(
                     [user_shell, "-lic", f"set +m; {command}"],
                     cwd=session.cwd,
@@ -759,6 +789,7 @@ class ProcessRegistry:
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
+        _inject_venv_env(bg_env)
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         proc = subprocess.Popen(

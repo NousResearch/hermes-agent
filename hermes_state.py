@@ -78,6 +78,106 @@ _COMPRESSION_CHILD_SQL = (
 # compression continuations stay hidden).
 _LISTABLE_CHILD_SQL = f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')})"
 
+SESSION_CHILD_KIND_PRIORITY: Dict[str, int] = {
+    "focused_continuation": 0,
+    "branch": 1,
+    "interactive_child": 2,
+    "compression_continuation": 2,
+    "delegate_subagent_active": 3,
+    "delegate_subagent_completed": 4,
+    "delegate_subagent_stale": 5,
+    "child": 6,
+}
+
+_STALE_DELEGATE_END_REASONS = {
+    "error",
+    "failed",
+    "failure",
+    "interrupted",
+    "killed",
+    "orphaned",
+    "stale",
+    "timeout",
+}
+
+
+def _model_config_dict(row: Dict[str, Any]) -> Dict[str, Any]:
+    raw = row.get("model_config")
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _truthy_config_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def classify_session_child(child: Dict[str, Any], parent: Optional[Dict[str, Any]]) -> str:
+    """Classify a child session for parent/child UI ordering.
+
+    ``parent_session_id`` alone is too broad: focused continuations, explicit
+    branches, compression rotations, and read-only delegate subagents all use
+    that edge. This classifier gives WebUI/API callers one authoritative order
+    so retained audit/debug subagents never occupy the focused continuation
+    slot.
+    """
+    cfg = _model_config_dict(child)
+    parent_id = parent.get("id") if parent else child.get("parent_session_id")
+    source = (child.get("source") or "").strip().lower()
+    parent_source = ((parent or {}).get("source") or "").strip().lower()
+    explicit_kind = str(cfg.get("_child_kind") or "").strip().lower()
+
+    focused_of = cfg.get("_focused_continuation_of")
+    if explicit_kind == "focused_continuation" or (
+        focused_of is not None and str(focused_of) == str(parent_id)
+    ):
+        return "focused_continuation"
+
+    if cfg.get("_branched_from") is not None:
+        return "branch"
+    if parent and parent.get("end_reason") == "branched":
+        parent_ended = parent.get("ended_at") or 0
+        if parent_ended and (child.get("started_at") or 0) >= parent_ended:
+            return "branch"
+
+    delegate_marker = cfg.get("_delegate_from") is not None or explicit_kind == "delegate_subagent"
+    promoted = _truthy_config_value(cfg.get("_promoted_from_delegate"))
+    continuable = _truthy_config_value(cfg.get("_continuable"))
+    if promoted or (delegate_marker and continuable):
+        return "interactive_child"
+
+    if parent and parent.get("end_reason") == "compression" and not delegate_marker:
+        # Compression continuations are internal rotations, not read-only
+        # subagent children. Preserve subagent-to-subagent chains, but don't let
+        # a retained subagent under a normal parent masquerade as the focused
+        # continuation.
+        if source != "tool" and (source != "subagent" or parent_source == "subagent"):
+            parent_ended = parent.get("ended_at") or 0
+            if not parent_ended or (child.get("started_at") or 0) >= parent_ended:
+                return "compression_continuation"
+
+    if delegate_marker or source == "subagent":
+        if child.get("ended_at") is None:
+            return "delegate_subagent_active"
+        end_reason = str(child.get("end_reason") or "").strip().lower()
+        if end_reason in _STALE_DELEGATE_END_REASONS:
+            return "delegate_subagent_stale"
+        return "delegate_subagent_completed"
+
+    return "child"
+
 
 def _ephemeral_child_sql(alias: str = "s") -> str:
     """Subagent runs (cascade-delete targets), not branches or compression tips."""
@@ -3742,6 +3842,109 @@ class SessionDB:
         else:
             s["preview"] = ""
         return s
+
+    def get_session_children(
+        self,
+        session_id: str,
+        *,
+        include_stale: bool = False,
+        limit: int = 200,
+    ) -> Optional[Dict[str, Any]]:
+        """Return child sessions grouped for WebUI parent/child rendering.
+
+        Focused continuations and branches are first-class children. Read-only
+        delegate subagents remain available for audit/debugging, but are grouped
+        below the user-intended continuations and stale/failed delegates are
+        hidden unless explicitly requested.
+        """
+        parent = self.get_session(session_id)
+        if not parent:
+            return None
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id FROM sessions WHERE parent_session_id = ? "
+                "ORDER BY started_at DESC, id DESC LIMIT ?",
+                (session_id, max(0, min(limit, 1000))),
+            ).fetchall()
+        child_ids = [r["id"] if hasattr(r, "keys") else r[0] for r in rows]
+
+        now = time.time()
+        children: List[Dict[str, Any]] = []
+        for child_id in child_ids:
+            child = self._get_session_rich_row(child_id, compact_rows=True)
+            if not child:
+                continue
+            kind = classify_session_child(child, parent)
+            child["child_kind"] = kind
+            child["child_priority"] = SESSION_CHILD_KIND_PRIORITY.get(
+                kind,
+                SESSION_CHILD_KIND_PRIORITY["child"],
+            )
+            child["is_active"] = (
+                child.get("ended_at") is None
+                and (now - (child.get("last_active") or child.get("started_at") or 0)) < 300
+            )
+            child["archived"] = bool(child.get("archived"))
+            # The classifier needs model_config, but WebUI child rows do not.
+            child.pop("model_config", None)
+            child.pop("system_prompt", None)
+            children.append(child)
+
+        def _sort_key(child: Dict[str, Any]) -> Tuple[int, float, str]:
+            recency = float(child.get("last_active") or child.get("started_at") or 0)
+            raw_priority = child.get("child_priority")
+            priority = int(raw_priority) if raw_priority is not None else 999
+            return (priority, -recency, str(child.get("id") or ""))
+
+        children.sort(key=_sort_key)
+
+        grouped: Dict[str, Any] = {
+            "parent_session_id": session_id,
+            "focused": [],
+            "branches": [],
+            "interactive": [],
+            "compression": [],
+            "subagents": {
+                "active": [],
+                "completed": [],
+                "stale": [],
+                "stale_count": 0,
+            },
+            "other": [],
+            "ordered_children": [],
+        }
+
+        for child in children:
+            kind = child.get("child_kind")
+            if kind == "focused_continuation":
+                grouped["focused"].append(child)
+                grouped["ordered_children"].append(child)
+            elif kind == "branch":
+                grouped["branches"].append(child)
+                grouped["ordered_children"].append(child)
+            elif kind == "interactive_child":
+                grouped["interactive"].append(child)
+                grouped["ordered_children"].append(child)
+            elif kind == "compression_continuation":
+                grouped["compression"].append(child)
+                grouped["ordered_children"].append(child)
+            elif kind == "delegate_subagent_active":
+                grouped["subagents"]["active"].append(child)
+                grouped["ordered_children"].append(child)
+            elif kind == "delegate_subagent_completed":
+                grouped["subagents"]["completed"].append(child)
+                grouped["ordered_children"].append(child)
+            elif kind == "delegate_subagent_stale":
+                grouped["subagents"]["stale_count"] += 1
+                if include_stale:
+                    grouped["subagents"]["stale"].append(child)
+                    grouped["ordered_children"].append(child)
+            else:
+                grouped["other"].append(child)
+                grouped["ordered_children"].append(child)
+
+        return grouped
 
     # =========================================================================
     # Message storage

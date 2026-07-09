@@ -359,6 +359,10 @@ export const api = {
     fetchJSON<SessionInfo>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
     ),
+  getSessionChildren: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<SessionChildrenResponse>(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/children`, profile),
+    ),
   getSessionLatestDescendant: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionLatestDescendantResponse>(
       appendProfileParam(
@@ -1816,6 +1820,34 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  child_kind?: SessionChildKind;
+  child_priority?: number;
+}
+
+export type SessionChildKind =
+  | "focused_continuation"
+  | "branch"
+  | "interactive_child"
+  | "compression_continuation"
+  | "delegate_subagent_active"
+  | "delegate_subagent_completed"
+  | "delegate_subagent_stale"
+  | "child";
+
+export interface SessionChildrenResponse {
+  parent_session_id: string;
+  focused: SessionInfo[];
+  branches: SessionInfo[];
+  interactive: SessionInfo[];
+  compression: SessionInfo[];
+  subagents: {
+    active: SessionInfo[];
+    completed: SessionInfo[];
+    stale: SessionInfo[];
+    stale_count: number;
+  };
+  other: SessionInfo[];
+  ordered_children: SessionInfo[];
 }
 
 export interface SessionLatestDescendantResponse {

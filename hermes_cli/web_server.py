@@ -9934,6 +9934,31 @@ def _open_session_db_for_profile(profile: Optional[str]):
     return SessionDB(db_path=Path(home) / "state.db")
 
 
+@app.get("/api/sessions/{session_id}/children")
+async def get_session_children_endpoint(
+    session_id: str,
+    include_stale: bool = False,
+    profile: Optional[str] = None,
+):
+    """Grouped child sessions for the WebUI parent/child drawer.
+
+    Focused continuations/branches are returned before read-only delegate
+    subagents. Stale/failed delegate rows are counted but hidden unless the
+    caller asks for ``include_stale=1``.
+    """
+    db = _open_session_db_for_profile(profile)
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        grouped = db.get_session_children(sid, include_stale=include_stale)
+        if grouped is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return grouped
+    finally:
+        db.close()
+
+
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile)

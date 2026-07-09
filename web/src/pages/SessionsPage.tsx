@@ -29,6 +29,8 @@ import {
   Pencil,
   Check,
   Archive,
+  Bot,
+  GitBranch,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
@@ -37,6 +39,7 @@ import {
   parseImportSessions,
 } from "@/lib/session-import";
 import type {
+  SessionChildrenResponse,
   SessionInfo,
   SessionMessage,
   SessionSearchResult,
@@ -356,7 +359,7 @@ function MessageList({
 
   useEffect(() => {
     if (!highlight || !containerRef.current) return;
-    // Scroll to first hit after render
+    // Scroll to first hit after render.
     const timer = setTimeout(() => {
       const hit = containerRef.current?.querySelector("[data-search-hit]");
       if (hit) {
@@ -378,6 +381,223 @@ function MessageList({
   );
 }
 
+const CHILD_KIND_LABELS: Record<string, string> = {
+  focused_continuation: "Focused continuation",
+  branch: "Branch",
+  interactive_child: "Interactive child",
+  compression_continuation: "Compression continuation",
+  delegate_subagent_active: "Active delegate",
+  delegate_subagent_completed: "Completed delegate",
+  delegate_subagent_stale: "Stale delegate",
+  child: "Child",
+};
+
+function childSessionTitle(session: SessionInfo, untitled: string): string {
+  const title = session.title?.trim();
+  if (title && title !== "Untitled") return title;
+  const preview = session.preview?.trim();
+  if (preview) return preview.slice(0, 80);
+  return untitled;
+}
+
+function ChildSessionRow({
+  session,
+  onResume,
+}: {
+  session: SessionInfo;
+  onResume: (id: string) => void;
+}) {
+  const { t } = useI18n();
+  const sourceInfo = (session.source
+    ? SOURCE_CONFIG[session.source]
+    : null) ?? { icon: Globe, color: "text-muted-foreground" };
+  const SourceIcon = sourceInfo.icon;
+  return (
+    <div className="flex min-w-0 items-start justify-between gap-3 rounded border border-border/70 bg-background/70 px-3 py-2">
+      <div className="flex min-w-0 items-start gap-2">
+        <SourceIcon className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${sourceInfo.color}`} />
+        <div className="min-w-0 space-y-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <span className="min-w-0 truncate text-sm font-medium">
+              {childSessionTitle(session, t.sessions.untitledSession)}
+            </span>
+            {session.child_kind && (
+              <Badge tone="outline" className="text-[10px]">
+                {CHILD_KIND_LABELS[session.child_kind] ?? session.child_kind}
+              </Badge>
+            )}
+            {session.is_active && (
+              <Badge tone="success" className="text-[10px]">
+                {t.common.live}
+              </Badge>
+            )}
+          </div>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+            <span className="shrink-0">{session.source ?? "local"}</span>
+            <span className="text-border">&#183;</span>
+            <span className="shrink-0">
+              {session.message_count} {t.common.msgs}
+            </span>
+            <span className="text-border">&#183;</span>
+            <span className="shrink-0">{timeAgo(session.last_active)}</span>
+          </div>
+        </div>
+      </div>
+      <Button
+        ghost
+        size="sm"
+        className="shrink-0 text-muted-foreground hover:text-success"
+        onClick={(e) => {
+          e.stopPropagation();
+          onResume(session.id);
+        }}
+        prefix={<Play />}
+      >
+        {t.sessions.resumeInChat}
+      </Button>
+    </div>
+  );
+}
+
+function ChildSessionGroup({
+  title,
+  description,
+  rows,
+  icon: Icon,
+  onResume,
+}: {
+  title: string;
+  description?: string;
+  rows: SessionInfo[];
+  icon: typeof Terminal;
+  onResume: (id: string) => void;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <Icon className="h-3.5 w-3.5" />
+        <span>{title}</span>
+        <Badge tone="outline" className="text-[10px]">
+          {rows.length}
+        </Badge>
+      </div>
+      {description && <p className="text-xs text-muted-foreground">{description}</p>}
+      <div className="space-y-1.5">
+        {rows.map((child) => (
+          <ChildSessionRow key={child.id} session={child} onResume={onResume} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ChildSessionsBlock({
+  grouped,
+  onResume,
+}: {
+  grouped: SessionChildrenResponse;
+  onResume: (id: string) => void;
+}) {
+  const activeSubagents = grouped.subagents.active;
+  const completedSubagents = grouped.subagents.completed;
+  const staleCount = grouped.subagents.stale_count;
+  const subagentCount = activeSubagents.length + completedSubagents.length + staleCount;
+  const visibleCount =
+    grouped.focused.length +
+    grouped.branches.length +
+    grouped.interactive.length +
+    grouped.compression.length +
+    grouped.other.length +
+    subagentCount;
+
+  if (visibleCount === 0) return null;
+
+  return (
+    <div className="mb-4 space-y-4 rounded border border-border bg-midground/20 p-3">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <GitBranch className="h-4 w-4 text-primary" />
+        <span>Continuations and child sessions</span>
+      </div>
+
+      <ChildSessionGroup
+        title="Focused continuations"
+        description="User-intended continuations are always shown before read-only delegate subagents."
+        rows={grouped.focused}
+        icon={GitBranch}
+        onResume={onResume}
+      />
+      <ChildSessionGroup
+        title="Branches"
+        rows={grouped.branches}
+        icon={GitBranch}
+        onResume={onResume}
+      />
+      <ChildSessionGroup
+        title="Interactive promoted children"
+        rows={grouped.interactive}
+        icon={MessageSquare}
+        onResume={onResume}
+      />
+      <ChildSessionGroup
+        title="Compression continuations"
+        rows={grouped.compression}
+        icon={Archive}
+        onResume={onResume}
+      />
+
+      {subagentCount > 0 && (
+        <details className="rounded border border-border/70 bg-background/60 p-2" open={activeSubagents.length > 0}>
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <span className="flex items-center gap-2">
+              <Bot className="h-3.5 w-3.5" />
+              Read-only delegate subagents
+            </span>
+            <span className="flex items-center gap-1.5">
+              {activeSubagents.length > 0 && <Badge tone="success" className="text-[10px]">{activeSubagents.length} active</Badge>}
+              {completedSubagents.length > 0 && <Badge tone="outline" className="text-[10px]">{completedSubagents.length} completed</Badge>}
+              {staleCount > 0 && <Badge tone="outline" className="text-[10px]">{staleCount} hidden stale</Badge>}
+            </span>
+          </summary>
+          <div className="mt-3 space-y-3">
+            {activeSubagents.length > 0 && (
+              <div className="space-y-1.5">
+                {activeSubagents.map((child) => (
+                  <ChildSessionRow key={child.id} session={child} onResume={onResume} />
+                ))}
+              </div>
+            )}
+            {completedSubagents.length > 0 && (
+              <details className="rounded border border-border/60 bg-background/60 p-2">
+                <summary className="cursor-pointer text-xs text-muted-foreground">
+                  Completed read-only subagents ({completedSubagents.length})
+                </summary>
+                <div className="mt-2 space-y-1.5">
+                  {completedSubagents.map((child) => (
+                    <ChildSessionRow key={child.id} session={child} onResume={onResume} />
+                  ))}
+                </div>
+              </details>
+            )}
+            {staleCount > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {staleCount} stale or failed delegate row{staleCount === 1 ? " is" : "s are"} hidden by default for debugging only.
+              </p>
+            )}
+          </div>
+        </details>
+      )}
+
+      <ChildSessionGroup
+        title="Other children"
+        rows={grouped.other}
+        icon={MessageSquare}
+        onResume={onResume}
+      />
+    </div>
+  );
+}
+
 function SessionRow({
   session,
   snippet,
@@ -393,6 +613,9 @@ function SessionRow({
 }: SessionRowProps) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [childGroups, setChildGroups] = useState<SessionChildrenResponse | null>(null);
+  const [childrenLoading, setChildrenLoading] = useState(false);
+  const [childrenError, setChildrenError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
@@ -414,6 +637,18 @@ function SessionRow({
       cancelled = true;
     };
   }, [isExpanded, session.id, messages]);
+
+  useEffect(() => {
+    if (isExpanded && childGroups === null && !childrenLoading) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setChildrenLoading(true);
+      api
+        .getSessionChildren(session.id)
+        .then(setChildGroups)
+        .catch((err) => setChildrenError(String(err)))
+        .finally(() => setChildrenLoading(false));
+    }
+  }, [isExpanded, session.id, childGroups, childrenLoading]);
 
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]
@@ -648,6 +883,20 @@ function SessionRow({
 
       {isExpanded && (
         <div className="min-w-0 border-t border-border bg-background/50 p-4">
+          {childrenLoading && (
+            <div className="mb-4 flex items-center justify-center gap-2 rounded border border-border bg-midground/10 py-3 text-xs text-muted-foreground">
+              <Spinner /> Loading child sessions
+            </div>
+          )}
+          {childrenError && (
+            <p className="mb-4 text-sm text-destructive text-center">{childrenError}</p>
+          )}
+          {childGroups && (
+            <ChildSessionsBlock
+              grouped={childGroups}
+              onResume={(id) => navigate(`/chat?resume=${encodeURIComponent(id)}`)}
+            />
+          )}
           {messages === null && !error && (
             <div className="flex items-center justify-center py-8">
               <Spinner className="text-xl text-primary" />

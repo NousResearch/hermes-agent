@@ -1488,7 +1488,14 @@ def _tui_need_npm_install(root: Path) -> bool:
         return False
 
     ink = ws_root / "node_modules" / "@hermes" / "ink" / "package.json"
-    if not ink.is_file():
+    # Resolve junctions before is_file() to avoid WinError 448 on Windows OpenSSH
+    # (filtered network token cannot traverse reparse points). Fallback to
+    # direct check if resolve() fails (e.g., path doesn't exist).
+    try:
+        ink_resolved = ink.resolve()
+    except OSError:
+        ink_resolved = ink
+    if not ink_resolved.is_file():
         return True
     if not lock.is_file():
         return False

@@ -533,30 +533,100 @@ class TestEdgeTTSLazyImport:
 
 
 class TestStreamingTTSOutputStreamCleanup:
-    """Bug #7: output_stream must be closed in finally block."""
+    """Bug #7: output_stream lifecycle must be torn down even on exception.
 
-    def test_output_stream_closed_in_finally(self):
-        """AST check: stream_tts_to_speaker's finally block must close
-        output_stream even on exception."""
+    After the generic-dispatcher refactor (Task 11 of
+    ``plans/streaming-tts-generic.md``), the audio output stream is no
+    longer created inside ``stream_tts_to_speaker`` — it's owned by
+    ``tools.tts_streaming.dispatch_stream_tts``, which opens a fresh
+    ``sounddevice.OutputStream`` per sentence and tears it down in its
+    own ``finally`` block. The wrapper's only remaining invariant is
+    "always set ``tts_done_event`` so callers waiting on it know the
+    pipeline finished". Both invariants are checked here, in the right
+    places.
+    """
+
+    def test_wrapper_finally_sets_tts_done_event(self):
+        """AST check: stream_tts_to_speaker's finally block must set
+        tts_done_event even on exception."""
         import ast as _ast
 
         with open("tools/tts_tool.py") as f:
             tree = _ast.parse(f.read())
 
+        def _calls_attr(nodes, target_name, attr_name):
+            """Return True if any node in *nodes* is a Call that calls
+            ``target_name.attr_name(...)`` (e.g. ``tts_done_event.set()``).
+            ``ast.dump`` renders attribute access as separate Name +
+            Attribute nodes, so a substring check isn't enough — we
+            walk the tree to confirm both pieces are present in the
+            same Call.
+            """
+            for n in nodes:
+                for sub in _ast.walk(n):
+                    if (
+                        isinstance(sub, _ast.Call)
+                        and isinstance(sub.func, _ast.Attribute)
+                        and sub.func.attr == attr_name
+                        and isinstance(sub.func.value, _ast.Name)
+                        and sub.func.value.id == target_name
+                    ):
+                        return True
+            return False
+
         for node in _ast.walk(tree):
             if isinstance(node, _ast.FunctionDef) and node.name == "stream_tts_to_speaker":
-                # Find the outermost try that has a finally with tts_done_event.set()
+                # Find the outermost try that has a finally that calls
+                # ``tts_done_event.set()``.
                 for child in _ast.walk(node):
                     if isinstance(child, _ast.Try) and child.finalbody:
-                        finally_text = "\n".join(
-                            _ast.dump(n) for n in child.finalbody
-                        )
-                        if "tts_done_event" in finally_text:
-                            assert "output_stream" in finally_text, (
-                                "finally block must close output_stream"
-                            )
+                        if _calls_attr(child.finalbody, "tts_done_event", "set"):
                             return
-                pytest.fail("No finally block with tts_done_event found")
+                pytest.fail(
+                    "stream_tts_to_speaker has no finally block calling "
+                    "tts_done_event.set()"
+                )
+
+    def test_dispatcher_finally_closes_output_stream(self):
+        """AST check: dispatch_stream_tts's finally block must close
+        output_stream even on exception. The dispatcher's per-sentence
+        ``sounddevice.OutputStream`` must not leak file descriptors if
+        a chunk raises mid-iteration."""
+        import ast as _ast
+
+        with open("tools/tts_streaming.py") as f:
+            tree = _ast.parse(f.read())
+
+        def _calls_attr(nodes, target_name, attr_name):
+            """Return True if any node in *nodes* is a Call that calls
+            ``target_name.attr_name(...)`` (e.g. ``output_stream.close()``).
+            ``ast.dump`` renders attribute access as separate Name +
+            Attribute nodes, so a substring check isn't enough — we
+            walk the tree to confirm both pieces are present in the
+            same Call.
+            """
+            for n in nodes:
+                for sub in _ast.walk(n):
+                    if (
+                        isinstance(sub, _ast.Call)
+                        and isinstance(sub.func, _ast.Attribute)
+                        and sub.func.attr == attr_name
+                        and isinstance(sub.func.value, _ast.Name)
+                        and sub.func.value.id == target_name
+                    ):
+                        return True
+            return False
+
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.FunctionDef) and node.name == "dispatch_stream_tts":
+                for child in _ast.walk(node):
+                    if isinstance(child, _ast.Try) and child.finalbody:
+                        if _calls_attr(child.finalbody, "output_stream", "close"):
+                            return
+                pytest.fail(
+                    "dispatch_stream_tts has no finally block calling "
+                    "output_stream.close()"
+                )
 
 
 class TestCtrlCResetsContinuousMode:

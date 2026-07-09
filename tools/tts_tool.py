@@ -2153,6 +2153,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> str:
     """
     Convert text to speech audio.
@@ -2167,6 +2168,14 @@ def text_to_speech_tool(
     Args:
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+        provider: Optional TTS provider override. When set, bypasses the
+            configured ``tts.provider`` and uses this provider instead.
+            Accepts built-in names (``edge``, ``openai``, ``elevenlabs``,
+            ``minimax``, ``xai``, ``mistral``, ``gemini``, ``neutts``,
+            ``kittentts``, ``piper``), user-declared command provider names
+            from ``tts.providers.<name>``, or plugin-registered provider
+            names.  When ``None`` (the default), the configured provider
+            from ``tts.provider`` in config.yaml is used.
 
     Returns:
         str: JSON result with success, file_path, and optionally MEDIA tag.
@@ -2175,7 +2184,11 @@ def text_to_speech_tool(
         return tool_error("Text is required", success=False)
 
     tts_config = _load_tts_config()
-    provider = _get_provider(tts_config)
+    # Allow per-call provider override; fall back to the configured default.
+    if provider:
+        provider = provider.lower().strip()
+    else:
+        provider = _get_provider(tts_config)
 
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here
@@ -2599,8 +2612,16 @@ def stream_tts_to_speaker(
     display_callback: Optional[Callable[[str], None]] = None,
 ):
     """Consume text deltas from *text_queue*, buffer them into sentences,
-    and stream each sentence through ElevenLabs TTS to the speaker in
-    real-time.
+    and stream each sentence through the configured streaming TTS provider
+    to the speaker in real-time.
+
+    Provider selection is delegated to :mod:`tools.tts_streaming`, which
+    resolves the best streaming provider from config (or the priority list
+    ``elevenlabs → gemini → openai → xai → edge``) and routes each
+    sentence through it. The legacy ElevenLabs-inlined path has been
+    replaced by a generic dispatcher that owns the audio output stream
+    lifecycle (``sounddevice.OutputStream`` start / stop / close) and
+    stop-event handling.
 
     Protocol:
         * The producer puts ``str`` deltas onto *text_queue*.
@@ -2612,52 +2633,29 @@ def stream_tts_to_speaker(
     tts_done_event.clear()
 
     try:
-        # --- TTS client setup (optional -- display_callback works without it) ---
-        client = None
-        output_stream = None
-        voice_id = DEFAULT_ELEVENLABS_VOICE_ID
-        model_id = DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
-
+        # --- Provider selection: defer to the generic streaming dispatcher ---
+        # The dispatcher (``tools.tts_streaming.resolve_streaming_provider``)
+        # reads ``tts.streaming.provider`` from config first, then falls
+        # through the priority list. We pass the active sync provider as
+        # ``preferred`` so users with ``tts.provider: gemini`` get a
+        # streaming-capable provider without any extra config.
         tts_config = _load_tts_config()
-        el_config = tts_config.get("elevenlabs", {})
-        voice_id = el_config.get("voice_id", voice_id)
-        model_id = el_config.get("streaming_model_id",
-                                 el_config.get("model_id", model_id))
-        # Per-sentence cap for the streaming path. Look up the cap against
-        # the *streaming* model_id (defaults to eleven_flash_v2_5 = 40k chars),
-        # not the sync model_id. A user override
-        # (tts.elevenlabs.max_text_length) still wins.
-        stream_max_len = _resolve_max_text_length(
-            "elevenlabs",
-            {**tts_config, "elevenlabs": {**el_config, "model_id": model_id}},
-        )
-
-        api_key = (get_env_value("ELEVENLABS_API_KEY") or "")
-        if not api_key:
-            logger.warning("ELEVENLABS_API_KEY not set; streaming TTS audio disabled")
-        else:
-            try:
-                ElevenLabs = _import_elevenlabs()
-                client = ElevenLabs(api_key=api_key)
-            except ImportError:
-                logger.warning("elevenlabs package not installed; streaming TTS disabled")
-
-            # Open a single sounddevice output stream for the lifetime of
-            # this function.  ElevenLabs pcm_24000 produces signed 16-bit
-            # little-endian mono PCM at 24 kHz.
-            if client is not None:
-                try:
-                    sd = _import_sounddevice()
-                    output_stream = sd.OutputStream(
-                        samplerate=24000, channels=1, dtype="int16",
-                    )
-                    output_stream.start()
-                except (ImportError, OSError) as exc:
-                    logger.debug("sounddevice not available: %s", exc)
-                    output_stream = None
-                except Exception as exc:
-                    logger.warning("sounddevice OutputStream failed: %s", exc)
-                    output_stream = None
+        try:
+            from tools.tts_streaming import resolve_streaming_provider
+            provider_name = resolve_streaming_provider(
+                tts_config, preferred=_get_provider(tts_config)
+            )
+        except RuntimeError as exc:
+            # No streaming-capable provider is registered/installed/configured.
+            # We continue with ``provider_name = None`` so the display
+            # callback still works (voice mode without audio is still
+            # useful for testing the queue protocol / sentence buffer).
+            logger.warning(
+                "No streaming TTS provider available: %s; "
+                "display-only mode",
+                exc,
+            )
+            provider_name = None
 
         sentence_buf = ""
         min_sentence_len = 20
@@ -2668,7 +2666,7 @@ def stream_tts_to_speaker(
         _think_block_re = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
 
         def _speak_sentence(sentence: str):
-            """Display sentence and optionally generate + play audio."""
+            """Display sentence and dispatch it to the streaming provider."""
             if stop_event.is_set():
                 return
             cleaned = _strip_markdown_for_tts(sentence).strip()
@@ -2683,57 +2681,24 @@ def stream_tts_to_speaker(
             # Display raw sentence on screen before TTS processing
             if display_callback is not None:
                 display_callback(sentence)
-            # Skip audio generation if no TTS client available
-            if client is None:
+            # Skip audio generation if no streaming provider is available
+            # (e.g. no API keys set, no SDKs installed). Display-only mode
+            # still completes the queue-protocol round-trip so the rest of
+            # the voice-mode pipeline keeps working.
+            if provider_name is None:
                 return
-            # Truncate very long sentences (ElevenLabs streaming path)
-            if len(cleaned) > stream_max_len:
-                cleaned = cleaned[:stream_max_len]
-            try:
-                audio_iter = client.text_to_speech.convert(
-                    text=cleaned,
-                    voice_id=voice_id,
-                    model_id=model_id,
-                    output_format="pcm_24000",
-                )
-                if output_stream is not None:
-                    for chunk in audio_iter:
-                        if stop_event.is_set():
-                            break
-                        import numpy as _np
-                        audio_array = _np.frombuffer(chunk, dtype=_np.int16)
-                        output_stream.write(audio_array.reshape(-1, 1))
-                else:
-                    # Fallback: write chunks to temp file and play via system player
-                    _play_via_tempfile(audio_iter, stop_event)
-            except Exception as exc:
-                logger.warning("Streaming TTS sentence failed: %s", exc)
-
-        def _play_via_tempfile(audio_iter, stop_evt):
-            """Write PCM chunks to a temp WAV file and play it."""
-            tmp_path = None
-            try:
-                import wave
-                tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-                tmp_path = tmp.name
-                with wave.open(tmp, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)  # 16-bit
-                    wf.setframerate(24000)
-                    for chunk in audio_iter:
-                        if stop_evt.is_set():
-                            break
-                        wf.writeframes(chunk)
-                from tools.voice_mode import play_audio_file
-                play_audio_file(tmp_path)
-            except Exception as exc:
-                logger.warning("Temp-file TTS fallback failed: %s", exc)
-            finally:
-                if tmp_path:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
+            # Defer to the generic dispatcher. The dispatcher opens and
+            # tears down its own ``sounddevice.OutputStream`` per sentence
+            # and checks ``stop_event`` between chunks, so a single
+            # misconfigured sentence never crashes the loop. The
+            # dispatcher's own ``try/except`` logs and returns on failure,
+            # matching the legacy best-effort semantics.
+            from tools.tts_streaming import dispatch_stream_tts
+            dispatch_stream_tts(
+                cleaned,
+                provider_name,
+                stop_event=stop_event,
+            )
 
         while not stop_event.is_set():
             # Read next delta from queue
@@ -2786,18 +2751,16 @@ def stream_tts_to_speaker(
             except queue.Empty:
                 break
 
-        # output_stream is closed in the finally block below
-
     except Exception as exc:
         logger.warning("Streaming TTS pipeline error: %s", exc)
     finally:
-        # Always close the audio output stream to avoid locking the device
-        if output_stream is not None:
-            try:
-                output_stream.stop()
-                output_stream.close()
-            except Exception:
-                pass
+        # The audio output stream is now owned by the streaming dispatcher
+        # (``tools.tts_streaming.dispatch_stream_tts``), which opens a
+        # fresh ``sounddevice.OutputStream`` per sentence and tears it
+        # down in its own ``finally`` block. The remaining invariant
+        # here is the wrapper's contract: always set ``tts_done_event``
+        # so callers waiting on it (continuous voice mode) know the
+        # pipeline has finished, even on exception.
         tts_done_event.set()
 
 
@@ -2852,6 +2815,16 @@ TTS_SCHEMA = {
             "output_path": {
                 "type": "string",
                 "description": f"Optional custom file path to save the audio. Defaults to {display_hermes_home()}/audio_cache/<timestamp>.mp3"
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional TTS provider override. Accepts built-in names "
+                    "(edge, openai, elevenlabs, minimax, xai, mistral, gemini, "
+                    "neutts, kittentts, piper), user-declared command provider "
+                    "names from tts.providers.<name>, or plugin-registered names. "
+                    "When omitted, the configured tts.provider from config.yaml is used."
+                )
             }
         },
         "required": ["text"]
@@ -2864,7 +2837,8 @@ registry.register(
     schema=TTS_SCHEMA,
     handler=lambda args, **kw: text_to_speech_tool(
         text=args.get("text", ""),
-        output_path=args.get("output_path")),
+        output_path=args.get("output_path"),
+        provider=args.get("provider")),
     check_fn=check_tts_requirements,
     emoji="🔊",
 )

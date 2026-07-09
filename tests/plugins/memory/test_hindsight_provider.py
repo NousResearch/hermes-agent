@@ -909,6 +909,16 @@ class TestPrefetch:
     def test_prefetch_returns_empty_when_no_result(self, provider):
         assert provider.prefetch("test") == ""
 
+    def test_prefetch_joins_live_thread_with_configured_timeout(self, provider_with_config):
+        provider = provider_with_config(prefetch_join_timeout=0.5)
+        live_thread = MagicMock()
+        live_thread.is_alive.return_value = True
+        provider._prefetch_thread = live_thread
+
+        provider.prefetch("test")
+
+        live_thread.join.assert_called_once_with(timeout=0.5)
+
     def test_prefetch_default_preamble(self, provider):
         provider._prefetch_result = "- some memory"
         result = provider.prefetch("test")

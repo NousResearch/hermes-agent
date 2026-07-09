@@ -902,9 +902,10 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
         kwargs: dict = {
             "workspace_id": config.workspace_id,
-            "api_key": effective_api_key,
             "environment": config.environment,
         }
+        if effective_api_key:
+            kwargs["api_key"] = effective_api_key
         if resolved_base_url:
             kwargs["base_url"] = resolved_base_url
         if resolved_timeout is not None:

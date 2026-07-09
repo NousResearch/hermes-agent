@@ -1,5 +1,10 @@
 const DELETE = "\x7f";
 
+// How long (ms) after a mobile IME / replacement event we treat subsequent
+// terminal input as a candidate line-replacement rather than a plain append.
+// Exported so the ChatPage integration and tests share one tunable value.
+export const MOBILE_REPLACEMENT_WINDOW_MS = 350;
+
 function chars(text: string): string[] {
   return Array.from(text);
 }
@@ -24,6 +29,11 @@ function collapseDuplicatedFinalWord(text: string, previousLine: string): string
 
   const [, prefix, first, , second, trailing] = match;
   if (first.toLocaleLowerCase() !== second.toLocaleLowerCase()) return text;
+  // Only collapse a duplication the tracked line already ended with — i.e.
+  // Gboard re-emitted the final word. Requiring a >=2-char word avoids
+  // eating legitimate single-letter reduplication ("a a", "i i") that a
+  // user may genuinely type inside the replacement window.
+  if (first.length < 2) return text;
   if (!previousLine.trimEnd().toLocaleLowerCase().endsWith(first.toLocaleLowerCase())) {
     return text;
   }

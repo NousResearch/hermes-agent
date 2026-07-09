@@ -354,7 +354,26 @@ def _redact_approval_command(cmd: "str | None") -> str:
 
 
 def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
+    """Map raw provider/API errors to a short user-safe Telegram reply.
+
+    Order matters here. The 429 rate-limit regex MUST run before the
+    auth-failed regex because real-world 429 envelopes from OAuth-pool
+    credentials (e.g. openai-codex) are wrapped as
+    ``"Provider authentication failed: Rate limit exceeded (HTTP 429)"``
+    (the gateway re-wraps upstream errors in auth-shape envelopes even
+    when the credentials are perfectly valid and the real problem is
+    rate-limiting). With the previous order, every such 429 surfaced
+    as "Provider authentication failed" and sent users to re-auth for
+    no reason (#60846).
+
+    Concretely: 429/``quota``/``usage limit``/``rate`` must win over
+    ``provider authentication failed`` when the latter is a wrapper
+    around the former. The inverse (true 401s, invalid keys) is still
+    caught by the auth regex *after* the rate-limit check returns
+    nothing, so reordering does not break real auth detection.
+    """
+    if _GATEWAY_RATE_LIMIT_RE.search(text):
+        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
     if _GATEWAY_AUTH_ERROR_RE.search(text):
         return (
             "⚠️ Provider authentication failed. Check the configured credentials; "
@@ -365,8 +384,6 @@ def _gateway_provider_error_reply(text: str) -> str:
             "⚠️ The model provider rejected the request. I kept the raw provider "
             "error out of chat; check gateway logs for details or try rephrasing."
         )
-    if _GATEWAY_RATE_LIMIT_RE.search(text):
-        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
     return (
         "⚠️ The model provider failed after retries. I kept raw provider details "
         "out of chat; check gateway logs for diagnostics."
@@ -13226,7 +13243,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         media_urls: Optional[List[str]] = None,
         media_types: Optional[List[str]] = None,
     ) -> None:
-        """Execute a background agent task and deliver the result to the chat."""
+        """Profile-scoping wrapper around the background task.
+
+        When multiplexing is active, install the source's profile
+        secret scope around the inner task so credential reads (e.g.
+        ``get_secret('OPENROUTER_BASE_URL')``) resolve from the
+        profile's ``.env`` instead of the process-global environment
+        (which in a multiplexed gateway may hold another profile's
+        value). When multiplexing is off, this is a transparent
+        pass-through — the scope installation is a no-op for
+        single-profile gateways.
+
+        Background tasks are fire-and-forget (``asyncio.create_task``),
+        so the scope must be installed INSIDE the task function, not
+        relied on from the caller — the caller's context does not
+        propagate into the detached task (#60726).
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return await self._run_background_task_inner(
+                prompt, source, task_id,
+                event_message_id=event_message_id,
+                media_urls=media_urls,
+                media_types=media_types,
+            )
+        profile_home = self._resolve_profile_home_for_source(source)
+        with _profile_runtime_scope(profile_home):
+            return await self._run_background_task_inner(
+                prompt, source, task_id,
+                event_message_id=event_message_id,
+                media_urls=media_urls,
+                media_types=media_types,
+            )
+
+    async def _run_background_task_inner(
+        self,
+        prompt: str,
+        source: "SessionSource",
+        task_id: str,
+        event_message_id: Optional[str] = None,
+        media_urls: Optional[List[str]] = None,
+        media_types: Optional[List[str]] = None,
+    ) -> None:
+        """Execute a background agent task and deliver the result to the chat.
+
+        Extracted from ``_run_background_task`` so the wrapper can install
+        a profile secret scope around it (#60726). The body is unchanged
+        from the original implementation.
+        """
         from run_agent import AIAgent
 
         media_urls = media_urls or []

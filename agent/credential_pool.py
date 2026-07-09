@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 import re
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -153,6 +153,14 @@ class PooledCredential:
     agent_key_expires_at: Optional[str] = None
     request_count: int = 0
     extra: Dict[str, Any] = None  # type: ignore[assignment]
+    # #61451: per-model exhaustion state. A Fable-class 429 carries Fable's
+    # own rate-limit window; the unified Anthropic credential is still
+    # usable for sonnet/opus. Tracking exhaustion per (credential, model)
+    # keeps the credential available for models that have NOT hit the
+    # limit, while still blocking the model that did. Keyed by model name
+    # (lower-cased). Dict-of-dicts avoids growing the dataclass with N
+    # model-specific fields.
+    model_exhaustions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.extra is None:
@@ -335,7 +343,30 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
     return normalized
 
 
-def _exhausted_until(entry: PooledCredential) -> Optional[float]:
+def _exhausted_until(
+    entry: PooledCredential,
+    model: Optional[str] = None,
+) -> Optional[float]:
+    """Return the absolute timestamp until which the entry is in
+    exhaustion cooldown for the requested model, or None if not
+    exhausted.
+
+    #61451: when a model is given, consult ``entry.model_exhaustions``
+    FIRST. This keeps the credential available for other models while
+    still blocking the model that hit the rate limit. When no model
+    is given (or the model has no recorded exhaustion), fall back to
+    the credential-wide ``last_status``/``last_status_at`` for
+    backwards compatibility with health-check and legacy call sites.
+    """
+    if model:
+        m_state = entry.model_exhaustions.get(model.strip().lower())
+        if m_state and m_state.get("status") == STATUS_EXHAUSTED:
+            reset_at = _parse_absolute_timestamp(m_state.get("reset_at"))
+            if reset_at is not None:
+                return reset_at
+            if m_state.get("status_at"):
+                return m_state["status_at"] + _exhausted_ttl(m_state.get("error_code"))
+    # Credential-wide state (legacy / no-model path).
     if entry.last_status != STATUS_EXHAUSTED:
         return None
     reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
@@ -572,6 +603,7 @@ class CredentialPool:
         entry: PooledCredential,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        model: Optional[str] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
@@ -585,6 +617,33 @@ class CredentialPool:
             terminal_status = STATUS_DEAD
         else:
             terminal_status = STATUS_EXHAUSTED
+
+        # #61451: per-model exhaustion. When the caller provides a model
+        # argument, record exhaustion in entry.model_exhaustions (NOT in
+        # the credential-wide fields) so other models on the same
+        # credential remain selectable. The credential-wide fields are
+        # only set when no model is given (legacy / no-model call sites
+        # like health checks).
+        if model:
+            model_key = model.strip().lower()
+            new_model_exhaustions = dict(entry.model_exhaustions)
+            new_model_exhaustions[model_key] = {
+                "status": terminal_status,
+                "status_at": time.time(),
+                "error_code": status_code,
+                "error_reason": normalized_error.get("reason"),
+                "error_message": normalized_error.get("message"),
+                "reset_at": normalized_error.get("reset_at"),
+            }
+            updated = replace(
+                entry,
+                model_exhaustions=new_model_exhaustions,
+            )
+            self._replace_entry(entry, updated)
+            self._persist()
+            return updated
+
+        # Legacy / no-model path: credential-wide exhaustion.
         updated = replace(
             entry,
             last_status=terminal_status,
@@ -1362,16 +1421,28 @@ class CredentialPool:
             return False
         return False
 
-    def select(self) -> Optional[PooledCredential]:
+    def select(self, model: Optional[str] = None) -> Optional[PooledCredential]:
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(model=model)
 
-    def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
+    def _available_entries(
+        self,
+        *,
+        clear_expired: bool = False,
+        refresh: bool = False,
+        model: Optional[str] = None,
+    ) -> List[PooledCredential]:
         """Return entries not currently in exhaustion cooldown.
 
         When *clear_expired* is True, entries whose cooldown has elapsed are
         reset to STATUS_OK and persisted.  When *refresh* is True, entries
         that need a token refresh are refreshed (skipped on failure).
+
+        #61451: when *model* is given, also consult the per-model
+        ``model_exhaustions`` map. An entry is skipped if the requested
+        model is in exhaustion cooldown, even if the credential is
+        otherwise healthy. This is what keeps sonnet/opus selectable on
+        a credential whose Fable has 429'd.
         """
         now = time.time()
         cleared_any = False
@@ -1452,7 +1523,7 @@ class CredentialPool:
                 # the re-auth case for OAuth singletons.
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
-                exhausted_until = _exhausted_until(entry)
+                exhausted_until = _exhausted_until(entry, model=model)
                 if exhausted_until is not None and now < exhausted_until:
                     continue
                 if clear_expired:
@@ -1468,6 +1539,37 @@ class CredentialPool:
                     self._replace_entry(entry, cleared)
                     entry = cleared
                     cleared_any = True
+            # #61451: per-model exhaustion filter. The credential-wide
+            # STATUS_EXHAUSTED state above is only set by legacy/no-model
+            # call sites; per-model exhaustion is recorded in
+            # ``entry.model_exhaustions``. If a model-specific exhaustion
+            # is still in cooldown for the requested model, skip this
+            # entry. This is the core of the fix: a Fable 429 on a
+            # credential that has plenty of sonnet quota should NOT
+            # block sonnet queries on that credential.
+            if model and entry.model_exhaustions:
+                m_state = entry.model_exhaustions.get(model.strip().lower())
+                if m_state:
+                    m_reset_at = _parse_absolute_timestamp(m_state.get("reset_at"))
+                    m_status_at = m_state.get("status_at")
+                    m_code = m_state.get("error_code")
+                    m_exhausted = None
+                    if m_reset_at is not None:
+                        m_exhausted = m_reset_at
+                    elif m_status_at:
+                        m_exhausted = m_status_at + _exhausted_ttl(m_code)
+                    if m_exhausted is not None and now < m_exhausted:
+                        continue
+                    if clear_expired and m_exhausted is not None and now >= m_exhausted:
+                        new_model_exhaustions = dict(entry.model_exhaustions)
+                        new_model_exhaustions.pop(model.strip().lower(), None)
+                        cleared = replace(
+                            entry,
+                            model_exhaustions=new_model_exhaustions,
+                        )
+                        self._replace_entry(entry, cleared)
+                        entry = cleared
+                        cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
                 refreshed = self._refresh_entry(entry, force=False)
                 if refreshed is None:
@@ -1481,8 +1583,8 @@ class CredentialPool:
             self._persist(removed_ids=entries_to_prune)
         return available
 
-    def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._available_entries(clear_expired=True, refresh=True)
+    def _select_unlocked(self, model: Optional[str] = None) -> Optional[PooledCredential]:
+        available = self._available_entries(clear_expired=True, refresh=True, model=model)
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")

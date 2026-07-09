@@ -12588,11 +12588,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Expose the flag for post-turn hooks (e.g. goal continuation)
             # so they can skip themselves when the turn was user-cancelled.
             self._last_turn_interrupted = _interrupted_this_turn
+            # Default to empty so the post-Panel block below can reference
+            # it without an UnboundLocalError on non-interrupt turns.
+            _interrupt_marker = ""
             if _interrupted_this_turn:
                 pending_message = result.get("interrupt_message") or interrupt_msg
-                # Add indicator that we were interrupted
-                if response and pending_message:
-                    response = response + "\n\n---\n_[Interrupted - processing new message]_"
+                # #60920: do NOT concatenate the interrupt marker into the response
+                # itself — that would record the marker into _OUTPUT_HISTORY via
+                # ChatConsole.print's per-line _cprint path, so the next
+                # _replay_output_history (after _force_full_redraw or terminal
+                # resize) would duplicate the marker on screen. Keep the
+                # response clean for resize-recovery; emit the marker as a
+                # SEPARATE _cprint() call AFTER the Panel render, wrapped in
+                # _suspend_output_history() so the marker reaches the
+                # terminal but is NOT added to history.
+                _interrupt_marker = "\n\n---\n_[Interrupted - processing new message]_"
             elif interrupt_msg:
                 # We fired agent.interrupt(interrupt_msg) but the turn result
                 # doesn't acknowledge it. Two ways this happens, both racy:
@@ -12684,6 +12694,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         width=self._scrollback_box_width(),
                     ))
 
+            # #60920: emit the interrupt marker (if any) AFTER the Panel
+            # render, under _suspend_output_history() so the marker reaches
+            # the terminal but is NOT recorded into _OUTPUT_HISTORY. This
+            # preserves the once-displayed-on-interrupt semantics without
+            # duplicating the marker on every _replay_output_history() call
+            # (after _force_full_redraw, terminal resize, etc.).
+            if _interrupted_this_turn and response:
+                with _suspend_output_history():
+                    _cprint(_interrupt_marker.rstrip())
+
 
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
@@ -12733,14 +12753,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             # If a /steer was left over (agent finished before another tool
             # batch could absorb it), deliver it as the next user turn.
-            _leftover_steer = result.get("pending_steer") if result else None
-            if _leftover_steer and hasattr(self, '_pending_input'):
-                preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
-                print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
-                self._pending_input.put(_leftover_steer)
+            self._deliver_leftover_steer(result)
 
             return response
-            
+
         except Exception as e:
             print(f"Error: {e}")
             return None
@@ -12758,7 +12774,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 stop_event.set()
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
-    
+
+    def _deliver_leftover_steer(self, result) -> None:
+        """Queue a leftover /steer for the next user turn, with the
+        OUT-OF-BAND marker wrap so the model can distinguish it from
+        a regular next-turn user message.
+
+        Background (issue #60543): ``_apply_pending_steer_to_tool_results``
+        drains ``agent._pending_steer`` AFTER each tool batch. If the
+        /steer arrives between the drain and the next API call (a
+        narrow but real window in long tool runs), the drain returns
+        None, the steer stays in ``_pending_steer``, and the leftover
+        ends up in ``agent.run()``'s return ``result``. Without this
+        helper, the next turn sees raw steer text on ``self._pending_input``
+        and never sees the ``OUT-OF-BAND USER MESSAGE`` marker that
+        tells it to interpret the text as a mid-turn steer rather
+        than a fresh user prompt.
+
+        Extracted from chat() so the regression can be tested without
+        driving the whole chat pipeline (see
+        tests/run_agent/test_steer_leftover_handler.py).
+        """
+        _leftover_steer = result.get("pending_steer") if result else None
+        if not _leftover_steer:
+            return
+        if not hasattr(self, "_pending_input"):
+            return
+        # Wrap the steer text so the model recognizes it as out-of-band
+        # on the next turn. Without this wrap, raw steer text lands in
+        # the next user turn and the model treats it as a fresh prompt.
+        from agent.prompt_builder import format_steer_marker
+        preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
+        print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
+        self._pending_input.put(format_steer_marker(_leftover_steer))
+
     def _clear_terminal_on_exit(self):
         """Clear screen + scrollback so nothing is stranded above the exit summary.
 

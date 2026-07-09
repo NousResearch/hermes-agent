@@ -46,11 +46,17 @@ import { useProfileScope } from "@/contexts/useProfileScope";
 // ``rotate`` mints a new token — used when the user explicitly starts a fresh
 // session so the old keep-alive PTY is NOT reattached (the registry reaps it).
 const PTY_ATTACH_TOKEN_KEY = "hermes.pty.token.chat";
-function ptyAttachToken(rotate = false): string {
+
+// Scope the attach token to the resume session so different ?resume=<id>
+// values get independent keep-alive PTYs.  Without session scoping, every
+// /chat tab shares the same localStorage token — the server reattaches
+// to whichever PTY last bound that token (#60772).
+function ptyAttachToken(rotate = false, scope?: string | null): string {
+  const key = scope ? `${PTY_ATTACH_TOKEN_KEY}:${scope}` : PTY_ATTACH_TOKEN_KEY;
   let t = "";
   if (!rotate) {
     try {
-      t = window.localStorage.getItem(PTY_ATTACH_TOKEN_KEY) ?? "";
+      t = window.localStorage.getItem(key) ?? "";
     } catch {
       /* private mode / storage blocked */
     }
@@ -60,7 +66,7 @@ function ptyAttachToken(rotate = false): string {
     crypto.getRandomValues(a);
     t = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
     try {
-      window.localStorage.setItem(PTY_ATTACH_TOKEN_KEY, t);
+      window.localStorage.setItem(key, t);
     } catch {
       /* ignore */
     }
@@ -710,7 +716,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Keep-alive identity: reattach to this tab's living PTY across
       // refresh/transient drops. A forced-fresh start rotates the token so
       // the previous keep-alive PTY is not reattached (registry reaps it).
-      params.attach = ptyAttachToken(forceFresh);
+      params.attach = ptyAttachToken(forceFresh, resumeParam);
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).

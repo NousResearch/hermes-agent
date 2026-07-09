@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 // Shared chrome styling for interactive statusbar items (button / link / menu
 // trigger). The 'text' variant intentionally omits hover/transition/disabled.
 const STATUSBAR_ACTION_CLASS =
-  'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45'
+  'inline-flex h-full items-center gap-1.5 rounded-none px-2 text-xs text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45'
 
 export interface StatusbarMenuItem {
   id: string
@@ -61,7 +61,7 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
   return (
     <footer
       className={cn(
-        'flex h-5 shrink-0 items-stretch justify-between gap-2 border-t border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) px-1 py-0 text-(--ui-text-tertiary) [-webkit-app-region:no-drag]',
+        'flex h-6 shrink-0 items-stretch justify-between gap-2 border-t border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) px-1.5 py-0 text-(--ui-text-tertiary) [-webkit-app-region:no-drag]',
         className
       )}
       data-slot="statusbar"
@@ -96,7 +96,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     <>
       {item.icon}
       {item.label && <span className="truncate">{item.label}</span>}
-      {item.detail && <span className="truncate text-muted-foreground/80">{item.detail}</span>}
+      {item.detail && <span className="truncate text-muted-foreground">{item.detail}</span>}
     </>
   )
 
@@ -179,7 +179,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
       <Tip label={item.title}>
         <div
           className={cn(
-            'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
+            'inline-flex h-full items-center gap-1.5 px-2 text-xs text-(--ui-text-tertiary)',
             item.className
           )}
         >

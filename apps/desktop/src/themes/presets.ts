@@ -277,13 +277,80 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/** Vibrant purple-blue with colorful accents — inspired by Codex and modern AI tools. */
+export const codexTheme: DesktopTheme = {
+  name: 'codex',
+  label: 'Codex',
+  description: 'Vibrant purple-blue with colorful accents',
+  colors: {
+    background: '#F5F3FF',
+    foreground: '#1E1B2E',
+    card: '#FFFFFF',
+    cardForeground: '#1E1B2E',
+    muted: '#EDE9FE',
+    mutedForeground: '#6B6590',
+    popover: '#FFFFFF',
+    popoverForeground: '#1E1B2E',
+    primary: '#7C3AED',
+    primaryForeground: '#FFFFFF',
+    secondary: '#EDE9FE',
+    secondaryForeground: '#3B2F6B',
+    accent: '#DDD6FE',
+    accentForeground: '#4C1D95',
+    border: '#DDD6FE',
+    input: '#E9E5F5',
+    ring: '#7C3AED',
+    midground: '#7C3AED',
+    composerRing: '#7C3AED',
+    destructive: '#DC2626',
+    destructiveForeground: '#FFFFFF',
+    sidebarBackground: '#EDE9FE',
+    sidebarBorder: '#DDD6FE',
+    userBubble: '#EDE9FE',
+    userBubbleBorder: '#C4B5FD'
+  },
+  darkColors: {
+    background: '#0F0A1E',
+    foreground: '#E8E0F0',
+    card: '#1A1230',
+    cardForeground: '#E8E0F0',
+    muted: '#231A3E',
+    mutedForeground: '#9585C0',
+    popover: '#1E1538',
+    popoverForeground: '#E8E0F0',
+    primary: '#A78BFA',
+    primaryForeground: '#0F0A1E',
+    secondary: '#2D2252',
+    secondaryForeground: '#C4B5FD',
+    accent: '#3B2F6B',
+    accentForeground: '#DDD6FE',
+    border: '#3D2F72',
+    input: '#2D2252',
+    ring: '#A78BFA',
+    midground: '#7C3AED',
+    composerRing: '#A78BFA',
+    destructive: '#F87171',
+    destructiveForeground: '#0F0A1E',
+    sidebarBackground: '#0A0718',
+    sidebarBorder: '#2D2252',
+    userBubble: '#1E1538',
+    userBubbleBorder: '#4C1D95'
+  },
+  typography: {
+    fontSans: SYSTEM_SANS,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
-  slate: slateTheme
+  slate: slateTheme,
+  codex: codexTheme
 }
 
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)

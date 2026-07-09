@@ -181,7 +181,7 @@ class TestAtomicSnapshotWrite:
 
         assert "umask 077" in wrapped
         assert wrapped.index("eval 'echo hi'") < wrapped.index("umask 077")
-        assert wrapped.index("umask 077") < wrapped.index("export -p >")
+        assert wrapped.index("umask 077") < wrapped.index("export -p |")
 
     def test_init_session_bootstrap_uses_private_umask(self):
         env = _TestableEnv()
@@ -198,7 +198,7 @@ class TestAtomicSnapshotWrite:
             pass
         boot = captured.get("cmd", "")
         assert "umask 077" in boot
-        assert boot.index("umask 077") < boot.index("export -p >")
+        assert boot.index("umask 077") < boot.index("export -p |")
 
 
 class TestAtomicSnapshotConcurrencyBehavioral:

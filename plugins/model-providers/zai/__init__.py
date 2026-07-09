@@ -121,6 +121,7 @@ zai = ZaiProfile(
         "glm-4-9b",
     ),
     base_url="https://api.z.ai/api/paas/v4",
+    default_max_tokens=8192,
     default_aux_model="glm-4.5-flash",
 )
 

@@ -11,6 +11,7 @@ runs at a time if multiple processes overlap.
 import asyncio
 import atexit
 import concurrent.futures
+import contextlib
 import contextvars
 import json
 import logging
@@ -26,10 +27,10 @@ try:
     import fcntl
 except ImportError:
     fcntl = None
-    try:
-        import msvcrt
-    except ImportError:
-        msvcrt = None
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -38,7 +39,7 @@ from typing import Any, List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
@@ -556,6 +557,53 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+@contextlib.contextmanager
+def _cron_llm_run_lock(job: dict):
+    """Serialize cron LLM runs across Hermes profiles on this host.
+
+    Each profile gateway has its own process and thread pool, so per-process
+    max_parallel_jobs cannot stop simultaneous GLM calls. The lock is rooted in
+    the default Hermes home intentionally: it is a host-wide provider throttle,
+    not profile-local cron storage coordination. no_agent jobs never enter this
+    path, so script-only watchdogs keep running without model contention.
+    """
+    lock_dir = get_default_hermes_root() / "cron"
+    lock_path = lock_dir / ".llm-run.lock"
+    lock_file = None
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        lock_file = open(lock_path, "a+", encoding="utf-8")
+        logger.info(
+            "Job '%s': waiting for host-wide cron LLM lock",
+            job.get("name") or job.get("id") or "cron job",
+        )
+        if fcntl:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+        elif msvcrt:
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        logger.info(
+            "Job '%s': acquired host-wide cron LLM lock",
+            job.get("name") or job.get("id") or "cron job",
+        )
+        yield
+    except Exception:
+        if lock_file is None:
+            logger.warning("Cron LLM lock unavailable; running without host-wide throttle", exc_info=True)
+            yield
+        else:
+            raise
+    finally:
+        if lock_file is not None:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+                elif msvcrt:
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            except (OSError, IOError):
+                pass
+            lock_file.close()
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -3096,42 +3144,43 @@ def run_job(
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
-        _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        # Preserve scheduler-scoped ContextVar state (for example skill-declared
-        # env passthrough registrations) when the cron run hops into the worker
-        # thread used for inactivity timeout monitoring.
-        _cron_context = contextvars.copy_context()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
-        _inactivity_timeout = False
-        try:
-            if _cron_inactivity_limit is None:
-                # Unlimited — just wait for the result.
-                result = _cron_future.result()
-            else:
-                result = None
-                while True:
-                    done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
-                    )
-                    if done:
-                        result = _cron_future.result()
-                        break
-                    # Agent still running — check inactivity.
-                    _idle_secs = 0.0
-                    if hasattr(agent, "get_activity_summary"):
-                        try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _cron_inactivity_limit:
-                        _inactivity_timeout = True
-                        break
-        except Exception:
-            _cron_pool.shutdown(wait=False, cancel_futures=True)
-            raise
-        finally:
-            _cron_pool.shutdown(wait=False, cancel_futures=True)
+        with _cron_llm_run_lock(job):
+            _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            # Preserve scheduler-scoped ContextVar state (for example skill-declared
+            # env passthrough registrations) when the cron run hops into the worker
+            # thread used for inactivity timeout monitoring.
+            _cron_context = contextvars.copy_context()
+            _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+            _inactivity_timeout = False
+            try:
+                if _cron_inactivity_limit is None:
+                    # Unlimited — just wait for the result.
+                    result = _cron_future.result()
+                else:
+                    result = None
+                    while True:
+                        done, _ = concurrent.futures.wait(
+                            {_cron_future}, timeout=_POLL_INTERVAL,
+                        )
+                        if done:
+                            result = _cron_future.result()
+                            break
+                        # Agent still running — check inactivity.
+                        _idle_secs = 0.0
+                        if hasattr(agent, "get_activity_summary"):
+                            try:
+                                _act = agent.get_activity_summary()
+                                _idle_secs = _act.get("seconds_since_activity", 0.0)
+                            except Exception:
+                                pass
+                        if _idle_secs >= _cron_inactivity_limit:
+                            _inactivity_timeout = True
+                            break
+            except Exception:
+                _cron_pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            finally:
+                _cron_pool.shutdown(wait=False, cancel_futures=True)
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.

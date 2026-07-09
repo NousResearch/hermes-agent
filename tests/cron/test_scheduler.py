@@ -2223,6 +2223,44 @@ class TestRunJobModelResolution:
 
 
 class TestRunJobSkillBacked:
+    def test_run_job_wraps_agent_call_with_host_wide_llm_lock(self, tmp_path):
+        job = {
+            "id": "llm-lock-job",
+            "name": "LLM lock job",
+            "prompt": "Summarize this.",
+        }
+
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls, \
+             patch("cron.scheduler._cron_llm_run_lock") as mock_lock:
+            mock_lock.return_value.__enter__.return_value = None
+            mock_lock.return_value.__exit__.return_value = None
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        mock_lock.assert_called_once_with(job)
+        mock_agent.run_conversation.assert_called_once()
+
     def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
         job = {
             "id": "skill-env-job",

@@ -802,6 +802,8 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_active_null
+    ON messages(active) WHERE active IS NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
@@ -1381,6 +1383,23 @@ class SessionDB:
         # column (idx_messages_session_active) — same ordering constraint.
         cursor.executescript(DEFERRED_INDEX_SQL)
 
+        # Heal NULL ``active`` rows unconditionally on every startup.
+        # On real-world DBs the reconciler-added ``active`` column can lack
+        # its NOT NULL DEFAULT 1 (older reconciler builds reconstructed the
+        # type without the default — see #51646: PRAGMA shows
+        # (17,'active','INTEGER',0,None,0) in the wild), so INSERTs that
+        # omitted the column wrote NULL and the ``WHERE active = 1``
+        # transcript loaders hid the whole history.  The INSERTs now set
+        # active=1 explicitly; this idempotent repair un-hides rows written
+        # before the fix.  It was previously gated at ``current_version <
+        # 12`` which never re-ran for already-v12+ databases.
+        try:
+            cursor.execute(
+                "UPDATE messages SET active = 1 WHERE active IS NULL"
+            )
+        except sqlite3.OperationalError:
+            pass
+
         fts5_available = self._sqlite_supports_fts5(cursor)
         fts_migrations_complete = True
         if not fts5_available:
@@ -1495,18 +1514,6 @@ class SessionDB:
                         fts_migrations_complete = False
                 else:
                     fts_migrations_complete = False
-            if current_version < 12:
-                # v12: messages.active flag for rewind/undo soft-deletion.
-                # The declarative reconcile_columns() above adds the
-                # column itself; this UPDATE is belt-and-suspenders to
-                # ensure any rows that pre-existed the ADD COLUMN have
-                # active=1 rather than NULL.
-                try:
-                    cursor.execute(
-                        "UPDATE messages SET active = 1 WHERE active IS NULL"
-                    )
-                except sqlite3.OperationalError:
-                    pass
             if current_version < 16:
                 # v16: tag delegate subagent rows so pickers stay clean after
                 # parent deletes that used to orphan them (parent_session_id → NULL).
@@ -2940,6 +2947,28 @@ class SessionDB:
             current = child_id
         return current
 
+    # Columns excluded from compact_rows projections: only the payload-heavy
+    # blob no list consumer renders. Everything else — including gateway
+    # routing fields and desktop sidebar fields like git_branch — stays, and
+    # the projection is derived from SCHEMA_SQL so columns added later via
+    # declarative reconciliation are included automatically instead of
+    # silently dropping out of list rows.
+    _SESSION_COMPACT_EXCLUDED = frozenset({"system_prompt"})
+    _session_compact_cols_sql: Optional[str] = None
+
+    @classmethod
+    def _compact_session_cols(cls) -> str:
+        """SELECT list for compact_rows: every ``sessions`` column declared in
+        SCHEMA_SQL except the ``system_prompt`` blob, aliased with the ``s``
+        prefix used by list_sessions_rich/_get_session_rich_row queries."""
+        if cls._session_compact_cols_sql is None:
+            declared = cls._parse_schema_columns(SCHEMA_SQL)["sessions"]
+            cls._session_compact_cols_sql = ", ".join(
+                f"s.{name}" for name in declared
+                if name not in cls._SESSION_COMPACT_EXCLUDED
+            )
+        return cls._session_compact_cols_sql
+
     def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
         """Distinct non-empty session cwds with usage stats, for repo discovery.
 
@@ -2981,6 +3010,7 @@ class SessionDB:
         archived_only: bool = False,
         id_query: str = None,
         search_query: str = None,
+        compact_rows: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -3014,6 +3044,12 @@ class SessionDB:
         its forward compression chain). A punctuation-stripped variant is also
         matched so e.g. ``an94`` finds ``AN-94``. Only honored in the
         ``order_by_last_active`` path.
+
+        Pass ``compact_rows=True`` for dashboard and picker callers that only
+        need lightweight metadata. This omits the ``system_prompt`` blob from
+        the SELECT so SQLite never copies it out of the B-tree page — a
+        significant I/O saving on large databases where the blob routinely
+        runs to tens of kilobytes per row.
         """
         where_clauses = []
         params = []
@@ -3131,6 +3167,7 @@ class SessionDB:
                 outer_where = (
                     f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"
                 )
+            _sel = self._compact_session_cols() if compact_rows else "s.*"
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -3154,7 +3191,7 @@ class SessionDB:
                     FROM chain
                     GROUP BY root_id
                 )
-                SELECT s.*,
+                SELECT {_sel},
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
@@ -3177,8 +3214,9 @@ class SessionDB:
             # only applies to the outer select.
             params = params + params + id_params + [limit, offset]
         else:
+            _sel = self._compact_session_cols() if compact_rows else "s.*"
             query = f"""
-                SELECT s.*,
+                SELECT {_sel},
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
@@ -3229,7 +3267,7 @@ class SessionDB:
                 if tip_id == s["id"]:
                     projected.append(s)
                     continue
-                tip_row = self._get_session_rich_row(tip_id)
+                tip_row = self._get_session_rich_row(tip_id, compact_rows=compact_rows)
                 if not tip_row:
                     projected.append(s)
                     continue
@@ -3315,13 +3353,17 @@ class SessionDB:
             runs.append(s)
         return runs
 
-    def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """Fetch a single session with the same enriched columns as
         ``list_sessions_rich`` (preview + last_active). Returns None if the
         session doesn't exist.
+
+        Pass ``compact_rows=True`` to omit the ``system_prompt`` blob (see
+        ``list_sessions_rich`` for details).
         """
-        query = """
-            SELECT s.*,
+        _sel = self._compact_session_cols() if compact_rows else "s.*"
+        query = f"""
+            SELECT {_sel},
                 COALESCE(
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                      FROM messages m
@@ -3465,8 +3507,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3484,6 +3526,7 @@ class SessionDB:
                     codex_message_items_json,
                     platform_message_id,
                     1 if observed else 0,
+                    1,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -3556,8 +3599,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3575,6 +3618,7 @@ class SessionDB:
                     codex_message_items_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
+                    1,
                 ),
             )
             inserted += 1
@@ -3701,7 +3745,11 @@ class SessionDB:
 
 
     def get_messages(
-        self, session_id: str, include_inactive: bool = False
+        self,
+        session_id: str,
+        include_inactive: bool = False,
+        limit: Optional[int] = None,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -3712,14 +3760,25 @@ class SessionDB:
 
         Ordered by AUTOINCREMENT id (true insertion order) rather than
         timestamp — see c03acca50 for the WSL2 clock-regression rationale.
+
+        When ``limit`` is provided, returns at most ``limit`` messages
+        starting from ``offset`` (0-based, in insertion order). Enables
+        pagination for the API endpoint to avoid loading entire transcripts.
+        ``offset`` alone (without ``limit``) also pages — SQLite requires a
+        LIMIT clause for OFFSET, so it's emitted as ``LIMIT -1`` (unbounded).
         """
         active_clause = "" if include_inactive else " AND active = 1"
+        sql = (
+            "SELECT * FROM messages WHERE session_id = ?"
+            f"{active_clause} ORDER BY id"
+        )
+        params: list = [session_id]
+        if limit is not None or offset:
+            # SQLite's OFFSET requires LIMIT; -1 means "no limit".
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([-1 if limit is None else limit, offset])
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM messages WHERE session_id = ?"
-                f"{active_clause} ORDER BY id",
-                (session_id,),
-            )
+            cursor = self._conn.execute(sql, params)
             rows = cursor.fetchall()
         result = []
         for row in rows:
@@ -4949,6 +5008,64 @@ class SessionDB:
     # Export and cleanup
     # =========================================================================
 
+    def _is_branch_child_row(self, session: Dict[str, Any]) -> bool:
+        raw = session.get("model_config")
+        if not raw:
+            return False
+        try:
+            cfg = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, json.JSONDecodeError):
+            return False
+        return isinstance(cfg, dict) and cfg.get("_branched_from") is not None
+
+    def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
+        parent_id = child.get("parent_session_id")
+        if not parent_id or self._is_branch_child_row(child):
+            return False
+        parent = self.get_session(parent_id)
+        return bool(parent and parent.get("end_reason") == "compression")
+
+    def get_compression_lineage(self, session_id: str) -> List[str]:
+        """Return compression ancestors through tip in chronological order."""
+        session = self.get_session(session_id)
+        if not session or self._is_branch_child_row(session):
+            return [session_id] if session else []
+
+        root = session
+        while self._is_compression_child_row(root):
+            parent = self.get_session(root["parent_session_id"])
+            if not parent:
+                break
+            root = parent
+
+        lineage = [root["id"]]
+        current = root
+        while current.get("end_reason") == "compression":
+            with self._lock:
+                rows = self._conn.execute(
+                    """
+                    SELECT * FROM sessions
+                    WHERE parent_session_id = ?
+                    ORDER BY started_at ASC
+                    """,
+                    (current["id"],),
+                ).fetchall()
+            next_child = None
+            for row in rows:
+                candidate = dict(row)
+                if not self._is_branch_child_row(candidate):
+                    next_child = candidate
+                    break
+            if not next_child:
+                break
+            lineage.append(next_child["id"])
+            current = next_child
+            if current["id"] == session_id:
+                # Continue to include later compression tips only when the
+                # requested session itself was compacted.
+                continue
+        return lineage if session_id in lineage else [session_id]
+
     def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Export a single session with all its messages as a dict."""
         session = self.get_session(session_id)
@@ -4956,6 +5073,26 @@ class SessionDB:
             return None
         messages = self.get_messages(session_id)
         return {**session, "messages": messages}
+
+    def export_session_lineage(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Export a compression lineage as one logical session dict."""
+        lineage_ids = self.get_compression_lineage(session_id)
+        if not lineage_ids:
+            return None
+        segments = []
+        for sid in lineage_ids:
+            segment = self.export_session(sid)
+            if segment:
+                segments.append(segment)
+        if not segments:
+            return None
+        base = dict(segments[-1])
+        total_messages = sum(len(seg.get("messages") or []) for seg in segments)
+        base["segments"] = segments
+        base["lineage_session_ids"] = [seg["id"] for seg in segments]
+        base["message_count"] = total_messages
+        base["messages"] = [msg for seg in segments for msg in (seg.get("messages") or [])]
+        return base
 
     def export_all(self, source: str = None) -> List[Dict[str, Any]]:
         """

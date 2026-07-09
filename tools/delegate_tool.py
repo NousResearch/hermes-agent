@@ -2796,6 +2796,26 @@ def delegate_task(
             return json.dumps(_sync_result, ensure_ascii=False)
 
         _session_key = get_current_session_key(default="")
+        _origin_ui_session_id = ""
+        try:
+            from gateway.session_context import get_session_env
+
+            _source = get_session_env("HERMES_SESSION_SOURCE", "")
+            _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
+            # In desktop/TUI, the routable session key is the durable
+            # AIAgent.session_id. Context compression can rotate that id during
+            # the same turn before the TUI-side session dict is re-anchored;
+            # if we capture the stale approval/session context key here, the
+            # async completion becomes an orphan and any desktop poller may
+            # consume it. Gateway chats are different: their session_key is the
+            # platform conversation key (agent:main:...), so keep it there.
+            if _source == "tui":
+                _agent_session_id = str(getattr(parent_agent, "session_id", "") or "")
+                if _agent_session_id:
+                    _session_key = _agent_session_id
+        except Exception:
+            _origin_ui_session_id = ""
+        _parent_session_id = getattr(parent_agent, "session_id", None)
         _child_agents = [c for (_, _, c) in children]
 
         # Detach every child from the parent's interrupt-propagation list — the
@@ -2836,6 +2856,8 @@ def delegate_task(
             role=top_role,
             model=creds["model"],
             session_key=_session_key,
+            origin_ui_session_id=_origin_ui_session_id,
+            parent_session_id=_parent_session_id,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),
@@ -3098,26 +3120,40 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config from the active Hermes config.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Prefer the shared persistent loader because it follows the active
+    HERMES_HOME/profile. ``cli.CLI_CONFIG`` is a legacy fallback for entry
+    points that cannot import the shared loader; importing it first can return
+    an old default ``delegation`` block and hide user-set keys such as
+    ``max_concurrent_children``.
+
+    Uses ``load_config_readonly()``: every consumer of this dict is read-only
+    (``.get()`` lookups), and this runs on each ``get_definitions()`` schema
+    rebuild via ``_get_max_concurrent_children``, so skipping the defensive
+    deepcopy matters. Do NOT mutate the returned dict.
+
+    ``HERMES_IGNORE_USER_CONFIG=1`` (``hermes chat --ignore-user-config``) is
+    only honored by the legacy ``cli`` loader, not the shared one, so when the
+    flag is set we keep ``cli.CLI_CONFIG`` authoritative to preserve the
+    flag's contract of suppressing user config.yaml settings.
     """
+    prefer_legacy = os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1"
+    if not prefer_legacy:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            full = load_config_readonly()
+            cfg = full.get("delegation") or {}
+            if isinstance(cfg, dict):
+                return cfg
+        except Exception:
+            pass
     try:
         from cli import CLI_CONFIG
 
         cfg = CLI_CONFIG.get("delegation") or {}
-        if cfg:
-            return cfg
-    except Exception:
-        pass
-    try:
-        from hermes_cli.config import load_config
-
-        full = load_config()
-        return full.get("delegation") or {}
+        return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}
 

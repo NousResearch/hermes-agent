@@ -729,7 +729,14 @@ def recover_with_credential_pool(
     # that seeded the pool.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
-    if current_provider and pool_provider and current_provider != pool_provider:
+    # Guard: skip credential pool recovery when the pool is scoped to a
+    # different provider than the agent.  Only guard when the pool has a
+    # known provider — an empty pool provider means "unscoped" (applies to
+    # any provider).  An empty agent provider is treated as a mismatch
+    # because swapping the pool's credentials would set base_url/api_key
+    # without fixing the empty provider field, leaving the agent in a
+    # corrupted state (provider="" model="").
+    if pool_provider and current_provider != pool_provider:
         # Custom endpoints use two naming conventions for the SAME provider:
         # the agent carries the generic ``custom`` label while the pool is
         # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string
@@ -1268,6 +1275,12 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_activated = False
         agent._fallback_index = 0
 
+        # Reset the stale-call circuit breaker (#58962): the streak measured
+        # the FALLBACK provider we're leaving; the restored primary deserves
+        # a fresh stream attempt before the breaker can trip again.
+        from agent.chat_completion_helpers import _reset_stale_streak
+        _reset_stale_streak(agent)
+
         # Undo the fallback's identity rewrite so the prompt is
         # byte-identical to the stored copy again (prefix cache match).
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
@@ -1551,6 +1564,17 @@ def anthropic_prompt_cache_policy(
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
+    # Kimi / Moonshot family via OpenRouter: same cache_control wire format
+    # as Claude on OpenRouter (envelope layout).  Without this branch
+    # moonshotai/kimi-k2.6 falls through to (False, False), serving ~1%
+    # cache hits on 64K-token prompts and re-billing the full prompt on
+    # every turn.  Observed within-turn progression with cache enabled:
+    # 1% → 67% → 84% → 97% (#25970).  Reuses the canonical family matcher
+    # (covers bare k1./k2./k25 release slugs the substring check missed).
+    from agent.anthropic_adapter import _model_name_is_kimi_family
+    is_kimi = (
+        _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
+    )
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
     # Nous Portal proxies to OpenRouter behind the scenes — identical
     # OpenAI-wire envelope cache_control semantics. Treat it as an
@@ -1564,7 +1588,7 @@ def anthropic_prompt_cache_policy(
 
     if is_native_anthropic:
         return True, True
-    if (is_openrouter or is_nous_portal) and is_claude:
+    if (is_openrouter or is_nous_portal) and (is_claude or is_kimi):
         return True, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter
@@ -1985,6 +2009,14 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
 
+    # ── Reset the cross-turn stale-call circuit breaker (#58962) ──
+    # The breaker's error text tells the user to "switch models ... then
+    # retry"; without this reset the streak stays latched and the freshly
+    # selected (healthy) provider would keep short-circuiting before any
+    # stream is even attempted.
+    from agent.chat_completion_helpers import _reset_stale_streak
+    _reset_stale_streak(agent)
+
     # ── Update _primary_runtime so the change persists across turns ──
     _cc = agent.context_compressor if hasattr(agent, "context_compressor") and agent.context_compressor else None
     agent._primary_runtime = {
@@ -2094,12 +2126,12 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
 
-    # Check plugin hooks for a block directive before executing anything.
+    # Check plugin hooks for a block or approval directive before executing.
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
         try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            block_message = get_pre_tool_call_block_message(
+            from hermes_cli.plugins import resolve_pre_tool_block
+            block_message = resolve_pre_tool_block(
                 function_name,
                 function_args,
                 task_id=effective_task_id or "",
@@ -2110,7 +2142,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 middleware_trace=list(_tool_middleware_trace),
             )
         except Exception:
-            pass
+            block_message = None
     if block_message is not None:
         result = json.dumps({"error": block_message}, ensure_ascii=False)
         try:

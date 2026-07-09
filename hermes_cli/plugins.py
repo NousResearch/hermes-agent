@@ -1283,10 +1283,6 @@ class PluginManager:
         """
         if self._discovered and not force:
             return
-        # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): troubleshooting run
-        # with all customizations disabled. Skip plugin discovery entirely so
-        # no third-party code (hooks, tools, platforms) loads. Mark as
-        # discovered so callers see a clean empty registry, not a retry loop.
         if env_var_enabled("HERMES_SAFE_MODE"):
             logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
             self._discovered = True
@@ -2081,6 +2077,13 @@ def has_hook(hook_name: str) -> bool:
 _thread_tool_whitelist = threading.local()
 
 
+@dataclass(frozen=True)
+class _PreToolCallDirective:
+    action: Optional[str] = None
+    message: Optional[str] = None
+    rule_key: Optional[str] = None
+
+
 def set_thread_tool_whitelist(
     allowed: Optional[Set[str]],
     deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
@@ -2093,7 +2096,7 @@ def clear_thread_tool_whitelist() -> None:
     _thread_tool_whitelist.allowed = None
 
 
-def get_pre_tool_call_block_message(
+def _get_pre_tool_call_directive_details(
     tool_name: str,
     args: Optional[Dict[str, Any]],
     task_id: str = "",
@@ -2102,22 +2105,40 @@ def get_pre_tool_call_block_message(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
-) -> Optional[str]:
-    """Check ``pre_tool_call`` hooks for a blocking directive.
+) -> _PreToolCallDirective:
+    """Check ``pre_tool_call`` hooks for a blocking or approval directive.
 
     Plugins that need to enforce policy (rate limiting, security
-    restrictions, approval workflows) can return::
+    restrictions, approval workflows) can return one of::
 
-        {"action": "block", "message": "Reason the tool was blocked"}
+        {"action": "block",   "message": "Reason the tool was blocked"}
+        {"action": "approve", "message": "Why this needs human confirmation"}
+        {"action": "approve", "message": "...", "rule_key": "write_file:ssh"}
 
-    from their ``pre_tool_call`` callback.  The first valid block
-    directive wins.  Invalid or irrelevant hook return values are
-    silently ignored so existing observer-only hooks are unaffected.
+    from their ``pre_tool_call`` callback.
+
+    - ``block`` vetoes the tool call outright (the message becomes the tool
+      result the model sees).
+    - ``approve`` ESCALATES to the existing human-approval gate
+      (``prompt_dangerous_approval`` on CLI, the approval callback on the
+      gateway) — the same mechanism Tier-2 dangerous shell patterns use.
+      This lets a plugin require a human ``[o]nce/[s]ession/[a]lways/[d]eny``
+      decision on ANY tool, not just terminal command strings. The caller is
+      responsible for invoking the gate (see
+      :func:`tools.approval.request_tool_approval`).
+    - ``rule_key`` is optional and only honored for ``approve`` directives. It
+      lets plugins choose the allowlist grain for `[a]lways` approvals.
+
+    The first valid directive wins. Invalid or irrelevant hook return values
+    are silently ignored so existing observer-only hooks are unaffected.
     """
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
-        return fmt.format(tool_name=tool_name)
+        return _PreToolCallDirective(
+            action="block",
+            message=fmt.format(tool_name=tool_name),
+        )
 
     hook_results = invoke_hook(
         "pre_tool_call",
@@ -2134,12 +2155,122 @@ def get_pre_tool_call_block_message(
     for result in hook_results:
         if not isinstance(result, dict):
             continue
-        if result.get("action") != "block":
+        action = result.get("action")
+        if action not in ("block", "approve"):
             continue
         message = result.get("message")
-        if isinstance(message, str) and message:
-            return message
+        message = message if isinstance(message, str) and message else None
+        # A block directive requires a message (it becomes the tool result);
+        # an approve directive can carry an optional reason.
+        if action == "block" and not message:
+            continue
+        rule_key = result.get("rule_key") if action == "approve" else None
+        rule_key = rule_key.strip() if isinstance(rule_key, str) else None
+        if not rule_key:
+            rule_key = None
+        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key)
 
+    return _PreToolCallDirective()
+
+
+def get_pre_tool_call_directive(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Check ``pre_tool_call`` hooks for a blocking or approval directive.
+
+    Backward-compatible public helper: returns ``(directive, message)`` where
+    ``directive`` is ``"block"``, ``"approve"``, or ``None``. Internal callers
+    that need approve-specific metadata use
+    :func:`_get_pre_tool_call_directive_details`.
+    """
+    details = _get_pre_tool_call_directive_details(
+        tool_name, args, task_id=task_id, session_id=session_id,
+        tool_call_id=tool_call_id, turn_id=turn_id,
+        api_request_id=api_request_id, middleware_trace=middleware_trace,
+    )
+    return (details.action, details.message)
+
+
+def get_pre_tool_call_block_message(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[str]:
+    """Back-compat shim: return only a ``block`` message (or ``None``).
+
+    Deprecated in favor of :func:`get_pre_tool_call_directive`, which also
+    surfaces the ``approve`` escalation directive. Kept so any external caller
+    importing the old name keeps working; ``approve`` directives are invisible
+    to this shim (it only reports blocks).
+    """
+    directive, message = get_pre_tool_call_directive(
+        tool_name, args, task_id=task_id, session_id=session_id,
+        tool_call_id=tool_call_id, turn_id=turn_id,
+        api_request_id=api_request_id, middleware_trace=middleware_trace,
+    )
+    return message if directive == "block" else None
+
+
+def resolve_pre_tool_block(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[str]:
+    """Resolve the pre_tool_call directive to a final block message (or None).
+
+    Single entry point for every tool-dispatch site: fetches the plugin
+    directive and, for an ``approve`` escalation, invokes the human-approval
+    gate (:func:`tools.approval.request_tool_approval`). Returns the message
+    the tool result should carry when the call is blocked, or ``None`` when
+    the call may proceed.
+
+    Centralizing this keeps the security-critical fail-closed logic in ONE
+    place instead of copy-pasted across the concurrent/sequential/helper
+    dispatch paths: an ``approve`` directive whose gate errors, denies, or
+    times out is fail-closed to a block; ``block`` blocks with its message;
+    anything else proceeds.
+    """
+    details = _get_pre_tool_call_directive_details(
+        tool_name, args, task_id=task_id, session_id=session_id,
+        tool_call_id=tool_call_id, turn_id=turn_id,
+        api_request_id=api_request_id, middleware_trace=middleware_trace,
+    )
+    if details.action == "block":
+        return details.message
+    if details.action == "approve":
+        try:
+            from tools.approval import request_tool_approval
+            result = request_tool_approval(
+                tool_name,
+                details.message or "",
+                rule_key=details.rule_key or tool_name,
+            )
+        except Exception:
+            # Fail-closed: if the gate itself errors, block rather than
+            # silently execute an action a plugin flagged for approval.
+            return f"BLOCKED: plugin approval gate failed for {tool_name}"
+        if not result.get("approved"):
+            return str(
+                result.get("message")
+                or f"BLOCKED: plugin approval required for {tool_name}"
+            )
     return None
 
 

@@ -181,6 +181,14 @@ class SessionSource:
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
 
+    # Discord auto-thread metadata.  Newly auto-created Discord threads start
+    # with a fast placeholder title from the raw message, then the gateway can
+    # rename them after the first agent turn using the generated session title.
+    # Keep this explicit so pre-existing or human-renamed threads are not
+    # mistaken for safe rename targets.
+    auto_thread_created: bool = False
+    auto_thread_initial_name: Optional[str] = None
+
     # Internal, wire-INVISIBLE trust signal: True when this event was delivered
     # to the gateway over the per-instance-authenticated relay WebSocket (the
     # Team Gateway connector). The connector authenticates the gateway's socket
@@ -254,6 +262,10 @@ class SessionSource:
             d["message_id"] = self.message_id
         if self.profile:
             d["profile"] = self.profile
+        if self.auto_thread_created:
+            d["auto_thread_created"] = True
+        if self.auto_thread_initial_name:
+            d["auto_thread_initial_name"] = self.auto_thread_initial_name
         return d
 
     @classmethod
@@ -275,6 +287,8 @@ class SessionSource:
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
             profile=data.get("profile"),
+            auto_thread_created=bool(data.get("auto_thread_created", False)),
+            auto_thread_initial_name=data.get("auto_thread_initial_name"),
         )
     
 
@@ -1259,6 +1273,45 @@ class SessionStore:
         except Exception:
             return None
 
+    @staticmethod
+    def _profile_from_session_key(session_key: Optional[str]) -> Optional[str]:
+        """Extract the profile namespace encoded in a gateway session key."""
+        if not session_key:
+            return None
+        parts = str(session_key).split(":")
+        if len(parts) < 2 or parts[0] != "agent":
+            return None
+        namespace = parts[1] or "main"
+        return "default" if namespace == "main" else namespace
+
+    @staticmethod
+    def _active_profile_name() -> str:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return get_active_profile_name() or "default"
+        except Exception:
+            return "default"
+
+    def _recovered_row_allowed_for_active_profile(
+        self,
+        *,
+        requested_session_key: str,
+        recovered: Dict[str, Any],
+    ) -> bool:
+        """Prevent non-multiplexed gateways from reviving another profile's row."""
+        if getattr(self.config, "multiplex_profiles", False):
+            return True
+
+        recovered_key = str(recovered.get("session_key") or "")
+        if not recovered_key or recovered_key == requested_session_key:
+            return True
+
+        recovered_profile = self._profile_from_session_key(recovered_key)
+        if recovered_profile is None:
+            return True
+
+        return recovered_profile == self._active_profile_name()
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
@@ -1318,6 +1371,18 @@ class SessionStore:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
             return None
         if not recovered:
+            return None
+        if not self._recovered_row_allowed_for_active_profile(
+            requested_session_key=session_key,
+            recovered=recovered,
+        ):
+            logger.warning(
+                "Gateway session DB recovery ignored %s for %s because "
+                "multiplex_profiles is disabled and the row belongs to a "
+                "different profile",
+                recovered.get("session_key"),
+                session_key,
+            )
             return None
         try:
             self._db.reopen_session(str(recovered["id"]))

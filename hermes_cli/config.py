@@ -441,8 +441,20 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
-    if (root / ".git").is_dir():
+    
+    # detect git repo installs (normal installer, development env)
+    git_path = root / ".git"
+    if git_path.is_dir():
         return "git"
+
+    # detect git repo installs from worktrees
+    if git_path.is_file():
+        try:
+            content = git_path.read_text(encoding="utf-8").strip()
+            if content.startswith("gitdir:"):
+                return "git"
+        except OSError:
+            pass
     return "pip"
 
 
@@ -528,8 +540,52 @@ def recommended_update_command() -> str:
     managed_cmd = get_managed_update_command()
     if managed_cmd:
         return managed_cmd
-    method = detect_install_method()
+    method = detect_install_method(get_project_root())
     return recommended_update_command_for_method(method)
+
+
+# =============================================================================
+# Unsupported install methods (pip, Homebrew) — deprecation notice
+# =============================================================================
+#
+# pip/PyPI and Homebrew are NOT an officially supported distribution method
+# (see website/docs/getting-started/platform-support.md, "Unsupported"
+# section). pip exists on PyPI for internal/CI reasons, not end-user installs;
+# Homebrew is a legacy packaging path. Unlike NixOS/Homebrew "managed mode"
+# (which hard-blocks config writes), this is a warn-don't-block deprecation
+# notice surfaced everywhere the user might see install-method state: the CLI
+# banner, the TUI/desktop session info panel, and ``hermes update``. NixOS
+# stays fully supported (Tier 2) and must never hit this path.
+
+PLATFORM_SUPPORT_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/getting-started/platform-support"
+
+_UNSUPPORTED_INSTALL_METHODS = frozenset({"pip", "homebrew"})
+
+
+def is_unsupported_install_method(method: str) -> bool:
+    """Whether ``method`` (from ``detect_install_method()``) is deprecated."""
+    return method in _UNSUPPORTED_INSTALL_METHODS
+
+
+def unsupported_install_method_label(method: str) -> str:
+    """Human-readable name for an unsupported install method."""
+    return "pip" if method == "pip" else "Homebrew"
+
+
+def format_unsupported_install_warning(method: str) -> str:
+    """Plain-text (no markup) deprecation notice for pip/Homebrew installs.
+
+    Shared verbatim across the CLI banner, TUI/desktop ``session.info``, and
+    ``hermes update`` / ``hermes update --check`` so the wording — and the
+    docs link — stays consistent across every surface instead of drifting
+    into three slightly different warnings.
+    """
+    label = unsupported_install_method_label(method)
+    return (
+        f"{label} installs are no longer an officially supported platform and "
+        f"will not receive further updates. See {PLATFORM_SUPPORT_DOCS_URL} "
+        "for supported install methods."
+    )
 
 
 # Long-form text for ``hermes update`` / ``--check`` when running inside the
@@ -1341,7 +1397,11 @@ DEFAULT_CONFIG = {
 
     "compression": {
         "enabled": True,
-        "threshold": 0.50,            # compress when context usage exceeds this ratio
+        "threshold": 0.50,            # compress when context usage exceeds this ratio.
+                                      # Models with context windows below 512K are
+                                      # floored at 0.75 (raise-only) so compaction
+                                      # doesn't fire with half the window still free;
+                                      # set this above 0.75 to override the floor.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
@@ -1377,6 +1437,14 @@ DEFAULT_CONFIG = {
                                       # autoraise banner. Set False to keep the
                                       # 85% threshold autoraise but suppress the
                                       # user-facing notice in CLI/gateway output.
+        "codex_app_server_auto": "native",  # Codex app-server (codex CLI runtime) thread
+                                      # compaction mode. The codex agent owns the real
+                                      # thread context, so Hermes' summarizer cannot
+                                      # shrink it (#36801). native = codex decides when
+                                      # to compact its own thread (default); hermes =
+                                      # Hermes' compression threshold triggers
+                                      # thread/compact/start; off = never auto-trigger
+                                      # (codex may still compact natively).
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation
@@ -2376,6 +2444,11 @@ DEFAULT_CONFIG = {
         # real memory cost. Default 32 MiB matches the historical hardcoded
         # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
+        # When True, Discord approval prompts mention numeric allowed users so
+        # owners notice approval requests in shared channels/threads. Env
+        # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
+        # pings.
+        "approval_mentions": False,
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and

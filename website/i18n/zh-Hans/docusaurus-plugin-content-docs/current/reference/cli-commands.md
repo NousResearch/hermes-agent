@@ -477,6 +477,7 @@ hermes webhook subscribe <name> [options]
 | `--deliver-chat-id` | 跨平台投递的目标聊天/频道 ID。 |
 | `--secret` | 自定义 HMAC 密钥。省略时自动生成。 |
 | `--deliver-only` | 跳过 agent——将渲染后的 `--prompt` 作为字面消息投递。零 LLM 成本，亚秒级投递。要求 `--deliver` 为真实目标（非 `log`）。 |
+| `--script` | 位于 `~/.hermes/scripts/` 下的过滤/转换脚本。webhook payload 以 JSON 形式通过 stdin 传入；JSON stdout 会替换 payload，空 stdout、`[SILENT]` 或非零退出码会忽略该 webhook。参见[脚本过滤与转换](../user-guide/messaging/webhooks.md#script-filters-and-transforms)。 |
 
 订阅持久化到 `~/.hermes/webhook_subscriptions.json`，webhook 适配器无需重启 gateway 即可热重载。
 

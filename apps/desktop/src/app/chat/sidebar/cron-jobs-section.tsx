@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -33,6 +33,15 @@ const PEEK_POLL_INTERVAL_MS = 8000
 const INITIAL_VISIBLE_JOBS = 3
 const LOAD_MORE_STEP = 10
 
+function lastRunMs(job: CronJob): null | number {
+  if (!job.last_run_at) {
+    return null
+  }
+
+  const ms = Date.parse(job.last_run_at)
+
+  return Number.isNaN(ms) ? null : ms
+}
 function nextRunMs(job: CronJob): null | number {
   if (!job.next_run_at) {
     return null
@@ -144,8 +153,7 @@ export function SidebarCronJobsSection({
         </button>
       </div>
       {open && (
-        <SidebarGroupContent className="flex max-h-72 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
-          {shown.map(job => (
+        <SidebarGroupContent className="flex max-h-72 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">          {shown.map(job => (
             <CronJobSidebarRow
               expanded={peekJobId === job.id}
               job={job}
@@ -192,7 +200,45 @@ function CronJobSidebarRow({
   const next = nextRunMs(job)
   const label = jobTitle(job)
 
-  const meta = INACTIVE_STATES.has(state) ? (c.states[state] ?? state) : next !== null ? relativeTime(next, nowMs) : '—'
+  // Track the last time next_run_at was within 10s of "now" (i.e. the job
+  // is currently running or just completed). When next_run_at jumps to a
+  // far-future value (scheduler recalculates), keep the "X ago" counter
+  // going until the scheduler also advances last_run_at (which confirms
+  // the job completed and the session is visible in the runs list).
+  const jobStartRef = useRef<number | null>(null)
+  const lastLastRunRef = useRef<number | null>(null)
+  const lastRun = lastRunMs(job)
+  if (next !== null && Math.abs(next - nowMs) < 10_000) {
+    jobStartRef.current = next
+  }
+  // When last_run_at advances to a new value, the job completed — reset
+  // the grace counter so the display shows "in X hr." (the next run).
+  if (lastRun !== null && lastRun !== lastLastRunRef.current) {
+    lastLastRunRef.current = lastRun
+    jobStartRef.current = null
+  }
+
+  // Pulse the dot while the job is executing. The backend doesn't set
+  // state='running', and the scheduler pre-advances next_run_at to the
+  // next slot BEFORE running (PR #3396: at-most-once crash-safety), so
+  // the legacy "next_run_at in recent past" heuristic never fires. We
+  // now key off the same jobStartRef grace counter that drives the
+  // "X ago" elapsed time: as long as the job is still in its grace
+  // window (last_run_at hasn't advanced yet), the dot pulses.
+  const isRunning = jobStartRef.current !== null
+  const displayState = isRunning ? 'running' : state
+
+  const meta = INACTIVE_STATES.has(state)
+    ? (c.states[state] ?? state)
+    : next !== null && (next - nowMs) > 3_600_000 && jobStartRef.current !== null
+      // next_run_at jumped to far future but the job started recently.
+      // Keep showing "X ago" until last_run_at advances (confirming
+      // the session is visible in the runs list), then fall through
+      // to normal "in X hr." display.
+      ? relativeTime(jobStartRef.current, nowMs)
+      : next !== null
+        ? relativeTime(next, nowMs)
+        : '—'
 
   return (
     <div>
@@ -214,8 +260,8 @@ function CronJobSidebarRow({
               aria-hidden="true"
               className={cn(
                 'size-1 rounded-full',
-                STATE_DOT[state] ?? 'bg-(--ui-text-quaternary)',
-                state === 'running' && 'size-1.5 animate-pulse'
+                STATE_DOT[displayState] ?? 'bg-(--ui-text-quaternary)',
+                displayState === 'running' && "relative size-1.5 bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']"
               )}
             />
           </span>

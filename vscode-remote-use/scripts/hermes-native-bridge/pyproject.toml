@@ -1,0 +1,10 @@
+[project]
+name = "hermes-native-bridge"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "Hermes Native Python bridge for unified inference/runtime routing."
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

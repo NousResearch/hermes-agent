@@ -1,0 +1,13 @@
+# build output
+out/
+dist/
+*.vsix
+*.zip
+node_modules/
+package-lock.json
+
+# python bridge runtime artifacts
+scripts/hermes-native-bridge/tmp/
+scripts/hermes-native-bridge/__pycache__/
+**/__pycache__/
+*.pyc

@@ -3,7 +3,7 @@
   "displayName": "vscode-remote-use",
   "description": "Hermes VS Code media primitive + breakout bridge",
   "version": "0.1.0",
-  "publisher": "local",
+  "publisher": "hermes-agent",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -59,6 +59,22 @@
       {
         "command": "remoteUse.homeOS",
         "title": "Remote Use: Open home:// Surface"
+      },
+      {
+        "command": "remoteUse.webLLM",
+        "title": "Remote Use: Open Hermes Native · WebLLM WebGPU Runtime"
+      },
+      {
+        "command": "remoteUse.factory",
+        "title": "Remote Use: Hermes Native Agentic CSS/HTML Factory"
+      },
+      {
+        "command": "remoteUse.computerUse",
+        "title": "Remote Use: Computer Use · Bounded Local Desktop Control"
+      },
+      {
+        "command": "remoteUse.htmlSurface",
+        "title": "Remote Use: Open Local HTML Surface"
       }
     ],
     "configuration": {
@@ -80,6 +96,12 @@
           "default": "",
           "format": "file",
           "description": "Absolute path to DAO surface HTML. Leave empty for default."
+        },
+        "remoteUse.htmlSurfacePath": {
+          "type": "string",
+          "default": "",
+          "format": "file",
+          "description": "Preferred local HTML surface path for `remoteUse.htmlSurface`. Leave empty for built-in candidate resolution."
         }
       }
     }

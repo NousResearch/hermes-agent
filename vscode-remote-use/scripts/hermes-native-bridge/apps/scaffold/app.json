@@ -1,0 +1,9 @@
+{
+  "name": "scaffold",
+  "description": "Hermes Native local scaffold app",
+  "entry": "run.py",
+  "permissions": [
+    "local:fs"
+  ],
+  "runtime": "python"
+}

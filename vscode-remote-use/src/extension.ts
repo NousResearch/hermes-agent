@@ -527,29 +527,69 @@ function renderDaoSurfaceHtml(): string {
   return html;
 }
 
-function renderHomeOS(): string {
-  const repo = getHermesRepoPath();
-  const surfaces = [
-    { kind: 'terminal', command: 'remoteUse.commandPrompt', detail: 'Hermes terminal profile', surface: 'terminal' },
-    { kind: 'editor', command: 'remoteUse.editor', detail: 'VS Code editor control', surface: 'editor' },
-    { kind: 'files', command: 'remoteUse.files', detail: 'Bounded filesystem primitive', surface: 'files' },
-    { kind: 'victus', command: 'remoteUse.victus', detail: 'Victus machine vitals', surface: 'victus' },
-    { kind: 'nvidia', command: 'remoteUse.nvidia', detail: 'NVIDIA GPU C2', surface: 'nvidia' },
-    { kind: 'vlc', command: 'remoteUse.vlc', detail: 'VLC fleet command', surface: 'vlc' },
-    { kind: 'ffmpeg', command: 'remoteUse.ffmpeg', detail: 'FFmpeg media pipeline', surface: 'ffmpeg' },
-    { kind: 'qr', command: 'remoteUse.qr', detail: 'QR-tagged HTML execution', surface: 'qr' },
-    { kind: 'mesh', command: 'remoteUse.mesh', detail: 'Bounded sovereign mesh', surface: 'mesh' },
-  ];
+function renderFactoryHtml(repo: string | undefined): string {
+  const local = findLocalTemplate(repo, [`${repo}/templates/factory.html`]);
+  if (local) return local;
+  try {
+    const fs = require('fs');
+    const p = require('path').join(__dirname, '..', 'templates', 'factory.html');
+    if (fs.existsSync(p)) return fs.readFileSync(p, 'utf8');
+  } catch (e) { /* fall through */ }
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Hermes Native · Factory</title></head><body>Sovereign factory surface unavailable.</body></html>`;
+}
 
-  const buttons = surfaces
-    .map((s) => `<button data-command="${escapeHtml(s.command)}">${escapeHtml(s.kind)} · ${escapeHtml(s.detail)}</button>`)
-    .join('');
-
+function renderComputerUseHtml(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Hermes Native · Computer Use</title>
+<style>
+  :root { --bg:#050505; --panel:#0a0a0f; --gold:#D4AF37; --text:#e6e6e6; --muted:#9a9a9a; --border:#1f1f1f; --neon:#00ffa3; --error:#ff7b72; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:18px; background:var(--bg); color:var(--text); font-family:'JetBrains Mono',ui-monospace,monospace; height:100vh; display:grid; grid-template-rows:auto 1fr auto; gap:12px; }
+  .header { font-size:18px; font-weight:700; color:var(--gold); border-bottom:1px solid var(--border); padding-bottom:12px; }
+  .sub { color:var(--muted); font-size:12px; }
+  .shot { flex:1; border:1px solid var(--border); border-radius:10px; background:#000; min-height:0; }
+  .log { background:#050508; border:1px solid var(--border); border-radius:10px; padding:10px; min-height:80px; font-size:11px; color:var(--muted); white-space:pre-wrap; max-height:160px; overflow:auto; }
+  .row { display:flex; gap:10px; }
+  button.primary { background:linear-gradient(135deg, rgba(212,175,55,0.15), rgba(0,255,163,0.08)); border:1px solid rgba(212,175,55,0.65); color:var(--gold); padding:10px 12px; border-radius:10px; font:inherit; font-size:12px; cursor:pointer; }
+  .err { color:var(--error); }
+</style>
+</head>
+<body>
+<div class="header">Hermes Native · Computer Use <span class="sub">— bounded local desktop control</span></div>
+<img class="shot" id="shot" alt="desktop capture"/>
+<div class="log" id="log">Ready. Use capture / click / type from the mesh.</div>
+<script>
+const logEl = document.getElementById('log');
+const shot = document.getElementById('shot');
+const log = (t, err=false) => { const d = document.createElement('div'); d.className = err ? 'err' : ''; d.textContent = new Date().toLocaleTimeString() + ' ' + t; logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight; };
+const vscode = typeof acquireVsCodeApi !== 'undefined' ? acquireVsCodeApi() : null;
+if (vscode) {
+  window.addEventListener('message', (event) => {
+    const m = event && event.data;
+    if (!m || !m.command) return;
+    if (m.command === 'remoteUse.computerUse.capture' && m.dataUrl) { shot.src = m.dataUrl; log('Captured desktop frame.'); }
+    if (m.command === 'remoteUse.computerUse.log') { log(m.text || '', !!m.error); }
+  });
+  vscode.postMessage({ command: 'remoteUse.computerUse.ready' });
+  log('Computer Use surface active.');
+}
+window.addEventListener('unhandledrejection', (e) => { log('Unhandled rejection: ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason)), true); });
+</script>
+</body>
+</html>`;
+}
+
+function renderHomeOS(): string {
+  const repo = getHermesRepoPath();
+  const fallbackHome = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"/>
 <title>home://</title>
 <style>
 :root { --bg:#050505; --bg-panel:#0a0a0a; --gold:#D4AF37; --gold-60:rgba(212,175,55,0.6); --text:#e6e6e6; --muted:#8a8a8a; --border:#1a1a1a; --ff:'Orbitron','JetBrains Mono','Segoe UI',monospace; }
@@ -566,7 +606,20 @@ button:hover { border-color: var(--gold-60); }
 </head>
 <body>
 <div class="header"><div class="title">home://</div><div class="subtitle">agentic OS surface</div></div>
-<div class="surfaces">${buttons}</div>
+<div class="surfaces">
+<button data-command="remoteUse.commandPrompt">terminal · Hermes terminal profile</button>
+<button data-command="remoteUse.editor">editor · VS Code editor control</button>
+<button data-command="remoteUse.files">files · Bounded filesystem primitive</button>
+<button data-command="remoteUse.victus">victus · Victus machine vitals</button>
+<button data-command="remoteUse.nvidia">nvidia · NVIDIA GPU C2</button>
+<button data-command="remoteUse.vlc">vlc · VLC fleet command</button>
+<button data-command="remoteUse.ffmpeg">ffmpeg · FFmpeg media pipeline</button>
+<button data-command="remoteUse.qr">qr · QR-tagged HTML execution</button>
+<button data-command="remoteUse.mesh">mesh · Bounded sovereign mesh</button>
+<button data-command="remoteUse.agenticHtmlViewport">shell · agentic.html viewport</button>
+<button data-command="remoteUse.htmlSurface">bundle · local HTML surfaces</button>
+<button data-command="remoteUse.hermesNative">inference · Hermes Native · WebLLM WebGPU</button>
+</div>
 <script>
 const vscode = acquireVsCodeApi();
 document.querySelectorAll('button').forEach((btn) => {
@@ -575,6 +628,290 @@ document.querySelectorAll('button').forEach((btn) => {
 </script>
 </body>
 </html>`;
+
+  const defaultSuffix = 'templates/agentic.html';
+  const fallbackSuffix = 'vscode-remote-use/templates/agentic-fallback.html';
+  const candidateTails = repo ? [
+    'templates/agentic.html',
+    defaultSuffix,
+    fallbackSuffix,
+    'templates/omniverse.html',
+    'templates/hermes-superagent.html',
+  ] : [];
+
+  let html = fallbackHome;
+  if (repo) {
+    for (const tail of candidateTails) {
+      const candidate = `${repo.replace(/\/$/, '')}/${tail}`;
+      try {
+        if (require('fs').existsSync(candidate)) {
+          html = require('fs').readFileSync(candidate, 'utf8');
+          break;
+        }
+      } catch {
+        // continue to next fallback
+      }
+    }
+  }
+
+  return html;
+}
+
+function renderWebLLM(): string {
+  const repo = getHermesRepoPath();
+  const fallbackTemplate = 'vscode-remote-use/templates/web-llm.html';
+  const cleanRepo = (repo || '').replace(/[\\/]+$/, '');
+  const templateCandidates = cleanRepo
+    ? [
+        cleanRepo + '/templates/web-llm.html',
+        cleanRepo + '/vscode-remote-use/templates/web-llm.html',
+        'C:/æ/hermes-fork/templates/web-llm.html',
+        'C:/æ/hermes-fork/vscode-remote-use/templates/web-llm.html',
+      ]
+    : [fallbackTemplate];
+  for (const candidate of templateCandidates) {
+    try {
+      if (require('fs').existsSync(candidate)) {
+        return require('fs').readFileSync(candidate, 'utf8');
+      }
+    } catch {
+      // continue to next fallback
+    }
+  }
+  return fallbackHermesNativeHtml();
+}
+
+function findLocalTemplate(repo: string | undefined, candidates: string[]): string | undefined {
+  const cleanRepo = (repo || '').replace(/[\\/]+$/, '');
+  const htmlCandidates = cleanRepo
+    ? [
+        cleanRepo + '/templates/web-llm.html',
+        cleanRepo + '/vscode-remote-use/templates/web-llm.html',
+        'C:/æ/hermes-fork/templates/web-llm.html',
+        'C:/æ/hermes-fork/vscode-remote-use/templates/web-llm.html',
+        ...candidates,
+      ]
+    : candidates;
+  for (const candidate of htmlCandidates) {
+    try {
+      if (require('fs').existsSync(candidate)) {
+        return require('fs').readFileSync(candidate, 'utf8');
+      }
+    } catch {
+      // continue to next fallback
+    }
+  }
+  return undefined;
+}
+
+function renderHermesNativeHtml(repo: string | undefined): string {
+  const local = findLocalTemplate(repo, []);
+  if (local) return local;
+  return fallbackHermesNativeHtml();
+}
+
+function fallbackHermesNativeHtml(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"/>
+<meta name="theme-color" content="#050505"/>
+<title>Hermes Native · WebLLM WebGPU Runtime</title>
+<style>
+  :root { --bg:#050505; --panel:#0a0a0f; --gold:#D4AF37; --gold-60:rgba(212,175,55,0.65); --text:#e6e6e6; --muted:#9a9a9a; --border:#1f1f1f; --neon:#00ffa3; --error:#ff7b72; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); font-family: 'JetBrains Mono','Cascadia Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
+  body { padding: 18px; }
+  .header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 18px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+  .title { font-size: 18px; font-weight: 700; color: var(--gold); letter-spacing: 0.08em; }
+  .subtitle { font-size: 12px; color: var(--muted); text-transform: lowercase; letter-spacing: 0.12em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .name { font-size: 12px; font-weight: 700; color: var(--gold); letter-spacing: 0.08em; }
+  .meta { font-size: 11px; color: var(--muted); }
+  .status { font-size: 11px; color: var(--neon); display: flex; align-items: center; gap: 6px; }
+  .status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--neon); box-shadow: 0 0 8px var(--neon); }
+  .prompt { width: 100%; min-height: 96px; background: #060609; color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px; font: inherit; font-size: 12px; }
+  .row { display: flex; align-items: center; gap: 10px; justify-content: space-between; margin-top: 14px; }
+  button.primary { background: linear-gradient(135deg, rgba(212,175,55,0.15), rgba(0,255,163,0.08)); border: 1px solid var(--gold-60); color: var(--gold); padding: 10px 12px; border-radius: 10px; font: inherit; font-size: 12px; cursor: pointer; }
+  .log { margin-top: 14px; background: #050508; border: 1px solid var(--border); border-radius: 10px; padding: 10px; min-height: 72px; font-size: 11px; color: var(--muted); white-space: pre-wrap; }
+  .err { color: var(--error); }
+</style>
+</head>
+<body>
+<div class="header"><div class="title">Hermes Native · WebLLM WebGPU Runtime</div><div class="subtitle">Sovereign industrial-grade local inference surface</div></div>
+<div class="grid">
+  <div class="card"><div class="name">RUNTIME</div><div class="meta">Hermes Native</div><div class="status" id="status">INITIALIZING</div></div>
+  <div class="card"><div class="name">PRIMITIVE</div><div class="meta" id="capability">Detecting WebGPU...</div></div>
+  <div class="card"><div class="name">LATENCY</div><div class="meta" id="latency">Awaiting first inference</div></div>
+  <div class="card"><div class="name">RUNTIME</div><div class="meta" id="runtime">Local viewport</div></div>
+</div>
+<div class="grid">
+  <div class="card"><div class="name">APPS</div><div class="meta" id="apps">Loading...</div></div>
+  <div class="card"><div class="name">BRIDGE</div><div class="meta" id="bridge">Idle</div></div>
+  <div class="card"><div class="name">SESSION</div><div class="meta" id="session">Local viewport</div></div>
+  <div class="card"><div class="name">RUNNER</div><div class="meta" id="runner">Scaffold available</div></div>
+</div>
+<div class="row">
+  <textarea class="prompt" id="prompt" placeholder="Prompt: summarize the sovereign runtime stack in 3 bullets."></textarea>
+  <button class="primary" id="run">RUN INFERENCE</button>
+</div>
+<div class="log" id="log">Awaiting user action...</div>
+<script>
+const logEl = document.getElementById('log');
+const statusEl = document.getElementById('status');
+const capabilityEl = document.getElementById('capability');
+const latencyEl = document.getElementById('latency');
+const runtimeEl = document.getElementById('runtime');
+const promptEl = document.getElementById('prompt');
+const runBtn = document.getElementById('run');
+const log = (text, err=false) => { const el = document.createElement('div'); el.className = err ? 'err' : ''; el.textContent = new Date().toLocaleTimeString() + ' ' + text; logEl.appendChild(el); logEl.scrollTop = logEl.scrollHeight; };
+const setStatus = (text, err=false) => { statusEl.className = err ? 'status err' : 'status'; statusEl.style.color = err ? '#ff7b72' : '#00ffa3'; statusEl.textContent = text; };
+const detect = async () => {
+  try {
+    if (!navigator.gpu) throw new Error('navigator.gpu is unavailable');
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('No GPU adapter found');
+    capabilityEl.textContent = 'WebGPU runtime ready';
+    runtimeEl.textContent = 'WebGPU viewport';
+    setStatus('READY');
+    log('WebGPU detect: adapter ready');
+  } catch (e) {
+    capabilityEl.textContent = 'WebGPU fallback required';
+    runtimeEl.textContent = 'Fallback viewport';
+    setStatus('FALLBACK', true);
+    log('WebGPU detect failed: ' + e.message, true);
+  }
+};
+let engine = null;
+let loading = false;
+const modelId = 'Qwen/Qwen3-0.6B';
+const initEngine = async () => {
+  if (engine) return engine;
+  if (loading) return null;
+  loading = true;
+  setStatus('LOADING');
+  log('WebLLM engine init: ' + modelId);
+  try {
+    const webllm = await import('https://esm.run/@mlc-ai/web-llm');
+    engine = await webllm.CreateMLCEngine(modelId, {
+      initProgressCallback: (p) => {
+        const text = (p && (p.text || p.progress != null)) ? (p.progress != null ? Math.round(p.progress * 100) + '%' : p.text) : 'Loading...';
+        log('Engine: ' + text);
+      }
+    });
+    setStatus('READY');
+    log('WebLLM engine ready');
+    loading = false;
+    return engine;
+  } catch (e) {
+    setStatus('ENGINE_FAILED', true);
+    log('WebLLM init failed: ' + (e && e.message ? e.message : String(e)), true);
+    loading = false;
+    return null;
+  }
+};
+const runInference = async () => {
+  const text = (promptEl.value || '').trim();
+  const ready = await initEngine();
+  if (!ready) {
+    setStatus('INFERENCE_FAILED', true);
+    return;
+  }
+  log('Inference requested...');
+  runBtn.disabled = true;
+  runBtn.textContent = 'RUNNING...';
+  const start = performance.now();
+  try {
+    const chat = await engine.chat.completions.create({
+      messages: [
+        { role: 'system', content: 'You are a concise sovereign runtime assistant.' },
+        { role: 'user', content: text || 'Summarize the stack in 3 bullets.' }
+      ],
+      max_tokens: 256,
+      temperature: 0.3
+    });
+    const reply = (chat && chat.choices && chat.choices[0] && chat.choices[0].message) ? chat.choices[0].message.content || '' : '';
+    const elapsed = Math.max(1, Math.round(performance.now() - start));
+    latencyEl.textContent = elapsed + 'ms';
+    log('Reply:\n' + reply);
+  } catch (e) {
+    log('Inference failed: ' + (e && e.message ? e.message : String(e)), true);
+    setStatus('INFERENCE_FAILED', true);
+  }
+  runBtn.disabled = false;
+  runBtn.textContent = 'RUN INFERENCE';
+};
+const bridgeReady = typeof window !== 'undefined' && typeof acquireVsCodeApi === 'undefined';
+const discoverApps = async () => {
+  const appsEl = document.getElementById('apps');
+  const runnerEl = document.getElementById('runner');
+  try {
+    const response = await fetch('vscode-resource:/.manifest', {headers: {'Cache-Control':'no-store'}}).catch(() => null);
+    appsEl.textContent = 'NX';
+    runnerEl.textContent = 'Scaffold ready';
+  } catch (e) {
+    appsEl.textContent = 'Scaffold only';
+    runnerEl.textContent = 'Scaffold ready';
+  }
+};
+const runAppNow = async () => {
+  const bridgeEl = document.getElementById('bridge');
+  const sessionEl = document.getElementById('session');
+  bridgeEl.textContent = 'Running...';
+  sessionEl.textContent = 'App session';
+  try {
+    const result = await runInference();
+    bridgeEl.textContent = 'Idle';
+    sessionEl.textContent = 'Local viewport';
+    return result;
+  } catch (e) {
+    bridgeEl.textContent = 'Error: ' + (e && e.message ? e.message : String(e));
+    bridgeEl.style.color = '#ff7b72';
+    sessionEl.textContent = 'Local viewport';
+    throw e;
+  }
+};
+detect();
+discoverApps().catch(() => {});
+runBtn.addEventListener('click', async () => { try { await runAppNow(); } catch { /* logged in UI */ } });
+promptEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); runInference(); } });
+const vscode = typeof acquireVsCodeApi !== 'undefined' ? acquireVsCodeApi() : null;
+if (vscode) {
+  log('VS Code webview context acquired');
+  window.hermesNative = { runInference };
+  window.addEventListener('message', (event) => {
+    const message = event && event.data;
+    if (!message || !message.command) return;
+    if (message.command === 'remoteUse.hermesNative') runInference();
+  });
+}
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event && event.reason;
+  log('Unhandled rejection: ' + (reason && reason.message ? reason.message : String(reason)), true);
+});
+</script>
+</body>
+</html>
+`;
+}
+
+function openHtmlSurface(title: string, path: string): void {
+  try {
+    const html = require('fs').readFileSync(path, 'utf8');
+    const baseDir = require('path').dirname(path);
+    const panel = vscode.window.createWebviewPanel(
+      'remoteUseHtmlSurface',
+      `Remote Use: ${title}`,
+      vscode.ViewColumn.Beside,
+      { enableScripts: true, localResourceRoots: [vscode.Uri.file(baseDir)] }
+    );
+    panel.webview.html = html;
+    vscode.window.showInformationMessage(`Remote Use: opened ${title}`);
+  } catch {
+    vscode.window.showWarningMessage(`Remote Use: HTML surface not found at ${path}`);
+  }
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -794,6 +1131,82 @@ export function activate(context: vscode.ExtensionContext) {
     panel.webview.html = renderDaoSurfaceHtml();
   });
 
+  const hermesNativeCmd = vscode.commands.registerCommand('remoteUse.hermesNative', async () => {
+    const repo = getHermesRepoPath();
+    const panel = vscode.window.createWebviewPanel(
+      'remoteUseHermesNative',
+      'Remote Use: Hermes Native',
+      vscode.ViewColumn.One,
+      { enableScripts: true, retainContextWhenHidden: true }
+    );
+    panel.webview.html = renderHermesNativeHtml(repo);
+  });
+
+  const webLLMCmd = vscode.commands.registerCommand('remoteUse.webLLM', async () => {
+    await vscode.commands.executeCommand('remoteUse.hermesNative');
+  });
+
+  const factoryCmd = vscode.commands.registerCommand('remoteUse.factory', async () => {
+    const repo = getHermesRepoPath();
+    const panel = vscode.window.createWebviewPanel(
+      'remoteUseFactory',
+      'Remote Use: Hermes Native Factory',
+      vscode.ViewColumn.Beside,
+      { enableScripts: true, retainContextWhenHidden: true }
+    );
+    panel.webview.html = renderFactoryHtml(repo);
+    panel.webview.onDidReceiveMessage(async (message: any) => {
+      if (message?.command === 'remoteUse.factory.write') {
+        const fs = require('fs');
+        const path = require('path');
+        const outDir = path.join(repo, 'site', 'generated');
+        try {
+          fs.mkdirSync(outDir, { recursive: true });
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const file = path.join(outDir, `surface-${stamp}.html`);
+          fs.writeFileSync(file, message.code || '', 'utf8');
+          vscode.window.showInformationMessage(`Remote Use: wrote ${path.basename(file)}`);
+        } catch (e) {
+          vscode.window.showErrorMessage('Remote Use: factory write failed: ' + (e && (e as any).message ? (e as any).message : String(e)));
+        }
+      }
+    });
+  });
+
+  const computerUseCmd = vscode.commands.registerCommand('remoteUse.computerUse', async () => {
+    const panel = vscode.window.createWebviewPanel(
+      'remoteUseComputerUse',
+      'Remote Use: Computer Use',
+      vscode.ViewColumn.Beside,
+      { enableScripts: true, retainContextWhenHidden: true }
+    );
+    panel.webview.html = renderComputerUseHtml();
+    panel.webview.onDidReceiveMessage(async (message: any) => {
+      if (message?.command === 'remoteUse.computerUse.ready') {
+        vscode.window.showInformationMessage('Remote Use: Computer Use surface ready (cua-driver drives desktop in background).');
+      }
+    });
+  });
+
+  const htmlSurfaceCmd = vscode.commands.registerCommand('remoteUse.htmlSurface', async () => {
+    const repo = getHermesRepoPath();
+    const configuredCandidates = [
+      `${repo}/templates/agentic.html`,
+      `${repo}/index.html`,
+      repo ? `C:/æ/site/index.html` : '',
+      repo ? `C:/æ/site/secret-source-bridge.html` : '',
+      repo ? `C:/Users/yaelm/OneDrive/BEFORE 2023/Desktop/Y-L.com/startabusiness.html` : '',
+    ];
+    const boardingCandidates = configuredCandidates;
+    for (const candidate of boardingCandidates) {
+      const path = String(candidate || '').trim();
+      if (!path) continue;
+      openHtmlSurface(require('path').basename(path), path);
+      return;
+    }
+    vscode.window.showWarningMessage('Remote Use: no local HTML surface candidates available.');
+  });
+
   const commandPromptCmd = vscode.commands.registerCommand('remoteUse.commandPrompt', async () => {
     const repo = getHermesRepoPath();
     const psProfilePath = require('path').join(repo, 'shell', '_commandPrompt.ps1');
@@ -861,6 +1274,9 @@ export function activate(context: vscode.ExtensionContext) {
         case 'remoteUse.mesh':
           await vscode.window.showInformationMessage('Mesh surface: pc://mesh/victus/local');
           break;
+        case 'remoteUse.webLLM':
+          await vscode.commands.executeCommand('remoteUse.webLLM');
+          break;
         default:
           if (typeof message.command === 'string' && message.command.startsWith('remoteUse.')) {
             await vscode.commands.executeCommand(message.command);
@@ -884,6 +1300,11 @@ export function activate(context: vscode.ExtensionContext) {
     agenticHtmlViewportCmd,
     daoBlueprintCmd,
     daoSurfaceCmd,
+    hermesNativeCmd,
+    webLLMCmd,
+    factoryCmd,
+    computerUseCmd,
+    htmlSurfaceCmd,
     commandPromptCmd,
     homeOSCmd
   );

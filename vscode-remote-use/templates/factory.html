@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"/>
+<meta name="theme-color" content="#050505"/>
+<title>Hermes Native · Agentic CSS/HTML Factory</title>
+<style>
+  :root { --bg:#050505; --panel:#0a0a0f; --gold:#D4AF37; --gold-60:rgba(212,175,55,0.65); --text:#e6e6e6; --muted:#9a9a9a; --border:#1f1f1f; --neon:#00ffa3; --error:#ff7b72; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); font-family: 'JetBrains Mono','Cascadia Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
+  body { padding: 18px; display: grid; grid-template-rows: auto 1fr; gap: 14px; height: 100vh; }
+  .header { display: flex; align-items: baseline; gap: 14px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+  .title { font-size: 18px; font-weight: 700; color: var(--gold); letter-spacing: 0.08em; }
+  .subtitle { font-size: 12px; color: var(--muted); text-transform: lowercase; letter-spacing: 0.12em; }
+  .status { font-size: 11px; color: var(--neon); }
+  .factory { display: grid; grid-template-columns: 380px 1fr; gap: 14px; min-height: 0; }
+  .pane { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .prompt { width: 100%; min-height: 120px; background: #060609; color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px; font: inherit; font-size: 12px; resize: vertical; }
+  .row { display: flex; gap: 10px; }
+  button.primary { background: linear-gradient(135deg, rgba(212,175,55,0.15), rgba(0,255,163,0.08)); border: 1px solid var(--gold-60); color: var(--gold); padding: 10px 12px; border-radius: 10px; font: inherit; font-size: 12px; cursor: pointer; }
+  button.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 10px 12px; border-radius: 10px; font: inherit; font-size: 12px; cursor: pointer; }
+  iframe { flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 10px; background: #fff; min-height: 0; }
+  .code { flex: 1; min-height: 0; overflow: auto; background: #060609; color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 10px; font-size: 11px; white-space: pre-wrap; }
+  .log { background: #050508; border: 1px solid var(--border); border-radius: 10px; padding: 10px; min-height: 60px; font-size: 11px; color: var(--muted); white-space: pre-wrap; max-height: 140px; overflow: auto; }
+  .err { color: var(--error); }
+  .name { font-size: 12px; font-weight: 700; color: var(--gold); letter-spacing: 0.08em; }
+</style>
+</head>
+<body>
+<div class="header"><div class="title">Hermes Native · Agentic CSS/HTML Factory</div><div class="subtitle">Sovereign local surface generation</div></div>
+<div class="factory">
+  <div class="pane">
+    <div class="name">SPEC</div>
+    <textarea class="prompt" id="prompt" placeholder="Describe the surface: e.g. a sovereign gold-on-void dashboard card with a live latency meter."></textarea>
+    <div class="row">
+      <button class="primary" id="gen">GENERATE</button>
+      <button class="ghost" id="write">WRITE FILE</button>
+    </div>
+    <div class="name">STATUS</div>
+    <div class="log" id="log">Awaiting spec...</div>
+  </div>
+  <div class="pane">
+    <div class="name">LIVE PREVIEW</div>
+    <iframe id="preview" title="preview"></iframe>
+    <div class="name">SOURCE</div>
+    <div class="code" id="code">// generated HTML/CSS appears here</div>
+  </div>
+</div>
+<script>
+const logEl = document.getElementById('log');
+const preview = document.getElementById('preview');
+const codeEl = document.getElementById('code');
+const promptEl = document.getElementById('prompt');
+const genBtn = document.getElementById('gen');
+const writeBtn = document.getElementById('write');
+const log = (text, err=false) => { const el = document.createElement('div'); el.className = err ? 'err' : ''; el.textContent = new Date().toLocaleTimeString() + ' ' + text; logEl.appendChild(el); logEl.scrollTop = logEl.scrollHeight; };
+let engine = null;
+let loading = false;
+let lastCode = '';
+const modelId = 'Qwen/Qwen3-0.6B';
+const systemPrompt = 'You are a sovereign frontend engineer. Generate a single self-contained HTML file (inline <style>) for the requested UI surface. Output ONLY the HTML code, no markdown fences, no prose.';
+const initEngine = async () => {
+  if (engine) return engine;
+  if (loading) return null;
+  loading = true;
+  log('WebLLM engine init: ' + modelId);
+  try {
+    const webllm = await import('https://esm.run/@mlc-ai/web-llm');
+    engine = await webllm.CreateMLCEngine(modelId, {
+      initProgressCallback: (p) => { const t = (p && (p.text || p.progress != null)) ? (p.progress != null ? Math.round(p.progress*100)+'%' : p.text) : 'Loading...'; log('Engine: ' + t); }
+    });
+    log('WebLLM engine ready');
+    loading = false;
+    return engine;
+  } catch (e) {
+    log('WebLLM init failed: ' + (e && e.message ? e.message : String(e)), true);
+    loading = false;
+    return null;
+  }
+};
+const renderPreview = (html) => { preview.srcdoc = html; };
+const generate = async () => {
+  const spec = (promptEl.value || '').trim();
+  if (!spec) { log('Spec is empty', true); return; }
+  const ready = await initEngine();
+  if (!ready) { log('Engine unavailable — cannot generate', true); return; }
+  genBtn.disabled = true; genBtn.textContent = 'GENERATING...';
+  log('Generating surface from spec...');
+  try {
+    const chat = await engine.chat.completions.create({
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: spec }
+      ],
+      max_tokens: 1024,
+      temperature: 0.4
+    });
+    const raw = (chat && chat.choices && chat.choices[0] && chat.choices[0].message) ? chat.choices[0].message.content || '' : '';
+    const html = raw.replace(/^```(?:html)?/i, '').replace(/```$/i, '').trim();
+    lastCode = html;
+    codeEl.textContent = html;
+    renderPreview(html);
+    log('Surface generated.');
+  } catch (e) {
+    log('Generation failed: ' + (e && e.message ? e.message : String(e)), true);
+  }
+  genBtn.disabled = false; genBtn.textContent = 'GENERATE';
+};
+const writeFile = async () => {
+  if (!lastCode) { log('Nothing to write', true); return; }
+  const vscode = typeof acquireVsCodeApi !== 'undefined' ? acquireVsCodeApi() : null;
+  if (vscode) {
+    vscode.postMessage({ command: 'remoteUse.factory.write', code: lastCode });
+    log('Requested bridge to write file.');
+  } else {
+    log('No VS Code context — copy source manually.', true);
+  }
+};
+genBtn.addEventListener('click', generate);
+writeBtn.addEventListener('click', writeFile);
+promptEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); generate(); } });
+const vscode = typeof acquireVsCodeApi !== 'undefined' ? acquireVsCodeApi() : null;
+if (vscode) {
+  window.addEventListener('message', (event) => {
+    const message = event && event.data;
+    if (!message || !message.command) return;
+    if (message.command === 'remoteUse.factory') generate();
+  });
+}
+window.addEventListener('unhandledrejection', (event) => { const r = event && event.reason; log('Unhandled rejection: ' + (r && r.message ? r.message : String(r)), true); });
+</script>
+</body>
+</html>

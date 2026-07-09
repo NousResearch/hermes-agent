@@ -362,13 +362,15 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
 ]
-# pytest-timeout: per-test 30s hard cap with thread method (cross-platform;
+# pytest-timeout: per-test hard cap with thread method (cross-platform;
 # signal/SIGALRM is POSIX-only and breaks on Windows).
 # This is the fallback inside each per-file pytest subprocess (see
 # scripts/run_tests_parallel.py). Per-file isolation gives every test
 # file a fresh Python interpreter; pytest-timeout catches Python-level
-# hangs within a file.
-addopts = "-m 'not integration' --timeout=30 --timeout-method=thread"
+# hangs within a file. 180s (was 30s): upstream v0.18 tests legitimately
+# run >30s subprocesses (ensure_dependency installs in browser/computer-use
+# hardening tests) — the cap only needs to beat true hangs, not real work.
+addopts = "-m 'not integration' --timeout=180 --timeout-method=thread"
 
 [tool.ty.environment]
 python-version = "3.13"

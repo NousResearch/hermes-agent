@@ -55,7 +55,21 @@ def _get_anthropic_sdk():
 
 logger = logging.getLogger(__name__)
 
-THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
+# Hermes effort → Anthropic manual-thinking budget (thinking.budget_tokens).
+# Tier order (low → high): minimal(2k) < low(4k) < medium(8k) < high(16k)
+# < xhigh(32k) < max(48k).  Every value declared in VALID_REASONING_EFFORTS
+# must have its own distinct entry — the previous 4-entry map silently
+# dropped both ``minimal`` and ``max`` to the medium default (8000),
+# turning user-visible "shallowest" and "deepest" effort choices into the
+# same budget with no warning (#61334).
+THINKING_BUDGET = {
+    "minimal": 2000,
+    "low":     4000,
+    "medium":  8000,
+    "high":   16000,
+    "xhigh":  32000,
+    "max":    48000,
+}
 # Hermes effort → Anthropic adaptive-thinking effort (output_config.effort).
 # Anthropic exposes 5 levels on 4.7+: low, medium, high, xhigh, max.
 # Opus/Sonnet 4.6 only expose 4 levels: low, medium, high, max — no xhigh.

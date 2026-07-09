@@ -123,6 +123,7 @@ export type CommandDispatchResponse =
   | PrefillCommandDispatchResponse
 
 export type SidebarNavId =
+  | 'ai-employees'
   | 'artifacts'
   | 'command-center'
   | 'messaging'

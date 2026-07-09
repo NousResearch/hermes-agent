@@ -102,6 +102,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
     ],
     [browserLabel, browserOpen, filePreviewTabs, previewTarget, t.preview.tab]
   )
+
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0] ?? null
 
   useEffect(() => {

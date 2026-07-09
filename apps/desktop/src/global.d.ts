@@ -202,6 +202,10 @@ declare global {
         open: (url?: string, sessionId?: string) => Promise<void>
         navigate: (url: string, sessionId?: string) => Promise<void>
         getState?: (sessionId?: string) => Promise<DesktopBrowserState>
+        act?: (action: DesktopBrowserDomAction, sessionId?: string) => Promise<DesktopBrowserActionResult>
+        completeAction?: (payload: DesktopBrowserActionCompletePayload) => Promise<{ ok: boolean }>
+        snapshot?: (sessionId?: string) => Promise<DesktopBrowserSnapshot>
+        completeSnapshot?: (payload: DesktopBrowserSnapshotResult) => Promise<{ ok: boolean }>
         updateState?: (patch: Partial<DesktopBrowserState>) => Promise<DesktopBrowserState>
         reload?: (sessionId?: string) => Promise<void>
         goBack?: (sessionId?: string) => Promise<void>
@@ -214,10 +218,25 @@ declare global {
   }
 }
 
-export type DesktopBrowserDriveAction = 'goBack' | 'goForward' | 'navigate' | 'open' | 'reload'
+export type DesktopBrowserDriveAction = 'act' | 'goBack' | 'goForward' | 'navigate' | 'open' | 'reload' | 'snapshot'
+
+export type DesktopBrowserDomActionKind = 'click' | 'press' | 'scroll' | 'select' | 'setValue' | 'type'
+
+export interface DesktopBrowserDomAction {
+  amount?: number
+  direction?: 'down' | 'left' | 'right' | 'up'
+  index?: number
+  key?: string
+  kind: DesktopBrowserDomActionKind
+  selector?: string
+  text?: string
+  value?: string
+}
 
 export interface DesktopBrowserDrivePayload {
   action: DesktopBrowserDriveAction
+  domAction?: DesktopBrowserDomAction
+  requestId?: string
   sessionId?: string
   title?: string
   url?: string
@@ -231,6 +250,79 @@ export interface DesktopBrowserState {
   title?: string
   updatedAt?: number
   url?: string
+}
+
+export interface DesktopBrowserSnapshotElement {
+  ariaLabel?: string
+  href?: string
+  id?: string
+  index: number
+  name?: string
+  placeholder?: string
+  role?: string
+  tag: string
+  text?: string
+  type?: string
+  value?: string
+  visible?: boolean
+}
+
+export interface DesktopBrowserSnapshotHeading {
+  level: number
+  text: string
+}
+
+export interface DesktopBrowserSnapshotTable {
+  caption?: string
+  headers: string[]
+  rows: string[][]
+}
+
+export interface DesktopBrowserSnapshot {
+  capturedAt: number
+  elements: DesktopBrowserSnapshotElement[]
+  headings: DesktopBrowserSnapshotHeading[]
+  ok: boolean
+  sessionId: string
+  tables: DesktopBrowserSnapshotTable[]
+  text: string
+  title: string
+  url: string
+  error?: string
+}
+
+export interface DesktopBrowserSnapshotResult {
+  requestId?: string
+  sessionId: string
+  snapshot: DesktopBrowserSnapshot
+}
+
+export interface DesktopBrowserActionTarget {
+  ariaLabel?: string
+  id?: string
+  index?: number
+  name?: string
+  role?: string
+  tag?: string
+  text?: string
+  value?: string
+}
+
+export interface DesktopBrowserActionResult {
+  action: DesktopBrowserDomActionKind
+  capturedAt: number
+  ok: boolean
+  sessionId: string
+  target?: DesktopBrowserActionTarget
+  title?: string
+  url?: string
+  error?: string
+}
+
+export interface DesktopBrowserActionCompletePayload {
+  requestId?: string
+  result: DesktopBrowserActionResult
+  sessionId: string
 }
 
 export interface DesktopMarketplaceSearchItem {

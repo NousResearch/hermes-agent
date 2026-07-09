@@ -98,5 +98,29 @@ def test_mcp_tool_specs_cover_phase3_and_phase2_names():
         "moneyprinter_generate_script",
         "moneyprinter_generate_terms",
         "moneyprinter_delete_task",
+        "moneyprinter_minimax_list_voices",
+        "moneyprinter_minimax_clone_voice",
+        "moneyprinter_minimax_generate_tts",
+        "moneyprinter_minimax_generate_lyrics",
+        "moneyprinter_minimax_generate_music",
     }
     assert required.issubset(names)
+
+
+def test_mcp_minimax_generate_music_uses_adapter(monkeypatch):
+    async def fake_music(body):
+        assert body["prompt"] == "科技感短视频开场"
+        assert body["save_as_bgm"] is True
+        return 200, {
+            "ok": True,
+            "data": {"bgm": {"file": "minimax-music-demo.mp3", "name": "minimax-music-demo.mp3"}},
+            "error": None,
+        }
+
+    monkeypatch.setattr(adapter, "generate_minimax_music_data", fake_music)
+
+    raw = mp_tools.moneyprinter_minimax_generate_music(prompt="科技感短视频开场", save_as_bgm=True)
+    payload = json.loads(raw)
+
+    assert payload["ok"] is True
+    assert payload["data"]["bgm"]["file"] == "minimax-music-demo.mp3"

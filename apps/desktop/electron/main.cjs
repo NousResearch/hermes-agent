@@ -6690,9 +6690,14 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
 // Built-in browser drive handlers (for right-rail BrowserPane).
 // These send to the renderer so the TS store and <webview> can react.
 const DEFAULT_BROWSER_SESSION_ID = 'draft'
+const BROWSER_SNAPSHOT_TIMEOUT_MS = 10000
 
 function browserSessionKey(sessionId) {
   return typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : DEFAULT_BROWSER_SESSION_ID
+}
+
+function optionalBrowserSessionKey(sessionId) {
+  return typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : undefined
 }
 
 function defaultBrowserRailState(sessionId) {
@@ -6720,13 +6725,13 @@ function browserRailStateFor(sessionId) {
 function parseBrowserRequest(value, sessionId) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return {
-      sessionId: browserSessionKey(value.sessionId || sessionId),
+      sessionId: optionalBrowserSessionKey(value.sessionId || sessionId),
       url: typeof value.url === 'string' ? value.url : undefined
     }
   }
 
   return {
-    sessionId: browserSessionKey(sessionId),
+    sessionId: optionalBrowserSessionKey(sessionId),
     url: typeof value === 'string' ? value : undefined
   }
 }
@@ -6739,6 +6744,47 @@ let browserRailState = {
   title: '',
   updatedAt: Date.now(),
   url: 'about:blank'
+}
+
+const pendingBrowserSnapshots = new Map()
+const pendingBrowserActions = new Map()
+
+function settleBrowserSnapshot(requestId, result, error = null) {
+  const pending = pendingBrowserSnapshots.get(requestId)
+
+  if (!pending) {
+    return false
+  }
+
+  pendingBrowserSnapshots.delete(requestId)
+  clearTimeout(pending.timer)
+
+  if (error) {
+    pending.reject(error)
+  } else {
+    pending.resolve(result)
+  }
+
+  return true
+}
+
+function settleBrowserAction(requestId, result, error = null) {
+  const pending = pendingBrowserActions.get(requestId)
+
+  if (!pending) {
+    return false
+  }
+
+  pendingBrowserActions.delete(requestId)
+  clearTimeout(pending.timer)
+
+  if (error) {
+    pending.reject(error)
+  } else {
+    pending.resolve(result)
+  }
+
+  return true
 }
 
 function sanitizeBrowserStatePatch(patch) {
@@ -6773,34 +6819,100 @@ function updateBrowserRailState(sender, patch) {
 
 ipcMain.handle('hermes:browser:open', (event, url, sessionId) => {
   const request = parseBrowserRequest(url, sessionId)
-  const payload = { action: 'open', sessionId: request.sessionId, url: request.url || undefined }
-  updateBrowserRailState(event.sender, { sessionId: request.sessionId, ...(payload.url ? { url: payload.url } : {}) })
+  const payload = { action: 'open', ...(request.sessionId ? { sessionId: request.sessionId } : {}), url: request.url || undefined }
+  if (request.sessionId) {
+    updateBrowserRailState(event.sender, { sessionId: request.sessionId, ...(payload.url ? { url: payload.url } : {}) })
+  }
   event.sender.send('hermes:browser:drive', payload)
 })
 
 ipcMain.handle('hermes:browser:navigate', (event, url, sessionId) => {
   const request = parseBrowserRequest(url, sessionId)
-  const payload = { action: 'navigate', sessionId: request.sessionId, url: request.url || '' }
-  if (payload.url) updateBrowserRailState(event.sender, { sessionId: request.sessionId, url: payload.url })
+  const payload = { action: 'navigate', ...(request.sessionId ? { sessionId: request.sessionId } : {}), url: request.url || '' }
+  if (request.sessionId && payload.url) updateBrowserRailState(event.sender, { sessionId: request.sessionId, url: payload.url })
   event.sender.send('hermes:browser:drive', payload)
 })
 
 ipcMain.handle('hermes:browser:getState', (_event, sessionId) => browserRailStateFor(sessionId))
+
+ipcMain.handle('hermes:browser:act', (event, domAction, sessionId) => {
+  const requestId = crypto.randomUUID()
+  const key = optionalBrowserSessionKey(sessionId)
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      settleBrowserAction(
+        requestId,
+        null,
+        new Error(`Browser action timed out for session ${key || 'current'}`)
+      )
+    }, BROWSER_SNAPSHOT_TIMEOUT_MS)
+
+    pendingBrowserActions.set(requestId, { reject, resolve, timer })
+    event.sender.send('hermes:browser:drive', {
+      action: 'act',
+      domAction: domAction && typeof domAction === 'object' ? domAction : null,
+      requestId,
+      ...(key ? { sessionId: key } : {})
+    })
+  })
+})
+
+ipcMain.handle('hermes:browser:actionResult', (_event, payload) => {
+  const requestId = payload && typeof payload === 'object' ? payload.requestId : null
+
+  if (typeof requestId !== 'string' || !requestId) {
+    return { ok: false }
+  }
+
+  return { ok: settleBrowserAction(requestId, payload.result || null) }
+})
+
+ipcMain.handle('hermes:browser:snapshot', (event, sessionId) => {
+  const requestId = crypto.randomUUID()
+  const key = optionalBrowserSessionKey(sessionId)
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      settleBrowserSnapshot(
+        requestId,
+        null,
+        new Error(`Browser snapshot timed out for session ${key || 'current'}`)
+      )
+    }, BROWSER_SNAPSHOT_TIMEOUT_MS)
+
+    pendingBrowserSnapshots.set(requestId, { reject, resolve, timer })
+    event.sender.send('hermes:browser:drive', { action: 'snapshot', requestId, ...(key ? { sessionId: key } : {}) })
+  })
+})
+
+ipcMain.handle('hermes:browser:snapshotResult', (_event, payload) => {
+  const requestId = payload && typeof payload === 'object' ? payload.requestId : null
+
+  if (typeof requestId !== 'string' || !requestId) {
+    return { ok: false }
+  }
+
+  return { ok: settleBrowserSnapshot(requestId, payload.snapshot || null) }
+})
 
 ipcMain.handle('hermes:browser:updateState', (event, patch) => {
   return updateBrowserRailState(event.sender, patch)
 })
 
 ipcMain.handle('hermes:browser:reload', (event, sessionId) => {
-  event.sender.send('hermes:browser:drive', { action: 'reload', sessionId: browserSessionKey(sessionId) })
+  const key = optionalBrowserSessionKey(sessionId)
+  event.sender.send('hermes:browser:drive', { action: 'reload', ...(key ? { sessionId: key } : {}) })
 })
 
 ipcMain.handle('hermes:browser:goBack', (event, sessionId) => {
-  event.sender.send('hermes:browser:drive', { action: 'goBack', sessionId: browserSessionKey(sessionId) })
+  const key = optionalBrowserSessionKey(sessionId)
+  event.sender.send('hermes:browser:drive', { action: 'goBack', ...(key ? { sessionId: key } : {}) })
 })
 
 ipcMain.handle('hermes:browser:goForward', (event, sessionId) => {
-  event.sender.send('hermes:browser:drive', { action: 'goForward', sessionId: browserSessionKey(sessionId) })
+  const key = optionalBrowserSessionKey(sessionId)
+  event.sender.send('hermes:browser:drive', { action: 'goForward', ...(key ? { sessionId: key } : {}) })
 })
 
 ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {

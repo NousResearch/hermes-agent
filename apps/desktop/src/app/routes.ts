@@ -5,6 +5,7 @@ export const COMMAND_CENTER_ROUTE = '/command-center'
 export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'
 export const ARTIFACTS_ROUTE = '/artifacts'
+export const AI_EMPLOYEES_ROUTE = '/ai-employees'
 export const VIDEO_STUDIO_ROUTE = '/video-studio'
 export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
@@ -12,6 +13,7 @@ export const AGENTS_ROUTE = '/agents'
 export const STARMAP_ROUTE = '/starmap'
 
 export type AppView =
+  | 'ai-employees'
   | 'agents'
   | 'artifacts'
   | 'chat'
@@ -25,6 +27,7 @@ export type AppView =
   | 'video-studio'
 
 export type AppRouteId =
+  | 'ai-employees'
   | 'agents'
   | 'artifacts'
   | 'command-center'
@@ -50,6 +53,7 @@ export const APP_ROUTES = [
   { id: 'skills', path: SKILLS_ROUTE, view: 'skills' },
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
+  { id: 'ai-employees', path: AI_EMPLOYEES_ROUTE, view: 'ai-employees' },
   { id: 'video-studio', path: VIDEO_STUDIO_ROUTE, view: 'video-studio' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },

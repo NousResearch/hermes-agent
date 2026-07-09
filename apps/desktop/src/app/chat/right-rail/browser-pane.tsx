@@ -10,6 +10,7 @@ import {
   $browserCurrentState,
   $browserDriveCommand,
   $browserSessionId,
+  type BrowserDomActionPayload,
   normalizeBrowserUrl,
   setBrowserSessionState
 } from '@/store/browser'
@@ -18,17 +19,20 @@ import { compactUrl } from './preview-console'
 import { PreviewEmptyState } from './preview-file'
 
 const AGENT_ACTION_LABELS = {
+  act: 'Act',
   goBack: 'Back',
   goForward: 'Forward',
   navigate: 'Navigate',
   open: 'Open',
-  reload: 'Reload'
+  reload: 'Reload',
+  snapshot: 'Snapshot'
 }
 
 type BrowserWebview = HTMLElement & {
   canGoBack?: () => boolean
   canGoForward?: () => boolean
   closeDevTools?: () => void
+  executeJavaScript?: (code: string, userGesture?: boolean) => Promise<unknown>
   getTitle?: () => string
   getURL?: () => string
   goBack?: () => void
@@ -38,6 +42,67 @@ type BrowserWebview = HTMLElement & {
   openDevTools?: () => void
   reload?: () => void
   stop?: () => void
+}
+
+interface BrowserSnapshotElement {
+  ariaLabel?: string
+  href?: string
+  id?: string
+  index: number
+  name?: string
+  placeholder?: string
+  role?: string
+  tag: string
+  text?: string
+  type?: string
+  value?: string
+  visible?: boolean
+}
+
+interface BrowserSnapshotHeading {
+  level: number
+  text: string
+}
+
+interface BrowserSnapshotTable {
+  caption?: string
+  headers: string[]
+  rows: string[][]
+}
+
+interface BrowserSnapshot {
+  capturedAt: number
+  elements: BrowserSnapshotElement[]
+  headings: BrowserSnapshotHeading[]
+  ok: boolean
+  sessionId: string
+  tables: BrowserSnapshotTable[]
+  text: string
+  title: string
+  url: string
+  error?: string
+}
+
+interface BrowserActionTarget {
+  ariaLabel?: string
+  id?: string
+  index?: number
+  name?: string
+  role?: string
+  tag?: string
+  text?: string
+  value?: string
+}
+
+interface BrowserActionResult {
+  action: BrowserDomActionPayload['kind']
+  capturedAt: number
+  ok: boolean
+  sessionId: string
+  target?: BrowserActionTarget
+  title?: string
+  url?: string
+  error?: string
 }
 
 interface BrowserPaneProps {
@@ -54,6 +119,214 @@ const TITLEBAR_GROUP_ID = 'browser'
 
 function browserPartitionForSession(sessionId: string): string {
   return `persist:hermes-browser-${encodeURIComponent(sessionId).replaceAll('%', '_')}`
+}
+
+const BROWSER_SNAPSHOT_SCRIPT = String.raw`(() => {
+  const MAX_TEXT = 200000
+  const MAX_ELEMENTS = 500
+  const MAX_TABLES = 30
+  const MAX_ROWS = 80
+  const MAX_CELL_TEXT = 500
+
+  const clean = value => String(value || '').replace(/\s+/g, ' ').trim()
+  const clip = (value, max = 4000) => clean(value).slice(0, max)
+  const isVisible = element => {
+    const style = window.getComputedStyle(element)
+    const rect = element.getBoundingClientRect()
+
+    return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0
+  }
+  const elementText = element => {
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      return element.value || element.placeholder || element.getAttribute('aria-label') || ''
+    }
+
+    return element.innerText || element.textContent || element.getAttribute('aria-label') || ''
+  }
+  const elementValue = element => {
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+      return element.value || ''
+    }
+
+    return ''
+  }
+
+  const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+    .filter(isVisible)
+    .slice(0, 100)
+    .map(element => ({
+      level: Number(element.tagName.slice(1)),
+      text: clip(element.innerText || element.textContent || '', 1000)
+    }))
+    .filter(item => item.text)
+
+  const elements = Array.from(
+    document.querySelectorAll('a,button,input,textarea,select,[role],[contenteditable="true"],summary,label')
+  )
+    .slice(0, MAX_ELEMENTS)
+    .map((element, index) => ({
+      ariaLabel: clip(element.getAttribute('aria-label') || '', 1000) || undefined,
+      href: element instanceof HTMLAnchorElement ? element.href || undefined : undefined,
+      id: element.id || undefined,
+      index,
+      name: element.getAttribute('name') || undefined,
+      placeholder: element.getAttribute('placeholder') || undefined,
+      role: element.getAttribute('role') || undefined,
+      tag: element.tagName.toLowerCase(),
+      text: clip(elementText(element), 2000) || undefined,
+      type: element.getAttribute('type') || undefined,
+      value: clip(elementValue(element), 2000) || undefined,
+      visible: isVisible(element)
+    }))
+    .filter(item => item.visible || item.text || item.ariaLabel || item.placeholder)
+
+  const tables = Array.from(document.querySelectorAll('table'))
+    .filter(isVisible)
+    .slice(0, MAX_TABLES)
+    .map(table => {
+      const headers = Array.from(table.querySelectorAll('th'))
+        .slice(0, 40)
+        .map(cell => clip(cell.innerText || cell.textContent || '', MAX_CELL_TEXT))
+      const rows = Array.from(table.querySelectorAll('tr'))
+        .slice(0, MAX_ROWS)
+        .map(row =>
+          Array.from(row.querySelectorAll('th,td'))
+            .slice(0, 40)
+            .map(cell => clip(cell.innerText || cell.textContent || '', MAX_CELL_TEXT))
+        )
+        .filter(row => row.some(Boolean))
+
+      return {
+        caption: clip(table.querySelector('caption')?.innerText || '', 1000) || undefined,
+        headers,
+        rows
+      }
+    })
+
+  return {
+    capturedAt: Date.now(),
+    elements,
+    headings,
+    ok: true,
+    tables,
+    text: (document.body?.innerText || document.documentElement?.innerText || '').slice(0, MAX_TEXT),
+    title: document.title || '',
+    url: location.href
+  }
+})()`
+
+function browserActionScript(action: BrowserDomActionPayload): string {
+  return `(() => {
+  const action = ${JSON.stringify(action)}
+  const TARGET_SELECTOR = 'a,button,input,textarea,select,[role],[contenteditable="true"],summary,label'
+  const clean = value => String(value || '').replace(/\\s+/g, ' ').trim()
+  const clip = (value, max = 2000) => clean(value).slice(0, max)
+  const targetInfo = (element, index) => ({
+    ariaLabel: element.getAttribute('aria-label') || undefined,
+    id: element.id || undefined,
+    index,
+    name: element.getAttribute('name') || undefined,
+    role: element.getAttribute('role') || undefined,
+    tag: element.tagName?.toLowerCase?.() || undefined,
+    text: clip(element.innerText || element.textContent || element.getAttribute('aria-label') || element.getAttribute('placeholder') || ''),
+    value: element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ? element.value || '' : undefined
+  })
+  const resolveTarget = () => {
+    if (typeof action.selector === 'string' && action.selector.trim()) {
+      const element = document.querySelector(action.selector)
+      const index = Array.from(document.querySelectorAll(TARGET_SELECTOR)).indexOf(element)
+      return { element, index }
+    }
+
+    if (Number.isInteger(action.index)) {
+      const elements = Array.from(document.querySelectorAll(TARGET_SELECTOR))
+      return { element: elements[action.index], index: action.index }
+    }
+
+    return { element: document.activeElement, index: -1 }
+  }
+  const emitInput = element => {
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }))
+    element.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+  const setTextValue = (element, value) => {
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+      setter ? setter.call(element, value) : (element.value = value)
+      emitInput(element)
+      return true
+    }
+
+    if (element instanceof HTMLElement && element.isContentEditable) {
+      element.textContent = value
+      emitInput(element)
+      return true
+    }
+
+    return false
+  }
+  const keyEvent = (type, key) => new KeyboardEvent(type, { bubbles: true, cancelable: true, key })
+  const finish = (ok, target, extra = {}) => ({
+    action: action.kind,
+    capturedAt: Date.now(),
+    ok,
+    target,
+    title: document.title || '',
+    url: location.href,
+    ...extra
+  })
+
+  const { element, index } = resolveTarget()
+  if (!element) return finish(false, undefined, { error: 'Target element not found' })
+
+  element.scrollIntoView?.({ block: 'center', inline: 'center' })
+  element.focus?.()
+  const target = targetInfo(element, index)
+
+  if (action.kind === 'click') {
+    element.click?.()
+    return finish(true, target)
+  }
+
+  if (action.kind === 'type' || action.kind === 'setValue') {
+    const next = String(action.text ?? action.value ?? '')
+    if (!setTextValue(element, next)) return finish(false, target, { error: 'Target is not editable' })
+    return finish(true, targetInfo(element, index))
+  }
+
+  if (action.kind === 'select') {
+    if (!(element instanceof HTMLSelectElement)) return finish(false, target, { error: 'Target is not a select element' })
+    element.value = String(action.value ?? '')
+    emitInput(element)
+    return finish(true, targetInfo(element, index))
+  }
+
+  if (action.kind === 'press') {
+    const key = String(action.key || 'Enter')
+    element.dispatchEvent(keyEvent('keydown', key))
+    element.dispatchEvent(keyEvent('keyup', key))
+    if (key === 'Enter' && element instanceof HTMLInputElement) element.form?.requestSubmit?.()
+    return finish(true, target)
+  }
+
+  if (action.kind === 'scroll') {
+    const amount = Number.isFinite(action.amount) ? Number(action.amount) : 600
+    const direction = action.direction || 'down'
+    const delta = {
+      down: [0, amount],
+      left: [-amount, 0],
+      right: [amount, 0],
+      up: [0, -amount]
+    }[direction] || [0, amount]
+    const scrollTarget = element === document.body || element === document.documentElement ? window : element
+    if (scrollTarget === window) window.scrollBy({ left: delta[0], top: delta[1], behavior: 'instant' })
+    else scrollTarget.scrollBy?.({ left: delta[0], top: delta[1], behavior: 'instant' })
+    return finish(true, target)
+  }
+
+  return finish(false, target, { error: 'Unsupported browser action' })
+})()`
 }
 
 function BrowserLoadError({ error, onRetry }: { error: BrowserLoadErrorState; onRetry: () => void }) {
@@ -83,6 +356,75 @@ function navigateWebview(webview: BrowserWebview | null, url: string) {
     webview.loadURL(url)
   } else {
     webview.setAttribute('src', url)
+  }
+}
+
+function emptyBrowserSnapshot(sessionId: string, error: string): BrowserSnapshot {
+  return {
+    capturedAt: Date.now(),
+    elements: [],
+    error,
+    headings: [],
+    ok: false,
+    sessionId,
+    tables: [],
+    text: '',
+    title: '',
+    url: ''
+  }
+}
+
+function normalizeBrowserSnapshot(raw: unknown, sessionId: string): BrowserSnapshot {
+  if (!raw || typeof raw !== 'object') {
+    return emptyBrowserSnapshot(sessionId, 'Snapshot returned no data')
+  }
+
+  const record = raw as Partial<BrowserSnapshot>
+
+  return {
+    capturedAt: typeof record.capturedAt === 'number' ? record.capturedAt : Date.now(),
+    elements: Array.isArray(record.elements) ? record.elements : [],
+    headings: Array.isArray(record.headings) ? record.headings : [],
+    ok: record.ok !== false,
+    sessionId,
+    tables: Array.isArray(record.tables) ? record.tables : [],
+    text: typeof record.text === 'string' ? record.text : '',
+    title: typeof record.title === 'string' ? record.title : '',
+    url: typeof record.url === 'string' ? record.url : '',
+    ...(typeof record.error === 'string' ? { error: record.error } : {})
+  }
+}
+
+function emptyBrowserActionResult(action: BrowserDomActionPayload, sessionId: string, error: string): BrowserActionResult {
+  return {
+    action: action.kind,
+    capturedAt: Date.now(),
+    error,
+    ok: false,
+    sessionId
+  }
+}
+
+function normalizeBrowserActionResult(
+  raw: unknown,
+  action: BrowserDomActionPayload,
+  sessionId: string
+): BrowserActionResult {
+  if (!raw || typeof raw !== 'object') {
+    return emptyBrowserActionResult(action, sessionId, 'Action returned no data')
+  }
+
+  const record = raw as Partial<BrowserActionResult>
+
+  return {
+    action: action.kind,
+    capturedAt: typeof record.capturedAt === 'number' ? record.capturedAt : Date.now(),
+    ok: record.ok === true,
+    sessionId,
+    ...(record.target && typeof record.target === 'object' ? { target: record.target } : {}),
+    ...(typeof record.title === 'string' ? { title: record.title } : {}),
+    ...(typeof record.url === 'string' ? { url: record.url } : {}),
+    ...(typeof record.error === 'string' ? { error: record.error } : {})
   }
 }
 
@@ -147,6 +489,53 @@ export function BrowserPane({ setTitlebarToolGroup }: BrowserPaneProps) {
     publishBrowserState({ loading: true })
     webviewRef.current?.reload?.()
   }, [publishBrowserState])
+
+  const completeSnapshotRequest = useCallback(
+    async (requestId?: string) => {
+      const webview = webviewRef.current
+      let snapshot: BrowserSnapshot
+
+      try {
+        if (!webview?.executeJavaScript) {
+          snapshot = emptyBrowserSnapshot(sessionId, 'Browser webview snapshot API is unavailable')
+        } else {
+          snapshot = normalizeBrowserSnapshot(await webview.executeJavaScript(BROWSER_SNAPSHOT_SCRIPT, false), sessionId)
+        }
+      } catch (error) {
+        snapshot = emptyBrowserSnapshot(sessionId, error instanceof Error ? error.message : String(error))
+      }
+
+      void window.hermesDesktop?.browser?.completeSnapshot?.({ requestId, sessionId, snapshot })
+    },
+    [sessionId]
+  )
+
+  const completeActionRequest = useCallback(
+    async (domAction: BrowserDomActionPayload | undefined, requestId?: string) => {
+      const action = domAction?.kind ? domAction : ({ kind: 'click' } satisfies BrowserDomActionPayload)
+      const webview = webviewRef.current
+      let result: BrowserActionResult
+
+      try {
+        if (!domAction?.kind) {
+          result = emptyBrowserActionResult(action, sessionId, 'Browser action payload is missing')
+        } else if (!webview?.executeJavaScript) {
+          result = emptyBrowserActionResult(action, sessionId, 'Browser webview action API is unavailable')
+        } else {
+          result = normalizeBrowserActionResult(
+            await webview.executeJavaScript(browserActionScript(action), true),
+            action,
+            sessionId
+          )
+        }
+      } catch (error) {
+        result = emptyBrowserActionResult(action, sessionId, error instanceof Error ? error.message : String(error))
+      }
+
+      void window.hermesDesktop?.browser?.completeAction?.({ requestId, result, sessionId })
+    },
+    [sessionId]
+  )
 
   const toggleDevTools = useCallback(() => {
     const webview = webviewRef.current
@@ -307,6 +696,18 @@ export function BrowserPane({ setTitlebarToolGroup }: BrowserPaneProps) {
 
     lastHandledDriveCommandIdRef.current = driveCommand.id
 
+    if (driveCommand.action === 'snapshot') {
+      void completeSnapshotRequest(driveCommand.requestId)
+
+      return
+    }
+
+    if (driveCommand.action === 'act') {
+      void completeActionRequest(driveCommand.domAction, driveCommand.requestId)
+
+      return
+    }
+
     const webview = webviewRef.current
 
     if (!webview) {
@@ -320,7 +721,7 @@ export function BrowserPane({ setTitlebarToolGroup }: BrowserPaneProps) {
     } else if (driveCommand.action === 'goForward') {
       webview.goForward?.()
     }
-  }, [driveCommand, reload, sessionId])
+  }, [completeActionRequest, completeSnapshotRequest, driveCommand, reload, sessionId])
 
   const activeDriveCommand = driveCommand?.sessionId === sessionId ? driveCommand : null
   const agentActionLabel = activeDriveCommand ? AGENT_ACTION_LABELS[activeDriveCommand.action] : null

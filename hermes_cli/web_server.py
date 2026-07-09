@@ -340,6 +340,16 @@ async def api_moneyprinter_create_video(request: Request):
     return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().create_video(request))
 
 
+@app.post("/api/capabilities/moneyprinter/audio")
+async def api_moneyprinter_create_audio(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().create_audio(request))
+
+
+@app.post("/api/capabilities/moneyprinter/subtitle")
+async def api_moneyprinter_create_subtitle(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().create_subtitle(request))
+
+
 @app.get("/api/capabilities/moneyprinter/materials")
 async def api_moneyprinter_list_materials():
     return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().list_local_materials())
@@ -348,6 +358,21 @@ async def api_moneyprinter_list_materials():
 @app.post("/api/capabilities/moneyprinter/materials")
 async def api_moneyprinter_upload_material(request: Request):
     return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().upload_local_material(request))
+
+
+@app.get("/api/capabilities/moneyprinter/assets")
+async def api_moneyprinter_list_assets():
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().list_assets())
+
+
+@app.post("/api/capabilities/moneyprinter/bgms")
+async def api_moneyprinter_upload_bgm(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().upload_bgm(request))
+
+
+@app.post("/api/capabilities/moneyprinter/custom-audio")
+async def api_moneyprinter_upload_custom_audio(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().upload_custom_audio(request))
 
 
 @app.post("/api/capabilities/moneyprinter/scripts")
@@ -10750,6 +10775,14 @@ class ProfileDescriptionUpdate(BaseModel):
     description: str = ""
 
 
+class AgentEmployeeMetadataUpdate(BaseModel):
+    display_name_zh: Optional[str] = None
+    role_zh: Optional[str] = None
+    mission_zh: Optional[str] = None
+    category: Optional[str] = None
+    emoji: Optional[str] = None
+
+
 class ProfileModelUpdate(BaseModel):
     provider: str
     model: str
@@ -10981,6 +11014,46 @@ async def list_profiles_endpoint():
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
+
+
+@app.get("/api/ai-employees")
+async def list_ai_employees_endpoint():
+    """Return durable AI employees backed by Hermes profiles."""
+    from hermes_cli.ai_employees import list_ai_employees
+    try:
+        loop = asyncio.get_running_loop()
+        agents = await loop.run_in_executor(None, list_ai_employees)
+        return {"agents": agents}
+    except Exception:
+        _log.exception("GET /api/ai-employees failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.put("/api/ai-employees/{profile_id}/metadata")
+async def update_ai_employee_metadata_endpoint(profile_id: str, body: AgentEmployeeMetadataUpdate):
+    """Persist employee display/training metadata without renaming the profile."""
+    from hermes_cli.ai_employees import update_ai_employee_metadata
+
+    raw_updates = {
+        "display_name_zh": body.display_name_zh,
+        "role_zh": body.role_zh,
+        "mission_zh": body.mission_zh,
+        "category": body.category,
+        "emoji": body.emoji,
+    }
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: update_ai_employee_metadata(profile_id, raw_updates),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("PUT /api/ai-employees/%s/metadata failed", profile_id)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/profiles")

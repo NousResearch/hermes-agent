@@ -952,6 +952,40 @@ class TestElevenLabsVoice(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestMiniMaxVoice(unittest.TestCase):
+
+    def test_is_minimax_voice_true(self):
+        self.assertTrue(vs.is_minimax_voice("minimax:MiniMaxDemo001"))
+        self.assertTrue(vs.is_minimax_voice("minimax:MiniMaxDemo001:演示音色"))
+
+    def test_parse_minimax_voice_id(self):
+        self.assertEqual(vs.parse_minimax_voice_id("minimax:MiniMaxDemo001:演示音色"), "MiniMaxDemo001")
+
+    def test_tts_dispatches_minimax_voice(self):
+        sentinel = object()
+        calls = {}
+
+        def fake_minimax_tts(text, voice_id, voice_file, voice_rate, voice_volume):
+            calls.update(
+                {
+                    "text": text,
+                    "voice_id": voice_id,
+                    "voice_file": voice_file,
+                    "voice_rate": voice_rate,
+                    "voice_volume": voice_volume,
+                }
+            )
+            return sentinel
+
+        with patch.object(vs, "minimax_tts", fake_minimax_tts):
+            result = vs.tts("Hello MiniMax", "minimax:MiniMaxDemo001:演示音色", 1.2, "/tmp/minimax.mp3", 0.8)
+
+        self.assertIs(result, sentinel)
+        self.assertEqual(calls["voice_id"], "MiniMaxDemo001")
+        self.assertEqual(calls["voice_rate"], 1.2)
+        self.assertEqual(calls["voice_volume"], 0.8)
+
+
 if __name__ == "__main__":
     # python -m unittest test.services.test_voice.TestVoiceService.test_azure_tts_v1
     # python -m unittest test.services.test_voice.TestVoiceService.test_azure_tts_v2

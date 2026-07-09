@@ -1436,6 +1436,19 @@ class ShellFileOperations(FileOperations):
 
         # Post-write lint with delta refinement.
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
+        if self._should_rollback_lint_failure(path, pre_content, lint_result):
+            restore_result = self._atomic_write(path, pre_content)
+            restore_note = ""
+            if restore_result.exit_code != 0:
+                restore_note = f" Rollback failed: {restore_result.stdout or 'unknown error'}"
+            return WriteResult(
+                lint=lint_result.to_dict() if lint_result else None,
+                error=(
+                    "Write rolled back: this edit introduced new syntax/lint "
+                    f"errors in {path}. Re-read the file and apply a smaller, "
+                    f"complete edit.{restore_note}"
+                ),
+            )
 
         # Semantic diagnostics from the LSP layer — separate channel.
         # Only fired when the syntax tier reported clean (no point asking
@@ -1457,6 +1470,24 @@ class ShellFileOperations(FileOperations):
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
         )
+
+    def _should_rollback_lint_failure(
+        self,
+        path: str,
+        pre_content: Optional[str],
+        lint_result: Optional[LintResult],
+    ) -> bool:
+        """Return True when a write introduced a parse-level error we can undo."""
+        if pre_content is None or lint_result is None:
+            return False
+        if lint_result.success or lint_result.skipped:
+            return False
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in LINTERS_INPROC:
+            return False
+        if "pre-existing" in (lint_result.message or "").lower():
+            return False
+        return True
     
     # =========================================================================
     # PATCH Implementation (Replace Mode)

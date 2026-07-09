@@ -3,6 +3,9 @@ import { JsonRpcGatewayClient } from '@hermes/shared'
 import type {
   ActionResponse,
   ActionStatusResponse,
+  AgentEmployeeInfo,
+  AgentEmployeeMetadataUpdate,
+  AgentEmployeesResponse,
   AnalyticsResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
@@ -63,6 +66,9 @@ export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 export type {
   ActionResponse,
   ActionStatusResponse,
+  AgentEmployeeInfo,
+  AgentEmployeeMetadataUpdate,
+  AgentEmployeesResponse,
   AnalyticsDailyEntry,
   AnalyticsModelEntry,
   AnalyticsResponse,
@@ -746,6 +752,23 @@ export function deleteProfile(name: string): Promise<{ ok: boolean; path: string
   return window.hermesDesktop.api<{ ok: boolean; path: string }>({
     path: `/api/profiles/${encodeURIComponent(name)}`,
     method: 'DELETE'
+  })
+}
+
+export function getAiEmployees(): Promise<AgentEmployeesResponse> {
+  return window.hermesDesktop.api<AgentEmployeesResponse>({
+    path: '/api/ai-employees'
+  })
+}
+
+export function updateAiEmployeeMetadata(
+  profileId: string,
+  body: AgentEmployeeMetadataUpdate
+): Promise<AgentEmployeeInfo> {
+  return window.hermesDesktop.api<AgentEmployeeInfo>({
+    path: `/api/ai-employees/${encodeURIComponent(profileId)}/metadata`,
+    method: 'PUT',
+    body
   })
 }
 

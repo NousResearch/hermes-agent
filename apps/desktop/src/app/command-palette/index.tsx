@@ -62,6 +62,7 @@ import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
 import {
   AGENTS_ROUTE,
+  AI_EMPLOYEES_ROUTE,
   ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
@@ -393,6 +394,13 @@ export function CommandPalette() {
             run: go(CRON_ROUTE)
           },
           { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
+          {
+            icon: Users,
+            id: 'nav-ai-employees',
+            keywords: ['ai employees', 'agents', 'profiles', '员工', '智能体', '训练员工'],
+            label: 'AI 员工',
+            run: go(AI_EMPLOYEES_ROUTE)
+          },
           { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) },
           {
             icon: Starmap,

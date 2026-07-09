@@ -1490,6 +1490,22 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return await moneyprinter_adapter.create_video(request)
 
+    async def _handle_moneyprinter_create_audio(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.create_audio(request)
+
+    async def _handle_moneyprinter_create_subtitle(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.create_subtitle(request)
+
     async def _handle_moneyprinter_list_materials(self, request: Any) -> Any:
         auth_err = self._check_auth(request)
         if auth_err:
@@ -1505,6 +1521,30 @@ class APIServerAdapter(BasePlatformAdapter):
         from capabilities.moneyprinter import adapter as moneyprinter_adapter
 
         return await moneyprinter_adapter.upload_local_material(request)
+
+    async def _handle_moneyprinter_list_assets(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.list_assets()
+
+    async def _handle_moneyprinter_upload_bgm(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.upload_bgm(request)
+
+    async def _handle_moneyprinter_upload_custom_audio(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.upload_custom_audio(request)
 
     async def _handle_moneyprinter_generate_script(self, request: "web.Request") -> "web.Response":
         auth_err = self._check_auth(request)
@@ -4713,8 +4753,13 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/api/capabilities/moneyprinter/config", self._handle_moneyprinter_get_config)
             self._app.router.add_post("/api/capabilities/moneyprinter/config", self._handle_moneyprinter_save_config)
             self._app.router.add_post("/api/capabilities/moneyprinter/videos", self._handle_moneyprinter_create_video)
+            self._app.router.add_post("/api/capabilities/moneyprinter/audio", self._handle_moneyprinter_create_audio)
+            self._app.router.add_post("/api/capabilities/moneyprinter/subtitle", self._handle_moneyprinter_create_subtitle)
             self._app.router.add_get("/api/capabilities/moneyprinter/materials", self._handle_moneyprinter_list_materials)
             self._app.router.add_post("/api/capabilities/moneyprinter/materials", self._handle_moneyprinter_upload_material)
+            self._app.router.add_get("/api/capabilities/moneyprinter/assets", self._handle_moneyprinter_list_assets)
+            self._app.router.add_post("/api/capabilities/moneyprinter/bgms", self._handle_moneyprinter_upload_bgm)
+            self._app.router.add_post("/api/capabilities/moneyprinter/custom-audio", self._handle_moneyprinter_upload_custom_audio)
             self._app.router.add_post("/api/capabilities/moneyprinter/scripts", self._handle_moneyprinter_generate_script)
             self._app.router.add_post("/api/capabilities/moneyprinter/terms", self._handle_moneyprinter_generate_terms)
             self._app.router.add_get("/api/capabilities/moneyprinter/outputs", self._handle_moneyprinter_list_outputs)

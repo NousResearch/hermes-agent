@@ -408,6 +408,82 @@ def test_browser_tool_complete_emits_desktop_browser_drive(monkeypatch):
     ) in events
 
 
+def test_browser_click_complete_emits_desktop_dom_action(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "browser-sync-test",
+        {"tool_progress_mode": "off", "tool_started_at": {}},
+    )
+
+    server._on_tool_complete(
+        "browser-sync-test",
+        "tool-1",
+        "browser_click",
+        {"ref": "@e47"},
+        json.dumps({"success": True}),
+    )
+
+    assert (
+        "browser.drive",
+        "browser-sync-test",
+        {"action": "act", "domAction": {"index": 47, "kind": "click"}},
+    ) in events
+
+
+def test_browser_type_scroll_and_press_complete_emit_desktop_dom_actions(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "browser-sync-test",
+        {"tool_progress_mode": "off", "tool_started_at": {}},
+    )
+
+    server._on_tool_complete(
+        "browser-sync-test",
+        "tool-type",
+        "browser_type",
+        {"ref": "@e3", "text": "你好"},
+        json.dumps({"success": True}),
+    )
+    server._on_tool_complete(
+        "browser-sync-test",
+        "tool-scroll",
+        "browser_scroll",
+        {"direction": "down"},
+        json.dumps({"success": True}),
+    )
+    server._on_tool_complete(
+        "browser-sync-test",
+        "tool-press",
+        "browser_press",
+        {"key": "Escape"},
+        json.dumps({"success": True}),
+    )
+
+    assert (
+        "browser.drive",
+        "browser-sync-test",
+        {"action": "act", "domAction": {"index": 3, "kind": "type", "text": "你好"}},
+    ) in events
+    assert (
+        "browser.drive",
+        "browser-sync-test",
+        {"action": "act", "domAction": {"amount": 3, "direction": "down", "kind": "scroll"}},
+    ) in events
+    assert (
+        "browser.drive",
+        "browser-sync-test",
+        {"action": "act", "domAction": {"key": "Escape", "kind": "press"}},
+    ) in events
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 

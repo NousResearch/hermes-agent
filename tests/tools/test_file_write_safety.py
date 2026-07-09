@@ -271,6 +271,32 @@ class TestAtomicWrite:
         assert target.read_text() == "a = 1\nb = 22\nc = 3\n"
         assert (os.stat(target).st_mode & 0o777) == 0o600
 
+    def test_write_file_rolls_back_new_python_syntax_error(self, ops, tmp_path: Path):
+        target = tmp_path / "module.py"
+        original = "def ok():\n    return 1\n"
+        target.write_text(original)
+
+        res = ops.write_file(str(target), "def broken(:\n    return 1\n")
+
+        assert res.error is not None
+        assert "rolled back" in res.error.lower()
+        assert target.read_text() == original
+
+    def test_patch_replace_rolls_back_new_python_syntax_error(self, ops, tmp_path: Path):
+        target = tmp_path / "module.py"
+        original = "def _resolve_profile_dir(name):\n    return name\n"
+        target.write_text(original)
+
+        res = ops.patch_replace(
+            str(target),
+            "def _resolve_profile_dir(name):\n",
+            '_AG...    """Validate name."""\n',
+        )
+
+        assert res.error is not None
+        assert "rolled back" in res.error.lower()
+        assert target.read_text() == original
+
 
 class TestBomHandling:
     """UTF-8 BOM is stripped on read and preserved across write/patch.

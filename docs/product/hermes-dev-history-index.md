@@ -47,6 +47,7 @@ development branch.
 | Area | Local Path |
 | --- | --- |
 | AI employee desktop page | `apps/desktop/src/app/ai-employees/index.tsx` |
+| AI employee logic map | `docs/capabilities/ai-employees-logic-map.md` |
 | Desktop routes | `apps/desktop/src/app/routes.ts` |
 | Desktop sidebar | `apps/desktop/src/app/chat/sidebar/index.tsx` |
 | Video Studio page | `apps/desktop/src/app/video-studio/` |
@@ -55,6 +56,7 @@ development branch.
 | Capability architecture doc | `docs/hermes-desktop-capability-architecture.md` |
 | Video Studio design doc | `docs/capabilities/moneyprinter-video-studio.md` |
 | Video Studio logic map | `docs/capabilities/video-studio-logic-map.md` |
+| A2A + browser isolation + Douyin logic map | `docs/capabilities/a2a-browser-douyin-logic-map.md` |
 
 ## Chronicle Pointers
 

@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
-import { $browserCurrentState, openBrowserRail, resetBrowserRegistryForTests } from '@/store/browser'
+import { $browserCurrentState, $browserDriveCommand, openBrowserRail, resetBrowserRegistryForTests } from '@/store/browser'
 import { $rightRailActiveTabId, PREVIEW_PANE_ID, RIGHT_RAIL_BROWSER_TAB_ID, RIGHT_RAIL_PREVIEW_TAB_ID } from '@/store/layout'
 import { $paneOpen } from '@/store/panes'
 import {
@@ -180,5 +180,50 @@ describe('usePreviewRouting', () => {
 
     expect($browserCurrentState.get()).toMatchObject({ title: 'Example', url: 'https://example.com/' })
     expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_BROWSER_TAB_ID)
+  })
+
+  it('routes browser DOM action payloads to the active browser session', () => {
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+      />
+    )
+
+    act(() =>
+      handleEvent({
+        payload: { action: 'act', domAction: { index: 3, kind: 'type', text: 'hello' }, requestId: 'act-1' },
+        session_id: 'session-1',
+        type: 'browser.drive'
+      })
+    )
+
+    expect($browserDriveCommand.get()).toMatchObject({
+      action: 'act',
+      domAction: { index: 3, kind: 'type', text: 'hello' },
+      requestId: 'act-1',
+      sessionId: 'session-1'
+    })
+  })
+
+  it('closes the browser rail when the active session has no browser record', async () => {
+    openBrowserRail('example.com', 'session-1')
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
+
+    render(
+      <PreviewRoutingHarness
+        activeSessionId="session-2"
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+        routedSessionId="session-2"
+      />
+    )
+
+    await waitFor(() => {
+      expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(false)
+    })
+    expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
   })
 })

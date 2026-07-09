@@ -3365,16 +3365,69 @@ def _browser_drive_payload_from_tool(
     parsed_result: object,
 ) -> dict[str, object] | None:
     """Translate agent browser tool completions into desktop rail commands."""
-    if name not in {"browser_back", "browser_navigate"}:
+    if name not in {
+        "browser_back",
+        "browser_click",
+        "browser_navigate",
+        "browser_press",
+        "browser_scroll",
+        "browser_type",
+    }:
         return None
 
     result = parsed_result if isinstance(parsed_result, dict) else {}
     if result.get("success") is not True:
         return None
 
+    tool_args = args or {}
+
+    def ref_index(ref: object) -> int | None:
+        if isinstance(ref, int):
+            return ref if ref >= 0 else None
+        if not isinstance(ref, str):
+            return None
+        raw = ref.strip()
+        if raw.startswith("@e"):
+            raw = raw[2:]
+        if not raw.isdigit():
+            return None
+        index = int(raw)
+        return index if index >= 0 else None
+
+    if name == "browser_click":
+        index = ref_index(tool_args.get("ref"))
+        if index is None:
+            return None
+        return {"action": "act", "domAction": {"index": index, "kind": "click"}}
+
+    if name == "browser_type":
+        index = ref_index(tool_args.get("ref"))
+        text = tool_args.get("text")
+        if index is None or not isinstance(text, str):
+            return None
+        return {
+            "action": "act",
+            "domAction": {"index": index, "kind": "type", "text": text},
+        }
+
+    if name == "browser_scroll":
+        direction = tool_args.get("direction")
+        if direction not in {"down", "up"}:
+            return None
+        return {
+            "action": "act",
+            "domAction": {"amount": 3, "direction": direction, "kind": "scroll"},
+        }
+
+    if name == "browser_press":
+        key = tool_args.get("key")
+        if not isinstance(key, str) or not key:
+            return None
+        return {"action": "act", "domAction": {"key": key, "kind": "press"}}
+
     url = result.get("url")
     if not isinstance(url, str) or not url:
-        url = (args or {}).get("url")
+        url = tool_args.get("url")
 
     if not isinstance(url, str) or not url:
         return {"action": "goBack"} if name == "browser_back" else None

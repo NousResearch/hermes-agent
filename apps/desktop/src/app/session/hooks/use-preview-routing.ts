@@ -2,7 +2,12 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
-import { type BrowserDriveAction, type BrowserDrivePayload, driveBrowser } from '@/store/browser'
+import {
+  type BrowserDomActionPayload,
+  type BrowserDriveAction,
+  type BrowserDrivePayload,
+  driveBrowser
+} from '@/store/browser'
 import {
   $previewTarget,
   $sessionPreviewRegistry,
@@ -40,7 +45,37 @@ function activePreviewSessionId(
   return selectedStoredSessionId || routedSessionId || activeSessionIdRef.current || ''
 }
 
-const BROWSER_DRIVE_ACTIONS = new Set<BrowserDriveAction>(['goBack', 'goForward', 'navigate', 'open', 'reload'])
+const BROWSER_DRIVE_ACTIONS = new Set<BrowserDriveAction>([
+  'act',
+  'goBack',
+  'goForward',
+  'navigate',
+  'open',
+  'reload',
+  'snapshot'
+])
+
+function browserDomAction(value: unknown): BrowserDomActionPayload | undefined {
+  const record = asRecord(value)
+  const kind = typeof record.kind === 'string' ? record.kind : ''
+
+  if (!['click', 'press', 'scroll', 'select', 'setValue', 'type'].includes(kind)) {
+    return undefined
+  }
+
+  return {
+    kind: kind as BrowserDomActionPayload['kind'],
+    ...(typeof record.amount === 'number' ? { amount: record.amount } : {}),
+    ...(record.direction === 'down' || record.direction === 'left' || record.direction === 'right' || record.direction === 'up'
+      ? { direction: record.direction }
+      : {}),
+    ...(typeof record.index === 'number' ? { index: record.index } : {}),
+    ...(typeof record.key === 'string' ? { key: record.key } : {}),
+    ...(typeof record.selector === 'string' ? { selector: record.selector } : {}),
+    ...(typeof record.text === 'string' ? { text: record.text } : {}),
+    ...(typeof record.value === 'string' ? { value: record.value } : {})
+  }
+}
 
 function browserDrivePayload(payload: unknown): BrowserDrivePayload | null {
   const record = asRecord(payload)
@@ -52,6 +87,8 @@ function browserDrivePayload(payload: unknown): BrowserDrivePayload | null {
 
   return {
     action: action as BrowserDriveAction,
+    ...(record.domAction ? { domAction: browserDomAction(record.domAction) } : {}),
+    ...(typeof record.requestId === 'string' ? { requestId: record.requestId } : {}),
     ...(typeof record.title === 'string' ? { title: record.title } : {}),
     ...(typeof record.url === 'string' ? { url: record.url } : {})
   }
@@ -74,7 +111,7 @@ export function usePreviewRouting({
   // the tool row is the only entry point, so HTML artifacts never pop the rail
   // open on their own.
   useEffect(() => {
-    if (currentView !== 'chat' || !previewSessionId) {
+    if (currentView !== 'chat') {
       setPreviewTarget(null)
 
       return

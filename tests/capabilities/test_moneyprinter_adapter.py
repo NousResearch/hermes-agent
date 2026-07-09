@@ -9,6 +9,36 @@ def _response_body(response):
     return json.loads(response.body.decode("utf-8"))
 
 
+def test_config_summary_returns_visible_saved_fields_without_secret(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '\n'.join(
+            [
+                'llm_provider = "openai"',
+                'openai_api_key = "dummy-saved-key"',
+                'openai_base_url = "https://openrouter.ai/api/v1"',
+                'openai_model_name = "openrouter/auto"',
+                'pexels_api_keys = ["dummy-pexels-key"]',
+                'pixabay_api_keys = []',
+                'coverr_api_keys = []',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(adapter, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(adapter, "CONFIG_EXAMPLE_PATH", tmp_path / "missing.toml")
+
+    summary = adapter._config_summary()
+
+    assert summary["llmProvider"] == "openai"
+    assert summary["modelName"] == "openrouter/auto"
+    assert summary["baseUrl"] == "https://openrouter.ai/api/v1"
+    assert summary["apiKeyConfigured"] is True
+    assert summary["materialProviders"] == {"coverr": False, "pexels": True, "pixabay": False}
+    assert "dummy-saved-key" not in json.dumps(summary)
+    assert "dummy-pexels-key" not in json.dumps(summary)
+
+
 def test_list_tasks_recovers_completed_disk_outputs(tmp_path, monkeypatch):
     task_dir = tmp_path / "task-1"
     task_dir.mkdir()
@@ -149,3 +179,94 @@ def test_default_create_video_body_normalizes_local_materials(tmp_path, monkeypa
     )
 
     assert payload["video_materials"] == [{"duration": 2.5, "provider": "local", "url": "clip-a.mp4"}]
+
+
+def test_config_summary_includes_minimax_without_secret(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '\n'.join(
+            [
+                'llm_provider = "openai"',
+                'openai_api_key = "dummy-saved-key"',
+                '[minimax]',
+                'api_key = "dummy-minimax-key"',
+                'base_url = "https://api.minimaxi.com"',
+                't2a_model = "speech-2.8-hd"',
+                'voice_clone_model = "speech-2.8-hd"',
+                'music_model = "music-2.6-free"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(adapter, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(adapter, "CONFIG_EXAMPLE_PATH", tmp_path / "missing.toml")
+
+    summary = adapter._config_summary()
+
+    assert summary["minimax"] == {
+        "apiKeyConfigured": True,
+        "baseUrl": "https://api.minimaxi.com",
+        "musicModel": "music-2.6-free",
+        "t2aModel": "speech-2.8-hd",
+        "voiceCloneModel": "speech-2.8-hd",
+    }
+    assert "dummy-minimax-key" not in json.dumps(summary)
+
+
+def test_list_assets_includes_local_minimax_voice_metadata(tmp_path, monkeypatch):
+    voice_dir = tmp_path / "MiniMaxDemo001"
+    voice_dir.mkdir(parents=True)
+    (voice_dir / "metadata.json").write_text(
+        json.dumps({"voice_id": "MiniMaxDemo001", "display_name": "演示音色"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(adapter, "MINIMAX_VOICES_DIR", tmp_path)
+    monkeypatch.setattr(adapter, "SONGS_DIR", tmp_path / "songs")
+    monkeypatch.setattr(adapter, "CUSTOM_AUDIO_DIR", tmp_path / "custom_audio")
+    monkeypatch.setattr(adapter, "FONTS_DIR", tmp_path / "fonts")
+
+    status, payload = adapter.list_assets_data()
+
+    assert status == 200
+    assert "minimax:MiniMaxDemo001:演示音色" in payload["data"]["voices"]
+
+
+def test_generate_minimax_music_data_proxies_to_sidecar(monkeypatch):
+    async def fake_proxy_json(method, upstream_path, body=None):
+        assert method == "POST"
+        assert upstream_path == "/api/v1/minimax/music"
+        assert body == {"prompt": "科技感短视频开场", "save_as_bgm": True}
+        return 200, {
+            "status": 200,
+            "data": {"bgm": {"file": "minimax-music-demo.mp3", "name": "minimax-music-demo.mp3"}},
+        }
+
+    monkeypatch.setattr(adapter, "_proxy_json", fake_proxy_json)
+
+    status, payload = asyncio.run(
+        adapter.generate_minimax_music_data({"prompt": "科技感短视频开场", "save_as_bgm": True})
+    )
+
+    assert status == 200
+    assert payload["ok"] is True
+    assert payload["data"]["bgm"]["file"] == "minimax-music-demo.mp3"
+
+
+def test_create_subtitle_data_stringifies_subtitle_enabled_for_upstream(monkeypatch):
+    captured = {}
+
+    async def fake_proxy_json(method, upstream_path, body=None):
+        captured["method"] = method
+        captured["upstream_path"] = upstream_path
+        captured["body"] = body
+        return 200, {"status": 200, "data": {"task_id": "subtitle-task", "state": "4"}}
+
+    monkeypatch.setattr(adapter, "_proxy_json", fake_proxy_json)
+
+    status, payload = asyncio.run(adapter.create_subtitle_data({"subtitle_enabled": False, "video_script": "Hello"}))
+
+    assert status == 200
+    assert payload["ok"] is True
+    assert captured["method"] == "POST"
+    assert captured["upstream_path"] == "/api/v1/subtitle"
+    assert captured["body"]["subtitle_enabled"] == "false"

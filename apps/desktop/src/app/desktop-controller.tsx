@@ -131,6 +131,7 @@ import { useGroupRegistry } from './shell/use-group-registry'
 import { UpdatesOverlay } from './updates-overlay'
 
 const AgentsView = lazy(async () => ({ default: (await import('./agents')).AgentsView }))
+const AiEmployeesView = lazy(async () => ({ default: (await import('./ai-employees')).AiEmployeesView }))
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
@@ -1210,6 +1211,14 @@ export function DesktopController() {
               </Suspense>
             }
             path="artifacts"
+          />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <AiEmployeesView setStatusbarItemGroup={setStatusbarItemGroup} />
+              </Suspense>
+            }
+            path="ai-employees"
           />
           <Route
             element={

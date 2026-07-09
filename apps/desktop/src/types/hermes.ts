@@ -599,6 +599,36 @@ export interface ProfileInfo {
   skill_count: number
 }
 
+export interface AgentEmployeeInfo {
+  category: string
+  description: string
+  display_name_zh: string
+  emoji: string
+  gateway_running: boolean
+  mission_zh: string
+  model: null | string
+  profile_id: string
+  profile_path: string
+  provider: null | string
+  role_zh: string
+  skill_count: number
+  sort_order: number
+  soul_path: string
+  system_name_locked: boolean
+}
+
+export interface AgentEmployeesResponse {
+  agents: AgentEmployeeInfo[]
+}
+
+export interface AgentEmployeeMetadataUpdate {
+  category?: string
+  display_name_zh?: string
+  emoji?: string
+  mission_zh?: string
+  role_zh?: string
+}
+
 export interface ProfileSetupCommand {
   command: string
 }

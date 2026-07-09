@@ -35,7 +35,13 @@ CONFIG_PATH = MONEYPRINTER_ROOT / "config.toml"
 CONFIG_EXAMPLE_PATH = MONEYPRINTER_ROOT / "config.example.toml"
 TASKS_DIR = MONEYPRINTER_ROOT / "storage" / "tasks"
 LOCAL_MATERIALS_DIR = MONEYPRINTER_ROOT / "storage" / "local_videos"
+SONGS_DIR = MONEYPRINTER_ROOT / "resource" / "songs"
+FONTS_DIR = MONEYPRINTER_ROOT / "resource" / "fonts"
+CUSTOM_AUDIO_DIR = MONEYPRINTER_ROOT / "storage" / "custom_audio"
 SUPPORTED_LOCAL_MATERIAL_EXTS = {".avi", ".flv", ".jpeg", ".jpg", ".mkv", ".mov", ".mp4", ".png"}
+SUPPORTED_AUDIO_EXTS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}
+SUPPORTED_BGM_EXTS = {".mp3"}
+SUPPORTED_FONT_EXTS = {".ttc", ".ttf"}
 PUBLIC_VIDEO_OUTPUT_RE = re.compile(r"^(?:combined|final)-\d+\.mp4$", re.IGNORECASE)
 MEDIA_PROXY_HEADERS = ("content-type", "content-length", "content-disposition", "accept-ranges", "content-range")
 
@@ -155,6 +161,14 @@ def _replace_list(text: str, key: str, values: list[str]) -> str:
     return f"{text.rstrip()}\n{line}\n"
 
 
+def _split_config_list_input(value: Any) -> list[str]:
+    if isinstance(value, list):
+        raw_values = [str(item) for item in value]
+    else:
+        raw_values = re.split(r"[\n,，]", str(value or ""))
+    return [item.strip() for item in raw_values if item.strip()]
+
+
 def _has_config_value(text: str, key: str) -> bool:
     match = re.search(rf"^{re.escape(key)}\s*=\s*(.+)$", text, flags=re.MULTILINE)
     if not match:
@@ -163,13 +177,23 @@ def _has_config_value(text: str, key: str) -> bool:
     return value not in {'""', "''", "[]"}
 
 
+def _read_config_scalar(text: str, key: str, default: str = "") -> str:
+    match = re.search(rf"^{re.escape(key)}\s*=\s*(.+)$", text, flags=re.MULTILINE)
+    if not match:
+        return default
+    value = match.group(1).strip()
+    if value.startswith(("'", '"')) and value.endswith(("'", '"')) and len(value) >= 2:
+        value = value[1:-1]
+    return value.strip() or default
+
+
 def _config_summary() -> dict[str, Any]:
     text = _read_config_text()
-    provider = "openai"
-    provider_match = re.search(r'^llm_provider\s*=\s*["\']([^"\']*)["\']', text, flags=re.MULTILINE)
-    if provider_match:
-        provider = provider_match.group(1) or provider
+    provider = _read_config_scalar(text, "llm_provider", "openai")
+    api_key_configured = _has_config_value(text, f"{provider}_api_key")
     return {
+        "apiKeyConfigured": api_key_configured,
+        "baseUrl": _read_config_scalar(text, f"{provider}_base_url"),
         "configExists": CONFIG_PATH.exists(),
         "llmProvider": provider,
         "materialProviders": {
@@ -177,10 +201,8 @@ def _config_summary() -> dict[str, Any]:
             "pexels": _has_config_value(text, "pexels_api_keys"),
             "pixabay": _has_config_value(text, "pixabay_api_keys"),
         },
-        "modelConfigured": any(
-            _has_config_value(text, key)
-            for key in ("openai_api_key", "gemini_api_key", "qwen_api_key", "deepseek_api_key", "grok_api_key")
-        ),
+        "modelConfigured": api_key_configured,
+        "modelName": _read_config_scalar(text, f"{provider}_model_name"),
     }
 
 
@@ -237,9 +259,9 @@ async def save_config(request: Any) -> Any:
         ("pixabayApiKey", "pixabay_api_keys"),
         ("coverrApiKey", "coverr_api_keys"),
     ):
-        value = str(body.get(body_key) or "").strip()
-        if value:
-            text = _replace_list(text, config_key, [value])
+        values = _split_config_list_input(body.get(body_key))
+        if values:
+            text = _replace_list(text, config_key, values)
 
     CONFIG_PATH.write_text(text, encoding="utf-8")
     return _json(_envelope(_config_summary()))
@@ -415,6 +437,27 @@ def _sanitize_local_material_filename(filename: str) -> str:
     return name
 
 
+def _sanitize_asset_filename(filename: str, allowed_exts: set[str], label: str) -> str:
+    raw = str(filename or "").replace("\\", "/")
+    name = Path(raw).name
+    name = re.sub(r"[^A-Za-z0-9._ -]+", "_", name).strip(" .")
+    if not name:
+        raise ValueError(f"{label} filename is required")
+    suffix = Path(name).suffix.lower()
+    if suffix not in allowed_exts:
+        allowed = ", ".join(sorted(allowed_exts))
+        raise ValueError(f"unsupported {label} type {suffix or '<none>'}; allowed: {allowed}")
+    return name
+
+
+def _sanitize_bgm_filename(filename: str) -> str:
+    return _sanitize_asset_filename(filename, SUPPORTED_BGM_EXTS, "BGM")
+
+
+def _sanitize_custom_audio_filename(filename: str) -> str:
+    return _sanitize_asset_filename(filename, SUPPORTED_AUDIO_EXTS, "custom audio")
+
+
 def _local_material_payload(path: Path) -> dict[str, Any]:
     suffix = path.suffix.lower()
     stat = path.stat()
@@ -425,6 +468,31 @@ def _local_material_payload(path: Path) -> dict[str, Any]:
         "size": stat.st_size,
         "updatedAt": stat.st_mtime,
     }
+
+
+def _audio_asset_payload(path: Path, *, file_value: Optional[str] = None) -> dict[str, Any]:
+    stat = path.stat()
+    return {
+        "file": file_value or path.name,
+        "kind": "audio",
+        "name": path.name,
+        "size": stat.st_size,
+        "updatedAt": stat.st_mtime,
+    }
+
+
+def _font_asset_payload(path: Path) -> dict[str, Any]:
+    stat = path.stat()
+    return {
+        "file": path.name,
+        "name": path.name,
+        "size": stat.st_size,
+        "updatedAt": stat.st_mtime,
+    }
+
+
+def _custom_audio_relative_path(path: Path) -> str:
+    return path.resolve(strict=False).relative_to(MONEYPRINTER_ROOT.resolve(strict=False)).as_posix()
 
 
 def _decode_upload_content(value: str) -> bytes:
@@ -463,6 +531,27 @@ def _normalize_local_video_materials(value: Any) -> list[dict[str, Any]]:
             duration_value = 0
         materials.append({"provider": "local", "url": safe_name, "duration": duration_value})
     return materials
+
+
+def _normalize_bgm_file(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    filename = _sanitize_bgm_filename(raw)
+    if not (SONGS_DIR / filename).is_file():
+        raise ValueError(f"BGM file not found: {filename}")
+    return filename
+
+
+def _normalize_custom_audio_file(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    filename = _sanitize_custom_audio_filename(raw)
+    target = CUSTOM_AUDIO_DIR / filename
+    if not target.is_file():
+        raise ValueError(f"custom audio file not found: {filename}")
+    return _custom_audio_relative_path(target)
 
 
 def _unwrap_upstream(payload: Any) -> Any:
@@ -507,6 +596,94 @@ def upload_local_material_data(body: dict[str, Any]) -> tuple[int, dict[str, Any
     return 200, _envelope({"material": _local_material_payload(target)})
 
 
+def _write_uploaded_asset(body: dict[str, Any], target: Path) -> None:
+    source_path = str(body.get("sourcePath") or body.get("source_path") or "").strip()
+    content_base64 = body.get("contentBase64") or body.get("content_base64")
+    if source_path:
+        source = Path(source_path).expanduser().resolve(strict=True)
+        if not source.is_file():
+            raise ValueError("sourcePath is not a file")
+        if source.resolve() != target.resolve():
+            shutil.copyfile(source, target)
+    elif content_base64:
+        target.write_bytes(_decode_upload_content(str(content_base64)))
+    else:
+        raise ValueError("sourcePath or contentBase64 is required")
+
+
+def list_assets_data() -> tuple[int, dict[str, Any]]:
+    bgms = []
+    if SONGS_DIR.is_dir():
+        bgms = [
+            _audio_asset_payload(path)
+            for path in sorted(SONGS_DIR.iterdir(), key=lambda p: p.name.lower())
+            if path.is_file() and path.suffix.lower() in SUPPORTED_BGM_EXTS
+        ]
+
+    CUSTOM_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    custom_audio = [
+        _audio_asset_payload(path, file_value=_custom_audio_relative_path(path))
+        for path in sorted(CUSTOM_AUDIO_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+        if path.is_file() and path.suffix.lower() in SUPPORTED_AUDIO_EXTS
+    ]
+
+    fonts = []
+    if FONTS_DIR.is_dir():
+        fonts = [
+            _font_asset_payload(path)
+            for path in sorted(FONTS_DIR.iterdir(), key=lambda p: p.name.lower())
+            if path.is_file() and path.suffix.lower() in SUPPORTED_FONT_EXTS
+        ]
+
+    voices = [
+        "no-voice",
+        "zh-CN-XiaoxiaoNeural-Female",
+        "zh-CN-XiaoyiNeural-Female",
+        "zh-CN-YunjianNeural-Male",
+        "zh-CN-YunxiNeural-Male",
+        "zh-CN-YunxiaNeural-Male",
+        "zh-CN-YunyangNeural-Male",
+        "en-US-JennyNeural-Female",
+        "en-US-GuyNeural-Male",
+        "siliconflow:FunAudioLLM/CosyVoice2-0.5B:alex-Male",
+        "siliconflow:FunAudioLLM/CosyVoice2-0.5B:anna-Female",
+        "gemini:Zephyr-Female",
+        "gemini:Puck-Male",
+        "mimo:mimo_default-Female",
+        "chatterbox:default-Female",
+    ]
+
+    return 200, _envelope({"bgms": bgms, "customAudio": custom_audio, "fonts": fonts, "voices": voices})
+
+
+def upload_bgm_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    try:
+        filename = _sanitize_bgm_filename(
+            str(body.get("filename") or body.get("name") or body.get("sourcePath") or body.get("source_path") or "")
+        )
+        target = SONGS_DIR / filename
+        SONGS_DIR.mkdir(parents=True, exist_ok=True)
+        _write_uploaded_asset(body, target)
+    except (OSError, ValueError) as exc:
+        return 400, _error(str(exc), "MONEYPRINTER_BGM_INVALID")
+
+    return 200, _envelope({"bgm": _audio_asset_payload(target)})
+
+
+def upload_custom_audio_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    try:
+        filename = _sanitize_custom_audio_filename(
+            str(body.get("filename") or body.get("name") or body.get("sourcePath") or body.get("source_path") or "")
+        )
+        target = CUSTOM_AUDIO_DIR / filename
+        CUSTOM_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+        _write_uploaded_asset(body, target)
+    except (OSError, ValueError) as exc:
+        return 400, _error(str(exc), "MONEYPRINTER_CUSTOM_AUDIO_INVALID")
+
+    return 200, _envelope({"audio": _audio_asset_payload(target, file_value=_custom_audio_relative_path(target))})
+
+
 async def _proxy_json(method: str, upstream_path: str, body: Optional[dict[str, Any]] = None) -> tuple[int, Any]:
     if ClientSession is None:
         return 503, _error("aiohttp is unavailable", "MONEYPRINTER_AIOHTTP_UNAVAILABLE")
@@ -535,6 +712,8 @@ def _default_create_video_body(body: dict[str, Any]) -> dict[str, Any]:
         "video_script": "",
         "video_language": "zh-CN",
         "video_aspect": "9:16",
+        "video_concat_mode": "random",
+        "video_transition_mode": None,
         "video_count": 1,
         "video_clip_duration": 5,
         "video_source": "pexels",
@@ -544,13 +723,21 @@ def _default_create_video_body(body: dict[str, Any]) -> dict[str, Any]:
         "subtitle_enabled": True,
         "subtitle_position": "bottom",
         "bgm_type": "random",
+        "bgm_file": "",
         "bgm_volume": 0.2,
+        "custom_audio_file": "",
         "font_name": "STHeitiMedium.ttc",
         "font_size": 60,
         "text_fore_color": "#FFFFFF",
+        "text_background_color": True,
+        "rounded_subtitle_background": False,
+        "custom_position": 70.0,
         "stroke_color": "#000000",
         "stroke_width": 1.5,
         "match_materials_to_script": False,
+        "paragraph_number": 1,
+        "video_script_prompt": "",
+        "custom_system_prompt": "",
     }
     for key, value in defaults.items():
         if key not in payload or payload[key] in (None, ""):
@@ -565,6 +752,10 @@ def _default_create_video_body(body: dict[str, Any]) -> dict[str, Any]:
         if not materials:
             raise ValueError("at least one local material is required when video_source is local")
         payload["video_materials"] = materials
+    if payload.get("bgm_file"):
+        payload["bgm_file"] = _normalize_bgm_file(payload.get("bgm_file"))
+    if payload.get("custom_audio_file"):
+        payload["custom_audio_file"] = _normalize_custom_audio_file(payload.get("custom_audio_file"))
     return payload
 
 
@@ -579,6 +770,92 @@ async def create_video_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         if isinstance(upstream, dict) and upstream.get("ok") is False:
             return status, upstream
         return status, _error(str(upstream), "MONEYPRINTER_CREATE_FAILED")
+
+    data = _unwrap_upstream(upstream)
+    task = _as_task(data if isinstance(data, dict) else {})
+    return 200, _envelope({"task": task})
+
+
+def _default_audio_subtitle_body(body: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(body or {})
+    defaults = {
+        "video_language": "zh-CN",
+        "voice_name": "zh-CN-XiaoxiaoNeural-Female",
+        "voice_rate": 1.0,
+        "voice_volume": 1.0,
+        "custom_audio_file": "",
+        "bgm_type": "random",
+        "bgm_file": "",
+        "bgm_volume": 0.2,
+        "video_source": "local",
+        "subtitle_position": "bottom",
+        "font_name": "STHeitiMedium.ttc",
+        "font_size": 60,
+        "text_fore_color": "#FFFFFF",
+        "text_background_color": True,
+        "rounded_subtitle_background": False,
+        "custom_position": 70.0,
+        "stroke_color": "#000000",
+        "stroke_width": 1.5,
+        "subtitle_enabled": True,
+    }
+    for key, value in defaults.items():
+        if key not in payload or payload[key] in (None, ""):
+            payload[key] = value
+    if not str(payload.get("video_script") or "").strip():
+        raise ValueError("video_script is required")
+    payload["video_script"] = str(payload["video_script"]).strip()
+    if payload.get("bgm_file"):
+        payload["bgm_file"] = _normalize_bgm_file(payload.get("bgm_file"))
+    if payload.get("custom_audio_file"):
+        payload["custom_audio_file"] = _normalize_custom_audio_file(payload.get("custom_audio_file"))
+    return payload
+
+
+def _subtitle_enabled_for_upstream(value: Any) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return "true"
+        if normalized in {"0", "false", "no", "off"}:
+            return "false"
+        return value
+    return "true" if bool(value) else "false"
+
+
+async def create_audio_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    try:
+        payload = _default_audio_subtitle_body(body)
+    except ValueError as exc:
+        return 400, _error(str(exc), "MONEYPRINTER_INVALID_PARAMS")
+
+    status, upstream = await _proxy_json("POST", "/api/v1/audio", payload)
+    if status >= 400:
+        if isinstance(upstream, dict) and upstream.get("ok") is False:
+            return status, upstream
+        return status, _error(str(upstream), "MONEYPRINTER_AUDIO_FAILED")
+
+    data = _unwrap_upstream(upstream)
+    task = _as_task(data if isinstance(data, dict) else {})
+    return 200, _envelope({"task": task})
+
+
+async def create_subtitle_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    try:
+        payload = _default_audio_subtitle_body(body)
+    except ValueError as exc:
+        return 400, _error(str(exc), "MONEYPRINTER_INVALID_PARAMS")
+
+    # MoneyPrinterTurbo accepts booleans for full /videos generation, but the
+    # staged /subtitle request schema is typed as Optional[str]. Keep /videos
+    # unchanged and stringify only at this endpoint boundary.
+    payload["subtitle_enabled"] = _subtitle_enabled_for_upstream(payload.get("subtitle_enabled"))
+
+    status, upstream = await _proxy_json("POST", "/api/v1/subtitle", payload)
+    if status >= 400:
+        if isinstance(upstream, dict) and upstream.get("ok") is False:
+            return status, upstream
+        return status, _error(str(upstream), "MONEYPRINTER_SUBTITLE_FAILED")
 
     data = _unwrap_upstream(upstream)
     task = _as_task(data if isinstance(data, dict) else {})
@@ -737,8 +1014,35 @@ async def create_video(request: Any) -> Any:
     return _json(payload, status=status)
 
 
+async def create_audio(request: Any) -> Any:
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(_error("Invalid JSON body", "MONEYPRINTER_INVALID_JSON"), status=400)
+    if not isinstance(body, dict):
+        return _json(_error("Body must be an object", "MONEYPRINTER_INVALID_JSON"), status=400)
+    status, payload = await create_audio_data(body)
+    return _json(payload, status=status)
+
+
+async def create_subtitle(request: Any) -> Any:
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(_error("Invalid JSON body", "MONEYPRINTER_INVALID_JSON"), status=400)
+    if not isinstance(body, dict):
+        return _json(_error("Body must be an object", "MONEYPRINTER_INVALID_JSON"), status=400)
+    status, payload = await create_subtitle_data(body)
+    return _json(payload, status=status)
+
+
 async def list_local_materials() -> Any:
     status, payload = list_local_materials_data()
+    return _json(payload, status=status)
+
+
+async def list_assets() -> Any:
+    status, payload = list_assets_data()
     return _json(payload, status=status)
 
 
@@ -750,6 +1054,28 @@ async def upload_local_material(request: Any) -> Any:
     if not isinstance(body, dict):
         return _json(_error("Body must be an object", "MONEYPRINTER_INVALID_JSON"), status=400)
     status, payload = upload_local_material_data(body)
+    return _json(payload, status=status)
+
+
+async def upload_bgm(request: Any) -> Any:
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(_error("Invalid JSON body", "MONEYPRINTER_INVALID_JSON"), status=400)
+    if not isinstance(body, dict):
+        return _json(_error("Body must be an object", "MONEYPRINTER_INVALID_JSON"), status=400)
+    status, payload = upload_bgm_data(body)
+    return _json(payload, status=status)
+
+
+async def upload_custom_audio(request: Any) -> Any:
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(_error("Invalid JSON body", "MONEYPRINTER_INVALID_JSON"), status=400)
+    if not isinstance(body, dict):
+        return _json(_error("Body must be an object", "MONEYPRINTER_INVALID_JSON"), status=400)
+    status, payload = upload_custom_audio_data(body)
     return _json(payload, status=status)
 
 

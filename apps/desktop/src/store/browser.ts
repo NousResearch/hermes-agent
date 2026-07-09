@@ -12,10 +12,25 @@ export interface BrowserSessionState {
   url: string
 }
 
-export type BrowserDriveAction = 'goBack' | 'goForward' | 'navigate' | 'open' | 'reload'
+export type BrowserDriveAction = 'act' | 'goBack' | 'goForward' | 'navigate' | 'open' | 'reload' | 'snapshot'
+
+export type BrowserDomActionKind = 'click' | 'press' | 'scroll' | 'select' | 'setValue' | 'type'
+
+export interface BrowserDomActionPayload {
+  amount?: number
+  direction?: 'down' | 'left' | 'right' | 'up'
+  index?: number
+  key?: string
+  kind: BrowserDomActionKind
+  selector?: string
+  text?: string
+  value?: string
+}
 
 export interface BrowserDrivePayload {
   action: BrowserDriveAction
+  domAction?: BrowserDomActionPayload
+  requestId?: string
   sessionId?: string
   title?: string
   url?: string
@@ -161,6 +176,7 @@ export function setBrowserSessionState(
   const previous = current[key] ?? { updatedAt: 0, url: DEFAULT_BROWSER_URL }
   const url = next.url !== undefined ? normalizeBrowserUrl(next.url) : previous.url
   const title = next.title !== undefined ? next.title : previous.title
+
   const nextState = {
     title,
     updatedAt: Date.now(),

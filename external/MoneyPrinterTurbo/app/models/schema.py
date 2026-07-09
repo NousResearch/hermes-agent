@@ -114,6 +114,7 @@ class VideoParams(BaseModel):
 
 class SubtitleRequest(BaseModel):
     video_script: str
+    custom_audio_file: Optional[str] = None
     video_language: Optional[str] = ""
     voice_name: Optional[str] = "zh-CN-XiaoxiaoNeural-Female"
     voice_volume: Optional[float] = 1.0
@@ -135,6 +136,7 @@ class SubtitleRequest(BaseModel):
 
 class AudioRequest(BaseModel):
     video_script: str
+    custom_audio_file: Optional[str] = None
     video_language: Optional[str] = ""
     voice_name: Optional[str] = "zh-CN-XiaoxiaoNeural-Female"
     voice_volume: Optional[float] = 1.0

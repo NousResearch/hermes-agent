@@ -747,7 +747,7 @@ class TestPatchReplacePostWriteVerification:
     def test_patch_replace_fails_when_file_not_persisted(self, mock_env):
         """write_file reports success but the re-read returns old content:
         patch_replace must return an error, not success-with-diff."""
-        file_contents = {"/tmp/test/a.py": "hello world\n"}
+        file_contents = {"/tmp/test/a.txt": "hello world\n"}
 
         def side_effect(command, **kwargs):
             # cat reads the file — both the initial read and the verify read
@@ -772,7 +772,7 @@ class TestPatchReplacePostWriteVerification:
 
         mock_env.execute.side_effect = side_effect
         ops = ShellFileOperations(mock_env)
-        result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
+        result = ops.patch_replace("/tmp/test/a.txt", "hello", "hi")
         assert result.error is not None, (
             "Silent persistence failure must surface as error, got: "
             f"success={result.success}, diff={result.diff}"
@@ -802,7 +802,7 @@ class TestPatchReplacePostWriteVerification:
 
         mock_env.execute.side_effect = side_effect
         ops = ShellFileOperations(mock_env)
-        result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
+        result = ops.patch_replace("/tmp/test/a.txt", "hello", "hi")
         assert result.error is None, f"Unexpected error: {result.error}"
         assert result.success is True
         assert state["content"] == "hi world\n", f"File not actually updated: {state['content']!r}"
@@ -830,7 +830,7 @@ class TestPatchReplacePostWriteVerification:
 
         mock_env.execute.side_effect = side_effect
         ops = ShellFileOperations(mock_env)
-        result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
+        result = ops.patch_replace("/tmp/test/a.txt", "hello", "hi")
         assert result.error is not None
         assert "could not re-read" in result.error.lower()
 

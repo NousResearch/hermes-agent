@@ -1,5 +1,8 @@
 import { fireEvent, render } from '@testing-library/react'
+import { createRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { CodeEditorApi } from './code-editor'
 
 const originalCreateRange = document.createRange.bind(document)
 
@@ -63,6 +66,19 @@ describe('CodeEditor', () => {
     expect(content).toBeInstanceOf(HTMLElement)
 
     fireEvent.keyDown(content!, { ctrlKey: true, key: 'f' })
+
+    expect(rendered.container.querySelector('.cm-search')).toBeTruthy()
+  })
+
+  it('opens the native CodeMirror search panel through the imperative API', async () => {
+    const { CodeEditor } = await import('./code-editor')
+    const apiRef = createRef<CodeEditorApi | null>()
+
+    const rendered = render(
+      <CodeEditor apiRef={apiRef} filePath="example.ts" initialValue="const browseros = true" onChange={vi.fn()} />
+    )
+
+    apiRef.current?.find()
 
     expect(rendered.container.querySelector('.cm-search')).toBeTruthy()
   })

@@ -55,6 +55,7 @@ const {
   macTitleBarOverlayHeight
 } = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
+const { createFolderForIpc, createTextFileForIpc } = require('./fs-create.cjs')
 const { readLiveUpdateMarker, writeUpdateMarker } = require('./update-marker.cjs')
 const {
   resolveUnpackedRelease,
@@ -7021,6 +7022,10 @@ function disposeTerminalSession(id) {
 }
 
 ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
+
+ipcMain.handle('hermes:fs:createTextFile', async (_event, filePath, content) => createTextFileForIpc(filePath, content))
+
+ipcMain.handle('hermes:fs:createFolder', async (_event, folderPath) => createFolderForIpc(folderPath))
 
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 

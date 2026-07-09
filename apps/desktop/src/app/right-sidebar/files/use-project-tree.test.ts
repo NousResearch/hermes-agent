@@ -111,6 +111,52 @@ describe('useProjectTree', () => {
     expect(readDir).toHaveBeenCalledTimes(1)
   })
 
+  it('can recursively expand folders and collapse them again', async () => {
+    readDir.mockImplementation(async path => {
+      if (path === '/p') {
+        return ok([
+          { name: 'src', path: '/p/src', isDirectory: true },
+          { name: 'docs', path: '/p/docs', isDirectory: true }
+        ])
+      }
+
+      if (path === '/p/src') {
+        return ok([{ name: 'lib', path: '/p/src/lib', isDirectory: true }])
+      }
+
+      if (path === '/p/src/lib') {
+        return ok([{ name: 'deep.ts', path: '/p/src/lib/deep.ts', isDirectory: false }])
+      }
+
+      if (path === '/p/docs') {
+        return ok([{ name: 'guide.md', path: '/p/docs/guide.md', isDirectory: false }])
+      }
+
+      throw new Error(`unexpected path ${path}`)
+    })
+
+    const { result } = renderHook(() => useProjectTree('/p'))
+
+    await waitFor(() => expect(result.current.data.length).toBe(2))
+
+    await act(async () => {
+      await result.current.expandAll()
+    })
+
+    expect(result.current.openState).toEqual({
+      '/p/docs': true,
+      '/p/src': true,
+      '/p/src/lib': true
+    })
+    expect(result.current.data[0]?.children?.[0]?.children?.[0]?.name).toBe('deep.ts')
+
+    act(() => {
+      result.current.collapseAll()
+    })
+
+    expect(result.current.openState).toEqual({})
+  })
+
   it('reads gitignore from the real path while caching per connection', async () => {
     const readFileDataUrl = vi.fn(async () => `data:text/plain;base64,${btoa('ignored.log\n')}`)
     const gitRoot = vi.fn(async () => '/repo')

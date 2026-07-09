@@ -93,6 +93,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   revealLogs: () => ipcRenderer.invoke('hermes:logs:reveal'),
   getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
+  createTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:createTextFile', filePath, content),
+  createFolder: folderPath => ipcRenderer.invoke('hermes:fs:createFolder', folderPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),

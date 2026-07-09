@@ -61,6 +61,46 @@ function errorChild(parentId: string, error: string | undefined): TreeNode {
   }
 }
 
+function collectDirectoryOpenState(nodes: TreeNode[], openState: Record<string, boolean> = {}): Record<string, boolean> {
+  for (const node of nodes) {
+    if (!node.isDirectory || node.placeholder) {
+      continue
+    }
+
+    openState[node.id] = true
+
+    if (node.children && node.children.length > 0) {
+      collectDirectoryOpenState(node.children, openState)
+    }
+  }
+
+  return openState
+}
+
+async function expandDirectorySubtree(node: TreeNode, rootPath: string, visited: Set<string>): Promise<TreeNode> {
+  if (!node.isDirectory || node.placeholder) {
+    return node
+  }
+
+  if (visited.has(node.id)) {
+    return node
+  }
+
+  visited.add(node.id)
+
+  const { entries, error } = await readProjectDir(node.id, rootPath)
+
+  if (error) {
+    return { ...node, error, loading: false, children: [errorChild(node.id, error)] }
+  }
+
+  const children = await Promise.all(
+    entries.map(entry => expandDirectorySubtree(makeNode(entry.path, entry.name, entry.isDirectory), rootPath, visited))
+  )
+
+  return { ...node, children, error: undefined, loading: false }
+}
+
 export interface UseProjectTreeResult {
   /** Bumped by collapseAll so callers can remount the tree fully collapsed. */
   collapseNonce: number
@@ -73,6 +113,7 @@ export interface UseProjectTreeResult {
   rootError: string | null
   rootLoading: boolean
   collapseAll: () => void
+  expandAll: () => Promise<void>
   loadChildren: (id: string) => Promise<void>
   refreshRoot: () => Promise<void>
   setNodeOpen: (id: string, open: boolean) => void
@@ -313,6 +354,27 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     })
   }, [cwd])
 
+  const expandAll = useCallback(async () => {
+    const current = $projectTree.get()
+
+    if (current.cwd !== cwd || current.rootLoading) {
+      return
+    }
+
+    const rootPath = current.resolvedCwd || cwd
+    const visited = new Set<string>()
+    const nextData = await Promise.all(current.data.map(node => expandDirectorySubtree(node, rootPath, visited)))
+    const openState = collectDirectoryOpenState(nextData)
+
+    setProjectTree(latest => {
+      if (latest.cwd !== cwd) {
+        return latest
+      }
+
+      return { ...latest, collapseNonce: latest.collapseNonce + 1, data: nextData, openState }
+    })
+  }, [cwd])
+
   const loadChildren = useCallback(
     async (id: string) => {
       if (!cwd || inflight.has(id)) {
@@ -423,6 +485,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       collapseNonce: state.cwd === cwd ? state.collapseNonce : 0,
       data: state.cwd === cwd ? state.data : [],
       effectiveCwd: state.cwd === cwd && state.resolvedCwd ? state.resolvedCwd : cwd,
+      expandAll,
       loadChildren,
       openState: state.cwd === cwd ? state.openState : {},
       refreshRoot,
@@ -433,6 +496,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     [
       collapseAll,
       cwd,
+      expandAll,
       loadChildren,
       refreshRoot,
       setNodeOpen,

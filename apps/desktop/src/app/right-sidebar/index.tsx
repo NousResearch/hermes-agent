@@ -1,14 +1,17 @@
 import { useStore } from '@nanostores/react'
-import type { ComponentProps } from 'react'
+import { type ComponentProps, useMemo, useState } from 'react'
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { SearchField } from '@/components/ui/search-field'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
+import { requestFileCreate } from '@/store/file-actions'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
@@ -41,6 +44,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     collapseNonce,
     data,
     effectiveCwd,
+    expandAll,
     loadChildren,
     openState,
     refreshRoot,
@@ -56,6 +60,8 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
       .pop() ?? effectiveCwd
 
   const canCollapse = Object.values(openState).some(Boolean)
+  const canExpand = data.some(node => node.isDirectory)
+  const canMutateFiles = !isDesktopFsRemoteMode()
 
   const previewFile = async (path: string) => {
     try {
@@ -83,6 +89,8 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     >
       <FilesystemTab
         canCollapse={canCollapse}
+        canCreate={canMutateFiles}
+        canExpand={canExpand}
         collapseNonce={collapseNonce}
         cwd={effectiveCwd}
         cwdName={cwdName}
@@ -93,6 +101,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
         onActivateFile={onActivateFile}
         onActivateFolder={onActivateFolder}
         onCollapseAll={collapseAll}
+        onExpandAll={expandAll}
         onLoadChildren={loadChildren}
         onNodeOpenChange={setNodeOpen}
         onPreviewFile={previewFile}
@@ -104,11 +113,14 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
 }
 
 interface FilesystemTabProps extends FileTreeBodyProps {
+  canCreate: boolean
   canCollapse: boolean
+  canExpand: boolean
   cwdName: string
   hasWorkspace: boolean
   onCollapseAll: () => void
-  onRefresh: () => void
+  onExpandAll: () => Promise<void>
+  onRefresh: () => void | Promise<void>
 }
 
 // Sidebar palette + hover-reveal: header actions stay reachable while moving
@@ -116,10 +128,31 @@ interface FilesystemTabProps extends FileTreeBodyProps {
 const HEADER_ACTION_CLASS =
   'text-sidebar-foreground/70 hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:ring-sidebar-ring'
 
-const HEADER_ACTION_LABEL_REVEAL = `${HEADER_ACTION_CLASS} pointer-events-none opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100`
+type FileTreeNode = ReturnType<typeof useProjectTree>['data'][number]
+
+function filterTreeNodes(nodes: FileTreeNode[], rawQuery: string): FileTreeNode[] {
+  const query = rawQuery.trim().toLowerCase()
+
+  if (!query) {
+    return nodes
+  }
+
+  return nodes.flatMap(node => {
+    const childMatches = node.children ? filterTreeNodes(node.children, query) : undefined
+    const selfMatches = node.name.toLowerCase().includes(query) || node.id.toLowerCase().includes(query)
+
+    if (!selfMatches && (!childMatches || childMatches.length === 0)) {
+      return []
+    }
+
+    return [{ ...node, children: childMatches ?? node.children }]
+  })
+}
 
 function FilesystemTab({
+  canCreate,
   canCollapse,
+  canExpand,
   collapseNonce,
   cwd,
   cwdName,
@@ -130,6 +163,7 @@ function FilesystemTab({
   onActivateFile,
   onActivateFolder,
   onCollapseAll,
+  onExpandAll,
   onLoadChildren,
   onNodeOpenChange,
   onPreviewFile,
@@ -138,6 +172,8 @@ function FilesystemTab({
 }: FilesystemTabProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
+  const [searchQuery, setSearchQuery] = useState('')
+  const filteredData = useMemo(() => filterTreeNodes(data, searchQuery), [data, searchQuery])
 
   // No working directory (a bare/detached chat) → no tree, just a terse hint.
   // Switching workspace is a project/worktree action, never a raw folder picker.
@@ -153,7 +189,7 @@ function FilesystemTab({
         </div>
         <Button
           aria-label={r.refreshTree}
-          className={HEADER_ACTION_LABEL_REVEAL}
+          className={HEADER_ACTION_CLASS}
           disabled={loading}
           onClick={onRefresh}
           size="icon-xs"
@@ -163,8 +199,19 @@ function FilesystemTab({
           <Codicon name="refresh" size="0.8125rem" spinning={loading} />
         </Button>
         <Button
+          aria-label={r.expandAll}
+          className={HEADER_ACTION_CLASS}
+          disabled={!canExpand}
+          onClick={() => void onExpandAll()}
+          size="icon-xs"
+          title={r.expandAll}
+          variant="ghost"
+        >
+          <Codicon name="expand-all" size="0.8125rem" />
+        </Button>
+        <Button
           aria-label={r.collapseAll}
-          className={cn(HEADER_ACTION_CLASS, !canCollapse && 'pointer-events-none opacity-0')}
+          className={HEADER_ACTION_CLASS}
           disabled={!canCollapse}
           onClick={onCollapseAll}
           size="icon-xs"
@@ -173,11 +220,45 @@ function FilesystemTab({
         >
           <Codicon name="collapse-all" size="0.8125rem" />
         </Button>
+        {canCreate && (
+          <>
+            <Button
+              aria-label={r.newFile}
+              className={HEADER_ACTION_CLASS}
+              onClick={() => requestFileCreate(cwd, 'file')}
+              size="icon-xs"
+              title={r.newFile}
+              variant="ghost"
+            >
+              <Codicon name="new-file" size="0.8125rem" />
+            </Button>
+            <Button
+              aria-label={r.newFolder}
+              className={HEADER_ACTION_CLASS}
+              onClick={() => requestFileCreate(cwd, 'folder')}
+              size="icon-xs"
+              title={r.newFolder}
+              variant="ghost"
+            >
+              <Codicon name="new-folder" size="0.8125rem" />
+            </Button>
+          </>
+        )}
       </RightSidebarSectionHeader>
+      <div className="flex h-8 shrink-0 items-center border-b border-(--ui-stroke-tertiary) px-3">
+        <SearchField
+          aria-label={r.searchFiles}
+          containerClassName="w-full opacity-100"
+          inputClassName="w-full [field-sizing:fixed]"
+          onChange={setSearchQuery}
+          placeholder={r.searchFiles}
+          value={searchQuery}
+        />
+      </div>
       <FileTreeBody
         collapseNonce={collapseNonce}
         cwd={cwd}
-        data={data}
+        data={filteredData}
         error={error}
         loading={loading}
         onActivateFile={onActivateFile}

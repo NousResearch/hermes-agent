@@ -122,6 +122,34 @@ export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string
   return remoteFsApi<{ branch: string; cwd: string }>('/api/fs/default-cwd')
 }
 
+export async function createDesktopTextFile(path: string, content = ''): Promise<{ path: string }> {
+  const desktop = bridge()
+
+  if (isDesktopFsRemoteMode()) {
+    throw new Error('New file is not available for remote backends yet')
+  }
+
+  if (!desktop.createTextFile) {
+    throw new Error('New file is not available')
+  }
+
+  return desktop.createTextFile(path, content)
+}
+
+export async function createDesktopFolder(path: string): Promise<{ path: string }> {
+  const desktop = bridge()
+
+  if (isDesktopFsRemoteMode()) {
+    throw new Error('New folder is not available for remote backends yet')
+  }
+
+  if (!desktop.createFolder) {
+    throw new Error('New folder is not available')
+  }
+
+  return desktop.createFolder(path)
+}
+
 // Reveal a path in the OS file manager (Finder / Explorer / Files). Local only.
 export async function revealDesktopPath(path: string): Promise<void> {
   await bridge().revealPath?.(path)

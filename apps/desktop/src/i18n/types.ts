@@ -1741,7 +1741,18 @@ export interface Translations {
     folderTip: (cwd: string) => string
     openFolder: string
     refreshTree: string
+    expandAll: string
     collapseAll: string
+    searchFiles: string
+    newFile: string
+    newFolder: string
+    createFileTitle: string
+    createFolderTitle: string
+    fileName: string
+    folderName: string
+    createFile: string
+    createFolder: string
+    createFailed: string
     previewUnavailable: string
     couldNotPreview: (path: string) => string
     noProjectTitle: string

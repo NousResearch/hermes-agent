@@ -15,7 +15,7 @@ import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
 import { RichCodeBlock } from '@/components/assistant-ui/embeds'
-import { CodeEditor } from '@/components/chat/code-editor'
+import { CodeEditor, type CodeEditorApi } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { PageLoader } from '@/components/page-loader'
@@ -27,7 +27,7 @@ import {
   readDesktopFileText,
   writeDesktopFileText
 } from '@/lib/desktop-fs'
-import { Check, Pencil, X } from '@/lib/icons'
+import { Check, Pencil, Search, X } from '@/lib/icons'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
@@ -391,11 +391,13 @@ function PreviewModeSwitcher({
 function EditControls({
   dirty,
   onCancel,
+  onFind,
   onSave,
   saving
 }: {
   dirty: boolean
   onCancel: () => void
+  onFind: () => void
   onSave: () => void
   saving: boolean
 }) {
@@ -403,6 +405,15 @@ function EditControls({
 
   return (
     <>
+      <button
+        className="flex items-center gap-1 rounded-md px-1.5 text-[0.625rem] font-bold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        onClick={onFind}
+        title="Find in file (Ctrl/Cmd+F)"
+        type="button"
+      >
+        <Search className="size-3" />
+        Find
+      </button>
       <button
         className="flex items-center gap-1 rounded-md px-1.5 text-[0.625rem] font-bold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         onClick={onCancel}
@@ -584,6 +595,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   // For the bare-`e` shortcut: the read-view root (to detect focus-within) and a
   // hover flag (no state — only the keydown handler reads it).
   const readViewRef = useRef<HTMLDivElement>(null)
+  const editorApiRef = useRef<CodeEditorApi | null>(null)
   const hoverRef = useRef(false)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
@@ -822,7 +834,15 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           active="source"
           modes={[]}
           onSelect={() => {}}
-          trailing={<EditControls dirty={dirty} onCancel={cancelEdit} onSave={() => void saveEdit()} saving={saving} />}
+          trailing={
+            <EditControls
+              dirty={dirty}
+              onCancel={cancelEdit}
+              onFind={() => editorApiRef.current?.find()}
+              onSave={() => void saveEdit()}
+              saving={saving}
+            />
+          }
         />
         {conflict && (
           <div className="shrink-0 border-b border-amber-400/40 bg-amber-50 px-3 py-2 text-[0.7rem] text-amber-900 dark:border-amber-300/30 dark:bg-amber-300/10 dark:text-amber-100">
@@ -853,6 +873,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         )}
         <div className="min-h-0 flex-1 overflow-hidden">
           <CodeEditor
+            apiRef={editorApiRef}
             filePath={filePath}
             initialValue={baselineRef.current}
             key={editorKey}

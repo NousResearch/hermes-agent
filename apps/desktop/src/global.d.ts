@@ -98,6 +98,10 @@ declare global {
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
+      // Create a small UTF-8 text file, failing when the path already exists.
+      createTextFile?: (path: string, content?: string) => Promise<{ path: string }>
+      // Create one folder, failing when the path already exists.
+      createFolder?: (path: string) => Promise<{ path: string }>
       // Reveal a path in the OS file manager (Finder / Explorer).
       revealPath?: (path: string) => Promise<boolean>
       // Rename a file/folder in place (new base name, same parent dir).

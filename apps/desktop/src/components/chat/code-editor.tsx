@@ -1,7 +1,7 @@
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { bracketMatching, indentOnInput, LanguageDescription } from '@codemirror/language'
 import { languages } from '@codemirror/language-data'
-import { searchKeymap } from '@codemirror/search'
+import { openSearchPanel, searchKeymap } from '@codemirror/search'
 import { Compartment, EditorState } from '@codemirror/state'
 import { Decoration, drawSelection, EditorView, keymap, lineNumbers } from '@codemirror/view'
 import { type RefObject, useEffect, useRef } from 'react'
@@ -34,6 +34,7 @@ function applyFormatJson(view: EditorView, onError?: (error: string) => void): F
 /** Imperative surface for callers that drive selection from outside (e.g. a
  *  config list focusing its block in the document). */
 export interface CodeEditorApi {
+  find: () => void
   formatJson: () => FormatOutcome
   setCursor: (pos: number) => void
 }
@@ -292,6 +293,16 @@ export function CodeEditor({
 
     if (apiRef) {
       apiRef.current = {
+        find: () => {
+          const view = viewRef.current
+
+          if (!view) {
+            return
+          }
+
+          openSearchPanel(view)
+          view.focus()
+        },
         formatJson: () => {
           const view = viewRef.current
 

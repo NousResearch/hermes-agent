@@ -1,15 +1,21 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
-import { copyTextToClipboard, renameDesktopPath, revealDesktopPath, trashDesktopPath } from '@/lib/desktop-fs'
+import {
+  copyTextToClipboard,
+  createDesktopFolder,
+  createDesktopTextFile,
+  renameDesktopPath,
+  revealDesktopPath,
+  trashDesktopPath
+} from '@/lib/desktop-fs'
 import { notify, notifyError } from '@/store/notifications'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 // Shared file-row actions for BOTH trees (the file browser + the review/git
-// tree): reveal, copy path, rename, delete. Rename/delete route through a single
-// dialog set (driven by this atom, rendered once by `FileActionDialogs`) instead
-// of one dialog per row. After a successful mutation we bump the workspace tick
-// so every git-/fs-mirroring surface refreshes.
+// tree): reveal, copy path, create, rename, delete. Rename/delete/create route
+// through shared UI state where appropriate. After a successful mutation we bump
+// the workspace tick so every git-/fs-mirroring surface refreshes.
 
 export interface FileActionTarget {
   isDirectory: boolean
@@ -19,14 +25,20 @@ export interface FileActionTarget {
   path: string
 }
 
-// Delete routes through a single confirm dialog (rendered once). Rename is
+// Delete/create route through a single dialog set (rendered once). Rename is
 // INLINE (VS Code style — an input in the row), driven by `$renamingPath`.
-export type FileActionDialog = { kind: 'delete' } & FileActionTarget
+export type FileActionDialog =
+  | ({ kind: 'delete' } & FileActionTarget)
+  | { kind: 'create-file' | 'create-folder'; parentPath: string }
 
 export const $fileActionDialog = atom<FileActionDialog | null>(null)
 
 export function requestFileDelete(target: FileActionTarget): void {
   $fileActionDialog.set({ kind: 'delete', ...target })
+}
+
+export function requestFileCreate(parentPath: string, kind: 'file' | 'folder'): void {
+  $fileActionDialog.set({ kind: kind === 'file' ? 'create-file' : 'create-folder', parentPath })
 }
 
 export function closeFileActionDialog(): void {
@@ -77,6 +89,37 @@ export function toRelativePath(path: string, relativeTo: string): string {
 }
 
 // ── Dialog-confirmed mutations (called by FileActionDialogs) ──────────────────
+
+function validateNewEntryName(name: string): string {
+  const value = name.trim()
+
+  if (!value || value === '.' || value === '..' || value.includes('/') || value.includes('\\') || value.includes('\0')) {
+    throw new Error('Invalid name')
+  }
+
+  return value
+}
+
+export function childPath(parentPath: string, name: string): string {
+  const cleanParent = parentPath.replace(/[\\/]+$/, '')
+  const separator = cleanParent.includes('\\') && !cleanParent.includes('/') ? '\\' : '/'
+
+  return `${cleanParent}${separator}${validateNewEntryName(name)}`
+}
+
+export async function executeFileCreate(parentPath: string, name: string, content = ''): Promise<string> {
+  const result = await createDesktopTextFile(childPath(parentPath, name), content)
+  notifyWorkspaceChanged()
+
+  return result.path
+}
+
+export async function executeFolderCreate(parentPath: string, name: string): Promise<string> {
+  const result = await createDesktopFolder(childPath(parentPath, name))
+  notifyWorkspaceChanged()
+
+  return result.path
+}
 
 export async function executeFileRename(path: string, newName: string): Promise<void> {
   await renameDesktopPath(path, newName)

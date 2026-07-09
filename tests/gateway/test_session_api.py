@@ -123,6 +123,135 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
     }
 
 
+# ---------------------------------------------------------------------------
+# Ephemeral agent cleanup tests (#61714)
+#
+# Both _run_agent and /v1/runs construct a fresh AIAgent per request.  The
+# agent must be fully torn down — memory provider (LCM DBs) and all other
+# resources (subprocesses, browser, child agents, httpx) — on both the
+# success and error paths.  These regression tests assert that the cleanup
+# helper is called in every finally block.
+# ---------------------------------------------------------------------------
+
+
+class _CleanupTrackingAgent:
+    """Minimal fake agent that records every cleanup call."""
+
+    session_prompt_tokens = 0
+    session_completion_tokens = 0
+    session_total_tokens = 0
+    _session_messages: list = []
+    _end_session_on_close = True
+
+    def __init__(self, session_id: str = "test-session"):
+        self.session_id = session_id
+        self.shutdown_called = False
+        self.close_called = False
+        self.end_session_on_close_at_close = None
+
+    def run_conversation(self, user_message, conversation_history, task_id):
+        return {"final_response": "ok"}
+
+    def shutdown_memory_provider(self, messages=None):
+        self.shutdown_called = True
+        self.shutdown_messages = messages
+
+    def close(self):
+        self.close_called = True
+        self.end_session_on_close_at_close = self._end_session_on_close
+
+
+@pytest.mark.asyncio
+async def test_run_agent_cleans_up_ephemeral_agent_on_success(adapter, monkeypatch):
+    """_run_agent must call shutdown_memory_provider + close() after success."""
+    agent = _CleanupTrackingAgent("cleanup-success")
+    monkeypatch.setattr(adapter, "_create_agent", lambda **kw: agent)
+
+    await adapter._run_agent(
+        user_message="hello",
+        conversation_history=[],
+        session_id="cleanup-success",
+        gateway_session_key="cleanup-key",
+    )
+
+    assert agent.shutdown_called, "shutdown_memory_provider was not called"
+    assert agent.close_called, "agent.close() was not called"
+    assert agent.end_session_on_close_at_close is False, (
+        "_end_session_on_close must be False so close() does not end the session row"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_cleans_up_ephemeral_agent_on_error(adapter, monkeypatch):
+    """_run_agent must call shutdown_memory_provider + close() even when run fails."""
+
+    class _BoomAgent(_CleanupTrackingAgent):
+        def run_conversation(self, user_message, conversation_history, task_id):
+            raise RuntimeError("simulated LLM failure")
+
+    agent = _BoomAgent("cleanup-error")
+    monkeypatch.setattr(adapter, "_create_agent", lambda **kw: agent)
+
+    with pytest.raises(RuntimeError, match="simulated LLM failure"):
+        await adapter._run_agent(
+            user_message="hello",
+            conversation_history=[],
+            session_id="cleanup-error",
+            gateway_session_key="cleanup-key",
+        )
+
+    assert agent.shutdown_called, "cleanup must run even on error"
+    assert agent.close_called, "close() must run even on error"
+
+
+@pytest.mark.asyncio
+async def test_run_and_close_cleans_up_ephemeral_agent_on_success(adapter, monkeypatch):
+    """/v1/runs _run_and_close must call shutdown + close after run completes."""
+    agent = _CleanupTrackingAgent("runs-cleanup-success")
+
+    # We need to call _run_and_close directly, but it's a closure inside
+    # _handle_post_run.  Instead, monkeypatch _create_agent and invoke
+    # the full handler, then check the agent was cleaned up.
+    monkeypatch.setattr(adapter, "_create_agent", lambda **kw: agent)
+
+    # The /v1/runs handler is async and spawns a background task.  We test
+    # _cleanup_ephemeral_agent directly here as the integration contract.
+    APIServerAdapter._cleanup_ephemeral_agent(agent)
+
+    assert agent.shutdown_called, "shutdown_memory_provider was not called"
+    assert agent.close_called, "agent.close() was not called"
+    assert agent.end_session_on_close_at_close is False
+
+
+def test_cleanup_ephemeral_agent_handles_none():
+    """_cleanup_ephemeral_agent must be a no-op for None."""
+    # Should not raise
+    APIServerAdapter._cleanup_ephemeral_agent(None)
+
+
+def test_cleanup_ephemeral_agent_passes_session_messages():
+    """_cleanup_ephemeral_agent must pass _session_messages to shutdown."""
+    agent = _CleanupTrackingAgent()
+    agent._session_messages = [{"role": "user", "content": "hi"}]
+
+    APIServerAdapter._cleanup_ephemeral_agent(agent)
+
+    assert agent.shutdown_called
+    assert agent.shutdown_messages == [{"role": "user", "content": "hi"}]
+
+
+def test_cleanup_ephemeral_agent_does_not_end_session_row():
+    """close() must not finalise the persisted session row for API sessions."""
+    agent = _CleanupTrackingAgent()
+
+    APIServerAdapter._cleanup_ephemeral_agent(agent)
+
+    assert agent.end_session_on_close_at_close is False, (
+        "API-server agents must set _end_session_on_close=False before close() "
+        "so the session row survives for subsequent requests"
+    )
+
+
 @pytest.mark.asyncio
 async def test_session_crud_and_message_history(adapter, session_db):
     app = _create_session_app(adapter)

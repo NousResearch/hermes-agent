@@ -174,6 +174,93 @@ def test_restore_stashed_changes_applies_without_prompt_when_disabled(monkeypatc
     assert "Restore local changes now?" not in capsys.readouterr().out
 
 
+def test_restore_stashed_changes_treats_slash_approve_as_yes(monkeypatch, tmp_path, capsys):
+    """Test that /approve token is treated as affirmative for yes/no prompts."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[1:3] == ["stash", "apply"]:
+            return SimpleNamespace(stdout="applied\n", stderr="", returncode=0)
+        if cmd[1:3] == ["diff", "--name-only"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd[1:3] == ["stash", "list"]:
+            return SimpleNamespace(stdout="stash@{0} abc123\n", stderr="", returncode=0)
+        if cmd[1:3] == ["stash", "drop"]:
+            return SimpleNamespace(stdout="dropped\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr("builtins.input", lambda: "Y /approve")
+
+    restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
+
+    assert restored is True
+    assert calls[0][0] == ["git", "stash", "apply", "abc123"]
+
+
+def test_restore_stashed_changes_treats_slash_approve_only_as_yes(monkeypatch, tmp_path, capsys):
+    """Test that /approve by itself is treated as affirmative."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[1:3] == ["stash", "apply"]:
+            return SimpleNamespace(stdout="applied\n", stderr="", returncode=0)
+        if cmd[1:3] == ["diff", "--name-only"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd[1:3] == ["stash", "list"]:
+            return SimpleNamespace(stdout="stash@{0} abc123\n", stderr="", returncode=0)
+        if cmd[1:3] == ["stash", "drop"]:
+            return SimpleNamespace(stdout="dropped\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr("builtins.input", lambda: "/approve")
+
+    restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
+
+    assert restored is True
+    assert calls[0][0] == ["git", "stash", "apply", "abc123"]
+
+
+def test_restore_stashed_changes_treats_slash_deny_as_no(monkeypatch, tmp_path, capsys):
+    """Test that /deny token is treated as negative for yes/no prompts."""
+    monkeypatch.setattr(hermes_main.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected command")))
+    monkeypatch.setattr("builtins.input", lambda: "/deny")
+
+    restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
+
+    assert restored is False
+    out = capsys.readouterr().out
+    assert "Restore local changes now? [Y/n]" in out
+    assert "Your changes are still preserved in git stash." in out
+
+
+def test_restore_stashed_changes_treats_approve_yes_mixed(monkeypatch, tmp_path, capsys):
+    """Test that /approve yes is treated as affirmative."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[1:3] == ["stash", "apply"]:
+            return SimpleNamespace(stdout="applied\n", stderr="", returncode=0)
+        if cmd[1:3] == ["diff", "--name-only"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd[1:3] == ["stash", "list"]:
+            return SimpleNamespace(stdout="stash@{0} abc123\n", stderr="", returncode=0)
+        if cmd[1:3] == ["stash", "drop"]:
+            return SimpleNamespace(stdout="dropped\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr("builtins.input", lambda: "/approve yes")
+
+    restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
+
+    assert restored is True
+    assert calls[0][0] == ["git", "stash", "apply", "abc123"]
+
 
 def test_print_stash_cleanup_guidance_with_selector(capsys):
     hermes_main._print_stash_cleanup_guidance("abc123", "stash@{2}")

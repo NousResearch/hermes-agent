@@ -6490,6 +6490,16 @@ def _restore_stashed_changes(
             response = input_fn("Restore local changes now? [Y/n]", "y")
         else:
             response = input().strip().lower()
+        # Normalize: treat /approve as yes, /deny as no for yes/no prompts
+        # This handles mixed inputs like "Y /approve" or "/approve yes"
+        response_lower = response.lower()
+        if "/approve" in response_lower:
+            response = "y"
+        elif "/deny" in response_lower:
+            response = "n"
+        else:
+            # Extract first word for natural language responses
+            response = response_lower.split()[0] if response_lower else ""
         if response not in {"", "y", "yes"}:
             print("Skipped restoring local changes.")
             print("Your changes are still preserved in git stash.")

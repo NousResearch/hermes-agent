@@ -101,6 +101,37 @@ class TestGetDefaultHermesRoot:
         assert get_default_hermes_root() == home / "AppData" / "Local" / "hermes"
 
 
+class TestHtHomeAlias:
+    """HT_HOME is a backward-compatible alias for HERMES_HOME (Phase 6).
+
+    The new name takes precedence when both are set; either alone resolves.
+    """
+
+    def test_ht_home_alone_resolves(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("HT_HOME", str(tmp_path / "new"))
+        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", True)
+        assert get_hermes_home() == tmp_path / "new"
+
+    def test_hermes_home_alone_still_resolves(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HT_HOME", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "old"))
+        assert get_hermes_home() == tmp_path / "old"
+
+    def test_ht_home_wins_when_both_set(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HT_HOME", str(tmp_path / "new"))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "old"))
+        assert get_hermes_home() == tmp_path / "new"
+
+    def test_ht_home_alias_for_default_root(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        docker_home = tmp_path / "opt" / "data"
+        docker_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HT_HOME", str(docker_home))
+        assert get_default_hermes_root() == docker_home
+
+
 class TestGetHermesHome:
     """Tests for get_hermes_home() platform-aware fallback."""
 

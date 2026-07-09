@@ -12721,6 +12721,15 @@ def cmd_claw(args):
 
 def main():
     """Main entry point for hermes CLI."""
+    # Phase 6 backward compat: mirror HERMES_*/HT_* env vars so both the legacy
+    # and new brand names resolve to the same value process-wide and are
+    # inherited by every subprocess we spawn. Non-fatal — additive only.
+    try:
+        from ht_compat import mirror_brand_env
+        mirror_brand_env(os.environ)
+    except Exception:
+        pass
+
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
     # in ps/top/htop.  Non-fatal — just a nicer UX.
     _set_process_title()

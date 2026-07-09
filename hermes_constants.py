@@ -12,6 +12,11 @@ import sysconfig
 from contextvars import ContextVar, Token
 from pathlib import Path
 
+# ht_compat is stdlib-only and imports nothing from this package, so depending
+# on it here preserves this module's import-safety. It provides the backward-
+# compatible HT_*/HERMES_* env-var resolution (Phase 6).
+from ht_compat import resolve_env as _resolve_brand_env
+
 
 _profile_fallback_warned: bool = False
 _UNSET = object()
@@ -55,8 +60,9 @@ def _get_platform_default_hermes_home() -> Path:
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: platform-native path).
 
-    Reads HERMES_HOME env var, falls back to the platform-native default.
-    This is the single source of truth — all other copies should import this.
+    Reads the ``HT_HOME`` env var (new name), falling back to the legacy
+    ``HERMES_HOME``, then to the platform-native default. This is the single
+    source of truth — all other copies should import this.
 
     When ``HERMES_HOME`` is unset but an ``active_profile`` file indicates
     a non-default profile is active, logs a loud one-shot warning to
@@ -72,7 +78,7 @@ def get_hermes_home() -> Path:
     if override:
         return Path(override)
 
-    val = os.environ.get("HERMES_HOME", "").strip()
+    val = (_resolve_brand_env("HERMES_HOME", "") or "").strip()
     if val:
         return Path(val)
 
@@ -128,7 +134,7 @@ def get_default_hermes_root() -> Path:
     Import-safe — no dependencies beyond stdlib.
     """
     native_home = _get_platform_default_hermes_home()
-    env_home = os.environ.get("HERMES_HOME", "")
+    env_home = _resolve_brand_env("HERMES_HOME", "") or ""
     if not env_home:
         return native_home
     env_path = Path(env_home)
@@ -173,7 +179,7 @@ def get_optional_skills_dir(default: Path | None = None) -> Path:
     Packaged installs may ship ``optional-skills`` outside the Python package
     tree and expose it via ``HERMES_OPTIONAL_SKILLS``.
     """
-    override = os.getenv("HERMES_OPTIONAL_SKILLS", "").strip()
+    override = (_resolve_brand_env("HERMES_OPTIONAL_SKILLS", "") or "").strip()
     if override:
         return Path(override)
     packaged = _get_packaged_data_dir("optional-skills")
@@ -192,7 +198,7 @@ def get_optional_mcps_dir(default: Path | None = None) -> Path:
     default). Packaged installs may ship ``optional-mcps`` outside the Python
     package tree and expose it via ``HERMES_OPTIONAL_MCPS``.
     """
-    override = os.getenv("HERMES_OPTIONAL_MCPS", "").strip()
+    override = (_resolve_brand_env("HERMES_OPTIONAL_MCPS", "") or "").strip()
     if override:
         return Path(override)
     packaged = _get_packaged_data_dir("optional-mcps")
@@ -212,7 +218,7 @@ def get_bundled_skills_dir(default: Path | None = None) -> Path:
         3. Caller-supplied ``default`` (typically the source-checkout path)
         4. ``<HERMES_HOME>/skills`` last-resort
     """
-    override = os.getenv("HERMES_BUNDLED_SKILLS", "").strip()
+    override = (_resolve_brand_env("HERMES_BUNDLED_SKILLS", "") or "").strip()
     if override:
         return Path(override)
     packaged = _get_packaged_data_dir("skills")
@@ -287,7 +293,7 @@ def _candidate_node_command_names(command: str) -> list[str]:
     return [f"{base}.cmd", f"{base}.exe", base]
 
 
-_HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22"))
+_HERMES_NODE_TARGET_MAJOR = int(_resolve_brand_env("HERMES_NODE_TARGET_MAJOR", "22") or "22")
 _managed_node_heal_attempted = False
 _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 
@@ -681,7 +687,12 @@ def _norm_home_path(path: str | None) -> str:
 
 def _profile_home_path(env: dict[str, str] | None = None) -> str | None:
     """Return ``{HERMES_HOME}/home`` when the profile-home directory exists."""
-    hermes_home = get_hermes_home_override() or (env or {}).get("HERMES_HOME") or os.getenv("HERMES_HOME")
+    _env = env or {}
+    hermes_home = (
+        get_hermes_home_override()
+        or _env.get("HT_HOME") or _env.get("HERMES_HOME")
+        or os.getenv("HT_HOME") or os.getenv("HERMES_HOME")
+    )
     if not hermes_home:
         return None
     profile_home = os.path.join(hermes_home, "home")
@@ -698,7 +709,10 @@ def _iter_real_home_candidates(env: dict[str, str] | None = None) -> list[str]:
     """Return likely OS-user home candidates in trust order."""
     env = env or {}
     candidates: list[str] = []
-    explicit = str(env.get("HERMES_REAL_HOME") or os.getenv("HERMES_REAL_HOME", "")).strip()
+    explicit = str(
+        env.get("HT_REAL_HOME") or env.get("HERMES_REAL_HOME")
+        or os.getenv("HT_REAL_HOME") or os.getenv("HERMES_REAL_HOME", "")
+    ).strip()
     if explicit:
         candidates.append(explicit)
     home = str(env.get("HOME") or os.getenv("HOME", "")).strip()
@@ -785,7 +799,10 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
     """Apply Hermes' subprocess HOME contract to *env* in-place."""
     real_home = get_real_home(env)
     if real_home:
+        # Set both the legacy and new names so subprocesses that read either
+        # spelling resolve the real OS-user HOME (Phase 6 backward compat).
         env["HERMES_REAL_HOME"] = real_home
+        env["HT_REAL_HOME"] = real_home
     home = get_subprocess_home(env)
     if home:
         env["HOME"] = home

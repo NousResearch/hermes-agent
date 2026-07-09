@@ -61,6 +61,10 @@ from gateway.platforms.base import (
     validate_media_delivery_path,
 )
 from agent.redact import redact_sensitive_text
+# Phase 6 backward compat: accept/emit both the new X-HT-* and legacy
+# X-Hermes-* header spellings so new clients can use the HT names while
+# existing OpenAI-compatible clients keep working unchanged.
+from ht_compat import mirror_brand_headers, read_brand_header
 
 logger = logging.getLogger(__name__)
 
@@ -1108,7 +1112,7 @@ class APIServerAdapter(BasePlatformAdapter):
         unauthenticated client on a local-only server can't inject itself
         into another user's long-term memory scope by guessing a key.
         """
-        raw = request.headers.get("X-Hermes-Session-Key", "").strip()
+        raw = read_brand_header(request.headers, "Session-Key", "").strip()
         if not raw:
             return None, None
 
@@ -1911,6 +1915,7 @@ class APIServerAdapter(BasePlatformAdapter):
         headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key
+        mirror_brand_headers(headers)
         return web.json_response(
             {
                 "object": "hermes.session.chat.completion",
@@ -2038,6 +2043,7 @@ class APIServerAdapter(BasePlatformAdapter):
         }
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key
+        mirror_brand_headers(headers)
         response = web.StreamResponse(status=200, headers=headers)
         await response.prepare(request)
         last_write = time.monotonic()
@@ -2139,7 +2145,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # only allowed when the API key is configured and the request is
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
-        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        provided_session_id = read_brand_header(request.headers, "Session-Id", "").strip()
         if provided_session_id:
             if not self._api_key:
                 logger.warning(
@@ -2365,6 +2371,7 @@ class APIServerAdapter(BasePlatformAdapter):
             }
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            mirror_brand_headers(response_headers)
             return web.json_response(err_body, status=502, headers=response_headers)
 
         # Soft-partial path: we have *some* text but the run did not complete
@@ -2404,6 +2411,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if err_msg:
                 response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
 
+        mirror_brand_headers(response_headers)
         return web.json_response(response_data, headers=response_headers)
 
     async def _write_sse_chat_completion(
@@ -2434,6 +2442,7 @@ class APIServerAdapter(BasePlatformAdapter):
             sse_headers["X-Hermes-Session-Id"] = session_id
         if gateway_session_key:
             sse_headers["X-Hermes-Session-Key"] = gateway_session_key
+        mirror_brand_headers(sse_headers)
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
@@ -2662,6 +2671,7 @@ class APIServerAdapter(BasePlatformAdapter):
             sse_headers["X-Hermes-Session-Id"] = session_id
         if gateway_session_key:
             sse_headers["X-Hermes-Session-Key"] = gateway_session_key
+        mirror_brand_headers(sse_headers)
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
@@ -3486,6 +3496,7 @@ class APIServerAdapter(BasePlatformAdapter):
         response_headers = {"X-Hermes-Session-Id": session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        mirror_brand_headers(response_headers)
         return web.json_response(response_data, headers=response_headers)
 
     # ------------------------------------------------------------------
@@ -4474,6 +4485,7 @@ class APIServerAdapter(BasePlatformAdapter):
         response_headers = (
             {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
         )
+        mirror_brand_headers(response_headers)
         return web.json_response(
             {"run_id": run_id, "status": "started"},
             status=202,

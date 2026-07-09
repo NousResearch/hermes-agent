@@ -40,6 +40,62 @@ class ImmediateThread:
         self._target()
 
 
+def test_background_review_spawn_default_enabled(monkeypatch):
+    monkeypatch.delenv("HERMES_DISABLE_BACKGROUND_REVIEW", raising=False)
+    threads = []
+
+    class RecordingThread:
+        def __init__(self, *, target, daemon=None, name=None):
+            self.target = target
+            self.daemon = daemon
+            self.name = name
+            self.started = False
+            threads.append(self)
+
+        def start(self):
+            self.started = True
+
+    monkeypatch.setattr(run_agent_module.threading, "Thread", RecordingThread)
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert len(threads) == 1
+    assert threads[0].daemon is True
+    assert threads[0].name == "bg-review"
+    assert threads[0].started is True
+
+
+def test_background_review_spawn_env_opt_out_suppresses_spawn(monkeypatch):
+    monkeypatch.setenv("HERMES_DISABLE_BACKGROUND_REVIEW", "1")
+    threads = []
+
+    class RecordingThread:
+        def __init__(self, *, target, daemon=None, name=None):
+            threads.append((target, daemon, name))
+
+        def start(self):
+            raise AssertionError("background review thread should not start")
+
+    monkeypatch.setattr(run_agent_module.threading, "Thread", RecordingThread)
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+        review_skills=True,
+    )
+
+    assert threads == []
+
+
 def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
     events = []
 

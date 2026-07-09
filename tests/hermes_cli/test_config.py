@@ -35,7 +35,12 @@ class TestGetHermesHome:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            assert home == Path.home() / ".hermes"
+            if os.name == "nt":
+                local_appdata = os.environ.get("LOCALAPPDATA")
+                expected = (Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local") / "hermes"
+            else:
+                expected = Path.home() / ".hermes"
+            assert home == expected
 
     def test_env_override(self):
         with patch.dict(os.environ, {"HERMES_HOME": "/custom/path"}):
@@ -1805,5 +1810,3 @@ class TestCodexAppServerAutoConfig:
 
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
-
-

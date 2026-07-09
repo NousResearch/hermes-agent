@@ -13,7 +13,9 @@ from agent import secret_scope as ss
 
 
 @pytest.fixture(autouse=True)
-def _reset(monkeypatch):
+def _reset(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     ss.set_multiplex_active(False)
     yield
     ss.set_multiplex_active(False)
@@ -156,3 +158,47 @@ class TestProfilePathResolutionUnderMultiplexScope:
             t.join()
 
         assert seen["home"] == str(prof_b)
+
+
+class TestResolveProfileHomeMissingProfileFallback:
+    """_resolve_profile_home_for_source must not scope a turn into a missing home."""
+
+    def _runner(self):
+        from gateway.run import GatewayRunner
+        return GatewayRunner.__new__(GatewayRunner)
+
+    def _source(self, profile):
+        from types import SimpleNamespace
+        return SimpleNamespace(profile=profile)
+
+    def _set_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    def test_existing_routed_profile_resolves_to_its_dir(self, tmp_path, monkeypatch):
+        self._set_home(tmp_path, monkeypatch)
+        (tmp_path / "profiles" / "coder").mkdir(parents=True)
+        runner = self._runner()
+        home = runner._resolve_profile_home_for_source(self._source("coder"))
+        assert home == tmp_path / "profiles" / "coder"
+
+    def test_missing_routed_profile_falls_back_to_default(self, tmp_path, monkeypatch):
+        self._set_home(tmp_path, monkeypatch)
+        runner = self._runner()
+        home = runner._resolve_profile_home_for_source(self._source("ghost"))
+        assert home != tmp_path / "profiles" / "ghost"
+        assert home == tmp_path
+
+    def test_empty_routed_profile_uses_active_default(self, tmp_path, monkeypatch):
+        self._set_home(tmp_path, monkeypatch)
+        runner = self._runner()
+        for empty in (None, "", "   "):
+            home = runner._resolve_profile_home_for_source(self._source(empty))
+            assert home == tmp_path
+
+    def test_missing_profile_does_not_raise(self, tmp_path, monkeypatch):
+        self._set_home(tmp_path, monkeypatch)
+        runner = self._runner()
+        home = runner._resolve_profile_home_for_source(self._source("nope"))
+        assert home.exists()

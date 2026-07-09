@@ -112,6 +112,8 @@ def terminate_pid(pid: int, *, force: bool = False) -> None:
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
                 creationflags=windows_hide_flags(),
             )
@@ -198,6 +200,8 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
                 ["ps", "-p", str(pid), "-o", "command="],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
@@ -340,9 +344,47 @@ def _profile_name_for_home(profile_home: Path) -> Optional[str]:
     has no such parent, so it maps to the default profile (``None`` here, which
     callers treat as "the bare, flag-less gateway").
     """
-    if profile_home.parent.name == "profiles":
+    if profile_home.parent.name.casefold() == "profiles":
         return profile_home.name
     return None
+
+
+def _normalize_profile_match_text(value: object) -> str:
+    """Normalize command/path text for profile-home command-line matching."""
+    return str(value).replace("\\", "/").casefold().rstrip("/")
+
+
+def _profile_flag_text(command: str) -> str:
+    # Quoted profile values are equivalent for the simple flag scan below.
+    return _normalize_profile_match_text(command).replace('"', "").replace("'", "")
+
+
+def _command_line_has_profile_flag(command: str) -> bool:
+    tokens = _profile_flag_text(command).split()
+    for idx, token in enumerate(tokens):
+        if token in {"--profile", "-p"} and idx + 1 < len(tokens):
+            return True
+        if token.startswith("--profile=") or token.startswith("-p="):
+            return True
+    return False
+
+
+def _command_line_has_profile(command: str, profile_name: str) -> bool:
+    profile_lc = profile_name.casefold()
+    tokens = _profile_flag_text(command).split()
+    for idx, token in enumerate(tokens):
+        if token in {"--profile", "-p"} and idx + 1 < len(tokens):
+            if tokens[idx + 1].casefold() == profile_lc:
+                return True
+        if token in {f"--profile={profile_lc}", f"-p={profile_lc}"}:
+            return True
+    return False
+
+
+def _command_line_has_home(command: str, profile_home: Path) -> bool:
+    command_norm = _normalize_profile_match_text(command)
+    home_norm = _normalize_profile_match_text(profile_home)
+    return "hermes_home" in command_norm and home_norm in command_norm
 
 
 def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
@@ -350,24 +392,14 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
 
     Mirrors ``hermes_cli.gateway._matches_current_profile`` so the dashboard's
     cross-profile liveness fallback scopes a live PID to the *right* profile.
-    In a per-profile container, one profile's stale ``gateway_state.json`` can
-    record a PID that the OS has since recycled onto a DIFFERENT profile's live
-    gateway.  That recycled PID's command line still ``looks_like_gateway`` —
-    so without a profile check the dead profile is reported running.  A named
-    profile gateway carries ``-p <name>``/``--profile <name>`` (or, rarely, an
-    explicit ``HERMES_HOME=<path>``) on its argv; the default/root gateway runs
-    bare with no profile flag.
+    Normalize slash/backslash and case so Windows command lines such as
+    ``HERMES_HOME=C:/...`` match a ``C:/...`` profile path.
     """
-    command_lc = command.lower()
     profile_name = _profile_name_for_home(profile_home)
-    home_lc = str(profile_home).lower()
 
-    if profile_name is not None and profile_name != "default":
-        profile_lc = profile_name.lower()
-        return (
-            f"--profile {profile_lc}" in command_lc
-            or f"-p {profile_lc}" in command_lc
-            or f"hermes_home={home_lc}" in command_lc
+    if profile_name is not None and profile_name.casefold() != "default":
+        return _command_line_has_profile(command, profile_name) or _command_line_has_home(
+            command, profile_home
         )
 
     # Default/root profile: the gateway runs with no profile flag. Accept unless
@@ -375,9 +407,10 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     # a non-matching explicit HERMES_HOME= on the argv. HERMES_HOME is usually
     # passed via the environment (not visible on the command line), so its mere
     # absence is not disqualifying — only a conflicting explicit value is.
-    if "--profile " in command_lc or " -p " in command_lc:
+    if _command_line_has_profile_flag(command):
         return False
-    if "hermes_home=" in command_lc and f"hermes_home={home_lc}" not in command_lc:
+    command_norm = _normalize_profile_match_text(command)
+    if "hermes_home" in command_norm and not _command_line_has_home(command, profile_home):
         return False
     return True
 
@@ -676,6 +709,8 @@ def _pid_exists(pid: int) -> bool:
                     ["ps", "-o", "state=", "-p", str(int(pid))],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=5,
                 )
                 if r.returncode == 0 and r.stdout.strip().startswith("Z"):
@@ -804,13 +839,17 @@ def write_runtime_status(
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
+    platforms: Any = _UNSET,
     served_profiles: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     current_record = _build_pid_record()
-    payload.setdefault("platforms", {})
+    if platforms is not _UNSET:
+        payload["platforms"] = dict(platforms) if isinstance(platforms, dict) else {}
+    else:
+        payload.setdefault("platforms", {})
     payload["kind"] = current_record["kind"]
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]

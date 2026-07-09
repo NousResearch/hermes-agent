@@ -91,6 +91,19 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 300.0
 _DURATIONS_FILE = "test_durations.json"
 
 
+def _split_path_list(value: str) -> List[str]:
+    """Split path-list args without breaking Windows drive-letter paths."""
+    parts = [part for part in value.split(os.pathsep) if part]
+    if (
+        os.pathsep == ";"
+        and len(parts) == 1
+        and ":" in value
+        and not (len(value) >= 2 and value[1] == ":")
+    ):
+        parts = [part for part in value.split(":") if part]
+    return parts
+
+
 def _approximately_count_tests(
     files: List[Path], repo_root: Path
 ) -> dict[Path, int]:
@@ -250,7 +263,15 @@ def _run_one_file(
     orphan onto PID 1. This outer timeout exists only to
     bound a pathologically slow or hung file as a whole.
     """
-    cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
+    cmd = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "--rootdir",
+        str(repo_root),
+        str(file),
+        *pytest_args,
+    ]
     
     subproc_start = time.monotonic()
     # launch the pytest process
@@ -364,6 +385,25 @@ def _format_file(file: Path, repo_root: Path) -> str:
         return str(file)
 
 
+def _safe_stream_text(text: str, stream=None) -> str:
+    """Return text encodable by *stream*, replacing unsupported glyphs.
+
+    Windows consoles often expose legacy encodings (for example cp1250) that
+    cannot encode the progress check/cross glyphs. The progress callback must
+    never raise UnicodeEncodeError and abort the runner after tests already ran.
+    """
+    target = stream or sys.stdout
+    encoding = getattr(target, "encoding", None) or "utf-8"
+    try:
+        return text.encode(encoding, errors="replace").decode(
+            encoding, errors="replace"
+        )
+    except LookupError:
+        return text.encode("utf-8", errors="replace").decode(
+            "utf-8", errors="replace"
+        )
+
+
 def _print_progress(
     tests_done: int,
     approx_total_tests: int,
@@ -434,7 +474,7 @@ def _print_progress(
             msg = msg[: cols - 1] + "…"
     except OSError:
         pass
-    print(msg, flush=True)
+    print(_safe_stream_text(msg), flush=True)
 
 
 def _print_inline_failure(
@@ -459,12 +499,12 @@ def _print_inline_failure(
     tail = "\n".join(lines[-30:])
 
     print(flush=True)
-    print(f"  ╔╍ Failed: {rel} ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍", flush=True)
+    print(_safe_stream_text(f"  ╔╍ Failed: {rel} ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍"), flush=True)
     for line in tail.splitlines():
-        print(f"  ║ {line}", flush=True)
-    print("  ║", flush=True)
-    print(f"  ║  Repro: {repro}", flush=True)
-    print("  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍", flush=True)
+        print(_safe_stream_text(f"  ║ {line}"), flush=True)
+    print(_safe_stream_text(f"  ║"), flush=True)
+    print(_safe_stream_text(f"  ║  Repro: {repro}"), flush=True)
+    print(_safe_stream_text(f"  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍"), flush=True)
     print(flush=True)
 
 
@@ -749,7 +789,7 @@ def main() -> int:
 
     # --files: explicit file list from the CI generate job — skip discovery.
     if args.files:
-        files = [repo_root / f for f in args.files.split(":") if f.strip()]
+        files = [repo_root / f for f in _split_path_list(args.files) if f.strip()]
         roots = []
     else:
         # Resolve discovery roots: positional path args override --paths if any
@@ -757,7 +797,7 @@ def main() -> int:
         if args.paths_positional:
             roots = [repo_root / p for p in args.paths_positional]
         else:
-            roots = [repo_root / p for p in args.paths.split(":") if p]
+            roots = [repo_root / p for p in _split_path_list(args.paths) if p]
 
         if args.include_integration:
             # Caller takes responsibility — typically used via explicit -k filter.
@@ -780,7 +820,9 @@ def main() -> int:
             "slice": [
                 {
                     "index": i + 1,
-                    "files": ":".join(_format_file(f, repo_root) for f in bucket),
+                    "files": os.pathsep.join(
+                        _format_file(f, repo_root) for f in bucket
+                    ),
                 }
                 for i, bucket in enumerate(slices)
             ]

@@ -974,9 +974,68 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_zero_budget_worker(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Surface Kanban worker budget preflight failures as infrastructure issues."""
+    task_id = _task_field(task, "id")
+    latest_payload: dict = {}
+    latest_ts = 0
+    for ev in events:
+        if _event_kind(ev) != "spawn_blocked_zero_budget":
+            continue
+        ts = _event_ts(ev)
+        if ts >= latest_ts:
+            latest_ts = ts
+            latest_payload = _parse_payload(ev)
+    for run in runs:
+        outcome = _task_field(run, "outcome") or _task_field(run, "status")
+        if outcome != "spawn_blocked_zero_budget":
+            continue
+        ts = int(_task_field(run, "ended_at", default=0) or _task_field(run, "started_at", default=0) or 0)
+        if ts >= latest_ts:
+            latest_ts = ts
+            meta = _task_field(run, "metadata", default={}) or {}
+            latest_payload = meta if isinstance(meta, dict) else {}
+    if not latest_payload:
+        return []
+    budget_key = str(latest_payload.get("budget_key") or "unknown budget key")
+    detail = str(latest_payload.get("detail") or f"effective worker budget {budget_key} resolved to zero")
+    actions = []
+    if task_id:
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label="Inspect runs for zero-budget preflight evidence",
+            payload={"command": f"hermes kanban runs {task_id}"},
+            suggested=True,
+        ))
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label="Preview zero-budget repair candidates",
+            payload={"command": "hermes kanban repair zero-budget-failures --dry-run"},
+            suggested=True,
+        ))
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label="Fix the profile budget config, then unblock/requeue",
+            payload={"command": f"hermes kanban unblock {task_id}"},
+            suggested=False,
+        ))
+    return [Diagnostic(
+        kind="zero_budget_worker",
+        severity="critical",
+        title="Kanban worker spawn blocked by zero execution budget",
+        detail=f"{detail}; budget key: {budget_key}. This is infrastructure failure, not content/source failure.",
+        actions=actions,
+        first_seen_at=int(latest_ts or now),
+        last_seen_at=int(latest_ts or now),
+        count=1,
+        data={"budget_key": budget_key, **latest_payload},
+    )]
+
+
 # Registry — order matters: rules higher on the list render first when
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
+    _rule_zero_budget_worker,
     _rule_hallucinated_cards,
     _rule_triage_aux_unavailable,
     _rule_prose_phantom_refs,
@@ -991,6 +1050,7 @@ _RULES: list[RuleFn] = [
 # Known kinds (for the UI's filter / legend / i18n keys). Update when
 # rules are added.
 DIAGNOSTIC_KINDS = (
+    "zero_budget_worker",
     "hallucinated_cards",
     "triage_aux_unavailable",
     "prose_phantom_refs",

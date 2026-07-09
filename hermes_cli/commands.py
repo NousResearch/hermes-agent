@@ -124,6 +124,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("closure", "Show max-iteration closure artifacts and compact resume packets", "Session",
+               args_hint="[latest|show] [--session-id ID|--task-id ID] [--resume-prompt]"),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
@@ -209,7 +211,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                             "claim", "comment", "complete", "edit", "block", "unblock",
                             "archive", "tail", "dispatch", "stats", "notify-subscribe",
                             "notify-list", "notify-unsubscribe", "log", "runs",
-                            "heartbeat", "assignees", "context", "specify", "gc")),
+                            "heartbeat", "assignees", "context", "specify",
+                            "decompose", "triage", "gc")),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
@@ -1163,7 +1166,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

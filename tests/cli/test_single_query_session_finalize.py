@@ -34,6 +34,52 @@ def test_finalize_single_query_runs_cleanup_without_reemitting_finalize_before_r
     ]
 
 
+@pytest.mark.parametrize(
+    ("agent_session_id", "cli_session_id", "expected_session_id"),
+    [
+        ("agent-session", "cli-session", "agent-session"),
+        (None, "cli-session", "cli-session"),
+    ],
+)
+def test_finalize_single_query_persists_and_ends_current_session_before_release(
+    monkeypatch,
+    agent_session_id,
+    cli_session_id,
+    expected_session_id,
+):
+    calls = []
+    fake_agent = SimpleNamespace(session_id=agent_session_id, platform="cli")
+    fake_session_db = SimpleNamespace(
+        end_session=lambda session_id, reason: calls.append(
+            ("end", session_id, reason)
+        )
+    )
+    fake_cli = SimpleNamespace(
+        agent=fake_agent,
+        session_id=cli_session_id,
+        _session_db=fake_session_db,
+        _persist_active_session_before_close=lambda: calls.append("persist"),
+        _release_active_session=lambda: calls.append("release"),
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "_notify_single_query_session_finalize",
+        lambda _cli: calls.append("finalize"),
+    )
+    monkeypatch.setattr(cli, "_run_cleanup", lambda **_kwargs: calls.append("cleanup"))
+
+    cli._finalize_single_query(fake_cli)
+
+    assert calls == [
+        "finalize",
+        "cleanup",
+        "persist",
+        ("end", expected_session_id, "cli_close"),
+        "release",
+    ]
+
+
 def test_finalize_single_query_releases_session_when_cleanup_fails(monkeypatch):
     calls = []
     fake_cli = SimpleNamespace(_release_active_session=lambda: calls.append("release"))
@@ -146,6 +192,28 @@ def test_notify_single_query_session_finalize_uses_agent_session(monkeypatch):
             },
         )
     ]
+
+
+def test_state_db_maintenance_finalizes_stale_active_session_leases(monkeypatch):
+    calls = []
+
+    class FakeSessionDB:
+        def get_meta(self, key):
+            return "1"
+
+    monkeypatch.setattr(
+        "hermes_cli.active_sessions.prune_dead_active_session_leases",
+        lambda *, session_db: calls.append(session_db) or 2,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"sessions": {"auto_prune": False}},
+    )
+
+    fake_db = FakeSessionDB()
+    cli._run_state_db_auto_maintenance(fake_db)
+
+    assert calls == [fake_db]
 
 
 def test_human_single_query_main_finalizes_after_query(monkeypatch):

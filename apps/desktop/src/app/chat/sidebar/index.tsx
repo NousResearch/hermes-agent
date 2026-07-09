@@ -194,7 +194,21 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     source: result.source ?? null,
     started_at: ts,
     title: null,
-    tool_call_count: 0
+    tool_call_count: 0,
+    last_tool_runtime_event: result.last_tool_runtime_event ?? null,
+    last_activity_age_seconds: result.last_activity_age_seconds ?? null,
+    queued_steer_count: result.queued_steer_count ?? null,
+    model_policy_recommended_action: result.model_policy_recommended_action ?? null,
+    model_policy_violation: result.model_policy_violation,
+    model_request_high_context: result.model_request_high_context,
+    model_request_queued_steer_count: result.model_request_queued_steer_count ?? null,
+    model_request_status: result.model_request_status ?? null,
+    model_request_steer_queued: result.model_request_steer_queued,
+    required_model: result.required_model ?? null,
+    steer_boundary: result.steer_boundary ?? null,
+    terminal_recovery_needed: result.terminal_recovery_needed,
+    compression_tip_session_id: result.compression_tip_session_id ?? null,
+    status_evidence_source: result.status_evidence_source
   }
 }
 

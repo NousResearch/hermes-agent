@@ -63,6 +63,28 @@ def _ra():
     return run_agent
 
 
+def _bounded_max_iteration_closeout(
+    agent,
+    *,
+    api_call_count: int,
+    message_count: int,
+    estimated_context_tokens: int,
+) -> str:
+    return (
+        "Bounded closeout mode: Hermes reached the iteration budget "
+        f"({api_call_count}/{agent.max_iterations}) and skipped an additional "
+        f"high-context summary request (~{estimated_context_tokens:,} tokens). "
+        f"Current compact evidence: {message_count} API messages were prepared "
+        "for closeout. Resume by inspecting current repo/session state and run "
+        "narrow verification for the remaining review/report work."
+    )
+
+
+_IMAGE_CONTEXT_TOKEN_COST = 1500
+_IMAGE_CONTEXT_CHAR_COST = _IMAGE_CONTEXT_TOKEN_COST * 4
+_IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
+
+
 def estimate_request_context_tokens(api_payload: Any) -> int:
     """Estimate context/load tokens from an API payload, dict or messages list.
 
@@ -80,11 +102,28 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
       - any other dict -> fall back to summing string values
     """
 
+    def _is_image_part(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        ptype = str(value.get("type") or "").strip().lower()
+        return ptype in _IMAGE_PART_TYPES
+
     def _chars(value: Any) -> int:
         if value is None:
             return 0
         if isinstance(value, str):
             return len(value)
+        if _is_image_part(value):
+            metadata_chars = 0
+            for key, item in value.items():
+                if key in {"image_url", "data", "source"}:
+                    continue
+                metadata_chars += len(str(key)) + _chars(item)
+            return _IMAGE_CONTEXT_CHAR_COST + metadata_chars
+        if isinstance(value, dict):
+            return sum(len(str(key)) + _chars(item) + 4 for key, item in value.items())
+        if isinstance(value, list):
+            return sum(_chars(item) + 2 for item in value)
         return len(str(value))
 
     def _message_chars(messages: Any) -> int:
@@ -1279,6 +1318,25 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return agent._try_activate_fallback(reason)
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.model_policy import check_fallback_model_policy
+
+        _fallback_policy_check = check_fallback_model_policy(load_config(), fb_model)
+    except Exception:
+        _fallback_policy_check = None
+    if _fallback_policy_check is not None and not _fallback_policy_check.allowed:
+        try:
+            agent._buffer_status(f"⛔ {_fallback_policy_check.message}")
+        except Exception:
+            pass
+        logger.warning(
+            "Fallback blocked by model policy: provider=%s model=%s required=%s",
+            fb_provider or "<empty>",
+            fb_model or "<empty>",
+            _fallback_policy_check.required_model,
+        )
+        return agent._try_activate_fallback(reason)  # skip disallowed, try next
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback(reason)  # skip invalid, try next
 
@@ -1632,6 +1690,26 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # Same safety net as the main loop: drop thinking-only assistant
         # turns so Anthropic-family providers don't 400 the summary call.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
+
+        summary_context_tokens = estimate_request_context_tokens(
+            {"messages": api_messages, "tools": None}
+        )
+        try:
+            from agent.request_watchdog import should_use_bounded_closeout_mode
+        except Exception:
+            should_use_bounded_closeout_mode = None
+        if should_use_bounded_closeout_mode is not None and should_use_bounded_closeout_mode(
+            estimated_context_tokens=summary_context_tokens,
+            remaining_work_kind="closeout review report verification",
+        ):
+            final_response = _bounded_max_iteration_closeout(
+                agent,
+                api_call_count=api_call_count,
+                message_count=len(api_messages),
+                estimated_context_tokens=summary_context_tokens,
+            )
+            messages.append({"role": "assistant", "content": final_response})
+            return final_response
 
         summary_extra_body = {}
         try:

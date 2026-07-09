@@ -32,6 +32,7 @@ import base64
 import functools
 import json
 import logging
+import math
 import os
 import platform
 import secrets
@@ -923,7 +924,9 @@ def _execute_remote(
     """
 
     _cfg = _load_config()
-    timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
+    timeout, timeout_error = _resolve_timeout_config(_cfg)
+    if timeout_error:
+        return _timeout_config_error_result(timeout_error)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
     session_tools = set(enabled_tools) if enabled_tools else set()
@@ -1186,7 +1189,9 @@ def execute_code(
 
     # Resolve config
     _cfg = _load_config()
-    timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
+    timeout, timeout_error = _resolve_timeout_config(_cfg)
+    if timeout_error:
+        return _timeout_config_error_result(timeout_error)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
     # Determine which tools the sandbox can call
@@ -1642,6 +1647,57 @@ def _load_config() -> dict:
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}
+
+
+def _resolve_timeout_config(config: Dict[str, Any]) -> tuple[Any, Optional[str]]:
+    """Return a safe execute_code timeout or a readable config error.
+
+    Positive numeric values are preserved. Missing, ``None``, zero, or negative
+    values use the default timeout; invalid/non-finite values are rejected before
+    they reach local subprocess math or remote backend calls.
+    """
+    raw_timeout = config.get("timeout", DEFAULT_TIMEOUT)
+    if raw_timeout is None:
+        return DEFAULT_TIMEOUT, None
+
+    if isinstance(raw_timeout, bool):
+        return None, _invalid_timeout_config_error(raw_timeout)
+
+    if isinstance(raw_timeout, (int, float)):
+        numeric_timeout = float(raw_timeout)
+        if not math.isfinite(numeric_timeout):
+            return None, _invalid_timeout_config_error(raw_timeout)
+        if numeric_timeout <= 0:
+            return DEFAULT_TIMEOUT, None
+        return raw_timeout, None
+
+    try:
+        numeric_timeout = float(raw_timeout)
+    except (TypeError, ValueError):
+        return None, _invalid_timeout_config_error(raw_timeout)
+
+    if not math.isfinite(numeric_timeout):
+        return None, _invalid_timeout_config_error(raw_timeout)
+    if numeric_timeout <= 0:
+        return DEFAULT_TIMEOUT, None
+    return numeric_timeout, None
+
+
+def _invalid_timeout_config_error(raw_timeout: Any) -> str:
+    return (
+        f"Invalid code_execution.timeout={raw_timeout!r}; expected a numeric "
+        "value. Use a positive number of seconds, or 0/negative to use the "
+        f"default {DEFAULT_TIMEOUT}s timeout."
+    )
+
+
+def _timeout_config_error_result(error: str) -> str:
+    return json.dumps({
+        "status": "error",
+        "error": error,
+        "tool_calls_made": 0,
+        "duration_seconds": 0,
+    }, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------

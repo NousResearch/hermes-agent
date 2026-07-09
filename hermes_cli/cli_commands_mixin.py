@@ -1514,6 +1514,33 @@ class CLICommandsMixin:
         if output:
             print(output)
 
+    def _handle_closure_command(self, cmd: str):
+        """Handle /closure by delegating to the shared closure CLI."""
+        import argparse
+        import shlex
+
+        from hermes_cli.closure_cli import build_closure_parser
+
+        parser = argparse.ArgumentParser(prog="/closure")
+        subparsers = parser.add_subparsers(dest="command")
+        build_closure_parser(subparsers)
+        rest = cmd.strip()
+        if rest.startswith("/"):
+            rest = rest.lstrip("/")
+        if rest.startswith("closure"):
+            rest = rest[len("closure"):].lstrip()
+        argv = ["closure"] + (shlex.split(rest) if rest else ["latest"])
+        try:
+            args = parser.parse_args(argv)
+            if not getattr(args, "closure_action", None):
+                args.closure_action = "latest"
+            args.func(args)
+        except SystemExit as exc:
+            if exc.code:
+                print("(._.) closure: invalid arguments")
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"(._.) closure error: {exc}")
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from cli import ChatConsole

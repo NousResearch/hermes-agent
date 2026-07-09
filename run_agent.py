@@ -1609,6 +1609,12 @@ class AIAgent:
         here so existing tests that patch ``run_agent.threading.Thread``
         keep working.
         """
+        if os.environ.get("HERMES_DISABLE_BACKGROUND_REVIEW", "").strip().lower() in {
+            "1", "true", "yes", "on"
+        }:
+            logger.debug("background review spawn disabled by HERMES_DISABLE_BACKGROUND_REVIEW")
+            return
+
         from agent.background_review import spawn_background_review_thread
         from tools.thread_context import propagate_context_to_thread
         target, _prompt = spawn_background_review_thread(
@@ -2746,6 +2752,41 @@ class AIAgent:
         if _steer_lock is not None:
             with _steer_lock:
                 self._pending_steer = None
+                self._pending_steer_count = 0
+        self._update_active_session_pending_steer_metadata()
+
+    def _pending_steer_registry_metadata(self) -> Dict[str, Any]:
+        pending_steer_count = self._pending_steer_status_count()
+        if pending_steer_count:
+            return {
+                "pending_steer_count": pending_steer_count,
+                "pending_steer_queued": True,
+                "queued_steer_count": pending_steer_count,
+            }
+        return {
+            "pending_steer_count": None,
+            "pending_steer_queued": None,
+            "queued_steer_count": None,
+        }
+
+    def _write_active_session_metadata(self, metadata: Dict[str, Any]) -> None:
+        try:
+            from hermes_cli.active_sessions import update_active_session_metadata
+        except Exception:
+            return
+        session_id = getattr(self, "session_id", None)
+        if not session_id:
+            return
+        try:
+            update_active_session_metadata(
+                session_id=str(session_id),
+                metadata=metadata,
+            )
+        except Exception:
+            logger.debug("Failed to update active-session runtime metadata", exc_info=True)
+
+    def _update_active_session_pending_steer_metadata(self) -> None:
+        self._write_active_session_metadata(self._pending_steer_registry_metadata())
 
     def steer(self, text: str) -> bool:
         """
@@ -2775,12 +2816,16 @@ class AIAgent:
             # in those stubs.
             existing = getattr(self, "_pending_steer", None)
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+            self._pending_steer_count = int(getattr(self, "_pending_steer_count", 0) or 0) + 1
+            self._update_active_session_pending_steer_metadata()
             return True
         with _lock:
             if self._pending_steer:
                 self._pending_steer = self._pending_steer + "\n" + cleaned
             else:
                 self._pending_steer = cleaned
+            self._pending_steer_count = int(getattr(self, "_pending_steer_count", 0) or 0) + 1
+        self._update_active_session_pending_steer_metadata()
         return True
 
     def _drain_pending_steer(self) -> Optional[str]:
@@ -2793,10 +2838,14 @@ class AIAgent:
         if _lock is None:
             text = getattr(self, "_pending_steer", None)
             self._pending_steer = None
+            self._pending_steer_count = 0
+            self._update_active_session_pending_steer_metadata()
             return text
         with _lock:
             text = self._pending_steer
             self._pending_steer = None
+            self._pending_steer_count = 0
+        self._update_active_session_pending_steer_metadata()
         return text
 
     def _record_file_mutation_result(
@@ -3064,6 +3113,39 @@ class AIAgent:
         from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
         return apply_pending_steer_to_tool_results(self, messages, num_tool_msgs)
 
+    @staticmethod
+    def _classify_activity_kind(desc: str) -> str:
+        lowered = desc.lower()
+        if lowered.startswith("executing ") and "tools concurrently" in lowered:
+            return "concurrent_tools_running"
+        if lowered.startswith("executing tool:"):
+            return "tool_running"
+        if lowered.startswith("tool completed:"):
+            return "tool_completed"
+        return "generic"
+
+    def _log_activity_runtime_event(self, desc: str, elapsed_ms: int) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        payload = {
+            "session_id": getattr(self, "session_id", None),
+            "turn_id": getattr(self, "_current_turn_id", None),
+            "current_tool": getattr(self, "_current_tool", None),
+            "activity_kind": self._classify_activity_kind(desc),
+            "elapsed_ms_since_previous_activity": elapsed_ms,
+        }
+        logger.debug("activity_runtime_event %s", json.dumps(payload, sort_keys=True))
+
+    def _update_active_session_runtime_metadata(self, desc: str, activity_ts: float) -> None:
+        metadata: Dict[str, Any] = {
+            "activity_kind": self._classify_activity_kind(desc),
+            "current_tool": getattr(self, "_current_tool", None),
+            "last_activity_age_seconds": 0,
+            "last_activity_ts": activity_ts,
+        }
+        metadata.update(self._pending_steer_registry_metadata())
+        self._write_active_session_metadata(metadata)
+
     def _touch_activity(self, desc: str) -> None:
         """Update the last-activity timestamp and description (thread-safe).
 
@@ -3073,8 +3155,16 @@ class AIAgent:
         worker as stale (#31752). Bridge is rate-limited (60s) and
         best-effort — it never raises into the agent loop.
         """
-        self._last_activity_ts = time.time()
+        previous_activity_ts = getattr(self, "_last_activity_ts", None)
+        activity_ts = time.time()
+        if isinstance(previous_activity_ts, (int, float)):
+            elapsed_ms = max(0, int((activity_ts - previous_activity_ts) * 1000))
+        else:
+            elapsed_ms = 0
+        self._last_activity_ts = activity_ts
         self._last_activity_desc = desc
+        self._log_activity_runtime_event(desc, elapsed_ms)
+        self._update_active_session_runtime_metadata(desc, activity_ts)
         if os.environ.get("HERMES_KANBAN_TASK"):
             try:
                 from tools.kanban_tools import heartbeat_current_worker_from_env
@@ -3289,16 +3379,39 @@ class AIAgent:
         when it was killed, and by the periodic "still working" notifications.
         """
         elapsed = time.time() - self._last_activity_ts
+        pending_steer_count = self._pending_steer_status_count()
         return {
+            "session_id": getattr(self, "session_id", None),
+            "active_turn_id": getattr(self, "_current_turn_id", None),
             "last_activity_ts": self._last_activity_ts,
             "last_activity_desc": self._last_activity_desc,
             "seconds_since_activity": round(elapsed, 1),
+            "last_activity_age_seconds": round(elapsed, 1),
             "current_tool": self._current_tool,
+            "pending_steer_count": pending_steer_count,
+            "pending_steer_queued": pending_steer_count > 0,
             "api_call_count": self._api_call_count,
             "max_iterations": self.max_iterations,
             "budget_used": self.iteration_budget.used,
             "budget_max": self.iteration_budget.max_total,
         }
+
+    def _pending_steer_status_count(self) -> int:
+        _lock = getattr(self, "_pending_steer_lock", None)
+        if _lock is None:
+            return self._coerce_pending_steer_count_for_status()
+        with _lock:
+            return self._coerce_pending_steer_count_for_status()
+
+    def _coerce_pending_steer_count_for_status(self) -> int:
+        raw_count = getattr(self, "_pending_steer_count", 0)
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            count = 0
+        if count > 0:
+            return count
+        return 1 if getattr(self, "_pending_steer", None) else 0
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
         """Shut down the memory provider and context engine — call at actual session boundaries.
@@ -4679,6 +4792,15 @@ class AIAgent:
 
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
+        try:
+            from agent.request_watchdog import mark_request_watchdog_event
+
+            mark_request_watchdog_event(
+                getattr(self, "_active_request_watchdog_record", None),
+                byte_count=len(text or ""),
+            )
+        except Exception:
+            pass
         # If a tool iteration set the break flag, prepend a single paragraph
         # break before the first real text delta.  This prevents the original
         # problem (text concatenation across tool boundaries) without stacking

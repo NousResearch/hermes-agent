@@ -338,6 +338,7 @@ class TestGoalManager:
     def test_evaluate_after_turn_budget_exhausted(self, hermes_home):
         """When turn budget hits ceiling, auto-pause instead of continuing."""
         from hermes_cli import goals
+        from hermes_cli.closure_artifacts import latest_closure_artifact
         from hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="eval-sid-3", default_max_turns=2)
@@ -355,6 +356,16 @@ class TestGoalManager:
             assert mgr.state.status == "paused"
             assert mgr.state.turns_used == 2
             assert "budget" in (mgr.state.paused_reason or "").lower()
+
+            artifact = latest_closure_artifact(session_id="eval-sid-3")
+            assert artifact is not None
+            assert artifact["status"] == "goal_turn_budget_exhausted"
+            assert artifact["session_id"] == "eval-sid-3"
+            assert artifact["remaining_checklist"]
+            assert artifact["active_session_lease_released"] is False
+            assert artifact["exact_resume_prompt"]
+            assert artifact["artifact_path"] in mgr.status_line()
+            assert "closure artifact" in mgr.status_line().lower()
 
     def test_evaluate_after_turn_inactive(self, hermes_home):
         """evaluate_after_turn is a no-op when goal isn't active."""

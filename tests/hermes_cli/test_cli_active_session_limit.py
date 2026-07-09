@@ -39,3 +39,27 @@ def test_cli_claim_active_session_respects_global_limit(tmp_path, monkeypatch):
     finally:
         held.release()
         cli._release_active_session()
+
+
+def test_cli_claim_active_session_fails_closed_when_registry_lock_errors(monkeypatch):
+    def fail_acquire(**_kwargs):
+        raise RuntimeError("active session file lock timed out")
+
+    monkeypatch.setattr(
+        "hermes_cli.active_sessions.try_acquire_active_session",
+        fail_acquire,
+    )
+
+    cli = object.__new__(HermesCLI)
+    cli.session_id = "new-cli-session"
+    cli.config = {"max_concurrent_sessions": 1}
+    cli._active_session_lease = None
+    printed: list[str] = []
+    cli._console_print = lambda text: printed.append(text)
+
+    assert cli._claim_active_session("cli") is False
+    assert printed == [
+        "[bold red]Hermes could not claim an active session slot. "
+        "Try again shortly or run `hermes runtime active-sessions status`.[/]"
+    ]
+    assert cli._active_session_lease is None

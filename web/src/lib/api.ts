@@ -1797,6 +1797,12 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  _lineage_root_id?: string | null;
+  last_tool_runtime_event?: unknown | null;
+  last_activity_age_seconds?: number | null;
+  queued_steer_count?: number | null;
+  compression_tip_session_id?: string | null;
+  status_evidence_source?: string[];
 }
 
 export interface SessionLatestDescendantResponse {
@@ -2223,6 +2229,12 @@ export interface SessionSearchResult {
   source: string | null;
   model: string | null;
   session_started: number | null;
+  lineage_root?: string | null;
+  last_tool_runtime_event?: unknown | null;
+  last_activity_age_seconds?: number | null;
+  queued_steer_count?: number | null;
+  compression_tip_session_id?: string | null;
+  status_evidence_source?: string[];
 }
 
 export interface SessionSearchResponse {

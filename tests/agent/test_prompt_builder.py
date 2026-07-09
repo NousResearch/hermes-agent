@@ -4,6 +4,7 @@ import builtins
 import importlib
 import logging
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +29,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
+    PROPORTIONAL_ORCHESTRATION_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
@@ -414,6 +416,51 @@ class TestBuildSkillsSystemPrompt:
         assert "python-debug" in result
         assert "Debug Python scripts" in result
         assert "available_skills" in result
+
+    def test_skill_prompt_says_topic_mention_is_not_invocation(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "workflow" / "kanban-worker"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: kanban-worker\ndescription: Operate Kanban workflows\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+        text = result.lower()
+
+        assert "topic mention is not invocation" in text
+        assert "merely mentions" in text or "mere mention" in text
+
+    def test_skill_prompt_preserves_explicit_named_skill_requests(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "workflow" / "kanban-worker"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: kanban-worker\ndescription: Operate Kanban workflows\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+        text = result.lower()
+
+        assert "explicitly asks" in text
+        assert "named skill" in text
+        assert "must load" in text
+
+    def test_skill_prompt_carves_out_analysis_and_negative_workflow_mentions(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "workflow" / "kanban-worker"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: kanban-worker\ndescription: Operate Kanban workflows\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+        text = result.lower()
+
+        for term in ("analysis", "comparison", "critique", "audit", "negative instruction"):
+            assert term in text
+        assert "do not by themselves" in text
+        assert "trigger" in text and "workflow" in text
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1639,6 +1686,93 @@ class TestParallelToolCallGuidance:
         # steer. The Google-only block must NOT carry its own copy, otherwise
         # Gemini/Gemma would receive the instruction twice in one prompt.
         assert "parallel tool call" not in GOOGLE_MODEL_OPERATIONAL_GUIDANCE.lower()
+
+
+class TestProportionalOrchestrationGuidance:
+    def test_guidance_defines_all_operating_modes(self):
+        text = PROPORTIONAL_ORCHESTRATION_GUIDANCE.lower()
+        for mode in ("simple", "focused", "workflow", "delegated", "safety_gated"):
+            assert mode in text
+        assert "direct answer" in text
+        assert "one small read" in text
+        assert "one local command" in text
+        assert "targeted" in text and "tests" in text
+        assert "checklist" in text or "recovery state" in text
+        assert "independent subtasks" in text
+
+    def test_guidance_protects_simple_tasks_from_default_scaffolding(self):
+        text = PROPORTIONAL_ORCHESTRATION_GUIDANCE.lower()
+        assert "simple" in text
+        assert "no kanban" in text
+        assert "no subagents" in text
+        assert "no broad skill" in text
+        assert "memory" in text
+        assert "workflow scaffolding" in text
+        assert "unless the user asks" in text
+
+    def test_guidance_preserves_safety_gated_approval_boundaries(self):
+        text = PROPORTIONAL_ORCHESTRATION_GUIDANCE.lower()
+        assert "safety_gated" in text
+        for boundary in ("provider", "deploy", "dns", "payment", "email", "webhook"):
+            assert boundary in text
+        assert "approval" in text
+        assert "verify" in text or "verification" in text
+
+    def test_guidance_is_a_decision_aid_not_a_ritual(self):
+        text = PROPORTIONAL_ORCHESTRATION_GUIDANCE.lower()
+        assert "decision aid" in text
+        assert "not a mandatory ritual" in text
+        assert len(PROPORTIONAL_ORCHESTRATION_GUIDANCE) < 900
+
+    def test_generated_prompt_places_guidance_before_skill_and_kanban_blocks(self, monkeypatch):
+        import agent.system_prompt as system_prompt
+
+        fake_run_agent = SimpleNamespace(
+            load_soul_md=lambda *_args, **_kwargs: "",
+            build_nous_subscription_prompt=lambda *_args, **_kwargs: "",
+            build_skills_system_prompt=lambda *_args, **_kwargs: "SKILLS_SENTINEL",
+            get_toolset_for_tool=lambda _tool_name: "skills",
+            build_environment_hints=lambda: "",
+            build_context_files_prompt=lambda *_args, **_kwargs: "",
+        )
+        monkeypatch.setattr(system_prompt, "_ra", lambda: fake_run_agent)
+        monkeypatch.setattr(
+            "agent.coding_context.coding_system_blocks",
+            lambda **_kwargs: [],
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "agent.coding_context.coding_compact_skill_categories",
+            lambda **_kwargs: frozenset(),
+            raising=False,
+        )
+
+        agent = SimpleNamespace(
+            load_soul_identity=False,
+            skip_context_files=True,
+            valid_tool_names={"skill_view", "kanban_show"},
+            _task_completion_guidance=False,
+            _parallel_tool_call_guidance=False,
+            _kanban_worker_guidance="KANBAN_SENTINEL",
+            platform="cli",
+            provider="openai-codex",
+            model="gpt-5.5",
+            _tool_use_enforcement=False,
+            _environment_probe=False,
+            _platform_hint_overrides={},
+            _memory_store=None,
+            _memory_enabled=False,
+            _user_profile_enabled=False,
+            _memory_manager=None,
+            pass_session_id=False,
+            session_id="",
+        )
+
+        stable = system_prompt.build_system_prompt_parts(agent)["stable"]
+
+        assert "Proportional orchestration" in stable
+        assert stable.index("Proportional orchestration") < stable.index("KANBAN_SENTINEL")
+        assert stable.index("Proportional orchestration") < stable.index("SKILLS_SENTINEL")
 
 
 # =========================================================================

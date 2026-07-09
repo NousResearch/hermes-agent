@@ -223,6 +223,7 @@ class TestAtomicWrite:
         assert target.read_text() == "v2 content"
         assert os.stat(target).st_ino != ino_before
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable on Windows")
     def test_overwrite_preserves_mode(self, ops, tmp_path: Path):
         target = tmp_path / "perms.txt"
         target.write_text("old")
@@ -231,6 +232,7 @@ class TestAtomicWrite:
         assert res.error is None, res.error
         assert (os.stat(target).st_mode & 0o777) == 0o640
 
+    @pytest.mark.skipif(os.name == "nt", reason="directory chmod write denial is POSIX-specific")
     def test_failed_write_leaves_original_intact(self, ops, tmp_path: Path):
         # A read-only parent directory means the temp file can't be created,
         # so the write fails BEFORE any rename. The original must survive
@@ -262,6 +264,7 @@ class TestAtomicWrite:
         assert res.error is None, res.error
         assert target.read_text(encoding="utf-8") == tricky
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable on Windows")
     def test_patch_routes_through_atomic_write(self, ops, tmp_path: Path):
         target = tmp_path / "edit.py"
         target.write_text("a = 1\nb = 2\nc = 3\n")

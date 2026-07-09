@@ -27,9 +27,19 @@ import { useSearchParams } from "react-router-dom";
 
 import { useI18n } from "@/i18n";
 import { api, type SessionInfo } from "@/lib/api";
+import {
+  getSessionStatusLabels,
+  type SessionStatusLabel,
+} from "@/lib/session-status-labels";
 import { cn, timeAgo } from "@/lib/utils";
 
 const SESSION_LIMIT = 30;
+const STATUS_LABEL_CLASS: Record<SessionStatusLabel["tone"], string> = {
+  destructive: "border-destructive/35 bg-destructive/10 text-destructive",
+  outline: "border-border bg-background-base/40 text-text-tertiary",
+  success: "border-success/30 bg-success/10 text-success",
+  warning: "border-warning/35 bg-warning/10 text-warning",
+};
 interface ChatSessionListProps {
   /** Active resume target (the session currently shown in the terminal). */
   activeSessionId: string | null;
@@ -181,6 +191,7 @@ export function ChatSessionList({
       <div className="flex flex-col gap-0.5">
         {sessions.map((s) => {
           const isActive = s.id === activeSessionId;
+          const statusLabels = getSessionStatusLabels(s);
           return (
             <ListItem
               key={s.id}
@@ -212,6 +223,22 @@ export function ChatSessionList({
                   </>
                 )}
               </span>
+              {statusLabels.length > 0 && (
+                <span className="flex w-full min-w-0 flex-wrap items-center gap-1">
+                  {statusLabels.map((status) => (
+                    <span
+                      key={status.kind}
+                      className={cn(
+                        "max-w-full truncate rounded-[4px] border px-1 py-0 text-[0.625rem] leading-4",
+                        STATUS_LABEL_CLASS[status.tone],
+                      )}
+                      title={status.title}
+                    >
+                      {status.label}
+                    </span>
+                  ))}
+                </span>
+              )}
             </ListItem>
           );
         })}

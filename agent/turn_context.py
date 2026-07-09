@@ -430,6 +430,16 @@ def build_turn_context(
                 f">= {_compressor.threshold_tokens:,} threshold. "
                 "This may take a moment."
             )
+            try:
+                from hermes_cli.usage_guard import activate_usage_guard_after_warning
+
+                activate_usage_guard_after_warning(
+                    task_id=effective_task_id,
+                    session_id=agent.session_id,
+                    reason="preflight_context_compression",
+                )
+            except Exception:
+                logger.debug("usage guard activation failed", exc_info=True)
             for _pass in range(3):
                 _orig_len = len(messages)
                 _orig_tokens = _preflight_tokens

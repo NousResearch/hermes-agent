@@ -37,6 +37,7 @@ import threading
 import unittest
 from unittest.mock import patch, MagicMock
 
+import tools.code_execution_tool as code_execution_tool
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     execute_code,
@@ -215,6 +216,119 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         # shlex.quote wraps values containing special characters in single quotes
         self.assertIn("TZ='US/Eastern; echo PWNED'", run_cmd,
                       "TZ value must be wrapped in single quotes by shlex.quote()")
+
+
+class TestExecuteCodeTimeoutConfig(unittest.TestCase):
+    """Focused timeout config regression tests for local and remote paths."""
+
+    class _FakeRemoteEnv:
+        def __init__(self):
+            self.commands = []
+
+        def get_temp_dir(self):
+            return "/tmp"
+
+        def execute(self, command, cwd=None, timeout=None):
+            self.commands.append((command, cwd, timeout))
+            if "command -v python3" in command:
+                return {"output": "OK\n", "returncode": 0}
+            if "python3 script.py" in command:
+                return {"output": "remote ok\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+    def _run_local_with_timeout(self, timeout_value, code):
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={
+                       "timeout": timeout_value,
+                       "max_tool_calls": 5,
+                       "mode": "strict",
+                   }), \
+             patch("model_tools.handle_function_call",
+                   side_effect=_mock_handle_function_call):
+            raw = execute_code(
+                code=code,
+                task_id=f"test-timeout-{timeout_value}",
+                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+            )
+        return json.loads(raw)
+
+    def _run_remote_with_timeout(self, timeout_value):
+        env = self._FakeRemoteEnv()
+        fake_thread = MagicMock()
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": timeout_value, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env",
+                   return_value=(env, "ssh")), \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool.threading.Thread",
+                   return_value=fake_thread):
+            result = json.loads(_execute_remote("print('remote ok')", "task-1", ["terminal"]))
+        return result, env
+
+    def test_local_timeout_zero_and_negative_use_default_timeout(self):
+        code = "import time\ntime.sleep(0.05)\nprint('timeout normalized')\n"
+        for timeout_value in (0, -1):
+            with self.subTest(timeout=timeout_value):
+                result = self._run_local_with_timeout(timeout_value, code)
+
+            self.assertEqual(result["status"], "success", msg=result)
+            self.assertIn("timeout normalized", result["output"])
+
+    def test_local_positive_timeout_is_preserved(self):
+        result = self._run_local_with_timeout(
+            0.05,
+            "import time\ntime.sleep(0.5)\nprint('should not reach')\n",
+        )
+
+        self.assertEqual(result["status"], "timeout", msg=result)
+        self.assertIn("0.05s", result.get("error", ""))
+
+    def test_local_non_numeric_timeout_returns_readable_error(self):
+        result = self._run_local_with_timeout("not-a-number", "print('never')")
+
+        self.assertEqual(result["status"], "error", msg=result)
+        self.assertIn("Invalid code_execution.timeout", result.get("error", ""))
+
+    def test_remote_timeout_zero_and_negative_use_default_timeout(self):
+        for timeout_value in (0, -1):
+            with self.subTest(timeout=timeout_value):
+                result, env = self._run_remote_with_timeout(timeout_value)
+
+            self.assertEqual(result["status"], "success", msg=result)
+            run_timeout = next(
+                timeout for command, _, timeout in env.commands
+                if "python3 script.py" in command
+            )
+            self.assertEqual(run_timeout, code_execution_tool.DEFAULT_TIMEOUT)
+
+    def test_remote_positive_timeout_is_preserved(self):
+        result, env = self._run_remote_with_timeout(17)
+
+        self.assertEqual(result["status"], "success", msg=result)
+        run_timeout = next(
+            timeout for command, _, timeout in env.commands
+            if "python3 script.py" in command
+        )
+        self.assertEqual(run_timeout, 17)
+
+    def test_remote_non_numeric_timeout_returns_readable_error(self):
+        env = self._FakeRemoteEnv()
+        fake_thread = MagicMock()
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": "not-a-number", "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env",
+                   return_value=(env, "ssh")) as mock_get_env, \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool.threading.Thread",
+                   return_value=fake_thread):
+            result = json.loads(_execute_remote("print('remote ok')", "task-1", ["terminal"]))
+
+        self.assertEqual(result["status"], "error", msg=result)
+        self.assertIn("Invalid code_execution.timeout", result.get("error", ""))
+        mock_get_env.assert_not_called()
+        self.assertFalse(
+            any("python3 script.py" in command for command, _, _ in env.commands)
+        )
 
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")

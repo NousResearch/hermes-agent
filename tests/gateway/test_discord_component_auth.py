@@ -462,4 +462,3 @@ def test_other_views_not_admin_gated():
         session_key="s", confirm_id="c", allowed_user_ids={"11111"}
     )
     assert sc._check_auth(_interaction(11111)) is True
-

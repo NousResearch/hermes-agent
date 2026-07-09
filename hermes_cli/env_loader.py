@@ -232,7 +232,17 @@ def load_hermes_dotenv(
     """
     loaded: list[Path] = []
 
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    if hermes_home:
+        home_path = Path(hermes_home)
+    elif env_home := os.getenv("HERMES_HOME", "").strip():
+        home_path = Path(env_home)
+    else:
+        try:
+            home_path = Path.home() / ".hermes"
+        except RuntimeError:
+            from hermes_constants import get_hermes_home
+
+            home_path = get_hermes_home()
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 

@@ -1231,7 +1231,21 @@ def _finalize_single_query(cli) -> None:
         _notify_single_query_session_finalize(cli)
         _run_cleanup(notify_session_finalize=False)
     finally:
-        cli._release_active_session()
+        try:
+            persist_before_close = getattr(cli, "_persist_active_session_before_close", None)
+            if callable(persist_before_close):
+                persist_before_close()
+
+            agent = getattr(cli, "agent", None)
+            session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
+            session_db = getattr(cli, "_session_db", None)
+            end_session = getattr(session_db, "end_session", None)
+            if session_id and callable(end_session):
+                end_session(session_id, "cli_close")
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Could not close single-query CLI session in DB: %s", e)
+        finally:
+            cli._release_active_session()
 
 
 def _reset_terminal_input_modes_on_exit() -> None:
@@ -1807,6 +1821,20 @@ def _run_state_db_auto_maintenance(session_db) -> None:
             logger.debug("Orphan compression finalize skipped: %s", _finalize_exc)
 
         cfg = (_load_full_config().get("sessions") or {})
+        try:
+            from hermes_cli.active_sessions import prune_dead_active_session_leases
+
+            finalized = prune_dead_active_session_leases(session_db=session_db)
+            if finalized:
+                logger.info(
+                    "Finalized %d stale active session(s)", finalized
+                )
+        except Exception as _active_finalize_exc:
+            logger.debug(
+                "Stale active-session finalize skipped: %s",
+                _active_finalize_exc,
+            )
+
         if not cfg.get("auto_prune", False):
             return
         session_db.maybe_auto_prune_and_vacuum(
@@ -3536,12 +3564,53 @@ def _looks_like_slash_command(text: str) -> bool:
     the two so that pasted paths are sent to the agent instead of
     triggering "Unknown command".
     """
-    if not text or not text.startswith("/"):
-        return False
-    first_word = text.split()[0]
-    # After stripping the leading /, a command name has no slashes.
-    # A path like /Users/foo/bar.md always does.
-    return "/" not in first_word[1:]
+    from hermes_cli.slash_dispatch import looks_like_slash_command
+
+    return looks_like_slash_command(text)
+
+
+def _dispatch_noninteractive_slash_query(
+    cli,
+    query: str | None,
+    *,
+    has_images: bool = False,
+    explicit_slash: bool = False,
+) -> tuple[bool, int]:
+    """Dispatch safe slash commands in single-query mode before agent startup."""
+    if not isinstance(query, str):
+        if explicit_slash:
+            print(
+                "Expected a slash command beginning with '/'. Use --query for ordinary text.",
+                file=sys.stderr,
+            )
+            return True, 2
+        return False, 0
+
+    from hermes_cli.slash_dispatch import (
+        classify_slash_text,
+        is_noninteractive_safe_slash,
+        noninteractive_slash_error_message,
+    )
+
+    info = classify_slash_text(query)
+    if not info.looks_like_command:
+        if explicit_slash:
+            print(noninteractive_slash_error_message(info), file=sys.stderr)
+            return True, 2
+        return False, 0
+
+    if has_images:
+        if explicit_slash:
+            print("--slash cannot be combined with --image.", file=sys.stderr)
+            return True, 2
+        return False, 0
+
+    if not is_noninteractive_safe_slash(info):
+        print(noninteractive_slash_error_message(info), file=sys.stderr)
+        return True, 2
+
+    cli.process_command(query)
+    return True, 0
 
 
 # ============================================================================
@@ -4150,7 +4219,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if self._active_session_lease is not None:
             return True
         try:
-            from hermes_cli.active_sessions import try_acquire_active_session
+            from hermes_cli.active_sessions import (
+                active_session_acquire_error_message,
+                try_acquire_active_session,
+            )
 
             lease, message = try_acquire_active_session(
                 session_id=self.session_id,
@@ -4159,7 +4231,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             )
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)
-            return True
+            try:
+                message = active_session_acquire_error_message()
+            except Exception:
+                message = (
+                    "Hermes could not claim an active session slot. "
+                    "Try again shortly or run `hermes runtime active-sessions status`."
+                )
+            if stderr:
+                print(message, file=sys.stderr)
+            else:
+                self._console_print(f"[bold red]{message}[/]")
+            return False
         if message:
             if stderr:
                 print(message, file=sys.stderr)
@@ -4183,6 +4266,34 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             logger.debug("Failed to release active session slot", exc_info=True)
         finally:
             self._active_session_lease = None
+
+    def _consume_control_plane_steers_for_active_agent(self) -> int:
+        """Drain cross-process CLI steer records into the live agent slot."""
+        agent = getattr(self, "agent", None)
+        if agent is None or not hasattr(agent, "steer"):
+            return 0
+        try:
+            from hermes_cli.control_plane import consume_control_plane_steers
+
+            messages = consume_control_plane_steers(self.session_id)
+        except Exception:
+            logger.debug("Failed to consume control-plane steers", exc_info=True)
+            return 0
+        accepted = 0
+        for message in messages:
+            if not message:
+                continue
+            try:
+                if agent.steer(message):
+                    accepted += 1
+            except Exception:
+                logger.debug("Failed to queue control-plane steer on agent", exc_info=True)
+        if accepted and not getattr(self, "quiet", False):
+            suffix = "" if accepted == 1 else f" ({accepted})"
+            _cprint(
+                f"\n⏩ Control-plane steer queued{suffix} — arrives after the next tool boundary"
+            )
+        return accepted
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint for high-frequency background updates.
@@ -8684,6 +8795,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_curator_command(cmd_original)
         elif canonical == "kanban":
             self._handle_kanban_command(cmd_original)
+        elif canonical == "closure":
+            self._handle_closure_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
@@ -12111,6 +12224,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             request_overrides=turn_route.get("request_overrides"),
         ):
             return None
+        self._consume_control_plane_steers_for_active_agent()
         
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
@@ -12406,7 +12520,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # by the Enter key binding (routed to the clarify response queue),
             # so we skip interrupt processing to avoid stealing that input.
             interrupt_msg = None
+            last_control_plane_steer_poll = 0.0
             while agent_thread.is_alive():
+                now = time.monotonic()
+                if now - last_control_plane_steer_poll >= 0.2:
+                    last_control_plane_steer_poll = now
+                    self._consume_control_plane_steers_for_active_agent()
                 if hasattr(self, '_interrupt_queue'):
                     try:
                         interrupt_msg = self._interrupt_queue.get(timeout=0.1)
@@ -15167,6 +15286,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             # Check for background process notifications (completions
                             # and watch pattern matches) while agent is idle.
                             try:
+                                _recovery_now = time.monotonic()
+                                if _recovery_now >= getattr(self, "_async_delegation_next_recovery_scan", 0.0):
+                                    from tools.async_delegation import recover_pending_delegations
+                                    recover_pending_delegations(origin="cli idle drain")
+                                    self._async_delegation_next_recovery_scan = _recovery_now + 2.0
                                 from tools.process_registry import process_registry
                                 from tools.approval import get_current_session_key
                                 _drain_sk = get_current_session_key(default="")
@@ -15268,9 +15392,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._pet_reasoning = False
                     app.invalidate()  # Refresh status line
 
+                    _async_delegation_ids_to_mark = []
+                    if isinstance(user_input, str):
+                        try:
+                            from tools.async_delegation import extract_delegation_ids_from_text
+                            _async_delegation_ids_to_mark = extract_delegation_ids_from_text(user_input)
+                        except Exception:
+                            _async_delegation_ids_to_mark = []
+                    _chat_completed = False
                     try:
                         self.chat(user_input, images=submit_images or None)
+                        _chat_completed = True
                     finally:
+                        if _chat_completed and _async_delegation_ids_to_mark:
+                            try:
+                                from tools.async_delegation import mark_delivered
+                                for _deleg_id in _async_delegation_ids_to_mark:
+                                    mark_delivered(_deleg_id)
+                            except Exception:
+                                pass
                         self._agent_running = False
                         self._spinner_text = ""
                         self._tool_start_time = 0.0
@@ -15331,6 +15471,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         # Drain process notifications (completions + watch matches)
                         # that arrived while the agent was running.
                         try:
+                            _recovery_now = time.monotonic()
+                            if _recovery_now >= getattr(self, "_async_delegation_next_recovery_scan", 0.0):
+                                from tools.async_delegation import recover_pending_delegations
+                                recover_pending_delegations(origin="cli post-turn drain")
+                                self._async_delegation_next_recovery_scan = _recovery_now + 2.0
                             from tools.process_registry import process_registry
                             for _evt, _synth in process_registry.drain_notifications():
                                 self._pending_input.put(_synth)
@@ -15754,9 +15899,29 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     )
 
 
+def build_windows_query_file_resume_argv(
+    *,
+    session_id: str,
+    prompt_path: str | Path,
+    model: str = "gpt-5.5",
+) -> list[str]:
+    """Build an atomic argv list for Windows resume + query-file launches."""
+
+    from hermes_cli.windows_launch import build_query_file_argv
+
+    return build_query_file_argv(
+        session_id=session_id,
+        prompt_path=prompt_path,
+        model=model,
+    )
+
+
 def main(
     query: str = None,
     q: str = None,
+    slash: str = None,
+    query_file: str = None,
+    stdin_query: bool = False,
     image: str = None,
     toolsets: str = None,
     skills: str | list[str] | tuple[str, ...] = None,
@@ -15785,6 +15950,9 @@ def main(
     Args:
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
+        slash: Slash command to dispatch locally without starting an agent turn
+        query_file: UTF-8 file containing a single query
+        stdin_query: Read a single query from stdin
         image: Optional local image path to attach to a single query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
@@ -15863,8 +16031,22 @@ def main(
     else:
         wt_info = None
     
-    # Handle query shorthand
-    query = query or q
+    # Handle query shorthand, file/stdin input, and explicit slash dispatch.
+    explicit_slash = slash is not None
+    try:
+        from hermes_cli.query_input import resolve_query_input
+
+        query, query_source = resolve_query_input(
+            query=query,
+            q=q,
+            slash=slash,
+            query_file=query_file,
+            stdin_query=stdin_query,
+        )
+    except ValueError:
+        raise
+    if image and query_source in {"query_file", "stdin_query", "slash"}:
+        raise ValueError("--image can only be combined with --query/-q")
     
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools
@@ -16041,7 +16223,18 @@ def main(
         pass  # signal handler may fail in restricted environments
     
     # Handle single query mode
-    if query or image:
+    if query is not None or image:
+        handled_slash, slash_exit_code = _dispatch_noninteractive_slash_query(
+            cli,
+            query,
+            has_images=bool(image),
+            explicit_slash=explicit_slash,
+        )
+        if handled_slash:
+            _finalize_single_query(cli)
+            if slash_exit_code:
+                sys.exit(slash_exit_code)
+            return
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
             sys.exit(1)
         try:

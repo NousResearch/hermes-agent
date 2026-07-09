@@ -2,10 +2,12 @@
 """File Tools Module - LLM agent file manipulation tools."""
 
 import errno
+import fnmatch
 import json
 import logging
 import os
 import posixpath
+import re
 import threading
 from pathlib import Path, PurePosixPath
 
@@ -17,6 +19,7 @@ from tools.file_operations import (
     normalize_search_pagination,
 )
 from tools import file_state
+from tools.path_translation import normalize_windows_host_path
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -232,7 +235,7 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
     raw = str(raw or "").strip()
     if raw.lower() in _TERMINAL_CWD_SENTINELS:
         return None
-    expanded = _expand_tilde(raw)
+    expanded = normalize_windows_host_path(_expand_tilde(raw))
     if not os.path.isabs(expanded):
         return None
     return expanded
@@ -415,6 +418,27 @@ def _resolve_base_dir(
     return base.resolve()
 
 
+def _is_windows_foreign_posix_absolute_path(filepath: str) -> bool:
+    """True for POSIX absolute paths that are not local Windows drive aliases."""
+    if os.name != "nt":
+        return False
+    expanded = _expand_tilde(str(filepath or ""))
+    if not expanded.startswith("/") or expanded.startswith("//"):
+        return False
+    if re.match(r"^/[A-Za-z](?:/|$)", expanded):
+        return False
+    if re.match(r"^/mnt/[A-Za-z](?:/|$)", expanded, re.IGNORECASE):
+        return False
+    return True
+
+
+def _is_absolute_input_path(filepath: str) -> bool:
+    expanded = _expand_tilde(str(filepath or ""))
+    if _is_windows_foreign_posix_absolute_path(expanded):
+        return True
+    return Path(normalize_windows_host_path(expanded)).is_absolute()
+
+
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory.
 
@@ -428,7 +452,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
             return _normalize_without_host_deref(expanded)
         resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
         return _normalize_without_host_deref(resolved)
-    p = Path(expanded)
+    p = Path(normalize_windows_host_path(expanded))
     if p.is_absolute():
         return p.resolve()
     resolved = _resolve_base_dir(task_id, container_paths=False) / p
@@ -451,7 +475,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     (no ``cd`` run yet) is warned on the very first write.
     """
     try:
-        if Path(_expand_tilde(filepath)).is_absolute():
+        if _is_absolute_input_path(filepath):
             return None
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
@@ -466,8 +490,8 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
             return None  # Inside the workspace — expected.
         except ValueError:
             return (
-                f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
-                f"OUTSIDE the active workspace ({str(root)!r}). The edit will land in "
+                f"Relative path {filepath!r} resolved to '{resolved}', which is "
+                f"OUTSIDE the active workspace ('{root}'). The edit will land in "
                 f"a different directory than the terminal's cwd. If this is not "
                 f"intended (e.g. a git-worktree session writing into the main "
                 f"checkout), pass an absolute path under the workspace instead."
@@ -613,6 +637,19 @@ _hermes_config_resolved: str | None = None
 _hermes_config_resolved_loaded = False
 
 
+def _normalize_sensitive_path_text(filepath: str) -> str:
+    expanded = _expand_tilde(str(filepath or ""))
+    return posixpath.normpath(expanded.replace("\\", "/"))
+
+
+def _matches_sensitive_path(normalized_path: str) -> bool:
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        root = prefix.rstrip("/")
+        if normalized_path == root or normalized_path.startswith(prefix):
+            return True
+    return normalized_path in _SENSITIVE_EXACT_PATHS
+
+
 def _get_hermes_config_resolved() -> str | None:
     """Return the resolved absolute path of the Hermes config file (cached)."""
     global _hermes_config_resolved, _hermes_config_resolved_loaded
@@ -636,15 +673,13 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
-    normalized = os.path.normpath(_expand_tilde(filepath))
+    normalized = _normalize_sensitive_path_text(filepath)
+    resolved_normalized = _normalize_sensitive_path_text(resolved)
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+    if _matches_sensitive_path(resolved_normalized) or _matches_sensitive_path(normalized):
         return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
@@ -859,6 +894,22 @@ def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
             return
         for rp in resolved_paths:
             task_failures.pop(rp, None)
+
+
+def _looks_like_patch_context_failure(error_text: str) -> bool:
+    """Return True for patch errors likely caused by stale hunk context."""
+    if not error_text:
+        return False
+    lowered = error_text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "could not find",
+            "patch validation failed",
+            "hunk",
+            "no files were modified",
+        )
+    )
 
 # Per-task bounds for the containers inside each _read_tracker[task_id].
 # A CLI session uses one stable task_id for its lifetime; without these
@@ -1190,6 +1241,19 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         _resolved = _resolve_path_for_task(path, task_id)
+        try:
+            from hermes_cli.usage_guard import read_request_denial_after_warning
+
+            usage_denial = read_request_denial_after_warning(
+                path=path,
+                offset=offset,
+                limit=limit,
+                task_id=task_id,
+            )
+        except Exception:
+            usage_denial = None
+        if usage_denial:
+            return json.dumps(usage_denial, ensure_ascii=False)
 
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
@@ -1664,7 +1728,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # fall back to the legacy path — write proceeds, per-task staleness
         # check below still runs.
         try:
-            _resolved = str(_resolve_path_for_task(path, task_id))
+            if _is_windows_foreign_posix_absolute_path(path):
+                _resolved = None
+            else:
+                _resolved = str(_resolve_path_for_task(path, task_id))
         except Exception:
             _resolved = None
 
@@ -1789,7 +1856,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _seen: set[str] = set()
         for _p in _paths_to_check:
             try:
-                _r = str(_resolve_path_for_task(_p, task_id))
+                if _is_windows_foreign_posix_absolute_path(_p):
+                    _r = None
+                else:
+                    _r = str(_resolve_path_for_task(_p, task_id))
             except Exception:
                 _r = None
             if _r and _r not in _seen:
@@ -1811,7 +1881,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             _path_to_resolved: dict[str, str] = {}
             for _p in _paths_to_check:
                 try:
-                    _r = str(_resolve_path_for_task(_p, task_id))
+                    if _is_windows_foreign_posix_absolute_path(_p):
+                        _r = None
+                    else:
+                        _r = str(_resolve_path_for_task(_p, task_id))
                 except Exception:
                     _r = None
                 _path_to_resolved[_p] = _r
@@ -1876,33 +1949,56 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         # retries with stale content instead of re-reading the file.
         # Suppressed when patch_replace already attached a rich "Did you mean?"
         # snippet (which is strictly more useful than the generic hint).
-        if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
-            # Track per-file consecutive failures for replace mode.  The
-            # ``path`` arg only exists for replace mode; for V4A patches
-            # we'd need to walk the headers, but in practice V4A failures
-            # are far rarer and the existing _hint covers them adequately.
+        error_text = str(result_dict.get("error") or "")
+        if result_dict.get("error") and _looks_like_patch_context_failure(error_text):
+            # Track per-file consecutive failures. Replace mode uses the
+            # explicit path argument; V4A patch mode uses extracted headers.
             failure_count = 0
+            failure_targets: list[str] = []
             if mode == "replace" and path:
                 resolved = _path_to_resolved.get(path) or path
                 failure_count = _record_patch_failure(task_id, resolved)
+                failure_targets = [path]
+            elif mode == "patch":
+                seen_failure_targets: set[str] = set()
+                for _p in _paths_to_check:
+                    resolved = _path_to_resolved.get(_p) or _p
+                    if not resolved or resolved in seen_failure_targets:
+                        continue
+                    seen_failure_targets.add(resolved)
+                    failure_count = max(
+                        failure_count,
+                        _record_patch_failure(task_id, resolved),
+                    )
+                    failure_targets.append(_p)
 
-            if failure_count >= 3:
-                # Escalating hint after multiple consecutive failures on the
-                # same path.  Most common cause is a stale view of the file —
-                # the model is retrying with the same old_string against
-                # content that has since changed.  Surface the failure count
-                # so the model recognises it's in a loop and breaks out by
-                # re-reading or falling back to write_file.
-                result_dict["_hint"] = (
-                    f"This is failure #{failure_count} patching {path!r}. "
-                    "Stop retrying with variations of the same old_string. "
-                    "Either: (1) re-read the file fresh to verify current "
-                    "content, (2) use a longer / more unique old_string with "
-                    "surrounding context lines, or (3) use write_file to "
-                    "replace the entire file if the targeted region is hard "
-                    "to anchor."
-                )
-            elif "Did you mean one of these sections?" not in str(result_dict["error"]):
+            if failure_count >= 2:
+                # Block patch loops after the second consecutive failure on
+                # the same path.  Most common cause is a stale view of the
+                # file — the model is retrying with old context against
+                # content that has since changed.  Keep the original failure
+                # payload intact and add a clear instruction to refresh
+                # context before attempting another hunk.
+                if mode == "patch":
+                    displayed_targets = ", ".join(repr(t) for t in failure_targets[:3])
+                    if len(failure_targets) > 3:
+                        displayed_targets += ", ..."
+                    result_dict["_hint"] = (
+                        f"PATCH-LOOP BLOCKER: This is the second consecutive failed V4A patch "
+                        f"on {displayed_targets or 'the target file(s)'} in the current task "
+                        f"(failure #{failure_count}). Stop retrying stale hunks. "
+                        "re-read the current target file, then patch against fresh context. "
+                        "Preserve any partial diff/details from this response; do not discard them."
+                    )
+                else:
+                    result_dict["_hint"] = (
+                        f"PATCH-LOOP BLOCKER: This is the second consecutive failed patch "
+                        f"on {path!r} in the current task (failure #{failure_count}). "
+                        "Stop retrying stale old_string variants. re-read the current target file, "
+                        "then patch against fresh context. Preserve any partial diff/details from "
+                        "this response; do not discard them."
+                    )
+            elif "Did you mean one of these sections?" not in error_text:
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "
                     "content, or search_files to locate the text."
@@ -1912,6 +2008,94 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         return tool_error(str(e))
 
 
+def _matches_file_glob(path: Path, file_glob: str | None) -> bool:
+    if not file_glob:
+        return True
+    text = str(path)
+    return (
+        fnmatch.fnmatch(path.name, file_glob)
+        or fnmatch.fnmatch(text, file_glob)
+        or fnmatch.fnmatch(text.replace("\\", "/"), file_glob)
+    )
+
+
+def _matches_file_pattern(path: Path, pattern: str) -> bool:
+    pat = str(pattern or "*").strip() or "*"
+    text = str(path)
+    return (
+        fnmatch.fnmatch(path.name, pat)
+        or fnmatch.fnmatch(text, pat)
+        or fnmatch.fnmatch(text.replace("\\", "/"), pat)
+    )
+
+
+def _exact_file_search_fallback(
+    *,
+    pattern: str,
+    target: str,
+    path: str,
+    file_glob: str | None,
+    limit: int,
+    offset: int,
+    output_mode: str,
+    task_id: str,
+) -> dict | None:
+    """Bounded one-file search for exact local paths."""
+
+    try:
+        resolved = _resolve_path_for_task(path, task_id)
+    except Exception:
+        return None
+    if not resolved.is_file():
+        return None
+
+    resolved_text = str(resolved)
+    if target == "files":
+        matched = _matches_file_pattern(resolved, pattern)
+        files = [resolved_text] if matched and offset == 0 and limit > 0 else []
+        result: dict[str, object] = {"total_count": 1 if matched else 0}
+        if files:
+            result["files"] = files
+        if matched and offset > 0:
+            result["truncated"] = True
+        return result
+
+    if target != "content":
+        return None
+    if not _matches_file_glob(resolved, file_glob):
+        return {"total_count": 0}
+
+    try:
+        regex = re.compile(pattern)
+    except re.error as exc:
+        return {"error": f"Invalid regex pattern for exact-file search: {exc}", "total_count": 0}
+
+    try:
+        lines = resolved.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return {"error": f"Could not read exact file path: {exc}", "total_count": 0}
+
+    matches = [
+        {"path": resolved_text, "line": line_number, "content": line}
+        for line_number, line in enumerate(lines, start=1)
+        if regex.search(line)
+    ]
+    total_count = len(matches)
+    paged = matches[offset: offset + limit]
+    result = {"total_count": total_count}
+    if output_mode == "count":
+        if total_count:
+            result["counts"] = {resolved_text: total_count}
+    elif output_mode == "files_only":
+        if paged:
+            result["files"] = [resolved_text]
+    elif paged:
+        result["matches"] = paged
+    if offset + limit < total_count:
+        result["truncated"] = True
+    return result
+
+
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
@@ -1919,6 +2103,21 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
+        try:
+            from hermes_cli.usage_guard import search_request_denial_after_warning
+
+            usage_denial = search_request_denial_after_warning(
+                pattern=pattern,
+                target=target,
+                path=path,
+                file_glob=file_glob,
+                limit=limit,
+                task_id=task_id,
+            )
+        except Exception:
+            usage_denial = None
+        if usage_denial:
+            return json.dumps(usage_denial, ensure_ascii=False)
 
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated
@@ -1961,6 +2160,19 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         block_error = get_read_block_error(str(resolved_path) if resolved_path else path)
         if block_error:
             return json.dumps({"error": block_error}, ensure_ascii=False)
+
+        exact_result = _exact_file_search_fallback(
+            pattern=pattern,
+            target=target,
+            path=path,
+            file_glob=file_glob,
+            limit=limit,
+            offset=offset,
+            output_mode=output_mode,
+            task_id=task_id,
+        )
+        if exact_result is not None:
+            return json.dumps(exact_result, ensure_ascii=False)
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(

@@ -109,6 +109,32 @@ def _release_singleton_lock(handle) -> None:
         pass
 
 
+def _format_dispatch_health_warning(
+    board_slug: str,
+    bad_ticks: int,
+    explanations: list[dict[str, Any]],
+) -> str:
+    """Human warning text for dispatcher no-spawn health telemetry."""
+    capacity_kinds = {"capacity_limited_global", "capacity_limited_per_profile"}
+    if any((item or {}).get("kind") in capacity_kinds for item in explanations):
+        return (
+            f"kanban dispatcher capacity-limited [{board_slug}]: ready queue "
+            f"did not spawn for {bad_ticks} consecutive ticks because configured "
+            "capacity limits are already reached. This is expected backpressure. "
+            f"Run 'hermes kanban dispatch --board {board_slug} --dry-run --explain' "
+            "to inspect the exact cap before changing kanban.max_in_progress or "
+            "kanban.max_in_progress_per_profile."
+        )
+    return (
+        f"kanban dispatcher stuck [{board_slug}]: ready queue non-empty for "
+        f"{bad_ticks} consecutive ticks but 0 workers spawned and no capacity, "
+        "profile, or dependency limit explains it. Run "
+        f"'hermes kanban dispatch --board {board_slug} --dry-run --explain' "
+        f"and 'hermes kanban diagnostics --board {board_slug}'; then check "
+        "profile health (venv, PATH, credentials)."
+    )
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -1234,8 +1260,13 @@ class GatewayKanbanWatchersMixin:
                     await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
+                explanation_pairs: list[tuple[str, dict[str, Any]]] = []
                 for slug, res in (results or []):
-                    if res is not None and getattr(res, "spawned", None):
+                    if res is None:
+                        continue
+                    for item in getattr(res, "ready_explanations", []) or []:
+                        explanation_pairs.append((slug, item))
+                    if getattr(res, "spawned", None):
                         any_spawned = True
                         # Quiet by default — only log when something actually
                         # happened, so an idle gateway stays silent.
@@ -1250,21 +1281,42 @@ class GatewayKanbanWatchersMixin:
                             res.promoted,
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
                         )
-                # Health telemetry (aggregate across boards)
-                ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
-                    bad_ticks += 1
-                else:
+                # Health telemetry (aggregate across boards). Capacity-limited
+                # queues are expected backpressure, not dispatcher-stuck.
+                true_stuck_pairs = [
+                    (slug, item) for slug, item in explanation_pairs
+                    if item.get("kind") == "dispatcher_stuck"
+                ]
+                capacity_pairs = [
+                    (slug, item) for slug, item in explanation_pairs
+                    if item.get("kind") in {"capacity_limited_global", "capacity_limited_per_profile"}
+                ]
+                if any_spawned:
                     bad_ticks = 0
+                elif true_stuck_pairs:
+                    bad_ticks += 1
+                elif capacity_pairs:
+                    bad_ticks = 0
+                else:
+                    ready_pending = await asyncio.to_thread(_ready_nonempty)
+                    if ready_pending:
+                        bad_ticks += 1
+                    else:
+                        bad_ticks = 0
                 if bad_ticks >= HEALTH_WINDOW:
                     now = int(time.time())
                     if now - last_warn_at >= 300:
+                        warn_slug = true_stuck_pairs[0][0] if true_stuck_pairs else _kb.DEFAULT_BOARD
+                        warn_explanations = [item for _slug, item in true_stuck_pairs]
+                        if not warn_explanations:
+                            warn_explanations = [{"kind": "dispatcher_stuck"}]
                         logger.warning(
-                            "kanban dispatcher stuck: ready queue non-empty for "
-                            "%d consecutive ticks but 0 workers spawned. Check "
-                            "profile health (venv, PATH, credentials) and "
-                            "`hermes kanban list --status ready`.",
-                            bad_ticks,
+                            "%s",
+                            _format_dispatch_health_warning(
+                                warn_slug,
+                                bad_ticks,
+                                warn_explanations,
+                            ),
                         )
                         last_warn_at = now
             except asyncio.CancelledError:

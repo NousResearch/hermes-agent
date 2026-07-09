@@ -50,6 +50,8 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
+    _closure_artifact_path = None
+    _active_session_lease_released = False
     if final_response is None and (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
@@ -105,6 +107,7 @@ def finalize_turn(
                             "budget_max": agent.max_iterations,
                         },
                     )
+                    _active_session_lease_released = True
                     logger.info(
                         "recorded budget-exhausted failure for task %s (%d/%d)",
                         _kanban_task, api_call_count, agent.max_iterations,
@@ -120,6 +123,69 @@ def finalize_turn(
                     _kanban_task,
                     exc_info=True,
                 )
+        try:
+            import json
+
+            from hermes_cli.closure_artifacts import read_closure_artifact, write_closure_artifact
+            from hermes_cli.closeout_state import (
+                build_safe_bounded_resume_prompt,
+                classify_closeout_response,
+            )
+
+            remaining = [
+                "Inspect the current repo/board state.",
+                "Continue from the last completed step with narrow verification.",
+            ]
+            if _kanban_task:
+                remaining.append("Call kanban_complete or kanban_block after the next verified slice.")
+            _latest_session_id = getattr(agent, "session_id", "") or ""
+            _parent_lineage = getattr(agent, "parent_lineage", None) or getattr(agent, "_parent_lineage", None) or []
+            if not isinstance(_parent_lineage, (list, tuple)):
+                _parent_lineage = []
+            if _latest_session_id and _latest_session_id not in _parent_lineage:
+                _parent_lineage = [*_parent_lineage, _latest_session_id]
+            _closeout_packet = {
+                "session_id": _latest_session_id,
+                "latest_session_id": _latest_session_id,
+                "task_id": _kanban_task or "",
+                "remaining_closeout_tasks": remaining,
+            }
+            _safe_resume_prompt = build_safe_bounded_resume_prompt(_closeout_packet)
+            _closeout_verdict = classify_closeout_response(final_response)
+            closure_path = write_closure_artifact(
+                session_id=getattr(agent, "session_id", "") or "",
+                task_id=_kanban_task or "",
+                status="max_iterations_reached",
+                last_completed_step=final_response or _turn_exit_reason,
+                changed_files=[],
+                tests_run=[],
+                test_results={},
+                failing_tests=[],
+                remaining_checklist=remaining,
+                exact_resume_prompt=_safe_resume_prompt,
+                active_session_lease_released=_active_session_lease_released,
+            )
+            try:
+                _closure_data = read_closure_artifact(closure_path)
+                _closure_data.update({
+                    "latest_session_id": _latest_session_id,
+                    "parent_lineage": [str(item) for item in _parent_lineage],
+                    "remaining_closeout_tasks": remaining,
+                    "safe_bounded_resume_prompt": _safe_resume_prompt,
+                    "closeout_status": _closeout_verdict.get("status"),
+                    "closeout_reasons": _closeout_verdict.get("reasons") or [],
+                    "invalid_review_children": [],
+                })
+                closure_path.write_text(
+                    json.dumps(_closure_data, indent=2, ensure_ascii=False, sort_keys=True),
+                    encoding="utf-8",
+                )
+            except Exception:
+                logger.debug("Failed to annotate closeout state on closure artifact", exc_info=True)
+            _closure_artifact_path = str(closure_path)
+            logger.info("wrote max-iteration closure artifact: %s", _closure_artifact_path)
+        except Exception:
+            logger.warning("Failed to write max-iteration closure artifact", exc_info=True)
 
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")
@@ -433,6 +499,8 @@ def finalize_turn(
     # (the response is still returned either way — #8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors
+    if _closure_artifact_path:
+        result["closure_artifact"] = _closure_artifact_path
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.

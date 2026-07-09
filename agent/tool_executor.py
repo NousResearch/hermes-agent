@@ -50,6 +50,97 @@ from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context
 
 logger = logging.getLogger(__name__)
 
+_TOOL_RUNTIME_EVENT_PREFIX = "tool_runtime_event "
+_TOOL_RUNTIME_EVENT_FIELDS = frozenset(
+    {
+        "event",
+        "session_id",
+        "tool_call_id",
+        "tool_name",
+        "mode",
+        "task_id",
+        "turn_id",
+        "api_request_id",
+        "elapsed_ms",
+        "status",
+        "error_type",
+        "result_kind",
+        "result_chars",
+    }
+)
+
+
+def _tool_runtime_result_metadata(result: Any) -> dict[str, Any]:
+    """Return coarse result metadata without copying result content into logs."""
+    try:
+        if result is None:
+            return {"result_kind": "none", "result_chars": 0}
+        if _is_multimodal_tool_result(result):
+            return {"result_kind": "multimodal", "result_chars": len(_multimodal_text_summary(result))}
+        if isinstance(result, str):
+            return {"result_kind": "text", "result_chars": len(result)}
+        if isinstance(result, (dict, list, tuple)):
+            rendered = json.dumps(result, ensure_ascii=False, default=str)
+            return {"result_kind": "structured", "result_chars": len(rendered)}
+        return {"result_kind": "other", "result_chars": len(str(result))}
+    except Exception:
+        return {"result_kind": "unknown", "result_chars": 0}
+
+
+def _log_tool_runtime_event(agent, **fields: Any) -> None:
+    """Emit one redacted structured tool-runtime event.
+
+    Only the allowlisted operational fields are serialized. Raw args, commands,
+    prompts, results, exception messages, URLs, and provider payloads passed by
+    mistake are dropped here instead of reaching persistent logs.
+    """
+    payload: dict[str, Any] = {
+        "session_id": getattr(agent, "session_id", "") or "",
+        "turn_id": getattr(agent, "_current_turn_id", "") or "",
+        "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+    }
+    for key in _TOOL_RUNTIME_EVENT_FIELDS:
+        if key in {"session_id", "turn_id", "api_request_id"}:
+            continue
+        value = fields.get(key)
+        if value is None:
+            continue
+        if key in {"elapsed_ms", "result_chars"}:
+            try:
+                value = max(0, int(value))
+            except Exception:
+                continue
+        payload[key] = value
+    payload = {
+        key: value
+        for key, value in payload.items()
+        if key in _TOOL_RUNTIME_EVENT_FIELDS and value not in (None, "")
+    }
+    try:
+        logger.info(
+            "%s%s",
+            _TOOL_RUNTIME_EVENT_PREFIX,
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str),
+        )
+    except Exception:
+        pass
+
+
+def _log_tool_exception(agent, source: str, function_name: str, tool_error: BaseException) -> None:
+    """Log tool-dispatch exceptions without raw messages unless verbose logging is enabled."""
+    error_type = type(tool_error).__name__
+    if getattr(agent, "verbose_logging", False):
+        logger.error(
+            "%s raised for %s with %s: %s",
+            source,
+            function_name,
+            error_type,
+            tool_error,
+            exc_info=True,
+        )
+        return
+    logger.error("%s raised for %s (error_type=%s)", source, function_name, error_type)
+
 
 def _budget_for_agent(agent) -> BudgetConfig:
     """Resolve a tool-result BudgetConfig scaled to the agent's context window.
@@ -320,6 +411,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if agent._interrupt_requested:
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         for tc in tool_calls:
+            _log_tool_runtime_event(
+                agent,
+                event="tool.cancelled",
+                tool_call_id=getattr(tc, "id", "") or "",
+                tool_name=getattr(getattr(tc, "function", None), "name", "") or "",
+                mode="concurrent",
+                task_id=effective_task_id,
+                elapsed_ms=0,
+                status="cancelled",
+                error_type="user_interrupt",
+            )
             messages.append(make_tool_result_message(
                 tc.function.name,
                 f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
@@ -398,9 +500,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # checkpoint state (dedup slot, real snapshots).
         block_result = None
         blocked_by_guardrail = False
+        block_error_type = None
         if _ts_scope_block is not None:
             # Out-of-scope tool_call: reject before hooks/guardrails/dispatch.
             block_result = _ts_scope_block
+            block_error_type = "tool_scope_block"
             _emit_terminal_post_tool_call(
                 agent,
                 function_name=function_name,
@@ -431,6 +535,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
             if block_message is not None:
                 block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+                block_error_type = "plugin_block"
                 _emit_terminal_post_tool_call(
                     agent,
                     function_name=function_name,
@@ -448,6 +553,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 if not guardrail_decision.allows_execution:
                     block_result = agent._guardrail_block_result(guardrail_decision)
                     blocked_by_guardrail = True
+                    block_error_type = "guardrail_block"
                     _emit_terminal_post_tool_call(
                         agent,
                         function_name=function_name,
@@ -460,6 +566,19 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         error_message=getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy",
                         middleware_trace=list(middleware_trace),
                     )
+
+        if block_result is not None:
+            _log_tool_runtime_event(
+                agent,
+                event="tool.blocked",
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                tool_name=function_name,
+                mode="concurrent",
+                task_id=effective_task_id,
+                elapsed_ms=0,
+                status="blocked",
+                error_type=block_error_type or "blocked",
+            )
 
         # ── Checkpoint preflight (only for tools that will execute) ──
         if block_result is None:
@@ -564,6 +683,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # ContextVars are propagated by propagate_context_to_thread() at the
         # submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
+        _runtime_error_type = "tool_result_error"
+        _log_tool_runtime_event(
+            agent,
+            event="tool.start",
+            tool_call_id=getattr(tool_call, "id", "") or "",
+            tool_name=function_name,
+            mode="concurrent",
+            task_id=effective_task_id,
+            status="started",
+        )
         try:
             try:
                 result = agent._invoke_tool(
@@ -591,16 +720,65 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     middleware_trace=list(middleware_trace),
                 )
                 duration = time.time() - start
+                _log_tool_runtime_event(
+                    agent,
+                    event="tool.cancelled",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    tool_name=function_name,
+                    mode="concurrent",
+                    task_id=effective_task_id,
+                    elapsed_ms=int(duration * 1000),
+                    status="cancelled",
+                    error_type="keyboard_interrupt",
+                )
                 logger.info("tool %s cancelled (%.2fs)", function_name, duration)
                 results[index] = (function_name, function_args, result, duration, True, False, middleware_trace)
                 return
             except Exception as tool_error:
+                _runtime_error_type = type(tool_error).__name__
                 result = f"Error executing tool '{function_name}': {tool_error}"
-                logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
+                _log_tool_exception(agent, "_invoke_tool", function_name, tool_error)
             duration = time.time() - start
             is_error, _ = _detect_tool_failure(function_name, result)
+            _runtime_result_fields = _tool_runtime_result_metadata(result)
             if is_error:
-                logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
+                _log_tool_runtime_event(
+                    agent,
+                    event="tool.error",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    tool_name=function_name,
+                    mode="concurrent",
+                    task_id=effective_task_id,
+                    elapsed_ms=int(duration * 1000),
+                    status="error",
+                    error_type=_runtime_error_type,
+                    **_runtime_result_fields,
+                )
+            else:
+                _log_tool_runtime_event(
+                    agent,
+                    event="tool.finish",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    tool_name=function_name,
+                    mode="concurrent",
+                    task_id=effective_task_id,
+                    elapsed_ms=int(duration * 1000),
+                    status="success",
+                    **_runtime_result_fields,
+                )
+            if is_error:
+                if getattr(agent, "verbose_logging", False):
+                    _result_text = _multimodal_text_summary(result)
+                    logger.info("tool %s failed with preview (%.2fs): %s", function_name, duration, _result_text[:200])
+                else:
+                    logger.info(
+                        "tool %s failed (%.2fs, result_kind=%s, result_chars=%d, error_type=%s)",
+                        function_name,
+                        duration,
+                        _runtime_result_fields.get("result_kind", "unknown"),
+                        _runtime_result_fields.get("result_chars", 0),
+                        _runtime_error_type,
+                    )
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
             results[index] = (function_name, function_args, result, duration, is_error, False, middleware_trace)
@@ -830,6 +1008,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     error_message="Tool execution cancelled by user interrupt",
                     middleware_trace=list(middleware_trace),
                 )
+                _log_tool_runtime_event(
+                    agent,
+                    event="tool.cancelled",
+                    tool_call_id=getattr(tc, "id", "") or "",
+                    tool_name=name,
+                    mode="concurrent",
+                    task_id=effective_task_id,
+                    elapsed_ms=0,
+                    status="cancelled",
+                    error_type="user_interrupt",
+                )
             else:
                 function_result = f"Error executing tool '{name}': thread did not return a result"
                 _emit_terminal_post_tool_call(
@@ -844,6 +1033,18 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     error_message=function_result,
                     middleware_trace=list(middleware_trace),
                 )
+                _log_tool_runtime_event(
+                    agent,
+                    event="tool.error",
+                    tool_call_id=getattr(tc, "id", "") or "",
+                    tool_name=name,
+                    mode="concurrent",
+                    task_id=effective_task_id,
+                    elapsed_ms=0,
+                    status="error",
+                    error_type="thread_missing_result",
+                    **_tool_runtime_result_metadata(function_result),
+                )
             tool_duration = 0.0
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked, middleware_trace = r
@@ -857,9 +1058,24 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
 
             if is_error:
-                _err_text = _multimodal_text_summary(function_result)
-                result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
-                logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
+                _runtime_result_fields = _tool_runtime_result_metadata(function_result)
+                if getattr(agent, "verbose_logging", False):
+                    _err_text = _multimodal_text_summary(function_result)
+                    logger.warning(
+                        "Tool %s returned error with preview (%.2fs): %s",
+                        function_name,
+                        tool_duration,
+                        _err_text[:200],
+                    )
+                else:
+                    logger.warning(
+                        "Tool %s returned error (%.2fs, result_kind=%s, result_chars=%d, error_type=%s)",
+                        function_name,
+                        tool_duration,
+                        _runtime_result_fields.get("result_kind", "unknown"),
+                        _runtime_result_fields.get("result_chars", 0),
+                        "tool_result_error",
+                    )
 
             # Track file-mutation outcome for the turn-end verifier.
             # `blocked` calls never actually ran — don't let a guardrail
@@ -976,6 +1192,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
             for skipped_tc in remaining_calls:
                 skipped_name = skipped_tc.function.name
+                _log_tool_runtime_event(
+                    agent,
+                    event="tool.cancelled",
+                    tool_call_id=getattr(skipped_tc, "id", "") or "",
+                    tool_name=skipped_name,
+                    mode="sequential",
+                    task_id=effective_task_id,
+                    elapsed_ms=0,
+                    status="cancelled",
+                    error_type="user_interrupt",
+                )
                 messages.append(make_tool_result_message(
                     skipped_name,
                     f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
@@ -1130,6 +1357,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 pass  # never block tool execution
 
         tool_start_time = time.time()
+        _runtime_error_type = "tool_result_error"
+        if not _execution_blocked:
+            _log_tool_runtime_event(
+                agent,
+                event="tool.start",
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                tool_name=function_name,
+                mode="sequential",
+                task_id=effective_task_id,
+                status="started",
+            )
 
         if _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
@@ -1147,6 +1385,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 error_message=_block_msg,
                 middleware_trace=list(middleware_trace),
             )
+            _log_tool_runtime_event(
+                agent,
+                event="tool.blocked",
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                tool_name=function_name,
+                mode="sequential",
+                task_id=effective_task_id,
+                elapsed_ms=0,
+                status="blocked",
+                error_type=_block_error_type,
+            )
         elif _guardrail_block_decision is not None:
             # Tool blocked by tool-loop guardrail — synthesize exactly one
             # tool result for the original tool_call_id without executing.
@@ -1163,6 +1412,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 error_type="guardrail_block",
                 error_message=getattr(_guardrail_block_decision, "message", None) or "Tool blocked by guardrail policy",
                 middleware_trace=list(middleware_trace),
+            )
+            _log_tool_runtime_event(
+                agent,
+                event="tool.blocked",
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                tool_name=function_name,
+                mode="sequential",
+                task_id=effective_task_id,
+                elapsed_ms=0,
+                status="blocked",
+                error_type="guardrail_block",
             )
         elif function_name == "todo":
             def _execute(next_args: dict) -> Any:
@@ -1350,7 +1610,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _ce_result = function_result
             except Exception as tool_error:
                 function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
-                logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                _log_tool_exception(agent, "context_engine.handle_tool_call", function_name, tool_error)
             finally:
                 tool_duration = time.time() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_ce_result)
@@ -1384,7 +1644,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _mem_result = function_result
             except Exception as tool_error:
                 function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
-                logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                _log_tool_exception(agent, "memory_manager.handle_tool_call", function_name, tool_error)
             finally:
                 tool_duration = time.time() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
@@ -1428,14 +1688,26 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     middleware_trace=list(middleware_trace),
                 )
                 _spinner_result = function_result
+                _log_tool_runtime_event(
+                    agent,
+                    event="tool.cancelled",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    tool_name=function_name,
+                    mode="sequential",
+                    task_id=effective_task_id,
+                    elapsed_ms=int((time.time() - tool_start_time) * 1000),
+                    status="cancelled",
+                    error_type="keyboard_interrupt",
+                )
                 try:
                     agent.interrupt("keyboard interrupt")
                 except Exception:
                     pass
                 raise
             except Exception as tool_error:
+                _runtime_error_type = type(tool_error).__name__
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
-                logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                _log_tool_exception(agent, "handle_function_call", function_name, tool_error)
             finally:
                 tool_duration = time.time() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
@@ -1459,7 +1731,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     tool_request_middleware_trace=list(middleware_trace),
                 )
             except KeyboardInterrupt:
-                _emit_cancelled_terminal_post_tool_call(
+                function_result = _emit_cancelled_terminal_post_tool_call(
                     agent,
                     function_name=function_name,
                     function_args=function_args,
@@ -1468,24 +1740,32 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     start_time=tool_start_time,
                     middleware_trace=list(middleware_trace),
                 )
+                _log_tool_runtime_event(
+                    agent,
+                    event="tool.cancelled",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    tool_name=function_name,
+                    mode="sequential",
+                    task_id=effective_task_id,
+                    elapsed_ms=int((time.time() - tool_start_time) * 1000),
+                    status="cancelled",
+                    error_type="keyboard_interrupt",
+                )
                 try:
                     agent.interrupt("keyboard interrupt")
                 except Exception:
                     pass
                 raise
             except Exception as tool_error:
+                _runtime_error_type = type(tool_error).__name__
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
-                logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                _log_tool_exception(agent, "handle_function_call", function_name, tool_error)
             tool_duration = time.time() - tool_start_time
 
         if isinstance(function_result, str):
-            result_preview = function_result if agent.verbose_logging else (
-                function_result[:200] if len(function_result) > 200 else function_result
-            )
             _result_len = len(function_result)
         else:
             # Multimodal dict result (_multimodal=True) — not sliceable as string
-            result_preview = function_result
             _result_len = len(str(function_result))
 
         # Log tool errors to the persistent error log so [error] tags
@@ -1520,11 +1800,51 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result,
                 failed=_is_error_result,
             )
-            result_preview = function_result if agent.verbose_logging else (
-                function_result[:200] if len(function_result) > 200 else function_result
-            )
+            _runtime_result_fields = _tool_runtime_result_metadata(function_result)
+            if _is_error_result:
+                _log_tool_runtime_event(
+                    agent,
+                    event="tool.error",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    tool_name=function_name,
+                    mode="sequential",
+                    task_id=effective_task_id,
+                    elapsed_ms=int(tool_duration * 1000),
+                    status="error",
+                    error_type=_runtime_error_type,
+                    **_runtime_result_fields,
+                )
+            else:
+                _log_tool_runtime_event(
+                    agent,
+                    event="tool.finish",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    tool_name=function_name,
+                    mode="sequential",
+                    task_id=effective_task_id,
+                    elapsed_ms=int(tool_duration * 1000),
+                    status="success",
+                    **_runtime_result_fields,
+                )
         if _is_error_result:
-            logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
+            _runtime_result_fields = _tool_runtime_result_metadata(function_result)
+            if getattr(agent, "verbose_logging", False):
+                _result_text = _multimodal_text_summary(function_result)
+                logger.warning(
+                    "Tool %s returned error with preview (%.2fs): %s",
+                    function_name,
+                    tool_duration,
+                    _result_text[:200],
+                )
+            else:
+                logger.warning(
+                    "Tool %s returned error (%.2fs, result_kind=%s, result_chars=%d, error_type=%s)",
+                    function_name,
+                    tool_duration,
+                    _runtime_result_fields.get("result_kind", "unknown"),
+                    _runtime_result_fields.get("result_chars", 0),
+                    _runtime_error_type,
+                )
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
 
@@ -1611,6 +1931,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
             for skipped_tc in assistant_message.tool_calls[i:]:
                 skipped_name = skipped_tc.function.name
+                _log_tool_runtime_event(
+                    agent,
+                    event="tool.cancelled",
+                    tool_call_id=getattr(skipped_tc, "id", "") or "",
+                    tool_name=skipped_name,
+                    mode="sequential",
+                    task_id=effective_task_id,
+                    elapsed_ms=0,
+                    status="cancelled",
+                    error_type="user_interrupt",
+                )
                 messages.append(make_tool_result_message(
                     skipped_name,
                     f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",

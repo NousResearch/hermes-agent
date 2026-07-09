@@ -2910,6 +2910,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._active_session_leases: Dict[str, Any] = {}
+        self._active_session_claim_backoff: Dict[str, tuple[float, str]] = {}
+        self._active_session_claim_backoff_seconds = 2.0
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Last successfully-resolved (non-empty) model, keyed by session. Used
         # as a fallback when a fresh config read transiently returns an empty
@@ -5118,11 +5120,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         local_limit_message = self._active_session_limit_message(session_key)
         if local_limit_message is not None:
             return None, local_limit_message
+        now = time.time()
+        backoff = getattr(self, "_active_session_claim_backoff", None)
+        if backoff is None:
+            backoff = {}
+            self._active_session_claim_backoff = backoff
+        cached = backoff.get(session_key)
+        if cached is not None:
+            retry_at, cached_message = cached
+            if retry_at > now:
+                return None, cached_message
+            backoff.pop(session_key, None)
         try:
-            from hermes_cli.active_sessions import try_acquire_active_session
+            from hermes_cli.active_sessions import (
+                active_session_acquire_error_message,
+                try_acquire_active_session,
+            )
 
             platform = source.platform.value if source and source.platform else "gateway"
-            return try_acquire_active_session(
+            lease, message = try_acquire_active_session(
                 session_id=session_key,
                 surface=f"gateway:{platform}",
                 config=getattr(self, "config", None),
@@ -5132,9 +5148,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "user_id": getattr(source, "user_id", "") or "",
                 },
             )
+            if message is None:
+                backoff.pop(session_key, None)
+            elif self._is_active_session_claim_backoff_message(message):
+                self._remember_active_session_claim_backoff(session_key, message)
+            return lease, message
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)
-            return None, None
+            try:
+                message = active_session_acquire_error_message()
+            except Exception:
+                message = (
+                    "Hermes could not claim an active session slot. "
+                    "Try again shortly or run `hermes runtime active-sessions status`."
+                )
+            self._remember_active_session_claim_backoff(session_key, message)
+            return None, message
+
+    @staticmethod
+    def _is_active_session_claim_backoff_message(message: str) -> bool:
+        return message.startswith(
+            (
+                "Hermes active session registry is busy",
+                "Hermes could not claim an active session slot",
+            )
+        )
+
+    def _remember_active_session_claim_backoff(
+        self,
+        session_key: str,
+        message: str,
+    ) -> None:
+        seconds = float(
+            getattr(self, "_active_session_claim_backoff_seconds", 2.0) or 0.0
+        )
+        if seconds <= 0.0:
+            return
+        backoff = getattr(self, "_active_session_claim_backoff", None)
+        if backoff is None:
+            backoff = {}
+            self._active_session_claim_backoff = backoff
+        backoff[session_key] = (time.time() + seconds, message)
 
     @staticmethod
     def _agent_has_active_subagents(running_agent: Any) -> bool:
@@ -6339,7 +6393,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     out = subprocess.run(
                         [systemctl, *scope_flags, "show", service_name,
                          "--property=MainPID", "--value"],
-                        capture_output=True, text=True, timeout=2,
+                        capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=2,
                     )
                     return (out.stdout or "").strip()
                 except Exception:
@@ -6769,7 +6824,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(gateway_state="starting", exit_reason=None)
+            write_runtime_status(gateway_state="starting", exit_reason=None, platforms={})
         except Exception:
             pass
 
@@ -15306,7 +15361,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(evt.get("user_name") or "").strip() or None,
         )
 
-    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
+    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> bool:
         """Inject a watch-pattern notification as a synthetic message event.
 
         Routing must come from the queued watch event itself, not from whatever
@@ -15318,7 +15373,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Dropping watch notification with no routing metadata for process %s",
                 evt.get("session_id", "unknown"),
             )
-            return
+            return False
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         adapter = None
         for p, a in self.adapters.items():
@@ -15326,7 +15381,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 adapter = a
                 break
         if not adapter:
-            return
+            return False
         try:
             metadata = {}
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
@@ -15347,8 +15402,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source.thread_id,
             )
             await adapter.handle_message(synth_event)
+            return True
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
+            return False
 
     def _enrich_async_delegation_routing(self, evt: dict) -> None:
         """Fill platform/chat_id/thread_id/chat_type on an async-delegation event.
@@ -15387,8 +15444,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         await asyncio.sleep(3)  # let platforms finish connecting
         from tools.process_registry import process_registry as _pr
+        from tools.async_delegation import is_delivered, mark_delivered, recover_pending_delegations
+        recover_pending_delegations(origin="gateway async watcher startup")
         while self._running:
             try:
+                recover_pending_delegations(origin="gateway async watcher")
                 # Peek the queue for async-delegation events. We must NOT
                 # consume watch/completion events here (other drains own them),
                 # so requeue anything that isn't ours.
@@ -15400,6 +15460,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         break
                     if evt.get("type") == "async_delegation":
+                        if is_delivered(str(evt.get("delegation_id") or "")):
+                            continue
                         async_events.append(evt)
                     else:
                         requeue.append(evt)
@@ -15411,7 +15473,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not synth_text:
                         continue
                     try:
-                        await self._inject_watch_notification(synth_text, evt)
+                        if await self._inject_watch_notification(synth_text, evt):
+                            mark_delivered(str(evt.get("delegation_id") or ""))
                     except Exception as e:
                         logger.error("Async delegation injection error: %s", e)
             except Exception as e:
@@ -16859,10 +16922,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Prefers the profile the source was routed to (``source.profile`` — set
         by the /p/<profile>/ URL prefix or a per-credential adapter), falling
         back to the active profile (the multiplexer's own home).
+
+        A routed profile whose directory does not exist must not scope the turn
+        into a missing HERMES_HOME. ``get_profile_dir`` returns a path for a
+        valid-but-absent profile name, so missing routed profiles need an
+        explicit existence check before falling back to active/default.
         """
-        from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+        from hermes_cli.profiles import (
+            get_active_profile_name,
+            get_profile_dir,
+            profile_exists,
+        )
         try:
-            name = (source.profile or "").strip() or get_active_profile_name() or "default"
+            routed = (source.profile or "").strip()
+            if routed and not profile_exists(routed):
+                logger.warning(
+                    "Routed profile %r has no profile directory; falling back "
+                    "to the active/default home.",
+                    routed,
+                )
+                routed = ""
+            name = routed or get_active_profile_name() or "default"
             return get_profile_dir(name)
         except Exception:
             from hermes_constants import get_hermes_home

@@ -267,6 +267,36 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
+    def test_control_plane_status_endpoint(self, monkeypatch):
+        import hermes_cli.control_plane as control_plane
+
+        monkeypatch.setattr(control_plane, "count_close_wait_sockets", lambda: 4)
+        monkeypatch.setattr(
+            control_plane,
+            "build_control_plane_status",
+            lambda **_kwargs: {
+                "status": "degraded",
+                "listener_alive": True,
+                "websocket": {
+                    "probe_status": "not_run",
+                    "probe_ok": None,
+                    "stale_closed_clients": 2,
+                },
+                "close_wait_count": 4,
+                "active_worker_progress": True,
+                "restart_guidance": "defer_restart_active_worker_progress",
+                "sessions": [],
+            },
+        )
+
+        resp = self.client.get("/api/control-plane/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "degraded"
+        assert data["restart_guidance"] == "defer_restart_active_worker_progress"
+        assert data["websocket"]["stale_closed_clients"] == 2
+
     def test_status_active_session_count_uses_read_only_db(self, monkeypatch, tmp_path):
         import hermes_cli.web_server as web_server
         import hermes_state
@@ -948,6 +978,332 @@ class TestWebServerEndpoints:
         row = next(s for s in rows if s["id"] == "session-no-cwd")
         assert row["cwd"] is None
 
+    def test_get_sessions_attaches_status_evidence_without_changing_pagination(self, monkeypatch):
+        """Status evidence is row-local metadata; it must not alter list args/shape."""
+        import hermes_cli.web_server as web_server
+
+        captured = {}
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, **kwargs):
+                captured["list"] = kwargs
+                return [
+                    {
+                        "id": "evidence-session",
+                        "source": "cli",
+                        "started_at": 1_000,
+                        "last_active": 1_025,
+                        "ended_at": None,
+                        "archived": 0,
+                    }
+                ]
+
+            def session_count(self, **kwargs):
+                captured["count"] = kwargs
+                return 123
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr(web_server.time, "time", lambda: 1_125)
+        monkeypatch.setattr(web_server, "_active_session_registry_by_session", lambda: {})
+
+        resp = self.client.get(
+            "/api/sessions?limit=5&offset=7&min_messages=2&order=recent&archived=include"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["total"] == 123
+        assert data["limit"] == 5
+        assert data["offset"] == 7
+        assert captured["list"]["limit"] == 5
+        assert captured["list"]["offset"] == 7
+        assert captured["list"]["min_message_count"] == 2
+        assert captured["list"]["include_archived"] is True
+        assert captured["list"]["order_by_last_active"] is True
+
+        row = data["sessions"][0]
+        assert row["last_tool_runtime_event"] is None
+        assert row["last_activity_age_seconds"] == 100
+        assert row["queued_steer_count"] == 0
+        assert row["compression_tip_session_id"] == "evidence-session"
+        assert "db_row" in row["status_evidence_source"]
+        assert "unavailable" in row["status_evidence_source"]
+
+    def test_get_sessions_status_evidence_uses_registry_count_without_queued_text(self, monkeypatch):
+        """Only the safe queued steer count may cross from the active registry."""
+        import hermes_cli.active_sessions as active_sessions
+        import hermes_cli.web_server as web_server
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, **kwargs):
+                return [
+                    {
+                        "id": "steer-session",
+                        "source": "cli",
+                        "started_at": 10,
+                        "ended_at": None,
+                        "archived": 0,
+                    }
+                ]
+
+            def session_count(self, **kwargs):
+                return 1
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr(web_server.time, "time", lambda: 20)
+        monkeypatch.setattr(
+            active_sessions,
+            "active_session_registry_snapshot",
+            lambda: {
+                "sessions": [
+                    {
+                        "session_id": "steer-session",
+                        "queued_steer_count": "1",
+                        "queued_steer_text": "do not expose this top-level queued text",
+                        "metadata": {
+                            "pending_steer_count": "1",
+                            "queued_steer_text": "do not expose this queued text",
+                        },
+                    },
+                    {
+                        "session_id": "steer-session",
+                        "queued_steer_text": "do not expose duplicate queued text",
+                        "metadata": {
+                            "pending_steer_count": "invalid-first-count",
+                            "queued_steer_count": "4",
+                            "queued_steer_text": "do not expose invalid-first text",
+                        },
+                    }
+                ]
+            },
+        )
+
+        registry_entry = web_server._active_session_registry_by_session()["steer-session"]
+        assert web_server._registry_queued_steer_count(registry_entry) == 4
+        assert "queued_steer_text" not in registry_entry
+        assert "do not expose" not in json.dumps(registry_entry)
+
+        resp = self.client.get("/api/sessions?limit=5&offset=0")
+        assert resp.status_code == 200
+        row = resp.json()["sessions"][0]
+
+        assert row["queued_steer_count"] == 4
+        assert "active_session_registry" in row["status_evidence_source"]
+        assert "queued_steer_text" not in row
+        assert "do not expose this queued text" not in json.dumps(row)
+        assert "do not expose this top-level queued text" not in json.dumps(row)
+        assert "do not expose duplicate queued text" not in json.dumps(row)
+        assert "do not expose invalid-first text" not in json.dumps(row)
+
+    def test_get_sessions_status_evidence_flags_model_policy_violation_without_payload(self, monkeypatch):
+        import hermes_cli.active_sessions as active_sessions
+        import hermes_cli.web_server as web_server
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, **kwargs):
+                return [
+                    {
+                        "id": "policy-session",
+                        "source": "cli",
+                        "model": "gpt-5.4-mini",
+                        "started_at": 10,
+                        "ended_at": None,
+                        "archived": 0,
+                    }
+                ]
+
+            def session_count(self, **kwargs):
+                return 1
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "model_policy": {
+                    "fixed_model": "gpt-5.5",
+                    "forbid_lower_fallback": True,
+                }
+            },
+        )
+        monkeypatch.setattr(
+            active_sessions,
+            "active_session_registry_snapshot",
+            lambda: {
+                "sessions": [
+                    {
+                        "session_id": "policy-session",
+                        "metadata": {
+                            "model_request_model": "gpt-5.4-mini",
+                            "queued_steer_text": "do not expose policy queued text",
+                            "provider_payload": "do not expose provider payload",
+                        },
+                    }
+                ]
+            },
+        )
+
+        resp = self.client.get("/api/sessions?limit=5&offset=0")
+        assert resp.status_code == 200
+        row = resp.json()["sessions"][0]
+
+        assert row["model_policy_violation"] is True
+        assert row["required_model"] == "gpt-5.5"
+        assert row["model_policy_recommended_action"] == "interrupt_and_restore_fixed_model"
+        dumped = json.dumps(row)
+        assert "policy queued text" not in dumped
+        assert "provider payload" not in dumped
+
+    def test_get_sessions_status_evidence_marks_registry_entry_without_queued_count(self, monkeypatch):
+        """A live registry entry is runtime-active evidence even with no queued steer."""
+        import hermes_cli.active_sessions as active_sessions
+        import hermes_cli.web_server as web_server
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, **kwargs):
+                return [
+                    {
+                        "id": "active-no-queue",
+                        "source": "cli",
+                        "started_at": 10,
+                        "ended_at": None,
+                        "archived": 0,
+                    }
+                ]
+
+            def session_count(self, **kwargs):
+                return 1
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr(web_server.time, "time", lambda: 20)
+        monkeypatch.setattr(
+            active_sessions,
+            "active_session_registry_snapshot",
+            lambda: {"sessions": [{"session_id": "active-no-queue"}]},
+        )
+
+        resp = self.client.get("/api/sessions?limit=5&offset=0")
+        assert resp.status_code == 200
+        row = resp.json()["sessions"][0]
+
+        assert row["queued_steer_count"] == 0
+        assert "active_session_registry" in row["status_evidence_source"]
+
+    def test_get_sessions_status_evidence_marks_running_tool_from_registry(self, monkeypatch):
+        """A runtime tool heartbeat should surface as value-free status evidence."""
+        import hermes_cli.active_sessions as active_sessions
+        import hermes_cli.web_server as web_server
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, **kwargs):
+                return [
+                    {
+                        "id": "running-tool-session",
+                        "source": "cli",
+                        "started_at": 10,
+                        "ended_at": None,
+                        "archived": 0,
+                    }
+                ]
+
+            def session_count(self, **kwargs):
+                return 1
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr(web_server.time, "time", lambda: 20)
+        monkeypatch.setattr(
+            active_sessions,
+            "active_session_registry_snapshot",
+            lambda: {
+                "sessions": [
+                    {
+                        "session_id": "running-tool-session",
+                        "metadata": {
+                            "activity_kind": "tool_running",
+                            "current_tool": "terminal",
+                            "current_tool_args": "do not expose command args",
+                        },
+                    }
+                ]
+            },
+        )
+
+        resp = self.client.get("/api/sessions?limit=5&offset=0")
+        assert resp.status_code == 200
+        row = resp.json()["sessions"][0]
+
+        assert row["last_tool_runtime_event"] == "tool_running"
+        assert "active_session_registry" in row["status_evidence_source"]
+        assert "terminal" not in json.dumps(row)
+        assert "do not expose command args" not in json.dumps(row)
+
+    def test_get_sessions_status_evidence_marks_monitor_blocked_end_reason(self, monkeypatch):
+        """Monitor stop/block reasons should surface without exposing raw prompts."""
+        import hermes_cli.web_server as web_server
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, **kwargs):
+                return [
+                    {
+                        "id": "monitor-blocked-session",
+                        "source": "cli",
+                        "started_at": 10,
+                        "ended_at": 15,
+                        "end_reason": "monitor_stopped_slice14_over_discovery_no_diff",
+                        "archived": 0,
+                    }
+                ]
+
+            def session_count(self, **kwargs):
+                return 1
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr(web_server.time, "time", lambda: 20)
+        monkeypatch.setattr(web_server, "_active_session_registry_by_session", lambda: {})
+
+        resp = self.client.get("/api/sessions?limit=5&offset=0")
+        assert resp.status_code == 200
+        row = resp.json()["sessions"][0]
+
+        assert "blocked_by_monitor" in row["status_evidence_source"]
+        assert "monitor_stopped_slice14_over_discovery_no_diff" in row["end_reason"]
+
     def test_get_sessions_forwards_min_messages(self, monkeypatch):
         """The ?min_messages= filter must reach SessionDB.
 
@@ -1127,10 +1483,31 @@ class TestWebServerEndpoints:
         resp = self.client.patch("/api/sessions/no-fields", json={})
         assert resp.status_code == 400
 
-    def test_profiles_sessions_tags_default_profile(self):
+    def test_profiles_sessions_tags_default_profile(self, monkeypatch):
         """The cross-profile aggregator returns the default profile's rows
         tagged profile="default" (single-profile parity with /api/sessions)."""
+        import hermes_cli.active_sessions as active_sessions
+
         from hermes_state import SessionDB
+
+        registry_calls = {"count": 0}
+
+        def _registry_snapshot():
+            registry_calls["count"] += 1
+            return {
+                "sessions": [
+                    {
+                        "session_id": "agg-me",
+                        "queued_steer_text": "do not expose profile queued text",
+                        "metadata": {
+                            "queued_steer_count": "3",
+                            "queued_steer_text": "do not expose profile metadata text",
+                        },
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(active_sessions, "active_session_registry_snapshot", _registry_snapshot)
 
         db = SessionDB()
         try:
@@ -1145,6 +1522,16 @@ class TestWebServerEndpoints:
         row = next(s for s in data["sessions"] if s["id"] == "agg-me")
         assert row["profile"] == "default"
         assert row["is_default_profile"] is True
+        assert row["last_tool_runtime_event"] is None
+        assert isinstance(row["last_activity_age_seconds"], (int, float))
+        assert row["queued_steer_count"] == 3
+        assert row["compression_tip_session_id"] == "agg-me"
+        assert "db_row" in row["status_evidence_source"]
+        assert "active_session_registry" in row["status_evidence_source"]
+        assert "queued_steer_text" not in row
+        assert "do not expose profile queued text" not in json.dumps(row)
+        assert "do not expose profile metadata text" not in json.dumps(row)
+        assert registry_calls["count"] == 1
         assert isinstance(data.get("errors"), list)
 
     def test_profiles_sessions_rejects_unknown_archived_value(self):
@@ -1336,6 +1723,9 @@ class TestWebServerEndpoints:
         # ...carrying the durable lineage root so the desktop can match pins.
         tip = next(r for r in rows if r["id"] == "tip-new")
         assert tip.get("_lineage_root_id") == "root-old"
+        assert tip["compression_tip_session_id"] == "tip-new"
+        assert "compression_projection" in tip["status_evidence_source"]
+        assert tip["last_tool_runtime_event"] is None
 
     def test_search_dedupes_compression_lineage_to_tip(self):
         """A conversation that auto-compresses leaves the matched term in both
@@ -1374,6 +1764,9 @@ class TestWebServerEndpoints:
         # Surfaced under the live tip so clicking resumes the current session.
         assert hit["session_id"] == "search-tip"
         assert hit["lineage_root"] == "search-root"
+        assert hit["compression_tip_session_id"] == "search-tip"
+        assert "compression_projection" in hit["status_evidence_source"]
+        assert hit["last_tool_runtime_event"] is None
 
     def test_search_keeps_branch_specific_hits_on_branch(self):
         """Branch sessions share parent_session_id, but they are not compression

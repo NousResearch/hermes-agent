@@ -3655,6 +3655,22 @@ class TestHandleMaxIterations:
         assert len(result) > 0
         assert "summary" in result.lower()
 
+    def test_high_context_summary_uses_bounded_closeout_without_provider_call(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "agent.chat_completion_helpers.estimate_request_context_tokens",
+            lambda _payload: 250_000,
+        )
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "finish review/report"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert "bounded closeout" in result.lower()
+        assert "250,000" in result
+        assert not agent.client.chat.completions.create.called
+        assert messages[-1]["role"] == "assistant"
+        assert messages[-1]["content"] == result
+
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."

@@ -24,6 +24,15 @@ import tools.file_tools as ft
 import tools.terminal_tool as terminal_tool
 
 
+def _symlink_dir_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is not available")
+        raise
+
+
 @pytest.fixture
 def _isolated_cwd(tmp_path, monkeypatch):
     """Two checkouts: workspace (intended) + decoy (process cwd)."""
@@ -111,7 +120,7 @@ def test_container_absolute_input_path_does_not_follow_host_symlink(tmp_path, mo
     host_project = tmp_path / "host-project"
     host_project.mkdir()
     container_mount = tmp_path / "workspace-projects"
-    container_mount.symlink_to(host_project, target_is_directory=True)
+    _symlink_dir_or_skip(container_mount, host_project)
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "docker"})
     monkeypatch.setattr(terminal_tool, "_active_environments", {})
 
@@ -134,7 +143,7 @@ def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypat
     host_project = tmp_path / "host-project"
     host_project.mkdir()
     container_mount = tmp_path / "workspace-projects"
-    container_mount.symlink_to(host_project, target_is_directory=True)
+    _symlink_dir_or_skip(container_mount, host_project)
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "docker"})
     monkeypatch.setattr(terminal_tool, "_active_environments", {})
     monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(container_mount))

@@ -248,7 +248,8 @@ export const zhHant = defineLocale({
       testUnsupported: '此系統不支援原生通知。',
       completionSoundTitle: '完成提示音',
       completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
-      completionSoundPreview: '預覽'
+      completionSoundPreview: '預覽',
+      completionSoundOff: '關閉'
     },
     sections: {
       model: '模型',

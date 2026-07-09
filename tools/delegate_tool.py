@@ -334,6 +334,326 @@ def _looks_like_error_output(content: Any) -> bool:
     )
 
 
+_REVIEW_TASK_MARKERS = (
+    "review",
+    "verdict",
+    "safety",
+    "correctness",
+    "audit",
+    "adversarial",
+    "validate",
+    "validation",
+    "approve",
+    "approval",
+    "regression",
+    "security",
+)
+_TEXT_ONLY_REVIEW_MARKERS = (
+    "text-only",
+    "text only",
+    "prompt only",
+    "provided text only",
+    "from the prompt only",
+    "without tools",
+    "no tools",
+    "do not inspect repo",
+    "do not inspect repository",
+    "do not read files",
+    "do not access repo",
+    "do not access repository",
+)
+_REVIEW_REPO_TOOLSETS = frozenset({"file", "terminal"})
+_DEFAULT_PARENT_CLOSEOUT_RESERVE = 1
+_MAX_REVIEW_GOAL_PREVIEW_CHARS = 180
+
+
+def _safe_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text and text.lstrip("+-").isdigit():
+            try:
+                return int(text)
+            except ValueError:
+                return default
+    return default
+
+
+def _safe_review_preview(text: Any, limit: int = _MAX_REVIEW_GOAL_PREVIEW_CHARS) -> str:
+    raw = " ".join(str(text or "").split())
+    try:
+        from agent.redact import redact_sensitive_text
+
+        raw = redact_sensitive_text(raw, force=True)
+    except Exception:
+        pass
+    if len(raw) <= limit:
+        return raw
+    return raw[: max(0, limit - 15)].rstrip() + " ...[truncated]"
+
+
+def _is_review_task(goal: Any, context: Any = None) -> bool:
+    text = f"{goal or ''} {context or ''}".lower()
+    return any(marker in text for marker in _REVIEW_TASK_MARKERS)
+
+
+def _is_text_only_review(goal: Any, context: Any = None) -> bool:
+    text = f"{goal or ''} {context or ''}".lower()
+    return any(marker in text for marker in _TEXT_ONLY_REVIEW_MARKERS)
+
+
+def _parent_toolsets_for_delegation(parent_agent) -> set[str]:
+    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
+    if isinstance(parent_enabled, (list, tuple, set)):
+        return {str(t) for t in parent_enabled if str(t)}
+    if parent_agent and hasattr(parent_agent, "valid_tool_names"):
+        try:
+            import model_tools
+
+            valid_tool_names = getattr(parent_agent, "valid_tool_names", None)
+            if isinstance(valid_tool_names, (list, tuple, set)):
+                return {
+                    ts
+                    for name in valid_tool_names
+                    if (ts := model_tools.get_toolset_for_tool(name)) is not None
+                }
+        except Exception:
+            pass
+    return set(DEFAULT_TOOLSETS)
+
+
+def _child_toolsets_for_delegation(
+    parent_agent,
+    requested_toolsets: Optional[List[str]],
+    *,
+    effective_role: str = "leaf",
+) -> List[str]:
+    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
+    parent_toolsets = _parent_toolsets_for_delegation(parent_agent)
+
+    if requested_toolsets:
+        expanded_parent = _expand_parent_toolsets(parent_toolsets)
+        child_toolsets = [str(t) for t in requested_toolsets if str(t) in expanded_parent]
+        if _get_inherit_mcp_toolsets():
+            child_toolsets = _preserve_parent_mcp_toolsets(
+                child_toolsets, parent_toolsets
+            )
+        child_toolsets = _strip_blocked_tools(child_toolsets)
+    elif isinstance(parent_enabled, (list, tuple, set)):
+        child_toolsets = _strip_blocked_tools([str(t) for t in parent_enabled])
+    elif parent_toolsets:
+        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
+    else:
+        child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+
+    if effective_role == "orchestrator" and "delegation" not in child_toolsets:
+        child_toolsets.append("delegation")
+    return child_toolsets
+
+
+def _parent_remaining_api_calls(parent_agent) -> Optional[int]:
+    parent_max = _safe_int(getattr(parent_agent, "max_iterations", None), None)
+    parent_used = _safe_int(
+        getattr(parent_agent, "_api_call_count", None),
+        None,
+    )
+    if parent_used is None:
+        parent_used = _safe_int(getattr(parent_agent, "api_call_count", None), None)
+    if parent_max is None or parent_used is None:
+        return None
+    return max(0, parent_max - parent_used)
+
+
+def _parent_closeout_reserve(cfg: dict[str, Any]) -> int:
+    configured = cfg.get(
+        "parent_closeout_reserve_iterations",
+        cfg.get("closeout_reserve_iterations", _DEFAULT_PARENT_CLOSEOUT_RESERVE),
+    )
+    return max(0, _safe_int(configured, _DEFAULT_PARENT_CLOSEOUT_RESERVE) or 0)
+
+
+def _review_rerun_recommendation(preflight: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "action": "rerun_invalid_review",
+        "goal_preview": preflight.get("goal_preview", ""),
+        "required_toolsets": sorted(_REVIEW_REPO_TOOLSETS),
+        "recommended_max_iterations": max(
+            3,
+            min(8, int(preflight.get("effective_max_iterations") or 8)),
+        ),
+        "instruction": (
+            "Rerun only the fixed file set or diff with explicit nonzero "
+            "max-turn/tool budget; avoid broad repository reads."
+        ),
+    }
+
+
+def _build_delegation_preflight(
+    *,
+    task_index: int,
+    task: Dict[str, Any],
+    parent_agent,
+    requested_toolsets: Optional[List[str]],
+    effective_max_iterations: int,
+    cfg: dict[str, Any],
+    effective_role: str = "leaf",
+) -> Dict[str, Any]:
+    goal_text = task.get("goal", "")
+    context_text = task.get("context")
+    is_review = _is_review_task(goal_text, context_text)
+    text_only = is_review and _is_text_only_review(goal_text, context_text)
+    child_toolsets = _child_toolsets_for_delegation(
+        parent_agent,
+        requested_toolsets,
+        effective_role=effective_role,
+    )
+    parent_remaining = _parent_remaining_api_calls(parent_agent)
+    reserve = _parent_closeout_reserve(cfg)
+    if parent_remaining is None:
+        expected_allowance = max(0, effective_max_iterations)
+    else:
+        expected_allowance = max(
+            0,
+            min(effective_max_iterations, max(0, parent_remaining - reserve)),
+        )
+
+    repo_toolsets_available = sorted(set(child_toolsets) & _REVIEW_REPO_TOOLSETS)
+    missing_repo_toolsets = sorted(_REVIEW_REPO_TOOLSETS - set(child_toolsets))
+
+    review_status: Optional[str] = None
+    allowed = True
+    reason = ""
+    if effective_max_iterations <= 0 or expected_allowance <= 0:
+        review_status = "blocked_zero_budget" if is_review else None
+        allowed = False
+        reason = "effective child or parent closeout API budget is zero"
+    elif is_review and text_only:
+        review_status = "text_only_not_counted"
+    elif is_review and not child_toolsets:
+        review_status = "blocked_no_tools"
+        allowed = False
+        reason = "review task has no usable child toolsets"
+    elif is_review and not repo_toolsets_available:
+        review_status = "blocked_no_repo_access"
+        allowed = False
+        reason = "review task lacks repo/diff access toolsets"
+    elif is_review:
+        review_status = "valid_review"
+
+    return {
+        "task_index": task_index,
+        "allowed": allowed,
+        "reason": reason,
+        "is_review_task": is_review,
+        "text_only_review": text_only,
+        "review_evidence_status": review_status,
+        "goal_preview": _safe_review_preview(goal_text),
+        "effective_max_iterations": max(0, effective_max_iterations),
+        "expected_api_call_allowance": expected_allowance,
+        "available_toolsets": list(child_toolsets),
+        "available_toolset_count": len(child_toolsets),
+        "repo_toolsets_available": repo_toolsets_available,
+        "blocked_or_disabled_required_toolsets": missing_repo_toolsets
+        if is_review and not text_only
+        else [],
+        "parent_remaining_api_calls": parent_remaining,
+        "parent_closeout_reserve": reserve,
+    }
+
+
+def _public_preflight(preflight: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: preflight.get(key)
+        for key in (
+            "effective_max_iterations",
+            "expected_api_call_allowance",
+            "available_toolset_count",
+            "available_toolsets",
+            "blocked_or_disabled_required_toolsets",
+            "parent_remaining_api_calls",
+            "parent_closeout_reserve",
+            "repo_toolsets_available",
+            "text_only_review",
+        )
+    }
+
+
+def _preflight_blocked_entry(preflight: Dict[str, Any]) -> Dict[str, Any]:
+    status = preflight.get("review_evidence_status")
+    entry = {
+        "task_index": preflight.get("task_index", 0),
+        "status": "error",
+        "summary": None,
+        "error": f"Delegation preflight refused task: {preflight.get('reason') or status}.",
+        "api_calls": 0,
+        "duration_seconds": 0,
+        "child_session_id": None,
+        "goal_preview": preflight.get("goal_preview", ""),
+        "preflight": _public_preflight(preflight),
+    }
+    if status:
+        entry["review_evidence_status"] = status
+        entry["rerun_recommendation"] = _review_rerun_recommendation(preflight)
+    else:
+        entry["preflight_status"] = "blocked_zero_budget"
+    return entry
+
+
+def _apply_review_evidence_metadata(
+    entry: Dict[str, Any],
+    preflight: Optional[Dict[str, Any]],
+    child: Any = None,
+) -> None:
+    if not preflight or not preflight.get("review_evidence_status"):
+        return
+    status = str(preflight["review_evidence_status"])
+    if status == "valid_review":
+        api_calls = _safe_int(entry.get("api_calls"), 0) or 0
+        if entry.get("status") != "completed" or api_calls <= 0:
+            status = "blocked_zero_budget"
+    entry["review_evidence_status"] = status
+    entry["goal_preview"] = preflight.get("goal_preview", "")
+    entry["preflight"] = _public_preflight(preflight)
+    if "child_session_id" not in entry:
+        entry["child_session_id"] = (
+            getattr(child, "session_id", None) if child is not None else None
+        )
+    if status != "valid_review":
+        entry["rerun_recommendation"] = _review_rerun_recommendation(preflight)
+
+
+def _review_evidence_summary(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    reviewed = [
+        entry for entry in entries if entry.get("review_evidence_status") is not None
+    ]
+    if not reviewed:
+        return None
+    valid = [e for e in reviewed if e.get("review_evidence_status") == "valid_review"]
+    invalid = [e for e in reviewed if e.get("review_evidence_status") != "valid_review"]
+    invalid_children = []
+    for entry in invalid:
+        invalid_children.append(
+            {
+                "task_index": entry.get("task_index"),
+                "child_session_id": entry.get("child_session_id"),
+                "review_evidence_status": entry.get("review_evidence_status"),
+                "goal_preview": entry.get("goal_preview", ""),
+                "rerun_recommendation": entry.get("rerun_recommendation"),
+            }
+        )
+    return {
+        "valid_count": len(valid),
+        "invalid_count": len(invalid),
+        "total_review_tasks": len(reviewed),
+        "invalid_children": invalid_children,
+    }
+
+
 def _normalize_role(r: Optional[str]) -> str:
     """Normalise a caller-provided role to 'leaf' or 'orchestrator'.
 
@@ -2113,6 +2433,7 @@ def _run_single_child(
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
             "exit_reason": exit_reason,
+            "child_session_id": getattr(child, "session_id", None),
             "tokens": {
                 "input": (
                     _input_tokens if isinstance(_input_tokens, (int, float)) else 0
@@ -2339,9 +2660,61 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _looks_like_broad_reviewer_delegation(
+    *,
+    goal: Optional[str],
+    tasks: Optional[List[Dict[str, Any]]],
+) -> bool:
+    if tasks and len(tasks) > 1:
+        return True
+    goals: list[str] = []
+    if goal:
+        goals.append(str(goal))
+    for task in tasks or []:
+        if isinstance(task, dict) and task.get("goal"):
+            goals.append(str(task.get("goal")))
+    text = " ".join(goals).lower()
+    broad_markers = (
+        "entire repository",
+        "whole repository",
+        "full repository",
+        "full repo",
+        "whole repo",
+        "broad review",
+        "review everything",
+        "audit everything",
+    )
+    return any(marker in text for marker in broad_markers)
+
+
+def _reviewer_delegation_denial_after_warning(
+    *,
+    goal: Optional[str],
+    tasks: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    try:
+        from hermes_cli.usage_guard import (
+            reviewer_verdict_instruction,
+            usage_guard_active,
+        )
+        from tools.tool_output_limits import resolve_tool_output_mode
+
+        if not usage_guard_active() or resolve_tool_output_mode() != "reviewer":
+            return None
+        if not _looks_like_broad_reviewer_delegation(goal=goal, tasks=tasks):
+            return None
+        return tool_error(
+            "Usage guard active: broad reviewer delegation is blocked. "
+            + reviewer_verdict_instruction()
+        )
+    except Exception:
+        return None
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
+    toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
@@ -2362,6 +2735,13 @@ def delegate_task(
 
     Returns JSON with results array, one entry per task.
     """
+    delegation_denial = _reviewer_delegation_denial_after_warning(
+        goal=goal,
+        tasks=tasks,
+    )
+    if delegation_denial:
+        return delegation_denial
+
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
@@ -2403,7 +2783,10 @@ def delegate_task(
 
     # Load config
     cfg = _load_config()
-    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+    default_max_iter = _safe_int(
+        cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS),
+        DEFAULT_MAX_ITERATIONS,
+    )
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
     # and tests; a model-emitted value here would only shrink the budget and
@@ -2415,7 +2798,7 @@ def delegate_task(
             "using delegation.max_iterations=%s from config",
             max_iterations, default_max_iter,
         )
-    effective_max_iter = default_max_iter
+    effective_max_iter = default_max_iter if default_max_iter is not None else DEFAULT_MAX_ITERATIONS
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
@@ -2468,6 +2851,36 @@ def delegate_task(
     n_tasks = len(task_list)
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
+
+    preflights: List[Dict[str, Any]] = []
+    blocked_preflight_entries: List[Dict[str, Any]] = []
+    for i, t in enumerate(task_list):
+        task_role = _normalize_role(t.get("role") or top_role)
+        task_preflight = _build_delegation_preflight(
+            task_index=i,
+            task=t,
+            parent_agent=parent_agent,
+            requested_toolsets=t.get("toolsets") or toolsets,
+            effective_max_iterations=effective_max_iter,
+            cfg=cfg,
+            effective_role=task_role,
+        )
+        preflights.append(task_preflight)
+        if not task_preflight.get("allowed", True):
+            blocked_preflight_entries.append(_preflight_blocked_entry(task_preflight))
+
+    if blocked_preflight_entries:
+        summary = _review_evidence_summary(blocked_preflight_entries)
+        payload: Dict[str, Any] = {
+            "error": "Delegation preflight failed",
+            "results": blocked_preflight_entries,
+            "total_duration_seconds": round(time.monotonic() - overall_start, 2),
+        }
+        if summary is not None:
+            payload["review_evidence_summary"] = summary
+        return json.dumps(payload, ensure_ascii=False)
+
+    preflight_by_index = {p["task_index"]: p for p in preflights}
 
     # Save parent tool names BEFORE any child construction mutates the global.
     # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
@@ -2649,6 +3062,17 @@ def delegate_task(
             # Sort by task_index so results match input order
             results.sort(key=lambda r: r["task_index"])
 
+        for entry in results:
+            idx = entry.get("task_index")
+            child_for_entry = None
+            if isinstance(idx, int) and 0 <= idx < len(children):
+                child_for_entry = children[idx][2]
+            _apply_review_evidence_metadata(
+                entry,
+                preflight_by_index.get(idx),
+                child_for_entry,
+            )
+
         # Cap subagent summaries against the parent's remaining context
         # headroom (split across the batch) before they enter the parent's
         # conversation. Full text is spilled to disk so nothing is lost.
@@ -2751,10 +3175,14 @@ def delegate_task(
 
         total_duration = round(time.monotonic() - overall_start, 2)
 
-        return {
+        payload = {
             "results": results,
             "total_duration_seconds": total_duration,
         }
+        review_summary = _review_evidence_summary(results)
+        if review_summary is not None:
+            payload["review_evidence_summary"] = review_summary
+        return payload
 
     # ----- Background dispatch: run the WHOLE batch as one async unit -----
     # When background is true, the entire fan-out runs on the daemon executor
@@ -2847,6 +3275,10 @@ def delegate_task(
                     pass
 
         _goals = [t["goal"] for t in task_list]
+        _child_session_ids = [
+            getattr(_c, "session_id", "") for _c in _child_agents
+            if getattr(_c, "session_id", "")
+        ]
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
@@ -2861,6 +3293,8 @@ def delegate_task(
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),
+            parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
+            child_session_ids=_child_session_ids,
         )
 
         if dispatch.get("status") == "dispatched":
@@ -2868,14 +3302,18 @@ def delegate_task(
             note = (
                 "Subagent is running in the background. You and the user can "
                 "keep working; its full result re-enters the conversation as a "
-                "new message when it finishes. Do not wait or poll — just "
-                "continue."
+                "new message when it finishes. A durable recovery record has "
+                "also been written, so a parent restart surfaces a recovered "
+                "completion/loss notice instead of silently losing the handle. "
+                "Do not wait or poll — just continue."
                 if n == 1 else
                 f"{n} subagents are running in parallel in the background. You "
                 f"and the user can keep working; they wait on each other and "
                 f"their consolidated results re-enter the conversation as a "
-                f"single message once ALL of them finish. Do not wait or poll "
-                f"— just continue."
+                f"single message once ALL of them finish. A durable recovery "
+                f"record has also been written, so a parent restart surfaces a "
+                f"recovered completion/loss notice instead of silently losing "
+                f"the handle. Do not wait or poll — just continue."
             )
             payload = {
                 "status": "dispatched",
@@ -2897,11 +3335,12 @@ def delegate_task(
         )
         _cap_result = _execute_and_aggregate()
         if isinstance(_cap_result, dict):
+            _dispatch_error = dispatch.get("error", "rejected")
             _cap_result["note"] = (
-                "The background delegation pool was at capacity "
-                "(delegation.max_concurrent_children), so the subagent(s) ran "
-                "SYNCHRONOUSLY and the result is included above. Raise "
-                "delegation.max_concurrent_children in config.yaml to allow "
+                "The background delegation could not be dispatched safely "
+                f"({_dispatch_error}), so the subagent(s) ran SYNCHRONOUSLY "
+                "and the result is included above. If this was capacity-related, "
+                "raise delegation.max_concurrent_children in config.yaml to allow "
                 "more concurrent background delegations."
             )
         return json.dumps(_cap_result, ensure_ascii=False)

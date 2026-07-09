@@ -1260,12 +1260,13 @@ class TestProfileRestoration:
         assert (hermes_home / "profiles" / "coder" / "config.yaml").exists()
         assert (hermes_home / "profiles" / "researcher" / "config.yaml").exists()
 
+        wrapper_suffix = ".bat" if os.name == "nt" else ""
         # Wrapper scripts should be created
-        assert (wrapper_dir / "coder").exists()
-        assert (wrapper_dir / "researcher").exists()
+        assert (wrapper_dir / f"coder{wrapper_suffix}").exists()
+        assert (wrapper_dir / f"researcher{wrapper_suffix}").exists()
 
         # Wrappers should contain the right content
-        coder_wrapper = (wrapper_dir / "coder").read_text()
+        coder_wrapper = (wrapper_dir / f"coder{wrapper_suffix}").read_text()
         assert "hermes -p coder" in coder_wrapper
 
     def test_import_skips_profile_dirs_without_config(self, tmp_path, monkeypatch):
@@ -1290,9 +1291,10 @@ class TestProfileRestoration:
         from hermes_cli.backup import run_import
         run_import(args)
 
+        wrapper_suffix = ".bat" if os.name == "nt" else ""
         # Only valid profile should get a wrapper
-        assert (wrapper_dir / "valid").exists()
-        assert not (wrapper_dir / "empty").exists()
+        assert (wrapper_dir / f"valid{wrapper_suffix}").exists()
+        assert not (wrapper_dir / f"empty{wrapper_suffix}").exists()
 
     def test_import_without_profiles_module(self, tmp_path, monkeypatch):
         """Import gracefully handles missing profiles module (fresh install)."""
@@ -1858,7 +1860,7 @@ class TestQuickSnapshotProjectsKanban:
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         # The board db was copied via _safe_copy_db (not raw copy).
-        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
+        assert any(Path(s).parts[-3:] == ("boards", "work", "kanban.db") for s in called["db"]), called["db"]
         copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]
@@ -2467,8 +2469,9 @@ class TestMemoryProviderExternalPaths:
         restored = dst_home / ".honcho" / "config.json"
         assert restored.exists()
         assert restored.read_text() == '{"peer":"bob"}'
-        # Credential-shaped file tightened.
-        assert (restored.stat().st_mode & 0o777) == 0o600
+        # Credential-shaped file tightened where POSIX mode bits are meaningful.
+        if os.name != "nt":
+            assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into HERMES_HOME.
         assert not (hermes_home / "_external").exists()
 

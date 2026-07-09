@@ -120,6 +120,70 @@ def test_new_session_gets_clean_error_at_active_session_limit(monkeypatch):
     runner.session_store.get_or_create_session.assert_not_called()
 
 
+def test_new_session_fails_closed_when_active_session_registry_lock_errors(monkeypatch):
+    _silence_global_gateway_hooks(monkeypatch)
+
+    def fail_acquire(**_kwargs):
+        raise RuntimeError("active session file lock timed out")
+
+    monkeypatch.setattr(
+        "hermes_cli.active_sessions.try_acquire_active_session",
+        fail_acquire,
+    )
+
+    runner = _make_runner(max_concurrent_sessions=1)
+    event = _make_event(chat_id="new")
+    new_key = build_session_key(event.source)
+
+    async def fail_if_agent_runs(self_inner, ev, src, qk, generation):
+        raise AssertionError("_handle_message_with_agent should not run without a lease")
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", fail_if_agent_runs):
+        result = asyncio.run(runner._handle_message(event))
+
+    assert result == (
+        "Hermes could not claim an active session slot. "
+        "Try again shortly or run `hermes runtime active-sessions status`."
+    )
+    assert new_key not in runner._running_agents
+    runner.session_store.get_or_create_session.assert_not_called()
+
+
+def test_gateway_active_session_claim_errors_are_deduped_per_session_key(monkeypatch):
+    calls = 0
+
+    def fail_acquire(**_kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("active session file lock timed out")
+
+    monkeypatch.setattr(
+        "hermes_cli.active_sessions.try_acquire_active_session",
+        fail_acquire,
+    )
+
+    runner = _make_runner(max_concurrent_sessions=1)
+    source = _make_source(chat_id="new")
+    session_key = build_session_key(source)
+
+    first_lease, first_message = runner._claim_active_session_slot(
+        session_key,
+        source,
+    )
+    second_lease, second_message = runner._claim_active_session_slot(
+        session_key,
+        source,
+    )
+
+    assert first_lease is None
+    assert second_lease is None
+    assert first_message == second_message == (
+        "Hermes could not claim an active session slot. "
+        "Try again shortly or run `hermes runtime active-sessions status`."
+    )
+    assert calls == 1
+
+
 def test_existing_active_session_uses_busy_handling_at_limit(monkeypatch):
     _silence_global_gateway_hooks(monkeypatch)
     runner = _make_runner(max_concurrent_sessions=1)

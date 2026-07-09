@@ -278,6 +278,8 @@ from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
+from hermes_cli.goal_cli import build_parser as build_goal_parser
+from hermes_cli.runtime_cli import build_parser as build_runtime_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
@@ -358,6 +360,10 @@ def _apply_profile_override() -> None:
             return False
         return True
 
+    def _inside_config_worker_budget_repair(index: int) -> bool:
+        """True when --profile belongs to `config repair worker-budgets`."""
+        return index >= 3 and argv[:3] == ["config", "repair", "worker-budgets"]
+
     def _resolve_sudo_user_profile_env(name: str) -> str | None:
         """Resolve `sudo hermes -p <name>` against the invoking user's home.
 
@@ -409,6 +415,12 @@ def _apply_profile_override() -> None:
             break
         if arg == "--args" and _inside_mcp_add_args(i):
             break
+        if arg in {"--profile"} and _inside_config_worker_budget_repair(i):
+            i += 2 if i + 1 < len(argv) else 1
+            continue
+        if arg.startswith("--profile=") and _inside_config_worker_budget_repair(i):
+            i += 1
+            continue
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
             profile_name = argv[i + 1]
             consume = 2
@@ -1166,7 +1178,14 @@ def _probe_container(cmd: list, backend: str, via_sudo: bool = False):
     all other exceptions propagate naturally.
     """
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
     except subprocess.TimeoutExpired:
         label = f"sudo {backend}" if via_sudo else backend
         print(
@@ -1299,7 +1318,10 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
             # Project forward through compression chain so resumes land on
             # the live tip instead of a dead compressed parent.
             try:
-                resolved_id = db.get_compression_tip(resolved_id) or resolved_id
+                resolved_id = (
+                    db.get_compression_tip(resolved_id, emit_lineage_event=True)
+                    or resolved_id
+                )
             except Exception:
                 pass
 
@@ -1680,6 +1702,8 @@ def _restore_tui_workspace(tui_dir: Path) -> bool:
             cwd=str(tui_dir.parent),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
     except OSError:
@@ -2213,9 +2237,122 @@ def _resolve_use_tui(args) -> bool:
         return False
 
 
+def _is_noninteractive_slash_invocation(args) -> bool:
+    slash = getattr(args, "slash", None)
+    if slash:
+        return True
+    query = getattr(args, "query", None)
+    if not isinstance(query, str) or getattr(args, "image", None):
+        return False
+    try:
+        from hermes_cli.slash_dispatch import classify_slash_text
+
+        return classify_slash_text(query).looks_like_command
+    except Exception:
+        return False
+
+
+def _live_resume_owner_summaries(session_id: str) -> list[dict[str, object]]:
+    target = str(session_id or "").strip()
+    if not target:
+        return []
+    try:
+        from hermes_cli import active_sessions
+
+        try:
+            report = active_sessions.active_session_registry_status(no_lock=True)
+        except TypeError:
+            report = active_sessions.active_session_registry_status()
+    except Exception:
+        return []
+    entries = report.get("entries") if isinstance(report, dict) else []
+    if not isinstance(entries, list):
+        return []
+    owners: list[dict[str, object]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("session_id") or "") != target:
+            continue
+        if entry.get("runtime_status") != "live":
+            continue
+        summary = entry.get("owner_summary")
+        summary = summary if isinstance(summary, dict) else {}
+        owner: dict[str, object] = {}
+        pid = summary.get("pid", entry.get("pid"))
+        try:
+            pid_int = int(pid)
+        except (TypeError, ValueError):
+            pid_int = 0
+        if pid_int > 0:
+            owner["pid"] = pid_int
+        owner_kind = str(summary.get("owner_kind") or entry.get("owner_kind") or "").strip()
+        if owner_kind and all(ch.isalnum() or ch in "_.:-" for ch in owner_kind):
+            owner["owner_kind"] = owner_kind[:80]
+        fingerprint = str(
+            summary.get("command_line_fingerprint")
+            or entry.get("command_line_fingerprint")
+            or ""
+        ).strip()
+        if fingerprint and all(ch.isalnum() or ch in "_.:-" for ch in fingerprint):
+            owner["command_line_fingerprint"] = fingerprint[:80]
+        if owner:
+            owners.append(owner)
+    return owners
+
+
+def _format_resume_owner_summary(owner: dict[str, object]) -> str:
+    parts = []
+    for key in ("pid", "owner_kind", "command_line_fingerprint"):
+        if key in owner:
+            parts.append(f"{key}={owner[key]}")
+    return " ".join(parts) if parts else "owner=unknown"
+
+
+def _enforce_resume_duplicate_owner_preflight(args) -> None:
+    if getattr(args, "allow_parallel_owner", False):
+        return
+    resume = str(getattr(args, "resume", None) or "").strip()
+    if not resume:
+        return
+    owners = _live_resume_owner_summaries(resume)
+    if not owners:
+        return
+    owner_text = "; ".join(_format_resume_owner_summary(owner) for owner in owners)
+    print(
+        "Refusing chat --resume: live owner already controls this session. "
+        f"{owner_text}. Re-run with --allow-parallel-owner only if you intentionally "
+        "want two processes attached to the same session.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    try:
+        from hermes_cli.query_input import QueryInputError, resolve_query_input
+
+        resolved_query, query_source = resolve_query_input(
+            query=getattr(args, "query", None),
+            slash=getattr(args, "slash", None),
+            query_file=getattr(args, "query_file", None),
+            stdin_query=bool(getattr(args, "stdin_query", False)),
+        )
+    except QueryInputError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    if query_source is not None:
+        args.query = resolved_query
+        if query_source != "slash":
+            args.slash = None
+        args.query_file = None
+        args.stdin_query = False
+
     use_tui = _resolve_use_tui(args)
+    noninteractive_slash = _is_noninteractive_slash_invocation(args)
+    if noninteractive_slash:
+        use_tui = False
 
     _apply_safe_mode(args)
 
@@ -2253,6 +2390,8 @@ def cmd_chat(args):
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
+    _enforce_resume_duplicate_owner_preflight(args)
+
     # xAI retirement warning — one-shot, non-blocking, never fails startup
     try:
         from hermes_cli.xai_retirement import (
@@ -2277,7 +2416,7 @@ def cmd_chat(args):
         pass
 
     # First-run guard: check if any provider is configured before launching
-    if not _has_any_provider_configured():
+    if not noninteractive_slash and not _has_any_provider_configured():
         print()
         print(
             "It looks like Hermes isn't configured yet -- no API keys or providers found."
@@ -2360,6 +2499,9 @@ def cmd_chat(args):
             verbose=getattr(args, "verbose", None),
             quiet=getattr(args, "quiet", False),
             query=getattr(args, "query", None),
+            slash=getattr(args, "slash", None),
+            query_file=getattr(args, "query_file", None),
+            stdin_query=getattr(args, "stdin_query", False),
             image=getattr(args, "image", None),
             worktree=getattr(args, "worktree", False),
             checkpoints=getattr(args, "checkpoints", False),
@@ -2380,6 +2522,9 @@ def cmd_chat(args):
         "verbose": getattr(args, "verbose", None),
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
+        "slash": getattr(args, "slash", None),
+        "query_file": getattr(args, "query_file", None),
+        "stdin_query": getattr(args, "stdin_query", False),
         "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
@@ -4254,6 +4399,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_closure(args):
+    """Show max-iteration closure artifacts."""
+    from hermes_cli.closure_cli import cmd_closure as _cmd_closure
+
+    return _cmd_closure(args)
+
+
 def cmd_project(args):
     """Manage projects (named, multi-folder workspaces)."""
     from hermes_cli.projects_cmd import projects_command
@@ -4463,6 +4615,8 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
         return result.stdout.strip() or None
@@ -4748,7 +4902,8 @@ def _nixos_build_env() -> dict[str, str] | None:
     try:
         result = subprocess.run(
             ["nix-shell", "-p", "python3", "--run", "which python3"],
-            capture_output=True, text=True, check=False, timeout=15,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=False, timeout=15,
         )
         if result.returncode == 0:
             python3_path = result.stdout.strip()
@@ -5881,6 +6036,8 @@ def _find_stale_dashboard_pids(
                 ["ps", "-A", "-o", "pid=,command="],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
             if result.returncode == 0:
@@ -6091,6 +6248,8 @@ def _kill_stale_dashboard_processes(
                     ["taskkill", "/PID", str(pid), "/F"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=10,
                 )
                 if result.returncode == 0:
@@ -6399,6 +6558,8 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     )
     if not status.stdout.strip():
@@ -6413,6 +6574,8 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if unmerged.stdout.strip():
         print("→ Clearing unmerged index entries from a previous conflict...")
@@ -6434,6 +6597,8 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     ).stdout.strip()
     return stash_ref
@@ -6447,6 +6612,8 @@ def _resolve_stash_selector(
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     )
     for line in stash_list.stdout.splitlines():
@@ -6502,6 +6669,8 @@ def _restore_stashed_changes(
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     # Check for unmerged (conflicted) files — can happen even when returncode is 0
@@ -6510,6 +6679,8 @@ def _restore_stashed_changes(
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     has_conflicts = bool(unmerged.stdout.strip())
 
@@ -6560,6 +6731,8 @@ def _restore_stashed_changes(
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if drop.returncode != 0:
             print(
@@ -6612,6 +6785,8 @@ def _discard_stashed_changes(
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if drop.returncode != 0:
         print(
@@ -6649,6 +6824,8 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -6682,6 +6859,8 @@ def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         return result.returncode == 0
     except Exception:
@@ -6696,6 +6875,8 @@ def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         return result.returncode == 0
     except Exception:
@@ -6710,6 +6891,8 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode == 0:
             return int(result.stdout.strip())
@@ -6746,6 +6929,8 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         return result.returncode == 0
     except Exception:
@@ -7877,6 +8062,8 @@ def _verify_core_dependencies_installed(
                 [str(venv_python), "-c", check_script, *applicable],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
                 env=env,
             )
@@ -8431,6 +8618,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         ).stdout.strip()
         == "true"
     )
@@ -8443,6 +8632,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if fetch_result.returncode != 0:
             # Fallback to origin if upstream doesn't exist
@@ -8452,6 +8643,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             upstream_exists = False
             compare_branch = f"origin/{branch}"
@@ -8466,6 +8659,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         upstream_exists = False
         compare_branch = f"origin/{branch}"
@@ -8491,6 +8686,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if verify_result.returncode != 0:
         print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
@@ -8502,10 +8699,12 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         head_sha = subprocess.run(
             git_cmd + ["rev-parse", "HEAD"],
             cwd=PROJECT_ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
         ).stdout.strip()
         target_sha = subprocess.run(
             git_cmd + ["rev-parse", compare_branch],
             cwd=PROJECT_ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
         ).stdout.strip()
         if head_sha and target_sha and head_sha == target_sha:
             print("✓ Already up to date.")
@@ -8521,6 +8720,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     )
     behind = int(rev_result.stdout.strip())
@@ -8582,6 +8783,8 @@ def _ensure_fhs_path_guard() -> None:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -9224,6 +9427,8 @@ def _discard_lockfile_churn(git_cmd, repo_root):
             cwd=repo_root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if diff.returncode != 0:
             return
@@ -9245,6 +9450,8 @@ def _discard_lockfile_churn(git_cmd, repo_root):
             cwd=repo_root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         print(f"→ Discarded npm lockfile churn ({len(dirty)} file(s))")
@@ -9539,6 +9746,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
@@ -9563,6 +9772,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
         current_branch = result.stdout.strip()
@@ -9586,6 +9797,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             if checkout_result.returncode != 0:
                 # Local checkout doesn't have this branch yet. Try to set
@@ -9597,6 +9810,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                 )
                 if track_result.returncode != 0:
                     # Restore the user's prior branch + stash before bailing
@@ -9628,6 +9843,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
         commit_count = int(result.stdout.strip())
@@ -9654,6 +9871,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     check=False,
                 )
 
@@ -9743,6 +9962,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
@@ -9756,6 +9977,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                 )
                 if reset_result.returncode != 0:
                     print(f"✗ Failed to reset to origin/{branch}.")
@@ -9792,6 +10015,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         cwd=PROJECT_ROOT,
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                     )
                     if rollback_result.returncode == 0:
                         print("  ✓ Rollback complete — your install is unchanged.")
@@ -10342,6 +10567,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             scope_cmd_ + ["is-active", svc_name_],
                             capture_output=True,
                             text=True,
+                            encoding="utf-8",
+                            errors="replace",
                             timeout=5,
                         )
                         if _verify.stdout.strip() == "active":
@@ -10373,11 +10600,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             svc_name_,
                             "--property=RestartUSec",
                             "--value",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     return default
                 raw = (_show.stdout or "").strip()
@@ -10523,6 +10752,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             ],
                             capture_output=True,
                             text=True,
+                            encoding="utf-8",
+                            errors="replace",
                             timeout=10,
                         )
                         for line in result.stdout.strip().splitlines():
@@ -10540,6 +10771,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 scope_cmd + ["is-active", svc_name],
                                 capture_output=True,
                                 text=True,
+                                encoding="utf-8",
+                                errors="replace",
                                 timeout=5,
                             )
                             if check.stdout.strip() != "active":
@@ -10570,11 +10803,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         svc_name,
                                         "--property=MainPID",
                                         "--value",
-                                    ],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=5,
-                                )
+                        ],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=5,
+                    )
                                 _main_pid = int((_show.stdout or "").strip() or 0)
                             except (
                                 ValueError,
@@ -10626,12 +10861,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         _manage_cmd + ["reset-failed", svc_name],
                                         capture_output=True,
                                         text=True,
+                                        encoding="utf-8",
+                                        errors="replace",
                                         timeout=10,
                                     )
                                     subprocess.run(
                                         _manage_cmd + ["start", svc_name],
                                         capture_output=True,
                                         text=True,
+                                        encoding="utf-8",
+                                        errors="replace",
                                         timeout=15,
                                     )
                                     # Short poll: the gateway should be up
@@ -10715,12 +10954,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 _manage_cmd + ["reset-failed", svc_name],
                                 capture_output=True,
                                 text=True,
+                                encoding="utf-8",
+                                errors="replace",
                                 timeout=10,
                             )
                             restart = subprocess.run(
                                 _manage_cmd + ["restart", svc_name],
                                 capture_output=True,
                                 text=True,
+                                encoding="utf-8",
+                                errors="replace",
                                 timeout=15,
                             )
                             if restart.returncode == 0:
@@ -10747,12 +10990,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         _manage_cmd + ["reset-failed", svc_name],
                                         capture_output=True,
                                         text=True,
+                                        encoding="utf-8",
+                                        errors="replace",
                                         timeout=10,
                                     )
                                     subprocess.run(
                                         _manage_cmd + ["restart", svc_name],
                                         capture_output=True,
                                         text=True,
+                                        encoding="utf-8",
+                                        errors="replace",
                                         timeout=15,
                                     )
                                     if _wait_for_service_active(
@@ -10803,6 +11050,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             ["launchctl", "list", get_launchd_label()],
                             capture_output=True,
                             text=True,
+                            encoding="utf-8",
+                            errors="replace",
                             timeout=5,
                         )
                         if check.returncode == 0:
@@ -12245,18 +12494,18 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "closure", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
+        "goal", "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
+        "runtime", "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -12455,6 +12704,9 @@ def _apply_safe_mode(args) -> None:
 def _set_chat_arg_defaults(args) -> None:
     for attr, default in [
         ("query", None),
+        ("slash", None),
+        ("query_file", None),
+        ("stdin_query", False),
         ("model", None),
         ("provider", None),
         ("toolsets", None),
@@ -12465,6 +12717,18 @@ def _set_chat_arg_defaults(args) -> None:
     ]:
         if not hasattr(args, attr):
             setattr(args, attr, default)
+
+
+def _reject_unsupported_oneshot_resume(parser, args) -> None:
+    if not getattr(args, "oneshot", None):
+        return
+    if not (getattr(args, "resume", None) or getattr(args, "continue_last", None)):
+        return
+    parser.error(
+        "--oneshot cannot be combined with --resume or --continue. "
+        "Supported alternative: use `hermes chat --resume SESSION --query-file PATH` "
+        "for long prompts, or `hermes chat --resume SESSION --query TEXT` for short prompts."
+    )
 
 
 def _try_termux_fast_cli_launch() -> bool:
@@ -12500,6 +12764,7 @@ def _try_termux_fast_cli_launch() -> bool:
     parser, _subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=cmd_chat)
     args = parser.parse_args(_coalesce_session_name_args(argv))
+    _reject_unsupported_oneshot_resume(parser, args)
 
     if getattr(args, "version", False):
         _print_version_info(check_updates=False)
@@ -12524,7 +12789,14 @@ def _try_termux_fast_cli_launch() -> bool:
 
     if args.command in {None, "chat"}:
         _set_chat_arg_defaults(args)
-        interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
+        noninteractive_slash = _is_noninteractive_slash_invocation(args)
+        interactive_prompt = (
+            not getattr(args, "query", None)
+            and not getattr(args, "slash", None)
+            and not getattr(args, "query_file", None)
+            and not getattr(args, "stdin_query", False)
+            and not getattr(args, "image", None)
+        )
         if interactive_prompt:
             # Bare Termux CLI should reach the prompt first and do agent-only
             # discovery on the first submitted turn instead of before input.
@@ -12533,7 +12805,7 @@ def _try_termux_fast_cli_launch() -> bool:
             os.environ["HERMES_FAST_STARTUP_BANNER"] = "1"
             if getattr(args, "accept_hooks", False):
                 os.environ["HERMES_ACCEPT_HOOKS"] = "1"
-        else:
+        elif not noninteractive_slash:
             _prepare_agent_startup(args)
         cmd_chat(args)
         return True
@@ -12574,6 +12846,8 @@ def _try_termux_fast_tui_launch() -> bool:
     if getattr(args, "version", False) or getattr(args, "oneshot", None):
         return False
     if getattr(args, "command", None) not in {None, "chat"}:
+        return False
+    if _is_noninteractive_slash_invocation(args):
         return False
     if not _resolve_use_tui(args):
         return False
@@ -13004,6 +13278,16 @@ def main():
     build_status_parser(subparsers, cmd_status=cmd_status)
 
     # =========================================================================
+    # goal command  (parser built in hermes_cli/goal_cli.py)
+    # =========================================================================
+    build_goal_parser(subparsers)
+
+    # =========================================================================
+    # runtime command  (parser built in hermes_cli/runtime_cli.py)
+    # =========================================================================
+    build_runtime_parser(subparsers)
+
+    # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)
     # =========================================================================
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
@@ -13026,6 +13310,10 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    from hermes_cli.closure_cli import build_closure_parser
+
+    build_closure_parser(subparsers)
 
     # =========================================================================
     # project command — named, multi-folder workspaces
@@ -13372,7 +13660,8 @@ def main():
                     from hermes_cli.tools_config import _cua_driver_env
                     version = subprocess.run(
                         [path, "--version"],
-                        capture_output=True, text=True, timeout=5,
+                        capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=5,
                         env=_cua_driver_env(),
                     ).stdout.strip()
                 except Exception:
@@ -14588,6 +14877,8 @@ def main():
     else:
         subparsers.required = False
         args = parser.parse_args(_processed_argv)
+
+    _reject_unsupported_oneshot_resume(parser, args)
 
     # Handle --version flag
     if args.version:

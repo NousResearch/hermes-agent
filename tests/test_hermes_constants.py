@@ -27,13 +27,29 @@ from hermes_constants import (
 )
 
 
+def _raise_home_unavailable():
+    raise RuntimeError("Could not determine home directory.")
+
+
+def _symlink_or_skip(
+    link: Path, target: Path, *, target_is_directory: bool = False
+) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError) as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege unavailable")
+        raise
+
+
 class TestGetDefaultHermesRoot:
     """Tests for get_default_hermes_root() — Docker/custom deployment awareness."""
 
     def test_no_hermes_home_returns_native(self, tmp_path, monkeypatch):
-        """When HERMES_HOME is not set, returns ~/.hermes."""
+        """When HERMES_HOME is not set on POSIX, returns ~/.hermes."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
 
         assert get_default_hermes_root() == tmp_path / ".hermes"
 
@@ -100,6 +116,18 @@ class TestGetDefaultHermesRoot:
 
         assert get_default_hermes_root() == home / "AppData" / "Local" / "hermes"
 
+    def test_explicit_profile_home_does_not_need_path_home(self, tmp_path, monkeypatch):
+        """When HERMES_HOME is explicit, profile-root detection must not need HOME."""
+        root = tmp_path / "explicit-root"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(Path, "home", _raise_home_unavailable)
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+
+        assert get_default_hermes_root() == root
+
 
 class TestGetHermesHome:
     """Tests for get_hermes_home() platform-aware fallback."""
@@ -114,6 +142,34 @@ class TestGetHermesHome:
         monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
 
         assert get_hermes_home() == local_appdata / "hermes"
+
+    def test_no_explicit_home_fails_closed_when_home_directory_unavailable(self, tmp_path, monkeypatch):
+        """HOME-less startup must not silently relocate Hermes state into cwd."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(Path, "home", _raise_home_unavailable)
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
+
+        with pytest.raises(RuntimeError, match="Could not determine home directory"):
+            get_hermes_home()
+        assert not (tmp_path / ".hermes").exists()
+
+    def test_display_home_is_robust_when_home_directory_unavailable(self, tmp_path, monkeypatch):
+        """Display helpers should not invent cwd state when no home can be resolved."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(Path, "home", _raise_home_unavailable)
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
+
+        display = hermes_constants.display_hermes_home()
+
+        assert "unavailable" in display
+        assert str(tmp_path / ".hermes") not in display
+        assert not (tmp_path / ".hermes").exists()
 
 
 class TestHermesManagedNode:
@@ -567,7 +623,7 @@ class TestSecureParentDir:
 
         # Create a symlink with fewer path components
         link = tmp_path / "link"
-        link.symlink_to(real_dir)
+        _symlink_or_skip(link, real_dir, target_is_directory=True)
         link_target = link / "file.json"
 
         called_with = []
@@ -807,7 +863,7 @@ class TestGetHermesDir:
         """
         self._set_home(tmp_path, monkeypatch)
         legacy = tmp_path / "pairing"
-        legacy.symlink_to(tmp_path / "does-not-exist")
+        _symlink_or_skip(legacy, tmp_path / "does-not-exist")
         new = tmp_path / "platforms" / "pairing"
         new.mkdir(parents=True)
         (new / "discord-approved.json").write_text("[]")
@@ -821,7 +877,7 @@ class TestGetHermesDir:
         real.mkdir()
         (real / "cached.png").write_bytes(b"x")
         legacy = tmp_path / "image_cache"
-        legacy.symlink_to(real)
+        _symlink_or_skip(legacy, real, target_is_directory=True)
         result = get_hermes_dir("cache/images", "image_cache")
         assert result == legacy
 
@@ -831,6 +887,6 @@ class TestGetHermesDir:
         empty = tmp_path / "empty_real"
         empty.mkdir()
         legacy = tmp_path / "audio_cache"
-        legacy.symlink_to(empty)
+        _symlink_or_skip(legacy, empty, target_is_directory=True)
         result = get_hermes_dir("cache/audio", "audio_cache")
         assert result == tmp_path / "cache/audio"

@@ -24,6 +24,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.subprocess_text import install_lossy_text_subprocess_defaults
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
@@ -42,6 +43,7 @@ _hermes_home = get_hermes_home()
 load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"
 )
+install_lossy_text_subprocess_defaults()
 
 
 # ── Panic logger ─────────────────────────────────────────────────────
@@ -85,10 +87,28 @@ def _panic_hook(exc_type, exc_value, exc_tb):
 sys.excepthook = _panic_hook
 
 
+def _is_subprocess_reader_decode_error(args) -> bool:
+    if args.exc_type is not UnicodeDecodeError:
+        return False
+    thread_name = getattr(getattr(args, "thread", None), "name", "")
+    if "_readerthread" in thread_name:
+        return True
+    tb = args.exc_traceback
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        if code.co_name == "_readerthread" and Path(code.co_filename).name == "subprocess.py":
+            return True
+        tb = tb.tb_next
+    return False
+
+
 def _thread_panic_hook(args):
     # threading.excepthook signature: SimpleNamespace(exc_type, exc_value, exc_traceback, thread)
     import traceback
 
+    reader_decode_warning = _is_subprocess_reader_decode_error(args)
+    label = "thread warning" if reader_decode_warning else "thread exception"
+    prefix = "gateway-thread-warning" if reader_decode_warning else "gateway-crash"
     trace = "".join(
         traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
     )
@@ -96,7 +116,7 @@ def _thread_panic_hook(args):
         os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
         with open(_CRASH_LOG, "a", encoding="utf-8") as f:
             f.write(
-                f"\n=== thread exception · {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"\n=== {label} · {time.strftime('%Y-%m-%d %H:%M:%S')} "
                 f"· thread={args.thread.name} ===\n"
             )
             f.write(trace)
@@ -108,7 +128,7 @@ def _thread_panic_hook(args):
         else args.exc_type.__name__
     )
     print(
-        f"[gateway-crash] thread {args.thread.name} raised {args.exc_type.__name__}: {first_line}",
+        f"[{prefix}] thread {args.thread.name} raised {args.exc_type.__name__}: {first_line}",
         file=sys.stderr,
         flush=True,
     )
@@ -293,6 +313,7 @@ class _SlashWorker:
 
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_cli.subprocess_text import popen_text_kwargs
 
         # slash_worker runs the Hermes agent → needs provider credentials.
         # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
@@ -316,8 +337,7 @@ class _SlashWorker:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
+            **popen_text_kwargs(bufsize=1),
             cwd=os.getcwd(),
             env=env,
             creationflags=windows_hide_flags(),
@@ -438,6 +458,15 @@ def _claim_active_session_slot(
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
         return None, None
+
+
+def _active_session_registry_degradation(limit_message: str | None) -> dict | None:
+    if not str(limit_message or "").startswith("Hermes active session registry is busy;"):
+        return None
+    return {
+        "active_session_registry": "degraded",
+        "reason": "active_session_registry_busy",
+    }
 
 
 def _release_active_session_slot(session: dict | None) -> None:
@@ -2797,6 +2826,18 @@ def _persist_model_switch(result) -> None:
     # rewriting the whole `model:` block. A full-block rewrite via save_config()
     # destroys sibling keys the user set under `model:` — `model_slots`,
     # `model_fallback`, etc. — when switching models from the TUI (#48305).
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.model_policy import check_fixed_model_policy
+
+        _model_policy_check = check_fixed_model_policy(
+            load_config(), result.new_model, action="requested"
+        )
+    except Exception:
+        _model_policy_check = None
+    if _model_policy_check is not None and not _model_policy_check.allowed:
+        raise ValueError(_model_policy_check.message)
+
     from cli import save_config_value
 
     save_config_value("model.default", result.new_model)
@@ -5633,7 +5674,8 @@ def _(rid, params: dict) -> dict:
         lease, limit_message = _claim_active_session_slot(
             target, live_session_id=sid, surface=source
         )
-        if limit_message is not None:
+        runtime_degradation = _active_session_registry_degradation(limit_message)
+        if limit_message is not None and runtime_degradation is None:
             return _err(rid, 4090, limit_message)
         try:
             db.reopen_session(target)
@@ -5662,21 +5704,21 @@ def _(rid, params: dict) -> dict:
         # its liveness from the relay registry so the window shows a busy turn.
         child_running = _child_run_active(target)
         messages = _history_to_messages(history)
-        return _ok(
-            rid,
-            {
-                "session_id": sid,
-                "resumed": target,
-                "message_count": len(messages),
-                "messages": messages,
-                "info": _lazy_resume_info(cwd),
-                "inflight": None,
-                "running": child_running,
-                "session_key": target,
-                "started_at": record["created_at"],
-                "status": "streaming" if child_running else "idle",
-            },
-        )
+        payload = {
+            "session_id": sid,
+            "resumed": target,
+            "message_count": len(messages),
+            "messages": messages,
+            "info": _lazy_resume_info(cwd),
+            "inflight": None,
+            "running": child_running,
+            "session_key": target,
+            "started_at": record["created_at"],
+            "status": "streaming" if child_running else "idle",
+        }
+        if runtime_degradation is not None:
+            payload["runtime_status"] = runtime_degradation
+        return _ok(rid, payload)
 
     # Cold resume default: register the live session and read its stored
     # transcript, but build the agent OFF the response path. _make_agent can
@@ -5697,7 +5739,8 @@ def _(rid, params: dict) -> dict:
         lease, limit_message = _claim_active_session_slot(
             target, live_session_id=sid, surface=source
         )
-        if limit_message is not None:
+        runtime_degradation = _active_session_registry_degradation(limit_message)
+        if limit_message is not None and runtime_degradation is None:
             return _err(rid, 4090, limit_message)
         # Interactive resume routes approvals/clarify through gateway prompts;
         # the deferred build wires the remaining per-session callbacks.
@@ -5741,25 +5784,25 @@ def _(rid, params: dict) -> dict:
         _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
 
         messages = _history_to_messages(display_history)
-        return _ok(
-            rid,
-            {
-                "session_id": sid,
-                "resumed": target,
-                "message_count": len(messages),
-                "messages": messages,
-                "info": _lazy_resume_info(
-                    cwd,
-                    model=model_override.get("model") or "",
-                    provider=overrides.get("provider_override") or "",
-                ),
-                "inflight": None,
-                "running": False,
-                "session_key": target,
-                "started_at": record["created_at"],
-                "status": "idle",
-            },
-        )
+        payload = {
+            "session_id": sid,
+            "resumed": target,
+            "message_count": len(messages),
+            "messages": messages,
+            "info": _lazy_resume_info(
+                cwd,
+                model=model_override.get("model") or "",
+                provider=overrides.get("provider_override") or "",
+            ),
+            "inflight": None,
+            "running": False,
+            "session_key": target,
+            "started_at": record["created_at"],
+            "status": "idle",
+        }
+        if runtime_degradation is not None:
+            payload["runtime_status"] = runtime_degradation
+        return _ok(rid, payload)
 
     # Build the agent OUTSIDE the lock — _make_agent can block for seconds
     # (MCP discovery, prompt/skill build, AIAgent construction). Holding
@@ -5770,7 +5813,8 @@ def _(rid, params: dict) -> dict:
     lease, limit_message = _claim_active_session_slot(
         target, live_session_id=sid, surface=source
     )
-    if limit_message is not None:
+    runtime_degradation = _active_session_registry_degradation(limit_message)
+    if limit_message is not None and runtime_degradation is None:
         return _err(rid, 4090, limit_message)
     _enable_gateway_prompts()
     home_token = (
@@ -5880,21 +5924,21 @@ def _(rid, params: dict) -> dict:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
-    return _ok(
-        rid,
-        {
-            "session_id": sid,
-            "resumed": target,
-            "message_count": len(messages),
-            "messages": messages,
-            "info": _session_info(agent, session),
-            "inflight": None,
-            "running": False,
-            "session_key": target,
-            "started_at": float(session.get("created_at") or time.time()),
-            "status": "idle",
-        },
-    )
+    payload = {
+        "session_id": sid,
+        "resumed": target,
+        "message_count": len(messages),
+        "messages": messages,
+        "info": _session_info(agent, session),
+        "inflight": None,
+        "running": False,
+        "session_key": target,
+        "started_at": float(session.get("created_at") or time.time()),
+        "status": "idle",
+    }
+    if runtime_degradation is not None:
+        payload["runtime_status"] = runtime_degradation
+    return _ok(rid, payload)
 
 
 @method("session.cwd.set")
@@ -8670,9 +8714,22 @@ def _notification_poller_loop(
     CLI/gateway behavior (single session per process).
     """
     from tools.process_registry import process_registry, format_process_notification
+    from tools.async_delegation import is_delivered, recover_pending_delegations
 
     _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+    _next_recovery_scan = 0.0
+    async_home = session.get("profile_home") or None
     while not stop_event.is_set() and not session.get("_finalized"):
+        try:
+            _recovery_now = time.monotonic()
+            if _recovery_now >= _next_recovery_scan:
+                recover_pending_delegations(
+                    origin="tui notification poller",
+                    hermes_home=async_home,
+                )
+                _next_recovery_scan = _recovery_now + 2.0
+        except Exception:
+            pass
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
@@ -8716,6 +8773,11 @@ def _notification_poller_loop(
 
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+        if evt.get("type") == "async_delegation" and is_delivered(
+            str(evt.get("delegation_id") or ""),
+            hermes_home=async_home,
+        ):
             continue
 
         text = format_process_notification(evt)
@@ -8761,6 +8823,13 @@ def _notification_poller_loop(
     # Drain any remaining events after stop signal (process all pending
     # before exiting so nothing is lost on shutdown). Events owned by other
     # live sessions are set aside and re-queued so their poller still sees them.
+    try:
+        recover_pending_delegations(
+            origin="tui notification poller shutdown",
+            hermes_home=async_home,
+        )
+    except Exception:
+        pass
     deferred: list = []
     while not process_registry.completion_queue.empty():
         try:
@@ -8781,6 +8850,11 @@ def _notification_poller_loop(
             continue
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+        if evt.get("type") == "async_delegation" and is_delivered(
+            str(evt.get("delegation_id") or ""),
+            hermes_home=async_home,
+        ):
             continue
         text = format_process_notification(evt)
         if not text:
@@ -8874,6 +8948,15 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+    _async_delegation_ids_to_mark = []
+    if isinstance(text, str):
+        try:
+            from tools.async_delegation import extract_delegation_ids_from_text
+
+            _async_delegation_ids_to_mark = extract_delegation_ids_from_text(text)
+        except Exception:
+            _async_delegation_ids_to_mark = []
+
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -8894,6 +8977,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        async_home = session.get("profile_home") or None
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -8905,7 +8989,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 session["session_key"],
                 ui_session_id=sid,
             )
-            _profile_home_str = session.get("profile_home")
+            _profile_home_str = async_home
             if _profile_home_str:
                 home_token = set_hermes_home_override(_profile_home_str)
             # The sudo password callback is thread-local (tools.terminal_tool
@@ -9145,6 +9229,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             with session["history_lock"]:
                 _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
+            if status == "complete" and _async_delegation_ids_to_mark:
+                try:
+                    from tools.async_delegation import mark_delivered
+
+                    for _deleg_id in _async_delegation_ids_to_mark:
+                        mark_delivered(_deleg_id, hermes_home=_profile_home_str)
+                except Exception:
+                    pass
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge
@@ -9336,6 +9428,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         # the safety net for events that arrived mid-turn.
         try:
             from tools.process_registry import process_registry
+            from tools.async_delegation import recover_pending_delegations
+
+            recover_pending_delegations(
+                origin="tui post-turn drain",
+                hermes_home=async_home,
+            )
 
             # Positive-proof ownership (compression-chain aware) — the same
             # fail-closed gate the poller uses, so the post-turn drain can't
@@ -9345,6 +9443,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             for _evt, synth in process_registry.drain_notifications(
                 session_key=session.get("session_key", ""),
                 owns_event=lambda e: _session_owns_notification_event(sid, session, e),
+                hermes_home=async_home,
             ):
                 with session["history_lock"]:
                     if session.get("running"):
@@ -9694,7 +9793,8 @@ def _(rid, params: dict) -> dict:
 
         try:
             res = subprocess.run(
-                argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=120, stdin=subprocess.DEVNULL,
                 creationflags=windows_hide_flags(),
             )
         except subprocess.TimeoutExpired:
@@ -11748,6 +11848,8 @@ def _(rid, params: dict) -> dict:
             [sys.executable, "-m", "hermes_cli.main", *argv],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=min(int(params.get("timeout", 240)), 600),
             cwd=os.getcwd(),
             # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
@@ -11818,6 +11920,8 @@ def _(rid, params: dict) -> dict:
                 shell=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
                 stdin=subprocess.DEVNULL,
                 env=sanitized_env,
@@ -14297,7 +14401,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            cmd, shell=True, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=30, cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
         )
         return _ok(

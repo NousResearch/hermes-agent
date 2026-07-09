@@ -5,6 +5,7 @@ from tools.environments.local import LocalEnvironment
 
 class TestLocalTempDir:
     def test_uses_os_tmpdir_for_session_artifacts(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", False)
         monkeypatch.setenv("TMPDIR", "/data/data/com.termux/files/usr/tmp")
         monkeypatch.delenv("TMP", raising=False)
         monkeypatch.delenv("TEMP", raising=False)
@@ -17,6 +18,7 @@ class TestLocalTempDir:
         assert env._cwd_file == f"/data/data/com.termux/files/usr/tmp/hermes-cwd-{env._session_id}.txt"
 
     def test_prefers_backend_env_tmpdir_override(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", False)
         monkeypatch.delenv("TMPDIR", raising=False)
         monkeypatch.delenv("TMP", raising=False)
         monkeypatch.delenv("TEMP", raising=False)
@@ -37,6 +39,7 @@ class TestLocalTempDir:
         )
 
     def test_falls_back_to_tempfile_when_tmp_missing(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", False)
         monkeypatch.delenv("TMPDIR", raising=False)
         monkeypatch.delenv("TMP", raising=False)
         monkeypatch.delenv("TEMP", raising=False)

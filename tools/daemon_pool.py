@@ -38,8 +38,11 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
     """ThreadPoolExecutor variant whose workers do not block process exit."""
 
     def _adjust_thread_count(self) -> None:
-        # Mirrors CPython's implementation (3.8–3.13) with two changes:
-        # daemon=True and no _threads_queues registration.
+        # Mirrors CPython's implementation with two changes: daemon=True and no
+        # _threads_queues registration.  CPython 3.14 changed the private
+        # worker signature from (executor_ref, queue, initializer, initargs) to
+        # (executor_ref, worker_context, queue); build the args at runtime so the
+        # daemon pool works across both shapes.
         if self._idle_semaphore.acquire(timeout=0):
             return
 
@@ -49,16 +52,31 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
             thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
+            worker_args = self._worker_args(weakref_cb)
             t = threading.Thread(
                 name=thread_name,
                 target=_worker,
-                args=(
-                    weakref.ref(self, weakref_cb),
-                    self._work_queue,
-                    self._initializer,
-                    self._initargs,
-                ),
+                args=worker_args,
                 daemon=True,
             )
             t.start()
             self._threads.add(t)
+
+    def _worker_args(self, weakref_cb):
+        """Return args for concurrent.futures.thread._worker.
+
+        Python 3.14+ uses ``(executor_ref, worker_context, work_queue)`` while
+        3.8–3.13 use ``(executor_ref, work_queue, initializer, initargs)``.
+        Avoid version checks; the executor instance exposes the new context
+        factory only on runtimes that need it.
+        """
+        executor_ref = weakref.ref(self, weakref_cb)
+        create_context = getattr(self, "_create_worker_context", None)
+        if callable(create_context):
+            return (executor_ref, create_context(), self._work_queue)
+        return (
+            executor_ref,
+            self._work_queue,
+            getattr(self, "_initializer", None),
+            getattr(self, "_initargs", ()),
+        )

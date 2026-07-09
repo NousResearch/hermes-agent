@@ -358,4 +358,3 @@ A parent without a hand-verified `optout.playbook` gets synthesised steps from i
 back into `references/brokers/<id>.json`** (`optout.playbook`, `optout.deletion`, `quirks`,
 `last_verified`) so the next run is exact - that file, not this one, is where per-broker knowledge
 accrues.
-

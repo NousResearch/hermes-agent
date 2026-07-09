@@ -10,6 +10,7 @@ import codecs
 import json
 import logging
 import os
+import re
 import select
 import shlex
 import subprocess
@@ -23,6 +24,7 @@ from typing import IO, Callable, Protocol
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.interrupt import is_interrupted
+from tools.path_translation import windows_path_to_git_bash_path
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +151,8 @@ def _popen_bash(
         stderr=subprocess.STDOUT,
         stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         **kwargs,
     )
     if stdin_data is not None:
@@ -282,6 +286,28 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
+_CWD_MARKER_WARNING_RE = re.compile(
+    r"(?m)^.*hermes-cwd-[A-Za-z0-9_.-]+\.txt: No such file or directory\r?\n?"
+)
+
+
+def _shell_parent_dir(path: str) -> str:
+    stripped = str(path or "").rstrip("/")
+    if not stripped or "/" not in stripped:
+        return "."
+    return stripped.rsplit("/", 1)[0] or "/"
+
+
+def _shell_artifact_path(path: str) -> str:
+    return windows_path_to_git_bash_path(path).replace("\\", "/")
+
+
+def _strip_internal_cwd_marker_warnings(output: str) -> str:
+    if not output or "hermes-cwd-" not in output:
+        return output
+    return _CWD_MARKER_WARNING_RE.sub("", output).rstrip("\r\n")
+
+
 # ---------------------------------------------------------------------------
 # BaseEnvironment
 # ---------------------------------------------------------------------------
@@ -374,8 +400,11 @@ class BaseEnvironment(ABC):
         # caused ``C:/Users/.../hermes-snap-*.sh: No such file or directory``
         # errors on Windows, leaking via stderr (merged into stdout on Linux
         # backends) into every terminal-tool response.
-        _quoted_snap = shlex.quote(self._snapshot_path)
-        _quoted_cwd_file = shlex.quote(self._cwd_file)
+        shell_snapshot_path = _shell_artifact_path(self._snapshot_path)
+        shell_cwd_file = _shell_artifact_path(self._cwd_file)
+        _quoted_snap = shlex.quote(shell_snapshot_path)
+        _quoted_cwd_file = shlex.quote(shell_cwd_file)
+        _quoted_artifact_dir = shlex.quote(_shell_parent_dir(shell_cwd_file))
         # Use atomic file replacement: assemble the snapshot in a temp file,
         # then mv it over the final path.  This prevents concurrent source()
         # calls from reading a half-written snapshot when another terminal
@@ -393,9 +422,10 @@ class BaseEnvironment(ABC):
         # and is genuinely unique per writer, which closes the race.  The
         # static path is shlex-quoted (Windows/Git-Bash drive letters, spaces)
         # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
+        _snap_tmp = shlex.quote(shell_snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
             f"umask 077\n"
+            f"mkdir -p {_quoted_artifact_dir} 2>/dev/null || true\n"
             f"export -p > {_snap_tmp}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
@@ -470,8 +500,11 @@ class BaseEnvironment(ABC):
         # ``C:/Users/...``-shaped paths without glob-splitting the colon or
         # tripping on drive letters.  POSIX paths are unaffected.  See
         # :meth:`init_session` for the same fix on the bootstrap block.
-        _quoted_snap = shlex.quote(self._snapshot_path)
-        _quoted_cwd_file = shlex.quote(self._cwd_file)
+        shell_snapshot_path = _shell_artifact_path(self._snapshot_path)
+        shell_cwd_file = _shell_artifact_path(self._cwd_file)
+        _quoted_snap = shlex.quote(shell_snapshot_path)
+        _quoted_cwd_file = shlex.quote(shell_cwd_file)
+        _quoted_artifact_dir = shlex.quote(_shell_parent_dir(shell_cwd_file))
         # Use atomic file replacement for env snapshot updates (issue #38249).
         # Assemble into a per-writer-unique temp file, then mv to atomically
         # replace the snapshot so concurrent source() calls never read a
@@ -479,7 +512,7 @@ class BaseEnvironment(ABC):
         # subshell PID — unique per concurrent ``&``-launched writer — so two
         # writers never share a temp name and clobber each other before the mv.
         # Static path shlex-quoted (Windows/spaces); ``$BASHPID`` left to expand.
-        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
+        _snap_tmp = shlex.quote(shell_snapshot_path + ".tmp.") + "$BASHPID"
 
         parts = []
 
@@ -493,6 +526,8 @@ class BaseEnvironment(ABC):
             parts.append(
                 f"source {_quoted_snap} >/dev/null 2>&1 || true"
             )
+
+        parts.append(f"mkdir -p {_quoted_artifact_dir} 2>/dev/null || true")
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.
@@ -848,6 +883,8 @@ class BaseEnvironment(ABC):
         marker = self._cwd_marker
         last = output.rfind(marker)
         if last == -1:
+            if int(result.get("returncode", 0) or 0) == 0:
+                result["output"] = _strip_internal_cwd_marker_warnings(output)
             return
 
         # Find the opening marker before this closing one
@@ -870,7 +907,9 @@ class BaseEnvironment(ABC):
         line_end = output.find("\n", last + len(marker))
         line_end = line_end + 1 if line_end != -1 else len(output)
 
-        result["output"] = output[:line_start] + output[line_end:]
+        result["output"] = _strip_internal_cwd_marker_warnings(
+            output[:line_start] + output[line_end:]
+        )
 
     # ------------------------------------------------------------------
     # Hooks

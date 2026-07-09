@@ -2046,4 +2046,3 @@ class Test408RequestTimeout:
         assert result.reason == FailoverReason.timeout
         assert result.retryable is True
         assert result.should_compress is False
-

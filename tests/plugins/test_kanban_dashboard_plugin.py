@@ -114,6 +114,35 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_board_surfaces_terminal_task_with_live_worker_process(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "terminal mismatch", "assignee": "worker"},
+    ).json()["task"]
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'done', worker_pid = ?, "
+                "claim_lock = ?, claim_expires = ? WHERE id = ?",
+                (12345, "host:phase7", int(time.time()) + 3600, task["id"]),
+            )
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200, r.text
+    done = next(c for c in r.json()["columns"] if c["name"] == "done")
+    row = next(t for t in done["tasks"] if t["id"] == task["id"])
+
+    assert row["worker_process_state"] == {
+        "state": "terminal_task_with_live_process",
+        "status": "done",
+        "worker_pid": 12345,
+    }
+
+
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
     """Scheduled/time-delay tasks must not be silently bucketed into todo."""
 

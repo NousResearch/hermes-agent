@@ -347,6 +347,59 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect($composerDraft.get()).toBe('/ pasted context that must not vanish')
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
+
+  it('ignores bare slash artifacts without rendering "empty slash command" around /goal output', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        return { output: 'No active goal.' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/')
+    await handle!.submitText('/goal stop')
+    await handle!.submitText('/ ')
+
+    expect(calls).toEqual([
+      {
+        method: 'slash.exec',
+        params: {
+          command: 'goal stop',
+          session_id: RUNTIME_SESSION_ID
+        }
+      }
+    ])
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    expect(renderedText).toContain('/goal stop')
+    expect(renderedText).toContain('No active goal.')
+    expect(renderedText).not.toContain('empty slash command')
+  })
 })
 
 describe('usePromptActions desktop slash pickers', () => {

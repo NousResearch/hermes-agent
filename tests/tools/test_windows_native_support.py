@@ -50,9 +50,10 @@ class TestConfigureWindowsStdio:
         yield
         sys.modules.pop("hermes_cli.stdio", None)
 
-    def test_no_op_on_posix(self):
+    def test_no_op_on_posix(self, monkeypatch):
         from hermes_cli import stdio
 
+        monkeypatch.setattr(stdio, "is_windows", lambda: False)
         assert stdio.is_windows() is False
         result = stdio.configure_windows_stdio()
         assert result is False
@@ -173,6 +174,43 @@ class TestConfigureWindowsStdio:
 
 
 # ---------------------------------------------------------------------------
+# subprocess text capture
+# ---------------------------------------------------------------------------
+
+
+class TestSubprocessTextCaptureDecoding:
+    """Subprocess wrappers must survive non-UTF-8 child output.
+
+    A strict TextIOWrapper can raise ``UnicodeDecodeError`` in Python's
+    subprocess reader path when a child emits locale-encoded stderr/stdout.
+    Hermes should replace undecodable bytes while preserving the child exit
+    code so real failures still surface.
+    """
+
+    def test_popen_bash_replaces_bad_output_and_preserves_nonzero_exit(self):
+        from tools.environments.base import _popen_bash
+
+        script = (
+            "import os, sys; "
+            "os.write(sys.stdout.fileno(), b'alpha\\x81omega'); "
+            "sys.exit(7)"
+        )
+        proc = _popen_bash([sys.executable, "-c", script])
+        try:
+            assert proc.stdout is not None
+            output = proc.stdout.read()
+            returncode = proc.wait(timeout=10)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+        assert "alpha" in output
+        assert "\ufffd" in output
+        assert "omega" in output
+        assert returncode == 7
+
+
+# ---------------------------------------------------------------------------
 # terminate_pid — the centralized kill primitive
 # ---------------------------------------------------------------------------
 
@@ -287,8 +325,12 @@ class TestSigkillFallback:
 
     def test_getattr_fallback_prefers_sigkill_when_present(self):
         """On POSIX the fallback is a no-op: real SIGKILL wins."""
-        result = getattr(signal, "SIGKILL", signal.SIGTERM)
-        assert result == signal.SIGKILL
+        fake_signal = MagicMock()
+        fake_signal.SIGKILL = 9
+        fake_signal.SIGTERM = 15
+
+        result = getattr(fake_signal, "SIGKILL", fake_signal.SIGTERM)
+        assert result == 9
 
     @pytest.mark.parametrize(
         "module_path, line_pattern",
@@ -459,6 +501,46 @@ class TestReadmeNoLongerSaysWindowsUnsupported:
         assert "install.ps1" in source, (
             "README.md must point at scripts/install.ps1 for Windows users"
         )
+
+
+class TestWindowsQueryFileLaunchRunbook:
+    """Long noninteractive prompts on Windows should use argv arrays."""
+
+    def test_query_file_runbook_uses_safe_powershell_patterns(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (
+            root / "docs" / "kanban" / "windows-query-file-launch.md"
+        ).read_text(encoding="utf-8")
+
+        assert "--query-file" in source
+        assert "--stdin-query" in source
+        assert '--slash "/goal resume"' in source
+        assert '$args = @("-m", "hermes_cli.main", "chat", "--resume", $sessionId, "--model", "gpt-5.5", "--query-file", $promptPath)' in source
+        assert "& .\\venv\\Scripts\\python.exe @args" in source
+        assert "Start-Process `" in source
+        assert "-FilePath $exe" in source
+        assert "-ArgumentList $args" in source
+        assert "unrecognized arguments" in source
+
+
+class TestWindowsTestRunnerPaths:
+    """Focused test runners should work from this Windows checkout."""
+
+    def test_bash_runner_detects_windows_venv_scripts_python(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "scripts" / "run_tests.sh").read_text(encoding="utf-8")
+
+        assert "Scripts/python.exe" in source
+        assert "bin/python" in source
+
+    def test_powershell_runner_uses_venv_python_and_parallel_runner(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "scripts" / "run_tests.ps1").read_text(encoding="utf-8")
+
+        assert "venv\\Scripts\\python.exe" in source
+        assert "run_tests_parallel.py" in source
+        assert "PYTHONHASHSEED" in source
+        assert "@PytestArgs" in source
 
 
 # ---------------------------------------------------------------------------

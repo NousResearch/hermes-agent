@@ -47,9 +47,18 @@ def _get_platform_default_hermes_home() -> Path:
     """Return the platform-native default Hermes home path."""
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        if local_appdata:
+            base = Path(local_appdata)
+        else:
+            try:
+                base = Path.home() / "AppData" / "Local"
+            except RuntimeError:
+                raise
         return base / "hermes"
-    return Path.home() / ".hermes"
+    try:
+        return Path.home() / ".hermes"
+    except RuntimeError:
+        raise
 
 
 def get_hermes_home() -> Path:
@@ -127,11 +136,16 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
-    native_home = _get_platform_default_hermes_home()
-    env_home = os.environ.get("HERMES_HOME", "")
+    env_home = os.environ.get("HERMES_HOME", "").strip()
     if not env_home:
-        return native_home
+        return _get_platform_default_hermes_home()
     env_path = Path(env_home)
+    try:
+        native_home = _get_platform_default_hermes_home()
+    except RuntimeError:
+        if env_path.parent.name == "profiles":
+            return env_path.parent.parent
+        return env_path
     try:
         env_path.resolve().relative_to(native_home.resolve())
         # HERMES_HOME is under ~/.hermes (normal or profile mode)
@@ -641,10 +655,13 @@ def display_hermes_home() -> str:
     ``~/.hermes``.  For code that needs a real ``Path``, use
     :func:`get_hermes_home` instead.
     """
-    home = get_hermes_home()
+    try:
+        home = get_hermes_home()
+    except RuntimeError:
+        return "<unavailable: HERMES_HOME unset and home directory unavailable>"
     try:
         return "~/" + str(home.relative_to(Path.home()))
-    except ValueError:
+    except (RuntimeError, ValueError):
         return str(home)
 
 

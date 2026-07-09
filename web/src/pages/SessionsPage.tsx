@@ -38,6 +38,7 @@ import type {
   SessionStoreStats,
   StatusResponse,
 } from "@/lib/api";
+import { getSessionStatusLabels } from "@/lib/session-status-labels";
 import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
@@ -411,6 +412,7 @@ function SessionRow({
     : null) ?? { icon: Globe, color: "text-muted-foreground" };
   const SourceIcon = sourceInfo.icon;
   const hasTitle = session.title && session.title !== "Untitled";
+  const statusLabels = getSessionStatusLabels(session);
 
   const submitRename = async () => {
     const value = renameValue.trim();
@@ -603,6 +605,16 @@ function SessionRow({
                     {t.common.live}
                   </Badge>
                 )}
+                {statusLabels.map((status) => (
+                  <Badge
+                    key={status.kind}
+                    tone={status.tone}
+                    className="shrink-0 text-xs"
+                    title={status.title}
+                  >
+                    {status.label}
+                  </Badge>
+                ))}
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
                 <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
@@ -1185,9 +1197,28 @@ export default function SessionsPage() {
 
   // Build snippet map from search results (session_id → snippet)
   const snippetMap = new Map<string, string>();
+  const searchStatusMap = new Map<string, Partial<SessionInfo>>();
   if (searchResults) {
     for (const r of searchResults) {
       snippetMap.set(r.session_id, r.snippet);
+      const statusEvidence: Partial<SessionInfo> = {};
+      if (r.lineage_root != null) statusEvidence._lineage_root_id = r.lineage_root;
+      if (r.last_tool_runtime_event !== undefined) {
+        statusEvidence.last_tool_runtime_event = r.last_tool_runtime_event;
+      }
+      if (r.last_activity_age_seconds !== undefined) {
+        statusEvidence.last_activity_age_seconds = r.last_activity_age_seconds;
+      }
+      if (r.queued_steer_count !== undefined) {
+        statusEvidence.queued_steer_count = r.queued_steer_count;
+      }
+      if (r.compression_tip_session_id !== undefined) {
+        statusEvidence.compression_tip_session_id = r.compression_tip_session_id;
+      }
+      if (r.status_evidence_source !== undefined) {
+        statusEvidence.status_evidence_source = r.status_evidence_source;
+      }
+      searchStatusMap.set(r.session_id, statusEvidence);
     }
   }
 
@@ -1625,7 +1656,7 @@ export default function SessionsPage() {
               {filtered.map((s, index) => (
                 <SessionRow
                   key={s.id}
-                  session={s}
+                  session={{ ...s, ...searchStatusMap.get(s.id) }}
                   snippet={snippetMap.get(s.id)}
                   searchQuery={search || undefined}
                   isExpanded={expandedId === s.id}

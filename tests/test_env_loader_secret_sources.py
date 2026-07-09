@@ -7,6 +7,7 @@ don't see an unexplained "credentials ✓" line when their .env is empty.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +19,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hermes_cli import env_loader  # noqa: E402
+
+
+def _raise_home_unavailable():
+    raise RuntimeError("Could not determine home directory.")
 
 
 @pytest.fixture(autouse=True)
@@ -61,6 +66,41 @@ def test_format_secret_source_suffix_generic_label_for_future_sources():
         env_loader.format_secret_source_suffix("OPENAI_API_KEY")
         == " (from vault)"
     )
+
+
+def test_load_dotenv_uses_explicit_hermes_home_when_path_home_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "explicit-home"
+    home.mkdir()
+    (home / ".env").write_text("HERMES_TEST_EXPLICIT_HOME=loaded\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_TEST_EXPLICIT_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", _raise_home_unavailable)
+    monkeypatch.setattr(env_loader, "_apply_external_secret_sources", lambda _home: None)
+    monkeypatch.setattr(env_loader, "_apply_managed_env", lambda: None)
+
+    loaded = env_loader.load_hermes_dotenv()
+
+    assert loaded == [home / ".env"]
+    assert os.environ["HERMES_TEST_EXPLICIT_HOME"] == "loaded"
+
+
+def test_load_dotenv_fails_closed_without_explicit_home_when_path_home_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Path, "home", _raise_home_unavailable)
+    monkeypatch.setattr(env_loader, "_apply_external_secret_sources", lambda _home: None)
+    monkeypatch.setattr(env_loader, "_apply_managed_env", lambda: None)
+
+    with pytest.raises(RuntimeError, match="Could not determine home directory"):
+        env_loader.load_hermes_dotenv()
+    assert not (tmp_path / ".hermes").exists()
 
 
 def test_format_secret_source_suffix_onepassword_uses_proper_name():

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermes_cli.model_policy import check_fallback_model_policy
+
 
 def _normalized_base_url(value: Any) -> str:
     if not isinstance(value, str):
@@ -63,6 +65,9 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
 
     for key in ("fallback_providers", "fallback_model"):
         for entry in _iter_fallback_entries(config.get(key)):
+            policy_check = check_fallback_model_policy(config, entry.get("model"))
+            if not policy_check.allowed:
+                continue
             identity = _entry_identity(entry)
             if identity in seen:
                 continue

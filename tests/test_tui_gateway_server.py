@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -10,6 +11,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+# scripts/run_tests.sh scrubs HOME on Windows; tui_gateway.server resolves
+# Hermes home at import time, so provide a collection-time fallback before the
+# server module is imported. Per-test overrides still use set_hermes_home_override
+# or monkeypatch as usual.
+_TEST_HOME_FALLBACK = Path(tempfile.gettempdir()) / f"hermes-test-home-{os.getpid()}"
+os.environ.setdefault("HERMES_HOME", str(_TEST_HOME_FALLBACK))
+os.environ.setdefault("MESSAGING_CWD", str(_TEST_HOME_FALLBACK))
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
@@ -340,6 +349,25 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     monkeypatch.setattr(server, "_real_stdout", _BrokenStdout())
 
     assert server.write_json({"ok": True}) is False
+
+
+def test_subprocess_reader_decode_error_is_thread_warning(monkeypatch, tmp_path, capsys):
+    crash_log = tmp_path / "tui_gateway_crash.log"
+    monkeypatch.setattr(server, "_CRASH_LOG", str(crash_log))
+    err = UnicodeDecodeError("utf-8", b"\xf3", 0, 1, "invalid continuation byte")
+    args = types.SimpleNamespace(
+        exc_type=UnicodeDecodeError,
+        exc_value=err,
+        exc_traceback=None,
+        thread=types.SimpleNamespace(name="Thread-271 (_readerthread)"),
+    )
+
+    server._thread_panic_hook(args)
+
+    stderr = capsys.readouterr().err
+    assert "[gateway-crash]" not in stderr
+    assert "[gateway-thread-warning]" in stderr
+    assert "UnicodeDecodeError" in crash_log.read_text(encoding="utf-8")
 
 
 def test_write_json_drops_detached_ws_frames(monkeypatch):
@@ -1017,6 +1045,54 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         {"role": "assistant", "text": "root answer"},
     ]
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
+
+
+def test_session_resume_returns_transcript_when_active_registry_lock_busy(monkeypatch):
+    target = "stored-lock-busy"
+
+    class FakeDB:
+        def get_session(self, _target):
+            return {"id": target}
+
+        def get_session_by_title(self, _target):
+            return None
+
+        def reopen_session(self, _target):
+            pass
+
+        def get_messages_as_conversation(self, _target, include_ancestors=False):
+            return [{"role": "user", "content": "recover this transcript"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(
+        server,
+        "_claim_active_session_slot",
+        lambda *_args, **_kwargs: (
+            None,
+            "Hermes active session registry is busy; owner "
+            "pid=67890 session_id=metadata-session owner_kind=metadata_update. "
+            "Try again shortly or run `hermes runtime active-sessions status`.",
+        ),
+    )
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.resume", "params": {"session_id": target}}
+        )
+    finally:
+        server._sessions.clear()
+
+    assert "error" not in resp
+    assert resp["result"]["session_key"] == target
+    assert resp["result"]["messages"] == [
+        {"role": "user", "text": "recover this transcript"}
+    ]
+    assert resp["result"]["runtime_status"] == {
+        "active_session_registry": "degraded",
+        "reason": "active_session_registry_busy",
+    }
 
 
 def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
@@ -7030,7 +7106,8 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         with patch(
-            "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True
+            "hermes_cli.browser_connect.launch_chrome_debug",
+            return_value=ChromeDebugLaunch(launched=True),
         ):
             resp = server.handle_request(
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
@@ -7818,6 +7895,375 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         server._sessions.pop("sid_busy", None)
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_marks_async_delegation_after_turn(monkeypatch):
+    """TUI/Desktop async delegation notifications are marked delivered only after the synthetic turn completes."""
+    import queue as _queue_mod
+
+    from tools import async_delegation as ad
+    from tools.process_registry import process_registry
+
+    turns = []
+    marked = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            turns.append(prompt)
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    sess = _session(agent=_Agent())
+    server._sessions["sid_async"] = sess
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(ad, "mark_delivered", lambda deleg_id, **_kw: marked.append(deleg_id) or True)
+    monkeypatch.setattr(ad, "recover_pending_delegations", lambda origin="startup", **_kw: 0)
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    isolated_queue.put({
+        "type": "async_delegation",
+        "delegation_id": "deleg_deadbeef",
+        "session_key": "session-key",
+        "goal": "background research",
+        "context": "ctx",
+        "toolsets": ["terminal"],
+        "role": "leaf",
+        "model": "m",
+        "status": "completed",
+        "summary": "done",
+        "dispatched_at": 1000.0,
+        "completed_at": 1001.0,
+    })
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_async", sess)
+        assert len(turns) == 1
+        assert "ASYNC DELEGATION COMPLETE" in turns[0]
+        assert marked == ["deleg_deadbeef"]
+    finally:
+        server._sessions.pop("sid_async", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_recovers_async_event_from_session_profile_home(monkeypatch, tmp_path):
+    """TUI/Desktop async recovery and delivery must use the session profile_home."""
+    import queue as _queue_mod
+
+    from tools import async_delegation as ad
+    from tools.process_registry import process_registry
+
+    launch_home = tmp_path / "launch-home"
+    profile_home = tmp_path / "profiles" / "worker"
+    launch_home.mkdir()
+    profile_home.mkdir(parents=True)
+    token = set_hermes_home_override(launch_home)
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    turns = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            turns.append(prompt)
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    delegation_id = "deleg_abcdef2"
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": delegation_id,
+        "session_key": "session-key",
+        "goal": "profile scoped result",
+        "status": "completed",
+        "summary": "done in profile",
+        "dispatched_at": 1000.0,
+        "completed_at": 1001.0,
+    }
+
+    try:
+        ad._reset_for_tests(hermes_home=profile_home)
+        ad._persist_record(
+            {
+                "delegation_id": delegation_id,
+                "goal": "profile scoped result",
+                "status": "completed",
+                "dispatched_at": 1000.0,
+                "completed_at": 1001.0,
+                "delivered": False,
+                "result_event": evt,
+            },
+            hermes_home=profile_home,
+        )
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+        monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+        monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+        sess = _session(agent=_Agent(), profile_home=str(profile_home))
+        server._sessions["sid_profile_async"] = sess
+        stop = threading.Event()
+        stop.set()
+
+        server._notification_poller_loop(stop, "sid_profile_async", sess)
+
+        assert len(turns) == 1
+        assert "ASYNC DELEGATION COMPLETE" in turns[0]
+        assert ad.is_delivered(delegation_id, hermes_home=profile_home) is True
+        assert ad.is_delivered(delegation_id, hermes_home=launch_home) is False
+        assert not (launch_home / "async_delegations.json").exists()
+    finally:
+        server._sessions.pop("sid_profile_async", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+        ad._reset_for_tests(hermes_home=profile_home)
+        reset_hermes_home_override(token)
+
+
+def test_run_prompt_submit_post_turn_drain_skips_profile_home_delivered_async_event(monkeypatch, tmp_path):
+    """The post-turn drain must dedupe async events against the session profile_home."""
+    import queue as _queue_mod
+
+    from tools import async_delegation as ad
+    from tools.process_registry import process_registry
+
+    launch_home = tmp_path / "launch-home"
+    profile_home = tmp_path / "profiles" / "worker"
+    launch_home.mkdir()
+    profile_home.mkdir(parents=True)
+    token = set_hermes_home_override(launch_home)
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    turns = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            turns.append(prompt)
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    delegation_id = "deleg_cafebabe"
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": delegation_id,
+        "session_key": "session-key",
+        "goal": "already delivered in profile",
+        "status": "completed",
+        "summary": "done in profile",
+        "dispatched_at": 1000.0,
+        "completed_at": 1001.0,
+    }
+
+    try:
+        ad._reset_for_tests(hermes_home=profile_home)
+        ad._reset_for_tests(hermes_home=launch_home)
+        ad._persist_record(
+            {
+                "delegation_id": delegation_id,
+                "goal": "already delivered in profile",
+                "status": "completed",
+                "dispatched_at": 1000.0,
+                "completed_at": 1001.0,
+                "delivered": True,
+                "delivered_at": 1002.0,
+                "result_event": evt,
+            },
+            hermes_home=profile_home,
+        )
+        isolated_queue.put(evt)
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+        monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+        monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+
+        sess = _session(agent=_Agent(), profile_home=str(profile_home))
+        server._sessions["sid_post_drain_delivered"] = sess
+
+        server._run_prompt_submit("rid", "sid_post_drain_delivered", sess, "ordinary prompt")
+
+        assert turns == ["ordinary prompt"]
+        assert not (launch_home / "async_delegations.json").exists()
+    finally:
+        server._sessions.pop("sid_post_drain_delivered", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+        ad._reset_for_tests(hermes_home=profile_home)
+        ad._reset_for_tests(hermes_home=launch_home)
+        reset_hermes_home_override(token)
+
+
+def test_run_prompt_submit_post_turn_drain_recovers_profile_home_async_event(monkeypatch, tmp_path):
+    """The post-turn drain recovers, injects, and marks profile-home async checkpoints."""
+    import queue as _queue_mod
+
+    from tools import async_delegation as ad
+    from tools.process_registry import process_registry
+
+    launch_home = tmp_path / "launch-home"
+    profile_home = tmp_path / "profiles" / "worker"
+    launch_home.mkdir()
+    profile_home.mkdir(parents=True)
+    token = set_hermes_home_override(launch_home)
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    turns = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            turns.append(prompt)
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    delegation_id = "deleg_f00d1234"
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": delegation_id,
+        "session_key": "session-key",
+        "goal": "recover from profile",
+        "status": "completed",
+        "summary": "done in profile",
+        "dispatched_at": 1000.0,
+        "completed_at": 1001.0,
+    }
+
+    try:
+        ad._reset_for_tests(hermes_home=profile_home)
+        ad._reset_for_tests(hermes_home=launch_home)
+        ad._persist_record(
+            {
+                "delegation_id": delegation_id,
+                "goal": "recover from profile",
+                "status": "completed",
+                "dispatched_at": 1000.0,
+                "completed_at": 1001.0,
+                "delivered": False,
+                "result_event": evt,
+            },
+            hermes_home=profile_home,
+        )
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+        monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+        monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+
+        sess = _session(agent=_Agent(), profile_home=str(profile_home))
+        server._sessions["sid_post_drain_recover"] = sess
+
+        server._run_prompt_submit("rid", "sid_post_drain_recover", sess, "ordinary prompt")
+
+        assert len(turns) == 2
+        assert turns[0] == "ordinary prompt"
+        assert "ASYNC DELEGATION COMPLETE" in turns[1]
+        assert delegation_id in turns[1]
+        assert ad.is_delivered(delegation_id, hermes_home=profile_home) is True
+        assert ad.is_delivered(delegation_id, hermes_home=launch_home) is False
+        assert not (launch_home / "async_delegations.json").exists()
+    finally:
+        server._sessions.pop("sid_post_drain_recover", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+        ad._reset_for_tests(hermes_home=profile_home)
+        ad._reset_for_tests(hermes_home=launch_home)
+        reset_hermes_home_override(token)
+
+
+def test_notification_poller_failed_async_dispatch_stays_retryable(monkeypatch, tmp_path):
+    """If TUI consumes a recovered async event but cannot inject it, recovery requeues it in the same process."""
+    import queue as _queue_mod
+
+    from tools import async_delegation as ad
+    from tools.process_registry import process_registry
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+
+    def runner():
+        return {
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "retry me"}
+            ],
+            "total_duration_seconds": 0.1,
+        }
+
+    try:
+        ad._reset_for_tests()
+        res = ad.dispatch_async_delegation_batch(
+            goals=["retry from tui"],
+            context="ctx",
+            toolsets=None,
+            role="leaf",
+            model="m",
+            session_key="session-key",
+            runner=runner,
+            max_async_children=3,
+        )
+        assert res["status"] == "dispatched"
+        deadline = time.monotonic() + 5
+        while isolated_queue.empty() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not isolated_queue.empty()
+        isolated_queue.get_nowait()
+
+        ad._reset_for_tests(clear_persistent=False)
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+        assert ad.recover_pending_delegations(origin="test first recover") == 1
+
+        sess = _session()
+        server._sessions["sid_async_fail"] = sess
+        monkeypatch.setattr(
+            server,
+            "_run_prompt_submit",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("inject failed")),
+        )
+        stop = threading.Event()
+        stop.set()
+
+        server._notification_poller_loop(stop, "sid_async_fail", sess)
+        assert isolated_queue.empty()
+        assert ad.is_delivered(res["delegation_id"]) is False
+
+        assert ad.recover_pending_delegations(origin="test retry after failed tui dispatch") == 1
+        retried = isolated_queue.get_nowait()
+        assert retried["delegation_id"] == res["delegation_id"]
+    finally:
+        server._sessions.pop("sid_async_fail", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+        ad._reset_for_tests()
+        reset_hermes_home_override(token)
 
 
 def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
+from tools.path_translation import normalize_windows_host_path
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -29,15 +30,7 @@ def _msys_to_windows_path(cwd: str) -> str:
     Returns the input unchanged when no translation applies. This is
     idempotent — calling it on an already-Windows path returns it as-is.
     """
-    if not _IS_WINDOWS or not cwd:
-        return cwd
-    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
-    m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
-    if not m:
-        return cwd
-    drive = m.group(1).upper()
-    tail = (m.group(2) or "").replace('/', '\\')
-    return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
+    return normalize_windows_host_path(cwd, host_is_windows=_IS_WINDOWS)
 
 
 def _windows_to_msys_path(cwd: str) -> str:

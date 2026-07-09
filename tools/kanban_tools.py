@@ -31,10 +31,16 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, NamedTuple, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
+from hermes_cli.scoped_acceptance import (
+    append_acceptance_caveats_to_summary,
+    evaluate_scoped_acceptance,
+    format_scoped_acceptance_report,
+)
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 
@@ -164,6 +170,31 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     return None
 
 
+def _enforce_worker_run_is_active(kb, conn, tool_name: str) -> Optional[str]:
+    """Reject worker mutations after the worker's own task has closed."""
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not env_tid:
+        return None
+    task = kb.get_task(conn, env_tid)
+    if task is None:
+        return tool_error(
+            f"{tool_name}: worker task {env_tid} no longer exists; "
+            "this worker run is terminal. Stop now and do not call more tools."
+        )
+    expected_run_id = _worker_run_id(env_tid)
+    if task.status != "running" or task.current_run_id is None:
+        return tool_error(
+            f"{tool_name}: worker task {env_tid} is already {task.status}; "
+            "this worker run is terminal. Stop now and do not call more tools."
+        )
+    if expected_run_id is not None and int(task.current_run_id) != expected_run_id:
+        return tool_error(
+            f"{tool_name}: worker task {env_tid} is running under a newer run; "
+            "this stale worker run is terminal. Stop now and do not call more tools."
+        )
+    return None
+
+
 def _connect(board: Optional[str] = None):
     """Import + connect lazily so the module imports cleanly in non-kanban
     contexts (e.g. test rigs that import every tool module).
@@ -180,6 +211,34 @@ def _connect(board: Optional[str] = None):
 
 
 _GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset({"dependency", "needs_input"})
+
+
+class _GoalJudgeCheckResult(NamedTuple):
+    verdict: str
+    reason: str
+    parse_failed: bool
+    wait_directive: Any
+
+
+def _coerce_goal_judge_result(result: Any) -> _GoalJudgeCheckResult:
+    if not isinstance(result, (list, tuple)):
+        raise ValueError(
+            f"expected tuple/list with 3 or 4 fields, got {type(result).__name__}"
+        )
+    if len(result) not in {3, 4}:
+        raise ValueError(f"expected 3 or 4 fields, got {len(result)}")
+
+    verdict, reason, parse_failed = result[:3]
+    wait_directive = result[3] if len(result) == 4 else None
+    if not isinstance(verdict, str) or not verdict.strip():
+        raise ValueError("verdict must be a non-empty string")
+
+    return _GoalJudgeCheckResult(
+        verdict=verdict.strip().lower(),
+        reason=str(reason or ""),
+        parse_failed=bool(parse_failed),
+        wait_directive=wait_directive,
+    )
 
 
 def _goal_judge_available() -> bool:
@@ -313,6 +372,191 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     if text in {"false", "0", "no"}:
         return False, None
     return default, f"{name} must be a boolean or 'true'/'false'"
+
+
+def _normalize_artifact_list(value: Any, *, field_name: str) -> tuple[list[str], Optional[str]]:
+    if value is None:
+        return [], None
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return [], (
+            f"{field_name} must be a list of file paths, got "
+            f"{type(value).__name__}"
+        )
+    paths = [str(p).strip() for p in value if str(p).strip()]
+    return paths, None
+
+
+def _artifact_marker_map(value: Any) -> tuple[dict[str, str], Optional[str]]:
+    if value is None:
+        return {}, None
+    if not isinstance(value, dict):
+        return {}, (
+            f"artifact_markers must be an object mapping artifact path to marker, "
+            f"got {type(value).__name__}"
+        )
+    markers: dict[str, str] = {}
+    for raw_path, raw_marker in value.items():
+        path = str(raw_path).strip()
+        marker = str(raw_marker) if raw_marker is not None else ""
+        if path and marker:
+            markers[path] = marker
+    return markers, None
+
+
+def _file_contains_text(path: Path, marker: str) -> bool:
+    needle = marker.encode("utf-8")
+    if not needle:
+        return True
+    overlap = max(0, len(needle) - 1)
+    tail = b""
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(64 * 1024), b""):
+            haystack = tail + chunk
+            if needle in haystack:
+                return True
+            tail = haystack[-overlap:] if overlap else b""
+    return False
+
+
+def _verify_artifacts(
+    artifacts: list[str],
+    markers: dict[str, str],
+) -> tuple[list[dict[str, Any]], Optional[str]]:
+    verified: list[dict[str, Any]] = []
+    for raw in artifacts:
+        raw_key = str(raw).strip()
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            return [], f"artifact {raw!r} must be an absolute host path"
+        try:
+            resolved = path.resolve(strict=False)
+            stat = resolved.stat()
+        except FileNotFoundError:
+            return [], f"artifact {str(path)!r} does not exist"
+        except OSError as exc:
+            return [], f"artifact {str(path)!r} could not be inspected: {exc}"
+        if not resolved.is_file():
+            return [], f"artifact {str(path)!r} is not a file"
+        if stat.st_size <= 0:
+            return [], f"artifact {str(path)!r} is empty"
+        marker = (
+            markers.get(raw_key)
+            or markers.get(str(path))
+            or markers.get(str(resolved))
+        )
+        if marker and not _file_contains_text(resolved, marker):
+            return [], f"artifact {str(path)!r} required marker was not found"
+        record: dict[str, Any] = {
+            "path": str(resolved),
+            "size": int(stat.st_size),
+        }
+        if marker:
+            record["marker_verified"] = True
+        verified.append(record)
+    return verified, None
+
+
+def _normalize_text_list(value: Any, *, field_name: str) -> tuple[list[str], Optional[str]]:
+    if value is None:
+        return [], None
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return [], (
+            f"{field_name} must be a string or list of strings, got "
+            f"{type(value).__name__}"
+        )
+    items = [redact_sensitive_text(str(item).strip(), force=True) for item in value]
+    return [item for item in items if item], None
+
+
+def _build_block_metadata(
+    args: dict,
+    *,
+    reason: str,
+    kind: Optional[str],
+) -> tuple[dict[str, Any], Optional[str]]:
+    raw_metadata = args.get("metadata")
+    if raw_metadata is None:
+        metadata: dict[str, Any] = {}
+    elif isinstance(raw_metadata, dict):
+        metadata = dict(raw_metadata)
+    else:
+        return {}, f"metadata must be an object/dict, got {type(raw_metadata).__name__}"
+
+    existing = metadata.get("block_recovery")
+    recovery = dict(existing) if isinstance(existing, dict) else {}
+    recovery["exact_blocker"] = reason
+    recovery["kind"] = kind
+
+    for field_name in ("attempted_files", "tests_run", "remaining_failures"):
+        raw_value = args.get(field_name, recovery.get(field_name))
+        values, error = _normalize_text_list(raw_value, field_name=field_name)
+        if error:
+            return {}, error
+        if values:
+            recovery[field_name] = values
+
+    next_owner = args.get("next_owner", recovery.get("next_owner"))
+    if next_owner is not None and str(next_owner).strip():
+        recovery["next_owner"] = redact_sensitive_text(str(next_owner).strip(), force=True)
+
+    artifacts, artifact_error = _normalize_artifact_list(
+        args.get("artifacts", recovery.get("artifacts")),
+        field_name="artifacts",
+    )
+    if artifact_error:
+        return {}, artifact_error
+    if artifacts:
+        recovery["artifacts"] = artifacts
+        markers, marker_error = _artifact_marker_map(args.get("artifact_markers"))
+        if marker_error:
+            return {}, marker_error
+        verified_artifacts, verify_error = _verify_artifacts(artifacts, markers)
+        recovery["artifacts_host_visible"] = verify_error is None
+        if verify_error:
+            recovery["artifact_verification_error"] = redact_sensitive_text(
+                verify_error,
+                force=True,
+            )
+        else:
+            recovery["verified_artifacts"] = verified_artifacts
+    elif "artifacts_host_visible" in args:
+        visible, bool_error = _parse_bool_arg(args, "artifacts_host_visible")
+        if bool_error:
+            return {}, bool_error
+        recovery["artifacts_host_visible"] = bool(visible)
+
+    metadata["block_recovery"] = recovery
+    meta_json = json.dumps(metadata)
+    meta_json = redact_sensitive_text(meta_json, force=True)
+    try:
+        metadata = json.loads(meta_json)
+    except json.JSONDecodeError:
+        pass
+    return metadata, None
+
+
+def _release_worker_active_session_after_block() -> int:
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return 0
+    session_id = os.environ.get("HERMES_SESSION_ID")
+    if not session_id:
+        return 0
+    try:
+        from hermes_cli.active_sessions import (
+            release_active_sessions_for_current_process,
+        )
+
+        return release_active_sessions_for_current_process(
+            session_id=session_id,
+            surface="kanban-worker",
+        )
+    except Exception:
+        logger.debug("Failed to release worker active session after kanban_block", exc_info=True)
+        return 0
 
 
 def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
@@ -526,7 +770,8 @@ def _handle_complete(args: dict, **kw) -> str:
         except json.JSONDecodeError:
             pass
     created_cards = args.get("created_cards")
-    artifacts = args.get("artifacts")
+    artifacts_arg = args.get("artifacts")
+    artifacts = artifacts_arg
     if created_cards is not None:
         if isinstance(created_cards, str):
             # Accept a single id as a string for convenience.
@@ -587,11 +832,70 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
+    if isinstance(metadata, dict):
+        artifact_paths, artifact_error = _normalize_artifact_list(
+            metadata.get("artifacts"),
+            field_name="metadata.artifacts",
+        )
+        if artifact_error:
+            return tool_error(artifact_error)
+        if artifact_paths:
+            markers, marker_error = _artifact_marker_map(args.get("artifact_markers"))
+            if marker_error:
+                return tool_error(marker_error)
+            verified_artifacts, verify_error = _verify_artifacts(
+                artifact_paths,
+                markers,
+            )
+            if verify_error:
+                return tool_error(
+                    "kanban_complete artifact verification failed: "
+                    f"{verify_error}. Your task is still in-flight (no state change)."
+                )
+            metadata = dict(metadata)
+            metadata["artifacts"] = artifact_paths
+            metadata["verified_artifacts"] = verified_artifacts
+    acceptance = args.get("acceptance")
+    if acceptance is not None:
+        if not isinstance(acceptance, dict):
+            return tool_error(
+                f"acceptance must be an object/dict, got {type(acceptance).__name__}"
+            )
+        acc_json = redact_sensitive_text(json.dumps(acceptance), force=True)
+        try:
+            acceptance = json.loads(acc_json)
+        except json.JSONDecodeError:
+            pass
+        acceptance_result = evaluate_scoped_acceptance(**acceptance)
+        if not acceptance_result.get("accepted"):
+            report = format_scoped_acceptance_report(acceptance_result)
+            return tool_error(
+                "kanban_complete scoped acceptance blocked this completion. "
+                "Your task is still in-flight (no state change). Fix the "
+                "blocking failure or use kanban_block with the report below.\n"
+                f"{report}"
+            )
+        if metadata is None:
+            metadata = {}
+        elif not isinstance(metadata, dict):
+            return tool_error(
+                f"metadata must be an object/dict, got {type(metadata).__name__}"
+            )
+        metadata = dict(metadata)
+        metadata["scoped_acceptance"] = acceptance_result
+        summary = append_acceptance_caveats_to_summary(
+            summary if summary is not None else result,
+            acceptance_result,
+        )
     metadata = _stamp_worker_session_metadata(tid, metadata)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
         try:
+            active_err = _enforce_worker_run_is_active(kb, conn, "kanban_complete")
+            if active_err:
+                return active_err
+
             # Goal-mode pre-completion judge gate (Issue #38367).
             # Prevent workers from bypassing the auxiliary judge by
             # calling kanban_complete before acceptance criteria are met.
@@ -599,24 +903,33 @@ def _handle_complete(args: dict, **kw) -> str:
             # _goal_judge_available for why an unavailable judge fails open.
             task = kb.get_task(conn, tid)
             if task and task.goal_mode and _goal_judge_available():
-                verdict = "done"
-                reason = ""
                 try:
-                    verdict, reason, _ = judge_goal(
-                        goal=f"{task.title}\n\n{task.body or ''}".strip(),
-                        last_response=(summary or result or "").strip(),
+                    judge_result = _coerce_goal_judge_result(
+                        judge_goal(
+                            goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                            last_response=(summary or result or "").strip(),
+                        )
                     )
+                except ValueError as judge_exc:
+                    return tool_error(f"invalid goal judge result: {judge_exc}")
                 except Exception as judge_exc:
-                    # Defensive: judge_goal swallows its own errors, but if
-                    # it ever raises, fail open rather than wedge the worker.
                     logger.warning(
-                        "goal judge check failed, allowing completion: %s",
+                        "goal judge check failed; rejecting completion: %s",
                         judge_exc,
                         exc_info=True,
                     )
-                if verdict != "done":
+                    return tool_error(f"goal judge check failed: {judge_exc}")
+                if judge_result.parse_failed:
                     return tool_error(
-                        f"Goal completion rejected by judge: {reason}. "
+                        f"Goal completion rejected by judge: {judge_result.reason}. "
+                        f"To proceed, either: (1) provide explicit acceptance "
+                        f"evidence in your summary matching the task's criteria, "
+                        f"or (2) create continuation tasks with parents=[{tid}] "
+                        f"and keep this task alive."
+                    )
+                if judge_result.verdict != "done":
+                    return tool_error(
+                        f"Goal completion rejected by judge: {judge_result.reason}. "
                         f"To proceed, either: (1) provide explicit acceptance "
                         f"evidence in your summary matching the task's criteria, "
                         f"or (2) create continuation tasks with parents=[{tid}] "
@@ -655,7 +968,16 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                terminal=True,
+                terminal_status="done",
+                instruction=(
+                    "Task completed. Stop this worker run now; do not call "
+                    "more kanban tools or continue mutating the task."
+                ),
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -663,6 +985,128 @@ def _handle_complete(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_complete failed")
         return tool_error(f"kanban_complete: {e}")
+
+
+def _normalize_existing_file_args(value: Any, *, field_name: str) -> tuple[list[str], Optional[str]]:
+    if value is None:
+        return [], None
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple)):
+        values = list(value)
+    else:
+        return [], f"{field_name} must be a string or list of strings"
+    paths: list[str] = []
+    for item in values:
+        text = str(item).strip()
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if not path.exists():
+            return [], f"{field_name} does not exist: {path}"
+        if not path.is_file():
+            return [], f"{field_name} is not a file: {path}"
+        paths.append(path.resolve().as_posix())
+    return paths, None
+
+
+def _read_triage_result_file(path_arg: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    path = Path(str(path_arg).strip()).expanduser()
+    if not path.exists():
+        return None, None, f"result_file does not exist: {path}"
+    if not path.is_file():
+        return None, None, f"result_file is not a file: {path}"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None, None, f"result_file must be UTF-8: {path}"
+    if not text.strip():
+        return None, None, f"result_file is empty: {path}"
+    return path.resolve().as_posix(), text, None
+
+
+def _handle_triage_complete(args: dict, **kw) -> str:
+    """Complete a triage card after operator/reviewer judgment."""
+    guard = _require_orchestrator_tool("kanban_triage_complete")
+    if guard:
+        return guard
+    tid = str(args.get("task_id") or "").strip()
+    if not tid:
+        return tool_error("task_id is required")
+
+    summary = args.get("summary")
+    result = args.get("result")
+    if summary:
+        summary = redact_sensitive_text(str(summary), force=True)
+    if result:
+        result = redact_sensitive_text(str(result), force=True)
+
+    result_file_path = None
+    result_file = args.get("result_file")
+    if result_file:
+        result_file_path, result_from_file, file_error = _read_triage_result_file(str(result_file))
+        if file_error:
+            return tool_error(file_error)
+        if not result:
+            result = redact_sensitive_text(result_from_file or "", force=True)
+
+    if not (summary or result):
+        return tool_error("provide at least one of: summary, result, result_file")
+
+    evidence_files, evidence_error = _normalize_existing_file_args(
+        args.get("evidence_files"),
+        field_name="evidence_files",
+    )
+    if evidence_error:
+        return tool_error(evidence_error)
+
+    source_task_ids = args.get("source_task_ids")
+    if source_task_ids is not None and isinstance(source_task_ids, str):
+        source_task_ids = [source_task_ids]
+    reviewer = (
+        str(args.get("reviewer") or os.environ.get("HERMES_PROFILE") or "operator")
+        .strip()
+        or "operator"
+    )
+
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            ok = kb.complete_triage_task(
+                conn,
+                tid,
+                result=result,
+                summary=summary,
+                reviewer=reviewer,
+                result_file=result_file_path,
+                source_task_ids=source_task_ids,
+                evidence_files=evidence_files,
+                final_disposition=args.get("final_disposition"),
+            )
+            if not ok:
+                return tool_error(
+                    f"could not complete triage task {tid} "
+                    "(unknown id or not in triage)"
+                )
+            run = kb.latest_run(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                terminal=True,
+                terminal_status="done",
+                instruction=(
+                    "Triage task completed. Do not continue broad review "
+                    "work on this card."
+                ),
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_triage_complete: {e}")
+    except Exception as e:
+        logger.exception("kanban_triage_complete failed")
+        return tool_error(f"kanban_triage_complete: {e}")
 
 
 def _handle_block(args: dict, **kw) -> str:
@@ -680,6 +1124,13 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error("reason is required — explain what input you need")
     reason = redact_sensitive_text(str(reason), force=True)
     kind = args.get("kind")
+    metadata, metadata_error = _build_block_metadata(
+        args,
+        reason=reason,
+        kind=kind,
+    )
+    if metadata_error:
+        return tool_error(metadata_error)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -713,10 +1164,14 @@ def _handle_block(args: dict, **kw) -> str:
                 f"completion judge will evaluate it."
             )
         try:
+            active_err = _enforce_worker_run_is_active(kb, conn, "kanban_block")
+            if active_err:
+                return active_err
             ok = kb.block_task(
                 conn, tid,
                 reason=reason,
                 kind=kind,
+                metadata=metadata,
                 expected_run_id=_worker_run_id(tid),
             )
             if not ok:
@@ -728,11 +1183,20 @@ def _handle_block(args: dict, **kw) -> str:
             # Tell the worker where the task actually landed so it doesn't
             # assume it's sitting in 'blocked' when routing sent it elsewhere.
             landed = kb.get_task(conn, tid)
+            active_session_released = _release_worker_active_session_after_block()
+            status = landed.status if landed else "blocked"
             return _ok(
                 task_id=tid,
                 run_id=run.id if run else None,
-                status=landed.status if landed else "blocked",
+                status=status,
                 block_kind=kind,
+                terminal=True,
+                terminal_status=status,
+                active_session_released=active_session_released,
+                instruction=(
+                    "Task blocked. Stop this worker run now; do not call more "
+                    "kanban tools or continue mutating the task."
+                ),
             )
         finally:
             conn.close()
@@ -766,6 +1230,9 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            active_err = _enforce_worker_run_is_active(kb, conn, "kanban_heartbeat")
+            if active_err:
+                return active_err
             # Extend the claim TTL first. The dispatcher pins
             # HERMES_KANBAN_CLAIM_LOCK in the worker env at spawn time
             # (see _default_spawn in kanban_db.py); falling back to the
@@ -820,6 +1287,9 @@ def _handle_comment(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            active_err = _enforce_worker_run_is_active(kb, conn, "kanban_comment")
+            if active_err:
+                return active_err
             cid = kb.add_comment(conn, tid, author=author, body=str(body))
             return _ok(task_id=tid, comment_id=cid)
         finally:
@@ -895,6 +1365,9 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            active_err = _enforce_worker_run_is_active(kb, conn, "kanban_create")
+            if active_err:
+                return active_err
             # Inherit the spawning worker's own task workspace when the
             # caller didn't specify one (see resolution note above).
             if _inherit_workspace:
@@ -1087,6 +1560,9 @@ def _handle_link(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            active_err = _enforce_worker_run_is_active(kb, conn, "kanban_link")
+            if active_err:
+                return active_err
             kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
             return _ok(parent_id=parent_id, child_id=child_id)
         finally:
@@ -1237,6 +1713,18 @@ KANBAN_COMPLETE_SCHEMA = {
                     "workers alongside ``summary``."
                 ),
             },
+            "acceptance": {
+                "type": "object",
+                "description": (
+                    "Optional scoped acceptance evidence for deciding "
+                    "whether remaining broad/full-suite failures are "
+                    "unrelated caveats or blockers. Include touched_files, "
+                    "task_scope_files, targeted_tests, required_checks, "
+                    "full_suite_failures, and any safety_failures, "
+                    "contract_failures, migration_failures, or "
+                    "unknown_failures."
+                ),
+            },
             "result": {
                 "type": "string",
                 "description": (
@@ -1276,14 +1764,76 @@ KANBAN_COMPLETE_SCHEMA = {
                     "else uploads as a file) so the deliverable "
                     "lands with the completion notification. Skip "
                     "intermediate scratch files and references that "
-                    "are not the deliverable. The path must exist "
-                    "on disk when the notifier runs; missing files "
-                    "are silently skipped."
+                    "are not the deliverable. Each path must be an "
+                    "absolute host path to an existing non-empty file "
+                    "at completion time; missing or empty files block "
+                    "completion and leave the task running."
+                ),
+            },
+            "artifact_markers": {
+                "type": "object",
+                "description": (
+                    "Optional map of artifact path to required UTF-8 text "
+                    "marker. Use when the task specifies an expected marker "
+                    "or content fragment that must be present before the "
+                    "artifact counts as host-visible evidence."
                 ),
             },
             "board": _board_schema_prop(),
         },
         "required": [],
+    },
+}
+
+KANBAN_TRIAGE_COMPLETE_SCHEMA = {
+    "name": "kanban_triage_complete",
+    "description": (
+        "Orchestrator-only recovery tool: complete a task that is parked in "
+        "triage after an operator/reviewer has made a final decision. Use "
+        "only when you are closing the triage card itself, not ordinary "
+        "running/ready work. At least one of summary, result, or result_file "
+        "is required."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Triage task id to complete.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "Short operator verdict stored on the run.",
+            },
+            "result": {
+                "type": "string",
+                "description": "Inline result text stored on the task.",
+            },
+            "result_file": {
+                "type": "string",
+                "description": "UTF-8 host file containing the reviewed result.",
+            },
+            "reviewer": {
+                "type": "string",
+                "description": "Reviewer/operator recorded in audit metadata.",
+            },
+            "source_task_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Task ids whose evidence informed the verdict.",
+            },
+            "evidence_files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Existing host files recorded as audit evidence.",
+            },
+            "final_disposition": {
+                "type": "string",
+                "description": "Final disposition label, e.g. approved or rejected.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
     },
 }
 
@@ -1323,6 +1873,63 @@ KANBAN_BLOCK_SCHEMA = {
                     "Why you're blocked. 'dependency' waits in todo and "
                     "resumes automatically; the others surface to a human. "
                     "Omit only if none apply."
+                ),
+            },
+            "attempted_files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Files you inspected or changed before blocking. Use "
+                    "host-visible paths when relevant."
+                ),
+            },
+            "tests_run": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Commands/checks already attempted before blocking.",
+            },
+            "remaining_failures": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Specific failing tests, missing inputs, or unresolved "
+                    "blockers the next owner must see."
+                ),
+            },
+            "next_owner": {
+                "type": "string",
+                "description": (
+                    "Suggested next owner/profile when you know who should "
+                    "unblock or review the task."
+                ),
+            },
+            "artifacts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional host-visible partial artifacts or diagnostic "
+                    "files to verify and record in the block recovery packet."
+                ),
+            },
+            "artifact_markers": {
+                "type": "object",
+                "description": (
+                    "Optional map of artifact path to required UTF-8 marker "
+                    "for partial artifact verification."
+                ),
+            },
+            "artifacts_host_visible": {
+                "type": "boolean",
+                "description": (
+                    "Set when no artifact paths are supplied but you need to "
+                    "record whether current partial artifacts are host-visible."
+                ),
+            },
+            "metadata": {
+                "type": "object",
+                "description": (
+                    "Optional structured recovery metadata. Hermes stores it "
+                    "under block_recovery with reason/kind."
                 ),
             },
             "board": _board_schema_prop(),
@@ -1615,6 +2222,15 @@ registry.register(
     handler=_handle_complete,
     check_fn=_check_kanban_mode,
     emoji="✔",
+)
+
+registry.register(
+    name="kanban_triage_complete",
+    toolset="kanban",
+    schema=KANBAN_TRIAGE_COMPLETE_SCHEMA,
+    handler=_handle_triage_complete,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="T",
 )
 
 registry.register(

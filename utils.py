@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -112,7 +113,16 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
     tmp_str = str(tmp_path)
     try:
-        os.replace(tmp_str, real_path)
+        for attempt in range(10):
+            try:
+                os.replace(tmp_str, real_path)
+                break
+            except PermissionError:
+                if os.name != "nt" or attempt == 9:
+                    raise
+                time.sleep(0.01 * (attempt + 1))
+        else:
+            raise PermissionError(f"could not replace {real_path}")
     except OSError as exc:
         if exc.errno not in (errno.EXDEV, errno.EBUSY):
             raise

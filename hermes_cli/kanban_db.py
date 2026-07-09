@@ -73,6 +73,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import locale
 import os
 import re
 import random
@@ -95,11 +96,24 @@ from toolsets import get_toolset_names
 _log = logging.getLogger(__name__)
 
 
+def _run_text_subprocess(*popenargs, **kwargs) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess with lossy UTF-8 text capture.
+
+    Kanban worker and dispatcher helpers must not let Python's internal
+    subprocess._readerthread crash on CP1250 / otherwise non-UTF-8 output.
+    errors='replace' preserves the surrounding summary/log text with U+FFFD
+    markers instead of losing the whole capture to UnicodeDecodeError.
+    """
+    from hermes_cli.subprocess_text import run_text_subprocess
+
+    return run_text_subprocess(*popenargs, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "blocked_needs_input", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
@@ -285,6 +299,10 @@ _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # 4 KB per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # 8 KB per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
+
+# Review agents that keep respawning without landing a clear decision should
+# switch from exploration to a bounded verdict-first pass.
+REVIEW_VERDICT_FIRST_ATTEMPT = 3
 
 
 def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
@@ -2551,6 +2569,8 @@ def create_task(
         if row:
             return row["id"]
 
+    _validate_worker_profile_skills_or_raise(assignee, skills_list)
+
     now = int(time.time())
 
     # Resolve workspace_path from board-level default_workdir when the
@@ -2900,6 +2920,34 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
     return [r["child_id"] for r in rows]
 
 
+def incomplete_parent_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT p.id FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+        "ORDER BY p.id",
+        (task_id,),
+    ).fetchall()
+    return [r["id"] for r in rows]
+
+
+def _demote_ready_for_incomplete_parents(
+    conn: sqlite3.Connection,
+    task_id: str,
+    parents: list[str],
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'todo' "
+            "WHERE id = ? AND status = 'ready'",
+            (task_id,),
+        )
+        _append_event(
+            conn, task_id, "claim_rejected",
+            {"reason": "parents_not_done", "parents": list(parents)},
+        )
+
+
 def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Optional[str]]]:
     """Return ``(parent_id, result)`` for every done parent of ``task_id``."""
     rows = conn.execute(
@@ -3236,6 +3284,25 @@ def _synthesize_ended_run(
     return int(cur.lastrowid or 0)
 
 
+def _review_claim_count(conn: sqlite3.Connection, task_id: str) -> int:
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'claimed'",
+        (task_id,),
+    ).fetchall()
+    count = 0
+    for row in rows:
+        raw = row["payload"] if "payload" in row.keys() else None
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("source_status") == "review":
+            count += 1
+    return count
+
+
 # ---------------------------------------------------------------------------
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
@@ -3514,6 +3581,15 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        review_attempt = _review_claim_count(conn, task_id) + 1
+        verdict_first = review_attempt >= REVIEW_VERDICT_FIRST_ATTEMPT
+        review_metadata = {
+            "review_dispatch": {
+                "source_status": "review",
+                "attempt": review_attempt,
+                "verdict_first": verdict_first,
+            }
+        }
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3539,8 +3615,8 @@ def claim_review_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                metadata, started_at
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -3549,6 +3625,7 @@ def claim_review_task(
                 lock,
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
+                json.dumps(review_metadata, ensure_ascii=False),
                 now,
             ),
         )
@@ -3560,7 +3637,9 @@ def claim_review_task(
         _append_event(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id,
-             "source_status": "review"},
+             "source_status": "review",
+             "review_attempt": review_attempt,
+             "verdict_first": verdict_first},
             run_id=run_id,
         )
         return get_task(conn, task_id)
@@ -4123,6 +4202,20 @@ def complete_task(
                 ]
                 if cleaned_artifacts:
                     completed_payload["artifacts"] = cleaned_artifacts
+            md_verified_artifacts = metadata.get("verified_artifacts")
+            if isinstance(md_verified_artifacts, list):
+                verified_artifacts = [
+                    item for item in md_verified_artifacts
+                    if isinstance(item, dict) and item.get("path")
+                ]
+                if verified_artifacts:
+                    completed_payload["verified_artifacts"] = verified_artifacts
+            md_acceptance = metadata.get("scoped_acceptance")
+            if isinstance(md_acceptance, dict):
+                completed_payload["scoped_acceptance"] = {
+                    "decision": md_acceptance.get("decision"),
+                    "caveats": md_acceptance.get("caveats") or [],
+                }
         _append_event(
             conn, task_id, "completed",
             completed_payload,
@@ -4166,6 +4259,119 @@ def complete_task(
         assignee=_done_task.assignee if _done_task else None,
         run_id=run_id,
         summary=(summary if summary is not None else result),
+    )
+    return True
+
+
+def _clean_optional_strings(values: Optional[Iterable[str]]) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    cleaned: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text:
+            cleaned.append(text)
+    return cleaned
+
+
+def complete_triage_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    reviewer: Optional[str] = None,
+    result_file: Optional[str] = None,
+    source_task_ids: Optional[Iterable[str]] = None,
+    evidence_files: Optional[Iterable[str]] = None,
+    final_disposition: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> bool:
+    """Complete a ``triage`` task after an operator/reviewer decision."""
+    result_text = (result or "").strip()
+    summary_text = (summary or "").strip()
+    if not result_text and not summary_text:
+        raise ValueError("triage completion requires a result summary or result file")
+    if metadata is not None and not isinstance(metadata, dict):
+        raise ValueError("metadata must be a dict")
+
+    now = int(time.time())
+    audit = {
+        "reviewer": (reviewer or "operator").strip() or "operator",
+        "completed_at": now,
+        "source_task_ids": _clean_optional_strings(source_task_ids),
+        "evidence_files": _clean_optional_strings(evidence_files),
+        "final_disposition": (
+            final_disposition.strip() if isinstance(final_disposition, str)
+            and final_disposition.strip() else None
+        ),
+    }
+    if result_file:
+        audit["result_file"] = str(result_file).strip()
+
+    run_metadata = dict(metadata or {})
+    run_metadata["triage_completion"] = audit
+    stored_result = result if result_text else summary_text
+    handoff_summary = summary_text or result_text
+
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status       = 'done',
+                   result       = ?,
+                   completed_at = ?,
+                   claim_lock   = NULL,
+                   claim_expires= NULL,
+                   worker_pid   = NULL,
+                   block_kind   = NULL,
+                   block_recurrences = 0
+             WHERE id = ?
+               AND status = 'triage'
+            """,
+            (stored_result, now, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        run_id = _end_run(
+            conn, task_id,
+            outcome="completed", status="done",
+            summary=handoff_summary,
+            metadata=run_metadata,
+        )
+        if run_id is None:
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="completed",
+                summary=handoff_summary,
+                metadata=run_metadata,
+            )
+        ev_summary = handoff_summary.strip().splitlines()[0][:400]
+        _append_event(
+            conn,
+            task_id,
+            "completed",
+            {
+                "source_status": "triage",
+                "result_len": len(stored_result) if stored_result else 0,
+                "summary": ev_summary or None,
+                "triage_completion": audit,
+            },
+            run_id=run_id,
+        )
+    _clear_failure_counter(conn, task_id)
+    recompute_ready(conn)
+    _cleanup_workspace(conn, task_id)
+    _done_task = get_task(conn, task_id)
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_completed",
+        task_id,
+        board=get_current_board(),
+        assignee=_done_task.assignee if _done_task else None,
+        run_id=run_id,
+        summary=handoff_summary,
     )
     return True
 
@@ -4370,7 +4576,7 @@ def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
         # Workers named swarm1-12 use tmux sessions named swarm-swarm1 etc.
         session = f"swarm-{assignee}"
         # Check if session exists and pane is dead before killing
-        out = subprocess.run(
+        out = _run_text_subprocess(
             ["tmux", "list-panes", "-t", session, "-F", "#{pane_dead}"],
             capture_output=True, text=True, timeout=5,
         )
@@ -4541,9 +4747,10 @@ def edit_completed_task_result(
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,
-    *,
     reason: Optional[str] = None,
+    *,
     kind: Optional[str] = None,
+    metadata: Optional[dict] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
@@ -4557,6 +4764,10 @@ def block_task(
       ``todo`` so the existing parent-gating / ``recompute_ready`` machinery
       promotes it automatically once its parents finish. No human, no cron, no
       retry storm. This is Dale's "Type 2 — dependency blocked".
+
+    * ``needs_input`` on a dependency-gated ``todo`` card — routed to
+      ``blocked_needs_input`` so the human-input blocker is visible without
+      unlinking parent dependencies or making the card dispatchable.
 
     * ``needs_input`` / ``capability`` / ``None`` — "truly blocked" (Dale's
       "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
@@ -4577,6 +4788,11 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    block_recovery = None
+    if isinstance(metadata, dict):
+        raw_recovery = metadata.get("block_recovery")
+        if isinstance(raw_recovery, dict):
+            block_recovery = raw_recovery
     routed_to = "blocked"
     recurrences = 0
     with write_txn(conn):
@@ -4593,6 +4809,44 @@ def block_task(
             and cur_row["block_recurrences"] is not None
             else 0
         )
+
+        if kind == "needs_input" and cur_row["status"] == "todo":
+            waiting_parents = incomplete_parent_ids(conn, task_id)
+            if waiting_parents:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status        = 'blocked_needs_input',
+                           claim_lock    = NULL,
+                           claim_expires = NULL,
+                           worker_pid    = NULL,
+                           block_kind    = ?,
+                           block_recurrences = ?
+                     WHERE id = ?
+                       AND status = 'todo'
+                    """,
+                    (kind, 1, task_id),
+                )
+                if cur.rowcount != 1:
+                    return False
+                payload = {
+                    "reason": reason,
+                    "kind": kind,
+                    "waiting_on": waiting_parents,
+                }
+                if block_recovery:
+                    payload["block_recovery"] = block_recovery
+                _append_event(conn, task_id, "blocked_needs_input", payload)
+                _blocked_task = get_task(conn, task_id)
+                _fire_kanban_lifecycle_hook(
+                    "kanban_task_blocked",
+                    task_id,
+                    board=get_current_board(),
+                    assignee=_blocked_task.assignee if _blocked_task else None,
+                    run_id=None,
+                    reason=reason,
+                )
+                return True
 
         # Dependency blocks never enter the human ``blocked`` bucket — they
         # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
@@ -4619,14 +4873,19 @@ def block_task(
                 conn, task_id,
                 outcome="blocked", status="blocked",
                 summary=reason,
+                metadata=metadata,
             )
             if run_id is None and reason:
                 run_id = _synthesize_ended_run(
                     conn, task_id, outcome="blocked", summary=reason,
+                    metadata=metadata,
                 )
+            dependency_payload = {"reason": reason, "kind": kind}
+            if block_recovery:
+                dependency_payload["block_recovery"] = block_recovery
             _append_event(
                 conn, task_id, "dependency_wait",
-                {"reason": reason, "kind": kind}, run_id=run_id,
+                dependency_payload, run_id=run_id,
             )
             routed_to = "todo"
             _blocked_task = get_task(conn, task_id)
@@ -4673,19 +4932,24 @@ def block_task(
                 conn, task_id,
                 outcome="blocked", status="blocked",
                 summary=reason,
+                metadata=metadata,
             )
             if run_id is None and reason:
                 run_id = _synthesize_ended_run(
                     conn, task_id, outcome="blocked", summary=reason,
+                    metadata=metadata,
                 )
+            loop_payload = {
+                "reason": reason,
+                "kind": kind,
+                "recurrences": recurrences,
+                "limit": BLOCK_RECURRENCE_LIMIT,
+            }
+            if block_recovery:
+                loop_payload["block_recovery"] = block_recovery
             _append_event(
                 conn, task_id, "block_loop_detected",
-                {
-                    "reason": reason,
-                    "kind": kind,
-                    "recurrences": recurrences,
-                    "limit": BLOCK_RECURRENCE_LIMIT,
-                },
+                loop_payload,
                 run_id=run_id,
             )
             routed_to = "triage"
@@ -4727,6 +4991,7 @@ def block_task(
                 conn, task_id,
                 outcome="blocked", status="blocked",
                 summary=reason,
+                metadata=metadata,
             )
             # Synthesize a run when blocking a never-claimed task so the
             # reason is preserved in attempt history.
@@ -4735,10 +5000,18 @@ def block_task(
                     conn, task_id,
                     outcome="blocked",
                     summary=reason,
+                    metadata=metadata,
                 )
+            blocked_payload = {
+                "reason": reason,
+                "kind": kind,
+                "recurrences": recurrences,
+            }
+            if block_recovery:
+                blocked_payload["block_recovery"] = block_recovery
             _append_event(
                 conn, task_id, "blocked",
-                {"reason": reason, "kind": kind, "recurrences": recurrences},
+                blocked_payload,
                 run_id=run_id,
             )
         _blocked_task = get_task(conn, task_id)
@@ -4837,7 +5110,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled', 'blocked_needs_input')",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -4878,7 +5151,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "WHERE id = ? AND status IN ('blocked', 'scheduled', 'blocked_needs_input')",
             (new_status, task_id),
         )
         if cur.rowcount != 1:
@@ -5230,6 +5503,173 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     return True
 
 
+def _archive_verify_issue(
+    code: str,
+    message: str,
+    *,
+    path: Optional[Path] = None,
+    item: Optional[str] = None,
+) -> dict[str, Any]:
+    issue: dict[str, Any] = {"code": code, "message": message}
+    if path is not None:
+        issue["path"] = str(path)
+    if item is not None:
+        issue["item"] = item
+    return issue
+
+
+def _archive_expected_item_path(archive_dir: Path, item: Any) -> tuple[Optional[Path], Optional[dict[str, Any]]]:
+    raw = str(item or "").strip()
+    if not raw:
+        return None, _archive_verify_issue(
+            "expected_item_invalid",
+            "expected archive inventory item is empty",
+            item=raw,
+        )
+    rel = Path(raw)
+    if rel.is_absolute() or ".." in rel.parts:
+        return None, _archive_verify_issue(
+            "expected_item_invalid",
+            "expected archive inventory item must be a relative path inside archive_dir",
+            item=raw,
+        )
+    return archive_dir / rel, None
+
+
+def _archive_leftover_paths(source_dir: Path) -> list[Path]:
+    try:
+        return sorted(source_dir.rglob("*"), key=lambda path: str(path))
+    except OSError:
+        return []
+
+
+def verify_archive_move_contract(
+    *,
+    source_dir: str | os.PathLike[str],
+    archive_dir: str | os.PathLike[str],
+    expected_items: Iterable[str | os.PathLike[str]],
+    require_empty_source: bool = False,
+    require_archive_readme: bool = True,
+    archive_readme_path: str | os.PathLike[str] | None = None,
+    vault_index_path: str | os.PathLike[str] | None = None,
+    vault_index_required_terms: Optional[Iterable[str]] = None,
+) -> dict[str, Any]:
+    """Verify generic archive/move inventory evidence.
+
+    This helper intentionally checks only machine-inferable archive facts:
+    inventory was supplied, expected relative items exist under the archive,
+    the original intake directory exists/is empty when requested, README exists,
+    and an explicitly supplied vault/index file contains required terms. Project
+    wording and review semantics stay in the runbook/card checklist.
+    """
+    src = Path(source_dir).expanduser()
+    dst = Path(archive_dir).expanduser()
+    readme = Path(archive_readme_path).expanduser() if archive_readme_path else dst / "README.md"
+    index_path = Path(vault_index_path).expanduser() if vault_index_path else None
+    expected = [str(item).replace("\\", "/").strip() for item in expected_items]
+    issues: list[dict[str, Any]] = []
+
+    if not expected:
+        issues.append(_archive_verify_issue(
+            "pre_move_inventory_missing",
+            "pre-move inventory is required before an archive/move task can be verified",
+        ))
+
+    if not src.exists():
+        issues.append(_archive_verify_issue(
+            "source_dir_missing",
+            "original intake/source directory does not exist",
+            path=src,
+        ))
+    elif not src.is_dir():
+        issues.append(_archive_verify_issue(
+            "source_dir_not_directory",
+            "original intake/source path is not a directory",
+            path=src,
+        ))
+
+    if not dst.exists():
+        issues.append(_archive_verify_issue(
+            "archive_dir_missing",
+            "archive destination directory does not exist",
+            path=dst,
+        ))
+    elif not dst.is_dir():
+        issues.append(_archive_verify_issue(
+            "archive_dir_not_directory",
+            "archive destination path is not a directory",
+            path=dst,
+        ))
+
+    for item in expected:
+        archive_item, invalid = _archive_expected_item_path(dst, item)
+        if invalid is not None:
+            issues.append(invalid)
+            continue
+        if archive_item is not None and not archive_item.exists():
+            issues.append(_archive_verify_issue(
+                "archive_item_missing",
+                "expected source inventory item is missing from the archive destination",
+                path=archive_item,
+                item=item,
+            ))
+
+    if require_empty_source and src.is_dir():
+        for leftover in _archive_leftover_paths(src):
+            issues.append(_archive_verify_issue(
+                "source_not_empty",
+                "original intake/source directory still contains an item after archive move",
+                path=leftover,
+            ))
+
+    if require_archive_readme and not readme.exists():
+        issues.append(_archive_verify_issue(
+            "archive_readme_missing",
+            "archive README is required for final archive verification",
+            path=readme,
+        ))
+
+    index_terms = [str(term).strip() for term in (vault_index_required_terms or []) if str(term).strip()]
+    if index_path is not None:
+        if not index_path.exists():
+            issues.append(_archive_verify_issue(
+                "vault_index_missing",
+                "vault/index file required by the archive contract does not exist",
+                path=index_path,
+            ))
+        elif index_terms:
+            try:
+                index_text = index_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                index_text = ""
+            for term in index_terms:
+                if term not in index_text:
+                    issues.append(_archive_verify_issue(
+                        "vault_index_term_missing",
+                        "vault/index file is missing a required archive contract term",
+                        path=index_path,
+                        item=term,
+                    ))
+
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "checked": {
+            "source_dir": str(src),
+            "archive_dir": str(dst),
+            "expected_items": expected,
+            "require_empty_source": bool(require_empty_source),
+            "archive_readme": str(readme) if require_archive_readme else None,
+            "vault_index": str(index_path) if index_path is not None else None,
+        },
+        "runbook_checklist_required": [
+            "archive README names source split, review gate, preserved subfolder artifacts, and final synthesis/review artifacts",
+            "vault/index link is updated when the card contract requires it",
+            "project-specific review gate evidence is recorded in the task handoff/comment",
+        ],
+    }
+
+
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Permanently remove an already-archived task and its related rows.
 
@@ -5286,7 +5726,7 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 def _git_toplevel(path: Path) -> Optional[Path]:
     """Return the git toplevel containing ``path``, or ``None`` if not in a repo."""
     try:
-        result = subprocess.run(
+        result = _run_text_subprocess(
             ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
@@ -5308,7 +5748,7 @@ def _git_toplevel(path: Path) -> Optional[Path]:
 
 def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
     try:
-        result = subprocess.run(
+        result = _run_text_subprocess(
             ["git", "-C", str(repo_root), "show-ref", "--verify", f"refs/heads/{branch_name}"],
             capture_output=True,
             text=True,
@@ -5322,7 +5762,7 @@ def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
 
 def _git_common_dir(path: Path) -> Optional[Path]:
     try:
-        result = subprocess.run(
+        result = _run_text_subprocess(
             ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
             capture_output=True,
             text=True,
@@ -5341,7 +5781,7 @@ def _git_common_dir(path: Path) -> Optional[Path]:
 
 def _git_dir(path: Path) -> Optional[Path]:
     try:
-        result = subprocess.run(
+        result = _run_text_subprocess(
             ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-dir"],
             capture_output=True,
             text=True,
@@ -5360,7 +5800,7 @@ def _git_dir(path: Path) -> Optional[Path]:
 
 def _git_current_branch(path: Path) -> Optional[str]:
     try:
-        result = subprocess.run(
+        result = _run_text_subprocess(
             ["git", "-C", str(path), "branch", "--show-current"],
             capture_output=True,
             text=True,
@@ -5417,7 +5857,7 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
             str(target), "HEAD",
         ]
-    result = subprocess.run(
+    result = _run_text_subprocess(
         cmd,
         capture_output=True,
         text=True,
@@ -5645,6 +6085,8 @@ DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 # and rotates on spawn if the file is larger than this at spawn time.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
+DEFAULT_WORKER_STARTUP_CHECK_SECONDS = 0.35
+DEFAULT_WORKER_STARTUP_LOG_BYTES = 4096
 
 # Keep a little wall-clock budget for the worker to observe a terminal timeout
 # and call kanban_block/kanban_complete before max_runtime_seconds kills it.
@@ -5718,6 +6160,8 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    terminal_reconciled: list[str] = field(default_factory=list)
+    """Terminal task ids whose stale live worker process was reconciled."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -5738,12 +6182,766 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    spawn_blocked_zero_budget: list[str] = field(default_factory=list)
+    """Task ids blocked before spawn because their effective worker budget resolved to zero."""
+    spawn_blocked_missing_skills: list[str] = field(default_factory=list)
+    """Task ids blocked before spawn because the target profile lacks requested skills."""
+    spawn_blocked_session_lineage: list[str] = field(default_factory=list)
+    """Task ids blocked before spawn because their stored session id belongs elsewhere."""
+    ready_explanations: list[dict[str, Any]] = field(default_factory=list)
+    """Machine-readable reasons ready work did not spawn this tick."""
     skipped_locked: bool = False
     """True when this tick was skipped because another process already held
     the board's dispatch lock (issue #35240). A losing dispatcher does no
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+
+
+
+CAPACITY_LIMITED_EXPLANATION_KINDS = frozenset({
+    "capacity_limited_global",
+    "capacity_limited_per_profile",
+})
+
+
+def _ready_explanation(result: DispatchResult, kind: str) -> dict[str, Any]:
+    for item in result.ready_explanations:
+        if item.get("kind") == kind:
+            return item
+    item: dict[str, Any] = {"kind": kind}
+    result.ready_explanations.append(item)
+    return item
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    if value not in values:
+        values.append(value)
+
+
+def _add_global_capacity_explanation(
+    result: DispatchResult,
+    *,
+    limit: int,
+    running: int,
+    task_ids: list[str],
+) -> None:
+    ex = _ready_explanation(result, "capacity_limited_global")
+    ex.update({
+        "limit": int(limit),
+        "running": int(running),
+        "ready_count": len(task_ids),
+        "task_ids": list(task_ids),
+    })
+
+
+def _add_per_profile_capacity_explanation(
+    result: DispatchResult,
+    *,
+    task_id: str,
+    assignee: str,
+    running: int,
+    limit: int,
+) -> None:
+    ex = _ready_explanation(result, "capacity_limited_per_profile")
+    task_ids = ex.setdefault("task_ids", [])
+    _append_unique(task_ids, task_id)
+    profiles = ex.setdefault("profiles", {})
+    profile = profiles.setdefault(
+        assignee,
+        {"limit": int(limit), "running": int(running), "task_ids": []},
+    )
+    profile["limit"] = int(limit)
+    profile["running"] = int(running)
+    _append_unique(profile.setdefault("task_ids", []), task_id)
+
+
+def _add_zero_budget_explanation(
+    result: DispatchResult,
+    *,
+    task_id: str,
+    assignee: str,
+    preflight: WorkerBudgetPreflight,
+) -> None:
+    ex = _ready_explanation(result, "zero_budget_profile")
+    task_ids = ex.setdefault("task_ids", [])
+    _append_unique(task_ids, task_id)
+    profiles = ex.setdefault("profiles", {})
+    profile = profiles.setdefault(
+        assignee,
+        {
+            "budget_key": preflight.budget_key,
+            "budget": preflight.budget,
+            "task_ids": [],
+        },
+    )
+    profile["budget_key"] = preflight.budget_key
+    profile["budget"] = preflight.budget
+    _append_unique(profile.setdefault("task_ids", []), task_id)
+
+
+def _add_missing_profile_explanation(
+    result: DispatchResult,
+    *,
+    task_id: str,
+    assignee: str,
+) -> None:
+    ex = _ready_explanation(result, "missing_profile")
+    task_ids = ex.setdefault("task_ids", [])
+    _append_unique(task_ids, task_id)
+    assignees = ex.setdefault("assignees", {})
+    _append_unique(assignees.setdefault(assignee, []), task_id)
+
+
+def _add_unassigned_explanation(result: DispatchResult, task_id: str) -> None:
+    ex = _ready_explanation(result, "unassigned")
+    task_ids = ex.setdefault("task_ids", [])
+    _append_unique(task_ids, task_id)
+
+
+def _add_dependency_waiting_explanation(
+    result: DispatchResult,
+    *,
+    task_id: str,
+    parent_ids: list[str],
+) -> None:
+    ex = _ready_explanation(result, "dependency_waiting")
+    task_ids = ex.setdefault("task_ids", [])
+    _append_unique(task_ids, task_id)
+    parents = ex.setdefault("parents", {})
+    parents[task_id] = list(parent_ids)
+
+
+def _add_dispatcher_stuck_explanation(
+    result: DispatchResult,
+    *,
+    task_ids: list[str],
+    board: Optional[str],
+) -> None:
+    ex = _ready_explanation(result, "dispatcher_stuck")
+    ex["task_ids"] = list(task_ids)
+    board_slug = board or get_current_board()
+    ex["suggested_commands"] = [
+        f"hermes kanban dispatch --board {board_slug} --dry-run --explain",
+        f"hermes kanban diagnostics --board {board_slug}",
+        f"hermes kanban list --board {board_slug} --status ready",
+    ]
+
+
+def dispatch_explanations_are_capacity_limited(
+    explanations: Iterable[dict[str, Any]],
+) -> bool:
+    return any(e.get("kind") in CAPACITY_LIMITED_EXPLANATION_KINDS for e in explanations)
+
+
+def dispatch_explanations_have_true_stuck(
+    explanations: Iterable[dict[str, Any]],
+) -> bool:
+    return any(e.get("kind") == "dispatcher_stuck" for e in explanations)
+
+
+@dataclass(frozen=True)
+class WorkerBudgetPreflight:
+    allowed: bool
+    budget: Optional[int]
+    budget_key: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class SessionLineageVerdict:
+    ok: bool
+    reason: str
+
+
+@dataclass(frozen=True)
+class WorkerRunningClaim:
+    running: bool
+    reason: str
+
+
+def _safe_budget_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _nested_config_value(config: Any, dotted_key: str) -> Any:
+    cur = config
+    for part in dotted_key.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
+def _load_worker_profile_config(assignee: Optional[str]) -> dict[str, Any]:
+    """Load the config that a dispatcher-spawned worker will use.
+
+    Workers run as hermes -p <assignee>. Preflight needs to inspect the
+    same profile-scoped config before claiming/spawning, so a profile with
+    goals.max_turns: 0 or agent.max_turns: 0 cannot burn a lane.
+    Falls back to the active config in tests or synthetic environments where
+    the profile directory is absent.
+    """
+    from hermes_cli.config import load_config
+
+    profile = (assignee or "").strip()
+    if profile:
+        try:
+            from hermes_cli.profiles import resolve_profile_env
+            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+            hermes_home = resolve_profile_env(profile)
+            token = set_hermes_home_override(hermes_home)
+            try:
+                cfg = load_config()
+            finally:
+                reset_hermes_home_override(token)
+            return cfg if isinstance(cfg, dict) else {}
+        except Exception:
+            pass
+    try:
+        cfg = load_config()
+    except Exception:
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _profile_skill_names(assignee: Optional[str]) -> Optional[set[str]]:
+    profile = (assignee or "").strip()
+    if not profile:
+        return None
+    try:
+        from hermes_cli.profiles import get_profile_dir, profile_exists
+
+        if not profile_exists(profile):
+            return None
+        skills_dir = get_profile_dir(profile) / "skills"
+    except Exception:
+        return None
+    if not skills_dir.is_dir():
+        return set()
+    names: set[str] = set()
+    for child in skills_dir.iterdir():
+        if child.is_dir() and (child / "SKILL.md").is_file():
+            names.add(child.name)
+    return names
+
+
+def _missing_worker_profile_skills(
+    assignee: Optional[str],
+    skills: Optional[Iterable[str]],
+) -> list[str]:
+    requested = [str(s).strip() for s in (skills or []) if str(s).strip()]
+    if not requested:
+        return []
+    available = _profile_skill_names(assignee)
+    if available is None:
+        return []
+    return [name for name in requested if name not in available]
+
+
+def _missing_worker_skills_message(
+    assignee: Optional[str],
+    missing: Iterable[str],
+    *,
+    task_id: Optional[str] = None,
+) -> str:
+    profile = (assignee or "unassigned").strip() or "unassigned"
+    prefix = (
+        f"spawn_blocked_missing_skills: task {task_id} target profile {profile}"
+        if task_id else f"target profile {profile}"
+    )
+    return f"{prefix} missing skills: {', '.join(missing)}"
+
+
+def _validate_worker_profile_skills_or_raise(
+    assignee: Optional[str],
+    skills: Optional[Iterable[str]],
+) -> None:
+    missing = _missing_worker_profile_skills(assignee, skills)
+    if missing:
+        raise ValueError(_missing_worker_skills_message(assignee, missing))
+
+
+def resolve_kanban_worker_budget(
+    task: Task,
+    *,
+    assignee: Optional[str] = None,
+    config: Optional[dict[str, Any]] = None,
+) -> WorkerBudgetPreflight:
+    """Resolve the effective execution budget for a Kanban worker.
+
+    A zero budget means the worker would start and immediately exhaust its
+    turn/tool budget. Treat that as a dispatcher infrastructure preflight
+    failure before spawning; normal task retries are not content evidence.
+    """
+    cfg = config if config is not None else _load_worker_profile_config(assignee or task.assignee)
+    candidates: list[tuple[str, Any]] = []
+    if task.goal_mode:
+        candidates.append(("task.goal_max_turns", task.goal_max_turns))
+        candidates.append(("goals.max_turns", _nested_config_value(cfg, "goals.max_turns")))
+    candidates.extend([
+        ("agent.max_turns", _nested_config_value(cfg, "agent.max_turns")),
+        ("delegation.max_iterations", _nested_config_value(cfg, "delegation.max_iterations")),
+    ])
+    for key, raw in candidates:
+        value = _safe_budget_int(raw)
+        if value is None:
+            continue
+        if value <= 0:
+            return WorkerBudgetPreflight(
+                allowed=False,
+                budget=value,
+                budget_key=key,
+                detail=f"effective Kanban worker execution budget {key} resolved to {value}",
+            )
+        return WorkerBudgetPreflight(
+            allowed=True,
+            budget=value,
+            budget_key=key,
+            detail=f"effective Kanban worker execution budget {key} resolved to {value}",
+        )
+    return WorkerBudgetPreflight(
+        allowed=True,
+        budget=None,
+        budget_key="built_in_default",
+        detail="effective Kanban worker execution budget falls through to built-in default",
+    )
+
+
+def _block_spawn_zero_budget(
+    conn: sqlite3.Connection,
+    task_id: str,
+    preflight: WorkerBudgetPreflight,
+) -> None:
+    reason = f"spawn_blocked_zero_budget: {preflight.detail}"
+    metadata = {
+        "reason": "spawn_blocked_zero_budget",
+        "budget": preflight.budget,
+        "budget_key": preflight.budget_key,
+        "detail": preflight.detail,
+    }
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, last_failure_error = ? "
+            "WHERE id = ? AND status IN ('ready', 'review')",
+            (reason[:500], task_id),
+        )
+        run_id = _synthesize_ended_run(
+            conn,
+            task_id,
+            outcome="spawn_blocked_zero_budget",
+            summary=reason,
+            error=reason[:500],
+            metadata=metadata,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "spawn_blocked_zero_budget",
+            metadata,
+            run_id=run_id,
+        )
+
+
+def _block_spawn_missing_skills(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    assignee: Optional[str],
+    missing: Iterable[str],
+) -> None:
+    missing_list = list(missing)
+    reason = _missing_worker_skills_message(
+        assignee, missing_list, task_id=task_id
+    )
+    metadata = {
+        "reason": "spawn_blocked_missing_skills",
+        "assignee": assignee,
+        "missing_skills": missing_list,
+    }
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, last_failure_error = ? "
+            "WHERE id = ? AND status IN ('ready', 'review')",
+            (reason[:500], task_id),
+        )
+        run_id = _synthesize_ended_run(
+            conn,
+            task_id,
+            outcome="spawn_blocked_missing_skills",
+            summary=reason,
+            error=reason[:500],
+            metadata=metadata,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "spawn_blocked_missing_skills",
+            metadata,
+            run_id=run_id,
+        )
+
+
+def _session_record_value(record: Any, key: str) -> Any:
+    if isinstance(record, dict):
+        return record.get(key)
+    return getattr(record, key, None)
+
+
+def _same_path(left: Any, right: Any) -> bool:
+    if not left or not right:
+        return True
+    try:
+        lpath = os.path.normcase(os.path.abspath(str(left)))
+        rpath = os.path.normcase(os.path.abspath(str(right)))
+    except Exception:
+        return str(left) == str(right)
+    return lpath == rpath
+
+
+def validate_task_session_lineage(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    session_db: Any = None,
+    board: Optional[str] = None,
+) -> SessionLineageVerdict:
+    task = get_task(conn, task_id)
+    if task is None:
+        return SessionLineageVerdict(False, f"task {task_id} not found")
+    if not task.session_id:
+        return SessionLineageVerdict(True, "no session id")
+    if session_db is None:
+        return SessionLineageVerdict(True, "session db unavailable")
+    try:
+        record = session_db.get_session(task.session_id)
+    except Exception as exc:
+        return SessionLineageVerdict(
+            False,
+            f"session lineage check failed for {task.session_id}: {exc}",
+        )
+    if not record:
+        return SessionLineageVerdict(
+            False,
+            f"session lineage mismatch for {task.session_id}: session not found",
+        )
+
+    problems: list[str] = []
+    owner_task = _session_record_value(record, "kanban_task_id")
+    if owner_task and str(owner_task) != str(task.id):
+        problems.append(f"task {owner_task}")
+    owner_board = _session_record_value(record, "kanban_board")
+    if board and owner_board and str(owner_board) != str(board):
+        problems.append(f"board {owner_board}")
+    owner_workspace = _session_record_value(record, "workspace_path")
+    if owner_workspace and task.workspace_path and not _same_path(
+        owner_workspace, task.workspace_path
+    ):
+        problems.append(
+            f"workspace {owner_workspace} != {task.workspace_path}"
+        )
+
+    if problems:
+        return SessionLineageVerdict(
+            False,
+            f"session lineage mismatch for {task.session_id}: "
+            + "; ".join(problems),
+        )
+    return SessionLineageVerdict(True, "session lineage ok")
+
+
+def _block_spawn_session_lineage(
+    conn: sqlite3.Connection,
+    task_id: str,
+    verdict: SessionLineageVerdict,
+) -> None:
+    reason = f"session lineage blocked: {verdict.reason}"
+    metadata = {
+        "reason": "spawn_blocked_session_lineage",
+        "detail": verdict.reason,
+    }
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, last_failure_error = ? "
+            "WHERE id = ? AND status IN ('ready', 'review')",
+            (reason[:500], task_id),
+        )
+        run_id = _synthesize_ended_run(
+            conn,
+            task_id,
+            outcome="spawn_blocked_session_lineage",
+            summary=reason,
+            error=reason[:500],
+            metadata=metadata,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "spawn_blocked_session_lineage",
+            metadata,
+            run_id=run_id,
+        )
+
+
+def worker_running_claim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    process_alive=None,
+    now: Optional[int] = None,
+) -> WorkerRunningClaim:
+    del now
+    row = conn.execute(
+        "SELECT status, worker_pid, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return WorkerRunningClaim(False, "task not found")
+    if row["status"] != "running":
+        return WorkerRunningClaim(False, f"status is {row['status']}")
+    if row["current_run_id"] is None:
+        return WorkerRunningClaim(False, "current run missing")
+    pid = row["worker_pid"]
+    if pid is None:
+        return WorkerRunningClaim(False, "process missing")
+    run = conn.execute(
+        "SELECT status, ended_at FROM task_runs WHERE id = ?",
+        (int(row["current_run_id"]),),
+    ).fetchone()
+    if run is None or run["ended_at"] is not None or run["status"] != "running":
+        return WorkerRunningClaim(False, "current run is not live")
+    checker = process_alive if process_alive is not None else _pid_alive
+    try:
+        alive = bool(checker(int(pid)))
+    except Exception:
+        alive = False
+    if not alive:
+        return WorkerRunningClaim(False, f"process {pid} is not live")
+    return WorkerRunningClaim(True, "running")
+
+
+_ZERO_BUDGET_SIGNATURES = (
+    "Iteration budget exhausted (0/0)",
+    "blocked_zero_budget",
+    "spawn_blocked_zero_budget",
+)
+
+
+@dataclass(frozen=True)
+class ZeroBudgetRepairCandidate:
+    task_id: str
+    title: str
+    assignee: Optional[str]
+    status: str
+    reason: str
+    budget_key: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ZeroBudgetRepairAction:
+    task_id: str
+    action: str
+    mutated: bool
+    replacement_task_id: Optional[str] = None
+    reroute_profile: Optional[str] = None
+    created: Optional[bool] = None
+
+
+def _has_zero_budget_signature_text(*values: Any) -> bool:
+    blob = "\n".join(str(v or "") for v in values)
+    return any(sig in blob for sig in _ZERO_BUDGET_SIGNATURES)
+
+
+def _zero_budget_signature_for_task(conn: sqlite3.Connection, task_id: str) -> tuple[bool, str, Optional[str]]:
+    events = conn.execute(
+        "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY created_at DESC, id DESC",
+        (task_id,),
+    ).fetchall()
+    for ev in events:
+        payload = ev["payload"] or ""
+        if ev["kind"] in {"spawn_blocked_zero_budget", "blocked_zero_budget"} or _has_zero_budget_signature_text(payload):
+            budget_key = None
+            try:
+                parsed = json.loads(payload) if isinstance(payload, str) and payload else None
+                if isinstance(parsed, dict):
+                    budget_key = parsed.get("budget_key")
+            except Exception:
+                budget_key = None
+            return True, ev["kind"], budget_key
+
+    runs = conn.execute(
+        "SELECT outcome, summary, error, metadata FROM task_runs WHERE task_id = ? "
+        "ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC",
+        (task_id,),
+    ).fetchall()
+    for run in runs:
+        if run["outcome"] in {"spawn_blocked_zero_budget", "blocked_zero_budget"} or _has_zero_budget_signature_text(
+            run["outcome"], run["summary"], run["error"], run["metadata"]
+        ):
+            budget_key = None
+            try:
+                meta = json.loads(run["metadata"]) if run["metadata"] else None
+                if isinstance(meta, dict):
+                    budget_key = meta.get("budget_key")
+            except Exception:
+                budget_key = None
+            return True, run["outcome"] or "run_zero_budget_signature", budget_key
+    return False, "", None
+
+
+def list_zero_budget_repair_candidates(conn: sqlite3.Connection) -> list[ZeroBudgetRepairCandidate]:
+    """Return cards with precise zero-budget infrastructure failure evidence.
+
+    Content/source failures are intentionally ignored: candidates need a run or
+    event signature from the dispatcher/worker budget preflight and must not
+    carry a trusted content result. A routing-only superseded result remains a
+    candidate so reroute repair is idempotently inspectable after first apply.
+    """
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE status != 'archived' ORDER BY created_at ASC, id ASC"
+    ).fetchall()
+    out: list[ZeroBudgetRepairCandidate] = []
+    for row in rows:
+        result = (row["result"] or "").strip()
+        if result and "superseded/routing-only" not in result:
+            continue
+        matched, reason, budget_key = _zero_budget_signature_for_task(conn, row["id"])
+        if not matched:
+            continue
+        out.append(ZeroBudgetRepairCandidate(
+            task_id=row["id"],
+            title=row["title"],
+            assignee=row["assignee"],
+            status=row["status"],
+            reason=reason,
+            budget_key=budget_key,
+        ))
+    return out
+
+
+def _repair_comment_body(*, rerouted_to: Optional[str] = None) -> str:
+    if rerouted_to:
+        return (
+            "zero-budget repair: superseded this routing-only failed attempt "
+            f"with replacement {rerouted_to}. Original failure was infrastructure budget exhaustion, not content/source evidence."
+        )
+    return (
+        "zero-budget repair: requeued after operator fixed worker budget config. "
+        "Original failure was infrastructure budget exhaustion, not content/source evidence."
+    )
+
+
+def repair_zero_budget_failures(
+    conn: sqlite3.Connection,
+    *,
+    dry_run: bool = True,
+    reroute_profiles: Optional[Iterable[str]] = None,
+    author: str = "repair",
+) -> tuple[list[ZeroBudgetRepairCandidate], list[ZeroBudgetRepairAction]]:
+    """Repair zero-budget infrastructure failures safely and idempotently."""
+    candidates = list_zero_budget_repair_candidates(conn)
+    profiles = [str(p).strip() for p in (reroute_profiles or []) if str(p).strip()]
+    actions: list[ZeroBudgetRepairAction] = []
+    for idx, cand in enumerate(candidates):
+        reroute_profile = profiles[idx % len(profiles)] if profiles else None
+        if reroute_profile:
+            replacement_key = f"zero-budget-repair:{cand.task_id}:{reroute_profile}"
+            existing = conn.execute(
+                "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
+                "ORDER BY created_at ASC, id ASC LIMIT 1",
+                (replacement_key,),
+            ).fetchone()
+            if dry_run:
+                actions.append(ZeroBudgetRepairAction(
+                    task_id=cand.task_id,
+                    action="reroute",
+                    mutated=False,
+                    replacement_task_id=existing["id"] if existing else None,
+                    reroute_profile=reroute_profile,
+                    created=False if existing else None,
+                ))
+                continue
+
+            original = get_task(conn, cand.task_id)
+            if original is None:
+                continue
+            parents = parent_ids(conn, cand.task_id)
+            existing_id = existing["id"] if existing else None
+            if existing_id is None:
+                existing_id = create_task(
+                    conn,
+                    title=original.title,
+                    body=original.body,
+                    assignee=reroute_profile,
+                    created_by=author,
+                    workspace_kind=original.workspace_kind,
+                    workspace_path=original.workspace_path,
+                    branch_name=original.branch_name,
+                    tenant=original.tenant,
+                    priority=original.priority,
+                    parents=parents,
+                    idempotency_key=replacement_key,
+                    max_runtime_seconds=original.max_runtime_seconds,
+                    skills=original.skills,
+                    max_retries=original.max_retries,
+                    goal_mode=original.goal_mode,
+                    goal_max_turns=original.goal_max_turns,
+                    session_id=original.session_id,
+                    project_id=original.project_id,
+                )
+                created = True
+            else:
+                created = False
+
+            for child_id in child_ids(conn, cand.task_id):
+                if child_id != existing_id:
+                    link_tasks(conn, existing_id, child_id)
+            if (get_task(conn, cand.task_id) or original).status != "done":
+                complete_task(
+                    conn,
+                    cand.task_id,
+                    result=f"superseded/routing-only by {existing_id}",
+                    summary=f"superseded/routing-only zero-budget repair; replacement {existing_id}",
+                    metadata={
+                        "repair": "zero_budget_failures",
+                        "replacement_task_id": existing_id,
+                        "reroute_profile": reroute_profile,
+                    },
+                )
+                add_comment(conn, cand.task_id, author, _repair_comment_body(rerouted_to=existing_id))
+            if not any(existing_id in c.body and "zero-budget repair" in c.body for c in list_comments(conn, existing_id)):
+                add_comment(
+                    conn,
+                    existing_id,
+                    author,
+                    f"zero-budget repair: replacement for {cand.task_id}; preserves routing/body after infrastructure budget exhaustion.",
+                )
+            actions.append(ZeroBudgetRepairAction(
+                task_id=cand.task_id,
+                action="reroute",
+                mutated=True,
+                replacement_task_id=existing_id,
+                reroute_profile=reroute_profile,
+                created=created,
+            ))
+        else:
+            if dry_run:
+                actions.append(ZeroBudgetRepairAction(cand.task_id, "unblock", False))
+                continue
+            changed = unblock_task(conn, cand.task_id)
+            if changed:
+                add_comment(conn, cand.task_id, author, _repair_comment_body())
+            actions.append(ZeroBudgetRepairAction(cand.task_id, "unblock", bool(changed)))
+    return candidates, actions
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5894,7 +7092,7 @@ def _pid_alive(pid: Optional[int]) -> bool:
             pass
     elif sys.platform == "darwin":
         try:
-            proc = subprocess.run(
+            proc = _run_text_subprocess(
                 ["ps", "-o", "stat=", "-p", str(int(pid))],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -5988,6 +7186,156 @@ def _worker_survived_termination(termination: dict) -> bool:
         and termination.get("host_local")
         and not termination.get("terminated")
     )
+
+
+def _worker_session_id_from_run_metadata(raw_metadata: Any) -> Optional[str]:
+    if not raw_metadata:
+        return None
+    metadata = raw_metadata
+    if isinstance(raw_metadata, str):
+        try:
+            metadata = json.loads(raw_metadata)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(metadata, dict):
+        return None
+    value = metadata.get("worker_session_id")
+    if value is None:
+        return None
+    session_id = str(value).strip()
+    return session_id or None
+
+
+def _end_worker_session(
+    session_db: Any,
+    session_id: Optional[str],
+    *,
+    reason: str,
+) -> None:
+    if session_db is None or not session_id:
+        return
+    end_session = getattr(session_db, "end_session", None)
+    if not callable(end_session):
+        return
+    try:
+        end_session(session_id, reason)
+    except Exception:
+        _log.debug(
+            "Failed to end reconciled kanban worker session %s",
+            session_id,
+            exc_info=True,
+        )
+
+
+def reconcile_terminal_worker_processes(
+    conn: sqlite3.Connection,
+    *,
+    signal_fn=None,
+    session_db: Any = None,
+) -> list[str]:
+    """Stop host-local workers that outlived a terminal task state.
+
+    This is narrower than stale/crash reclaim: it acts only when the board
+    already says the worker run is terminal, yet the task row still carries a
+    host-local ``worker_pid`` plus claim lock.
+    """
+    terminal_statuses = ("done", "blocked", "triage", "todo", "archived")
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    rows = conn.execute(
+        """
+        SELECT t.id, t.status, t.worker_pid, t.claim_lock, t.claim_expires,
+               r.id AS run_id, r.metadata AS run_metadata
+          FROM tasks t
+          LEFT JOIN task_runs r
+            ON r.id = (
+                SELECT MAX(id) FROM task_runs WHERE task_id = t.id
+            )
+         WHERE t.status IN (?, ?, ?, ?, ?)
+           AND t.worker_pid IS NOT NULL
+        """,
+        terminal_statuses,
+    ).fetchall()
+
+    reconciled: list[str] = []
+    sessions_to_end: list[str] = []
+    for row in rows:
+        lock = row["claim_lock"] or ""
+        if not str(lock).startswith(host_prefix):
+            continue
+        pid = int(row["worker_pid"])
+        if _pid_alive(pid):
+            termination = _terminate_reclaimed_worker(
+                pid,
+                row["claim_lock"],
+                signal_fn=signal_fn,
+            )
+        else:
+            termination = {
+                "prev_pid": pid,
+                "host_local": True,
+                "termination_attempted": False,
+                "terminated": True,
+                "sigkill": False,
+            }
+
+        payload = {
+            "status": row["status"],
+            "pid": pid,
+            "claim_lock": row["claim_lock"],
+        }
+        payload.update(termination)
+        worker_session_id = _worker_session_id_from_run_metadata(
+            row["run_metadata"]
+        )
+        if worker_session_id:
+            payload["worker_session_id"] = worker_session_id
+
+        if _worker_survived_termination(termination):
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    row["id"],
+                    "terminal_worker_reconcile_deferred",
+                    payload,
+                    run_id=row["run_id"],
+                )
+            continue
+
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks "
+                "SET claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status = ? AND worker_pid = ? "
+                "AND claim_lock IS ?",
+                (row["id"], row["status"], pid, row["claim_lock"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            if row["run_id"] is not None:
+                conn.execute(
+                    "UPDATE task_runs "
+                    "SET claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                    "WHERE id = ?",
+                    (row["run_id"],),
+                )
+            _append_event(
+                conn,
+                row["id"],
+                "terminal_worker_reconciled",
+                payload,
+                run_id=row["run_id"],
+            )
+        reconciled.append(row["id"])
+        if worker_session_id:
+            sessions_to_end.append(worker_session_id)
+
+    for session_id in dict.fromkeys(sessions_to_end):
+        _end_worker_session(
+            session_db,
+            session_id,
+            reason="kanban_terminal_worker_reconciled",
+        )
+    return reconciled
 
 
 def _defer_reclaim_for_live_worker(
@@ -6942,6 +8290,8 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    signal_fn=None,
+    session_db: Any = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -6976,6 +8326,8 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            signal_fn=signal_fn,
+            session_db=session_db,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -6992,6 +8344,8 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            signal_fn=signal_fn,
+            session_db=session_db,
         )
 
 
@@ -7008,6 +8362,8 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    signal_fn=None,
+    session_db: Any = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -7042,6 +8398,11 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    result.terminal_reconciled = reconcile_terminal_worker_processes(
+        conn,
+        signal_fn=signal_fn,
+        session_db=session_db,
+    )
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -7063,7 +8424,7 @@ def _dispatch_once_locked(
     )
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
-    result.timed_out = enforce_max_runtime(conn)
+    result.timed_out = enforce_max_runtime(conn, signal_fn=signal_fn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather
@@ -7086,6 +8447,7 @@ def _dispatch_once_locked(
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    ready_task_ids = [row["id"] for row in ready_rows]
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
@@ -7095,6 +8457,12 @@ def _dispatch_once_locked(
             "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
         ).fetchone()[0]
         if in_progress >= max_in_progress:
+            _add_global_capacity_explanation(
+                result,
+                limit=max_in_progress,
+                running=in_progress,
+                task_ids=ready_task_ids,
+            )
             return result
         # Only spawn enough to reach the cap, respecting max_spawn too.
         remaining = max_in_progress - in_progress
@@ -7141,6 +8509,14 @@ def _dispatch_once_locked(
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
         row_assignee = row["assignee"]
+        waiting_parents = incomplete_parent_ids(conn, row["id"])
+        if waiting_parents:
+            _add_dependency_waiting_explanation(
+                result, task_id=row["id"], parent_ids=waiting_parents
+            )
+            if not dry_run:
+                _demote_ready_for_incomplete_parents(conn, row["id"], waiting_parents)
+            continue
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
             # unassigned ready task and an operator-configured fallback
@@ -7183,6 +8559,7 @@ def _dispatch_once_locked(
                 result.auto_assigned_default.append(row["id"])
             else:
                 result.skipped_unassigned.append(row["id"])
+                _add_unassigned_explanation(result, row["id"])
                 continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
@@ -7199,6 +8576,9 @@ def _dispatch_once_locked(
         except Exception:
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row_assignee):
+            _add_missing_profile_explanation(
+                result, task_id=row["id"], assignee=row_assignee
+            )
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -7219,7 +8599,53 @@ def _dispatch_once_locked(
                 result.skipped_per_profile_capped.append(
                     (row["id"], row_assignee, current)
                 )
+                _add_per_profile_capacity_explanation(
+                    result,
+                    task_id=row["id"],
+                    assignee=row_assignee,
+                    running=current,
+                    limit=_per_profile_cap,
+                )
                 continue
+        task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone()
+        if task_row is None:
+            continue
+        task = Task.from_row(task_row)
+        missing_skills = _missing_worker_profile_skills(
+            row_assignee, task.skills
+        )
+        if missing_skills:
+            result.spawn_blocked_missing_skills.append(row["id"])
+            if not dry_run:
+                _block_spawn_missing_skills(
+                    conn,
+                    row["id"],
+                    assignee=row_assignee,
+                    missing=missing_skills,
+                )
+            continue
+        lineage = validate_task_session_lineage(
+            conn, row["id"], session_db=session_db, board=board
+        )
+        if not lineage.ok:
+            result.spawn_blocked_session_lineage.append(row["id"])
+            if not dry_run:
+                _block_spawn_session_lineage(conn, row["id"], lineage)
+            continue
+        budget_preflight = resolve_kanban_worker_budget(
+            task, assignee=row_assignee
+        )
+        if not budget_preflight.allowed:
+            result.spawn_blocked_zero_budget.append(row["id"])
+            _add_zero_budget_explanation(
+                result,
+                task_id=row["id"],
+                assignee=row_assignee,
+                preflight=budget_preflight,
+            )
+            if not dry_run:
+                _block_spawn_zero_budget(conn, row["id"], budget_preflight)
+            continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -7254,6 +8680,11 @@ def _dispatch_once_locked(
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            waiting_parents = incomplete_parent_ids(conn, row["id"])
+            if waiting_parents:
+                _add_dependency_waiting_explanation(
+                    result, task_id=row["id"], parent_ids=waiting_parents
+                )
             continue
         try:
             resolved_branch_name = None
@@ -7313,6 +8744,13 @@ def _dispatch_once_locked(
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
+
+    if ready_task_ids and not result.spawned and not result.ready_explanations:
+        _add_dispatcher_stuck_explanation(
+            result,
+            task_ids=ready_task_ids,
+            board=board,
+        )
 
     # ---- review column dispatch ----
     # Review tasks are tasks that a worker moved to 'review' after
@@ -7479,6 +8917,67 @@ def _rotate_worker_log(
         pass
 
 
+def _worker_prompt_path(task_id: str, *, board: Optional[str] = None) -> Path:
+    """Return the UTF-8 prompt file path used for dispatcher worker launch."""
+    return worker_logs_dir(board=board) / f"{task_id}.prompt.txt"
+
+
+def _write_worker_prompt_file(
+    task_id: str,
+    prompt: str,
+    *,
+    board: Optional[str] = None,
+) -> Path:
+    """Persist a worker prompt so subprocess argv only carries a file path."""
+    prompt_path = _worker_prompt_path(task_id, board=board)
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text(prompt.rstrip("\n") + "\n", encoding="utf-8")
+    return prompt_path
+
+
+def _worker_startup_check_seconds() -> float:
+    raw = os.environ.get("HERMES_KANBAN_WORKER_STARTUP_CHECK_SECONDS")
+    if raw is None:
+        return DEFAULT_WORKER_STARTUP_CHECK_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_WORKER_STARTUP_CHECK_SECONDS
+
+
+def _read_worker_log_tail(
+    log_path: Path,
+    max_bytes: int = DEFAULT_WORKER_STARTUP_LOG_BYTES,
+) -> str:
+    try:
+        size = log_path.stat().st_size
+        with log_path.open("rb") as handle:
+            if size > max_bytes:
+                handle.seek(size - max_bytes)
+            return handle.read(max_bytes).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _smoke_check_worker_startup(proc, log_path: Path) -> None:
+    """Fail fast when a spawned worker exits on CLI/startup errors."""
+    poll = getattr(proc, "poll", None)
+    if not callable(poll):
+        return
+    delay = _worker_startup_check_seconds()
+    if delay > 0:
+        time.sleep(delay)
+    returncode = poll()
+    if returncode in (None, 0):
+        return
+    excerpt = _read_worker_log_tail(log_path).strip()
+    detail = f": {excerpt}" if excerpt else ""
+    raise RuntimeError(
+        f"kanban worker process {getattr(proc, 'pid', '<unknown>')} "
+        f"exited during startup with code {returncode}{detail}"
+    )
+
+
 def _module_hermes_argv() -> list[str]:
     """Return the interpreter-bound Hermes CLI invocation."""
     # ``hermes_cli.main`` is the console-script target declared in
@@ -7625,6 +9124,20 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+def _pythonioencoding_is_utf8(value: Optional[str]) -> bool:
+    if not value:
+        return False
+    encoding = str(value).split(":", 1)[0].strip().lower().replace("_", "-")
+    return encoding in {"utf-8", "utf8"}
+
+
+def _force_worker_python_utf8_env(env: dict[str, str]) -> None:
+    if not _pythonioencoding_is_utf8(env.get("PYTHONIOENCODING")):
+        env["PYTHONIOENCODING"] = "utf-8"
+    if str(env.get("PYTHONUTF8", "")).strip() != "1":
+        env["PYTHONUTF8"] = "1"
+
+
 def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
     """Return the assigned profile's effective CLI toolsets for a worker.
 
@@ -7767,6 +9280,7 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+    _force_worker_python_utf8_env(env)
 
     cmd = [
         *_resolve_hermes_argv(),
@@ -7791,9 +9305,10 @@ def _default_spawn(
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+    prompt_path = _write_worker_prompt_file(task.id, prompt, board=board)
     cmd.extend([
         "chat",
-        "-q", prompt,
+        "--query-file", str(prompt_path),
     ])
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
@@ -7824,11 +9339,14 @@ def _default_spawn(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
         )
-    # NOTE: we intentionally do NOT close log_f here — we want Popen's
-    # child process to keep writing after this function returns.  The
-    # handle is kept alive by the child's inheritance.  The parent's
-    # reference goes out of scope and is GC'd, but the OS-level FD stays
-    # open in the child until the child exits.
+    except Exception:
+        log_f.close()
+        raise
+    try:
+        log_f.close()
+    except OSError:
+        pass
+    _smoke_check_worker_startup(proc, log_path)
     return proc.pid
 
 
@@ -7986,6 +9504,28 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # Cap at _CTX_MAX_PRIOR_ATTEMPTS most-recent closed runs; older
     # attempts get collapsed into a one-line marker so the worker knows
     # more exist without bloating the prompt.
+    review_attempt = _review_claim_count(conn, task_id)
+    if review_attempt >= REVIEW_VERDICT_FIRST_ATTEMPT:
+        lines.append("## Review verdict required now")
+        try:
+            from hermes_cli.usage_guard import reviewer_verdict_instruction
+
+            lines.append(
+                reviewer_verdict_instruction(
+                    task_id=task_id,
+                    review_attempt=review_attempt,
+                )
+            )
+        except Exception:
+            lines.append(
+                f"This is review attempt {review_attempt}. Do not start another "
+                "broad read. First make one explicit verdict from the evidence "
+                "already present: approve/complete, request changes by blocking "
+                "with a precise reason, or record the smallest missing evidence "
+                "gap needed for a human/operator decision."
+            )
+        lines.append("")
+
     all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
     # list_runs returns ascending by started_at; "most recent" = last N
     if len(all_prior) > _CTX_MAX_PRIOR_ATTEMPTS:
@@ -8504,6 +10044,152 @@ def worker_log_path(task_id: str, *, board: Optional[str] = None) -> Path:
     return worker_logs_dir(board=board) / f"{task_id}.log"
 
 
+@dataclass
+class WorkerLogReadStatus:
+    content: str
+    encoding: str
+    used_fallback: bool
+    had_replacement: bool
+    truncated: bool
+    size_bytes: int
+    bytes_read: int
+
+
+_CP1250_POLISH_HINTS = set(
+    "\u0105\u0107\u0119\u0142\u0144\u00f3\u015b\u017a\u017c"
+    "\u0104\u0106\u0118\u0141\u0143\u00d3\u015a\u0179\u017b"
+)
+
+
+def _read_worker_log_bytes(
+    path: Path,
+    tail_bytes: Optional[int],
+) -> tuple[bytes, bool, int]:
+    size = path.stat().st_size
+    if tail_bytes is None:
+        return path.read_bytes(), False, size
+    with open(path, "rb") as f:
+        if size > tail_bytes:
+            f.seek(size - tail_bytes)
+            probe = f.tell()
+            partial = f.readline()
+            if not partial.endswith(b"\n") and f.tell() >= size:
+                f.seek(probe)
+        data = f.read()
+    return data, bool(tail_bytes and size > tail_bytes), size
+
+
+def _worker_log_fallback_encodings() -> list[str]:
+    candidates = ["cp1250"]
+    try:
+        preferred = locale.getpreferredencoding(False)
+    except Exception:
+        preferred = None
+    if preferred:
+        candidates.append(preferred)
+    seen: set[str] = set()
+    result: list[str] = []
+    for enc in candidates:
+        key = enc.lower().replace("_", "-")
+        if key in {"utf-8", "utf8"} or key in seen:
+            continue
+        seen.add(key)
+        result.append(enc)
+    return result
+
+
+def _worker_log_fallback_is_useful(candidate: str, utf8_replaced: str) -> bool:
+    if "\ufffd" not in utf8_replaced:
+        return False
+    return any(ch in _CP1250_POLISH_HINTS for ch in candidate)
+
+
+def _decode_worker_log_bytes(
+    data: bytes,
+    *,
+    allow_fallback: bool,
+) -> tuple[str, str, bool, bool]:
+    try:
+        return data.decode("utf-8"), "utf-8", False, False
+    except UnicodeDecodeError:
+        utf8_replaced = data.decode("utf-8", errors="replace")
+    if allow_fallback:
+        for encoding in _worker_log_fallback_encodings():
+            try:
+                candidate = data.decode(encoding)
+            except (LookupError, UnicodeDecodeError):
+                continue
+            if _worker_log_fallback_is_useful(candidate, utf8_replaced):
+                return candidate, encoding, True, False
+    return utf8_replaced, "utf-8", False, "\ufffd" in utf8_replaced
+
+
+def read_worker_log_status(
+    task_id: str, *, tail_bytes: Optional[int] = None,
+    board: Optional[str] = None,
+) -> Optional[WorkerLogReadStatus]:
+    path = worker_log_path(task_id, board=board)
+    if not path.exists():
+        return None
+    try:
+        data, truncated, size = _read_worker_log_bytes(path, tail_bytes)
+    except OSError:
+        return None
+    content, encoding, used_fallback, had_replacement = _decode_worker_log_bytes(
+        data,
+        allow_fallback=True,
+    )
+    return WorkerLogReadStatus(
+        content=content,
+        encoding=encoding,
+        used_fallback=used_fallback,
+        had_replacement=had_replacement,
+        truncated=truncated,
+        size_bytes=size,
+        bytes_read=len(data),
+    )
+
+
+SYNTHESIZER_LOG_TAIL_BYTES = 4_096
+SYNTHESIZER_LOG_EXCERPT_CHARS = 1_200
+
+
+def synthesizer_worker_log_status(
+    task_id: str, *, tail_bytes: Optional[int] = None,
+    board: Optional[str] = None,
+) -> Optional[dict]:
+    """Return a capped, decode-safe worker-log summary for synthesis passes."""
+    cap = tail_bytes if tail_bytes is not None else SYNTHESIZER_LOG_TAIL_BYTES
+    status = read_worker_log_status(task_id, tail_bytes=cap, board=board)
+    if status is None:
+        return None
+    excerpt = status.content
+    if len(excerpt) > SYNTHESIZER_LOG_EXCERPT_CHARS:
+        omitted = len(excerpt) - SYNTHESIZER_LOG_EXCERPT_CHARS
+        excerpt = (
+            excerpt[: int(SYNTHESIZER_LOG_EXCERPT_CHARS * 0.4)].rstrip()
+            + f"\n[log excerpt compacted; omitted_chars={omitted}]\n"
+            + excerpt[-int(SYNTHESIZER_LOG_EXCERPT_CHARS * 0.6):].lstrip()
+        )
+    try:
+        from hermes_cli.usage_guard import _redact_obvious_secrets
+
+        excerpt = _redact_obvious_secrets(excerpt)
+    except Exception:
+        pass
+    return {
+        "task_id": task_id,
+        "artifact_path": str(worker_log_path(task_id, board=board)),
+        "excerpt": excerpt,
+        "encoding": status.encoding,
+        "used_fallback": status.used_fallback,
+        "had_replacement": status.had_replacement,
+        "truncated": status.truncated,
+        "bytes_read": status.bytes_read,
+        "size_bytes": status.size_bytes,
+    }
+
+
 def read_worker_log(
     task_id: str, *, tail_bytes: Optional[int] = None,
     board: Optional[str] = None,
@@ -8721,3 +10407,130 @@ def latest_summaries(
         ids,
     ).fetchall()
     return {r["task_id"]: r["summary"] for r in rows}
+
+
+class ArtifactVerificationError(ValueError):
+    """Raised when completion declares artifacts that are not host-visible."""
+
+    def __init__(self, issues: list[dict[str, Any]]):
+        self.issues = issues
+        super().__init__(
+            "completion blocked: declared artifacts failed host-visible verification"
+        )
+
+
+def verify_deploy_artifact_contract(
+    *,
+    artifact_path: str | os.PathLike[str],
+    expected_sha256: Optional[str] = None,
+    required_entries: Optional[Iterable[str]] = None,
+) -> dict[str, Any]:
+    from hermes_cli.artifact_contracts import verify_deploy_artifact_contract as _verify
+
+    return _verify(
+        artifact_path=artifact_path,
+        expected_sha256=expected_sha256,
+        required_entries=required_entries,
+    )
+
+
+def _artifact_metadata_lookup(metadata: dict[str, Any], keys: Iterable[str], path: str) -> Any:
+    basename = Path(path).name
+    for key in keys:
+        value = metadata.get(key)
+        if isinstance(value, dict):
+            if path in value:
+                return value[path]
+            if basename in value:
+                return value[basename]
+            if "*" in value:
+                return value["*"]
+        elif value:
+            return value
+    return None
+
+
+def _verify_completion_artifacts_or_raise(metadata: Optional[dict]) -> Optional[dict]:
+    if not isinstance(metadata, dict):
+        return metadata
+    raw_artifacts = metadata.get("artifacts")
+    if not isinstance(raw_artifacts, (list, tuple)):
+        return metadata
+    artifact_paths = [
+        str(path).strip()
+        for path in raw_artifacts
+        if isinstance(path, (str, os.PathLike)) and str(path).strip()
+    ]
+    if not artifact_paths:
+        return metadata
+
+    failures: list[dict[str, Any]] = []
+    verified: list[dict[str, Any]] = []
+    canonical_artifacts: list[str] = []
+    for artifact_path in artifact_paths:
+        expected_hash = _artifact_metadata_lookup(
+            metadata,
+            ("artifact_hashes", "expected_hashes", "expected_sha256"),
+            artifact_path,
+        )
+        required_entries = _artifact_metadata_lookup(
+            metadata,
+            ("required_entries", "required_archive_entries"),
+            artifact_path,
+        )
+        if isinstance(required_entries, str):
+            required_entries = [required_entries]
+        result = verify_deploy_artifact_contract(
+            artifact_path=artifact_path,
+            expected_sha256=str(expected_hash).strip() if expected_hash else None,
+            required_entries=required_entries if isinstance(required_entries, (list, tuple, set)) else None,
+        )
+        if not result.get("ok"):
+            failures.append({"path": artifact_path, "issues": result.get("issues") or []})
+            continue
+        checked = result.get("checked") or {}
+        canonical = str(checked.get("canonical_path") or artifact_path)
+        canonical_artifacts.append(canonical)
+        verified.append(
+            {
+                "path": canonical,
+                "byte_length": checked.get("byte_length"),
+                "sha256": checked.get("sha256"),
+                "runtime_can_read": checked.get("runtime_can_read"),
+            }
+        )
+    if failures:
+        raise ArtifactVerificationError(failures)
+
+    updated = dict(metadata)
+    updated["artifacts"] = canonical_artifacts
+    existing_verified = updated.get("verified_artifacts")
+    if isinstance(existing_verified, list):
+        verified = [*existing_verified, *verified]
+    updated["verified_artifacts"] = verified
+    return updated
+
+
+_complete_task_without_artifact_guard = complete_task
+
+
+def complete_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    created_cards: Optional[Iterable[str]] = None,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    metadata = _verify_completion_artifacts_or_raise(metadata)
+    return _complete_task_without_artifact_guard(
+        conn,
+        task_id,
+        result=result,
+        summary=summary,
+        metadata=metadata,
+        created_cards=created_cards,
+        expected_run_id=expected_run_id,
+    )

@@ -26,6 +26,10 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
+from hermes_cli.scoped_acceptance import (
+    evaluate_scoped_acceptance,
+    format_scoped_acceptance_report,
+)
 from hermes_cli.profiles import get_active_profile_name
 
 
@@ -533,6 +537,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
 
+    p_acceptance = sub.add_parser(
+        "acceptance",
+        help="Evaluate scoped acceptance evidence and explain the decision",
+    )
+    p_acceptance.add_argument(
+        "--evidence",
+        required=True,
+        help="JSON evidence object, or @path to a UTF-8 JSON file",
+    )
+    p_acceptance.add_argument("--json", action="store_true")
+
     p_edit = sub.add_parser(
         "edit",
         help="Edit recovery fields on an already-completed task",
@@ -568,6 +583,37 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "Repeated same-kind re-blocks after unblock route the task to "
             "triage to break unblock loops. Omit for a generic block."
         ),
+    )
+    p_block.add_argument(
+        "--comment-only-ok",
+        action="store_true",
+        help=(
+            "If the requested state transition cannot happen, append the "
+            "BLOCKED comment anyway and exit 0 with changed=false."
+        ),
+    )
+
+    p_cleanup = sub.add_parser("cleanup", help="Kanban cleanup helpers")
+    cleanup_sub = p_cleanup.add_subparsers(dest="cleanup_action")
+    p_cleanup_report = cleanup_sub.add_parser(
+        "report",
+        help="Write a compact structured cleanup report for one graph or inventory",
+    )
+    p_cleanup_report.add_argument(
+        "--task",
+        dest="task_id",
+        default=None,
+        help="Root task id; report is limited to this dependency graph",
+    )
+    p_cleanup_report.add_argument(
+        "--inventory-only",
+        action="store_true",
+        help="Explicit escape hatch for board-wide inventory without mutations",
+    )
+    p_cleanup_report.add_argument(
+        "--output",
+        required=True,
+        help="Path to write the compact JSON report",
     )
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
@@ -640,6 +686,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_disp.add_argument("--dry-run", action="store_true",
                         help="Don't actually spawn processes; just print what would happen")
+    p_disp.add_argument(
+        "--board",
+        dest="board",
+        default=argparse.SUPPRESS,
+        metavar="<slug>",
+        help="Board slug for this dispatch pass (accepted here for operator runbooks)",
+    )
+    p_disp.add_argument(
+        "--explain",
+        action="store_true",
+        help="Explain why ready work did not spawn (capacity/profile/dependency/stuck)",
+    )
     p_disp.add_argument("--max", type=int, default=None,
                         help="Cap number of spawns this pass")
     p_disp.add_argument("--failure-limit", type=int,
@@ -730,6 +788,26 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_log.add_argument("task_id")
     p_log.add_argument("--tail", type=int, default=None,
                        help="Only print the last N bytes")
+    p_log.add_argument(
+        "--encoding-report",
+        action="store_true",
+        help="Print log decoding metadata before the log content",
+    )
+
+    # --- progress (worker liveness/progress classifier) ---
+    p_progress = sub.add_parser(
+        "progress",
+        help="Classify a running worker's local progress evidence",
+    )
+    p_progress.add_argument("task_id")
+    p_progress.add_argument(
+        "--board",
+        dest="board",
+        default=argparse.SUPPRESS,
+        metavar="<slug>",
+        help="Board slug for this progress check (accepted here for operator runbooks)",
+    )
+    p_progress.add_argument("--json", action="store_true")
 
     # --- runs (per-attempt history for a task) ---
     p_runs = sub.add_parser(
@@ -850,6 +928,87 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit one JSON object per task on stdout",
     )
 
+    # --- triage recovery ---
+    p_triage = sub.add_parser(
+        "triage",
+        help="Operator recovery actions for triage-column tasks",
+    )
+    triage_sub = p_triage.add_subparsers(dest="triage_action")
+    p_triage_complete = triage_sub.add_parser(
+        "complete",
+        help="Complete a triage task after human/operator review",
+    )
+    p_triage_complete.add_argument("task_id")
+    p_triage_complete.add_argument(
+        "--summary",
+        default=None,
+        help="Required unless --result-file or --result provides the result.",
+    )
+    p_triage_complete.add_argument(
+        "--result",
+        default=None,
+        help="Inline result text. Prefer --result-file for longer evidence.",
+    )
+    p_triage_complete.add_argument(
+        "--result-file",
+        default=None,
+        help="UTF-8 file containing the reviewed result/evidence summary.",
+    )
+    p_triage_complete.add_argument(
+        "--reviewer",
+        default=None,
+        help="Reviewer/operator recorded in audit metadata.",
+    )
+    p_triage_complete.add_argument(
+        "--source-task-id",
+        dest="source_task_ids",
+        action="append",
+        default=[],
+        help="Source task id that informed the triage verdict; repeatable.",
+    )
+    p_triage_complete.add_argument(
+        "--evidence-file",
+        dest="evidence_files",
+        action="append",
+        default=[],
+        help="Existing evidence file path recorded in audit metadata; repeatable.",
+    )
+    p_triage_complete.add_argument(
+        "--final-disposition",
+        default=None,
+        help="Final disposition label, e.g. approved, rejected, duplicate.",
+    )
+    p_triage_complete.add_argument("--json", action="store_true")
+
+
+    # --- repair ---
+    p_repair = sub.add_parser(
+        "repair",
+        help="Operator-safe repair helpers for known Kanban infrastructure failures",
+    )
+    repair_sub = p_repair.add_subparsers(dest="repair_action")
+    p_repair_zero = repair_sub.add_parser(
+        "zero-budget-failures",
+        help="Dry-run or repair cards blocked by zero worker execution budget",
+    )
+    p_repair_zero.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Report candidates/actions without changing board state",
+    )
+    p_repair_zero.add_argument("--json", action="store_true")
+    p_repair_zero.add_argument(
+        "--reroute-profile",
+        default=None,
+        help="Create/idempotently identify one replacement per candidate on this profile",
+    )
+    p_repair_zero.add_argument(
+        "--reroute-profiles",
+        default=None,
+        help="Comma-separated profiles; independent candidates are distributed round-robin",
+    )
+
     # --- gc ---
     p_gc = sub.add_parser(
         "gc", help="Garbage-collect archived-task workspaces, old events, and old logs",
@@ -952,8 +1111,10 @@ def kanban_command(args: argparse.Namespace) -> int:
             "claim":    _cmd_claim,
             "comment":  _cmd_comment,
             "complete": _cmd_complete,
+            "acceptance": _cmd_acceptance,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
+            "cleanup":  _cmd_cleanup,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
             "promote":  _cmd_promote,
@@ -964,6 +1125,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "watch":    _cmd_watch,
             "stats":    _cmd_stats,
             "log":      _cmd_log,
+            "progress": _cmd_progress,
             "runs":     _cmd_runs,
             "heartbeat": _cmd_heartbeat,
             "assignees": _cmd_assignees,
@@ -973,6 +1135,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "context":  _cmd_context,
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
+            "triage":  _cmd_triage,
+            "repair":   _cmd_repair,
             "gc":       _cmd_gc,
         }
         handler = handlers.get(action)
@@ -1863,6 +2027,33 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _read_acceptance_evidence(raw: str) -> dict[str, Any]:
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("--evidence requires a JSON object or @path")
+    if text.startswith("@"):
+        path = Path(text[1:]).expanduser()
+        text = path.read_text(encoding="utf-8")
+    value = json.loads(text)
+    if not isinstance(value, dict):
+        raise ValueError("--evidence must be a JSON object")
+    return value
+
+
+def _cmd_acceptance(args: argparse.Namespace) -> int:
+    try:
+        evidence = _read_acceptance_evidence(args.evidence)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"kanban acceptance: {exc}", file=sys.stderr)
+        return 2
+    result = evaluate_scoped_acceptance(**evidence)
+    if getattr(args, "json", False):
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(format_scoped_acceptance_report(result))
+    return 0 if result.get("accepted") else 1
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids = list(args.task_ids or [])
@@ -1936,16 +2127,48 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_cleanup(args: argparse.Namespace) -> int:
+    if getattr(args, "cleanup_action", None) != "report":
+        print("kanban cleanup requires a subcommand (try: report)", file=sys.stderr)
+        return 2
+
+    task_id = getattr(args, "task_id", None)
+    inventory_only = bool(getattr(args, "inventory_only", False))
+    if not task_id and not inventory_only:
+        print("cleanup report requires --task or --inventory-only", file=sys.stderr)
+        return 2
+    if task_id and inventory_only:
+        print("cleanup report accepts either --task or --inventory-only, not both", file=sys.stderr)
+        return 2
+
+    from hermes_cli.kanban_cleanup_report import build_cleanup_report, write_cleanup_report
+
+    with kb.connect_closing() as conn:
+        report = build_cleanup_report(
+            conn,
+            board=kb.get_current_board(),
+            root_task_id=task_id,
+            inventory_only=inventory_only,
+        )
+    path = write_cleanup_report(report, getattr(args, "output"))
+    print(
+        f"cleanup report wrote {path} "
+        f"cards_inspected={len(report['cards_inspected'])} "
+        f"state_mutations={len(report['state_mutations'])} "
+        f"comments_added={len(report['comments_added'])}"
+    )
+    return 0
+
+
 def _cmd_block(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     kind = getattr(args, "kind", None)
+    comment_only_ok = bool(getattr(args, "comment_only_ok", False))
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
             if not kb.block_task(
                 conn,
                 tid,
@@ -1953,23 +2176,44 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 kind=kind,
                 expected_run_id=_worker_run_id_for(tid),
             ):
-                failed.append(tid)
-                print(f"cannot block {tid}", file=sys.stderr)
+                landed = kb.get_task(conn, tid)
+                where = landed.status if landed else "missing"
+                if comment_only_ok:
+                    comments_added = 0
+                    if reason:
+                        kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
+                        comments_added = 1
+                    print(
+                        f"task_id={tid} changed=false status={where} "
+                        f"comment_only=true comments_added={comments_added}"
+                    )
+                else:
+                    failed.append(tid)
+                    print(
+                        f"cannot block {tid} changed=false status={where}",
+                        file=sys.stderr,
+                    )
             else:
+                if reason:
+                    kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
                 # Report where the task actually landed — dependency blocks go
                 # to todo, and a tripped unblock-loop breaker routes to triage.
                 landed = kb.get_task(conn, tid)
                 where = landed.status if landed else "blocked"
                 suffix = f": {reason}" if reason else ""
                 if where == "todo":
-                    print(f"{tid} → todo (dependency wait){suffix}")
+                    print(
+                        f"{tid} → todo (dependency wait) changed=true "
+                        f"task_id={tid} status={where}{suffix}"
+                    )
                 elif where == "triage":
                     print(
                         f"{tid} → triage (unblock loop detected — needs a "
-                        f"human decision){suffix}"
+                        f"human decision) changed=true task_id={tid} "
+                        f"status={where}{suffix}"
                     )
                 else:
-                    print(f"Blocked {tid}{suffix}")
+                    print(f"Blocked {tid} changed=true task_id={tid} status={where}{suffix}")
     return 0 if not failed else 1
 
 
@@ -2114,6 +2358,76 @@ def _cmd_tail(args: argparse.Namespace) -> int:
         return 0
 
 
+def _dispatch_payload(res: kb.DispatchResult, *, include_explanations: bool = False) -> dict[str, Any]:
+    payload = {
+        "reclaimed": res.reclaimed,
+        "crashed": res.crashed,
+        "timed_out": res.timed_out,
+        "stale": res.stale,
+        "auto_blocked": res.auto_blocked,
+        "promoted": res.promoted,
+        "spawned": [
+            {"task_id": tid, "assignee": who, "workspace": ws}
+            for (tid, who, ws) in res.spawned
+        ],
+        "skipped_unassigned": res.skipped_unassigned,
+        "skipped_nonspawnable": res.skipped_nonspawnable,
+        "skipped_per_profile_capped": [
+            {"task_id": tid, "assignee": who, "current": current}
+            for (tid, who, current) in res.skipped_per_profile_capped
+        ],
+        "auto_assigned_default": res.auto_assigned_default,
+        "spawn_blocked_zero_budget": res.spawn_blocked_zero_budget,
+    }
+    if include_explanations:
+        payload["explanations"] = res.ready_explanations
+    return payload
+
+
+def _print_dispatch_explanations(res: kb.DispatchResult) -> None:
+    if not res.ready_explanations:
+        print("Explanations: none")
+        return
+    print("Explanations:")
+    for item in res.ready_explanations:
+        kind = item.get("kind")
+        if kind == "capacity_limited_global":
+            print(
+                "  - capacity_limited_global: "
+                f"running={item.get('running')} limit={item.get('limit')} "
+                f"ready={item.get('ready_count')}"
+            )
+        elif kind == "capacity_limited_per_profile":
+            profiles = item.get("profiles") or {}
+            bits = [
+                f"{name} running={data.get('running')} limit={data.get('limit')}"
+                for name, data in sorted(profiles.items())
+            ]
+            print(f"  - capacity_limited_per_profile: {', '.join(bits)}")
+        elif kind == "zero_budget_profile":
+            print(
+                "  - zero_budget_profile: "
+                f"{', '.join(item.get('task_ids') or [])}"
+            )
+        elif kind == "missing_profile":
+            print(
+                "  - missing_profile: "
+                f"{', '.join(item.get('task_ids') or [])}"
+            )
+        elif kind == "dependency_waiting":
+            print(
+                "  - dependency_waiting: "
+                f"{', '.join(item.get('task_ids') or [])}"
+            )
+        elif kind == "dispatcher_stuck":
+            print(
+                "  - dispatcher_stuck: spawnable ready work made no progress; "
+                "run: " + "; ".join(item.get("suggested_commands") or [])
+            )
+        else:
+            print(f"  - {kind}: {item}")
+
+
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee as the fallback for unassigned ready
     # tasks (#27145), kanban.max_in_progress as the global concurrency cap
@@ -2163,25 +2477,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
     if getattr(args, "json", False):
-        print(json.dumps({
-            "reclaimed": res.reclaimed,
-            "crashed": res.crashed,
-            "timed_out": res.timed_out,
-            "stale": res.stale,
-            "auto_blocked": res.auto_blocked,
-            "promoted": res.promoted,
-            "spawned": [
-                {"task_id": tid, "assignee": who, "workspace": ws}
-                for (tid, who, ws) in res.spawned
-            ],
-            "skipped_unassigned": res.skipped_unassigned,
-            "skipped_nonspawnable": res.skipped_nonspawnable,
-            "skipped_per_profile_capped": [
-                {"task_id": tid, "assignee": who, "current": current}
-                for (tid, who, current) in res.skipped_per_profile_capped
-            ],
-            "auto_assigned_default": res.auto_assigned_default,
-        }, indent=2))
+        print(json.dumps(
+            _dispatch_payload(
+                res,
+                include_explanations=bool(getattr(args, "explain", False)),
+            ),
+            indent=2,
+        ))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
     print(f"Crashed:      {len(res.crashed)}")
@@ -2218,6 +2520,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    if getattr(args, "explain", False):
+        _print_dispatch_explanations(res)
     return 0
 
 
@@ -2480,7 +2784,21 @@ def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
 
 
 def _cmd_log(args: argparse.Namespace) -> int:
-    content = kb.read_worker_log(args.task_id, tail_bytes=args.tail)
+    if getattr(args, "encoding_report", False):
+        status = kb.read_worker_log_status(args.task_id, tail_bytes=args.tail)
+        if status is None:
+            print(f"(no log for {args.task_id} — task may not have spawned yet)",
+                  file=sys.stderr)
+            return 1
+        print(
+            "encoding="
+            f"{status.encoding} fallback={status.used_fallback} "
+            f"replacement={status.had_replacement} truncated={status.truncated} "
+            f"bytes={status.bytes_read}/{status.size_bytes}"
+        )
+        content = status.content
+    else:
+        content = kb.read_worker_log(args.task_id, tail_bytes=args.tail)
     if content is None:
         print(f"(no log for {args.task_id} — task may not have spawned yet)",
               file=sys.stderr)
@@ -2489,6 +2807,26 @@ def _cmd_log(args: argparse.Namespace) -> int:
     if not content.endswith("\n"):
         sys.stdout.write("\n")
     return 0
+
+
+def _cmd_progress(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_progress
+
+    board = getattr(args, "board", None)
+    with kb.connect_closing() as conn:
+        result = kanban_progress.classify_task_progress(
+            conn,
+            args.task_id,
+            board=board,
+        )
+    payload = result.to_dict()
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if payload["evidence"].get("task_exists", True) else 1
+    print(f"Task: {result.task_id}")
+    print(f"State: {result.state}")
+    print(f"Action: {result.recommended_action}")
+    return 0 if payload["evidence"].get("task_exists", True) else 1
 
 
 def _cmd_runs(args: argparse.Namespace) -> int:
@@ -2699,6 +3037,164 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
     return 0 if (ok_count > 0 or not ids) else 1
 
 
+def _existing_file_posix(path_arg: str, *, label: str) -> str:
+    path = Path(path_arg).expanduser()
+    if not path.exists():
+        raise ValueError(f"{label} does not exist: {path}")
+    if not path.is_file():
+        raise ValueError(f"{label} is not a file: {path}")
+    return path.resolve().as_posix()
+
+
+def _read_result_file(path_arg: str) -> tuple[str, str]:
+    path = Path(path_arg).expanduser()
+    if not path.exists():
+        raise ValueError(f"result file does not exist: {path}")
+    if not path.is_file():
+        raise ValueError(f"result file is not a file: {path}")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"result file must be UTF-8: {path}") from exc
+    if not text.strip():
+        raise ValueError(f"result file is empty: {path}")
+    return path.resolve().as_posix(), text
+
+
+def _cmd_repair(args: argparse.Namespace) -> int:
+    action = getattr(args, "repair_action", None)
+    if action == "zero-budget-failures":
+        return _cmd_repair_zero_budget_failures(args)
+    print("kanban repair: missing action (try )", file=sys.stderr)
+    return 2
+
+
+def _repair_profile_list(args: argparse.Namespace) -> list[str]:
+    one = (getattr(args, "reroute_profile", None) or "").strip()
+    many_raw = (getattr(args, "reroute_profiles", None) or "").strip()
+    profiles: list[str] = []
+    if one:
+        profiles.append(one)
+    if many_raw:
+        profiles.extend(p.strip() for p in many_raw.split(",") if p.strip())
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for profile in profiles:
+        if profile not in seen:
+            seen.add(profile)
+            deduped.append(profile)
+    return deduped
+
+
+def _repair_candidate_to_dict(c: kb.ZeroBudgetRepairCandidate) -> dict[str, Any]:
+    return {
+        "task_id": c.task_id,
+        "title": c.title,
+        "assignee": c.assignee,
+        "status": c.status,
+        "reason": c.reason,
+        "budget_key": c.budget_key,
+    }
+
+
+def _repair_action_to_dict(a: kb.ZeroBudgetRepairAction) -> dict[str, Any]:
+    data = {"task_id": a.task_id, "action": a.action, "mutated": a.mutated}
+    if a.replacement_task_id is not None:
+        data["replacement_task_id"] = a.replacement_task_id
+    if a.reroute_profile is not None:
+        data["reroute_profile"] = a.reroute_profile
+    if a.created is not None:
+        data["created"] = a.created
+    return data
+
+
+def _cmd_repair_zero_budget_failures(args: argparse.Namespace) -> int:
+    reroute_profiles = _repair_profile_list(args)
+    dry_run = bool(getattr(args, "dry_run", False))
+    # Default-safe: no reroute profile means inspect-only unless the operator
+    # intentionally omits --dry-run to requeue after fixing config. The CLI help
+    # and JSON expose the dry_run state for machine checks.
+    with kb.connect_closing() as conn:
+        candidates, actions = kb.repair_zero_budget_failures(
+            conn,
+            dry_run=dry_run,
+            reroute_profiles=reroute_profiles,
+            author=_profile_author(),
+        )
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "repair": "zero-budget-failures",
+            "dry_run": dry_run,
+            "reroute_profiles": reroute_profiles,
+            "candidates": [_repair_candidate_to_dict(c) for c in candidates],
+            "actions": [_repair_action_to_dict(a) for a in actions],
+        }, indent=2, ensure_ascii=False))
+        return 0
+    print(f"zero-budget repair candidates: {len(candidates)}")
+    for action in actions:
+        suffix = ""
+        if action.replacement_task_id:
+            suffix = f" -> {action.replacement_task_id} ({action.reroute_profile})"
+        tag = "dry-run" if not action.mutated else "applied"
+        print(f"  {action.task_id}: {action.action}{suffix} [{tag}]")
+    return 0
+
+
+def _cmd_triage(args: argparse.Namespace) -> int:
+    action = getattr(args, "triage_action", None)
+    if action == "complete":
+        return _cmd_triage_complete(args)
+    print("kanban triage: missing action (try `triage complete -h`)", file=sys.stderr)
+    return 2
+
+
+def _cmd_triage_complete(args: argparse.Namespace) -> int:
+    result = getattr(args, "result", None)
+    result_file_path = None
+    if getattr(args, "result_file", None):
+        result_file_path, result_from_file = _read_result_file(args.result_file)
+        if not result:
+            result = result_from_file
+
+    summary = getattr(args, "summary", None)
+    if not ((summary and summary.strip()) or (result and str(result).strip())):
+        print(
+            "kanban: triage complete requires --summary, --result, or --result-file",
+            file=sys.stderr,
+        )
+        return 2
+
+    evidence_files = [
+        _existing_file_posix(path, label="evidence file")
+        for path in (getattr(args, "evidence_files", None) or [])
+    ]
+    reviewer = getattr(args, "reviewer", None) or _profile_author()
+
+    with kb.connect_closing() as conn:
+        ok = kb.complete_triage_task(
+            conn,
+            args.task_id,
+            result=result,
+            summary=summary,
+            reviewer=reviewer,
+            result_file=result_file_path,
+            source_task_ids=getattr(args, "source_task_ids", None),
+            evidence_files=evidence_files,
+            final_disposition=getattr(args, "final_disposition", None),
+        )
+    if not ok:
+        print(
+            f"cannot complete triage task {args.task_id} (unknown id or not in triage)",
+            file=sys.stderr,
+        )
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps({"task_id": args.task_id, "status": "done"}))
+    else:
+        print(f"Completed triage task {args.task_id}")
+    return 0
+
+
 def _cmd_gc(args: argparse.Namespace) -> int:
     """Remove scratch workspaces of archived tasks, prune old events, and
     delete old worker logs."""
@@ -2761,6 +3257,7 @@ Common subcommands:
   `context <id>`        Full worker-context dump
   `runs <id>`           Attempt history
   `log <id>`            Worker log
+  `triage complete <id>` Complete reviewed triage
 
 Run `/kanban <subcommand> -h` for arguments. \
 Read-only commands are safe while an agent is running.\

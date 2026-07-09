@@ -1253,6 +1253,28 @@ def switch_model(
     # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)
 
+    # Config-driven fixed-model policy is opt-in.  When absent, explicit model
+    # switches keep their existing behavior; when present, block the switch
+    # before credential validation or live runtime mutation.
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.model_policy import check_fixed_model_policy
+
+        _model_policy_check = check_fixed_model_policy(
+            load_config(), new_model, action="requested"
+        )
+    except Exception:
+        _model_policy_check = None
+    if _model_policy_check is not None and not _model_policy_check.allowed:
+        return ModelSwitchResult(
+            success=False,
+            new_model=new_model,
+            target_provider=target_provider,
+            provider_label=provider_label,
+            is_global=is_global,
+            error_message=_model_policy_check.message,
+        )
+
     # --- Validate ---
     try:
         validation = validate_requested_model(

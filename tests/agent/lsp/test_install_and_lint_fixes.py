@@ -111,6 +111,44 @@ def test_existing_binary_finds_windows_wrapper_in_staging(tmp_path, monkeypatch)
     assert install_mod.detect_status("pyright") == "installed"
 
 
+def test_existing_binary_prefers_windows_wrapper_over_extensionless_shim(tmp_path, monkeypatch):
+    """Native Windows must not select npm's extensionless POSIX shim."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    bare = install_mod.hermes_lsp_bin_dir() / "pyright-langserver"
+    wrapper = install_mod.hermes_lsp_bin_dir() / "pyright-langserver.cmd"
+    bare.write_text("#!/bin/sh\n")
+    wrapper.write_text("@echo off\n")
+    bare.chmod(0o755)
+    wrapper.chmod(0o755)
+
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda _name: None)
+
+    assert install_mod._existing_binary("pyright-langserver") == str(wrapper)
+
+
+def test_server_which_prefers_windows_wrapper_over_extensionless_path_shim(monkeypatch):
+    """PATH resolution must pick .cmd before npm's extensionless shim on Windows."""
+    from agent.lsp import servers as servers_mod
+
+    def fake_which(name):
+        if name == "typescript-language-server.cmd":
+            return r"C:\repo\node_modules\.bin\typescript-language-server.cmd"
+        if name == "typescript-language-server":
+            return r"C:\repo\node_modules\.bin\typescript-language-server"
+        return None
+
+    monkeypatch.setattr(servers_mod.os, "name", "nt", raising=False)
+    monkeypatch.setattr(servers_mod.shutil, "which", fake_which)
+
+    assert servers_mod._which("typescript-language-server").endswith(
+        "typescript-language-server.cmd"
+    )
+
+
 def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
     """pip console scripts can land in Scripts/ on native Windows."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -281,6 +319,38 @@ def test_check_lint_returns_skipped_when_npx_tsc_unusable(tmp_path):
         f"output={lint.output!r}"
     )
     assert "not usable" in (lint.message or "")
+
+
+def test_check_lint_returns_skipped_when_npx_success_only_outputs_windows_cmd_banner(tmp_path):
+    """A zero exit with only a cmd.exe banner is not a successful lint artifact."""
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+
+    ts_file = tmp_path / "bad.ts"
+    ts_file.write_text("const x: string = 42;\n")
+
+    env = LocalEnvironment()
+    fops = ShellFileOperations(env)
+
+    cmd_banner = (
+        "Microsoft Windows [Version 10.0.26100.4351]\r\n"
+        "(c) Microsoft Corporation. All rights reserved.\r\n"
+        "\r\n"
+    )
+
+    def fake_exec(cmd, **kwargs):
+        result = MagicMock()
+        result.exit_code = 0
+        result.stdout = cmd_banner
+        return result
+
+    with patch.object(fops, "_exec", side_effect=fake_exec), \
+         patch.object(fops, "_has_command", return_value=True):
+        lint = fops._check_lint(str(ts_file))
+
+    assert lint.skipped is True
+    assert "not usable" in (lint.message or "")
+    assert lint.to_dict()["status"] == "skipped"
 
 
 def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path):

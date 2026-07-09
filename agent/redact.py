@@ -32,6 +32,10 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "secret",
     "key",
     "code",           # OAuth authorization codes
+    "magic_link_token",
+    "provider_token",
+    "private_redirect_url",
+    "sig",
     "signature",      # pre-signed URL signatures
     "x-amz-signature",
 })
@@ -210,6 +214,13 @@ _SECRET_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Browser/front-door provider evidence can include cookies and access-gate
+# cookies in headers. These are never useful to replay from agent output.
+_COOKIE_HEADER_RE = re.compile(
+    r"\b((?:Set-)?Cookie:\s*)([^\r\n]+)",
+    re.IGNORECASE,
+)
+
 # Telegram bot tokens: bot<digits>:<token> or <digits>:<token>,
 # where token part is restricted to [-A-Za-z0-9_] and length >= 30
 _TELEGRAM_RE = re.compile(
@@ -361,7 +372,7 @@ def _mask_token(token: str) -> str:
     return mask_secret(token, head=6, tail=4, floor=18)
 
 
-def _redact_query_string(query: str) -> str:
+def _redact_query_string(query: str, *, hide_sensitive_keys: bool = False) -> str:
     """Redact sensitive parameter values in a URL query string.
 
     Handles `k=v&k=v` format. Sensitive keys (case-insensitive) have values
@@ -377,13 +388,14 @@ def _redact_query_string(query: str) -> str:
             continue
         key, _, value = pair.partition("=")
         if key.lower() in _SENSITIVE_QUERY_PARAMS:
-            parts.append(f"{key}=***")
+            redacted_key = "redacted" if hide_sensitive_keys else key
+            parts.append(f"{redacted_key}=***")
         else:
             parts.append(pair)
     return "&".join(parts)
 
 
-def _redact_url_query_params(text: str) -> str:
+def _redact_url_query_params(text: str, *, hide_sensitive_keys: bool = False) -> str:
     """Scan text for URLs with query strings and redact sensitive params.
 
     Catches opaque tokens that don't match vendor prefix regexes, e.g.
@@ -393,7 +405,7 @@ def _redact_url_query_params(text: str) -> str:
         scheme = m.group(1)
         authority = m.group(2)
         path = m.group(3)
-        query = _redact_query_string(m.group(4))
+        query = _redact_query_string(m.group(4), hide_sensitive_keys=hide_sensitive_keys)
         fragment = m.group(5) or ""
         return f"{scheme}://{authority}{path}?{query}{fragment}"
     return _URL_WITH_QUERY_RE.sub(_sub, text)
@@ -436,11 +448,11 @@ def redact_cdp_url(value: object) -> str:
     return text
 
 
-def _redact_http_request_target_query_params(text: str) -> str:
+def _redact_http_request_target_query_params(text: str, *, hide_sensitive_keys: bool = False) -> str:
     """Redact sensitive query params in HTTP access-log request targets."""
     def _sub(m: re.Match) -> str:
         prefix = m.group(1)
-        query = _redact_query_string(m.group(2))
+        query = _redact_query_string(m.group(2), hide_sensitive_keys=hide_sensitive_keys)
         return f"{prefix}?{query}"
     return _HTTP_REQUEST_TARGET_QUERY_RE.sub(_sub, text)
 
@@ -608,6 +620,11 @@ def redact_sensitive_text(
             lambda m: m.group(1) + _mask_token(m.group(2)),
             text,
         )
+        if force:
+            text = _COOKIE_HEADER_RE.sub(
+                lambda m: m.group(1) + "***",
+                text,
+            )
 
     # Telegram bot tokens — pattern requires ":<token>" with digits prefix
     if ":" in text:
@@ -669,6 +686,18 @@ def redact_sensitive_text(
     # Form-urlencoded bodies (only triggers on clean k=v&k=v inputs).
     if "&" in text and "=" in text:
         text = _redact_form_body(text)
+
+    # Force-redaction is used at tool-output/provider-evidence boundaries.
+    # There, raw auth redirects, magic links, signed URLs, and private provider
+    # callbacks are evidence, not navigable workflow state, so redact sensitive
+    # query params even though normal text redaction intentionally preserves
+    # round-trip web URLs.
+    if force:
+        if "://" in text and "?" in text:
+            text = _redact_url_query_params(text, hide_sensitive_keys=True)
+            text = _redact_url_userinfo(text)
+        if "?" in text:
+            text = _redact_http_request_target_query_params(text, hide_sensitive_keys=True)
 
     # E.164 phone numbers (Signal, WhatsApp)
     if "+" in text:

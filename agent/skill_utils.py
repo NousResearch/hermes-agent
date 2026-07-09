@@ -42,12 +42,23 @@ EXCLUDED_SKILL_DIRS = frozenset(
         ".ruff_cache",
     )
 )
+BACKUP_SKILL_DIR_SUFFIXES = (".bak", ".backup", ".old")
 
 # Supporting files live inside a skill package and are loaded explicitly via
 # skill_view(skill, file_path=...). They are not standalone skills and must not
 # be scanned for active SKILL.md/DESCRIPTION.md entries, even if a Curator or
 # archive workflow preserves a complete old skill package under references/.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
+
+
+def is_excluded_skill_dir_name(name: str) -> bool:
+    """True when a directory name is not an active skill-discovery root."""
+    normalized = str(name).lower()
+    return (
+        name in EXCLUDED_SKILL_DIRS
+        or normalized.endswith(BACKUP_SKILL_DIR_SUFFIXES)
+        or normalized.endswith("~")
+    )
 
 
 def is_excluded_skill_path(path) -> bool:
@@ -65,7 +76,7 @@ def is_excluded_skill_path(path) -> bool:
     except AttributeError:
         from pathlib import PurePath
         parts = PurePath(str(path)).parts
-    return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(
+    return any(is_excluded_skill_dir_name(part) for part in parts) or is_skill_support_path(
         path
     )
 
@@ -798,7 +809,7 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
         dirs[:] = [
             d
             for d in dirs
-            if d not in EXCLUDED_SKILL_DIRS
+            if not is_excluded_skill_dir_name(d)
             and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
         ]
         if filename in files:

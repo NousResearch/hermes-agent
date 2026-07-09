@@ -162,6 +162,23 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
         assert kb.get_task(conn, child).status == "ready"
 
 
+def test_parent_gated_todo_can_be_marked_blocked_needs_input(
+    kanban_home: Path,
+) -> None:
+    """A gated todo card must not hide human-input blockers as comments only."""
+    with kb.connect_closing() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        child = kb.create_task(conn, title="child", assignee="worker", parents=[parent])
+        assert kb.get_task(conn, child).status == "todo"
+
+        assert kb.block_task(conn, child, reason="which account?", kind="needs_input")
+
+        task = kb.get_task(conn, child)
+        assert task.status == "blocked_needs_input"
+        assert task.block_kind == "needs_input"
+        assert kb.incomplete_parent_ids(conn, child) == [parent]
+
+
 # ---------------------------------------------------------------------------
 # Completion resets loop memory
 # ---------------------------------------------------------------------------

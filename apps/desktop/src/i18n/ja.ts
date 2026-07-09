@@ -255,7 +255,8 @@ export const ja = defineLocale({
       testUnsupported: 'このシステムはネイティブ通知に対応していません。',
       completionSoundTitle: '完了サウンド',
       completionSoundDesc: 'エージェントのターン終了時に再生されます。プリセットを選んでここで試聴できます。',
-      completionSoundPreview: '試聴'
+      completionSoundPreview: '試聴',
+      completionSoundOff: 'オフ'
     },
     sections: {
       model: 'モデル',

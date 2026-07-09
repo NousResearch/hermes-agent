@@ -1787,15 +1787,10 @@ class MessageEvent:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
-        # Split on space and get first word, strip the /
-        parts = self.text.split(maxsplit=1)
-        raw = parts[0][1:].lower() if parts else None
-        if raw and "@" in raw:
-            raw = raw.split("@", 1)[0]
-        # Reject file paths: valid command names never contain /
-        if raw and "/" in raw:
-            return None
-        return raw
+        from hermes_cli.slash_dispatch import classify_slash_text
+
+        info = classify_slash_text(self.text)
+        return info.command if info.looks_like_command else None
     
     def get_command_args(self) -> str:
         """Get the arguments after a command."""

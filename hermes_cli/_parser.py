@@ -161,6 +161,12 @@ def build_top_level_parser():
         help="Resume a previous session by ID or title",
     )
     parser.add_argument(
+        "--allow-parallel-owner",
+        action="store_true",
+        default=False,
+        help="Allow starting even when another live process owns the resumed session",
+    )
+    parser.add_argument(
         "--continue",
         "-c",
         dest="continue_last",
@@ -269,6 +275,20 @@ def build_top_level_parser():
         "-q", "--query", help="Single query (non-interactive mode)"
     )
     chat_parser.add_argument(
+        "--query-file",
+        help="Read a single non-interactive query from a UTF-8 text file",
+    )
+    chat_parser.add_argument(
+        "--stdin-query",
+        action="store_true",
+        default=False,
+        help="Read a single non-interactive query from stdin",
+    )
+    chat_parser.add_argument(
+        "--slash",
+        help="Dispatch a slash command non-interactively without starting an agent turn",
+    )
+    chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"
     )
     _inherited_flag(
@@ -315,6 +335,12 @@ def build_top_level_parser():
         metavar="SESSION_ID",
         default=argparse.SUPPRESS,
         help="Resume a previous session by ID (shown on exit)",
+    )
+    chat_parser.add_argument(
+        "--allow-parallel-owner",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Allow starting even when another live process owns the resumed session",
     )
     chat_parser.add_argument(
         "--continue",

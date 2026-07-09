@@ -175,7 +175,6 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
         <ArchiveSkillConfirmDialog
           onApply={() => {
             onNodeRemoved()
-
             return evictStarmapNode(deleting.id)
           }}
           onClose={() => setDeleting(null)}

@@ -765,6 +765,112 @@ DANGEROUS_PATTERNS_COMPILED = [
 ]
 
 
+_COMMAND_RISK_PATTERNS: tuple[tuple[str, tuple[str, ...], str, bool], ...] = (
+    (
+        "indefinite_watcher",
+        (
+            r'\bgh\s+pr\s+checks\b[^\n;|&]*\s--watch\b',
+        ),
+        "indefinite foreground watcher (use bounded polling instead)",
+        True,
+    ),
+    (
+        "live_deploy_provider_action",
+        (
+            r'\bgh\s+release\s+create\b',
+            r'\bvercel\b[^\n;|&]*\s--prod\b',
+            r'\bhostinger\b[^\n;|&]*\bdeploy\b',
+            r'\bnpm\s+run\s+[^\n;|&]*(?:hostinger[^\n;|&]*deploy|deploy[^\n;|&]*hostinger)\b',
+            r'\bcloudflare\b[^\n;|&]*\bdns\b[^\n;|&]*\b(create|update|delete|patch|put|post|edit)\b',
+            r'\b(?:aws\s+route53|gcloud\s+dns)\b[^\n;|&]*\b(change|create|update|delete|execute)\b',
+            r'\bstripe\b[^\n;|&]*\b(create|update|delete|refund|capture|confirm)\b',
+            r'\b(?:sendgrid|resend|mailgun)\b[^\n;|&]*\b(send|create|update|delete|post)\b',
+        ),
+        "live deploy/provider mutation",
+        True,
+    ),
+    (
+        "external_repo_write",
+        (
+            r'\bgit\s+push\b',
+            r'\bgh\s+pr\s+(create|merge)\b',
+        ),
+        "external repo write",
+        True,
+    ),
+    (
+        "local_write",
+        (
+            r'\bgit\s+(add|commit|reset\s+-q\s+head)\b',
+            r'\bpython(?:[23](?:\.\d+)?)?\b[^\n;|&]*\s--(?:out|output)\b',
+        ),
+        "local write",
+        False,
+    ),
+)
+
+
+def classify_command_risk(command: str) -> dict:
+    """Classify command side-effect risk without executing it.
+
+    The classifier is intentionally conservative for operations that write to
+    external systems.  A local docs commit is a local write, but pushing it,
+    creating/merging a PR, publishing a release, deploying to production, DNS,
+    payment, and email/provider mutations all require an explicit approval key.
+    """
+    normalized = _normalize_command_for_detection(command).lower()
+    for risk_class, patterns, description, requires_approval in _COMMAND_RISK_PATTERNS:
+        if any(re.search(pattern, normalized, _RE_FLAGS) for pattern in patterns):
+            return {
+                "risk_class": risk_class,
+                "description": description,
+                "requires_explicit_approval": requires_approval,
+            }
+    return {
+        "risk_class": "safe_read",
+        "description": "no external write or live provider mutation detected",
+        "requires_explicit_approval": False,
+    }
+
+
+def _external_action_block_result(command: str, risk: dict) -> dict:
+    risk_class = risk["risk_class"]
+    description = risk["description"]
+    return {
+        "approved": False,
+        "message": (
+            f"BLOCKED: {description} requires explicit approval for "
+            f"{risk_class}. Stop and ask the user for that exact scope; do "
+            "not retry with a rephrased command or a different tool."
+        ),
+        "pattern_key": risk_class,
+        "description": description,
+        "risk_class": risk_class,
+        "outcome": "external_action_approval_required",
+        "user_consent": False,
+    }
+
+
+def check_external_action_approval(command: str, env_type: str = "local") -> dict:
+    """Gate external repository writes, live provider actions, and watchers.
+
+    This gate runs before yolo/smart/off approval bypasses because those modes
+    are not explicit consent to push, open/merge PRs, deploy, mutate providers,
+    or pin a foreground turn on an indefinite watcher.  Existing per-session or
+    permanent approval state can grant the exact risk class.
+    """
+    risk = classify_command_risk(command)
+    if not risk["requires_explicit_approval"]:
+        return {"approved": True, "message": None, "risk_class": risk["risk_class"]}
+
+    session_key = get_current_session_key()
+    risk_class = risk["risk_class"]
+    if is_approved(session_key, risk_class):
+        return {"approved": True, "message": None, "risk_class": risk_class}
+
+    return _external_action_block_result(command, risk)
+
+
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
     return pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
@@ -2572,6 +2678,15 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    # External writes, live provider mutations, and indefinite foreground
+    # watchers require explicit class-scoped approval. This runs before
+    # yolo/smart/off and before the legacy non-interactive auto-approve path so
+    # those broad bypasses cannot silently push, open/merge PRs, deploy, mutate
+    # providers, or pin a turn on gh --watch.
+    external_action_gate = check_external_action_approval(command, env_type)
+    if not external_action_gate["approved"]:
+        return external_action_gate
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo / mode=off bypass — a deny

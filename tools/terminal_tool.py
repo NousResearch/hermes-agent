@@ -41,6 +41,7 @@ import time
 import threading
 import atexit
 import shutil
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -1858,6 +1859,139 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     return None
 
 
+_ARTIFACT_OUTPUT_FLAGS = frozenset({
+    "--out",
+    "--output",
+    "--outfile",
+    "--archive",
+    "--artifact",
+    "--destination",
+    "--dest",
+})
+
+
+def _split_command_for_artifact_scan(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=(os.name != "nt"))
+    except ValueError:
+        return []
+
+
+def _clean_artifact_token(token: str) -> str:
+    return token.strip().strip("'\"")
+
+
+def _is_machine_artifact_candidate(token: str) -> bool:
+    if not token or token.startswith("-"):
+        return False
+    if "://" in token or any(ch in token for ch in "$`|;&<>"):
+        return False
+    return bool(Path(token).suffix)
+
+
+def _resolve_expected_artifact(token: str, cwd: str | None) -> Path:
+    candidate = Path(_clean_artifact_token(token))
+    if candidate.is_absolute() or not cwd:
+        return candidate
+    return Path(cwd) / candidate
+
+
+def _infer_expected_artifacts(command: str, cwd: str | None) -> list[Path]:
+    tokens = _split_command_for_artifact_scan(command)
+    artifacts: list[Path] = []
+    for idx, token in enumerate(tokens):
+        cleaned = _clean_artifact_token(token)
+        if "=" in cleaned:
+            flag, value = cleaned.split("=", 1)
+            if flag in _ARTIFACT_OUTPUT_FLAGS and _is_machine_artifact_candidate(value):
+                artifacts.append(_resolve_expected_artifact(value, cwd))
+            continue
+        if cleaned in _ARTIFACT_OUTPUT_FLAGS and idx + 1 < len(tokens):
+            value = _clean_artifact_token(tokens[idx + 1])
+            if _is_machine_artifact_candidate(value):
+                artifacts.append(_resolve_expected_artifact(value, cwd))
+    return artifacts
+
+
+def _looks_like_parser_or_launch_failure(output: str) -> bool:
+    lowered = output.lower()
+    parser_markers = (
+        "unrecognized arguments",
+        "unknown option",
+        "missing required argument",
+        "the syntax of the command is incorrect",
+        "is not recognized as an internal or external command",
+    )
+    if any(marker in lowered for marker in parser_markers):
+        return True
+    return "usage:" in lowered and "error:" in lowered
+
+
+_CMD_PROMPT_RE = re.compile(r"^[A-Za-z]:\\[^\r\n>]*>\s*$")
+
+
+def _looks_like_windows_cmd_banner_only(output: str) -> bool:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return False
+    allowed = 0
+    for line in lines:
+        lowered = line.lower()
+        if lowered.startswith("microsoft windows [version"):
+            allowed += 1
+            continue
+        if "microsoft corporation" in lowered and "rights reserved" in lowered:
+            allowed += 1
+            continue
+        if _CMD_PROMPT_RE.match(line):
+            allowed += 1
+            continue
+        return False
+    return allowed == len(lines)
+
+
+def _classify_terminal_result(
+    *,
+    command: str,
+    output: str,
+    returncode: int,
+    cwd: str | None,
+    env_type: str,
+) -> dict[str, Any]:
+    """Classify terminal results that need more than an exit code."""
+
+    text = output or ""
+    if _looks_like_parser_or_launch_failure(text):
+        return {
+            "classification": "parser_or_launch_failure",
+            "reason": "parser_or_launch_output",
+        }
+
+    if returncode == 0 and env_type == "local":
+        expected = _infer_expected_artifacts(command, cwd)
+        missing = [str(path) for path in expected if not path.exists()]
+        if missing:
+            return {
+                "classification": "artifact_missing",
+                "reason": "expected_artifact_missing",
+                "missing_artifacts": missing,
+            }
+
+    if returncode == 0 and _looks_like_windows_cmd_banner_only(text):
+        return {
+            "classification": "ambiguous_no_machine_evidence",
+            "reason": "windows_cmd_banner_only",
+        }
+
+    if "\ufffd" in text:
+        return {
+            "classification": "decode_recovered",
+            "reason": "replacement_characters_present",
+        }
+
+    return {"classification": "ok", "reason": "exit_code_and_output_ok"}
+
+
 def _command_requires_pipe_stdin(command: str) -> bool:
     """Return True when PTY mode would break stdin-driven commands.
 
@@ -2072,6 +2206,19 @@ def terminal_tool(
         # every delegate_task child share one container; only task_ids with
         # a registered env override (RL benchmarks) get isolated sandboxes.
         effective_task_id = _resolve_container_task_id(task_id)
+        if not force:
+            try:
+                from hermes_cli.usage_guard import terminal_command_denial_after_warning
+
+                usage_denial = terminal_command_denial_after_warning(
+                    command,
+                    task_id=effective_task_id,
+                    session_id=session_id,
+                )
+            except Exception:
+                usage_denial = None
+            if usage_denial:
+                return json.dumps(usage_denial, ensure_ascii=False)
 
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config. ``resolve_task_overrides``
@@ -2302,12 +2449,17 @@ def terminal_tool(
                     f"Command denied: {desc}. "
                     "Use the approval prompt to allow it, or rephrase the command."
                 )
-                return json.dumps({
+                blocked_result = {
                     "output": "",
                     "exit_code": -1,
                     "error": approval.get("message", fallback_msg),
                     "status": "blocked"
-                }, ensure_ascii=False)
+                }
+                if approval.get("risk_class"):
+                    blocked_result["risk_class"] = approval["risk_class"]
+                if approval.get("outcome"):
+                    blocked_result["outcome"] = approval["outcome"]
+                return json.dumps(blocked_result, ensure_ascii=False)
             # Track whether approval was explicitly granted by the user
             if approval.get("user_approved"):
                 desc = approval.get("description", "flagged as dangerous")
@@ -2731,7 +2883,19 @@ def terminal_tool(
             # Real prefixes, auth headers, JWTs, private keys are masked in
             # both modes. See issue #43025.
             from agent.redact import redact_terminal_output
-            output = redact_terminal_output(output.strip(), command) if output else ""
+            output = redact_terminal_output(output.strip(), command, force=True) if output else ""
+            try:
+                from hermes_cli.usage_guard import compact_terminal_output_after_warning
+
+                output = compact_terminal_output_after_warning(
+                    output,
+                    exit_code=returncode,
+                    task_id=effective_task_id,
+                    session_id=session_id,
+                    command=command,
+                )
+            except Exception:
+                pass
 
             # Interpret non-zero exit codes that aren't real errors
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")
@@ -2742,6 +2906,18 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
+            classification = _classify_terminal_result(
+                command=command,
+                output=output,
+                returncode=returncode,
+                cwd=command_cwd,
+                env_type=env_type,
+            )
+            result_dict["result_classification"] = classification["classification"]
+            if classification.get("reason"):
+                result_dict["classification_reason"] = classification["reason"]
+            if classification.get("missing_artifacts"):
+                result_dict["missing_artifacts"] = classification["missing_artifacts"]
             try:
                 from agent.verification_evidence import record_terminal_result
 

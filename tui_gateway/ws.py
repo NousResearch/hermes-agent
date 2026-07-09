@@ -29,7 +29,7 @@ import json
 import logging
 import socket
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from tui_gateway import server
 
@@ -40,6 +40,67 @@ _log = logging.getLogger(__name__)
 # threads from a wedged socket.
 _WS_WRITE_TIMEOUT_S = 10.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
+_WS_HEALTH_LOCK = threading.Lock()
+_WS_HEALTH: dict[str, Any] = {
+    "created_clients": 0,
+    "active_clients": 0,
+    "closed_clients": 0,
+    "send_failures": 0,
+    "close_events": 0,
+    "last_send_failure_type": None,
+}
+
+
+def reset_ws_transport_health_for_tests() -> None:
+    with _WS_HEALTH_LOCK:
+        _WS_HEALTH.update(
+            {
+                "created_clients": 0,
+                "active_clients": 0,
+                "closed_clients": 0,
+                "send_failures": 0,
+                "close_events": 0,
+                "last_send_failure_type": None,
+            }
+        )
+
+
+def _safe_error_type(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if text and all(ch.isalnum() or ch in "_.:-" for ch in text) and len(text) <= 80:
+        return text
+    return None
+
+
+def _record_ws_created() -> None:
+    with _WS_HEALTH_LOCK:
+        _WS_HEALTH["created_clients"] += 1
+        _WS_HEALTH["active_clients"] += 1
+
+
+def _record_ws_closed() -> None:
+    with _WS_HEALTH_LOCK:
+        _WS_HEALTH["active_clients"] = max(0, int(_WS_HEALTH["active_clients"]) - 1)
+        _WS_HEALTH["closed_clients"] += 1
+        _WS_HEALTH["close_events"] += 1
+
+
+def _record_ws_send_failure(error_type: str | None) -> None:
+    with _WS_HEALTH_LOCK:
+        _WS_HEALTH["send_failures"] += 1
+        _WS_HEALTH["last_send_failure_type"] = _safe_error_type(error_type)
+
+
+def get_ws_transport_health(*, close_wait_count: int | None = None) -> dict[str, Any]:
+    with _WS_HEALTH_LOCK:
+        out = dict(_WS_HEALTH)
+    out["stale_closed_clients"] = out.get("closed_clients", 0)
+    if close_wait_count is not None:
+        try:
+            out["close_wait_count"] = max(0, int(close_wait_count))
+        except (TypeError, ValueError):
+            out["close_wait_count"] = None
+    return out
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on
 # a short timer instead of waking the event loop once per token. A model reply
@@ -89,11 +150,15 @@ class WSTransport:
         loop: asyncio.AbstractEventLoop,
         *,
         peer: str = "unknown",
+        on_broken: Callable[[Any, str], None] | None = None,
     ) -> None:
         self._ws = ws
         self._loop = loop
         self._peer = peer
         self._closed = False
+        self._on_broken = on_broken
+        self._broken_notified = False
+        _record_ws_created()
         # Token-coalescing buffer (CF-2). Streamed token frames land here and a
         # short timer flushes the batch. The lock guards the buffer + the
         # "armed" flag against the worker threads that call write(); the timer
@@ -102,6 +167,26 @@ class WSTransport:
         self._pending_tokens: list[str] = []
         self._token_flush_handle: asyncio.TimerHandle | None = None
         self._token_flush_armed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def _mark_closed(self, reason: str, error_type: str | None = None) -> None:
+        if reason == "send_failed":
+            _record_ws_send_failure(error_type)
+        was_closed = self._closed
+        self._closed = True
+        if not was_closed:
+            _record_ws_closed()
+        if reason == "send_failed" and not self._broken_notified:
+            self._broken_notified = True
+            callback = self._on_broken
+            if callback is not None:
+                try:
+                    callback(self, reason)
+                except Exception:
+                    _log.debug("ws broken callback failed peer=%s", self._peer, exc_info=True)
 
     @staticmethod
     def _is_streaming_frame(obj: dict) -> bool:
@@ -155,7 +240,7 @@ class WSTransport:
                 self._safe_send_many(batch), self._loop
             )
             if fut is None:
-                self._closed = True
+                self._mark_closed("schedule_failed")
                 return False
 
         try:
@@ -175,7 +260,7 @@ class WSTransport:
             )
             return not self._closed
         except Exception as exc:
-            self._closed = True
+            self._mark_closed("write_failed", type(exc).__name__)
             _log.warning(
                 "ws write failed peer=%s error_type=%s error=%s",
                 self._peer, type(exc).__name__, exc,
@@ -224,7 +309,7 @@ class WSTransport:
         try:
             await self._ws.send_text(line)
         except Exception as exc:
-            self._closed = True
+            self._mark_closed("send_failed", type(exc).__name__)
             _log.warning(
                 "ws send failed peer=%s error_type=%s error=%s",
                 self._peer, type(exc).__name__, exc,
@@ -236,14 +321,14 @@ class WSTransport:
             for line in lines:
                 await self._ws.send_text(line)
         except Exception as exc:
-            self._closed = True
+            self._mark_closed("send_failed", type(exc).__name__)
             _log.warning(
                 "ws send failed peer=%s error_type=%s error=%s",
                 self._peer, type(exc).__name__, exc,
             )
 
     def close(self) -> None:
-        self._closed = True
+        self._mark_closed("close")
         # Cancel any pending coalesce flush. close() runs on the loop thread
         # (the handle_ws finally), so touching the TimerHandle here is safe.
         handle = self._token_flush_handle
@@ -289,6 +374,8 @@ async def handle_ws(ws: Any) -> None:
     dispatch_crashes = 0
     send_failures = 0
     disconnect_reason = "not_connected"
+    reap_scheduled = False
+    reap_schedule_lock = threading.Lock()
 
     try:
         await ws.accept()
@@ -298,7 +385,43 @@ async def handle_ws(ws: Any) -> None:
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
 
-        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+        loop = asyncio.get_running_loop()
+
+        async def _reap_broken_transport(broken_transport: WSTransport, reason: str) -> None:
+            try:
+                await asyncio.to_thread(
+                    server._close_sessions_for_transport,
+                    broken_transport,
+                    end_reason=reason,
+                )
+            except Exception:
+                _log.exception("ws broken transport reap failed peer=%s", peer)
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+        def _schedule_broken_reap(broken_transport: WSTransport, reason: str) -> None:
+            nonlocal reap_scheduled
+            with reap_schedule_lock:
+                if reap_scheduled:
+                    return
+                reap_scheduled = True
+
+            def _spawn() -> None:
+                loop.create_task(_reap_broken_transport(broken_transport, reason))
+
+            try:
+                loop.call_soon_threadsafe(_spawn)
+            except RuntimeError:
+                pass
+
+        transport = WSTransport(
+            ws,
+            loop,
+            peer=peer,
+            on_broken=_schedule_broken_reap,
+        )
 
         # The desktop app and dashboard chat reach the agent through this WS
         # sidecar, NOT through tui_gateway.entry.main() (the stdio TUI path that

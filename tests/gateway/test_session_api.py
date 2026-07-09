@@ -175,7 +175,6 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
     session_db.append_message(source_id, "user", "before compression")
     session_db.end_session(source_id, "compression")
     session_db.create_session("tip-session", "api_server", parent_session_id=source_id)
-    session_db.replace_messages(source_id, [])
     session_db.append_message("tip-session", "user", "after compression")
 
     app = _create_session_app(adapter)
@@ -186,7 +185,7 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
 
     assert messages["object"] == "list"
     assert messages["session_id"] == "tip-session"
-    assert [m["content"] for m in messages["data"]] == ["after compression"]
+    assert [m["content"] for m in messages["data"]] == ["before compression", "after compression"]
 
 
 @pytest.mark.asyncio
@@ -407,6 +406,60 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
     # The tool call is preserved alongside the intermediate text.
     assert any(m.get("tool_calls") for m in messages)
 
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_resolves_stale_compression_root(adapter, session_db):
+    """If the client sends to a compression-ended root, the API must resolve
+    to the current tip before running, preventing sibling continuations."""
+    root_id = session_db.create_session("root-session", "api_server")
+    session_db.append_message(root_id, "user", "hello root")
+    session_db.end_session(root_id, "compression")
+    tip_id = session_db.create_session("tip-session", "api_server", parent_session_id=root_id)
+    session_db.append_message(tip_id, "user", "hello tip")
+
+    captured_kwargs = {}
+
+    async def fake_run(**kwargs):
+        captured_kwargs.update(kwargs)
+        kwargs["stream_delta_callback"]("response")
+        return {"final_response": "response", "session_id": tip_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{root_id}/chat/stream",
+                json={"message": "next message"},
+            )
+            assert resp.status == 200
+
+    assert captured_kwargs["session_id"] == tip_id, (
+        "Chat stream must resolve a stale compression root to the current tip"
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_chat_resolves_stale_compression_root(adapter, session_db):
+    """Non-streaming chat must also resolve a stale root to the tip."""
+    root_id = session_db.create_session("root-chat", "api_server")
+    session_db.append_message(root_id, "user", "hello root")
+    session_db.end_session(root_id, "compression")
+    tip_id = session_db.create_session("tip-chat", "api_server", parent_session_id=root_id)
+    session_db.append_message(tip_id, "user", "hello tip")
+
+    mock_run = AsyncMock(return_value=({"final_response": "ok", "session_id": tip_id}, {"total_tokens": 1}))
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{root_id}/chat",
+                json={"message": "next"},
+            )
+            assert resp.status == 200
+
+    _, kwargs = mock_run.call_args
+    assert kwargs["session_id"] == tip_id
 
 
 @pytest.mark.asyncio

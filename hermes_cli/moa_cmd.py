@@ -60,6 +60,12 @@ def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
     return {"provider": str(provider.get("slug") or ""), "model": str(model)}
 
 
+def _format_slot(slot: dict[str, Any]) -> str:
+    label = f"{slot['provider']}:{slot['model']}"
+    effort = str(slot.get("reasoning_effort") or "").strip()
+    return f"{label} [reasoning={effort}]" if effort else label
+
+
 def _print_config(config: dict[str, Any]) -> None:
     cfg = normalize_moa_config(config.get("moa") if isinstance(config, dict) else {})
     print("Mixture of Agents presets")
@@ -71,9 +77,9 @@ def _print_config(config: dict[str, Any]) -> None:
         print(f"\n{marker} {name}")
         print("  Reference models:")
         for idx, slot in enumerate(preset["reference_models"], start=1):
-            print(f"    {idx}. {slot['provider']}:{slot['model']}")
+            print(f"    {idx}. {_format_slot(slot)}")
         agg = preset["aggregator"]
-        print(f"  Aggregator: {agg['provider']}:{agg['model']}")
+        print(f"  Aggregator: {_format_slot(agg)}")
 
 
 def cmd_moa(args) -> None:

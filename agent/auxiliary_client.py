@@ -1286,6 +1286,7 @@ class _AnthropicCompletionsAdapter:
         model = kwargs.get("model", self._model)
         tools = kwargs.get("tools")
         tool_choice = kwargs.get("tool_choice")
+        reasoning_config = kwargs.get("_reasoning_config")
         # ZAI's Anthropic-compatible endpoint rejects max_tokens on vision
         # models (glm-4v-flash etc.) with error code 1210.  When the caller
         # signals this by setting _skip_zai_max_tokens in kwargs, omit it.
@@ -1306,17 +1307,18 @@ class _AnthropicCompletionsAdapter:
             elif choice_type in {"auto", "required", "none"}:
                 normalized_tool_choice = choice_type
 
-        # Honor extra_body.reasoning (chat.completions shape) so auxiliary
-        # tasks configured with auxiliary.<task>.reasoning_effort (or an
-        # explicit extra_body.reasoning) control Anthropic thinking too —
+        # Reasoning priority: explicit per-call reasoning_config (MoA per-slot,
+        # passed as _reasoning_config by _build_call_kwargs) wins over an
+        # extra_body.reasoning dict (auxiliary.<task>.extra_body config).
         # build_anthropic_kwargs translates the config dict into the native
         # ``thinking`` field and handles models where thinking is mandatory.
-        _reasoning_cfg = None
-        _eb = kwargs.get("extra_body")
-        if isinstance(_eb, dict):
-            _rc = _eb.get("reasoning")
-            if isinstance(_rc, dict):
-                _reasoning_cfg = _rc
+        _reasoning_cfg = reasoning_config
+        if _reasoning_cfg is None:
+            _eb = kwargs.get("extra_body")
+            if isinstance(_eb, dict):
+                _rc = _eb.get("reasoning")
+                if isinstance(_rc, dict):
+                    _reasoning_cfg = _rc
 
         anthropic_kwargs = build_anthropic_kwargs(
             model=model,
@@ -6298,6 +6300,7 @@ def _build_call_kwargs(
     tools: Optional[list] = None,
     timeout: float = 30.0,
     extra_body: Optional[dict] = None,
+    reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
@@ -6383,10 +6386,31 @@ def _build_call_kwargs(
 
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})
+    if reasoning_config and isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            merged_extra["reasoning"] = {"enabled": False}
+        else:
+            effort = reasoning_config.get("effort") or "medium"
+            merged_extra["reasoning"] = {"enabled": True, "effort": effort}
     if provider == "nous":
         merged_extra.setdefault("tags", []).extend(_nous_portal_tags())
     if merged_extra:
         kwargs["extra_body"] = merged_extra
+
+    # Native Anthropic Messages adapters do not consume ``extra_body``. Carry
+    # the normalized Hermes reasoning config through a private kwarg so the
+    # adapter can pass it into build_anthropic_kwargs(), where provider-aware
+    # thinking/output_config projection lives. Do not expose this private kwarg
+    # to ordinary OpenAI-compatible SDK clients, which would reject it.
+    if reasoning_config and isinstance(reasoning_config, dict):
+        provider_norm = str(provider or "").strip().lower()
+        effective_base = base_url or ""
+        if (
+            provider_norm == "anthropic"
+            or _endpoint_speaks_anthropic_messages(effective_base)
+            or _is_anthropic_compat_endpoint(provider_norm, effective_base)
+        ):
+            kwargs["_reasoning_config"] = dict(reasoning_config)
 
     return kwargs
 
@@ -6497,6 +6521,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    reasoning_config: Optional[dict] = None,
     api_mode: str = None,
     stream: bool = False,
     stream_options: dict = None,
@@ -6520,6 +6545,8 @@ def call_llm(
         tools: Tool definitions (for function calling).
         timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
         extra_body: Additional request body fields.
+        reasoning_config: Optional Hermes reasoning config for direct model calls
+              such as MoA reference/aggregator slots.
         stream: When True, return the raw SDK streaming iterator instead of a
             validated complete response. The caller is responsible for consuming
             chunks (and for any fallback). Used by the MoA aggregator so its
@@ -6624,6 +6651,7 @@ def call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
+        reasoning_config=reasoning_config,
         base_url=_base_info or resolved_base_url)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)

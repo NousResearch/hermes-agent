@@ -4848,12 +4848,55 @@ def resolve_provider_client(
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig is None:
-        # Demoted from logger.warning to debug; dedup keyed by provider name
-        # so the first occurrence surfaces but repeated retries stay silent.
-        if provider not in _LOGGED_UNKNOWN_PROVIDER_KEYS:
-            _LOGGED_UNKNOWN_PROVIDER_KEYS.add(provider)
-            logger.debug("resolve_provider_client: unknown provider %r", provider)
-        return None, None
+        # Plugin-catalog fallback for non-api_key providers.
+        #
+        # ``hermes_cli/auth.py`` auto-extends ``PROVIDER_REGISTRY`` from the
+        # provider-plugin catalog, but its filter (``auth_type != "api_key"
+        # or not env_vars``) intentionally skips OAuth-token / SDK-token
+        # providers (vertex, aws_sdk, oauth_device_code, oauth_external).
+        # Without this fallback, ``resolve_provider_client("vertex", ...)``
+        # returns ``(None, None)`` and the existing
+        # ``elif pconfig.auth_type == "vertex":`` branch below is dead code
+        # — silently breaking every auxiliary task (vision, compression,
+        # curator, session_search, title generation) on any deployment
+        # whose main provider is a non-api_key one. The failure is latent
+        # for fleets that keep an aggregator fallback (openrouter/nous):
+        # Step 3 of ``_resolve_auto`` catches the miss. A vertex-only
+        # deployment (no aggregator credentials) hits it terminally with
+        # ``RuntimeError: No LLM provider configured for task=<task>``.
+        #
+        # Consult the plugin catalog directly for the well-known non-api_key
+        # auth families and synthesize a minimal ``pconfig``-shaped object
+        # so the existing auth_type dispatch further down still fires. The
+        # dispatch is the single source of truth for how each family builds
+        # a client; we only fix the reachability.
+        try:
+            from providers import get_provider_profile as _get_provider_profile
+        except ImportError:
+            _get_provider_profile = None
+
+        _plugin_profile = None
+        if _get_provider_profile is not None:
+            try:
+                _plugin_profile = _get_provider_profile(provider)
+            except Exception:
+                _plugin_profile = None
+
+        _NON_API_KEY_AUTH_TYPES = {
+            "vertex", "aws_sdk", "oauth_device_code", "oauth_external",
+        }
+        if (
+            _plugin_profile is not None
+            and _plugin_profile.auth_type in _NON_API_KEY_AUTH_TYPES
+        ):
+            pconfig = SimpleNamespace(auth_type=_plugin_profile.auth_type)
+        else:
+            # Demoted from logger.warning to debug; dedup keyed by provider name
+            # so the first occurrence surfaces but repeated retries stay silent.
+            if provider not in _LOGGED_UNKNOWN_PROVIDER_KEYS:
+                _LOGGED_UNKNOWN_PROVIDER_KEYS.add(provider)
+                logger.debug("resolve_provider_client: unknown provider %r", provider)
+            return None, None
 
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":

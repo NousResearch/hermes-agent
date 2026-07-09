@@ -1882,6 +1882,7 @@ class MCPServerTask:
                     # sweep needs the pgid to reach any reparented descendants
                     # (e.g. ``claude mcp serve`` spawned by a stdio wrapper).
                     new_pgids: Dict[int, int] = {}
+                    new_jobs: Dict[int, int] = {}
                     for _pid in new_pids:
                         try:
                             new_pgids[_pid] = os.getpgid(_pid)
@@ -1889,10 +1890,31 @@ class MCPServerTask:
                             # AttributeError: Windows (os.getpgid is POSIX-only)
                             # ProcessLookupError: child raced and already exited
                             pass
+                        # Windows: assign the direct child to a per-server
+                        # Job Object so closing the handle atomically kills the
+                        # whole process tree (wrapper + every grandchild the
+                        # wrapper spawned).  Grandchildren inherit the Job
+                        # automatically because asyncio subprocess pipes use
+                        # ``bInheritHandles=True``.  Without this, every
+                        # reconnect leaves one leaked ``node.exe`` / ``python.exe``
+                        # grandchild behind — see the Windows-process-tree
+                        # helper block above for the full rationale.
+                        if sys.platform == "win32" and _WIN32_CTYPES_OK:
+                            job = _make_windows_job()
+                            if job is not None and _assign_child_to_job(_pid, job):
+                                new_jobs[_pid] = job
+                            elif job is not None:
+                                # Job creation succeeded but assignment
+                                # failed (e.g. child raced to exit before
+                                # we could attach).  Close the Job so the
+                                # handle doesn't leak.
+                                _close_job(job)
                     with _lock:
                         for _pid in new_pids:
                             _stdio_pids[_pid] = self.name
                         _stdio_pgids.update(new_pgids)
+                        if new_jobs:
+                            _stdio_jobs.update(new_jobs)
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
@@ -1942,6 +1964,20 @@ class MCPServerTask:
                             # Nothing left to reap — drop the pgid entry so
                             # PID-reuse can't surface stale pgroup state later.
                             _stdio_pgids.pop(pid, None)
+                # Windows reconnect-leak defense: when the SDK teardown
+                # leaves descendants alive (the user-reported bug — every
+                # keepalive-driven reconnect leaks one node.exe / python.exe
+                # grandchild because ``os.kill(pid, sig)`` only reaches the
+                # direct wrapper), eagerly close the Job Object now.  This
+                # atomically kills the entire tree — wrapper, node/python
+                # grandchild, any further descendants — without waiting for
+                # the shutdown sweep.  POSIX keeps its existing pgid path;
+                # this block is Windows-only.
+                if sys.platform == "win32":
+                    for pid in new_pids:
+                        # Close the Job if one was attached at spawn.  This
+                        # is the race-free atomic tree-kill the bug needs.
+                        _kill_process_tree(pid)
 
     # Content types a real MCP Streamable-HTTP endpoint may return on the
     # initial POST/GET. Anything else on a 2xx response means the URL is not
@@ -2985,6 +3021,325 @@ _orphan_stdio_pids: set = set()
 # exited and been removed from the active map.  Empty on Windows
 # (``os.getpgid`` is POSIX-only).
 _stdio_pgids: Dict[int, int] = {}  # pid -> pgid
+
+
+# ---------------------------------------------------------------------------
+# Windows process-tree kill helpers
+# ---------------------------------------------------------------------------
+#
+# Windows has no process groups, so ``os.kill(pid, sig)`` (and ``killpg``'s
+# POSIX counterpart) only reaches the direct wrapper — the real MCP server
+# grandchild (e.g. the ``node.exe`` spawned by ``cmd /c npx ...``, or the
+# ``python.exe`` spawned by ``uvx elevenlabs-mcp``) survives, leaks across
+# reconnects, and accumulates across a single Hermes run.  Every reconnect
+# leaks one grandchild.  A full Hermes restart cleans them up because the
+# Job Object is closed when the parent Python dies — but the leak still
+# burns RAM, file descriptors, and npx/uvx caches in the meantime.
+#
+# Two complementary mechanisms keep the tree clean on Windows:
+#
+# 1. Windows Job Objects (``_assign_child_to_job`` / ``_close_job``).  At
+#    spawn time we create a per-MCP-server Job with
+#    ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` and assign the direct child to
+#    it.  Grandchildren inherit the Job automatically (asyncio's subprocess
+#    pipe uses ``bInheritHandles=True``).  When we close the Job handle the
+#    kernel atomically kills every process in the Job, including
+#    grandchildren, race-free — even if the direct wrapper has already
+#    exited and the grandchildren have been reparented.
+#
+# 2. psutil tree-kill fallback (``_kill_process_tree_psutil``).  Used when
+#    the Job Object approach is unavailable (ctypes missing, Job creation
+#    failed) and as defense-in-depth.  ``psutil.Process.children(recursive=
+#    True)`` queries the OS process table directly, so it works even after
+#    the wrapper has exited (it does not depend on the parent/child
+#    relationship surviving in the kernel).
+#
+# POSIX is unchanged: ``killpg(pgid, sig)`` is the canonical path there.
+
+# Windows Job handles keyed by child PID.  Value is the ``HANDLE`` integer
+# from ``kernel32.CreateJobObjectW``.  Closing the handle (via
+# ``CloseHandle``) kills every process assigned to the Job when the Job was
+# created with ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``.  Empty on non-Windows.
+_stdio_jobs: Dict[int, int] = {}
+
+# Whether ctypes/wintypes is available in this interpreter.  Cached at
+# module import so we don't pay the import cost on every reconnect.
+try:
+    import ctypes  # noqa: F401  -- availability probe only
+    import ctypes.wintypes  # noqa: F401  -- availability probe only
+    _WIN32_CTYPES_OK: bool = sys.platform == "win32"
+except Exception:
+    _WIN32_CTYPES_OK: bool = False
+
+
+def _make_windows_job() -> Optional[int]:
+    """Create a Windows Job Object with KILL_ON_JOB_CLOSE.
+
+    Returns the Job handle (an integer suitable for ``CloseHandle``) on
+    success, ``None`` if ctypes is unavailable or the Win32 call fails.
+    Assigning any process to the Job makes it — and every process it
+    spawns (Jobs are inherited across CreateProcess) — die atomically when
+    this handle is closed.
+
+    Idempotent per-process: each MCP session gets its own Job so closing
+    one doesn't tear down siblings.
+    """
+    if not _WIN32_CTYPES_OK:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        # Constants from the Windows SDK (avoid the full win32 import).
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+        # IO_COUNTERS is unused but CreateJobObject's extended param requires
+        # a pointer to one.  Allocate on a kept-alive global so the pointer
+        # survives until CloseHandle.
+        class _IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", ctypes.c_uint32),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", ctypes.c_uint32),
+                ("SchedulingClass", ctypes.c_uint32),
+            ]
+
+        class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", _IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        CreateJobObjectW = kernel32.CreateJobObjectW
+        CreateJobObjectW.restype = wintypes.HANDLE
+        CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+
+        SetInformationJobObject = kernel32.SetInformationJobObject
+        SetInformationJobObject.restype = wintypes.BOOL
+        SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, ctypes.c_uint32,
+        ]
+
+        # JobObjectExtendedLimitInformation = 9
+        handle = CreateJobObjectW(None, None)
+        if not handle:
+            return None
+
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        ok = SetInformationJobObject(
+            handle, 9,
+            ctypes.byref(info), ctypes.sizeof(info),
+        )
+        if not ok:
+            kernel32.CloseHandle(handle)
+            return None
+        return int(handle)
+    except Exception:
+        return None
+
+
+def _assign_child_to_job(pid: int, job_handle: int) -> bool:
+    """Assign a running child PID to a Windows Job Object.
+
+    Opens the child with ``PROCESS_SET_QUOTA | PROCESS_TERMINATE`` (the
+    minimum access needed for ``AssignProcessToJobObject``), assigns it,
+    then closes the child handle.  Returns True on success.
+
+    On non-Windows or when ctypes is unavailable, returns False so callers
+    fall back to the psutil tree-kill path.
+
+    Note on the user's environment: when Hermes itself runs inside a Job
+    (the desktop launcher / Electron main process nests Hermes in a Job),
+    every child it spawns is *already* in that inherited Job, and Win32
+    refuses ``AssignProcessToJobObject`` with ``ERROR_ACCESS_DENIED``
+    (nested Jobs are not allowed without ``JOB_OBJECT_LIMIT_BREAKAWAY_OK``,
+    and even then only across the immediate boundary — not from outside).
+    In that case this returns False and the caller falls back to the
+    psutil tree-kill path, which is the fix that actually closes the
+    reported leak.
+    """
+    if not _WIN32_CTYPES_OK:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        PROCESS_SET_QUOTA = 0x0100
+        PROCESS_TERMINATE = 0x0001
+
+        OpenProcess = kernel32.OpenProcess
+        OpenProcess.restype = wintypes.HANDLE
+        OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+
+        AssignProcessToJobObject = kernel32.AssignProcessToJobObject
+        AssignProcessToJobObject.restype = wintypes.BOOL
+        AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+
+        CloseHandle = kernel32.CloseHandle
+        CloseHandle.restype = wintypes.BOOL
+        CloseHandle.argtypes = [wintypes.HANDLE]
+
+        child_handle = OpenProcess(
+            PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, int(pid),
+        )
+        if not child_handle:
+            return False
+        try:
+            ok = AssignProcessToJobObject(wintypes.HANDLE(job_handle), child_handle)
+            if not ok:
+                # ERROR_ACCESS_DENIED (5) is expected when the child is
+                # already in an inherited Job.  Surface the error in debug
+                # logs so we can tell apart "Job creation succeeded but
+                # assignment refused" from "Job creation itself failed".
+                import ctypes as _ct
+                err = _ct.get_last_error()
+                logger.debug(
+                    "AssignProcessToJobObject(%d) failed for MCP child PID %d: "
+                    "GetLastError=%d (5 = already in another Job, which is "
+                    "normal when Hermes itself runs under a Job; psutil "
+                    "tree-kill will be used)",
+                    job_handle, pid, err,
+                )
+                return False
+            return True
+        finally:
+            CloseHandle(child_handle)
+    except Exception:
+        return False
+
+
+def _close_job(job_handle: int) -> None:
+    """Close a Windows Job Object handle, atomically killing its tree.
+
+    With ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` set, the kernel terminates
+    every process in the Job — including grandchildren that inherited the
+    Job at CreateProcess time — at the moment the last handle is closed.
+    This is race-free even if the direct wrapper has already exited: the
+    grandchildren still belong to the Job and die with it.
+    """
+    if not _WIN32_CTYPES_OK or not job_handle:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CloseHandle(wintypes.HANDLE(int(job_handle)))
+    except Exception:
+        pass
+
+
+def _kill_process_tree_psutil(pid: int) -> None:
+    """Terminate a process and every descendant, on any platform.
+
+    Uses ``psutil.Process.children(recursive=True)`` to enumerate the
+    descendant set via the OS process table (not the parent/child
+    relationship — grandchildren are still findable after the wrapper
+    exits and they get reparented to PID 0/system).  Sends SIGTERM first
+    and SIGKILL 250ms later for any survivors.
+
+    No-op on platforms where psutil is missing or the PID is gone.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return
+    try:
+        proc = psutil.Process(int(pid))
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError, OSError):
+        return
+    # Collect descendants first; terminate() walks parent->child but
+    # grandchildren whose parent just exited become detached.  We want the
+    # full snapshot.
+    try:
+        descendants = proc.children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError, OSError):
+        descendants = []
+    # Include the root itself.
+    targets = [proc] + list(descendants)
+    # Graceful first.
+    for p in targets:
+        try:
+            p.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError, OSError):
+            continue
+    # Brief grace, then escalate.  ``wait_procs`` blocks up to the timeout
+    # but returns earlier if all targets exit; on Windows it accepts
+    # ``timeout`` as a float seconds.  Older psutil requires the positional
+    # form — try the kwarg first and fall back.
+    try:
+        gone, alive = psutil.wait_procs(targets, timeout=0.25)
+    except TypeError:
+        # Older psutil: ``timeout`` is positional and required.
+        try:
+            gone, alive = psutil.wait_procs(targets, 0.25)
+        except Exception:
+            alive = targets
+    except Exception:
+        alive = targets
+    for p in alive:
+        try:
+            p.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError, OSError):
+            continue
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Windows: atomically kill the process tree rooted at ``pid``.
+
+    Order of attempts (each falls through to the next on failure):
+      1. Close the tracked Job Object for this PID if one was assigned at
+         spawn — kernel kills the entire tree atomically.
+      2. psutil tree-kill — graceful SIGTERM then SIGKILL.
+      3. Direct os.kill(pid, sig) — only reaches the direct child.
+
+    No-op when ``pid`` is falsy.  Never raises.
+    """
+    if not pid:
+        return
+    with _lock:
+        job = _stdio_jobs.pop(pid, None)
+    if job:
+        _close_job(job)
+        # The Job Object close is synchronous on Windows, but give the
+        # kernel a tick to deliver the termination so subsequent PID
+        # existence probes report gone.
+        time.sleep(0.05)
+        return
+    if sys.platform == "win32":
+        # Defense-in-depth: even if we never created a Job (e.g. spawn ran
+        # before this code shipped, or ctypes failed), still try to reap
+        # the tree.  This is what fixes the user-reported leak.
+        _kill_process_tree_psutil(pid)
+        return
+    # POSIX: nothing to do here; _send_signal/killpg already handled it.
+    try:
+        import signal as _signal
+        os.kill(pid, _signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
 
 
 def _snapshot_child_pids() -> set:
@@ -4906,7 +5261,19 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
         _my_pgid = None  # Windows or restricted environment
 
     def _send_signal(pid: int, sig: int, server_name: str) -> None:
-        """SIGTERM/SIGKILL via pgroup on POSIX, fall back to pid signal."""
+        """SIGTERM/SIGKILL via pgroup on POSIX, fall back to pid signal.
+
+        Windows: ``killpg`` is unavailable and ``os.kill(pid, sig)`` only
+        reaches the direct wrapper — the MCP server grandchild (the real
+        process holding the stdio pipes) survives.  So on Windows we
+        route through ``_kill_process_tree`` which closes the per-server
+        Job Object if one was attached at spawn (atomic tree-kill) and
+        otherwise falls back to a psutil tree-kill.  POSIX keeps the
+        existing ``killpg``/``kill`` path verbatim.
+        """
+        if sys.platform == "win32":
+            _kill_process_tree(pid)
+            return
         pgid = pgids.get(pid)
         killpg = getattr(os, "killpg", None)
         if pgid is not None and killpg is not None:
@@ -4945,8 +5312,14 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
         _send_signal(pid, _signal.SIGTERM, server_name)
         logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, server_name)
 
-    # Phase 2: Wait for graceful exit
-    time.sleep(2)
+    # Phase 2: Wait for graceful exit.  On Windows, ``_send_signal`` routed
+    # through ``_kill_process_tree`` which closes the Job Object atomically
+    # (or psutil tree-kills synchronously) — by the time we get here the
+    # whole tree is already gone, so the 2s wait would be wasted.  POSIX
+    # keeps the original graceful-then-force-kill cadence so the wrapper
+    # and its grandchild get a chance to flush.
+    if sys.platform != "win32":
+        time.sleep(2)
 
     # Phase 3: SIGKILL any survivors
     _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)

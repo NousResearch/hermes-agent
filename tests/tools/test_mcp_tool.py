@@ -88,6 +88,207 @@ class TestFilterMCPChildren:
 
 
 # ---------------------------------------------------------------------------
+# Windows process-tree leak regression
+# ---------------------------------------------------------------------------
+#
+# Background: on Windows, MCP servers launched via wrapper commands
+# (``uvx elevenlabs-mcp``, ``cmd /c npx @supabase/...``) spawn a wrapper
+# PID that immediately re-execs the real server as a grandchild.  The
+# SDK only tracks the direct child; ``os.kill(pid, sig)`` on teardown
+# kills only the wrapper, leaving the grandchild orphaned.  Every
+# reconnect leaks one grandchild.
+#
+# The fix: ``_kill_process_tree(pid)`` walks the tree via psutil and
+# terminates the root plus every descendant before the function returns.
+# These tests pin that contract — the production bug is "the grandchild
+# survives tree-kill", so we assert every descendant is gone after the
+# sweep.  All subprocess work is mocked to keep the test fast and
+# deterministic.
+
+class TestWindowsProcessTreeKill:
+    """Regression tests for the Windows MCP grandchild leak."""
+
+    def _make_fake_psutil(self, descendants_by_pid):
+        """Build a fake psutil module.
+
+        ``descendants_by_pid`` maps each tracked PID to a list of its
+        direct child PIDs.  ``children(recursive=True)`` walks the full
+        descendant set the way real psutil does, so the test asserts the
+        same contract the production helper relies on.
+        """
+        terminated: set = set()
+        killed: set = set()
+
+        class FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def children(self, recursive=True):
+                direct = descendants_by_pid.get(self.pid, [])
+                if not recursive:
+                    return [FakeProcess(d) for d in direct]
+                # Walk the full subtree, matching psutil's recursive=True.
+                seen = set()
+                stack = list(direct)
+                out = []
+                while stack:
+                    cur = stack.pop()
+                    if cur in seen:
+                        continue
+                    seen.add(cur)
+                    out.append(FakeProcess(cur))
+                    stack.extend(descendants_by_pid.get(cur, []))
+                return out
+
+            def terminate(self):
+                terminated.add(self.pid)
+
+            def kill(self):
+                killed.add(self.pid)
+                terminated.add(self.pid)
+
+        def wait_procs(procs, *args, **kwargs):
+            # Pretend everything terminated.
+            gone = list(procs)
+            alive = []
+            return gone, alive
+
+        fake = SimpleNamespace(
+            Process=FakeProcess,
+            NoSuchProcess=ProcessLookupError,
+            AccessDenied=PermissionError,
+            wait_procs=wait_procs,
+            _terminated=terminated,
+            _killed=killed,
+        )
+        return fake
+
+    def test_psutil_tree_kill_terminates_root_and_all_descendants(self, monkeypatch):
+        """The core leak fix: killing the wrapper MUST also kill every
+        descendant.  This is what ``os.kill(pid, sig)`` failed to do.
+        """
+        import sys
+
+        import tools.mcp_tool as mcp_tool
+
+        fake = self._make_fake_psutil({
+            1000: [1001, 1002],   # wrapper 1000 -> grandchildren 1001, 1002
+            1001: [1003],          # grandchild 1001 -> great-grandchild 1003
+        })
+        monkeypatch.setitem(sys.modules, "psutil", fake)
+
+        # Skip the Job Object path so the test exercises the psutil branch.
+        monkeypatch.setattr(mcp_tool, "_WIN32_CTYPES_OK", False, raising=False)
+        monkeypatch.setattr(mcp_tool, "sys", SimpleNamespace(platform="win32"))
+
+        mcp_tool._kill_process_tree(1000)
+
+        # Every PID in the tree must be terminated.
+        terminated = fake._terminated
+        assert terminated == {1000, 1001, 1002, 1003}, (
+            f"Expected all 4 PIDs terminated, got {terminated}. "
+            f"Missing: {{1000,1001,1002,1003}} - terminated"
+        )
+
+    def test_psutil_tree_kill_handles_no_descendants(self, monkeypatch):
+        """Direct-command servers (freshbooks `node`, drive/analytics/ads
+        `python`) have no grandchildren — the sweep is a single-PID kill.
+        Must not raise.
+        """
+        import sys
+
+        import tools.mcp_tool as mcp_tool
+
+        fake = self._make_fake_psutil({2000: []})
+        monkeypatch.setitem(sys.modules, "psutil", fake)
+        monkeypatch.setattr(mcp_tool, "_WIN32_CTYPES_OK", False, raising=False)
+        monkeypatch.setattr(mcp_tool, "sys", SimpleNamespace(platform="win32"))
+
+        mcp_tool._kill_process_tree(2000)
+        assert fake._terminated == {2000}
+
+    def test_psutil_tree_kill_noop_when_pid_already_gone(self, monkeypatch):
+        """If the root exited before tree-kill runs, ``psutil.Process``
+        raises ``NoSuchProcess`` and the helper must return cleanly
+        without touching any other PID.
+        """
+        import sys
+
+        import tools.mcp_tool as mcp_tool
+
+        class _GoneProcess:
+            def __init__(self, pid):
+                # Real psutil raises NoSuchProcess from the constructor
+                # when the PID doesn't exist.  Mirror that exactly so
+                # the production code's outer try/except handles it
+                # without ever touching ``.children``/``.terminate``.
+                raise ProcessLookupError(pid)
+
+        fake = SimpleNamespace(
+            Process=_GoneProcess,
+            NoSuchProcess=ProcessLookupError,
+            AccessDenied=PermissionError,
+            wait_procs=lambda procs, *a, **kw: (list(procs), []),
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake)
+        monkeypatch.setattr(mcp_tool, "_WIN32_CTYPES_OK", False, raising=False)
+        monkeypatch.setattr(mcp_tool, "sys", SimpleNamespace(platform="win32"))
+
+        # Must not raise.
+        mcp_tool._kill_process_tree(3000)
+
+    def test_posix_path_skips_tree_kill(self, monkeypatch):
+        """On POSIX the canonical path is ``killpg``/``kill`` via the
+        run-loop's ``_send_signal``.  ``_kill_process_tree`` must NOT be
+        called on POSIX so we don't disturb that contract.
+        """
+        import sys
+
+        import tools.mcp_tool as mcp_tool
+
+        fake = self._make_fake_psutil({4000: [4001]})
+        monkeypatch.setitem(sys.modules, "psutil", fake)
+        monkeypatch.setattr(mcp_tool, "_WIN32_CTYPES_OK", False, raising=False)
+        monkeypatch.setattr(mcp_tool, "sys", SimpleNamespace(platform="linux"))
+
+        mcp_tool._kill_process_tree(4000)
+        # psutil was never consulted on POSIX.
+        assert fake._terminated == set()
+
+    def test_job_close_takes_precedence_over_psutil(self, monkeypatch):
+        """When a Job Object IS attached for this PID, closing the Job
+        is the race-free atomic path.  psutil must not be invoked.
+        """
+        import sys
+
+        import tools.mcp_tool as mcp_tool
+
+        fake = self._make_fake_psutil({5000: [5001, 5002]})
+        monkeypatch.setitem(sys.modules, "psutil", fake)
+        monkeypatch.setattr(mcp_tool, "_WIN32_CTYPES_OK", True, raising=False)
+        monkeypatch.setattr(mcp_tool, "sys", SimpleNamespace(platform="win32"))
+
+        closed = []
+        monkeypatch.setattr(mcp_tool, "_close_job", lambda h: closed.append(h))
+
+        # Pre-register a Job for this PID.
+        mcp_tool._stdio_jobs[5000] = 0xABCD
+
+        mcp_tool._kill_process_tree(5000)
+
+        assert closed == [0xABCD], "Job handle must be closed exactly once"
+        assert fake._terminated == set(), (
+            "psutil must not run when a Job Object handles the kill "
+            "(avoids a redundant sweep and possible race with the "
+            "kernel-side termination)"
+        )
+        assert 5000 not in mcp_tool._stdio_jobs, (
+            "Job handle must be popped from _stdio_jobs after close "
+            "so PID-reuse can't leak a stale handle"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
 

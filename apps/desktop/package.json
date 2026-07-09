@@ -45,8 +45,8 @@
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.ts' 'vite.config.ts'",
     "fix": "npm run lint:fix && npm run fmt",
     "test:ui": "vitest run",
+    "check": "npm run typecheck && npm run test:ui && npm run test:desktop:all && npm run build"
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
-    "check": "npm run typecheck && npm run test:ui && npm run test:desktop:all"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.28",

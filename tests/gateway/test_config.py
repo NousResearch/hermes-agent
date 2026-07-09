@@ -238,6 +238,28 @@ class TestSessionResetPolicy:
         restored = SessionResetPolicy.from_dict({"notify": "false"})
         assert restored.notify is False
 
+    def test_from_dict_normalizes_uppercase_mode(self):
+        for raw, expected in (
+            ("BOTH", "both"),
+            ("IDLE", "idle"),
+            ("DAILY", "daily"),
+            ("NONE", "none"),
+        ):
+            restored = SessionResetPolicy.from_dict({"mode": raw})
+            assert restored.mode == expected
+
+    def test_from_dict_normalizes_mixed_case_and_whitespace_mode(self):
+        restored = SessionResetPolicy.from_dict({"mode": "  Both "})
+        assert restored.mode == "both"
+
+    def test_from_dict_falls_back_to_default_on_invalid_mode(self):
+        restored = SessionResetPolicy.from_dict({"mode": "bogus"})
+        assert restored.mode == "none"
+
+    def test_from_dict_falls_back_to_default_on_non_string_mode(self):
+        restored = SessionResetPolicy.from_dict({"mode": 5})
+        assert restored.mode == "none"
+
 
 class TestStreamingConfig:
     def test_defaults_to_auto_transport(self):

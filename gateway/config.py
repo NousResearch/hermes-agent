@@ -148,6 +148,22 @@ def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
     return default
 
 
+def _normalize_session_reset_mode(value: Any, default: str = "none") -> str:
+    """Normalize a session-reset mode to a supported lowercase value.
+
+    Config files may supply ``mode`` with surrounding whitespace or mixed
+    case (e.g. YAML ``"BOTH"``).  ``SessionResetPolicy`` consumers compare
+    ``mode`` against the lowercase tokens ``daily``/``idle``/``both``/``none``
+    with exact matches, so any un-normalized value would silently skip every
+    reset check.  Fall back to ``default`` on unrecognized input.
+    """
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"daily", "idle", "both", "none"}:
+            return normalized
+    return default
+
+
 def _ensure_platform_extra_dict(platforms_data: dict, name: str) -> tuple[dict, dict]:
     """Get-or-create ``platforms_data[name]`` and its nested ``extra`` dict.
 
@@ -391,7 +407,7 @@ class SessionResetPolicy:
         exclude = data.get("notify_exclude_platforms")
         bg_max_age = data.get("bg_process_max_age_hours")
         return cls(
-            mode=mode if mode is not None else "none",
+            mode=_normalize_session_reset_mode(mode),
             at_hour=at_hour if at_hour is not None else 4,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
             notify=_coerce_bool(notify, True),

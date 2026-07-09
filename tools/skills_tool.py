@@ -68,6 +68,7 @@ Usage:
 
 import json
 import logging
+import time
 
 from hermes_constants import get_hermes_home, display_hermes_home
 import os
@@ -88,12 +89,51 @@ logger = logging.getLogger(__name__)
 
 # Per-session skill discovery cache.  _find_all_skills() re-reads every
 # SKILL.md on every call; with hundreds of skills this is wasteful.
-# We cache by the max mtime across all scanned skill directories so a
-# write by skill_manage (which touches the directory) invalidates the
-# cache automatically.  skip_disabled True/False are cached separately.
-_SKILLS_CACHE: dict = {}          # {cache_key: (max_mtime, skills_list)}
+# Cache validation (mirrors hermes_cli/profiles.py::_count_skills, d5eee133e):
+#   - signature = per-dir max mtime of the dir AND its immediate children
+#     (one scandir per dir; catches skill add/remove inside categories,
+#     which does NOT bump the root dir's mtime), plus the disabled-set
+#     (config-driven — changes with no filesystem mtime bump at all)
+#   - a short TTL bounds staleness from in-place SKILL.md edits, which
+#     bump only the file's mtime, invisible to any directory signature.
+# skip_disabled True/False are cached separately.
+_SKILLS_CACHE: dict = {}          # {cache_key: (signature, timestamp, skills_list)}
+_SKILLS_CACHE_TTL_SECONDS = 30.0
 _SKILLS_CACHE_KEY_DISABLED = "with_disabled"
 _SKILLS_CACHE_KEY_FILTERED = "filtered"
+
+
+def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
+    """Cheap change-signature for the skill scan inputs.
+
+    O(#dirs + #categories) stat calls, not a recursive walk. Includes the
+    platform the scan's ``skill_matches_platform`` filter will use (read
+    from ``agent.skill_utils``'s ``sys`` so test patches of that module
+    are honored) — the scan result is platform-dependent.
+    """
+    from agent import skill_utils as _skill_utils
+
+    platform = getattr(getattr(_skill_utils, "sys", None), "platform", "")
+    sig = []
+    for d in dirs_to_scan:
+        try:
+            m = d.stat().st_mtime
+        except OSError:
+            continue
+        try:
+            with os.scandir(d) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            em = entry.stat(follow_symlinks=False).st_mtime
+                            if em > m:
+                                m = em
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        sig.append((str(d), m))
+    return (tuple(sig), frozenset(disabled), platform)
 
 
 # All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
@@ -637,50 +677,43 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
 
-    Results are cached per-session; the cache is invalidated when any
-    scanned skill directory's mtime changes (a skill write touches the
-    directory, triggering a re-scan on the next call).
+    Results are cached per-session; the cache is invalidated when the scan
+    signature changes (dir/category mtimes or the disabled-set) and expires
+    after a short TTL to bound staleness from in-place SKILL.md edits.
     """
     from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
 
     cache_key = _SKILLS_CACHE_KEY_DISABLED if skip_disabled else _SKILLS_CACHE_KEY_FILTERED
 
-    # Collect directories to scan (same set as the scan loop below).
-    dirs_to_scan: list = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
-    dirs_to_scan.extend(get_external_skills_dirs())
-
-    # Compute the freshest mtime across all scanned directories.
-    max_mtime = 0.0
-    for d in dirs_to_scan:
-        try:
-            st = d.stat()
-            if st.st_mtime > max_mtime:
-                max_mtime = st.st_mtime
-        except OSError:
-            continue
-
-    # Serve from cache when nothing changed since last scan.
-    cached = _SKILLS_CACHE.get(cache_key)
-    if cached is not None:
-        cached_mtime, cached_skills = cached
-        if cached_mtime >= max_mtime:
-            return cached_skills
-
-    skills = []
-    seen_names: set = set()
-
-    # Load disabled set once (not per-skill)
+    # Load disabled set once (not per-skill). Part of the cache signature:
+    # disabling a skill is a config change with no filesystem mtime bump.
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
-    dirs_to_scan = []
+    # Collect directories to scan — same resolution as the scan loop below
+    # (_skills_dir() resolves the LIVE profile HERMES_HOME; the module-level
+    # SKILLS_DIR can be stale in long-lived runtimes).
+    dirs_to_scan: list = []
     active_skills_dir = _skills_dir()
     if active_skills_dir.exists():
         dirs_to_scan.append(active_skills_dir)
     dirs_to_scan.extend(get_external_skills_dirs())
 
+    signature = _skills_scan_signature(dirs_to_scan, disabled)
+    now = time.monotonic()
+
+    cached = _SKILLS_CACHE.get(cache_key)
+    if (
+        cached is not None
+        and cached[0] == signature
+        and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS
+    ):
+        return cached[2]
+
+    skills = []
+    seen_names: set = set()
+
+    # Scan local dir first, then external dirs (local takes precedence) —
+    # dirs_to_scan already resolved above for the signature.
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
@@ -733,10 +766,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 )
                 continue
 
-    # Store in cache keyed by the freshest directory mtime seen during
-    # this scan.  Any subsequent skill write that touches a directory
-    # will bump the mtime past the cached value and trigger a re-scan.
-    _SKILLS_CACHE[cache_key] = (max_mtime, skills)
+    # Store in cache keyed by the scan signature computed BEFORE the scan
+    # (a write racing the scan changes the signature, so the next call
+    # re-scans rather than serving the torn result past the TTL).
+    _SKILLS_CACHE[cache_key] = (signature, now, skills)
     return skills
 
 

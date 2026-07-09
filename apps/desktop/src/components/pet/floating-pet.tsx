@@ -485,7 +485,7 @@ export function FloatingPet() {
             aria-label="Hide pet"
             onClick={e => {
               e.stopPropagation()
-              void setPetEnabled(requestGateway, false)
+              void setPetEnabled(requestGateway, false, { noneAvailable: '', fallback: '' })
             }}
             style={{
               alignItems: 'center',

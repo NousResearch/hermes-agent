@@ -800,6 +800,15 @@ def _has_http_method_substring(text: str) -> bool:
     return any(method in upper for method in _HTTP_METHOD_SUBSTRINGS)
 
 
+# Control and line-break characters that must never survive into a formatted log
+# record. An agent/tool/user-supplied value containing a newline (or other line
+# break) would otherwise forge a second physical line that ``hermes logs`` parses
+# as a genuine record with an attacker-chosen level, component, and timestamp.
+# Mirrors ``gateway.platforms.base._LOG_UNSAFE_CHARS``, which already applies this
+# to file-path log sinks.
+_LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
+
+
 class RedactingFormatter(logging.Formatter):
     """Log formatter that redacts secrets from all log messages."""
 
@@ -807,5 +816,17 @@ class RedactingFormatter(logging.Formatter):
         super().__init__(fmt, datefmt, style, **kwargs)
 
     def format(self, record: logging.LogRecord) -> str:
-        original = super().format(record)
+        # Neutralize control/line-break characters in the interpolated message so
+        # an agent/tool/user-supplied value cannot forge an extra log record. The
+        # exception traceback is appended after the message by the base formatter
+        # and is legitimately multi-line, so it is left intact by sanitizing the
+        # message text only. The record is restored afterwards because the same
+        # record is handed to every handler.
+        saved_msg, saved_args = record.msg, record.args
+        try:
+            record.msg = _LOG_UNSAFE_CHARS.sub(" ", record.getMessage())
+            record.args = None
+            original = super().format(record)
+        finally:
+            record.msg, record.args = saved_msg, saved_args
         return redact_sensitive_text(original)

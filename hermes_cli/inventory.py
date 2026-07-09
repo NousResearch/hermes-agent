@@ -111,6 +111,7 @@ def load_picker_context() -> ConfigContext:
 def build_models_payload(
     ctx: ConfigContext,
     *,
+    explicit_only: bool = False,
     include_unconfigured: bool = False,
     picker_hints: bool = False,
     canonical_order: bool = False,
@@ -118,12 +119,18 @@ def build_models_payload(
     capabilities: bool = False,
     force_fresh_nous_tier: bool = False,
     refresh: bool = False,
+    probe_custom_providers: bool = True,
+    probe_current_custom_provider: bool = False,
     max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.
 
     Flags:
+    - ``explicit_only``: keep only providers the user explicitly configured
+      (current provider, providers from config, or providers backed by
+      provider-specific env vars). This hides ambient / auto-seeded
+      credentials from desktop chat pickers.
     - ``include_unconfigured``: append ``CANONICAL_PROVIDERS`` rows that
       ``list_authenticated_providers`` didn't emit (TUI uses this to show
       the full provider universe in the picker).
@@ -149,6 +156,15 @@ def build_models_payload(
       re-fetches its live catalog. Set only for an explicit user-triggered
       "refresh models" action; normal picker opens leave it false to stay
       snappy on the 1h cache.
+    - ``probe_custom_providers``: allow saved custom/provider endpoints to
+      run live ``/models`` discovery while building the payload. GUI picker
+      opens should leave this false unless the user explicitly refreshes; the
+      row can still render its configured model immediately, and slow/offline
+      local endpoints no longer block the dialog.
+    - ``probe_current_custom_provider``: when ``probe_custom_providers`` is
+      false, still live-probe the current custom endpoint. This keeps normal
+      GUI/TUI picker opens fast while making the active custom provider's model
+      list match the classic CLI picker.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -161,7 +177,16 @@ def build_models_payload(
         force_fresh_nous_tier=force_fresh_nous_tier,
         max_models=max_models,
         refresh=refresh,
+        probe_custom_providers=probe_custom_providers,
+        probe_current_custom_provider=probe_current_custom_provider,
     )
+
+    moa_row = _moa_provider_row(ctx.current_provider)
+    if moa_row is not None:
+        rows = [moa_row] + [r for r in rows if str(r.get("slug", "")).lower() != "moa"]
+
+    if explicit_only:
+        rows = _filter_explicit_provider_rows(rows, ctx)
 
     # --- Deduplicate: remove models from aggregators that overlap with
     # user-defined providers.  When a local proxy (e.g. litellm-proxy)
@@ -173,11 +198,11 @@ def build_models_payload(
     # aggregator rows honest: they only show models the user can't get
     # from a more-specific provider.  (#45954)
     try:
-        from hermes_cli.providers import is_aggregator as _is_aggregator
+        from hermes_cli.providers import is_routing_aggregator as _is_routing_aggregator
     except Exception:
-        _is_aggregator = None  # type: ignore[assignment]
+        _is_routing_aggregator = None  # type: ignore[assignment]
 
-    if _is_aggregator is not None:
+    if _is_routing_aggregator is not None:
         user_models: set[str] = set()
         for row in rows:
             if row.get("is_user_defined"):
@@ -186,14 +211,21 @@ def build_models_payload(
             for row in rows:
                 # A user's own configured provider is never an "aggregator
                 # duplicate" of itself: user_models is built from these very
-                # rows, and is_aggregator() reports True for every custom:*
-                # slug.  Without this guard the dedup strips a user-defined
-                # custom provider's entire model list (all of it lives in
-                # user_models), emptying its picker row.
+                # rows, and is_routing_aggregator() reports True for every
+                # custom:* slug.  Without this guard the dedup strips a
+                # user-defined custom provider's entire model list (all of it
+                # lives in user_models), emptying its picker row.
                 if row.get("is_user_defined"):
                     continue
                 slug = row.get("slug", "")
-                if not _is_aggregator(slug):
+                # Only strip overlaps from TRUE routing aggregators (OpenRouter,
+                # custom:* proxies). Flat-namespace resellers (opencode-go /
+                # opencode-zen) serve every listed model as a first-party model,
+                # so their rows must keep models that a user's proxy happens to
+                # share a name with — otherwise a subscription provider's own
+                # catalog (minimax-m3, glm-5, deepseek-v4-flash, ...) is silently
+                # gutted in the picker. (#47077)
+                if not _is_routing_aggregator(slug):
                     continue
                 original = row.get("models") or []
                 filtered = [m for m in original if m.lower() not in user_models]
@@ -202,7 +234,7 @@ def build_models_payload(
                     row["total_models"] = len(filtered)
 
     if include_unconfigured:
-        rows = list(rows) + _append_unconfigured_rows(rows, ctx)
+        rows = list(rows) + [r for r in _append_unconfigured_rows(rows, ctx) if str(r.get("slug", "")).lower() != "moa"]
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:
@@ -282,6 +314,37 @@ def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict
             }
         )
     return extras
+
+
+def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
+    """Keep only rows backed by explicit user configuration.
+
+    ``list_authenticated_providers`` intentionally discovers ambient / auto-
+    seeded credentials (for example GitHub CLI -> Copilot). Desktop chat model
+    pickers want the narrower subset the user explicitly configured for Hermes.
+    """
+    from hermes_cli.auth import is_provider_explicitly_configured
+
+    current_slug = str(ctx.current_provider or "").strip().lower()
+    kept: list[dict] = []
+    for row in rows:
+        slug = str(row.get("slug", "")).strip().lower()
+        if not slug:
+            continue
+        if row.get("is_user_defined"):
+            kept.append(row)
+            continue
+        if current_slug and slug == current_slug:
+            kept.append(row)
+            continue
+        if slug == "moa":
+            # MoA is a virtual routing mode, not an independently configured
+            # provider. Hide it from explicit-only pickers unless it is the
+            # current provider (handled above).
+            continue
+        if is_provider_explicitly_configured(slug):
+            kept.append(row)
+    return kept
 
 
 def _apply_picker_hints(rows: list[dict]) -> None:
@@ -429,3 +492,34 @@ def _apply_pricing(
                 # is never blocked from picking a model.
                 row["free_tier"] = False
                 row["unavailable_models"] = []
+
+
+def _moa_provider_row(current_provider: str = "") -> dict | None:
+    """Build the virtual ``moa`` provider row for model pickers.
+
+    Shared by the CLI inventory (:func:`build_models_payload`) and the gateway
+    picker path (:func:`hermes_cli.model_switch.list_picker_providers`) so the
+    row shape stays in one place. Returns ``None`` when no MoA presets exist.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.moa_config import normalize_moa_config
+
+        cfg = normalize_moa_config(load_config().get("moa") or {})
+        models = list(cfg.get("presets", {}).keys())
+        if not models:
+            return None
+        return {
+            "slug": "moa",
+            "name": "Mixture of Agents",
+            "is_current": (current_provider or "").lower() == "moa",
+            "is_user_defined": False,
+            "models": models,
+            "total_models": len(models),
+            "source": "virtual",
+            "authenticated": True,
+            "auth_type": "virtual",
+            "warning": "Aggregator acts as the selected model; references provide analysis before each call.",
+        }
+    except Exception:
+        return None

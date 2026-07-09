@@ -5074,7 +5074,7 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, workspace_kind, workspace_path, priority "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -5083,6 +5083,11 @@ def decompose_triage_task(
         if root_row["status"] != "triage":
             return None
         tenant = root_row["tenant"]
+        # Children inherit the root's dispatch priority. Without this they were
+        # created at the column default (p0) and starved forever under perpetual
+        # p1-p4 refill — the whole family (children in todo, root waiting on
+        # them) parked permanently, invisible except as "stuck in todo".
+        root_priority = root_row["priority"] if root_row["priority"] is not None else 0
         # Children inherit the root's workspace by default so a fan-out
         # of a code-gen task lands in the parent's project dir/worktree
         # rather than throwaway scratch tmp dirs. A child dict can still
@@ -5113,14 +5118,15 @@ def decompose_triage_task(
                 child_ws_path = None
             conn.execute(
                 "INSERT INTO tasks "
-                "(id, title, body, assignee, status, workspace_kind, "
+                "(id, title, body, assignee, status, priority, workspace_kind, "
                 " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    root_priority,
                     child_ws_kind,
                     child_ws_path,
                     tenant,

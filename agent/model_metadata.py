@@ -2328,10 +2328,32 @@ def estimate_tokens_rough(text: str) -> int:
     Uses ceiling division so short texts (1-3 chars) never estimate as
     0 tokens, which would cause the compressor and pre-flight checks to
     systematically undercount when many short tool results are present.
+
+    East Asian wide/fullwidth and CJK characters are weighted conservatively
+    (~1 char ≈ 1 token) because they tokenize closer to one token per
+    visible character than the 4-char generic estimate.
     """
     if not text:
         return 0
-    return (len(text) + 3) // 4
+
+    import unicodedata
+
+    # Count East Asian wide/fullwidth and CJK characters conservatively.
+    # These categories (U+1100-U+115F, U+2E80-U+A4CF, U+F900-U+FAFF,
+    # U+FE10-U+FE1F, U+FE30-U+FE6F, U+FF00-U+FF60, U+FFE0-U+FFE6,
+    # and Hiragana/Katakana/Hangul ranges) tokenize at roughly 1 per char.
+    east_asian_chars = 0
+    for ch in text:
+        ea = unicodedata.east_asian_width(ch)
+        if ea in ("F", "W"):  # Fullwidth or Wide
+            east_asian_chars += 1
+        elif unicodedata.name(ch, "").startswith(("HIRAGANA", "KATAKANA", "HANGUL")):
+            east_asian_chars += 1
+        elif "\u4e00" <= ch <= "\u9fff":  # CJK Unified Ideographs (common Han)
+            east_asian_chars += 1
+
+    ascii_equivalent = len(text) - east_asian_chars
+    return ((ascii_equivalent + 3) // 4) + east_asian_chars
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:

@@ -725,8 +725,11 @@ export const zh: Translations = {
       remoteTitle: '远程网关',
       remoteDesc:
         '将此桌面外壳连接到远程 Hermes 后端。托管网关使用 OAuth 或用户名密码；自托管网关也可能使用会话 token。',
+      remoteToolLocalityTitle: '工具在远程后端运行',
+      remoteToolLocalityDesc:
+        '终端、文件访问、MCP 和 Computer Use 都在你连接的后端机器上执行。仅仅因为应用窗口在本机打开，远程后端并不能控制这台本地电脑；要控制本机，请使用本地网关，或配置专用的本地工具桥。',
       remoteUrlTitle: '远程 URL',
-      remoteUrlDesc: '远程 dashboard 后端的基础 URL。支持路径前缀，例如 /hermes。',
+      remoteUrlDesc: '远程 Hermes 后端的基础 URL。支持路径前缀，例如 /hermes。',
       probing: '正在检查此网关的认证方式…',
       probeError: '暂时无法访问此网关。请检查 URL；网关响应后会显示认证方式。',
       signedIn: '已登录',

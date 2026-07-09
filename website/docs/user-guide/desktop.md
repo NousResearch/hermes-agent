@@ -52,7 +52,7 @@ The bar along the bottom of the chat shows live session state and exposes quick 
 
 - **Per-session YOLO toggle** — flip YOLO on or off for just this session (matching the TUI). YOLO bypasses the dangerous-command approval prompts, so know what you're turning off — see [Security → YOLO Mode](./security.md#yolo-mode).
 
-Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
+Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted backend connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
 
 #### Choosing a model
 
@@ -210,6 +210,12 @@ You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_U
 :::note Per-profile remote hosts
 The remote gateway host is configured per [profile](./profiles.md), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
 :::
+
+#### Local tools vs remote tools
+
+When Desktop connects to a remote backend, the agent's tools execute on **that backend machine**, not on the computer running the Desktop window. Terminal commands, file access, MCP servers, and tools such as Computer Use all see the remote host's environment.
+
+That means a Mac running Desktop against a VPS backend cannot control the Mac's local apps just because the UI is local. To use Computer Use on the local desktop, run a local backend for that session, or connect the remote backend to a dedicated local tool bridge/worker that executes those actions on the local machine.
 
 ### Troubleshooting
 

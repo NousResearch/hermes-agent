@@ -535,8 +535,11 @@ export const en: Translations = {
       remoteTitle: 'Remote gateway',
       remoteDesc:
         'Connect this desktop shell to a remote Hermes backend. Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
+      remoteToolLocalityTitle: 'Tools run on the remote backend',
+      remoteToolLocalityDesc:
+        'Terminal, file access, MCP, and Computer Use execute on the backend machine you connect to. A remote backend cannot control this local desktop just because the app window is open here; use Local gateway for this computer, or a dedicated local tool bridge.',
       remoteUrlTitle: 'Remote URL',
-      remoteUrlDesc: 'Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes.',
+      remoteUrlDesc: 'Base URL for the remote Hermes backend. Path prefixes are supported, for example /hermes.',
       probing: 'Checking how this gateway authenticates…',
       probeError: 'Could not reach this gateway yet. Check the URL — the auth method will appear once it responds.',
       signedIn: 'Signed in',

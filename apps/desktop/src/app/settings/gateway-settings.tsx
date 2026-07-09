@@ -484,6 +484,16 @@ export function GatewaySettings() {
         />
       </div>
 
+      {state.mode === 'remote' ? (
+        <div className="mt-4 flex items-start gap-2 rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)">
+          <AlertCircle className="mt-0.5 size-4 shrink-0 text-(--ui-text-tertiary)" />
+          <div>
+            <div className="font-medium text-(--ui-text-primary)">{g.remoteToolLocalityTitle}</div>
+            <div className="mt-1 leading-5">{g.remoteToolLocalityDesc}</div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="mt-5 grid gap-1">
         <ListRow
           action={

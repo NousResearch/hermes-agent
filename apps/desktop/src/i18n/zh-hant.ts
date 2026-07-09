@@ -634,8 +634,11 @@ export const zhHant = defineLocale({
       remoteTitle: '遠端閘道',
       remoteDesc:
         '將此桌面殼層連線至遠端 Hermes 後端。託管閘道使用 OAuth 或帳號密碼；自託管閘道也可使用工作階段 Token。',
+      remoteToolLocalityTitle: '工具會在遠端後端執行',
+      remoteToolLocalityDesc:
+        '終端機、檔案存取、MCP 和 Computer Use 都會在你連線的後端機器上執行。僅僅因為應用程式視窗在本機開啟，遠端後端並不能控制這台本機電腦；若要控制本機，請使用本機閘道，或設定專用的本機工具橋接。',
       remoteUrlTitle: '遠端 URL',
-      remoteUrlDesc: '遠端儀表板後端的基礎 URL。支援路徑前綴，例如 /hermes。',
+      remoteUrlDesc: '遠端 Hermes 後端的基礎 URL。支援路徑前綴，例如 /hermes。',
       probing: '正在檢查此閘道的驗證方式…',
       probeError: '暫時無法連線此閘道。請檢查 URL；閘道回應後將顯示驗證方式。',
       signedIn: '已登入',

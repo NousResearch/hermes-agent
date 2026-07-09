@@ -446,6 +446,8 @@ export interface Translations {
       localDesc: string
       remoteTitle: string
       remoteDesc: string
+      remoteToolLocalityTitle: string
+      remoteToolLocalityDesc: string
       remoteUrlTitle: string
       remoteUrlDesc: string
       probing: string

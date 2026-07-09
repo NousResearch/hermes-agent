@@ -390,6 +390,77 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
 
 
+_CODEX_REASONING_EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max", "ultra")
+_CODEX_MAX_MODEL_FAMILIES = (
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+)
+_CODEX_PROACTIVE_MODEL_FAMILIES = (
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+)
+_CODEX_XHIGH_MODEL_FAMILIES = (
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2",
+    "gpt-5.1",
+    "gpt-5",
+)
+
+
+def _matches_model_family(model_id: str, family: str) -> bool:
+    return model_id == family or model_id.startswith(f"{family}-")
+
+
+def resolve_codex_reasoning_effort(
+    model: str,
+    effort: Any,
+    *,
+    app_server: bool = False,
+) -> Optional[str]:
+    """Project a client effort onto the selected Codex model's wire ceiling.
+
+    Direct Responses requests cap the GPT-5.6 family at ``max``. Codex
+    app-server turns preserve ``ultra`` only for Sol/Terra, where it enables
+    native proactive delegation. Known older Codex models cap at ``xhigh``;
+    unknown models use the conservative ``high`` ceiling.
+    """
+    requested = str(effort or "").strip().lower()
+    if requested in {"none", "false", "disabled"}:
+        return None
+    if requested == "minimal":
+        requested = "low"
+    if requested not in _CODEX_REASONING_EFFORT_ORDER:
+        return None
+
+    model_id = _strip_provider_prefix(str(model or "").strip().lower())
+    model_id = model_id.rsplit("/", 1)[-1]
+
+    if app_server and any(
+        _matches_model_family(model_id, family)
+        for family in _CODEX_PROACTIVE_MODEL_FAMILIES
+    ):
+        ceiling = "ultra"
+    elif any(
+        _matches_model_family(model_id, family)
+        for family in _CODEX_MAX_MODEL_FAMILIES
+    ):
+        ceiling = "max"
+    elif any(
+        _matches_model_family(model_id, family)
+        for family in _CODEX_XHIGH_MODEL_FAMILIES
+    ):
+        ceiling = "xhigh"
+    else:
+        ceiling = "high"
+
+    requested_rank = _CODEX_REASONING_EFFORT_ORDER.index(requested)
+    ceiling_rank = _CODEX_REASONING_EFFORT_ORDER.index(ceiling)
+    return _CODEX_REASONING_EFFORT_ORDER[min(requested_rank, ceiling_rank)]
+
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",

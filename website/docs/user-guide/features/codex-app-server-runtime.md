@@ -182,6 +182,24 @@ model:
   openai_runtime: codex_app_server   # default is "auto" (= Hermes runtime)
 ```
 
+### Max and ultra reasoning
+
+`max` requests the maximum reasoning depth supported by the selected model.
+`ultra` uses that same wire-level depth and, on GPT-5.6 Sol/Terra through this
+runtime, also enables Codex's native proactive delegation:
+
+```yaml
+agent:
+  reasoning_effort: ultra
+```
+
+Hermes sends literal `ultra` only as the Codex app-server `turn/start` effort.
+Direct OpenAI/Codex Responses requests project it onto the selected model's
+supported ceiling: `max` for GPT-5.6, `xhigh` for known older Codex models,
+and `high` for unknown models. Other providers receive `max` before their
+existing provider-specific handling runs. GPT-5.6 Luna also falls back to
+`max` because it does not advertise the proactive multi-agent mode.
+
 ## Self-improvement loop (memory + skill nudges)
 
 Hermes' background self-improvement fires on counter thresholds:

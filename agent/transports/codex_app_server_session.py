@@ -367,6 +367,8 @@ class CodexAppServerSession:
         self,
         user_input: Any,
         *,
+        model: Optional[str] = None,
+        effort: Optional[str] = None,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
         post_tool_quiet_timeout: float = 90.0,
@@ -405,15 +407,26 @@ class CodexAppServerSession:
 
         user_input_text = _coerce_turn_input_text(user_input)
 
-        # Send turn/start with the user input. Text-only for now (codex
-        # supports rich content but Hermes' text path is the common case).
+        # Send turn/start with the user input. Model and effort are per-turn
+        # controls in the app-server protocol; in particular, client-level
+        # ``ultra`` activates Codex's proactive multi-agent mode while Codex
+        # normalizes the underlying Responses effort to ``max`` itself.
+        # Text-only for now (codex supports rich content but Hermes' text path
+        # is the common case).
+        turn_params: dict[str, Any] = {
+            "threadId": self._thread_id,
+            "input": [{"type": "text", "text": user_input_text}],
+        }
+        normalized_model = str(model or "").strip()
+        normalized_effort = str(effort or "").strip().lower()
+        if normalized_model:
+            turn_params["model"] = normalized_model
+        if normalized_effort:
+            turn_params["effort"] = normalized_effort
         try:
             ts = self._client.request(
                 "turn/start",
-                {
-                    "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input_text}],
-                },
+                turn_params,
                 timeout=10,
             )
         except CodexAppServerError as exc:

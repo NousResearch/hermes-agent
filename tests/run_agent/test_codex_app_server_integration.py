@@ -85,6 +85,84 @@ class TestRunConversationCodexPath:
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
 
+    @pytest.mark.parametrize(
+        ("model", "reasoning_config", "expected_effort"),
+        [
+            pytest.param(
+                "gpt-5.6-sol",
+                {"enabled": True, "effort": "ultra"},
+                "ultra",
+                id="sol-keeps-ultra",
+            ),
+            pytest.param(
+                "gpt-5.6-luna",
+                {"enabled": True, "effort": "ultra"},
+                "max",
+                id="luna-clamps-ultra-to-max",
+            ),
+            pytest.param(
+                "gpt-5.6-sol",
+                {"enabled": False},
+                None,
+                id="disabled-omits-effort",
+            ),
+            pytest.param(
+                "gpt-5.6-sol",
+                {"effort": "none"},
+                None,
+                id="legacy-none-omits-effort",
+            ),
+            pytest.param(
+                "gpt-9.9-unknown",
+                {"enabled": True, "effort": "ultra"},
+                "high",
+                id="unknown-clamps-ultra-to-high",
+            ),
+        ],
+    )
+    def test_selected_model_and_reasoning_effort_reach_turn_start(
+        self,
+        monkeypatch,
+        model,
+        reasoning_config,
+        expected_effort,
+    ):
+        captured = {}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured["user_input"] = user_input
+            captured.update(kwargs)
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-ultra-1",
+                thread_id="thread-ultra-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "ensure_started",
+            lambda self: "thread-ultra-1",
+        )
+        original_reasoning_config = reasoning_config.copy()
+        agent = _make_codex_agent(
+            model=model,
+            reasoning_config=reasoning_config,
+        )
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("solve this")
+
+        assert result["completed"] is True
+        assert captured == {
+            "user_input": "solve this",
+            "model": model,
+            "effort": expected_effort,
+        }
+        assert reasoning_config == original_reasoning_config
+        assert agent.reasoning_config == reasoning_config
+
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(
@@ -759,4 +837,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

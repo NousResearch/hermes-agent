@@ -162,8 +162,22 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
-        _effort_clamp = {"minimal": "low"}
-        reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
+        if is_xai_responses or is_github_responses:
+            reasoning_effort = {"minimal": "low"}.get(
+                reasoning_effort,
+                reasoning_effort,
+            )
+        else:
+            from agent.model_metadata import resolve_codex_reasoning_effort
+
+            resolved_effort = resolve_codex_reasoning_effort(
+                model,
+                reasoning_effort,
+            )
+            if resolved_effort is None:
+                reasoning_enabled = False
+            else:
+                reasoning_effort = resolved_effort
 
         response_tools = _responses_tools(tools)
 

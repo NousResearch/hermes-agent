@@ -20,7 +20,7 @@ import logging
 import os
 import time
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +298,21 @@ def _record_codex_app_server_compaction(
     return True
 
 
+def _codex_app_server_effort(
+    reasoning_config: Any,
+    model: Optional[str],
+) -> Optional[str]:
+    """Return a model-safe client effort for Codex ``turn/start``."""
+    if not isinstance(reasoning_config, dict):
+        return None
+    if reasoning_config.get("enabled") is False:
+        return None
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    from agent.model_metadata import resolve_codex_reasoning_effort
+
+    return resolve_codex_reasoning_effort(model or "", effort, app_server=True)
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -387,7 +402,15 @@ def run_codex_app_server_turn(
     # return reaches us. Do NOT append again — that would duplicate.
 
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        selected_model = getattr(agent, "model", None)
+        turn = agent._codex_session.run_turn(
+            user_input=user_message,
+            model=selected_model,
+            effort=_codex_app_server_effort(
+                getattr(agent, "reasoning_config", None),
+                selected_model,
+            ),
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn

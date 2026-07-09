@@ -289,6 +289,18 @@ class TestCodexBuildKwargs:
         # full history.
         assert "reasoning.encrypted_content" in kw.get("include", [])
 
+    def test_xai_reasoning_effort_bypasses_codex_model_ceiling(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=messages,
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "xhigh"},
+        )
+
+        assert kw.get("reasoning") == {"effort": "xhigh"}
+
     def test_xai_injects_native_web_search_when_client_web_search_present(self, transport):
         """xAI path swaps a client-side ``web_search`` function for xAI's
         native server-side ``web_search`` built-in so grok server-side search

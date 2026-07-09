@@ -57,7 +57,37 @@ def _build_agent(monkeypatch):
     return agent
 
 
-def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
+def _build_direct_codex_reasoning_agent(
+    monkeypatch,
+    reasoning_config,
+    *,
+    model="gpt-5.6-sol",
+):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model=model,
+        provider="openai-codex",
+        api_mode="codex_responses",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+        reasoning_config=reasoning_config,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    return agent
+
+
+def _build_copilot_agent(
+    monkeypatch,
+    *,
+    model="gpt-5.4",
+    reasoning_config=None,
+):
     _patch_agent_bootstrap(monkeypatch)
 
     agent = run_agent.AIAgent(
@@ -70,6 +100,7 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
         max_iterations=4,
         skip_context_files=True,
         skip_memory=True,
+        reasoning_config=reasoning_config,
     )
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
@@ -428,6 +459,92 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
         assert kwargs["reasoning"]["effort"] == effort, f"{effort} should pass through unchanged"
 
 
+@pytest.mark.parametrize("client_effort", ["max", "ultra"])
+def test_direct_codex_request_uses_wire_max_without_mutating_client_effort(
+    monkeypatch, client_effort
+):
+    reasoning_config = {"enabled": True, "effort": client_effort}
+    agent = _build_direct_codex_reasoning_agent(monkeypatch, reasoning_config)
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs["reasoning"] == {"effort": "max", "summary": "auto"}
+    assert reasoning_config == {"enabled": True, "effort": client_effort}
+    assert agent.reasoning_config == reasoning_config
+
+
+@pytest.mark.parametrize(
+    ("model", "client_effort", "wire_effort"),
+    [
+        ("gpt-5.4", "max", "xhigh"),
+        ("gpt-5.4", "ultra", "xhigh"),
+        ("gpt-9.9-unknown", "max", "high"),
+        ("gpt-9.9-unknown", "ultra", "high"),
+    ],
+)
+def test_direct_codex_request_respects_model_reasoning_ceiling(
+    monkeypatch,
+    model,
+    client_effort,
+    wire_effort,
+):
+    reasoning_config = {"enabled": True, "effort": client_effort}
+    agent = _build_direct_codex_reasoning_agent(
+        monkeypatch,
+        reasoning_config,
+        model=model,
+    )
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs["reasoning"] == {"effort": wire_effort, "summary": "auto"}
+    assert reasoning_config == {"enabled": True, "effort": client_effort}
+    assert agent.reasoning_config == reasoning_config
+
+
+def test_temp_home_ultra_config_loads_through_to_direct_codex_wire(
+    monkeypatch, tmp_path
+):
+    from hermes_cli.config import load_config
+    from hermes_constants import parse_reasoning_effort
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "agent:\n  reasoning_effort: ultra\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    loaded = load_config()
+    reasoning_config = parse_reasoning_effort(
+        loaded["agent"]["reasoning_effort"]
+    )
+    assert reasoning_config == {"enabled": True, "effort": "ultra"}
+
+    agent = _build_direct_codex_reasoning_agent(monkeypatch, reasoning_config)
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs["reasoning"] == {"effort": "max", "summary": "auto"}
+    assert loaded["agent"]["reasoning_effort"] == "ultra"
+    assert agent.reasoning_config == {"enabled": True, "effort": "ultra"}
+
+
 def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
     agent = _build_copilot_agent(monkeypatch)
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
@@ -448,6 +565,25 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
     assert "reasoning" not in kwargs
     assert "include" not in kwargs
     assert "prompt_cache_key" not in kwargs
+
+
+@pytest.mark.parametrize("client_effort", ["max", "ultra"])
+def test_copilot_reasoning_projection_receives_normalized_client_effort(
+    monkeypatch,
+    client_effort,
+):
+    monkeypatch.setattr(
+        "hermes_cli.models.github_model_reasoning_efforts",
+        lambda _model: ["low", "medium", "high", "xhigh", "max"],
+    )
+    agent = _build_copilot_agent(
+        monkeypatch,
+        reasoning_config={"enabled": True, "effort": client_effort},
+    )
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["reasoning"] == {"effort": "max"}
 
 
 # ---------------------------------------------------------------------------

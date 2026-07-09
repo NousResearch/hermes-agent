@@ -178,6 +178,22 @@ model:
   openai_runtime: codex_app_server   # 默认值为 "auto"（= Hermes 运行时）
 ```
 
+### Max 和 ultra 推理
+
+`max` 请求所选模型支持的最大推理深度。`ultra` 使用相同的线级深度，
+并且在通过此运行时使用 GPT-5.6 Sol/Terra 时，还会启用 Codex 的原生主动委派：
+
+```yaml
+agent:
+  reasoning_effort: ultra
+```
+
+Hermes 只会将字面值 `ultra` 作为 Codex app-server 的 `turn/start` effort 发送。
+直接 OpenAI/Codex Responses 请求会将它投影到所选模型支持的上限：GPT-5.6 为 `max`，
+已知的较旧 Codex 模型为 `xhigh`，未知模型为 `high`。其他 provider 在执行现有的
+provider 特定处理之前会收到 `max`。GPT-5.6 Luna 也会回退到 `max`，
+因为它没有声明主动多 agent 模式。
+
 ## 自我改进循环（记忆 + 技能提示）
 
 Hermes 的后台自我改进在计数器达到阈值时触发：

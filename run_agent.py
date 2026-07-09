@@ -5419,7 +5419,10 @@ class AIAgent:
             self._lmstudio_reasoning_options_cached(),
         )
 
-    def _github_models_reasoning_extra_body(self) -> dict | None:
+    def _github_models_reasoning_extra_body(
+        self,
+        reasoning_config: dict | None = None,
+    ) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
         try:
             from hermes_cli.models import github_model_reasoning_efforts
@@ -5430,11 +5433,12 @@ class AIAgent:
         if not supported_efforts:
             return None
 
-        if self.reasoning_config and isinstance(self.reasoning_config, dict):
-            if self.reasoning_config.get("enabled") is False:
+        config = self.reasoning_config if reasoning_config is None else reasoning_config
+        if config and isinstance(config, dict):
+            if config.get("enabled") is False:
                 return None
             requested_effort = str(
-                self.reasoning_config.get("effort", "medium")
+                config.get("effort", "medium")
             ).strip().lower()
         else:
             requested_effort = "medium"

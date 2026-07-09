@@ -196,6 +196,55 @@ class TestRunTurn:
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
 
+    def test_turn_start_sends_selected_model_and_literal_ultra_effort(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn(
+            "use the selected model",
+            model="gpt-5.6-sol",
+            effort="ultra",
+            turn_timeout=2.0,
+        )
+
+        assert result.error is None
+        method, params = next(req for req in client.requests if req[0] == "turn/start")
+        assert method == "turn/start"
+        assert params == {
+            "threadId": "thread-fake-001",
+            "input": [{"type": "text", "text": "use the selected model"}],
+            "model": "gpt-5.6-sol",
+            "effort": "ultra",
+        }
+
+    def test_turn_start_omits_disabled_reasoning_effort(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn(
+            "reasoning is disabled",
+            model="gpt-5.6-sol",
+            effort=None,
+            turn_timeout=2.0,
+        )
+
+        assert result.error is None
+        method, params = next(req for req in client.requests if req[0] == "turn/start")
+        assert method == "turn/start"
+        assert params == {
+            "threadId": "thread-fake-001",
+            "input": [{"type": "text", "text": "reasoning is disabled"}],
+            "model": "gpt-5.6-sol",
+        }
+
     def test_token_usage_notification_is_captured(self):
         client = FakeClient()
         client.queue_notification(

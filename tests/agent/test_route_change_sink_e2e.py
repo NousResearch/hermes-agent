@@ -202,12 +202,16 @@ def _recovery_agent(*, primary_reasoning=("dict", "high"), on_fallback=True):
 
 
 def test_recovery_restores_primary_route(tmp_path, monkeypatch):
-    """CB-2 (repointed): restore_primary_runtime returns the agent to its primary
-    route. The recovery ANNOUNCE + sink line MOVED to the unified gateway site
-    (gateway/run.py _run_agent_inner, keyed on the final served route) — so the
-    restore function itself is now a pure state restore that emits NOTHING.
-    Announce coverage: tests/gateway/test_reinit_recovery_announce.py.
+    """CB-2 (repointed twice): restore_primary_runtime returns the agent to its
+    primary route AND (SPEC 2026-07-08 prologue-recovery, supersedes #238's
+    INV-7) emits the restore-leg recovery INLINE — at the only moment the
+    restored route exists when the turn later re-fails-over (the refusing-pin
+    case). The durable sink line is written gate-independently; chat emit is
+    gated on announce_recovery (off here → sink only). The end-of-turn gateway
+    site is persist-only now. Announce coverage:
+    tests/gateway/test_reinit_recovery_announce.py.
     """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     agent, arh = _recovery_agent(primary_reasoning=("dict", "high"))
     monkeypatch.setattr(
         arh, "build_anthropic_client", lambda *a, **k: object(), raising=False)
@@ -216,14 +220,17 @@ def test_recovery_restores_primary_route(tmp_path, monkeypatch):
     assert agent.model == "claude-opus-4-8"
     assert agent.provider == "claude-app"
     assert agent._fallback_activated is False
-    # No inline announce/sink from the restore path anymore (INV-7).
+    # Inline restore emit: sink line always (gate-independent); chat emit is
+    # gated on announce_recovery which is OFF in this env → no chat line.
     assert agent._announced == [], agent._announced
-    assert _sink_lines(str(tmp_path)) == []
+    lines = _sink_lines(str(tmp_path))
+    assert len(lines) == 1 and " recovery " in lines[0], lines
 
 
 def test_recovery_keyless_primary_no_crash(tmp_path, monkeypatch):
     """CB-3 (repointed): a legacy _primary_runtime WITHOUT reasoning_config
-    recovers and does not KeyError. Still a pure state restore (no announce)."""
+    recovers and does not KeyError."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     agent, arh = _recovery_agent(primary_reasoning=("missing", None))
     monkeypatch.setattr(
         arh, "build_anthropic_client", lambda *a, **k: object(), raising=False)
@@ -233,15 +240,18 @@ def test_recovery_keyless_primary_no_crash(tmp_path, monkeypatch):
     assert agent.provider == "claude-app"
 
 
-def test_recovery_restore_emits_nothing_regardless_of_flag(tmp_path, monkeypatch):
-    """INV-7: even with announce_recovery=true, restore_primary_runtime itself
-    emits nothing — the recovery announce is owned by the gateway epilogue now,
-    never the restore function (which would double-fire / key on a stale route).
+def test_recovery_restore_announces_when_gate_on(tmp_path, monkeypatch):
+    """SPEC 2026-07-08 (supersedes #238 INV-7): with announce_recovery=true the
+    restore leg announces INLINE with the (restore) rider — chronologically
+    correct (before any later failover this turn), visible under a refusing
+    /model pin. Sink line written as well.
     """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("model:\n  announce_recovery: true\n")
     agent, arh = _recovery_agent(primary_reasoning=("dict", "high"))
     monkeypatch.setattr(
         arh, "build_anthropic_client", lambda *a, **k: object(), raising=False)
     restore_primary_runtime(agent)
-    assert agent._announced == [], agent._announced
-    assert _sink_lines(str(tmp_path)) == []
+    assert len(agent._announced) == 1, agent._announced
+    assert agent._announced[0].startswith("🔄 Model recovery (restore): ")
+    assert len(_sink_lines(str(tmp_path))) == 1

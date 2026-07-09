@@ -1264,6 +1264,48 @@ def drop_thinking_only_and_merge_users(
 
 
 
+def recovery_should_announce(
+    prev_route,
+    candidate_route,
+    *,
+    override_target=None,
+    override_target_changed: bool = False,
+) -> bool:
+    """Single source of truth for "does this model route-change announce as a
+    recovery?" — the ONE predicate every recovery-announce site calls (Momus
+    MB-1, config-drift): the gateway pre-run (re-init) site, and the
+    ``restore_primary_runtime`` inline (restore) site. Two hand-copied gate
+    blocks would drift the moment one site's carve-out is edited.
+
+    A genuine recovery announces when:
+      • we know the previous route (``prev_route[1]`` truthy), AND
+      • it differs from the candidate route (a real model return), AND
+      • it is NOT the user's own ``/model`` action this turn. Suppression covers
+        two manual shapes, for exactly the one turn ``override_target_changed``
+        is True: (a) re-target — the candidate lands on the freshly-set override
+        target (the #236 opus→fable→opus manual dance); (b) clear — the pin was
+        just removed (``override_target`` None), so the snap back to the config
+        default is user-driven. A recovery landing on a STANDING override target
+        (a pin the system keeps restoring after a refusing fallback) is a real
+        system event and DOES announce — that is exactly the refusing-pin
+        symptom this predicate exists to surface.
+
+    This is the RC-2 narrowing: an active override no longer suppresses
+    wholesale; it suppresses only the manual-retarget/clear transition.
+    """
+    if not (isinstance(prev_route, tuple) and isinstance(candidate_route, tuple)):
+        return False
+    if not prev_route[1]:
+        return False  # nothing to recover from
+    if tuple(prev_route) == tuple(candidate_route):
+        return False  # no genuine model return
+    if override_target_changed and (
+        override_target is None or tuple(candidate_route) == tuple(override_target)
+    ):
+        return False  # the user's own /model re-target or clear, not a recovery
+    return True
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn.
 
@@ -1312,6 +1354,9 @@ def restore_primary_runtime(agent) -> bool:
         return False  # primary still in rate-limit cooldown, stay on fallback
 
     rt = agent._primary_runtime
+    # Capture the route we are LEAVING (the fallback served last turn) before any
+    # assignment — the inline restore emit below needs the real from-route.
+    _from_route = (getattr(agent, "provider", None), getattr(agent, "model", None))
     try:
         # ── Core runtime state ──
         agent.model = rt["model"]
@@ -1428,13 +1473,55 @@ def restore_primary_runtime(agent) -> bool:
             agent.model, agent.provider,
         )
 
-        # NOTE: the recovery-announce for the same-agent restore leg used to
-        # fire HERE (#236). It has MOVED to the unified recovery-announce site
-        # in gateway/run.py _run_agent_inner (just before the turn result is
-        # returned), keyed on the FINAL served route, so a single code path
-        # emits BOTH the cache-warm restore ("new turn") and the re-init
-        # snap-back ("re-init") recoveries — never two lines, never keyed on a
-        # stale/constructed route. Do NOT re-add an emit here.
+        # NOTE (#238, superseded 2026-07-08): the recovery-announce for the
+        # restore leg is back HERE — inline, at the only moment the restored
+        # route exists (SPEC prologue-recovery / Momus RC-1). The #238 move to
+        # an end-of-turn served-route site was structurally blind to a restore
+        # that re-failed-over mid-turn (refusing /model pin: turn ends back on
+        # the fallback, prev==now, silent), and could emit a spurious/backwards
+        # "recovery" for a failover that changed the final route. Chronology:
+        # restore(opus→fable) then failover(fable→opus) must ANNOUNCE in that
+        # order. The end-of-turn site is now persist-only. No double-line risk:
+        # this emit is reachable only while _fallback_activated was True, and
+        # the reset above flips it False, so a second restore call this turn
+        # early-returns at the first guard. A restore can never be the user's
+        # own /model action (a /model switch rebuilds the agent), so no
+        # override gating applies; the shared predicate still guards the
+        # degenerate same-route case.
+        try:
+            _to_route = (rt["provider"], rt["model"])
+            if recovery_should_announce(_from_route, _to_route):
+                # predicate guarantees a truthy from-model; narrow for typing
+                _from_provider, _from_model = _from_route[0], str(_from_route[1])
+                from agent.chat_completion_helpers import (
+                    _append_route_change,
+                    _emit_fallback_announce,
+                )
+                # Durable sink line always (gate-independent).
+                _append_route_change(
+                    "recovery", _from_provider, _from_model,
+                    _to_route[0], _to_route[1],
+                )
+                _rec_announce = False
+                try:
+                    from hermes_cli.config import read_raw_config
+                    _raw = read_raw_config() or {}
+                    _mcfg = _raw.get("model", {}) if isinstance(_raw, dict) else {}
+                    _rec_announce = bool(_mcfg.get("announce_recovery", False))
+                except Exception:
+                    pass  # config read failure → default-off (silent)
+                _emit_fallback_announce(
+                    agent, _from_model, _to_route[1], _to_route[0],
+                    old_provider=_from_provider,
+                    announce_enabled=_rec_announce,
+                    record_event=False,
+                    kind="recovery",
+                    recovery_via="restore",
+                )
+                # Per-turn marker (observability + end-of-turn parity).
+                agent._recovery_emitted_this_turn = (_from_route, _to_route)
+        except Exception:  # noqa: BLE001 — the emit must never break the restore
+            logger.debug("restore recovery emit failed", exc_info=True)
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)
@@ -3188,6 +3275,7 @@ __all__ = [
     "try_recover_primary_transport",
     "drop_thinking_only_and_merge_users",
     "restore_primary_runtime",
+    "recovery_should_announce",
     "extract_reasoning",
     "dump_api_request_debug",
     "anthropic_prompt_cache_policy",

@@ -69,6 +69,23 @@ MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_m
 WATCH_MIN_INTERVAL_SECONDS = 15   # Minimum spacing between consecutive watch matches
 WATCH_STRIKE_LIMIT = 3            # Strikes in a row → disable watch + promote to notify_on_complete
 
+
+def format_completion_output(output: str, *, for_agent: bool = False) -> str:
+    """Normalize completion output so empty stdout doesn't read like no result."""
+    text = (output or "").strip()
+    if text:
+        return text
+    if for_agent:
+        return (
+            "(No buffered stdout captured. Do not assume the job produced no result — "
+            "inspect process(action=\"log\", session_id=...) and any known output files "
+            "or artifact paths before replying.)"
+        )
+    return (
+        "(No buffered stdout captured. The process may have written results to files "
+        "or logs instead of stdout.)"
+    )
+
 # Global circuit breaker — across all sessions. Secondary safety net so concurrent
 # siblings can't collectively flood the user even when each is under its own cap.
 WATCH_GLOBAL_MAX_PER_WINDOW = 15
@@ -1090,7 +1107,7 @@ class ProcessRegistry:
                 "exit_code": session.exit_code,
                 "completion_reason": session.completion_reason,
                 "termination_source": session.termination_source,
-                "output": output_tail,
+                "output": format_completion_output(output_tail, for_agent=True),
             })
 
     # ----- Query Methods -----
@@ -2129,7 +2146,7 @@ def format_process_notification(evt: dict) -> "str | None":
         f"[IMPORTANT: Background process {_sid} {_status} "
         f"(exit code {_exit}{_signal}).\n"
         f"Command: {_cmd}\n"
-        f"Output:\n{_out}]"
+        f"Output:\n{format_completion_output(_out, for_agent=True)}]"
     )
 
 

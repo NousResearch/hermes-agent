@@ -41,6 +41,10 @@ _WINDOWS_INSTALL_PARTS = tuple(parts for _, group in _WINDOWS_BROWSER_GROUPS for
 
 _LINUX_BROWSER_GROUPS = (
     (
+        ("obscura",),
+        ("/usr/local/bin/obscura", "/usr/bin/obscura"),
+    ),
+    (
         ("google-chrome", "google-chrome-stable"),
         ("/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"),
     ),
@@ -138,6 +142,18 @@ def _chrome_debug_args(port: int) -> list[str]:
     ]
 
 
+def _browser_debug_argv(candidate: str, port: int) -> list[str]:
+    """Return argv for launching a CDP-compatible debug server.
+
+    Chromium-family browsers expose CDP via ``--remote-debugging-port``.
+    Obscura is a lightweight Rust headless browser with a CDP server and uses
+    ``obscura serve --port <port>`` instead.
+    """
+    if os.path.basename(candidate).lower() == "obscura":
+        return [candidate, "serve", "--port", str(port)]
+    return [candidate, *_chrome_debug_args(port)]
+
+
 def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
     """Return True when ``url`` exposes a reachable Chrome DevTools endpoint."""
     import socket
@@ -179,7 +195,7 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
     candidates = get_chrome_debug_candidates(system)
 
     if candidates:
-        argv = [candidates[0], *_chrome_debug_args(port)]
+        argv = _browser_debug_argv(candidates[0], port)
         return subprocess.list2cmdline(argv) if system == "Windows" else shlex.join(argv)
 
     if system == "Darwin":
@@ -308,7 +324,7 @@ def launch_chrome_debug(
         try:
             with open(stderr_path, "wb") as stderr_file:
                 proc = subprocess.Popen(
-                    [candidate, *_chrome_debug_args(port)],
+                    _browser_debug_argv(candidate, port),
                     stdout=subprocess.DEVNULL,
                     stderr=stderr_file,
                     **_detach_kwargs(system),

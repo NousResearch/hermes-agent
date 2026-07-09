@@ -7019,8 +7019,9 @@ function focusWindow(win) {
 function spawnSecondaryWindow({
   sessionId,
   watch,
-  newSession
-}: { sessionId?: string; watch?: boolean; newSession?: boolean } = {}) {
+  newSession,
+  profile
+}: { sessionId?: string; watch?: boolean; newSession?: boolean; profile?: string } = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -7066,7 +7067,8 @@ function spawnSecondaryWindow({
       devServer: DEV_SERVER,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
       watch,
-      newSession
+      newSession,
+      profile
     })
   )
 
@@ -7074,8 +7076,10 @@ function spawnSecondaryWindow({
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch }))
+// `profile` is the session's owning profile (optional) so the secondary window
+// can route resume/API calls to the right backend for non-default profiles.
+function createSessionWindow(sessionId, { watch = false, profile }: { watch?: boolean; profile?: string } = {}) {
+  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch, profile }))
 }
 
 // Open a fresh compact window on the new-session draft (#/). Not registry-keyed:
@@ -7425,7 +7429,13 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
     return { ok: false, error: 'invalid-session-id' }
   }
 
-  createSessionWindow(sessionId.trim(), { watch: opts?.watch === true })
+  // Optional owning profile for multi-profile secondary windows. Accept only a
+  // non-empty string; ignore anything else so a bad renderer payload can't
+  // poison the URL / registry.
+  const rawProfile = typeof opts?.profile === 'string' ? opts.profile.trim() : ''
+  const profile = rawProfile && (rawProfile === 'default' || PROFILE_NAME_RE.test(rawProfile)) ? rawProfile : undefined
+
+  createSessionWindow(sessionId.trim(), { watch: opts?.watch === true, profile })
 
   return { ok: true }
 })

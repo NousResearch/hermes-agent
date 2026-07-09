@@ -41,9 +41,16 @@ function chatWindowWebPreferences(preloadPath: string) {
 // onboarding overlays and the global session sidebar. `new=1` marks the compact
 // scratch window; `watch=1` marks a spectator window (e.g. a running subagent's
 // session): the renderer resumes it lazily so the gateway never builds an agent
-// just to stream into it.
-function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath, watch, newSession }: any = {}) {
-  const query = `?win=secondary${newSession ? '&new=1' : ''}${watch ? '&watch=1' : ''}`
+// just to stream into it. `profile=` carries the session's owning profile so a
+// secondary window can resume a non-default-profile chat against the right
+// backend instead of falling back to the primary/window profile.
+function buildSessionWindowUrl(
+  sessionId: string,
+  { devServer, rendererIndexPath, watch, newSession, profile }: any = {}
+) {
+  const profileKey = typeof profile === 'string' ? profile.trim() : ''
+  const profileParam = profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''
+  const query = `?win=secondary${newSession ? '&new=1' : ''}${watch ? '&watch=1' : ''}${profileParam}`
   const route = newSession ? '#/' : `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {

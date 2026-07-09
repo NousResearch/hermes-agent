@@ -562,7 +562,11 @@ class TestToolNamePreservation(unittest.TestCase):
             captured["acp_command"] = kwargs.get("acp_command")
             captured["acp_args"] = kwargs.get("acp_args")
 
-        mock_which.assert_called_with("copilot")
+        # assert_any_call, not assert_called_with: the latter asserts the *last*
+        # which() call, and unrelated machinery (e.g. lazy-deps probing for
+        # "uv") may legitimately consult PATH later in the same flow. This
+        # test's contract is only that the configured binary was checked.
+        mock_which.assert_any_call("copilot")
         self.assertNotEqual(
             captured["provider"],
             "copilot-acp",

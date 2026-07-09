@@ -3,6 +3,7 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
+from hermes_constants import VALID_REASONING_EFFORTS
 from hermes_cli.commands import (
     COMMAND_REGISTRY,
     COMMANDS,
@@ -75,13 +76,9 @@ class TestCommandRegistry:
 
     def test_reasoning_subcommands_are_in_logical_order(self):
         reasoning = next(cmd for cmd in COMMAND_REGISTRY if cmd.name == "reasoning")
-        assert reasoning.subcommands[:6] == (
+        assert reasoning.subcommands[: 1 + len(VALID_REASONING_EFFORTS)] == (
             "none",
-            "minimal",
-            "low",
-            "medium",
-            "high",
-            "xhigh",
+            *VALID_REASONING_EFFORTS,
         )
 
     def test_cli_only_and_gateway_only_are_mutually_exclusive(self):

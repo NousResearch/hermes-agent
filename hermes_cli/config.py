@@ -2753,6 +2753,14 @@ DEFAULT_CONFIG = {
         # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
         # tool whitelist apply identically in both modes.
         "mode": "project",
+        # Max seconds for the script process itself.
+        "timeout": 300,
+        # Max seconds for one sandbox tool-call round-trip (child stub ↔ parent).
+        # Raise this alongside ``timeout`` when long-lived execute_code tasks
+        # make slow or blocking tool calls.
+        "rpc_timeout": 300,
+        # Max number of Hermes tool calls the script may make.
+        "max_tool_calls": 50,
     },
 
     # Tool Search (progressive disclosure for large tool surfaces).

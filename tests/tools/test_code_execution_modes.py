@@ -33,8 +33,10 @@ def _force_local_terminal(monkeypatch):
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     DEFAULT_EXECUTION_MODE,
+    DEFAULT_RPC_TIMEOUT,
     EXECUTION_MODES,
     _get_execution_mode,
+    _get_rpc_timeout,
     _is_usable_python,
     _resolve_child_cwd,
     _resolve_child_python,
@@ -108,6 +110,30 @@ class TestGetExecutionMode(unittest.TestCase):
     def test_execution_modes_tuple(self):
         """Canonical set of modes — tests + config layer rely on this shape."""
         self.assertEqual(set(EXECUTION_MODES), {"project", "strict"})
+
+
+class TestGetRpcTimeout(unittest.TestCase):
+    """code_execution.rpc_timeout is config-only and defaults to 300s."""
+
+    def test_default_is_300_seconds(self):
+        self.assertEqual(DEFAULT_RPC_TIMEOUT, 300)
+
+    def test_absent_config_falls_back_to_default(self):
+        with patch("tools.code_execution_tool._load_config", return_value={}):
+            self.assertEqual(_get_rpc_timeout(), DEFAULT_RPC_TIMEOUT)
+
+    def test_explicit_rpc_timeout_is_used(self):
+        with patch("tools.code_execution_tool._load_config", return_value={"rpc_timeout": 1800}):
+            self.assertEqual(_get_rpc_timeout(), 1800)
+
+    def test_string_rpc_timeout_is_accepted(self):
+        with patch("tools.code_execution_tool._load_config", return_value={"rpc_timeout": "45"}):
+            self.assertEqual(_get_rpc_timeout(), 45)
+
+    def test_invalid_rpc_timeout_falls_back_to_default(self):
+        for bad in (0, -1, float("inf"), float("nan"), True, False, "banana", None):
+            with patch("tools.code_execution_tool._load_config", return_value={"rpc_timeout": bad}):
+                self.assertEqual(_get_rpc_timeout(), DEFAULT_RPC_TIMEOUT)
 
 
 # ---------------------------------------------------------------------------

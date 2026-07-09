@@ -682,8 +682,16 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
                     content_parts.append(str(part))
             content = "\n".join(content_parts)
 
-        # Build message HTML
-        msg_class = f"message message-{role} active"
+        # Build message HTML. The role feeds two sinks and for tool/MCP messages
+        # is externally influenced, so treat each sink on its own terms:
+        #  - display text: HTML-escape (prevents markup/JS injection).
+        #  - class attribute: reduce to a single safe CSS token (alnum/-/_),
+        #    so a crafted role can neither break out of the attribute nor split
+        #    into several unintended classes. Real roles (user/assistant/system/
+        #    tool) are unchanged, so the `.message-<role>` rules still match.
+        safe_role = _escape_html(role)
+        role_class = "".join(c if c.isalnum() or c in "-_" else "-" for c in str(role).lower())
+        msg_class = f"message message-{role_class} active"
         # Delay animation for initial items
         delay_style = f' style="animation-delay: {min(i * 0.05, 1.0)}s"' if i < 10 else ""
         
@@ -691,7 +699,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
         
         html = f'<div class="{msg_class}"{delay_style}>'
         html += f'  <div class="message-header">'
-        html += f'    <div class="role-badge">{chevron_html} {role_icon} {role}</div>'
+        html += f'    <div class="role-badge">{chevron_html} {role_icon} {safe_role}</div>'
         html += f'    <div class="timestamp">{timestamp}</div>'
         html += '  </div>'
         html += '  <div class="message-body">'

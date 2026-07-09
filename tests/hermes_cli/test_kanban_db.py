@@ -1905,6 +1905,66 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
     assert reason == "active_pr"
 
 
+def test_respawn_guard_active_pr_cleared_by_later_operator_comment(kanban_home):
+    """Review feedback after a PR handoff means the task should respawn."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-feedback", assignee="alice")
+        pr_comment_id = kb.add_comment(
+            conn,
+            t,
+            "worker",
+            "review-required: PR https://github.com/acme/project/pull/149",
+        )
+        assert kb.block_task(conn, t, reason="review-required: PR #149")
+        feedback_comment_id = kb.add_comment(
+            conn,
+            t,
+            "operator",
+            "review feedback on https://github.com/acme/project/pull/149: please handle the stuck respawn path",
+        )
+        assert kb.unblock_task(conn, t)
+        now = int(time.time())
+        conn.execute(
+            "UPDATE task_comments SET created_at = ? WHERE id = ?",
+            (now - 30, pr_comment_id),
+        )
+        conn.execute(
+            "UPDATE task_comments SET created_at = ? WHERE id = ?",
+            (now - 10, feedback_comment_id),
+        )
+
+        reason = kb.check_respawn_guard(conn, t)
+
+    assert reason is None
+
+
+def test_respawn_guard_active_pr_cleared_by_later_unblock_event(kanban_home):
+    """A deliberate unblock after a PR handoff is human action to rerun."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="merged-pr-followup", assignee="alice")
+        pr_comment_id = kb.add_comment(
+            conn,
+            t,
+            "worker",
+            "PR merged: https://github.com/acme/project/pull/147",
+        )
+        assert kb.block_task(conn, t, reason="review-required: PR #147")
+        assert kb.unblock_task(conn, t)
+        now = int(time.time())
+        conn.execute(
+            "UPDATE task_comments SET created_at = ? WHERE id = ?",
+            (now - 30, pr_comment_id),
+        )
+        conn.execute(
+            "UPDATE task_events SET created_at = ? WHERE task_id = ? AND kind = 'unblocked'",
+            (now - 10, t),
+        )
+
+        reason = kb.check_respawn_guard(conn, t)
+
+    assert reason is None
+
+
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     """A GitHub PR URL in a comment older than the PR window does not block."""
     with kb.connect() as conn:

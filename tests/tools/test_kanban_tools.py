@@ -620,8 +620,11 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
 
     # Mock the judge to reject the completion. The gate only runs when a
     # judge is reachable, so force the availability probe True as well.
+    # Matches the real judge_goal signature (verdict, reason, parse_failed,
+    # wait_directive) — a 3-tuple stub here would mask a call-site unpack
+    # bug (see test_complete_goal_mode_call_site_matches_judge_goal_arity below).
     def mock_judge_goal(goal, last_response, *, timeout=30.0, subgoals=None):
-        return "continue", "missing verification evidence", False
+        return "continue", "missing verification evidence", False, None
 
     monkeypatch.setattr("tools.kanban_tools.judge_goal", mock_judge_goal)
     monkeypatch.setattr("tools.kanban_tools._goal_judge_available", lambda: True)
@@ -641,6 +644,56 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
         assert task.status == "running"  # Should still be running, not done
     finally:
         conn2.close()
+
+
+def test_complete_goal_mode_call_site_matches_judge_goal_arity(monkeypatch, tmp_path, caplog):
+    """Regression for #61490: the L605 call site must unpack exactly as many
+    values as the real (unmocked) judge_goal returns. A stale 3-value unpack
+    against the 4-value real signature raises ValueError, which the local
+    except silently swallows as a fail-open — masking a real "continue"
+    verdict as "done" and letting incomplete work through.
+
+    Uses the real judge_goal (not a stub) via the guaranteed-deterministic
+    empty-response early return, so this can't be fooled by a mock that
+    happens to match the buggy arity."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        goal_task_id = kb.create_task(
+            conn, title="goal-mode-arity-test", assignee="test-worker",
+            body="Must achieve X with verified evidence.", goal_mode=True
+        )
+        kb.claim_task(conn, goal_task_id)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+
+    # judge_goal is intentionally left unmocked. A whitespace-only summary
+    # passes the "provide at least one of summary/result" precheck (it's
+    # truthy) but strips down to last_response="", which judge_goal
+    # short-circuits deterministically to ("continue", "empty response
+    # (nothing to evaluate)", False, None) with no auxiliary client call
+    # involved.
+    monkeypatch.setattr("tools.kanban_tools._goal_judge_available", lambda: True)
+
+    out = kt._handle_complete({"summary": "   "})
+    d = json.loads(out)
+
+    assert "goal judge check failed" not in caplog.text
+    assert "error" in d
+    assert "empty response (nothing to evaluate)" in d["error"]
 
 
 def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path):

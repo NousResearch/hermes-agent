@@ -403,7 +403,10 @@ def _record_matches_live_gateway_pid(
     persisted record so cross-platform behavior is preserved.
     """
     live_cmdline = _read_process_cmdline(pid)
-    if live_cmdline:
+    if live_cmdline and _gateway_command_subcommand(live_cmdline) is not None:
+        # The live argv still carries an explicit gateway subcommand (e.g.
+        # "gateway run") — trust it strictly so a reused PID now running some
+        # other command cannot masquerade as the gateway.
         if not looks_like_gateway_runtime_command_line(live_cmdline):
             return False
         if expected_home is not None and not _command_line_belongs_to_profile(
@@ -411,6 +414,13 @@ def _record_matches_live_gateway_pid(
         ):
             return False
         return True
+    # Otherwise the argv is unreadable, or it has been replaced by the bare
+    # "hermes" proctitle that main.py installs via setproctitle("hermes"), which
+    # erases the "gateway run" subcommand. The caller has already confirmed the
+    # PID exists and its start_time matches this record, so the process genuinely
+    # is the one that wrote it — defer to the persisted gateway identity rather
+    # than failing on the stripped argv (otherwise a systemd-run gateway whose
+    # proctitle is just "hermes" is misreported as offline in the dashboard).
     return _record_looks_like_gateway(record)
 
 

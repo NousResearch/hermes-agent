@@ -738,10 +738,17 @@ class MemoryStore:
         parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
         roundtrip = ENTRY_DELIMITER.join(parsed)
 
+        # Normalize raw the same way before comparing, so cosmetic whitespace
+        # around ENTRY_DELIMITER (blank lines between entries) doesn't
+        # false-positive on signal #1. See issue #61523.
+        normalized_raw = ENTRY_DELIMITER.join(
+            e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()
+        )
+
         char_limit = self._char_limit(target)
         max_entry_len = max((len(e) for e in parsed), default=0)
 
-        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
+        drift_detected = (normalized_raw != roundtrip) or (max_entry_len > char_limit)
         if not drift_detected:
             return None
 

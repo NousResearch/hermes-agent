@@ -840,12 +840,27 @@ def _handle_create(args: dict, **kw) -> str:
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
-    assignee = args.get("assignee")
-    if not assignee:
-        return tool_error(
-            "assignee is required — name the profile that should execute this "
-            "task (the dispatcher will only spawn tasks with an assignee)"
-        )
+    # Default a missing/blank assignee to 'default' (the fleet's real
+    # dispatchable profile) instead of erroring, and coerce any name that is
+    # NOT an installed profile to 'default' too. Workers were reliably guessing
+    # stale profile names — prometheus-worker-N / prometheus-synthesis, from an
+    # old 50-profile deployment — that no longer resolve, so their follow-ups
+    # orphaned in 'ready' forever. Coercing an unknown name here means a guessed
+    # or stale assignee can never orphan a task again.
+    assignee = _normalize_profile(args.get("assignee")) or "default"
+    try:
+        from hermes_cli.profiles import profile_exists as _profile_exists
+
+        if not _profile_exists(assignee):
+            logger.warning(
+                "kanban_create: assignee %r is not an installed profile; "
+                "coercing to 'default'",
+                assignee,
+            )
+            assignee = "default"
+    except Exception:
+        # profiles module not importable (test stubs / exotic env) — keep as-is
+        pass
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
@@ -1407,10 +1422,18 @@ KANBAN_CREATE_SCHEMA = {
             "assignee": {
                 "type": "string",
                 "description": (
-                    "Profile name that should execute this task "
-                    "(e.g. 'researcher-a', 'reviewer', 'writer'). "
-                    "Required — tasks without an assignee are never "
-                    "dispatched."
+                    "Optional — the profile that should execute this task. "
+                    "Leave it unset for follow-up work: it defaults to "
+                    "'default', the fleet's real dispatchable profile, which "
+                    "is almost always what you want. Only set this to name a "
+                    "DIFFERENT profile that is actually installed under "
+                    "~/.hermes/profiles/. Do NOT invent a name — neither a "
+                    "role label ('researcher', 'reviewer') nor a numbered "
+                    "worker ('prometheus-worker-7', 'prometheus-synthesis'): "
+                    "those profiles do not exist in this deployment, and any "
+                    "name that is not an installed profile is coerced to "
+                    "'default' so the task still dispatches instead of "
+                    "orphaning in 'ready' forever."
                 ),
             },
             "body": {
@@ -1543,7 +1566,7 @@ KANBAN_CREATE_SCHEMA = {
             },
             "board": _board_schema_prop(),
         },
-        "required": ["title", "assignee"],
+        "required": ["title"],
     },
 }
 

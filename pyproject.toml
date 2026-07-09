@@ -250,6 +250,7 @@ termux-all = [
 ]
 dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
 feishu = ["lark-oapi==1.5.3", "qrcode==7.4.2"]
+xmpp = ["slixmpp==1.16.0", "aiohttp==3.14.1", "slixmpp-omemo==2.2.0"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525; exact-pinned to match tools/lazy_deps.py. slixmpp-omemo bundles OMEMO E2E (XEP-0384) like matrix's mautrix[encryption] — pure-python (python-omemo/twomemo/oldmemo/x3dh/xeddsa), wheels on all platforms, so it auto-installs with the platform.
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
   # Sheets, Docs).  Declared here so packagers (Nix, Homebrew) ship them with

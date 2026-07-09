@@ -467,6 +467,19 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATRIX_MAX_MEDIA_BYTES` | Maximum Matrix media upload/download size in bytes (default: `104857600`) |
 | `MATRIX_RECOVERY_KEY` | Recovery key for cross-signing verification after device key rotation. Recommended for E2EE setups with cross-signing enabled. |
 | `MATRIX_RECOVERY_KEY_OUTPUT_FILE` | Optional one-time path for a generated Matrix recovery key. Created with mode `0600` and never overwritten. |
+| `XMPP_JID` | Bot Jabber ID (e.g. `hermes@example.org`) — required to enable the XMPP platform |
+| `XMPP_PASSWORD` | XMPP account password (sent over STARTTLS only — TLS is mandatory) |
+| `XMPP_HOST` | Override SRV lookup if the server hostname differs from the JID domain (optional) |
+| `XMPP_PORT` | Server port (default: `5222` STARTTLS, or `5223` for direct TLS) |
+| `XMPP_MUC_ROOMS` | Comma-separated MUC (group room) JIDs to join (e.g. `dev@conference.example.org/hermes`). The optional `/nick` suffix overrides `XMPP_MUC_NICK` per room. |
+| `XMPP_MUC_NICK` | Default nickname when joining MUC rooms without an explicit `/nick` suffix |
+| `XMPP_HOME_CHANNEL` | JID where cron jobs deliver results by default (DM JID or MUC room JID) |
+| `XMPP_HOME_CHANNEL_NAME` | Display name for the XMPP home channel |
+| `XMPP_ALLOWED_USERS` | Comma-separated **bare JIDs** allowed to DM the bot (e.g. `you@example.org`). MUC (group chat) access is gated by room membership in `XMPP_MUC_ROOMS`, not this list — joining the room *is* the access decision. |
+| `XMPP_ALLOW_ALL_USERS` | Bypass DM allow-list and MUC checks (`true`/`false`, default: `false`). Dev only. |
+| `XMPP_OMEMO_ENABLED` | OMEMO end-to-end encryption for 1:1 chats (default: `true`; `slixmpp-omemo` ships with the `xmpp` extra and auto-installs. Set `false` to force TLS-only) |
+| `XMPP_OMEMO_STORAGE_PATH` | OMEMO key store path (default: `~/.hermes/xmpp_omemo.json`). Holds the bot's OMEMO identity — must persist across restarts. |
+| `XMPP_MAX_MESSAGE_LENGTH` | Per-stanza body cap (default: `10000`). Longer replies split on word/code-fence boundaries instead of being clipped. |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
 | `WEBHOOK_ENABLED` | Enable the webhook platform adapter (`true`/`false`) |

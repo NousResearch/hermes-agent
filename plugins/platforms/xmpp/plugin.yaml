@@ -1,0 +1,68 @@
+name: xmpp-platform
+label: XMPP
+kind: platform
+version: 1.0.0
+description: >
+  XMPP (Jabber) gateway adapter for Hermes Agent.
+  Connects to any XMPP server (Prosody, ejabberd, public servers) via slixmpp
+  and relays messages between XMPP chats and the Hermes agent. Supports 1:1
+  chats, MUC group chats, XEP-0363 HTTP File Upload for media, XEP-0085 chat
+  states (typing indicators), and bare-JID allowlists. TLS-to-server enforced;
+  optional OMEMO end-to-end encryption for 1:1 chats when slixmpp-omemo is
+  installed (hermes-agent[xmpp-omemo]).
+author: ericlarslee
+requires_env:
+  - name: XMPP_JID
+    description: "Bot JID — Jabber ID for the bot account (e.g. hermes@example.org)"
+    prompt: "Bot JID (e.g. hermes@example.org)"
+    url: "https://prosody.im/"
+    password: false
+  - name: XMPP_PASSWORD
+    description: "XMPP account password (sent over STARTTLS only)"
+    prompt: "XMPP password"
+    password: true
+optional_env:
+  - name: XMPP_HOST
+    description: "Override SRV lookup if your server hostname differs from JID domain (optional)"
+    prompt: "XMPP server host (optional, leave blank for SRV lookup)"
+    password: false
+  - name: XMPP_PORT
+    description: "XMPP server port (default 5222 STARTTLS)"
+    prompt: "XMPP server port (default 5222)"
+    password: false
+  - name: XMPP_MUC_ROOMS
+    description: "Comma-separated MUC rooms to join (e.g. dev@conference.example.org/hermes)"
+    prompt: "MUC rooms (comma-separated, optional)"
+    password: false
+  - name: XMPP_MUC_NICK
+    description: "Default nickname when joining MUC rooms without an explicit /nick suffix"
+    prompt: "Default MUC nickname (optional)"
+    password: false
+  - name: XMPP_HOME_CHANNEL
+    description: "Default JID for cron / notification delivery"
+    prompt: "Home channel JID (optional)"
+    password: false
+  - name: XMPP_HOME_CHANNEL_NAME
+    description: "Display name for the XMPP home channel"
+    prompt: "Home channel display name"
+    password: false
+  - name: XMPP_ALLOWED_USERS
+    description: "Comma-separated bare JIDs allowed to DM the bot (e.g. you@example.org)"
+    prompt: "Allowed bare JIDs for DMs (comma-separated)"
+    password: false
+  - name: XMPP_ALLOW_ALL_USERS
+    description: "Allow any XMPP user to trigger the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: XMPP_OMEMO_ENABLED
+    description: "OMEMO end-to-end encryption for 1:1 chats (default true; slixmpp-omemo ships with the xmpp extra and auto-installs)"
+    prompt: "Enable OMEMO? (true/false)"
+    password: false
+  - name: XMPP_OMEMO_STORAGE_PATH
+    description: "Path for the OMEMO key store JSON (default ~/.hermes/xmpp_omemo.json — must persist across restarts)"
+    prompt: "OMEMO key store path"
+    password: false
+  - name: XMPP_MAX_MESSAGE_LENGTH
+    description: "Per-stanza body length cap; longer replies split on word/code-fence boundaries (default 10000)"
+    prompt: "Max message length"
+    password: false

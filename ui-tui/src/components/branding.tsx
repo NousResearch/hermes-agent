@@ -396,21 +396,38 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           <Text color={t.color.muted}>/help for commands</Text>
         </Text>
 
-        {typeof info.update_behind === 'number' && info.update_behind > 0 && (
-          <Text bold color={t.color.warn}>
-            ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
-            <Text bold={false} color={t.color.warn} dimColor>
-              {' '}
-              - run{' '}
-            </Text>
+        {typeof info.update_behind === 'number' && info.update_behind !== 0 && (
+          info.update_behind > 0 ? (
             <Text bold color={t.color.warn}>
-              {info.update_command || 'hermes update'}
+              ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
+              <Text bold={false} color={t.color.warn} dimColor>
+                {' '}
+                - run{' '}
+              </Text>
+              <Text bold color={t.color.warn}>
+                {info.update_command || 'hermes update'}
+              </Text>
+              <Text bold={false} color={t.color.warn} dimColor>
+                {' '}
+                to update
+              </Text>
             </Text>
-            <Text bold={false} color={t.color.warn} dimColor>
-              {' '}
-              to update
+          ) : (
+            <Text bold color={t.color.warn}>
+              ! update available
+              <Text bold={false} color={t.color.warn} dimColor>
+                {' '}
+                - run{' '}
+              </Text>
+              <Text bold color={t.color.warn}>
+                {info.update_command || 'hermes update'}
+              </Text>
+              <Text bold={false} color={t.color.warn} dimColor>
+                {' '}
+                to update
+              </Text>
             </Text>
-          </Text>
+          )
         )}
       </Box>
     </Box>

@@ -357,6 +357,12 @@ def check_for_updates() -> Optional[int]:
             repo_dir = hermes_home / "hermes-agent"
         if not (repo_dir / ".git").exists():
             behind = check_via_pypi()
+            # PyPI returns 1 for any newer version — not a true count.
+            # Normalise to UPDATE_AVAILABLE_NO_COUNT so renderers use
+            # generic "update available" wording instead of presenting
+            # an uncomputed value as a precise count (#35857).
+            if behind == 1:
+                behind = UPDATE_AVAILABLE_NO_COUNT
         else:
             behind = _check_via_local_git(repo_dir)
 
@@ -856,9 +862,11 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         if behind is not None and behind != 0:
             from hermes_cli.config import get_managed_update_command, recommended_update_command
             if behind > 0:
-                commits_word = "commit" if behind == 1 else "commits"
+                # Use "version" not "commit" — the count may come from PyPI
+                # (1 = one version behind), not from git commit math (#35857).
+                word = "version" if behind == 1 else "versions"
                 right_lines.append(
-                    f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
+                    f"[bold yellow]⚠ {behind} {word} behind[/]"
                     f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
                 )
             else:

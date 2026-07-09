@@ -624,8 +624,17 @@ class _CuaDriverSession:
     session object, never the surrounding contexts.
     """
 
-    def __init__(self, bridge: _AsyncBridge) -> None:
+    def __init__(
+        self,
+        bridge: _AsyncBridge,
+        spawn_prefix: Optional[List[str]] = None,
+        spawn_env: Optional[Dict[str, str]] = None,
+        driver_path: Optional[str] = None,
+    ) -> None:
         self._bridge = bridge
+        self._spawn_prefix = list(spawn_prefix) if spawn_prefix else None
+        self._spawn_env = spawn_env
+        self._driver_path = driver_path or "cua-driver"
         self._session = None
         self._lock = threading.Lock()
         self._started = False
@@ -671,21 +680,36 @@ class _CuaDriverSession:
         self._startup_phase = "binary-check"
 
         try:
-            if not cua_driver_binary_available():
-                raise RuntimeError(cua_driver_install_hint())
+            if self._spawn_prefix:
+                # Container / remote runtime: spawn cua-driver through the
+                # prefix (e.g. ``docker exec -i <c> env DISPLAY=:1
+                # /config/bin/cua-driver mcp``). The binary lives in-target,
+                # not on the host, so skip the host binary check and host
+                # manifest discovery (manifest would run on the host binary
+                # and describe the wrong invocation).
+                command = self._spawn_prefix[0]
+                args = list(self._spawn_prefix[1:]) + [self._driver_path, "mcp"]
+                child_env = self._spawn_env
+                if child_env is None:
+                    child_env = cua_driver_child_env()
+                child_env = _sanitize_subprocess_env(child_env)
+            else:
+                if not cua_driver_binary_available():
+                    raise RuntimeError(cua_driver_install_hint())
 
-            # Surface 8: ask cua-driver itself which subcommand spawns
-            # the MCP server, instead of hardcoding ["mcp"]. Falls back
-            # transparently for older drivers / any discovery failure.
-            self._startup_phase = "manifest-discovery"
-            command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
+                # Surface 8: ask cua-driver itself which subcommand spawns
+                # the MCP server, instead of hardcoding ["mcp"]. Falls back
+                # transparently for older drivers / any discovery failure.
+                self._startup_phase = "manifest-discovery"
+                command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
+                child_env = _sanitize_subprocess_env(cua_driver_child_env())
             _t_manifest = _time.monotonic()
             params = StdioServerParameters(
                 command=command,
                 args=args,
                 # Apply the telemetry policy first (default: disabled), then
                 # sanitize Hermes-managed secrets out of the child env.
-                env=_sanitize_subprocess_env(cua_driver_child_env()),
+                env=child_env,
             )
 
             async with stdio_client(params) as (read, write):
@@ -980,12 +1004,31 @@ class _CuaDriverSession:
 
         call_args = dict(args)
         shot_file: Optional[str] = None
-        if name == "get_window_state" and "screenshot_out_file" not in call_args:
+        # spawn_prefix generalization (per-task provider). getattr keeps the
+        # legacy no-prefix path identical even for a session constructed via
+        # object.__new__ (the env-sanitization tests bypass __init__).
+        spawn_prefix = getattr(self, "_spawn_prefix", None)
+        driver_path = getattr(self, "_driver_path", None) or "cua-driver"
+        spawn_env = getattr(self, "_spawn_env", None)
+        # The screenshot-to-file optimization routes the PNG through a host
+        # temp file the daemon writes and we read back. When spawning
+        # through a prefix (container/remote) the in-target cua-driver
+        # cannot write to a host path, so skip the indirection and accept
+        # the inline base64 blob over the spawned pipe. The MCP stdio path
+        # is the primary transport in prefix mode; this CLI fallback is
+        # rarely hit there, and the action data still comes through.
+        use_shot_file = name == "get_window_state" and "screenshot_out_file" not in call_args
+        if use_shot_file and not spawn_prefix:
             fd, shot_file = _tempfile.mkstemp(prefix="cua_shot_", suffix=".png")
             os.close(fd)
             call_args["screenshot_out_file"] = shot_file
 
-        cmd = [_CUA_DRIVER_CMD, "call", name, json.dumps(call_args)]
+        if spawn_prefix:
+            cmd = list(spawn_prefix) + [driver_path, "call", name, json.dumps(call_args)]
+            cli_env = spawn_env if spawn_env is not None else cua_driver_child_env()
+        else:
+            cmd = [_CUA_DRIVER_CMD, "call", name, json.dumps(call_args)]
+            cli_env = cua_driver_child_env()
         attempts = 4
         backoff = 0.5
         parsed: Any = None
@@ -995,7 +1038,7 @@ class _CuaDriverSession:
                 try:
                     proc = _subprocess.run(
                         cmd, capture_output=True, text=True, timeout=max(15.0, timeout),
-                        env=_sanitize_subprocess_env(cua_driver_child_env()),
+                        env=_sanitize_subprocess_env(cli_env),
                     )
                 except Exception as e:  # pragma: no cover - subprocess spawn failure
                     raise RuntimeError(f"cua-driver CLI fallback for {name} failed to spawn: {e}") from e
@@ -1268,11 +1311,32 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 class CuaDriverBackend(ComputerUseBackend):
-    """Default computer-use backend. Cross-platform via cua-driver MCP."""
+    """Default computer-use backend. Cross-platform via cua-driver MCP.
 
-    def __init__(self) -> None:
+    By default the backend spawns ``cua-driver mcp`` on the host and drives
+    the host display. When ``spawn_prefix`` is given, the backend instead
+    spawns ``[*spawn_prefix, driver_path, "mcp"]`` — letting a container or
+    remote runtime own the cua-driver process and the display it connects
+    to (e.g. ``["docker","exec","-i",container,"env","DISPLAY=:1",
+    "HOME=/config"]`` with ``driver_path="/config/bin/cua-driver"``). The
+    MCP stdio bridge works unchanged over the spawned pipe. This is the
+    generic hook a per-task ComputerUseProvider uses to bind cua-driver to
+    a per-task display without special-casing any one runtime in core.
+    """
+
+    def __init__(
+        self,
+        spawn_prefix: Optional[List[str]] = None,
+        spawn_env: Optional[Dict[str, str]] = None,
+        driver_path: Optional[str] = None,
+    ) -> None:
         self._bridge = _AsyncBridge()
-        self._session = _CuaDriverSession(self._bridge)
+        self._session = _CuaDriverSession(
+            self._bridge,
+            spawn_prefix=spawn_prefix,
+            spawn_env=spawn_env,
+            driver_path=driver_path,
+        )
         # Sticky context — updated by capture(), used by action tools.
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
@@ -1363,6 +1427,11 @@ class CuaDriverBackend(ComputerUseBackend):
         # other Unix-likes haven't been exercised end-to-end.
         if sys.platform not in ("darwin", "win32", "linux"):
             return False
+        # When spawned through a prefix (container/remote), the cua-driver
+        # binary lives in-target, not on the host PATH — the provider that
+        # constructed us guarantees it, so the host binary check is N/A.
+        if self._session._spawn_prefix:
+            return True
         return cua_driver_binary_available()
 
     def _clear_active_target(self) -> None:

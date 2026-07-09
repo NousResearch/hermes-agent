@@ -282,6 +282,81 @@ class TestExternalCronProviderStatus:
         assert "Gateway is not running" not in out
 
 
+def test_cron_list_shows_toolsets_when_set(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "cron.jobs.list_jobs",
+        lambda include_disabled=False: [
+            {
+                "id": "job-tools",
+                "name": "Job with toolsets",
+                "schedule_display": "every day",
+                "state": "scheduled",
+                "enabled": True,
+                "next_run_at": "2026-07-01T00:00:00Z",
+                "deliver": ["local"],
+                "enabled_toolsets": ["terminal", "file"],
+            }
+        ],
+    )
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [9999])
+    monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+
+    cron_cli.cron_list()
+
+    out = capsys.readouterr().out
+    assert "Toolsets:  terminal, file" in out
+
+
+def test_cron_list_shows_origin_when_deliver_is_origin(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "cron.jobs.list_jobs",
+        lambda include_disabled=False: [
+            {
+                "id": "job-origin",
+                "name": "Job with origin",
+                "schedule_display": "every day",
+                "state": "scheduled",
+                "enabled": True,
+                "next_run_at": "2026-07-01T00:00:00Z",
+                "deliver": ["origin"],
+                "origin": {"platform": "telegram", "chat_id": "12345"},
+            }
+        ],
+    )
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [9999])
+    monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+
+    cron_cli.cron_list()
+
+    out = capsys.readouterr().out
+    assert "Origin:    telegram:12345" in out
+
+
+def test_cron_list_hides_origin_and_toolsets_when_absent(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "cron.jobs.list_jobs",
+        lambda include_disabled=False: [
+            {
+                "id": "job-plain",
+                "name": "Plain job",
+                "schedule_display": "every day",
+                "state": "scheduled",
+                "enabled": True,
+                "next_run_at": "2026-07-01T00:00:00Z",
+                "deliver": ["local"],
+            }
+        ],
+    )
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [9999])
+    monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+
+    cron_cli.cron_list()
+
+    out = capsys.readouterr().out
+    assert "Origin:" not in out
+    assert "Toolsets:" not in out
+
+
 def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     monkeypatch.setattr(
         "cron.jobs.list_jobs",

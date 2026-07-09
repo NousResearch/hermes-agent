@@ -26,13 +26,27 @@ const DEFAULT_SIGN_IN_COPY: SignInCopy = {
   withProvider: provider => `Sign in with ${provider}`
 }
 
-// A remote, gated (oauth-bucket), not-currently-connected gateway is a
-// remote-reauth boot failure: the access cookie lapsed (e.g. the remote
-// dashboard restarted) and the local-recovery buttons (Retry/Repair) can't
-// fix it — only re-establishing the remote session can. A connected oauth
-// session, or a token/local gateway, boots for some other reason the
-// local-recovery buttons address, so those return false here.
-export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | undefined): boolean {
+// A remote, gated (oauth-bucket) gateway with an auth-shaped boot error is
+// a remote-reauth boot failure: the access cookie lapsed, the refresh token was
+// rejected, or the remote dashboard could not mint a websocket ticket. The
+// Settings indicator may still say "connected" when an RT cookie exists, so
+// the boot error text is part of the signal — otherwise Tony gets dumped into
+// local-only recovery buttons for a problem only reauth can fix.
+export function isRemoteReauthError(error: string | null | undefined): boolean {
+  const text = String(error || '').toLowerCase()
+
+  return (
+    text.includes('remote gateway session has expired') ||
+    text.includes('gateway sign-in required') ||
+    text.includes('needs oauth login') ||
+    (text.includes('oauth') && (text.includes('not signed in') || text.includes('sign in')))
+  )
+}
+
+export function isRemoteReauthFailure(
+  config: DesktopConnectionConfig | null | undefined,
+  error?: string | null
+): boolean {
   if (!config) {
     return false
   }
@@ -40,8 +54,8 @@ export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | u
   return (
     config.mode === 'remote' &&
     config.remoteAuthMode === 'oauth' &&
-    !config.remoteOauthConnected &&
-    Boolean(config.remoteUrl)
+    Boolean(config.remoteUrl) &&
+    (!config.remoteOauthConnected || isRemoteReauthError(error))
   )
 }
 

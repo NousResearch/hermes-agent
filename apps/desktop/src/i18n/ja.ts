@@ -92,8 +92,9 @@ export const ja = defineLocale({
       useLocalGateway: 'ローカルゲートウェイを使用',
       openLogs: 'ログを開く',
       repairHint: '修復はインストーラーを再実行します。新しいマシンでは数分かかる場合があります。',
-      remoteSignInHint:
-        'ゲートウェイのログインウィンドウを開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。',
+      remoteSignInHint: signInLabel =>
+        `保存済みのリモート/Nous ブラウザーセッションからサインアウトしてから ${signInLabel} を開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。`,
+      signOutAndSignIn: 'サインアウトしてサインイン',
       hideRecentLogs: '最近のログを非表示',
       showRecentLogs: '最近のログを表示',
       signedInTitle: 'サインインしました',

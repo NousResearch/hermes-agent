@@ -92,7 +92,9 @@ export const en: Translations = {
       useLocalGateway: 'Use local gateway',
       openLogs: 'Open logs',
       repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
-      remoteSignInHint: 'Opens the gateway login window. Use local gateway to switch to the bundled backend instead.',
+      remoteSignInHint: signInLabel =>
+        `Signs out of the saved remote/Nous browser session, then opens ${signInLabel}. Use local gateway to switch to the bundled backend instead.`,
+      signOutAndSignIn: 'Sign out & sign in',
       hideRecentLogs: 'Hide recent logs',
       showRecentLogs: 'Show recent logs',
       signedInTitle: 'Signed in',

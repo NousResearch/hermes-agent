@@ -90,7 +90,9 @@ export const zh: Translations = {
       useLocalGateway: '使用本地网关',
       openLogs: '打开日志',
       repairHint: '修复会重新运行安装器，在新机器上可能需要几分钟。',
-      remoteSignInHint: '打开网关登录窗口。也可以使用本地网关切换到随应用提供的后端。',
+      remoteSignInHint: signInLabel =>
+        `先退出已保存的远程/Nous 浏览器会话，然后打开 ${signInLabel}。也可以使用本地网关切换到随应用提供的后端。`,
+      signOutAndSignIn: '退出并重新登录',
       hideRecentLogs: '隐藏最近日志',
       showRecentLogs: '显示最近日志',
       signedInTitle: '已登录',

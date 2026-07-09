@@ -135,7 +135,8 @@ export interface Translations {
       useLocalGateway: string
       openLogs: string
       repairHint: string
-      remoteSignInHint: string
+      remoteSignInHint: (signInLabel: string) => string
+      signOutAndSignIn: string
       hideRecentLogs: string
       showRecentLogs: string
       signedInTitle: string

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { DesktopConnectionConfig } from '@/global'
 
-import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
+import { deriveProviderShape, isRemoteReauthError, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
 
 function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnectionConfig {
   return {
@@ -23,8 +23,17 @@ describe('isRemoteReauthFailure', () => {
     expect(isRemoteReauthFailure(config())).toBe(true)
   })
 
-  it('false when the oauth session is still connected', () => {
-    expect(isRemoteReauthFailure(config({ remoteOauthConnected: true }))).toBe(false)
+  it('false when the oauth session is still connected and the error is not auth-shaped', () => {
+    expect(isRemoteReauthFailure(config({ remoteOauthConnected: true }), 'Python exploded')).toBe(false)
+  })
+
+  it('true when the session indicator is connected but boot failed while minting a remote OAuth ticket', () => {
+    expect(
+      isRemoteReauthFailure(
+        config({ remoteOauthConnected: true }),
+        'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
+      )
+    ).toBe(true)
   })
 
   it('false for a local gateway', () => {
@@ -42,6 +51,18 @@ describe('isRemoteReauthFailure', () => {
   it('false for null/undefined config', () => {
     expect(isRemoteReauthFailure(null)).toBe(false)
     expect(isRemoteReauthFailure(undefined)).toBe(false)
+  })
+})
+
+describe('isRemoteReauthError', () => {
+  it('recognizes the expired remote gateway session error', () => {
+    expect(
+      isRemoteReauthError('Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.')
+    ).toBe(true)
+  })
+
+  it('ignores non-auth boot errors', () => {
+    expect(isRemoteReauthError('Hermes background process exited during startup.')).toBe(false)
   })
 })
 

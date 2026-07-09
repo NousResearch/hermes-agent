@@ -90,7 +90,9 @@ export const zhHant = defineLocale({
       useLocalGateway: '使用本機閘道',
       openLogs: '開啟記錄',
       repairHint: '修復會重新執行安裝程式，在新機器上可能需要幾分鐘。',
-      remoteSignInHint: '開啟閘道登入視窗。使用本機閘道可切換至內建後端。',
+      remoteSignInHint: signInLabel =>
+        `先登出已儲存的遠端/Nous 瀏覽器工作階段，然後開啟 ${signInLabel}。使用本機閘道可切換至內建後端。`,
+      signOutAndSignIn: '登出並重新登入',
       hideRecentLogs: '隱藏最近記錄',
       showRecentLogs: '顯示最近記錄',
       signedInTitle: '已登入',

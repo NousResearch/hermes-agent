@@ -51,7 +51,7 @@ export function BootFailureOverlay() {
       ?.getRecentLogs()
       .then(res => setLogs(res.lines ?? []))
       .catch(() => undefined)
-  }, [visible])
+  }, [boot.error, visible])
 
   // Resolve whether this boot failure is a remote-gateway reauth so we can
   // offer the actionable "Sign in" path instead of the local-only recovery
@@ -80,7 +80,7 @@ export function BootFailureOverlay() {
         return
       }
 
-      if (cancelled || !isRemoteReauthFailure(config)) {
+      if (cancelled || !isRemoteReauthFailure(config, boot.error)) {
         return
       }
 
@@ -104,7 +104,7 @@ export function BootFailureOverlay() {
     return () => {
       cancelled = true
     }
-  }, [visible])
+  }, [boot.error, visible])
 
   if (!visible || suppressed) {
     return null
@@ -129,11 +129,13 @@ export function BootFailureOverlay() {
     setBusy(null)
   }
 
-  // Open the gateway's login window (renders the username/password form for a
-  // basic gateway, or the OAuth redirect otherwise — the desktop drives both
-  // through the same window). On a successful sign-in the session cookie is
-  // re-established in the persistent partition; reload so boot re-runs and the
-  // reconnect now mints a ticket against a live session.
+  // Clear the OAuth partition first, then open the gateway's login window
+  // (renders the username/password form for a basic gateway, or the OAuth
+  // redirect otherwise — the desktop drives both through the same window).
+  // Clearing without a URL signs out the gateway AND any identity-provider
+  // cookies in this dedicated partition, so stale Nous/Portal sessions don't
+  // silently bounce us back into the same expired state. On successful sign-in
+  // the session cookie is re-established; reload so boot mints a fresh ticket.
   const signInRemote = async () => {
     if (!remoteReauth) {
       return
@@ -142,6 +144,7 @@ export function BootFailureOverlay() {
     setBusy('signin')
 
     try {
+      await window.hermesDesktop?.oauthLogoutConnectionConfig?.()
       const result = await window.hermesDesktop?.oauthLoginConnectionConfig(remoteReauth.url)
 
       if (result?.connected) {
@@ -197,7 +200,7 @@ export function BootFailureOverlay() {
               {remoteReauth ? (
                 <Button disabled={Boolean(busy)} onClick={() => void signInRemote()}>
                   {busy === 'signin' ? <Loader2 className="animate-spin" /> : <LogIn />}
-                  {label}
+                  {copy.signOutAndSignIn}
                 </Button>
               ) : (
                 <Button disabled={Boolean(busy)} onClick={() => void retry()}>
@@ -220,7 +223,9 @@ export function BootFailureOverlay() {
                 {copy.openLogs}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">{remoteReauth ? copy.remoteSignInHint : copy.repairHint}</p>
+            <p className="text-xs text-muted-foreground">
+              {remoteReauth ? copy.remoteSignInHint(label) : copy.repairHint}
+            </p>
           </div>
 
           {logs.length > 0 ? (

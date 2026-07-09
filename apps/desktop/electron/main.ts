@@ -4744,7 +4744,13 @@ function installPreviewShortcut(window) {
 // survives reloads/restarts) rather than a main-process JSON file. The main
 // process owns setZoomLevel, so we mirror each change into localStorage and
 // read it back on did-finish-load to re-apply after reloads or crash recovery.
-import { clampZoomLevel, percentToZoomLevel, ZOOM_STORAGE_KEY, zoomLevelToPercent } from './zoom'
+import {
+  clampZoomLevel,
+  installZoomReassertOnWindowEvents,
+  percentToZoomLevel,
+  ZOOM_STORAGE_KEY,
+  zoomLevelToPercent
+} from './zoom'
 
 function setAndPersistZoomLevel(window, zoomLevel) {
   if (!window || window.isDestroyed()) {
@@ -6512,6 +6518,8 @@ function wireCommonWindowHandlers(win) {
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
   installZoomShortcuts(win)
+  installZoomReassertOnWindowEvents(win, () => restorePersistedZoomLevel(win))
+  win.webContents.once('did-finish-load', () => restorePersistedZoomLevel(win))
   installContextMenu(win)
   win.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)
@@ -6894,7 +6902,6 @@ function createWindow() {
   }
 
   mainWindow.webContents.once('did-finish-load', () => {
-    restorePersistedZoomLevel(mainWindow)
     broadcastBootProgress()
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))

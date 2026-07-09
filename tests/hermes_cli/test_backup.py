@@ -121,11 +121,12 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
 
-    def test_excludes_browser_cdp_profile(self):
-        """Live browser profiles contain sockets and locked SQLite DBs."""
+    def test_excludes_live_chromium_profile(self):
+        """Only the root live CDP profile is excluded."""
         from hermes_cli.backup import _should_exclude
-        assert _should_exclude(Path("browser-cdp-profile/SingletonSocket"))
-        assert _should_exclude(Path("browser-cdp-profile/Default/History"))
+        assert _should_exclude(Path("chrome-debug/SingletonSocket"))
+        assert _should_exclude(Path("chrome-debug/Default/History"))
+        assert not _should_exclude(Path("skills/example/chrome-debug/notes.md"))
 
     def test_excludes_sqlite_sidecars(self):
         """SQLite WAL/SHM/journal sidecars must not ship alongside the
@@ -207,10 +208,37 @@ class TestBackup:
         assert staged_dirs, "no SQLite snapshot was staged"
         assert all(d == str(out_zip.parent) for d in staged_dirs), staged_dirs
 
+    def test_pre_update_backup_prunes_only_root_browser_profile(self, tmp_path, monkeypatch):
+        """The shared pre-update/pre-migration path must not walk live CDP state."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        chrome_debug = hermes_home / "chrome-debug"
+        (chrome_debug / "Default").mkdir(parents=True)
+        (chrome_debug / "Default" / "Cookies").write_text("runtime")
+        nested = hermes_home / "skills" / "my-skill" / "chrome-debug"
+        nested.mkdir(parents=True)
+        (nested / "notes.md").write_text("keep me")
 
+        import hermes_cli.backup as backup_mod
+        real_walk = backup_mod.os.walk
+        walked: list[Path] = []
 
+        def _traced_walk(*args, **kwargs):
+            for item in real_walk(*args, **kwargs):
+                walked.append(Path(item[0]))
+                yield item
 
+        monkeypatch.setattr(backup_mod.os, "walk", _traced_walk)
+        out_zip = tmp_path / "pre-update.zip"
+        result = backup_mod._write_full_zip_backup(out_zip, hermes_home)
 
+        assert result == out_zip
+        assert not any(path == chrome_debug or chrome_debug in path.parents for path in walked)
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+        assert not any(name.startswith("chrome-debug/") for name in names)
+        assert "skills/my-skill/chrome-debug/notes.md" in names
 
     def test_skips_symlinked_files(self, tmp_path, monkeypatch):
         """Backup must not dereference symlinks and leak files outside HERMES_HOME."""
@@ -235,15 +263,64 @@ class TestBackup:
             assert "skills/outside-link.txt" not in names
             assert all(zf.read(name) != b"outside secret\n" for name in names)
 
+    def test_excludes_only_root_browser_profile(self, tmp_path, monkeypatch):
+        """Manual backup prunes root CDP state but preserves nested user content."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        chrome_debug = hermes_home / "chrome-debug"
+        chrome_debug.mkdir()
+        (chrome_debug / "Cookies").write_text("runtime")
+        nested = hermes_home / "skills" / "my-skill" / "chrome-debug"
+        nested.mkdir(parents=True)
+        (nested / "notes.md").write_text("keep me")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        out_zip = tmp_path / "backup.zip"
+
+        import hermes_cli.backup as backup_mod
+        real_walk = backup_mod.os.walk
+        walked: list[Path] = []
+
+        def _traced_walk(*args, **kwargs):
+            for item in real_walk(*args, **kwargs):
+                walked.append(Path(item[0]))
+                yield item
+
+        monkeypatch.setattr(backup_mod.os, "walk", _traced_walk)
+        backup_mod.run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+        assert not any(path == chrome_debug or chrome_debug in path.parents for path in walked)
+        assert not any(name.startswith("chrome-debug/") for name in names)
+        assert "skills/my-skill/chrome-debug/notes.md" in names
+
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="mkfifo unavailable")
-    def test_rejects_special_files(self, tmp_path):
-        """Backup file filter rejects FIFOs and other special files."""
-        from hermes_cli.backup import _is_backupable_file
+    def test_backup_filter_rejects_fifo(self, tmp_path):
+        """Internal and external backup paths reject special files and symlink roots."""
+        from hermes_cli.backup import _iter_external_files, _should_skip_backup_file
 
         fifo = tmp_path / "pipe"
         os.mkfifo(fifo)
+        regular = tmp_path / "regular.txt"
+        regular.write_text("keep")
 
-        assert not _is_backupable_file(fifo)
+        assert _should_skip_backup_file(fifo, Path("pipe"), tmp_path / "out.zip")
+        external = _iter_external_files(tmp_path)
+        assert regular in external
+        assert fifo not in external
+
+        target_dir = tmp_path / "external-target"
+        target_dir.mkdir()
+        (target_dir / "secret.txt").write_text("outside")
+        linked_dir = tmp_path / "external-link"
+        try:
+            linked_dir.symlink_to(target_dir, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+        assert _iter_external_files(linked_dir) == []
 
 
 # ---------------------------------------------------------------------------

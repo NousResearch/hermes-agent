@@ -1472,6 +1472,21 @@ class SessionStore:
                         "Session DB expiry_finalized write failed for %s: %s",
                         entry.session_id, exc,
                     )
+            # Mark the session as ended with reason='session_reset' so the
+            # recovery query (find_latest_gateway_session_for_peer) does not
+            # treat it as recoverable. This prevents token accumulation bugs
+            # where expired sessions are silently resumed with full history.
+            # Use reopen_session first because end_session no-ops when
+            # ended_at IS NOT NULL (first end_reason wins), and the session
+            # may have already been ended with 'agent_close' by agent cleanup.
+            try:
+                self._db.reopen_session(entry.session_id)
+                self._db.end_session(entry.session_id, "session_reset")
+            except Exception as exc:
+                logger.debug(
+                    "Session DB end_session(session_reset) failed for %s: %s",
+                    entry.session_id, exc,
+                )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.

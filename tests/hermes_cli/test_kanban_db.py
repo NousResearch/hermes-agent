@@ -244,6 +244,148 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "idx_events_run" in indexes
 
 
+def test_delivery_state_helpers_persist_snapshot_and_event(kanban_home, tmp_path):
+    artifact = tmp_path / "delivery-artifact.md"
+    artifact.write_text("pilot artifact\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pilot delivery")
+        state = kb.init_task_delivery_state(
+            conn,
+            tid,
+            stage="implementation",
+            workflow_stream_id="t_stream",
+            artifact_ref={"kind": "file", "path": str(artifact), "label": "implementation_artifact"},
+        )
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert state["delivery_verdict"] == "needs_review"
+    assert task is not None
+    assert task.delivery_state is not None
+    assert task.delivery_state["artifact"]["readable"] is True
+    assert any(e.kind == "delivery_state_updated" for e in events)
+
+
+def test_delivery_state_derives_blocked_for_unreadable_artifact(kanban_home, tmp_path):
+    missing = tmp_path / "missing-artifact.md"
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pilot unreadable artifact")
+        state = kb.init_task_delivery_state(
+            conn,
+            tid,
+            stage="implementation",
+            workflow_stream_id="t_stream",
+            artifact_ref={"kind": "file", "path": str(missing), "label": "implementation_artifact"},
+        )
+
+    assert state["artifact"]["readable"] is False
+    assert state["delivery_verdict"] == "blocked"
+    assert state["delivery_verdict_reason"] == "primary artifact unreadable"
+
+
+def test_write_run_delivery_evidence_merges_existing_metadata(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="evidence merge")
+        claimed = kb.claim_task(conn, tid, claimer="test-worker")
+        assert claimed is not None
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        run_id = task.current_run_id
+        assert run_id is not None
+
+        merged = kb.write_run_delivery_evidence(
+            conn,
+            run_id,
+            {"artifact_checks": [{"path": "/tmp/out.md", "readable": True}]},
+        )
+        merged = kb.write_run_delivery_evidence(
+            conn,
+            run_id,
+            {"test_receipts": [{"name": "pytest", "passed": True}]},
+        )
+        runs = kb.list_runs(conn, tid)
+
+    assert merged["delivery_evidence"]["artifact_checks"][0]["readable"] is True
+    assert merged["delivery_evidence"]["test_receipts"][0]["passed"] is True
+    assert runs[-1].metadata is not None
+    assert runs[-1].metadata["delivery_evidence"]["test_receipts"][0]["name"] == "pytest"
+
+
+def test_backfill_delivery_states_requires_verified_fields(kanban_home, tmp_path):
+    artifact = tmp_path / "backfill-artifact.md"
+    artifact.write_text("backfill\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="backfill me")
+        written = kb.backfill_delivery_states(
+            conn,
+            [
+                {
+                    "task_id": tid,
+                    "stage": "architecture",
+                    "workflow_stream_id": "t_stream",
+                    "artifact_ref": {"kind": "file", "path": str(artifact)},
+                    "risk_class": "low",
+                }
+            ],
+        )
+        task = kb.get_task(conn, tid)
+
+    assert written[0]["workflow_stream_id"] == "t_stream"
+    assert task is not None
+    assert task.delivery_state is not None
+    assert task.delivery_state["risk_class"] == "low"
+
+
+def test_delivery_state_refreshes_after_complete_block_and_unblock(kanban_home, tmp_path):
+    artifact = tmp_path / "lifecycle-artifact.md"
+    artifact.write_text("lifecycle\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        done_tid = kb.create_task(conn, title="done lifecycle", assignee="alice")
+        kb.init_task_delivery_state(
+            conn,
+            done_tid,
+            stage="implementation",
+            workflow_stream_id="t_stream",
+            artifact_ref={"kind": "file", "path": str(artifact)},
+        )
+        assert kb.claim_task(conn, done_tid, claimer="worker") is not None
+        assert kb.complete_task(conn, done_tid, summary="done") is True
+        done_task = kb.get_task(conn, done_tid)
+
+        blocked_tid = kb.create_task(conn, title="blocked lifecycle", assignee="alice")
+        kb.init_task_delivery_state(
+            conn,
+            blocked_tid,
+            stage="implementation",
+            workflow_stream_id="t_stream",
+            artifact_ref={"kind": "file", "path": str(artifact)},
+        )
+        assert kb.claim_task(conn, blocked_tid, claimer="worker") is not None
+        assert kb.block_task(conn, blocked_tid, reason="wait") is True
+        blocked_task = kb.get_task(conn, blocked_tid)
+        assert kb.unblock_task(conn, blocked_tid) is True
+        unblocked_task = kb.get_task(conn, blocked_tid)
+
+    assert done_task is not None
+    assert done_task.status == "done"
+    assert done_task.delivery_state is not None
+    assert done_task.delivery_state["task_status"] == "done"
+
+    assert blocked_task is not None
+    assert blocked_task.status == "blocked"
+    assert blocked_task.delivery_state is not None
+    assert blocked_task.delivery_state["task_status"] == "blocked"
+
+    assert unblocked_task is not None
+    assert unblocked_task.status == "ready"
+    assert unblocked_task.delivery_state is not None
+    assert unblocked_task.delivery_state["task_status"] == "ready"
+
+
 # ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------

@@ -36,7 +36,7 @@ def test_recommended_update_command_pip():
     cmd = recommended_update_command_for_method("pip")
     assert "pip install" in cmd or "uv pip install" in cmd
     assert "--upgrade" in cmd
-    assert "hermes-agent" in cmd
+    assert "ht-ai-agent" in cmd
 
 
 def test_stamp_file_takes_precedence(tmp_path):

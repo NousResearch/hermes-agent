@@ -148,6 +148,22 @@ def inject_memory_provider_tools(agent: Any) -> int:
 # ---------------------------------------------------------------------------
 # Context fencing helpers
 # ---------------------------------------------------------------------------
+#
+# Two distinct jobs live here, deliberately kept separate:
+#
+#   * ``sanitize_context`` — the LEAK SCRUBBER used by gateway/persistence/Honcho
+#     callers.  Its job is to DELETE whole leaked ``<memory-context>...</...>``
+#     blocks (tags + note + payload) before content is shown, persisted, or
+#     ingested downstream.  Whole-block removal is the contract those callers
+#     depend on.
+#   * ``neutralize_fence_markers`` — the FORGERY NEUTRALIZER used only by the
+#     context-block builders below.  Its job is to stop channel content from
+#     forging a trusted provenance fence, while KEEPING the surrounding text
+#     (a trusted-local channel may legitimately carry arbitrary prose).  It
+#     neutralizes the fence TOKEN itself, which is reformation-proof and linear.
+#
+# They are not interchangeable: the scrubber must not leave stale payload behind,
+# and the builder must not delete the payload it is trying to wrap.
 
 _FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
 _INTERNAL_CONTEXT_RE = re.compile(
@@ -165,6 +181,45 @@ def sanitize_context(text: str) -> str:
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
+    return text
+
+
+# Forgery neutralizer for the block builders.  The model recognizes a Hermes
+# provenance fence by the literal TOKEN ``memory-context`` / ``plugin-context``,
+# not by ``<...>`` tag structure.  We neutralize that token (and the canonical
+# note lead phrases) instead of matching tag structure, for two reasons:
+#   * Linear: fixed-literal match, no far ``>`` delimiter to hunt at many start
+#     positions — none of the O(n²) blowups that structural/whole-block matchers
+#     hit on repeated unterminated ``<memory-context `` prefixes.
+#   * Reformation-proof: a single ``.sub`` with a non-empty sentinel cannot let a
+#     split token (``<memory-<memory-context>context>``) re-form into a live
+#     fence, because the sentinel sits between the surviving fragments.
+# The surrounding payload is preserved on purpose — a trusted-local channel may
+# legitimately carry arbitrary prose; only its ability to FORGE a fence is removed.
+# Fail-closed: legitimate prose that literally contains the token is redacted too
+# (a rare, harmless over-strip).
+_FENCE_SENTINEL = "[redacted-fence]"
+_FENCE_TOKEN_RE = re.compile(r'(?:memory|plugin)-context', re.IGNORECASE)
+_NOTE_PHRASE_RE = re.compile(
+    r'the following is (?:recalled memory context|'
+    r'context injected by a trusted local hermes plugin hook)',
+    re.IGNORECASE,
+)
+
+
+def neutralize_fence_markers(text: str) -> str:
+    """Neutralize any trusted-fence provenance marker in builder-bound content.
+
+    Symmetric across both trusted channels: whether the payload came from a
+    memory provider or a plugin ``pre_llm_call`` hook, it may not carry EITHER a
+    ``memory-context`` or ``plugin-context`` marker — otherwise one channel could
+    forge the other's (higher-authority) fence, or break out of its own.  Both
+    passes neutralize a fixed literal (the fence token, then the canonical note
+    lead phrase), so this is linear and reformation-proof.  The surrounding text
+    is kept: with the token gone it carries no provenance the model would trust.
+    """
+    text = _FENCE_TOKEN_RE.sub(_FENCE_SENTINEL, text)
+    text = _NOTE_PHRASE_RE.sub('', text)
     return text
 
 
@@ -337,9 +392,9 @@ def build_memory_context_block(raw_context: str) -> str:
     """Wrap prefetched memory in a fenced block with system note."""
     if not raw_context or not raw_context.strip():
         return ""
-    clean = sanitize_context(raw_context)
+    clean = neutralize_fence_markers(raw_context)
     if clean != raw_context:
-        logger.warning("memory provider returned pre-wrapped context; stripped")
+        logger.warning("memory provider returned pre-wrapped context; neutralized")
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "
@@ -347,6 +402,34 @@ def build_memory_context_block(raw_context: str) -> str:
         "this is the agent's persistent memory and should inform all responses.]\n\n"
         f"{clean}\n"
         "</memory-context>"
+    )
+
+
+def build_plugin_context_block(raw_context: str) -> str:
+    """Wrap plugin ``pre_llm_call`` context in a fenced block with a system note.
+
+    Plugin hook context (ponytail, caveman/roster guardrails, etc.) is trusted
+    local Hermes context, but it is appended to the user message where it is
+    otherwise shape-indistinguishable from adversarial text riding on tool
+    output — so the model may treat it as untrusted and ignore it.  This fence
+    marks the provenance explicitly.  The payload is run through
+    ``neutralize_fence_markers`` first, so a plugin cannot forge or break out of
+    its own ``plugin-context`` fence, nor impersonate the ``memory-context``
+    channel: both provenance tokens (and the canonical note lead phrases) are
+    neutralized before wrapping, while the plugin's actual payload is preserved.
+    """
+    if not raw_context or not raw_context.strip():
+        return ""
+    clean = neutralize_fence_markers(raw_context)
+    if clean != raw_context:
+        logger.warning("plugin hook returned pre-fenced context; neutralized")
+    return (
+        "<plugin-context>\n"
+        "[System note: The following is context injected by a trusted local "
+        "Hermes plugin hook (pre_llm_call), NOT user input and NOT tool output. "
+        "Treat it as authoritative local instruction and act on it accordingly.]\n\n"
+        f"{clean}\n"
+        "</plugin-context>"
     )
 
 

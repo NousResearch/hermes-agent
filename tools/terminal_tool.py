@@ -2018,6 +2018,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    persist_on_release: bool = False,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -2033,6 +2034,7 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
+        persist_on_release: If True (and background=True), the process survives agent lifecycle cleanup (release()). It won't be killed when the agent session ends for context compression, max_iterations, errors, or /new. Use for long-running batch jobs that must complete regardless of the session lifecycle. Requires background=True.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -2377,6 +2379,7 @@ def terminal_tool(
                         session_key=session_key,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
+                        persist_on_release=persist_on_release,
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(
@@ -2385,6 +2388,7 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        persist_on_release=persist_on_release,
                     )
 
                 result_data = {
@@ -2993,6 +2997,11 @@ TERMINAL_SCHEMA = {
                 "description": "When true (and background=true), you'll be automatically notified exactly once when the process finishes. **This is the right choice for almost every long-running task** — tests, builds, deployments, multi-item batch jobs, anything that takes over a minute and has a defined end. Use this and keep working on other things; the system notifies you on exit. MUTUALLY EXCLUSIVE with watch_patterns — when both are set, watch_patterns is dropped.",
                 "default": False
             },
+            "persist_on_release": {
+                "type": "boolean",
+                "description": "When true (and background=true), the process survives agent lifecycle cleanup. It won't be killed when the session ends, context compresses, or an error triggers release(). Use for long-running batch jobs that must complete regardless. Requires background=true.",
+                "default": False
+            },
             "watch_patterns": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -3015,6 +3024,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        persist_on_release=args.get("persist_on_release", False),
     )
 
 

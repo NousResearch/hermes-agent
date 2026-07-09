@@ -117,6 +117,7 @@ class ProcessSession:
     watcher_message_id: str = ""                # Triggering message id — reply anchor for topic routing
     watcher_interval: int = 0                   # 0 = no watcher configured
     notify_on_complete: bool = False             # Queue agent notification on exit
+    persist_on_release: bool = False             # Skip this session in kill_all() during agent lifecycle cleanup
     # Watch patterns — trigger agent notification when output matches any pattern
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
@@ -687,6 +688,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        persist_on_release: bool = False,
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -697,6 +699,9 @@ class ProcessRegistry:
             use_pty: If True, use a pseudo-terminal via ptyprocess for interactive
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
+            persist_on_release: If True, skip this session in kill_all() during
+                                agent lifecycle cleanup (release()). The process
+                                continues running even after the agent session ends.
         """
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
@@ -705,6 +710,7 @@ class ProcessRegistry:
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
+            persist_on_release=persist_on_release,
         )
 
         if use_pty:
@@ -826,6 +832,7 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         timeout: int = 10,
+        persist_on_release: bool = False,
     ) -> ProcessSession:
         """
         Spawn a background process through a non-local environment backend.
@@ -847,6 +854,7 @@ class ProcessRegistry:
             started_at=time.time(),
             env_ref=env,
             pid_scope="sandbox",
+            persist_on_release=persist_on_release,
         )
 
         # Run the command in the sandbox with output capture
@@ -1742,7 +1750,7 @@ class ProcessRegistry:
         with self._lock:
             targets = [
                 s for s in self._running.values()
-                if (task_id is None or s.task_id == task_id) and not s.exited
+                if (task_id is None or s.task_id == task_id) and not s.exited and not s.persist_on_release
             ]
 
         killed = 0

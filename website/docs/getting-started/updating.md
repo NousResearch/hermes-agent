@@ -82,6 +82,12 @@ updates:
 
 `--backup` was the always-on behavior in earlier builds, but it was adding minutes to every update on large homes, so it's now opt-in. The lightweight pairing-data snapshot above still runs unconditionally.
 
+The dedicated local-CDP browser profile under `chrome-debug/` is intentionally
+excluded. It contains live Chromium sockets, locked databases, and machine-bound
+browser state that cannot be copied consistently while the browser is running.
+If you need to preserve a signed-in browser profile, close Chromium and back up
+that directory separately.
+
 ### Windows: another `hermes.exe` is running
 
 On Windows, `hermes update` will refuse to run if it detects another `hermes.exe` process holding the venv's entry-point executable open — most commonly the Hermes Desktop app's spawned backend, an open `hermes` REPL in another terminal, or a running gateway:

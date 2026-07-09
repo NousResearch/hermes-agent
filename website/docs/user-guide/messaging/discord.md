@@ -686,7 +686,7 @@ Hermes Agent supports Discord voice messages:
 
 - **Incoming voice messages** are automatically transcribed using the configured STT provider: local `faster-whisper` (no key), Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`).
 - **Text-to-speech**: Use `/voice tts` to have the bot send spoken audio responses alongside text replies.
-- **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
+- **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel. By default it auto-leaves after 300 seconds of voice-channel inactivity; set `discord.voice_inactivity_timeout_seconds: 0` in `config.yaml` to disable auto-leave for always-on coworking channels.
 
 For the full setup and operational guide, see:
 - [Voice Mode](/user-guide/features/voice-mode)

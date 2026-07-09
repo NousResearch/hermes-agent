@@ -812,7 +812,9 @@ class DiscordAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
-    # Auto-disconnect from voice channel after this many seconds of inactivity
+    # Auto-disconnect from voice channel after this many seconds of inactivity.
+    # ``VOICE_TIMEOUT`` is retained as the historical/default value for tests
+    # and external code that may have referenced the class constant.
     VOICE_TIMEOUT = 300
 
     def __init__(self, config: PlatformConfig):
@@ -833,6 +835,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
+        self._voice_inactivity_timeout_seconds = self._resolve_voice_inactivity_timeout_seconds()
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
@@ -901,6 +904,28 @@ class DiscordAdapter(BasePlatformAdapter):
         # Mirrors the Telegram #58563 fix. Entries are dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
         self._warned_fail_closed_default = False
+
+    def _resolve_voice_inactivity_timeout_seconds(self) -> int:
+        """Return Discord voice auto-leave timeout from config.
+
+        ``discord.voice_inactivity_timeout_seconds`` is the user-facing knob.
+        Missing or malformed values fall back to the historical five-minute
+        default.  ``0`` disables auto-leave for always-on coworking voice
+        channels; negative values are treated as invalid and fall back safely.
+        """
+        raw = getattr(self.config, "extra", {}).get(
+            "voice_inactivity_timeout_seconds",
+            self.VOICE_TIMEOUT,
+        )
+        if raw is None or raw == "":
+            return self.VOICE_TIMEOUT
+        try:
+            seconds = int(raw)
+        except (TypeError, ValueError):
+            return self.VOICE_TIMEOUT
+        if seconds < 0:
+            return self.VOICE_TIMEOUT
+        return seconds
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
@@ -2935,6 +2960,7 @@ class DiscordAdapter(BasePlatformAdapter):
         vc = self._voice_clients.get(guild_id)
         if not vc or not vc.is_connected():
             return False
+        self._cancel_voice_timeout(guild_id)
 
         # ── Mixer path (overlap + ducking) ──────────────────────────────
         mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
@@ -3011,19 +3037,32 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
         return member.voice.channel
 
-    def _reset_voice_timeout(self, guild_id: int) -> None:
-        """Reset the auto-disconnect inactivity timer."""
+    def _cancel_voice_timeout(self, guild_id: int) -> None:
+        """Cancel any pending auto-disconnect timer for this guild."""
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
+
+    def _reset_voice_timeout(self, guild_id: int) -> None:
+        """Reset the auto-disconnect inactivity timer."""
+        self._cancel_voice_timeout(guild_id)
+        if getattr(self, "_voice_inactivity_timeout_seconds", self.VOICE_TIMEOUT) <= 0:
+            return
         self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
             self._voice_timeout_handler(guild_id)
         )
 
     async def _voice_timeout_handler(self, guild_id: int) -> None:
-        """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
+        """Auto-disconnect after configured seconds of inactivity."""
+        timeout_seconds = getattr(
+            self,
+            "_voice_inactivity_timeout_seconds",
+            self.VOICE_TIMEOUT,
+        )
+        if timeout_seconds <= 0:
+            return
         try:
-            await asyncio.sleep(self.VOICE_TIMEOUT)
+            await asyncio.sleep(timeout_seconds)
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
@@ -3041,6 +3080,28 @@ class DiscordAdapter(BasePlatformAdapter):
                     return
             except Exception:
                 pass
+        vc = self._voice_clients.get(guild_id)
+        mixer = (
+            getattr(self, "_voice_mixers", {}).get(guild_id)
+            if getattr(self, "_voice_mixers", None)
+            else None
+        )
+        try:
+            vc_is_playing = (
+                vc is not None
+                and vc.is_connected()
+                and vc.is_playing() is True
+            )
+            mixer_is_speaking = (
+                mixer is not None
+                and getattr(mixer, "speech_active", False) is True
+            )
+            active_playback = vc_is_playing or mixer_is_speaking
+        except Exception:
+            active_playback = False
+        if active_playback:
+            self._reset_voice_timeout(guild_id)
+            return
         await self.leave_voice_channel(guild_id)
         # Notify the runner so it can clean up voice_mode state
         if self._on_voice_disconnect and text_ch_id:
@@ -3172,11 +3233,14 @@ class DiscordAdapter(BasePlatformAdapter):
                     ):
                         continue
                     # A user speaking to the bot is activity too — not just the
-                    # bot's own playback. Reset the inactivity timer so an active
-                    # listener isn't disconnected mid-conversation (this also
-                    # covers voice-on text-only sessions that never play audio).
-                    self._reset_voice_timeout(guild_id)
-                    await self._process_voice_input(guild_id, user_id, pcm_data)
+                    # bot's own playback. Suspend the inactivity timer while
+                    # STT and the resulting agent turn run so active voice
+                    # conversation is not disconnected mid-turn.
+                    self._cancel_voice_timeout(guild_id)
+                    try:
+                        await self._process_voice_input(guild_id, user_id, pcm_data)
+                    finally:
+                        self._reset_voice_timeout(guild_id)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -8241,7 +8305,10 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
     ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``,
-    ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
+    ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``). New settings that are only
+    consumed by ``DiscordAdapter`` may be returned into ``PlatformConfig.extra``
+    instead; ``discord.voice_inactivity_timeout_seconds`` uses that path so it
+    stays a normal config.yaml setting instead of becoming a user-facing env var.
     Rather than rewrite ~50 call sites inside the adapter to read from
     ``PlatformConfig.extra`` instead, this hook keeps the existing
     env-driven model and merely owns the YAML→env translation here, next to
@@ -8249,9 +8316,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
 
     Env vars take precedence over YAML — every assignment is guarded by
     ``not os.getenv(...)`` so explicit env vars survive a config.yaml
-    update.  Returns ``None`` because no extras are seeded into
-    ``PlatformConfig.extra`` directly (everything flows through env).
+    update.
     """
+    seeded_extra: dict[str, Any] = {}
     if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
@@ -8349,7 +8416,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     lft = discord_cfg.get("liveness_failure_threshold")
     if lft is not None and not os.getenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"):
         os.environ["HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"] = str(lft)
-    return None  # all settings flow through env; nothing to merge into extras
+    if "voice_inactivity_timeout_seconds" in discord_cfg:
+        seeded_extra["voice_inactivity_timeout_seconds"] = discord_cfg[
+            "voice_inactivity_timeout_seconds"
+        ]
+    return seeded_extra or None
 
 
 def _is_connected(config) -> bool:

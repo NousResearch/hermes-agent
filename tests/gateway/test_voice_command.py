@@ -1930,6 +1930,116 @@ class TestVoiceTimeoutCleansRunnerState:
         assert hasattr(adapter, "_on_voice_disconnect")
         assert adapter._on_voice_disconnect is None
 
+    def test_default_voice_inactivity_timeout_is_historical_value(self):
+        """Missing config keeps the existing 5-minute auto-leave default."""
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake-token", extra={}))
+
+        assert adapter._voice_inactivity_timeout_seconds == 300
+
+    def test_invalid_voice_inactivity_timeout_falls_back_to_default(self):
+        """Malformed or negative config must not disable or shrink the guard."""
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        from gateway.config import PlatformConfig
+
+        for raw in ("not-a-number", -1, None):
+            adapter = DiscordAdapter(
+                PlatformConfig(
+                    enabled=True,
+                    token="fake-token",
+                    extra={"voice_inactivity_timeout_seconds": raw},
+                )
+            )
+
+            assert adapter._voice_inactivity_timeout_seconds == 300
+
+    def test_zero_voice_inactivity_timeout_disables_timer(self, adapter):
+        """0 is the documented opt-out for always-on Discord VC sessions."""
+        adapter._voice_inactivity_timeout_seconds = 0
+        stale_task = MagicMock()
+        adapter._voice_timeout_tasks[111] = stale_task
+
+        adapter._reset_voice_timeout(111)
+
+        stale_task.cancel.assert_called_once()
+        assert 111 not in adapter._voice_timeout_tasks
+
+    @pytest.mark.asyncio
+    async def test_timeout_handler_skips_disconnect_when_disabled(self, adapter):
+        adapter._voice_inactivity_timeout_seconds = 0
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.disconnect = AsyncMock()
+        adapter._voice_clients[111] = mock_vc
+
+        await adapter._voice_timeout_handler(111)
+
+        assert 111 in adapter._voice_clients
+        mock_vc.disconnect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_playback_suspends_inactivity_timer(self, adapter):
+        """Long active playback should not be cut off by the idle timer."""
+        adapter._voice_inactivity_timeout_seconds = 300
+        existing_timeout = MagicMock()
+        adapter._voice_timeout_tasks[111] = existing_timeout
+        reset_calls = []
+        adapter._reset_voice_timeout = lambda guild_id: reset_calls.append(guild_id)
+
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = False
+        adapter._voice_clients[111] = mock_vc
+
+        def play(_source, after=None):
+            if after:
+                after(None)
+
+        mock_vc.play.side_effect = play
+
+        with patch("discord.FFmpegPCMAudio"), \
+             patch("discord.PCMVolumeTransformer", side_effect=lambda s, **kw: s):
+            result = await adapter.play_in_voice_channel(111, "/tmp/test.mp3")
+
+        assert result is True
+        existing_timeout.cancel.assert_called_once()
+        assert reset_calls == [111]
+
+    @pytest.mark.asyncio
+    async def test_voice_input_suspends_inactivity_timer(self, adapter):
+        """STT + agent turn work from VC input should not race the idle timer."""
+        events = []
+
+        class FakeReceiver:
+            def __init__(self):
+                self._running = True
+
+            def check_silence(self):
+                self._running = False
+                return [(222, b"pcm")]
+
+        adapter._voice_receivers[111] = FakeReceiver()
+        adapter._client = MagicMock()
+        adapter._client.get_guild.return_value = None
+        adapter._is_allowed_user = lambda *args, **kwargs: True
+        adapter._cancel_voice_timeout = lambda guild_id: events.append(("cancel", guild_id))
+        adapter._reset_voice_timeout = lambda guild_id: events.append(("reset", guild_id))
+
+        async def process_voice_input(guild_id, user_id, pcm_data):
+            events.append(("process", guild_id, user_id, pcm_data))
+
+        adapter._process_voice_input = process_voice_input
+
+        await adapter._voice_listen_loop(111)
+
+        assert events == [
+            ("cancel", 111),
+            ("process", 111, 222, b"pcm"),
+            ("reset", 111),
+        ]
+
     @pytest.mark.asyncio
     async def test_timeout_calls_disconnect_callback(self, adapter):
         """_voice_timeout_handler calls _on_voice_disconnect with chat_id."""

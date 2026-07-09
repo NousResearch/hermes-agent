@@ -1817,11 +1817,13 @@ discord:
   require_mention: true          # Require @mention to respond in server channels
   free_response_channels: ""     # Comma-separated channel IDs where bot responds without @mention
   auto_thread: true              # Auto-create threads on @mention in channels
+  voice_inactivity_timeout_seconds: 300  # Auto-leave Discord voice channels after idle; 0 disables
 ```
 
 - `require_mention` — when `true` (default), the bot only responds in server channels when mentioned with `@BotName`. DMs always work without mention.
 - `free_response_channels` — comma-separated list of channel IDs where the bot responds to every message without requiring a mention.
 - `auto_thread` — when `true` (default), mentions in channels automatically create a thread for the conversation, keeping channels clean (similar to Slack threading).
+- `voice_inactivity_timeout_seconds` — how long Hermes stays connected to a Discord voice channel after the last voice-channel activity before auto-leaving. The default is `300` seconds. Set to `0` to disable auto-leave for always-on coworking voice channels. Invalid or negative values fall back to the default.
 
 ## Security
 

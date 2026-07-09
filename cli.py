@@ -12733,14 +12733,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             # If a /steer was left over (agent finished before another tool
             # batch could absorb it), deliver it as the next user turn.
-            _leftover_steer = result.get("pending_steer") if result else None
-            if _leftover_steer and hasattr(self, '_pending_input'):
-                preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
-                print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
-                self._pending_input.put(_leftover_steer)
+            self._deliver_leftover_steer(result)
 
             return response
-            
+
         except Exception as e:
             print(f"Error: {e}")
             return None
@@ -12758,7 +12754,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 stop_event.set()
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
-    
+
+    def _deliver_leftover_steer(self, result) -> None:
+        """Queue a leftover /steer for the next user turn, with the
+        OUT-OF-BAND marker wrap so the model can distinguish it from
+        a regular next-turn user message.
+
+        Background (issue #60543): ``_apply_pending_steer_to_tool_results``
+        drains ``agent._pending_steer`` AFTER each tool batch. If the
+        /steer arrives between the drain and the next API call (a
+        narrow but real window in long tool runs), the drain returns
+        None, the steer stays in ``_pending_steer``, and the leftover
+        ends up in ``agent.run()``'s return ``result``. Without this
+        helper, the next turn sees raw steer text on ``self._pending_input``
+        and never sees the ``OUT-OF-BAND USER MESSAGE`` marker that
+        tells it to interpret the text as a mid-turn steer rather
+        than a fresh user prompt.
+
+        Extracted from chat() so the regression can be tested without
+        driving the whole chat pipeline (see
+        tests/run_agent/test_steer_leftover_handler.py).
+        """
+        _leftover_steer = result.get("pending_steer") if result else None
+        if not _leftover_steer:
+            return
+        if not hasattr(self, "_pending_input"):
+            return
+        # Wrap the steer text so the model recognizes it as out-of-band
+        # on the next turn. Without this wrap, raw steer text lands in
+        # the next user turn and the model treats it as a fresh prompt.
+        from agent.prompt_builder import format_steer_marker
+        preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
+        print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
+        self._pending_input.put(format_steer_marker(_leftover_steer))
+
     def _clear_terminal_on_exit(self):
         """Clear screen + scrollback so nothing is stranded above the exit summary.
 

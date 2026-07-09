@@ -3262,10 +3262,14 @@ class SlackAdapter(BasePlatformAdapter):
             # buttons).  execute_code approvals embed the entire script in
             # ``command``, so budget the preview against the fixed parts
             # instead of a flat truncation that overflows once the header +
-            # reason are added.
+            # reason are added.  Target 2900 rather than 3000: Slack
+            # HTML-escapes ``< > &`` on storage, and dangerous commands
+            # (redirects/pipes/``&&``) grow once escaped — the headroom keeps
+            # the *stored* (escaped) section under the cap so the later
+            # chat_update on approval doesn't fail with ``invalid_blocks``.
             header = ":warning: *Command Approval Required*\n"
             reason = f"Reason: {description[:500]}"
-            budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
+            budget = 2900 - len(header) - len(reason) - len("``````\n") - len("...")
             cmd_preview = command[:budget] + "..." if len(command) > budget else command
 
             blocks = [
@@ -3635,6 +3639,17 @@ class SlackAdapter(BasePlatformAdapter):
             if block.get("type") == "section":
                 original_text = block.get("text", {}).get("text", "")
                 break
+
+        # Slack HTML-escapes ``< > &`` when it stores the message, so the text
+        # echoed back in the button payload can exceed the 3000-char section
+        # cap that chat_update enforces even though the send path budgeted the
+        # RAW command to <=3000 — dangerous commands (redirects/pipes/``&&``)
+        # balloon once escaped.  Clamp before re-posting so the decision update
+        # never fails with ``invalid_blocks`` (the buttons are stripped anyway,
+        # so truncating the echoed command is harmless).
+        _SECTION_CAP = 2900
+        if len(original_text) > _SECTION_CAP:
+            original_text = original_text[:_SECTION_CAP].rstrip() + "\n... [truncated]"
 
         updated_blocks = [
             {

@@ -185,8 +185,8 @@ def test_unmentioned_group_messages_can_be_observed_without_dispatching():
         assert message["message_id"] == "42"
         assert store.sources[0].chat_id == "-100"
         assert store.sources[0].chat_type == "group"
-        assert store.sources[0].user_id == "111"
-        assert store.sources[0].user_name == "Alice Example"
+        assert store.sources[0].user_id is None
+        assert store.sources[0].user_name is None
 
     asyncio.run(_run())
 
@@ -1112,7 +1112,7 @@ def test_unmentioned_voice_message_observed_in_group():
         assert len(store.messages) == 1
         _, message, _ = store.messages[0]
         assert message["observed"] is True
-        assert store.sources[0].user_id == "111"
+        assert store.sources[0].user_id is None
 
     asyncio.run(_run())
 

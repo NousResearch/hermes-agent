@@ -87,6 +87,41 @@ class TestOllamaApiShowCaching:
         assert client.post.call_count == 1
 
 
+class TestLocalhostIPv4SiblingSites:
+    """#37595 widened: every probe helper rewrites localhost→127.0.0.1,
+    not just detect_local_server_type."""
+
+    def test_helper_rewrites_all_forms(self):
+        from agent.model_metadata import _localhost_to_ipv4
+
+        assert _localhost_to_ipv4("http://localhost:1234/v1") == "http://127.0.0.1:1234/v1"
+        assert _localhost_to_ipv4("http://localhost/v1") == "http://127.0.0.1/v1"
+        assert _localhost_to_ipv4("http://localhost") == "http://127.0.0.1"
+        # Non-localhost passes through untouched.
+        assert _localhost_to_ipv4("http://192.168.1.10:8080") == "http://192.168.1.10:8080"
+        assert _localhost_to_ipv4("https://api.openai.com/v1") == "https://api.openai.com/v1"
+        assert _localhost_to_ipv4("") == ""
+
+    def test_ollama_api_show_probes_ipv4(self):
+        from agent.model_metadata import _query_ollama_api_show
+
+        client = _client_mock(_mock_show_response(131072))
+        with patch("httpx.Client", return_value=client):
+            _query_ollama_api_show("llama3", "http://localhost:11434")
+
+        assert client.post.call_args[0][0].startswith("http://127.0.0.1:11434")
+
+    def test_query_ollama_num_ctx_probes_ipv4(self):
+        from agent.model_metadata import query_ollama_num_ctx
+
+        client = _client_mock(_mock_show_response(131072))
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("httpx.Client", return_value=client):
+            query_ollama_num_ctx("llama3", "http://localhost:11434")
+
+        assert client.post.call_args[0][0].startswith("http://127.0.0.1:11434")
+
+
 class TestContextCacheKeyNormalization:
     def test_trailing_slash_variants_share_one_entry(self, tmp_path, monkeypatch):
         from agent import model_metadata

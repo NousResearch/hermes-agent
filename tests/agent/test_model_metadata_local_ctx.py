@@ -465,7 +465,7 @@ class TestQueryLocalContextLengthLmStudio:
             result = _query_local_context_length("publisher/model-a", "http://localhost:1234/api/v1")
 
         assert result == 32768
-        assert client_mock.get.call_args_list[0].args[0] == "http://localhost:1234/api/v1/models"
+        assert client_mock.get.call_args_list[0].args[0] == "http://127.0.0.1:1234/api/v1/models"
 
 
 class TestDetectLocalServerTypeAuth:

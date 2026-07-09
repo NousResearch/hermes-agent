@@ -265,6 +265,11 @@ export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
+// Mirrors `display.interim_assistant_messages` (default true). When true, the
+// live completion path keeps mid-turn narration streamed between tool calls
+// instead of collapsing the bubble to only the final message. Reflects backend
+// config (no local persistence) — set from useHermesConfig on config refresh.
+export const $keepInterimAssistantMessages = atom(true)
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
 // reflection of the truth the gateway reports rather than its own store.
@@ -330,6 +335,9 @@ export const setCurrentFastMode = (next: Updater<boolean>) => {
   updateAtom($currentFastMode, next)
   persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
 }
+
+export const setKeepInterimAssistantMessages = (next: Updater<boolean>) =>
+  updateAtom($keepInterimAssistantMessages, next)
 
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
 

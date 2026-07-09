@@ -1,6 +1,10 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 
-import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
+import {
+  dedupeGeneratedImageEchoesInParts,
+  generatedImageEchoSources,
+  stripGeneratedImageEchoes
+} from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
@@ -255,6 +259,99 @@ export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string)
   }
 
   return next
+}
+
+// Whitespace-collapse WITHOUT lowercasing. Deliberately NOT the module's
+// imported `normalize` (which lowercases): this must match the streamed text
+// byte-for-byte modulo whitespace so the final-vs-streamed prefix test is
+// case-sensitive, matching the historical completion-merge behavior.
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+/** Merge the turn's final text (`message.complete.text` == the agent's LAST
+ *  assistant segment) into the streamed parts.
+ *
+ *  `keepInterim` mirrors `display.interim_assistant_messages` (default true).
+ *  When true, earlier narration streamed between tool calls is preserved and
+ *  only the trailing streamed text segment — the one the final text restates —
+ *  is upgraded in place (re-rendered + image-echo-stripped). This matches what
+ *  the reload path (`toChatMessages`) and the Ink TUI (`recordMessageComplete`)
+ *  already produce. When false, every text part is dropped and the final text
+ *  is re-appended as one trailing part (the legacy lean view).
+ *
+ *  Reasoning parts that the final text restates are always dropped (unchanged
+ *  from the original behavior); other non-text parts (tools, images) are kept. */
+export function mergeFinalAssistantText(
+  parts: ChatMessagePart[],
+  finalText: string,
+  keepInterim: boolean
+): ChatMessagePart[] {
+  const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
+  const dedupeReference = normalizeWhitespace(visibleFinalText)
+
+  const restatesReference = (candidate: string): boolean => {
+    const r = normalizeWhitespace(candidate)
+
+    return Boolean(r) && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference))
+  }
+
+  // Lean mode: drop ALL text parts, drop reasoning the final text restates,
+  // keep everything else, then re-append the final text. Byte-identical to the
+  // pre-fix behavior.
+  if (!keepInterim) {
+    const kept = parts.filter(part => {
+      if (part.type === 'text') {
+        return false
+      }
+
+      if (part.type !== 'reasoning' || !dedupeReference) {
+        return true
+      }
+
+      return !restatesReference((part as { text: string }).text)
+    })
+
+    return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
+  }
+
+  // Comprehensive mode: keep interim narration. Still drop reasoning the final
+  // text restates, but preserve every text part.
+  const kept = parts.filter(part => {
+    if (part.type !== 'reasoning' || !dedupeReference) {
+      return true
+    }
+
+    return !restatesReference((part as { text: string }).text)
+  })
+
+  if (!visibleFinalText) {
+    return kept
+  }
+
+  const rendered = assistantTextPart(visibleFinalText)
+
+  // Find the last streamed text part. The final text is the agent's last
+  // segment, so it either equals (or is a prefix/extension of) that trailing
+  // streamed part — upgrade it in place — or it's genuinely new text to append.
+  let lastTextIndex = -1
+
+  for (let i = kept.length - 1; i >= 0; i--) {
+    if (kept[i].type === 'text') {
+      lastTextIndex = i
+
+      break
+    }
+  }
+
+  if (lastTextIndex >= 0 && restatesReference((kept[lastTextIndex] as { text: string }).text)) {
+    const next = [...kept]
+    next[lastTextIndex] = rendered
+
+    return next
+  }
+
+  return [...kept, rendered]
 }
 
 export function hasToolPart(message: ChatMessage): boolean {

@@ -182,6 +182,15 @@ function cleanReviveSnapshot(serialized: string): string {
     lines.pop()
   }
 
+  // If the buffer contains only a few visible lines (e.g., just a prompt without
+  // any command output), treat it as an idle session and clear it entirely.
+  // This prevents duplicate prompts from accumulating on every app relaunch.
+  // The threshold of 3 accounts for single-command sessions that include the
+  // prompt, command, and output.
+  if (lines.length <= 3) {
+    return ''
+  }
+
   let lastBlank = -1
 
   for (let i = lines.length - 1; i >= 0; i -= 1) {

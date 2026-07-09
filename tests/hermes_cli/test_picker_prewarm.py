@@ -9,13 +9,16 @@ and it delegates to ``list_authenticated_providers`` to do the warming.
 
 from __future__ import annotations
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import hermes_cli.model_switch as ms
 
 
 def _reset_guard():
-    ms._picker_prewarm_done.clear()
+    ms._reset_picker_prewarm_for_tests()
 
 
 def test_prewarm_runs_list_authenticated_providers_once():
@@ -42,6 +45,31 @@ def test_prewarm_guard_is_once_per_process():
         # Subsequent calls return None (guard set) — no new thread.
         assert ms.prewarm_picker_cache_async() is None
         assert ms.prewarm_picker_cache_async() is None
+    _reset_guard()
+
+
+def test_prewarm_guard_is_atomic_under_concurrent_calls():
+    """Concurrent session starts should still spawn only one prewarm thread."""
+    _reset_guard()
+    worker_count = 8
+    start = threading.Barrier(worker_count)
+
+    def invoke():
+        start.wait(timeout=10)
+        return ms.prewarm_picker_cache_async()
+
+    def slow_list(*_args, **_kwargs):
+        time.sleep(0.05)
+        return []
+
+    with patch.object(ms, "list_authenticated_providers", side_effect=slow_list) as mock_list:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            threads = [thread for thread in pool.map(lambda _: invoke(), range(worker_count)) if thread is not None]
+        for thread in threads:
+            thread.join(timeout=10)
+
+    assert len(threads) == 1
+    mock_list.assert_called_once()
     _reset_guard()
 
 

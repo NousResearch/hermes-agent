@@ -1382,11 +1382,30 @@ def switch_model(
 # ---------------------------------------------------------------------------
 
 # Process-level guard so the picker prewarm thread is spawned at most once per
-# process — mirrors run_agent's _openrouter_prewarm_done. Without a guard a
-# long-lived process (or repeated triggers) would leak one OS thread per call.
+# process. Without a guard a long-lived process (or repeated triggers) would
+# leak one OS thread per call.
 import threading as _threading  # noqa: E402
 
-_picker_prewarm_done = _threading.Event()
+_picker_prewarm_done = False
+_picker_prewarm_lock = _threading.Lock()
+
+
+def _claim_picker_prewarm() -> bool:
+    """Return True exactly once per process, even under concurrent callers."""
+    global _picker_prewarm_done
+    if _picker_prewarm_done:
+        return False
+    with _picker_prewarm_lock:
+        if _picker_prewarm_done:
+            return False
+        _picker_prewarm_done = True
+        return True
+
+
+def _reset_picker_prewarm_for_tests() -> None:
+    global _picker_prewarm_done
+    with _picker_prewarm_lock:
+        _picker_prewarm_done = False
 
 
 def _extra_headers_from_config(entry: Any) -> dict[str, str]:
@@ -1412,13 +1431,12 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     user types ``/model``, the picker hits the warm disk cache and renders in
     ~100ms.
 
-    Fire-and-forget. Process-level Event guard ensures it runs at most once.
+    Fire-and-forget. Process-level guard ensures it runs at most once.
     Fully exception-isolated — a slow or offline provider can never affect the
     session. Returns the spawned thread (for tests) or None if already warmed.
     """
-    if _picker_prewarm_done.is_set():
+    if not _claim_picker_prewarm():
         return None
-    _picker_prewarm_done.set()
 
     def _warm() -> None:
         try:

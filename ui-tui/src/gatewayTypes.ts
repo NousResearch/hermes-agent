@@ -360,6 +360,9 @@ export interface SessionBranchResponse {
 
 export interface SessionCloseResponse {
   closed?: boolean
+  delete_error?: string
+  deleted?: boolean
+  deleted_session_id?: string
   ok?: boolean
 }
 

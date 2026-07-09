@@ -8343,6 +8343,163 @@ def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
     assert seen == [("s9", "tui_close")]
 
 
+def test_session_close_delete_closes_then_deletes_durable_session(monkeypatch):
+    captured: dict = {}
+
+    class _DB:
+        def get_session(self, sid):
+            return {"source": "tui"}
+
+        def end_session(self, sid, end_reason):
+            captured["ended"] = (sid, end_reason)
+
+        def delete_session(self, sid, sessions_dir=None):
+            captured["deleted"] = (sid, sessions_dir)
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    server._sessions["live-sid"] = _session(session_key="stored-session")
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.close",
+                "params": {"session_id": "live-sid", "delete": True},
+            }
+        )
+    finally:
+        server._sessions.pop("live-sid", None)
+
+    assert resp is not None
+    assert resp["result"] == {
+        "closed": True,
+        "deleted": True,
+        "deleted_session_id": "stored-session",
+    }
+    assert captured["ended"] == ("stored-session", "tui_delete")
+    assert captured["deleted"][0] == "stored-session"
+    assert captured["deleted"][1].name == "sessions"
+    assert "live-sid" not in server._sessions
+
+
+def test_session_close_delete_prefers_agent_session_id_over_stale_key(monkeypatch):
+    deleted: list[str] = []
+
+    class _DB:
+        def get_session(self, sid):
+            return {"source": "tui"}
+
+        def end_session(self, sid, end_reason):
+            pass
+
+        def delete_session(self, sid, sessions_dir=None):
+            deleted.append(sid)
+            return True
+
+    agent = types.SimpleNamespace(session_id="compressed-tip")
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    server._sessions["live-sid"] = _session(agent=agent, session_key="stale-parent")
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.close",
+                "params": {"session_id": "live-sid", "delete": True},
+            }
+        )
+    finally:
+        server._sessions.pop("live-sid", None)
+
+    assert resp is not None
+    assert resp["result"]["deleted"] is True
+    assert resp["result"]["deleted_session_id"] == "compressed-tip"
+    assert deleted == ["compressed-tip"]
+
+
+def test_session_close_delete_never_deletes_runtime_sid_fallback(monkeypatch):
+    called: list[str] = []
+
+    class _DB:
+        def delete_session(self, sid, sessions_dir=None):
+            called.append(sid)
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    server._sessions["live-sid"] = _session(agent=types.SimpleNamespace(), session_key="")
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.close",
+                "params": {"session_id": "live-sid", "delete": True},
+            }
+        )
+    finally:
+        server._sessions.pop("live-sid", None)
+
+    assert resp is not None
+    assert resp["result"] == {
+        "closed": True,
+        "deleted": False,
+        "delete_error": "no durable session id available for deletion",
+    }
+    assert called == []
+
+
+def test_session_close_delete_reports_delete_failure_after_close(monkeypatch):
+    class _DB:
+        def get_session(self, sid):
+            return {"source": "tui"}
+
+        def end_session(self, sid, end_reason):
+            pass
+
+        def delete_session(self, sid, sessions_dir=None):
+            return False
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    server._sessions["live-sid"] = _session(session_key="stored-session")
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.close",
+                "params": {"session_id": "live-sid", "delete": True},
+            }
+        )
+    finally:
+        server._sessions.pop("live-sid", None)
+
+    assert resp is not None
+    assert resp["result"] == {
+        "closed": True,
+        "deleted": False,
+        "deleted_session_id": "stored-session",
+        "delete_error": "session not found for deletion",
+    }
+
+
+def test_session_close_delete_missing_live_session_does_not_delete(monkeypatch):
+    class _DB:
+        def delete_session(self, sid, sessions_dir=None):
+            raise AssertionError("delete_session must not run without a live session")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.close",
+            "params": {"session_id": "missing", "delete": True},
+        }
+    )
+    assert resp is not None
+    assert resp["result"] == {"closed": False, "deleted": False}
+
+
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     seen = []
     monkeypatch.setattr(

@@ -94,20 +94,98 @@ describe('createSlashHandler', () => {
     expect(ctx.composer.openEditor).toHaveBeenCalledTimes(1)
   })
 
-  it('exits locally for /quit', () => {
+  it('exits locally for bare /quit without closing through the gateway', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/quit')).toBe(true)
     expect(ctx.session.die).toHaveBeenCalledTimes(1)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
-  it('keeps hosted dashboard chat alive for /exit', () => {
+  it('waits for session.close(delete=true) before exiting for /quit --delete', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ deleted: true, deleted_session_id: 'stored-abc' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/quit --delete')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('session.close', { delete: true, session_id: 'sid-abc' })
+    expect(ctx.session.die).not.toHaveBeenCalled()
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('session stored-abc deleted')
+      expect(ctx.session.die).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('supports /exit -d as an alias for deleting before exit', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ deleted: true, deleted_session_id: 'stored-abc' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/exit -d')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(rpc).toHaveBeenCalledWith('session.close', { delete: true, session_id: 'sid-abc' })
+      expect(ctx.session.die).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('warns and exits when /quit --delete closes but cannot delete', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ closed: true, deleted: false, delete_error: 'session not found' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/quit --delete')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('warning: session not found')
+      expect(ctx.session.die).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('keeps the TUI open when /quit --delete cannot reach the gateway', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.reject(new Error('gateway unavailable')))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/quit --delete')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('error: gateway unavailable')
+    })
+    expect(ctx.session.die).not.toHaveBeenCalled()
+  })
+
+  it('rejects unknown /quit arguments without exiting', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/quit later')).toBe(true)
+    expect(ctx.session.die).not.toHaveBeenCalled()
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(
+      '✗ Unknown argument: later. Use /quit --delete to also remove session history.'
+    )
+  })
+
+  it('keeps hosted dashboard chat alive for bare /exit', () => {
     envState.dashboardTuiMode = true
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/exit')).toBe(true)
     expect(ctx.session.die).not.toHaveBeenCalled()
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_EXIT_DISABLED_MESSAGE)
+  })
+
+  it('keeps hosted dashboard chat alive for /exit --delete', () => {
+    envState.dashboardTuiMode = true
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/exit --delete')).toBe(true)
+    expect(ctx.session.die).not.toHaveBeenCalled()
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
     expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_EXIT_DISABLED_MESSAGE)
   })

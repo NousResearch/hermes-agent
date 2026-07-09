@@ -750,6 +750,59 @@ def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
     return True
 
 
+def _close_session_by_id_and_delete(sid: str) -> dict:
+    """Close a live TUI session, then delete its durable stored history.
+
+    ``sid`` is the short runtime id used by TUI RPCs.  Deletion must use the
+    durable SessionDB id (``agent.session_id`` after rotations, otherwise the
+    session record's ``session_key``).  Never fall back to the runtime id: that
+    would turn ``/quit --delete`` into a false-success no-op.
+    """
+    with _sessions_lock:
+        session = _sessions.pop(sid, None)
+    if session is None:
+        return {"closed": False, "deleted": False}
+
+    delete_id = _session_lookup_key(session, fallback="")
+    can_delete = bool(delete_id and delete_id != sid)
+    session["_sid"] = sid
+    _teardown_session(session, end_reason="tui_delete" if can_delete else "tui_close")
+
+    # The short runtime sid is never a safe durable SessionDB deletion key.
+    if not can_delete:
+        return {
+            "closed": True,
+            "deleted": False,
+            "delete_error": "no durable session id available for deletion",
+        }
+
+    db = _get_db()
+    if db is None:
+        return {
+            "closed": True,
+            "deleted": False,
+            "deleted_session_id": delete_id,
+            "delete_error": f"state.db unavailable: {_db_error or 'unknown error'}",
+        }
+
+    try:
+        deleted = bool(
+            db.delete_session(delete_id, sessions_dir=get_hermes_home() / "sessions")
+        )
+    except Exception as e:
+        return {
+            "closed": True,
+            "deleted": False,
+            "deleted_session_id": delete_id,
+            "delete_error": f"delete failed: {e}",
+        }
+
+    result = {"closed": True, "deleted": deleted, "deleted_session_id": delete_id}
+    if not deleted:
+        result["delete_error"] = "session not found for deletion"
+    return result
+
+
 
 def _ws_session_is_orphaned(session: dict | None) -> bool:
     """True if a WS session has no live transport and no in-flight turn.
@@ -8011,6 +8064,8 @@ def _(rid, params: dict) -> dict:
     # idempotent teardown path (pop + _teardown_session) and returns False
     # when the session is already gone.
     with _session_resume_lock:
+        if is_truthy_value(params.get("delete", False)):
+            return _ok(rid, _close_session_by_id_and_delete(sid))
         return _ok(rid, {"closed": _close_session_by_id(sid, end_reason="tui_close")})
 
 

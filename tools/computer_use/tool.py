@@ -987,11 +987,25 @@ def check_computer_use_requirements() -> bool:
     upstream. Linux users see specific blocked checks via
     `hermes computer-use doctor` if their session is incomplete (e.g. no
     DISPLAY set).
+
+    On Linux the gateway process is typically headless (no ``DISPLAY``); the
+    cua-driver backend cannot reach an X server without one, so exposing the
+    tool in that state produces capture/input failures that the model then
+    thrashes against. Require a non-empty ``DISPLAY`` on Linux in addition to
+    the binary, so the tool is only surfaced when a display is actually
+    reachable. (A future per-task computer-use provider can override this by
+    registering as available; see ``computer_use.provider``.)
     """
     if sys.platform not in ("darwin", "win32", "linux"):
         return False
     from tools.computer_use.cua_backend import cua_driver_binary_available
-    return cua_driver_binary_available()
+    if not cua_driver_binary_available():
+        return False
+    # Headless Linux has no display for cua-driver to drive; don't surface the
+    # tool until a display exists (or a provider supplies one per-task).
+    if sys.platform == "linux" and not os.environ.get("DISPLAY", "").strip():
+        return False
+    return True
 
 
 def get_computer_use_schema() -> Dict[str, Any]:

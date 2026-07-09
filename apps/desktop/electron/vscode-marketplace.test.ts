@@ -158,6 +158,27 @@ test('extractThemes skips a decompression-bomb theme entry instead of inflating 
   assert.strictEqual(themes.length, 0) // bomb entry skipped, not inflated
 })
 
+test('extractThemes skips an oversized stored theme entry instead of decoding it', () => {
+  // A stored (uncompressed) theme entry larger than MAX_ENTRY_BYTES (16 MB)
+  // must be rejected by the length check before it is decoded to a string —
+  // the stored path has no zlib maxOutputLength to lean on.
+  const oversized = Buffer.alloc(17 * 1024 * 1024, 0x41)
+
+  const pkg = JSON.stringify({
+    name: 'big-theme',
+    displayName: 'Big',
+    contributes: { themes: [{ label: 'Big', uiTheme: 'vs-dark', path: './themes/big.json' }] }
+  })
+
+  const zip = makeZipWithDeflated([
+    { name: 'extension/package.json', data: pkg, method: 0 },
+    { name: 'extension/themes/big.json', data: oversized, method: 0 }
+  ])
+
+  const themes = extractThemes(zip)
+  assert.strictEqual(themes.length, 0) // oversized stored entry skipped, not decoded
+})
+
 test('extractThemes returns empty when the extension contributes no themes', () => {
   const zip = makeZip([{ name: 'extension/package.json', data: JSON.stringify({ name: 'x', contributes: {} }) }])
   assert.deepStrictEqual(extractThemes(zip), [])

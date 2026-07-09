@@ -1183,14 +1183,15 @@ class TestHermesHomeIsolation:
         assert "hermes_test" in hermes_home, "Should point to test temp dir"
 
     def test_get_hermes_home_fallback(self):
-        """Without HERMES_HOME set, falls back to the active OS home."""
+        """Without HERMES_HOME set, falls back to the platform default home."""
+        import hermes_constants
         from tools.tirith_security import _get_hermes_home
         with patch.dict(os.environ, {}, clear=True):
-            # Remove HERMES_HOME entirely. With HOME also absent, expanduser
-            # falls back to the account database; compute expected under the
-            # same environment instead of after patch.dict restores HOME.
+            # Remove HERMES_HOME entirely and compute the expected default from
+            # the resolver under the SAME environment (the HT-branded
+            # ~/.ht-ai-agent, or an existing legacy ~/.hermes).
             os.environ.pop("HERMES_HOME", None)
-            expected = os.path.join(os.path.expanduser("~"), ".hermes")
+            expected = str(hermes_constants._get_platform_default_hermes_home())
             result = _get_hermes_home()
         assert result == expected
 

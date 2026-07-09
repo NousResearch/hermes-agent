@@ -2572,24 +2572,26 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
 
     When installing a system service via sudo, get_hermes_home() resolves to
     root's home.  This translates it to the target user's equivalent path:
-      /root/.hermes                    → /home/alice/.hermes
-      /root/.hermes/profiles/coder     → /home/alice/.hermes/profiles/coder
+      /root/.ht-ai-agent               → /home/alice/.ht-ai-agent
+      /root/.ht-ai-agent/profiles/coder → /home/alice/.ht-ai-agent/profiles/coder
+      /root/.hermes  (legacy install)  → /home/alice/.hermes
       /opt/custom-hermes               → /opt/custom-hermes  (kept as-is)
+
+    Re-anchors relative to the calling user's home rather than assuming a
+    specific data-dir name, so it works for both the new ``.ht-ai-agent`` and
+    legacy ``.hermes`` layouts (and profile subdirs) without hardcoding either.
     """
     current_hermes = get_hermes_home().resolve()
-    current_default = (Path.home() / ".hermes").resolve()
-    target_default = Path(target_home_dir) / ".hermes"
+    calling_home = Path.home().resolve()
 
-    # Default ~/.hermes → remap to target user's default
-    if current_hermes == current_default:
-        return str(target_default)
-
-    # Profile or subdir of ~/.hermes → preserve the relative structure
+    # Anything under the calling user's home (``.ht-ai-agent``, ``.hermes``, or
+    # a profile subdir) is re-anchored under the target user's home, preserving
+    # the relative structure.
     try:
-        relative = current_hermes.relative_to(current_default)
-        return str(target_default / relative)
+        relative = current_hermes.relative_to(calling_home)
+        return str(Path(target_home_dir) / relative)
     except ValueError:
-        # Completely custom path (not under ~/.hermes) — keep as-is
+        # Completely custom path (not under the calling user's home) — keep as-is
         return str(current_hermes)
 
 

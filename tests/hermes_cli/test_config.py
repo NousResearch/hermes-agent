@@ -32,10 +32,14 @@ from hermes_cli.config import (
 
 class TestGetHermesHome:
     def test_default_path(self):
+        from hermes_constants import _get_platform_default_hermes_home
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
+            os.environ.pop("HT_HOME", None)
             home = get_hermes_home()
-            assert home == Path.home() / ".hermes"
+            # With no override, get_hermes_home() returns the platform default
+            # (the HT-branded ~/.ht-ai-agent, or an existing legacy ~/.hermes).
+            assert home == _get_platform_default_hermes_home()
 
     def test_env_override(self):
         with patch.dict(os.environ, {"HERMES_HOME": "/custom/path"}):

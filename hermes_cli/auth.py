@@ -899,12 +899,16 @@ def _auth_file_path() -> Path:
     # hermetic conftest, or sandbox escapes via threads/subprocesses. In
     # production (no PYTEST_CURRENT_TEST) this is a single dict lookup.
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        real_home_auth = (Path.home() / ".hermes" / "auth.json").resolve(strict=False)
+        # Guard both the new HT-branded and legacy default data dirs (Phase 6).
+        real_home_auths = {
+            (Path.home() / ".ht-ai-agent" / "auth.json").resolve(strict=False),
+            (Path.home() / ".hermes" / "auth.json").resolve(strict=False),
+        }
         try:
             resolved = path.resolve(strict=False)
         except Exception:
             resolved = path
-        if resolved == real_home_auth:
+        if resolved in real_home_auths:
             raise RuntimeError(
                 f"Refusing to touch real user auth store during test run: {path}. "
                 "Set HERMES_HOME to a tmp_path in your test fixture, or run "

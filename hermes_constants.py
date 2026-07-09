@@ -797,7 +797,7 @@ VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 def parse_reasoning_effort(effort) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 
-    Valid levels: "none", "minimal", "low", "medium", "high", "xhigh", "max".
+    Valid levels: "none", "auto", "minimal", "low", "medium", "high", "xhigh", "max".
     Returns None when the input is empty or unrecognized (caller uses default).
     Returns {"enabled": False} for "none" (aliases: "false", "disabled", and
     YAML boolean False — users write ``reasoning_effort: false``/``off``/``no``
@@ -815,9 +815,63 @@ def parse_reasoning_effort(effort) -> dict | None:
     effort = effort.strip().lower()
     if effort in {"none", "false", "disabled"}:
         return {"enabled": False}
-    if effort in VALID_REASONING_EFFORTS:
+    if effort == "auto" or effort in VALID_REASONING_EFFORTS:
         return {"enabled": True, "effort": effort}
     return None
+
+
+def _latest_user_text(messages) -> str:
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            return content.lower()
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(str(item.get("text") or item.get("content") or ""))
+                else:
+                    parts.append(str(item))
+            return " ".join(parts).lower()
+        return str(content).lower()
+    return ""
+
+
+def resolve_auto_reasoning_config(reasoning_config: dict | None, messages) -> dict | None:
+    """Resolve {effort: auto} to a concrete effort for this request.
+
+    Uses deterministic local heuristics only; no extra model call and no system
+    prompt mutation, so prompt caching remains stable.
+    """
+    if not isinstance(reasoning_config, dict):
+        return reasoning_config
+    if reasoning_config.get("enabled") is False:
+        return reasoning_config
+    if str(reasoning_config.get("effort") or "").strip().lower() != "auto":
+        return reasoning_config
+
+    text = _latest_user_text(messages)
+    high_markers = (
+        "root cause", "security", "audit", "auth", "credential", "secret",
+        "production", "prod", "architecture", "architekt", "refactor",
+        "debug", "traceback", "failing test", "test failure", "performance",
+        "incident", "migration", "database", "payment", "gateway", "systemd",
+    )
+    medium_markers = (
+        "implement", "build", "code", "patch", "change", "modify", "config",
+        "configure", "setup", "install", "design", "compare", "research",
+        "plan", "workflow", "automation", "test", "fix", "pakeit", "padaryk",
+    )
+
+    if any(marker in text for marker in high_markers):
+        effort = "high"
+    elif len(text) > 500 or any(marker in text for marker in medium_markers):
+        effort = "medium"
+    else:
+        effort = "low"
+    return {"enabled": True, "effort": effort}
 
 
 def is_termux() -> bool:

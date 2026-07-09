@@ -63,10 +63,13 @@ _IMAGE_EXTS = (
 _IMAGE_EXT_PATTERN = "|".join(e.lstrip(".") for e in _IMAGE_EXTS)
 
 # Absolute / home-relative local image path. Matches the same shape gateway's
-# extract_local_files() uses: anchors to ``~/`` or ``/``, ignores matches inside
-# URLs (the ``(?<![/:\w.])`` lookbehind), and case-insensitive on the extension.
+# extract_local_files() uses: anchors to ``~/``, ``/``, or Windows drive-letter
+# absolutes, ignores matches inside URLs (the ``(?<![/:\w.])`` lookbehind), and
+# is case-insensitive on the extension.
 _LOCAL_IMAGE_PATH_RE = re.compile(
-    r"(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:" + _IMAGE_EXT_PATTERN + r")\b",
+    r"(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:"
+    + _IMAGE_EXT_PATTERN
+    + r")\b",
     re.IGNORECASE,
 )
 
@@ -84,9 +87,10 @@ def extract_image_refs(text: str) -> Tuple[List[str], List[str]]:
 
     Returns ``(local_paths, urls)``:
 
-      * ``local_paths`` — absolute (``/``) or home-relative (``~/``) paths
-        whose suffix is an image extension AND whose expanded form exists
-        on disk as a file. Order-preserving, deduplicated.
+      * ``local_paths`` — absolute (``/`` or Windows drive-letter) or
+        home-relative (``~/``) paths whose suffix is an image extension AND
+        whose expanded form exists on disk as a file. Order-preserving,
+        deduplicated.
       * ``urls`` — ``http(s)://…`` URLs whose path ends in an image
         extension (a ``?query`` is allowed after the extension).
         Order-preserving, deduplicated.
@@ -119,16 +123,17 @@ def extract_image_refs(text: str) -> Tuple[List[str], List[str]]:
         if _in_code(match.start()):
             continue
         raw = match.group(0)
-        expanded = os.path.expanduser(raw)
+        expanded = os.path.normpath(os.path.expanduser(raw))
         try:
             if not os.path.isfile(expanded):
                 continue
         except OSError:
             # ENAMETOOLONG / EINVAL on pathological inputs — skip rather than crash.
             continue
-        if expanded in seen_paths:
+        dedupe_key = os.path.normcase(expanded)
+        if dedupe_key in seen_paths:
             continue
-        seen_paths.add(expanded)
+        seen_paths.add(dedupe_key)
         local_paths.append(expanded)
 
     urls: list[str] = []

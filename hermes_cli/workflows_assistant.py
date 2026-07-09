@@ -166,11 +166,51 @@ def _json_schema_instruction() -> str:
       "agent_node": {"type": "agent_task", "profile": "worker", "title": "Do work", "prompt": "Return JSON only with keys: summary (string), status (string).", "result_contract": {"summary": "string", "status": "string"}},
       "done": {"type": "pass", "output": {}}
     },
-    "edges": []
+    "edges": [
+      {"from": "agent_node", "to": "done"}
+    ]
   }
 }
+IMPORTANT: Each edge MUST be a JSON object with "from" and "to" keys, NOT a string. For switch/parallel branches use dot notation in the "from" field: {"from": "switch_id.case_name", "to": "target_node"}.
 Optional agent_task routing fields, only when the user explicitly asks for provider/model routing: "provider": "provider-slug", "model": "model-name".
 Do not include Markdown fences or prose outside the JSON object."""
+
+
+def _workflow_patterns() -> str:
+    return """Workflow logic patterns (use these when the user's goal requires them):
+
+1. LINEAR CHAIN (default): trigger -> agent_task -> pass -> done
+   Use when the goal is a simple sequence with no decision points.
+   Example: "fetch data, summarize it, send it"
+
+2. CONDITIONAL BRANCH (switch): Use a switch node when the goal has "if", "when", "or", "depending on", or any decision point.
+   The switch node has cases (each with a name) and a default. Each case routes to a different downstream node via edges like {"from": "switch_id.case_name", "to": "target"}.
+   The switch node's "default" field names a fallback node when no case matches.
+   Example goal: "review code, then deploy if approved, or report why not"
+   Pattern:
+     nodes: { "review": {type: agent_task, ...}, "decide": {type: switch, cases: [{name: "approved"}, {name: "rejected"}], default: "report"}, "deploy": {type: agent_task, ...}, "report": {type: agent_task, ...}, "done": {type: pass} }
+     edges: [{"from": "review", "to": "decide"}, {"from": "decide.approved", "to": "deploy"}, {"from": "decide.rejected", "to": "report"}, {"from": "deploy", "to": "done"}, {"from": "report", "to": "done"}]
+   Key: the switch node evaluates its cases and routes to exactly one branch. The "default" field is the fallback target node id.
+
+3. PARALLEL FAN-OUT + JOIN: Use parallel + join when the goal has "and also", "in parallel", "simultaneously", or independent workstreams that converge.
+   The parallel node requires branch-suffixed edges: {"from": "parallel_id.branch_name", "to": "target"}.
+   The join node waits for all incoming branches before continuing.
+   Example goal: "run tests and lint in parallel, then report combined results"
+   Pattern:
+     nodes: { "fanout": {type: parallel}, "tests": {type: agent_task, ...}, "lint": {type: agent_task, ...}, "collect": {type: join}, "report": {type: pass} }
+     edges: [{"from": "fanout.tests", "to": "tests"}, {"from": "fanout.lint", "to": "lint"}, {"from": "tests", "to": "collect"}, {"from": "lint", "to": "collect"}, {"from": "collect", "to": "report"}]
+
+4. ERROR HANDLING (catch): Any node can have a "catch" field naming a fallback node. If the node fails, execution routes to the catch target instead of aborting.
+   Example: { "review": {type: agent_task, catch: "handle_error", ...}, "handle_error": {type: fail, output: {message: "review failed"}} }
+
+5. RETRY: agent_task nodes support "retry": {"max_attempts": 3, "delay_seconds": 5, "backoff_seconds": 10, "multiplier": 2} for transient failures.
+
+CRITICAL: When the user's goal contains any of these words, you MUST use the corresponding pattern:
+- "if", "when", "unless", "depending on", "whether", "or" -> switch node with cases
+- "in parallel", "simultaneously", "also", "both", "and independently" -> parallel + join
+- "retry", "try again" -> retry spec on agent_task
+- "on error", "if it fails", "fallback" -> catch field
+Do NOT produce a linear chain when the goal describes branching or conditional outcomes."""
 
 
 def _assistant_rules() -> str:
@@ -183,7 +223,10 @@ def _assistant_rules() -> str:
 - Every agent_task prompt must ask for JSON-only output matching its result_contract.
 - Use provider/model only when requested: only include provider and model fields when the user explicitly asks for provider/model routing; otherwise omit them so the profile defaults apply.
 - If provider/model routing is requested, set provider and model on each affected agent_task cell independently.
-- Prefer simple graphs, no unrequested flexibility.
+- Use the workflow logic patterns above. Match the pattern to the user's goal structure, not always a linear chain.
+- When the goal has a decision point ("if X then Y else Z"), use a switch node with named cases and edges using "switch_id.case_name -> target".
+- When the goal has independent parallel work, use parallel + join nodes with "parallel_id.branch_name -> target" edges.
+- Prefer complete end-to-end flows: every branch must reach a terminal node (pass or fail). Do not leave dangling branches.
 - Use lowercase snake_case node ids."""
 
 
@@ -192,6 +235,7 @@ def build_draft_prompt(goal: str) -> str:
         [
             "Draft a Hermes workflow from this goal.",
             _json_schema_instruction(),
+            _workflow_patterns(),
             _assistant_rules(),
             "Goal:",
             goal.strip(),
@@ -205,6 +249,7 @@ def build_refine_prompt(spec: WorkflowSpec, instruction: str) -> str:
         [
             "Refine this Hermes workflow spec using the instruction.",
             _json_schema_instruction(),
+            _workflow_patterns(),
             _assistant_rules(),
             "Current workflow spec JSON:",
             spec_json,

@@ -1433,7 +1433,7 @@ class LiveCardManager:
     __slots__ = (
         "state", "card_message_id", "accumulated_text", "tool_lines",
         "started_at", "last_tool", "last_patch_ts", "heartbeat_task",
-        "degraded", "_consecutive_failures",
+        "degraded", "_consecutive_failures", "_edit_base",
     )
 
     def __init__(self) -> None:
@@ -1447,6 +1447,7 @@ class LiveCardManager:
         self.heartbeat_task: Optional[asyncio.Task] = None
         self.degraded: bool = False
         self._consecutive_failures: int = 0
+        self._edit_base: str = ""
 
     def start(self, card_message_id: str, *, started_at: float) -> None:
         self.state = LiveCardState.ACK_SENT
@@ -1458,9 +1459,22 @@ class LiveCardManager:
         self.last_patch_ts = 0.0
         self.degraded = False
         self._consecutive_failures = 0
+        self._edit_base = ""
+
+    def set_edit_base(self, base: str) -> None:
+        """Record finalized text from previous segments as the edit base.
+
+        Subsequent update_text() calls prepend this base so text from
+        earlier segments is preserved in the card across tool-call
+        boundaries instead of being overwritten.
+        """
+        self._edit_base = base
 
     def update_text(self, text: str) -> None:
-        self.accumulated_text = text
+        if self._edit_base:
+            self.accumulated_text = self._edit_base + text
+        else:
+            self.accumulated_text = text
         if self.state == LiveCardState.ACK_SENT:
             self.state = LiveCardState.LIVE
 
@@ -1492,6 +1506,7 @@ class LiveCardManager:
         self.last_patch_ts = 0.0
         self.degraded = False
         self._consecutive_failures = 0
+        self._edit_base = ""
         if self.heartbeat_task is not None:
             self.heartbeat_task.cancel()
             self.heartbeat_task = None
@@ -2017,10 +2032,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
             _is_system_msg = formatted.lstrip().startswith("💾")
             if not is_final and not _is_gw_heartbeat and not _is_system_msg:
-                if live.accumulated_text:
-                    live.accumulated_text += "\n\n" + formatted
-                else:
-                    live.accumulated_text = formatted
+                # New segment starting via send() — record current text as
+                # edit base so subsequent edit_message() calls preserve it.
+                live.set_edit_base(
+                    live.accumulated_text + "\n\n" if live.accumulated_text else ""
+                )
+                live.accumulated_text = (live._edit_base or "") + formatted
                 if live.state == LiveCardState.ACK_SENT:
                     live.state = LiveCardState.LIVE
                 logger.debug("[Feishu] LiveCard intercepted commentary send: %s", chat_id)
@@ -2177,8 +2194,13 @@ class FeishuAdapter(BasePlatformAdapter):
             if _is_finalize:
                 try:
                     from gateway.platforms.feishu_card import build_card_json
+                    # Use the full accumulated text (includes all segments)
+                    # rather than just the last segment's content.
+                    _final_content = content
+                    if live._edit_base and not content.startswith(live._edit_base):
+                        _final_content = live._edit_base + content
                     card = build_card_json(
-                        content=content,
+                        content=_final_content,
                         footer_line=_meta.get("footer_line"),
                         status_text=_meta.get("status_text"),
                     )

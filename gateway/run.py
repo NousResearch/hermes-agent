@@ -2705,6 +2705,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # hermes_state.get_last_init_error() for slash-command error strings.
             logger.warning("SQLite session store not available: %s", e)
 
+        # Restore persistent per-chat model overrides from state.db so
+        # /model settings survive gateway restarts.
+        if self._session_db is not None:
+            try:
+                saved = self._session_db.load_all_session_model_overrides()
+                if saved:
+                    self._session_model_overrides.update(saved)
+                    logger.info(
+                        "Loaded %d persistent session model override(s)", len(saved),
+                    )
+            except Exception as exc:
+                logger.debug("Failed to load session model overrides: %s", exc)
+
         # Opportunistic state.db maintenance: prune ended sessions older
         # than sessions.retention_days + optional VACUUM. Tracks last-run
         # in state_meta so it only actually executes once per
@@ -4632,6 +4645,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
             return
 
+        # Local hotfix (2026-06-24): do not fan out shutdown notifications to
+        # the home channel. During repeated external SIGTERM loops this spams
+        # the user's 1:1 bot chat even when the active turn belongs to a group
+        # chat. Active-session notifications above are enough context for the
+        # interrupted task; the home channel copy is diagnostic noise.
+        logger.info("Skipping home-channel shutdown notifications (local hotfix)")
+        return
+
         # Snapshot adapters up front: adapter.send() can hit a fatal error
         # path that pops the adapter from self.adapters (see _handle_fatal
         # elsewhere), which would otherwise trigger
@@ -6238,14 +6259,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # be garbage-collected.  Otherwise the cache grows
                         # unbounded across the gateway's lifetime.
                         self._evict_cached_agent(key)
-                        # Permanently finalizing this session — drop its
-                        # per-session control state so the dicts don't grow
-                        # unbounded across the gateway's lifetime. (Idle
-                        # agent-cache eviction must NOT prune these: the
-                        # session is still alive and a resumed turn rebuilds
-                        # its agent from these overrides. Only true session
-                        # finalization, /new, and /reset clear them.)
-                        self._session_model_overrides.pop(key, None)
+                        # Permanently finalizing this session — drop transient
+                        # per-session state so the dicts don't grow unbounded.
+                        # Model overrides are NOT cleared here — they are
+                        # persistent (backed by state.db) and should survive
+                        # session finalization and gateway restarts.
                         self._set_session_reasoning_override(key, None)
                         if hasattr(self, "_pending_model_notes"):
                             self._pending_model_notes.pop(key, None)
@@ -8939,11 +8957,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
         if getattr(session_entry, "was_auto_reset", False):
-            # Treat auto-reset as a full conversation boundary — drop every
-            # session-scoped transient state so the fresh session does not
-            # inherit the previous conversation's model/reasoning overrides
-            # or a queued "/model switched" note.
-            self._session_model_overrides.pop(session_key, None)
+            # Treat auto-reset as a conversation boundary — drop transient
+            # state. Model overrides are NOT cleared: they are persistent
+            # (backed by state.db) and survive resets/restarts.
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
@@ -9705,7 +9721,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 response = _sanitize_gateway_final_response(source.platform, response)
 
             # Extract <group-name> tag from agent output for group chats
-            if response and source.chat_type not in ("p2p", "dm", ""):
+            # Skip forum (话题群) — topic groups should keep their admin-set name
+            if response and source.chat_type not in ("p2p", "dm", "", "forum") and not getattr(source, "thread_id", None):
                 try:
                     from gateway.platforms.group_name import extract_group_name
                     _clean_text, _group_name = extract_group_name(response)
@@ -9936,7 +9953,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 new_entry = self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
-                self._session_model_overrides.pop(session_key, None)
+                # Model overrides are NOT cleared — persistent across resets.
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
@@ -17795,6 +17812,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 loop.add_signal_handler(signal.SIGUSR1, restart_signal_handler)  # windows-footgun: ok — POSIX signal, guarded by hasattr above + try/except NotImplementedError
             except NotImplementedError:
                 pass
+        # Arm the SIGTERM sender PID trap AFTER asyncio installs its handlers,
+        # so the trap can chain to them. Only on macOS (issue #22 diagnostics).
+        if sys.platform == "darwin":
+            try:
+                from gateway._sigterm_sender_trap import arm as _arm_sigterm_trap
+                _arm_sigterm_trap()
+                logger.info("SIGTERM sender PID trap armed (issue #22 diagnostics)")
+            except Exception as _e:
+                logger.debug("SIGTERM sender trap not available: %s", _e)
     else:
         logger.info("Skipping signal handlers (not running in main thread).")
 

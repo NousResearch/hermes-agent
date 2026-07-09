@@ -604,6 +604,16 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS session_model_overrides (
+    session_key TEXT PRIMARY KEY,
+    model       TEXT NOT NULL,
+    provider    TEXT,
+    api_key     TEXT,
+    base_url    TEXT,
+    api_mode    TEXT,
+    updated_at  REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -1594,6 +1604,64 @@ class SessionDB:
             conn.execute(
                 "UPDATE sessions SET model = ? WHERE id = ?",
                 (model, session_id),
+            )
+        self._execute_write(_do)
+
+    # ── Per-session-key model overrides (persistent across restarts) ───
+
+    def upsert_session_model_override(
+        self,
+        session_key: str,
+        model: str,
+        provider: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_mode: Optional[str] = None,
+    ) -> None:
+        """Persist a per-session-key model override so it survives gateway restarts."""
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO session_model_overrides
+                   (session_key, model, provider, api_key, base_url, api_mode, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(session_key) DO UPDATE SET
+                     model=excluded.model, provider=excluded.provider,
+                     api_key=excluded.api_key, base_url=excluded.base_url,
+                     api_mode=excluded.api_mode, updated_at=excluded.updated_at""",
+                (session_key, model, provider, api_key, base_url, api_mode, time.time()),
+            )
+        self._execute_write(_do)
+
+    def load_all_session_model_overrides(self) -> dict:
+        """Load all persistent per-session-key model overrides."""
+        rows = self._conn.execute(
+            "SELECT session_key, model, provider, api_key, base_url, api_mode "
+            "FROM session_model_overrides"
+        ).fetchall()
+        result = {}
+        for row in rows:
+            sk = row[0] if not isinstance(row, sqlite3.Row) else row["session_key"]
+            if isinstance(row, sqlite3.Row):
+                result[sk] = {
+                    "model": row["model"],
+                    "provider": row["provider"],
+                    "api_key": row["api_key"],
+                    "base_url": row["base_url"],
+                    "api_mode": row["api_mode"],
+                }
+            else:
+                result[sk] = {
+                    "model": row[1], "provider": row[2], "api_key": row[3],
+                    "base_url": row[4], "api_mode": row[5],
+                }
+        return result
+
+    def delete_session_model_override(self, session_key: str) -> None:
+        """Remove a persistent per-session-key model override."""
+        def _do(conn):
+            conn.execute(
+                "DELETE FROM session_model_overrides WHERE session_key = ?",
+                (session_key,),
             )
         self._execute_write(_do)
 

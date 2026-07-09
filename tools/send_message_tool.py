@@ -1393,6 +1393,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                                 last_msg = await bot.send_video(
                                     chat_id=int_chat_id, video=f, **media_kwargs
                                 )
+                            elif ext in _VOICE_EXTS and is_voice:
+                                last_msg = await bot.send_voice(
+                                    chat_id=int_chat_id, voice=f, **media_kwargs
+                                )
+                            elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
+                                last_msg = await bot.send_audio(
+                                    chat_id=int_chat_id, audio=f, **media_kwargs
+                                )
                             else:
                                 last_msg = await bot.send_document(
                                     chat_id=int_chat_id, document=f, **media_kwargs

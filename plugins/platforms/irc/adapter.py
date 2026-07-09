@@ -12,7 +12,7 @@ Configuration in config.yaml::
         irc:
           enabled: true
           extra:
-            server: irc.libera.chat
+            server: localhost
             port: 6697
             nickname: hermes-bot
             channel: "#hermes"
@@ -559,11 +559,11 @@ def interactive_setup() -> None:
         if not prompt_yes_no("Reconfigure IRC?", False):
             return
 
-    print_info("Connect Hermes to an IRC network. Uses Python stdlib — no extra packages needed.")
-    print_info("   Works with Libera.Chat, OFTC, your own ZNC/InspIRCd, etc.")
+    print_info("Connect Hermes to an IRC server. Uses Python stdlib — no extra packages needed.")
+    print_info("   Recommended: a local/self-hosted ircd such as Ergo, InspIRCd, or ZNC.")
     print()
 
-    server = prompt("IRC server hostname (e.g. irc.libera.chat)", default=existing_server or "")
+    server = prompt("IRC server hostname (e.g. localhost)", default=existing_server or "")
     if not server:
         print_warning("Server is required — skipping IRC setup")
         return

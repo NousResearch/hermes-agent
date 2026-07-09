@@ -591,7 +591,7 @@ Connect Hermes to an IRC server. No external dependencies. See [the IRC messagin
 
 | Variable | Description |
 |----------|-------------|
-| `IRC_SERVER` | IRC server hostname (e.g. `irc.libera.chat`). Required. |
+| `IRC_SERVER` | IRC server hostname (e.g. `localhost` for a self-hosted ircd). Required. |
 | `IRC_CHANNEL` | Channel(s) to join (e.g. `#hermes`); comma-separate for multiple. Required. |
 | `IRC_NICKNAME` | Bot nickname (default: `hermes-bot`). Required. |
 | `IRC_PORT` | Server port (default: `6697` with TLS, `6667` without). |

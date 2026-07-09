@@ -21,6 +21,7 @@ POSIX-only: Windows has its own grandchild lifecycle (no shared session,
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import subprocess
 import sys
@@ -36,6 +37,17 @@ import pytest
 # so concurrent invocations of the suite don't clobber each other.
 _HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
 _HANDOFF_DIR.mkdir(exist_ok=True)
+
+
+def _runner_module():
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    spec = importlib.util.spec_from_file_location("run_tests_parallel_under_test", runner)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _handoff_path_for(nonce: str) -> Path:
@@ -223,6 +235,39 @@ def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
         text=True,
         timeout=60,
     )
+
+
+def test_completed_full_suite_summary_counts_are_preserved() -> None:
+    runner = _runner_module()
+
+    summary = runner._parse_pytest_summary(
+        "9 failed, 8635 passed, 60 skipped, 260 warnings in 308.93s (0:05:08)"
+    )
+
+    assert summary["failed"] == 9
+    assert summary["passed"] == 8635
+    assert summary["skipped"] == 60
+
+
+def test_nonzero_exit_description_labels_signal_rc() -> None:
+    runner = _runner_module()
+
+    assert runner._describe_nonzero_exit(143) == "signal 15 (rc=143)"
+    assert runner._describe_nonzero_exit(124) == "timeout"
+
+
+def test_failure_buckets_keep_completed_summary_out_of_infrastructure() -> None:
+    runner = _runner_module()
+    file = Path("tests/gateway/test_full.py")
+    summary = {"failed": 9, "passed": 8635, "skipped": 60}
+
+    test_failures, completed_nonzero, infrastructure = runner._split_failure_records([
+        (file, 143, "summary output", summary)
+    ])
+
+    assert test_failures == [(file, 143, summary)]
+    assert completed_nonzero == []
+    assert infrastructure == []
 
 
 def test_bare_q_flag_passes_through(tmp_path: Path) -> None:

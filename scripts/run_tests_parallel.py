@@ -50,6 +50,7 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+FailureRecord = Tuple[Path, int, str, Dict[str, int]]
 
 # Default test discovery roots.
 _DEFAULT_ROOTS = ["tests"]
@@ -362,6 +363,41 @@ def _format_file(file: Path, repo_root: Path) -> str:
         return str(file.resolve().relative_to(repo_root.resolve()))
     except ValueError:
         return str(file)
+
+
+def _describe_nonzero_exit(rc: int) -> str:
+    if rc == 124:
+        return "timeout"
+    if rc < 0:
+        return f"signal {-rc}"
+    if rc >= 128:
+        return f"signal {rc - 128} (rc={rc})"
+    return f"rc={rc}"
+
+
+def _split_failure_records(
+    failures: List[FailureRecord],
+) -> Tuple[
+    List[Tuple[Path, int, Dict[str, int]]],
+    List[Tuple[Path, int, Dict[str, int]]],
+    List[Tuple[Path, int]],
+]:
+    test_fail_files = [
+        (f, rc, s)
+        for f, rc, _o, s in failures
+        if s.get("failed", 0) > 0 or s.get("errors", 0) > 0
+    ]
+    completed_summary_nonzero = [
+        (f, rc, s)
+        for f, rc, _o, s in failures
+        if s and s.get("failed", 0) == 0 and s.get("errors", 0) == 0
+    ]
+    infrastructure_failures = [
+        (f, rc)
+        for f, rc, _o, s in failures
+        if not s
+    ]
+    return test_fail_files, completed_summary_nonzero, infrastructure_failures
 
 
 def _print_progress(
@@ -818,7 +854,7 @@ def main() -> int:
 
     # Capture and print on completion (out-of-order is fine — keeps the
     # terminal clean rather than interleaving N parallel pytest outputs).
-    failures: List[Tuple[Path, str, Dict[str, int]]] = []
+    failures: List[FailureRecord] = []
     file_times: List[Tuple[Path, float]] = []  # (file, subprocess_wall) for distribution
     started = time.monotonic()
     files_done = 0
@@ -839,7 +875,7 @@ def main() -> int:
                 files_done += 1
                 tests_done += n_tests
                 fail_count += 1
-                failures.append((file, f"runner crashed: {exc!r}", {}))
+                failures.append((file, 1, f"runner crashed: {exc!r}", {}))
                 _print_progress(
                     tests_done, approx_total_tests, file, 1,
                     time.monotonic() - started_at,
@@ -859,7 +895,7 @@ def main() -> int:
                 pass_count += 1
             else:
                 fail_count += 1
-                failures.append((fpath, output, summary))
+                failures.append((fpath, rc, output, summary))
             _print_progress(
                 tests_done, approx_total_tests, fpath, rc,
                 time.monotonic() - started_at,
@@ -928,31 +964,43 @@ def main() -> int:
     if failures:
         print()
         print("=== Failure output ===")
-        for file, output, _summary in failures:
+        for file, _rc, output, _summary in failures:
             print()
             print(f"--- {_format_file(file, repo_root)} ---")
             print(output.rstrip())
         print()
         # Split: files with actual test failures vs non-zero exit for other reasons
-        test_fail_files = [(f, s) for f, _o, s in failures if s.get("failed", 0) > 0]
-        all_passed_but_nonzero = [(f, s) for f, _o, s in failures
-                                  if s.get("failed", 0) == 0 and s.get("passed", 0) > 0]
-        no_tests_ran = [(f, s) for f, _o, s in failures
-                        if s.get("failed", 0) == 0 and s.get("passed", 0) == 0]
+        test_fail_files, completed_summary_nonzero, infrastructure_failures = _split_failure_records(failures)
         if test_fail_files:
-            total_tf = sum(s.get("failed", 0) for _, s in test_fail_files)
+            total_tf = sum(s.get("failed", 0) for _, _rc, s in test_fail_files)
+            total_errors = sum(s.get("errors", 0) for _, _rc, s in test_fail_files)
             print(f"=== {len(test_fail_files)} file{'s' if len(test_fail_files) != 1 else ''} with test failures ({total_tf} test{'s' if total_tf != 1 else ''} failed) ===")
-            for file, s in test_fail_files:
+            for file, rc, s in test_fail_files:
                 nf = s.get("failed", 0)
-                print(f"  {_format_file(file, repo_root)}  ({nf} test{'s' if nf != 1 else ''} failed)")
-        if all_passed_but_nonzero:
-            print(f"=== {len(all_passed_but_nonzero)} file{'s' if len(all_passed_but_nonzero) != 1 else ''} where all tests passed but pytest exited non-zero (warnings-as-errors, hook failures, etc.) ===")
-            for file, s in all_passed_but_nonzero:
-                print(f"  {_format_file(file, repo_root)}  ({s.get('passed', 0)} passed)")
-        if no_tests_ran:
-            print(f"=== {len(no_tests_ran)} file{'s' if len(no_tests_ran) != 1 else ''} where no tests ran (collection/import error, timeout before collection, etc.) ===")
-            for file, s in no_tests_ran:
-                print(f"  {_format_file(file, repo_root)}")
+                ne = s.get("errors", 0)
+                suffix = []
+                if nf:
+                    suffix.append(f"{nf} failed")
+                if ne:
+                    suffix.append(f"{ne} error{'s' if ne != 1 else ''}")
+                suffix.append(_describe_nonzero_exit(rc))
+                print(f"  {_format_file(file, repo_root)}  ({', '.join(suffix)})")
+            if total_errors:
+                print(f"  Total collection/runtime errors: {total_errors}")
+        if completed_summary_nonzero:
+            print(f"=== {len(completed_summary_nonzero)} file{'s' if len(completed_summary_nonzero) != 1 else ''} with completed pytest summaries but non-zero process exit ===")
+            for file, rc, s in completed_summary_nonzero:
+                passed = s.get("passed", 0)
+                skipped = s.get("skipped", 0)
+                counts = [f"{passed} passed"] if passed else []
+                if skipped:
+                    counts.append(f"{skipped} skipped")
+                counts.append(_describe_nonzero_exit(rc))
+                print(f"  {_format_file(file, repo_root)}  ({', '.join(counts)})")
+        if infrastructure_failures:
+            print(f"=== {len(infrastructure_failures)} file{'s' if len(infrastructure_failures) != 1 else ''} with no completed pytest summary (collection/import error, timeout, interruption, or runner infrastructure failure) ===")
+            for file, rc in infrastructure_failures:
+                print(f"  {_format_file(file, repo_root)}  ({_describe_nonzero_exit(rc)})")
         return 1
 
     return 0

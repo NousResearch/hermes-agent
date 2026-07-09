@@ -109,6 +109,7 @@ import {
   sanitizeIxAgencySettingsInput,
   writeIxAgencySettings
 } from './ix-agency'
+import { applyIxProvisionToSettings, fetchIxDesktopProvision } from './ix-auto-provision'
 import {
   createWriteGate,
   DEFAULT_IX_CHAT_MODEL,
@@ -162,6 +163,7 @@ import {
   isLegacyJsonManifest,
   normalizeUpdateFeedUrl,
   pickDownloadUrl,
+  pickFallbackUrl,
   releaseNotesText
 } from './ix-updater'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
@@ -8064,8 +8066,11 @@ ipcMain.handle('hermes:ix-agency:auth:verify-otp', async (_event, input) => {
 
   // Auto-attach: fresh login pulls the MCP directory, dynamic connectors and
   // org skills without any manual refresh (fire-and-forget; the renderer gets
-  // the result via the sync:event push).
+  // the result via the sync:event push). Zero-touch provisioning rides the
+  // same trigger: the portal hands over the gateway token / LiteLLM key /
+  // Cognito secret / WireGuard conf for every slot still empty.
   if (status.authenticated) {
+    void runIxAutoProvision().catch(() => {})
     void runIxAgencySync().catch(() => {})
   }
 
@@ -8174,12 +8179,14 @@ ipcMain.handle('hermes:ix-agency:sync:run', async () => {
 })
 
 // Boot-time auto-attach: when a valid portal session already exists, wire
-// everything up without any user action.
+// everything up without any user action (including zero-touch provisioning
+// for any credential slot still empty — e.g. after a settings wipe).
 void app.whenReady().then(async () => {
   try {
     const status = await probeIxPortalAuth()
 
     if (status.authenticated) {
+      void runIxAutoProvision().catch(() => {})
       await runIxAgencySync()
     }
   } catch {
@@ -8749,16 +8756,24 @@ async function refreshIxUpdateStatus() {
     const latestVersion = String(info?.version ?? '').trim()
     const updateAvailable = Boolean(latestVersion) && compareVersions(latestVersion, currentVersion) > 0
 
+    // MSI / deb / rpm installs can't quitAndInstall — the check still runs
+    // everywhere and the Update button becomes a download link instead.
+    const support = inPlaceUpdateSupport()
+    const artifactUrl = updateAvailable ? pickDownloadUrl(info?.files ?? [], feedBase) : ''
+
     ixUpdateStatus = {
       updateAvailable,
+      inPlace: support.supported,
       currentVersion,
       latestVersion,
-      url: updateAvailable ? pickDownloadUrl(info?.files ?? [], feedBase) : '',
+      url: updateAvailable && !support.supported ? pickFallbackUrl(feedBase, artifactUrl) : artifactUrl,
       notes: releaseNotesText(info?.releaseNotes),
       detail: updateAvailable
         ? ixUpdateDownloaded
           ? `Update ${latestVersion} downloaded — restarting installs it`
-          : `Update available: ${currentVersion} → ${latestVersion}`
+          : support.supported
+            ? `Update available: ${currentVersion} → ${latestVersion}`
+            : `Update available: ${currentVersion} → ${latestVersion} (${support.reason})`
         : `Up to date (${currentVersion}${latestVersion ? `; feed ${latestVersion}` : ''})`
     }
   } catch (error) {
@@ -8837,16 +8852,20 @@ async function applyIxUpdate(): Promise<{ opened: boolean; detail: string }> {
     }
   }
 
-  if (!ixUpdateStatus.url) {
+  // Notify-and-link path: unsigned mac (in-place attempt threw above), MSI,
+  // deb/rpm, and legacy feeds. Official feed → the download landing page.
+  const fallbackUrl = pickFallbackUrl(normalizeUpdateFeedUrl(configured), ixUpdateStatus.url)
+
+  if (!fallbackUrl) {
     return {
       opened: false,
       detail: `No in-place update possible (${support.reason}) and the feed has no download URL for this platform`
     }
   }
 
-  await shell.openExternal(ixUpdateStatus.url)
+  await shell.openExternal(fallbackUrl)
 
-  return { opened: true, detail: `Opened ${ixUpdateStatus.url}` }
+  return { opened: true, detail: `Opened ${fallbackUrl}` }
 }
 
 ipcMain.handle('hermes:ix-agency:update:apply', async () => applyIxUpdate())
@@ -8923,7 +8942,9 @@ function updateIxTray() {
     ...(ixUpdateStatus?.updateAvailable
       ? [
           {
-            label: `⬆ Update available (${ixUpdateStatus.latestVersion}) — Restart to update`,
+            label: `⬆ Update available (${ixUpdateStatus.latestVersion}) — ${
+              ixUpdateStatus.inPlace ? 'Restart to update' : 'Open the download page'
+            }`,
             click: () => {
               void applyIxUpdate().catch(() => {
                 // surfaced via the status detail on the next poll
@@ -9021,8 +9042,9 @@ ipcMain.handle('hermes:ix-agency:cognito:validate', async (_event, input) => {
 // Initialize local Hermes: Cognito validation gates the whole flow, then the
 // hermes-deployment installer runs for REAL when its checkout exists (else a
 // minimal ~/.hermes/config.yaml pointed at the LiteLLM gateway is written),
-// and secrets Hermes reads land in ~/.hermes/.env (0600).
-ipcMain.handle('hermes:ix-agency:hermes:init', async () => {
+// and secrets Hermes reads land in ~/.hermes/.env (0600). Shared by the
+// Connect tab's Initialize button and the zero-touch auto-provision flow.
+async function runIxHermesInit(): Promise<{ ok: boolean; log: string }> {
   const settings = currentIxAgencySettings()
 
   if (!settings.cognitoClientId || !settings.cognitoClientSecret) {
@@ -9121,7 +9143,64 @@ ipcMain.handle('hermes:ix-agency:hermes:init', async () => {
   writeIxAgencySettings(IX_AGENCY_SETTINGS_PATH, { ...settings, hermesInitialized: true }, encryptDesktopSecret)
 
   return { ok: true, log }
-})
+}
+
+ipcMain.handle('hermes:ix-agency:hermes:init', async () => runIxHermesInit())
+
+// ── IX Agency zero-touch provisioning ───────────────────────────────────────
+// On every successful OTP login (and on boot with a live session) the portal's
+// /api/portal/desktop/provision hands over the credentials a new employee
+// previously pasted by hand. Only EMPTY slots are filled (manual overrides
+// and previous fills always win — idempotent), the WireGuard conf lands in
+// the same keychain slot the Import button writes (so the existing VPN
+// auto-connect picks it up), and a first-run Hermes init fires once the
+// Cognito credentials are in place. Secret values never reach the logs.
+let ixAutoProvisionInFlight: null | Promise<void> = null
+
+async function runIxAutoProvision(): Promise<void> {
+  if (ixAutoProvisionInFlight) {
+    return ixAutoProvisionInFlight
+  }
+
+  ixAutoProvisionInFlight = (async () => {
+    const settings = currentIxAgencySettings()
+    const payload = await fetchIxDesktopProvision(settings.portalUrl, ixPortalSessionFetch())
+    const { next, filled } = applyIxProvisionToSettings(settings, payload)
+
+    if (filled.length) {
+      writeIxAgencySettings(IX_AGENCY_SETTINGS_PATH, next, encryptDesktopSecret)
+      rememberLog(
+        `[ix-provision] auto-filled from the portal: ${filled.join(', ')} ` +
+          `(litellm: ${payload.litellm.source || 'n/a'}, vpn: ${payload.wireguard.source || 'n/a'})`
+      )
+
+      // A fresh VPN conf flips the lamp from 'unavailable' to 'disconnected';
+      // the renderer's login auto-connect then brings the tunnel up.
+      if (filled.includes('vpnConfSecret')) {
+        void refreshIxVpnLamp()
+      }
+    }
+
+    // First-run Hermes init: once the Cognito S2S credentials exist and init
+    // has never completed from this app, run it now — no button needed.
+    if (!next.hermesInitialized && next.cognitoClientId && next.cognitoClientSecret) {
+      try {
+        await runIxHermesInit()
+        rememberLog('[ix-provision] local Hermes initialized automatically after login')
+      } catch (error) {
+        rememberLog(
+          `[ix-provision] automatic Hermes init failed (retry from Settings → Connect): ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        )
+      }
+    }
+  })().finally(() => {
+    ixAutoProvisionInFlight = null
+  })
+
+  return ixAutoProvisionInFlight
+}
 
 ipcMain.handle('hermes:fetchLinkTitle', (_event, url) => fetchLinkTitle(url))
 

@@ -234,7 +234,7 @@ export function ConnectTab() {
             <span className="min-w-0 flex-1 text-xs">
               {settings.vpnConfImported
                 ? 'usa-vpn.conf is imported into the keychain (safeStorage) — nothing stays on disk.'
-                : 'No profile in the keychain yet — import your usa-vpn.conf once.'}
+                : 'No profile in the keychain yet — it auto-imports on sign-in, or import a usa-vpn.conf manually.'}
             </span>
             <Button onClick={() => void importConf()} size="sm" variant="secondary">
               {settings.vpnConfImported ? 'Re-import…' : 'Import .conf…'}
@@ -261,9 +261,10 @@ export function ConnectTab() {
             />
           </Field>
           <p className="text-[0.68rem] leading-relaxed text-muted-foreground/70">
-            Uses the per-employee profile from the company's wg-easy server (see usa-vpn/EMPLOYEE-GUIDE.md). Connecting
-            prompts for your admin password; needs wireguard-tools on macOS/Linux or WireGuard for Windows. The status
-            lamp turns green only when a fresh handshake is seen AND traffic actually egresses via the exit IP above.
+            Your per-employee profile is fetched from the portal automatically on sign-in (manual import stays as an
+            override). Connecting prompts for your admin password; needs wireguard-tools on macOS/Linux or WireGuard
+            for Windows. The status lamp turns green only when a fresh handshake is seen AND traffic actually egresses
+            via the exit IP above.
           </p>
         </section>
 
@@ -307,8 +308,9 @@ export function ConnectTab() {
             )}
           </div>
           <p className="text-[0.68rem] leading-relaxed text-muted-foreground/70">
+            Auto-filled on sign-in (leave empty to use the portal-provisioned token; enter a value only to override).
             The token is encrypted at rest (safeStorage) and powers the live MCP directory on the Tools tab, the MCP
-            status lamp and the native Copilot's tool loop. Tokens are minted per person — see ix-agency/README.md.
+            status lamp and the native Copilot's tool loop.
           </p>
         </section>
 
@@ -340,9 +342,9 @@ export function ConnectTab() {
             />
           </Field>
           <p className="text-[0.68rem] leading-relaxed text-muted-foreground/70">
-            Powers the Copilot tab: streaming chat with the full admin-mcp tool estate. The key is encrypted at rest
-            (safeStorage). The copilot additionally requires the IX Agency portal login (OTP) — credentials alone do not
-            unlock it.
+            Powers the Copilot tab: streaming chat with the full admin-mcp tool estate. A personal key is provisioned
+            automatically on sign-in (enter one here only to override it). The key is encrypted at rest (safeStorage).
+            The copilot additionally requires the IX Agency portal login (OTP) — credentials alone do not unlock it.
           </p>
         </section>
 
@@ -426,10 +428,12 @@ export function ConnectTab() {
             </pre>
           )}
           <p className="text-[0.68rem] leading-relaxed text-muted-foreground/70">
-            First-run setup: validates the S2S credentials with a real client-credentials grant (token verified against
-            the pool's JWKS), stores them keychain-backed (safeStorage), then initializes local Hermes — via
-            hermes-deployment's install-local.sh when its checkout exists, else a minimal ~/.hermes/config.yaml pointed
-            at the LiteLLM gateway. Your gateway token / LiteLLM key land in ~/.hermes/.env (0600).
+            Runs automatically after your first sign-in (the secret is provisioned from the portal; the buttons stay
+            for re-runs and overrides): validates the S2S credentials with a real client-credentials grant (token
+            verified against the pool's JWKS), stores them keychain-backed (safeStorage), then initializes local
+            Hermes — via hermes-deployment's install-local.sh when its checkout exists, else a minimal
+            ~/.hermes/config.yaml pointed at the LiteLLM gateway. Your gateway token / LiteLLM key land in
+            ~/.hermes/.env (0600).
           </p>
         </section>
       </div>

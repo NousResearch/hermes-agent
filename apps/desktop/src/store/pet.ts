@@ -173,6 +173,14 @@ export const setPetRoam = (on: boolean) => {
 }
 
 /**
+ * User-initiated dismiss flag: when the Hide button is pressed, this is set to
+ * prevent the polling loop from re-enabling the pet until the gateway confirms
+ * the disable. Cleared when the poll receives an already-disabled state, or
+ * when the user manually re-enables the pet via settings.
+ */
+export const $petDismissed = atom(false)
+
+/**
  * Opt-in: show the activity status bubble above the in-window pet. Pure
  * desktop-client preference, stored in localStorage like roam.
  */

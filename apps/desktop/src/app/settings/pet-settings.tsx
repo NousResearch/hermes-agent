@@ -13,7 +13,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Download, Loader2, PawPrint, Pencil, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
-import { $petBubble, $petControls, $petInfo, $petRoam, setPetBubble, setPetControls, setPetRoam } from '@/store/pet'
+import { $petBubble, $petControls, $petDismissed, $petInfo, $petRoam, setPetBubble, setPetControls, setPetRoam } from '@/store/pet'
 import {
   $petBusy,
   $petGallery,
@@ -102,6 +102,10 @@ export function PetSettings() {
   }
 
   const toggle = (on: boolean) => {
+    if (on) {
+      $petDismissed.set(false)
+    }
+
     void setPetEnabled(requestGateway, on, {
       noneAvailable: copy.noneAvailable,
       fallback: on ? copy.turnOnFailed : copy.turnOffFailed

@@ -1636,3 +1636,40 @@ class TestClaimDispatch:
         due = get_due_jobs()
         assert due == []
         assert load_jobs() == []  # cleaned up
+
+    def test_bad_schedule_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
+        """Regression for a job with non-dict 'schedule' (null / string / etc.
+
+        from direct jobs.json edit or old writer).
+
+        Such a record must not raise in _get_due_jobs_locked and must not
+        prevent healthy sibling jobs from being returned or having their
+        next_run_at advanced+persisted. Mirrors the id-less job P1 pattern.
+        """
+        past = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+
+        bad = {
+            "id": "bad-sched",
+            "name": "bad",
+            "enabled": True,
+            "schedule": None,  # poison: not a dict
+            "next_run_at": future,  # not due
+        }
+        good = {
+            "id": "good",
+            "name": "good",
+            "enabled": True,
+            "schedule": {"kind": "interval", "minutes": 5},
+            "next_run_at": past,
+        }
+        save_jobs([bad, good])
+
+        due = get_due_jobs()
+        due_ids = [j["id"] for j in due]
+        assert "good" in due_ids
+        assert "bad-sched" not in due_ids  # bad one ignored, no crash
+
+        # At minimum, the good job's record is still intact (no corruption from the bad neighbor)
+        loaded = {j["id"]: j for j in load_jobs()}
+        assert "good" in loaded

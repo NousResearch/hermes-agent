@@ -62,7 +62,14 @@ class TestNousFallbackLocalAvailability:
         assert agent.model == "gpt-5.5"
 
     def test_nous_unavailable_not_retried_in_same_session(self):
-        """After Nous is skipped once, subsequent activations continue further."""
+        """After Nous is skipped once, subsequent activations continue further.
+
+        #60761 Bug 2: the old permanent set was replaced by a
+        time-bounded cache. The skip still happens (Nous has no token
+        material) but the cache holds an expiry timestamp rather than a
+        permanent flag. The TTL default is 300s — long enough to ride
+        out the rest of this test session.
+        """
         agent = _make_agent(
             fallback_model=[
                 {"provider": "nous", "model": "anthropic/claude-sonnet-4.6"},
@@ -74,12 +81,13 @@ class TestNousFallbackLocalAvailability:
             return_value={},
         ):
             agent._try_activate_fallback(None)
-        key = (
-            "nous",
-            "anthropic/claude-sonnet-4.6",
-            "",
-        )
-        assert key in getattr(agent, "_unavailable_fallback_keys", set())
+        # Time-bounded cache holds an expiry timestamp for the nous entry.
+        cache = getattr(agent, "_fallback_unavailable_until", {})
+        key = "nous/anthropic/claude-sonnet-4.6"
+        assert key in cache
+        # Expiry is in the future (within default 300s TTL).
+        import time as _time
+        assert cache[key] > _time.monotonic()
 
     def test_present_nous_token_allows_activation(self):
         """Nous is considered when token material exists."""

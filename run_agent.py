@@ -4758,6 +4758,57 @@ class AIAgent:
         index = getattr(self, "_fallback_index", 0)
         return index < len(chain)
 
+    # ── Time-bounded fallback unavailability (#60761 Bug 2) ─────────────
+    # A fallback entry that fails once used to be added to a permanent
+    # session-scoped set (``_unavailable_fallback_keys``). Once a chain
+    # entry was in that set, every subsequent turn in the session
+    # skipped it — including retries minutes later when the upstream had
+    # recovered. The fix replaces that set with a time-bounded cache
+    # so failed entries become eligible again after the TTL elapses.
+    # Default TTL: 300 seconds (5 minutes) — long enough to ride out a
+    # transient outage, short enough that recovered upstreams are
+    # retried in the same session.
+
+    _FALLBACK_UNAVAILABLE_TTL_DEFAULT_S = 300.0
+
+    def _fallback_entry_key(self, provider: str, model: str) -> str:
+        """Canonical key for the time-bounded cache."""
+        return f"{(provider or '').strip().lower()}/{(model or '').strip()}"
+
+    def _mark_fallback_unavailable(
+        self,
+        provider: str,
+        model: str,
+        ttl_seconds: float | None = None,
+    ) -> None:
+        """Record that the fallback entry should be skipped for the next
+        ``ttl_seconds`` (default 300s). After the TTL elapses, the
+        entry becomes eligible again.
+        """
+        cache = getattr(self, "_fallback_unavailable_until", None)
+        if cache is None:
+            cache = {}
+            self._fallback_unavailable_until = cache
+        ttl = ttl_seconds if ttl_seconds is not None else self._FALLBACK_UNAVAILABLE_TTL_DEFAULT_S
+        cache[self._fallback_entry_key(provider, model)] = time.monotonic() + ttl
+
+    def _is_fallback_available(self, provider: str, model: str) -> bool:
+        """Whether the fallback entry is currently eligible. Returns True
+        if no TTL-bound entry exists, OR the TTL has elapsed (expired
+        entries are cleaned on access so the cache doesn't grow
+        unbounded).
+        """
+        cache = getattr(self, "_fallback_unavailable_until", None) or {}
+        key = self._fallback_entry_key(provider, model)
+        expiry = cache.get(key)
+        if expiry is None:
+            return True
+        if time.monotonic() >= expiry:
+            # Expired — clean up and return available.
+            cache.pop(key, None)
+            return True
+        return False
+
     # ── Per-turn primary restoration ─────────────────────────────────────
 
     def _restore_primary_runtime(self) -> bool:

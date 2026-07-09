@@ -1270,12 +1270,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
     fb_key = _fallback_entry_key(fb)
-    unavailable = getattr(agent, "_unavailable_fallback_keys", None)
-    if unavailable is None:
-        unavailable = set()
-        agent._unavailable_fallback_keys = unavailable
-    if fb_key in unavailable:
-        logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
+    # #60761 Bug 2: the old _unavailable_fallback_keys set was session-scoped
+    # and permanent — a failed fallback entry would be skipped for the rest
+    # of the session. Replace with a time-bounded cache so the upstream gets
+    # another chance after the TTL elapses.
+    if not agent._is_fallback_available(fb.get("provider", ""), fb.get("model", "")):
+        logger.debug("Fallback skip: %s/%s in TTL window; will retry after expiry",
+                     fb.get("provider", ""), fb.get("model", ""))
         return agent._try_activate_fallback(reason)
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
@@ -1284,9 +1285,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
-        unavailable.add(fb_key)
+        agent._mark_fallback_unavailable(fb_provider, fb_model)
         logger.warning(
-            "Fallback skip: %s/%s is not locally usable (%s); suppressing for this session",
+            "Fallback skip: %s/%s is not locally usable (%s); suppressing for TTL window",
             fb_provider,
             fb_model,
             local_skip_reason,
@@ -1348,7 +1349,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             logger.warning(
                 "Fallback to %s failed: provider not configured",
                 fb_provider)
-            unavailable.add(fb_key)
+            agent._mark_fallback_unavailable(fb_provider, fb_model)
             return agent._try_activate_fallback(reason)  # try next in chain
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
@@ -1556,7 +1557,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return True
     except Exception as e:
         if fb_provider == "nous":
-            unavailable.add(fb_key)
+            agent._mark_fallback_unavailable(fb_provider, fb_model)
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
         return agent._try_activate_fallback(reason)  # try next in chain
 

@@ -7,8 +7,16 @@ inter-client contracts. Renaming them outright would break running installs,
 subprocess hand-offs, and third-party API clients.
 
 This module introduces the new ``HT_*`` / ``X-HT-*`` identifiers **additively**:
-both namespaces resolve to the same value, with the ``HT_*`` (new) name taking
-precedence when both are present. Nothing that reads the legacy names breaks.
+both namespaces resolve to the same value. Nothing that reads the legacy names
+breaks. Precedence differs by surface, on purpose:
+
+  * **Env vars are legacy-authoritative** — ``HERMES_*`` wins over ``HT_*`` when
+    both are present, because every existing spawner sets ``HERMES_*``
+    explicitly and the ``HT_*`` counterpart may be a stale value inherited from
+    a parent process (profile-dispatch safety; see :func:`resolve_env`).
+  * **Headers are new-preferred** — ``X-HT-*`` wins over ``X-Hermes-*``, since a
+    request carries whatever the client sent with no cross-process inheritance
+    to worry about.
 
 Design rules:
   * The mapping is a pure *prefix* rule — ``HERMES_FOO`` ⇆ ``HT_FOO`` and
@@ -70,25 +78,35 @@ def resolve_env(
 ) -> Optional[str]:
     """Resolve a brand env var honouring both the new and legacy names.
 
-    ``name`` may be given as either the ``HT_*`` or ``HERMES_*`` spelling; the
-    new (``HT_*``) value wins when both are set. Returns ``default`` when
-    neither is present.
+    ``name`` may be given as either the ``HT_*`` or ``HERMES_*`` spelling.
+
+    Precedence is **legacy-authoritative**: the ``HERMES_*`` value wins when
+    both are set, and the ``HT_*`` value is used only when the legacy name is
+    absent. This is deliberate and load-bearing: every existing code path and
+    subprocess spawner sets the ``HERMES_*`` name explicitly (e.g. profile
+    dispatch propagates ``HERMES_HOME=<profile>`` into child env), while the
+    ``HT_*`` counterpart may be a *stale inherited* value mirrored from a
+    parent process. Preferring ``HT_*`` there would silently route a child
+    into the wrong profile home (the #18594 class of bug). New callers that set
+    only ``HT_*`` still work — the legacy name is simply absent, so ``HT_*`` is
+    used (and :func:`mirror_brand_env` keeps the two equal in normal
+    single-process use anyway).
+
+    Returns ``default`` when neither is present.
     """
     source: Mapping[str, str] = os.environ if env is None else env
     new = new_env_name(name)
     old = old_env_name(name)
-    val = source.get(new)
-    if val is not None and val != "":
-        return val
-    val = source.get(old)
-    if val is not None and val != "":
-        return val
+    # Legacy (HERMES_*) first, then new (HT_*).
+    for key in (old, new):
+        val = source.get(key)
+        if val is not None and val != "":
+            return val
     # Fall back to a set-but-empty value under either name before the default,
     # so callers can distinguish "explicitly blank" from "unset" if needed.
-    if new in source:
-        return source[new]
-    if old in source:
-        return source[old]
+    for key in (old, new):
+        if key in source:
+            return source[key]
     return default
 
 

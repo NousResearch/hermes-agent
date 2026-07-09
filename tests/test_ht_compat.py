@@ -34,10 +34,19 @@ class TestEnvNameMapping:
 
 
 class TestResolveEnv:
-    def test_new_wins_over_old(self):
+    def test_legacy_wins_over_new(self):
+        # Legacy-authoritative: HERMES_* wins when both are set, so an
+        # explicitly-propagated legacy value beats a stale inherited HT_*.
         env = {"HT_HOME": "/new", "HERMES_HOME": "/old"}
-        assert resolve_env("HERMES_HOME", env=env) == "/new"
-        assert resolve_env("HT_HOME", env=env) == "/new"
+        assert resolve_env("HERMES_HOME", env=env) == "/old"
+        assert resolve_env("HT_HOME", env=env) == "/old"
+
+    def test_stale_inherited_ht_does_not_shadow_explicit_hermes(self):
+        # The #18594-class hazard in miniature: a subprocess sets HERMES_HOME to
+        # its profile dir but inherits a stale HT_HOME from the parent. The
+        # explicit legacy value must win.
+        child_env = {"HT_HOME": "/root", "HERMES_HOME": "/root/profiles/coder"}
+        assert resolve_env("HERMES_HOME", env=child_env) == "/root/profiles/coder"
 
     def test_falls_back_to_old(self):
         env = {"HERMES_HOME": "/old"}

@@ -118,10 +118,13 @@ class TestHtHomeAlias:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "old"))
         assert get_hermes_home() == tmp_path / "old"
 
-    def test_ht_home_wins_when_both_set(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HT_HOME", str(tmp_path / "new"))
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "old"))
-        assert get_hermes_home() == tmp_path / "new"
+    def test_hermes_home_authoritative_when_both_set(self, tmp_path, monkeypatch):
+        # Legacy-authoritative: an explicitly-set HERMES_HOME wins over HT_HOME.
+        # This protects profile dispatch — a child that sets HERMES_HOME to its
+        # profile dir must not be routed to a stale inherited HT_HOME (#18594).
+        monkeypatch.setenv("HT_HOME", str(tmp_path / "stale"))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        assert get_hermes_home() == tmp_path / "profile"
 
     def test_ht_home_alias_for_default_root(self, tmp_path, monkeypatch):
         monkeypatch.delenv("HERMES_HOME", raising=False)

@@ -239,7 +239,6 @@ logger = logging.getLogger("hooks.boot-md")
 
 BOOT_FILE = Path.home() / ".hermes" / "BOOT.md"
 
-
 def _build_prompt(content: str) -> str:
     return (
         "You are running a startup boot checklist. Follow the instructions "
@@ -253,7 +252,6 @@ def _build_prompt(content: str) -> str:
         "If nothing needs attention and there is nothing to report, reply "
         "with ONLY: [SILENT]"
     )
-
 
 def _run_boot_agent(content: str) -> None:
     """Spawn a one-shot agent and execute the checklist.
@@ -282,7 +280,6 @@ def _run_boot_agent(content: str) -> None:
             logger.info("boot-md completed (nothing to report)")
     except Exception as e:
         logger.error("boot-md agent failed: %s", e)
-
 
 async def handle(event_type: str, context: dict) -> None:
     if not BOOT_FILE.exists():

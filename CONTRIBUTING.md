@@ -347,12 +347,10 @@ Tools self-register with the central registry. Each tool file co-locates its sch
 import json
 from tools.registry import registry
 
-
 def my_tool(param1: str, param2: int = 10, **kwargs) -> str:
     """Handler. Returns a string result (often JSON)."""
     result = do_work(param1, param2)
     return json.dumps(result)
-
 
 MY_TOOL_SCHEMA = {
     "type": "function",
@@ -370,11 +368,9 @@ MY_TOOL_SCHEMA = {
     },
 }
 
-
 def _check_requirements() -> bool:
     """Return True if this tool's dependencies are available."""
     return True
-
 
 registry.register(
     name="my_tool",

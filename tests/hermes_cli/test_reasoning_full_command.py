@@ -22,6 +22,7 @@ class _Stub(CLICommandsMixin):
         self.reasoning_config = None
         self.show_reasoning = True
         self.reasoning_full = False
+        self.reasoning_clamp_lines = 10
         self.agent = None
 
     def _current_reasoning_callback(self):
@@ -31,6 +32,7 @@ class _Stub(CLICommandsMixin):
 def test_default_config_clamps_reasoning():
     # Behaviour contract: the recap defaults to clamped, not full.
     assert DEFAULT_CONFIG["display"]["reasoning_full"] is False
+    assert DEFAULT_CONFIG["display"]["reasoning_clamp_lines"] == 10
 
 
 def _seed_config(tmp_path, monkeypatch):
@@ -64,6 +66,42 @@ def test_reasoning_clamp_resets_and_persists(tmp_path, monkeypatch):
     assert s.reasoning_full is False
     saved = yaml.safe_load((hh / "config.yaml").read_text())
     assert saved["display"]["reasoning_full"] is False
+
+
+def test_reasoning_clamp_accepts_custom_line_count(tmp_path, monkeypatch):
+    hh = _seed_config(tmp_path, monkeypatch)
+    s = _Stub()
+    s.reasoning_full = True
+
+    s._handle_reasoning_command("/reasoning clamp 20")
+    assert s.reasoning_full is False
+    assert s.reasoning_clamp_lines == 20
+    saved = yaml.safe_load((hh / "config.yaml").read_text())
+    assert saved["display"]["reasoning_full"] is False
+    assert saved["display"]["reasoning_clamp_lines"] == 20
+
+
+def test_reasoning_clamp_rejects_invalid_line_count(tmp_path, monkeypatch):
+    hh = _seed_config(tmp_path, monkeypatch)
+    s = _Stub()
+    s.reasoning_full = True
+
+    s._handle_reasoning_command("/reasoning clamp 0")
+    assert s.reasoning_full is True
+    assert s.reasoning_clamp_lines == 10
+    saved = yaml.safe_load((hh / "config.yaml").read_text())
+    assert "reasoning_full" not in saved["display"]
+    assert "reasoning_clamp_lines" not in saved["display"]
+
+
+def test_reasoning_full_rejects_extra_arguments(tmp_path, monkeypatch):
+    hh = _seed_config(tmp_path, monkeypatch)
+    s = _Stub()
+
+    s._handle_reasoning_command("/reasoning full now")
+    assert s.reasoning_full is False
+    saved = yaml.safe_load((hh / "config.yaml").read_text())
+    assert "reasoning_full" not in saved["display"]
 
 
 def test_reasoning_all_is_alias_for_full(tmp_path, monkeypatch):

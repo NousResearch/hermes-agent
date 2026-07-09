@@ -1302,6 +1302,11 @@ def get_cute_tool_message(
         urls = args.get("urls", [])
         if urls:
             url = urls[0] if isinstance(urls, list) else str(urls)
+            # Handle dict objects from web_search results
+            if isinstance(url, dict):
+                url = url.get("url") or url.get("href") or ""
+            if not isinstance(url, str):
+                url = str(url)
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
             extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
             return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")

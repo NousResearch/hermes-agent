@@ -240,3 +240,78 @@ class TestTodoSkinIntegration:
     def test_default_skin_prefix(self):
         msg = get_cute_tool_message("todo", {}, 0.5)
         assert msg.startswith("┊")
+
+
+class TestWebExtractDisplay:
+    """get_cute_tool_message for web_extract handles dict objects from web_search results.
+
+    Reproduces and verifies fix for #61693 where web_search result dicts
+    caused AttributeError when web_extract tried to extract domain names.
+    """
+
+    def test_web_extract_with_dict_url_field(self):
+        """Dict with 'url' field (standard web_search result shape)."""
+        args = {
+            "urls": [
+                {"url": "https://example.com/path", "title": "Example", "snippet": "..."}
+            ]
+        }
+        msg = get_cute_tool_message("web_extract", args, 0.5)
+        assert "example.com" in msg
+        assert "📄" in msg
+        assert "0.5s" in msg
+        assert "+" not in msg  # only 1 URL
+
+    def test_web_extract_with_dict_href_field(self):
+        """Dict with 'href' field (alternate key)."""
+        args = {
+            "urls": [
+                {"href": "http://test.org/page", "title": "Test", "snippet": "..."}
+            ]
+        }
+        msg = get_cute_tool_message("web_extract", args, 0.3)
+        assert "test.org" in msg
+
+    def test_web_extract_with_dict_no_url_field(self):
+        """Dict without url/href fields - should not crash."""
+        args = {
+            "urls": [
+                {"title": "No URL", "snippet": "Missing url field"}
+            ]
+        }
+        msg = get_cute_tool_message("web_extract", args, 0.2)
+        # Should handle gracefully, default to empty string domain
+        assert "📄" in msg
+        assert "0.2s" in msg
+
+    def test_web_extract_with_multiple_dicts(self):
+        """Multiple dict URLs show '+N' suffix."""
+        args = {
+            "urls": [
+                {"url": "https://example.com/page1"},
+                {"url": "https://example.com/page2"},
+                {"url": "https://example.com/page3"},
+            ]
+        }
+        msg = get_cute_tool_message("web_extract", args, 0.6)
+        assert "example.com" in msg
+        assert "+2" in msg  # 3 URLs total, +2 beyond first
+
+    def test_web_extract_with_mixed_types(self):
+        """Mix of string URLs and dict objects."""
+        args = {
+            "urls": [
+                "https://direct.com/page",
+                {"url": "https://dict.com/page", "title": "Dict URL"},
+            ]
+        }
+        msg = get_cute_tool_message("web_extract", args, 0.4)
+        # First item is a string, so domain should come from it
+        assert "direct.com" in msg
+
+    def test_web_extract_empty_urls(self):
+        """Empty urls list - shows 'pages' placeholder."""
+        args = {"urls": []}
+        msg = get_cute_tool_message("web_extract", args, 0.1)
+        assert "pages" in msg
+        assert "📄" in msg

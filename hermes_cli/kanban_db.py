@@ -2680,6 +2680,11 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                # Emit a "blocked" event so tasks created with
+                # initial_status="blocked" are treated as sticky-blocked
+                # by recompute_ready (#47777).
+                if task_status == "blocked":
+                    _append_event(conn, task_id, "blocked", {"reason": "created with initial_status=blocked"})
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

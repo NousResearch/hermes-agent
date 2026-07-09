@@ -277,3 +277,59 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
 # (landed via #28754 / #28781).  The original PR shipped a duplicate test
 # here; dropped during salvage to avoid two assertions of the same contract.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Created-blocked tasks must stay blocked (issue #47777)
+# ---------------------------------------------------------------------------
+
+
+def test_created_blocked_task_stays_blocked(kanban_home: Path) -> None:
+    """A task created with initial_status='blocked' must stay blocked
+    across dispatcher ticks, not be auto-promoted by recompute_ready."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="parked task", initial_status="blocked")
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        for _ in range(5):
+            promoted = kb.recompute_ready(conn)
+            assert promoted == 0, "created-blocked task must not auto-promote"
+            assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_created_blocked_with_done_parents_stays_blocked(kanban_home: Path) -> None:
+    """Created-blocked must stay blocked even when all parents are done."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent], initial_status="blocked")
+        kb.complete_task(conn, parent, result="parent ok")
+
+        assert kb.get_task(conn, child).status == "blocked"
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "blocked"
+
+
+def test_created_blocked_can_be_unblocked(kanban_home: Path) -> None:
+    """A created-blocked task can be explicitly unblocked and then
+    promoted normally (#47777)."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(
+            conn, title="child", parents=[parent], initial_status="blocked"
+        )
+        kb.complete_task(conn, parent, result="parent ok")
+
+        # Must stay blocked until explicit unblock.
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, child).status == "blocked"
+
+        # Explicit unblock frees it (status flips to ready because
+        # all parents are done).
+        kb.unblock_task(conn, child)
+        assert kb.get_task(conn, child).status == "ready"
+
+        # recompute_ready sees the task is already ready.
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "ready"

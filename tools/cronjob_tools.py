@@ -615,6 +615,15 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
     failure delivery, ``[SILENT]`` handling, and live-adapter delivery stay
     identical across paths and can't drift.
 
+    When a live gateway is running, this function retrieves the gateway's
+    adapters and event loop and passes them to ``run_one_job`` so that job
+    delivery goes through the live-adapter path (``safe_schedule_threadsafe``
+    on the gateway loop) rather than creating a new event loop via
+    ``asyncio.run()``.  The standalone path would send adapter HTTP calls
+    from a different loop than the adapter's internal aiohttp session was
+    created on, causing "Timeout context manager should be used inside a task"
+    failures for platforms such as Matrix (#61495).
+
     Returns {"claimed": bool, "success": bool, "error": str|None}.
     """
     job_id = job["id"]
@@ -636,9 +645,24 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
                 reason = "Job is already being fired by the scheduler; not run again."
             return {"claimed": False, "success": False, "error": reason}
 
+        # Resolve the gateway's adapters and event loop so delivery uses the
+        # live-adapter path (safe_schedule_threadsafe on the gateway loop).
+        # Without these, _deliver_result falls back to asyncio.run() in a new
+        # event loop, causing cross-loop adapter usage failures (#61495).
+        _adapters = None
+        _loop = None
+        try:
+            from gateway.run import _gateway_runner_ref
+            _runner = _gateway_runner_ref()
+            if _runner is not None:
+                _adapters = getattr(_runner, "adapters", None)
+                _loop = getattr(_runner, "_gateway_loop", None)
+        except Exception:
+            pass
+
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
-        processed = run_one_job(job)
+        processed = run_one_job(job, adapters=_adapters, loop=_loop)
         refreshed = get_job(job_id) or {}
         ok = refreshed.get("last_status") == "ok"
         return {

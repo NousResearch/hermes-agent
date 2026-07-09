@@ -1695,9 +1695,24 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         # disconnect it. Correctness here depends on this branch returning
         # before the ephemeral ``adapter`` is constructed below, so the
         # ephemeral ``finally`` disconnect never touches the live session.
-        return await _matrix_send_core(
-            live_adapter, chat_id, message, media_files, metadata
-        )
+        try:
+            return await _matrix_send_core(
+                live_adapter, chat_id, message, media_files, metadata
+            )
+        except RuntimeError as _matrix_loop_err:
+            # When the cron standalone path (asyncio.run() in a new event
+            # loop) uses the live adapter, the adapter's internal aiohttp
+            # session was created on the gateway's loop and cannot be used
+            # from a different loop.  Fall through to the ephemeral adapter
+            # rather than failing delivery (#61495).  The primary fix is in
+            # _execute_job_now (which passes the gateway loop so delivery
+            # uses safe_schedule_threadsafe), but this cross-loop guard
+            # catches any remaining path.
+            logger.warning(
+                "Matrix: live adapter unusable from this event loop "
+                "(%s: %s); falling back to ephemeral adapter",
+                type(_matrix_loop_err).__name__, _matrix_loop_err,
+            )
 
     # --- Fallback: ephemeral adapter (standalone / cron context) ---
     try:

@@ -568,7 +568,10 @@ def _recoverable_oneshot_run_at(
     if not run_at:
         return None
 
-    run_at_dt = _ensure_aware(datetime.fromisoformat(run_at))
+    try:
+        run_at_dt = _ensure_aware(datetime.fromisoformat(run_at))
+    except Exception:
+        return None
     if run_at_dt >= now - timedelta(seconds=ONESHOT_GRACE_SECONDS):
         return run_at
     return None
@@ -630,9 +633,11 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         if minutes is None:
             return None
         if last_run_at:
-            # Next run is last_run + interval
-            last = _ensure_aware(datetime.fromisoformat(last_run_at))
-            next_run = last + timedelta(minutes=minutes)
+            try:
+                last = _ensure_aware(datetime.fromisoformat(last_run_at))
+                next_run = last + timedelta(minutes=minutes)
+            except Exception:
+                next_run = now + timedelta(minutes=minutes)
         else:
             # First run is now + interval
             next_run = now + timedelta(minutes=minutes)
@@ -657,7 +662,10 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         # rather than to an arbitrary restart time.
         base_time = now
         if last_run_at:
-            base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
+            try:
+                base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
+            except Exception:
+                base_time = now
         cron = croniter(expr, base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
@@ -1702,6 +1710,63 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         if not isinstance(rj.get("schedule"), dict):
             rj["schedule"] = {}
             needs_save = True
+
+    # Normalize malformed "next_run_at" records (direct jobs.json edit,
+    # corruption, migration, or buggy writer). If present but not a valid
+    # ISO string, datetime.fromisoformat(next_run) later raises and aborts
+    # the entire scan *before* save_jobs(). Healthy siblings then lose any
+    # fast-forwarded next_run_at (same class of bug as bad "id" or "schedule").
+    # Strip the bad value so the existing "no next_run_at" recovery path
+    # recomputes a sane value and persists it for this job.
+    for j in jobs:
+        nr = j.get("next_run_at")
+        if nr is not None:
+            if not isinstance(nr, str):
+                j.pop("next_run_at", None)
+                needs_save = True
+            else:
+                try:
+                    datetime.fromisoformat(nr)
+                except Exception:
+                    j.pop("next_run_at", None)
+                    needs_save = True
+    for rj in raw_jobs:
+        nr = rj.get("next_run_at")
+        if nr is not None:
+            if not isinstance(nr, str):
+                rj.pop("next_run_at", None)
+                needs_save = True
+            else:
+                try:
+                    datetime.fromisoformat(nr)
+                except Exception:
+                    rj.pop("next_run_at", None)
+                    needs_save = True
+
+    # Same treatment for last_run_at (used as base in recovery / compute_next_run).
+    for j in jobs:
+        lr = j.get("last_run_at")
+        if lr is not None and not isinstance(lr, str):
+            j.pop("last_run_at", None)
+            needs_save = True
+        elif isinstance(lr, str):
+            try:
+                datetime.fromisoformat(lr)
+            except Exception:
+                j.pop("last_run_at", None)
+                needs_save = True
+    for rj in raw_jobs:
+        lr = rj.get("last_run_at")
+        if lr is not None and not isinstance(lr, str):
+            rj.pop("last_run_at", None)
+            needs_save = True
+        elif isinstance(lr, str):
+            try:
+                datetime.fromisoformat(lr)
+            except Exception:
+                rj.pop("last_run_at", None)
+                needs_save = True
+
     # Resolve the one-shot running-claim stale-recovery TTL once per scan
     # (derived from HERMES_CRON_TIMEOUT). See _oneshot_run_claim_ttl_seconds.
     _run_claim_ttl = _oneshot_run_claim_ttl_seconds()

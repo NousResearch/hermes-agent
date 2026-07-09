@@ -763,6 +763,11 @@ async def web_extract_tool(
     from urllib.parse import unquote
     normalized_urls: List[str] = []
     for _url in urls:
+        # Handle dict objects from web_search results
+        if isinstance(_url, dict):
+            _url = _url.get("url") or _url.get("href") or ""
+        elif not isinstance(_url, str):
+            _url = str(_url)
         normalized_url = normalize_url_for_request(_url)
         if (
             _PREFIX_RE.search(_url)

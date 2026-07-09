@@ -97,17 +97,11 @@ def _acquire_call_server(server_name: str, tool_timeout: float):
     return None, not_connected
 
 
-def _result_is_error(result) -> bool:
-    """True only for a JSON payload carrying an ``error`` key (non-JSON = success)."""
-    try:
-        return "error" in json.loads(result)
-    except (json.JSONDecodeError, TypeError):
-        return False
-
-
 def _record_call_outcome(server_name: str, result) -> Any:
-    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike."""
-    (_core._bump_server_error if _result_is_error(result) else _core._reset_server_error)(server_name)
+    """A completed round-trip is the reachability proof: the breaker guards the TRANSPORT, so any
+    response — including a tool-level ``isError`` payload (bad URL, 4xx, validation) — closes it.
+    Counting those as strikes branded healthy servers "unreachable" after three bad inputs (#11113)."""
+    _core._reset_server_error(server_name)
     return result
 
 
@@ -132,17 +126,13 @@ def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
 
 
 def _retry_once(server_name: str, retry_call, op_description: str, what: str):
-    """Re-run ``retry_call`` after a recovery step. Returns the result (closing the breaker)
-    when it is not an error payload; None when the retry raised or errored (caller falls through)."""
+    """Re-run ``retry_call`` after a recovery step. Any completed response (error payload included)
+    closes the breaker and is returned as-is; None only when the retry raised (caller falls through)."""
     try:
-        result = retry_call()
+        return _record_call_outcome(server_name, retry_call())
     except Exception as retry_exc:
         logger.warning("MCP %s/%s retry after %s failed: %s", server_name, op_description, what, retry_exc)
         return None
-    if _result_is_error(result):
-        return None
-    _core._reset_server_error(server_name)
-    return result
 
 
 def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):

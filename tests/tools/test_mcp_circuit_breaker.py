@@ -323,6 +323,55 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
         _cleanup(mcp_tool, "srv")
 
 
+def test_tool_level_error_payload_closes_breaker(monkeypatch, tmp_path):
+    """A completed ``isError`` response proves the transport is up: it must reset a partially
+    tripped breaker and never open it, however many bad inputs arrive in a row (#11113).
+    Before: three bad URLs branded a healthy server "unreachable" for the whole cooldown."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _make_tool_handler
+
+    calls = {"n": 0}
+
+    async def _call_tool_semantic_error(*a, **kw):
+        calls["n"] += 1
+        result = MagicMock()
+        result.isError = True
+        block = MagicMock()
+        block.text = "net::ERR_NAME_NOT_RESOLVED"
+        result.content = [block]
+        result.structuredContent = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_semantic_error)
+    _mcp_loop._ensure_mcp_loop()
+    try:
+        mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD - 1
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 1):
+            parsed = json.loads(handler({}))
+            assert parsed.get("error") == "net::ERR_NAME_NOT_RESOLVED", parsed  # the real error, not "unreachable"
+        assert calls["n"] == mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 1
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
+def test_recovery_retry_returns_tool_error_payload_as_is(monkeypatch, tmp_path):
+    """The recovery ladder's single retry follows the same rule: an error payload after a
+    successful reconnect is the tool's answer (breaker closed), not a reason to fall through."""
+    from tools import mcp_tool
+    from tools import mcp_tool_handlers as h
+
+    mcp_tool._server_error_counts["srv2"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+    try:
+        payload = json.dumps({"error": "403 MISSING_SCOPES"})
+        assert h._retry_once("srv2", lambda: payload, "call tool1", "session reconnect") == payload
+        assert mcp_tool._server_error_counts.get("srv2", 0) == 0
+    finally:
+        _cleanup(mcp_tool, "srv2")
+
+
 def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
     """When the auth-recovery path successfully reconnects the server,
     the breaker should be cleared so subsequent calls aren't gated on a

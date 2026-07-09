@@ -1567,6 +1567,63 @@ class TestContextLengthCache:
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
 
+    def test_repeated_load_reuses_unchanged_file_snapshot(self, tmp_path, monkeypatch):
+        import agent.model_metadata as mm
+
+        cache_file = tmp_path / "cache.yaml"
+        cache_file.write_text(
+            yaml.dump({"context_lengths": {"model@http://x": 64000}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        load_count = 0
+        original_safe_load = yaml.safe_load
+
+        def counting_safe_load(stream):
+            nonlocal load_count
+            load_count += 1
+            return original_safe_load(stream)
+
+        monkeypatch.setattr(mm.yaml, "safe_load", counting_safe_load)
+
+        assert mm.get_cached_context_length("model", "http://x") == 64000
+        assert mm.get_cached_context_length("model", "http://x") == 64000
+        assert load_count == 1
+
+    def test_cache_snapshot_invalidates_when_file_signature_changes(self, tmp_path, monkeypatch):
+        import agent.model_metadata as mm
+
+        cache_file = tmp_path / "cache.yaml"
+        cache_file.write_text(
+            yaml.dump({"context_lengths": {"model@http://x": 64000}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        assert mm.get_cached_context_length("model", "http://x") == 64000
+
+        cache_file.write_text(
+            yaml.dump({"context_lengths": {"model@http://x": 128000, "pad@x": 1}}),
+            encoding="utf-8",
+        )
+
+        assert mm.get_cached_context_length("model", "http://x") == 128000
+
+    def test_save_updates_snapshot_without_reloading_yaml(self, tmp_path, monkeypatch):
+        import agent.model_metadata as mm
+
+        cache_file = tmp_path / "cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        mm.save_context_length("model", "http://x", 64000)
+
+        def fail_safe_load(_stream):
+            raise AssertionError("unchanged cache file should use the in-process snapshot")
+
+        monkeypatch.setattr(mm.yaml, "safe_load", fail_safe_load)
+        assert mm.get_cached_context_length("model", "http://x") == 64000
+
 
 class TestGrok43StaleCacheGuard:
     """Pre-catalog builds resolved grok-4.3 via the generic 'grok-4' catch-all

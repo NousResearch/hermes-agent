@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -201,6 +202,8 @@ MINIMUM_CONTEXT_LENGTH = 64_000
 # restart freshness is handled by the reconcile logic re-probing after expiry.
 _LOCAL_CTX_PROBE_TTL_SECONDS = 30.0
 _LOCAL_CTX_PROBE_CACHE: Dict[tuple, tuple] = {}
+_CONTEXT_CACHE_LOCK = threading.Lock()
+_CONTEXT_CACHE_SNAPSHOT: Optional[Tuple[Path, Optional[Tuple[int, int]], Dict[str, int]]] = None
 
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
@@ -1069,17 +1072,53 @@ def _get_context_cache_path() -> Path:
     return get_hermes_home() / "context_length_cache.yaml"
 
 
+def _context_cache_signature(path: Path) -> Optional[Tuple[int, int]]:
+    """Return a cheap file signature for the context cache, or None if missing."""
+    try:
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_size
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logger.debug("Failed to stat context length cache: %s", e)
+        return None
+
+
+def _store_context_cache_snapshot(
+    path: Path,
+    signature: Optional[Tuple[int, int]],
+    cache: Dict[str, int],
+) -> None:
+    global _CONTEXT_CACHE_SNAPSHOT
+    with _CONTEXT_CACHE_LOCK:
+        _CONTEXT_CACHE_SNAPSHOT = (path, signature, dict(cache))
+
+
 def _load_context_cache() -> Dict[str, int]:
     """Load the model+provider -> context_length cache from disk."""
     path = _get_context_cache_path()
-    if not path.exists():
+    signature = _context_cache_signature(path)
+    with _CONTEXT_CACHE_LOCK:
+        if (
+            _CONTEXT_CACHE_SNAPSHOT is not None
+            and _CONTEXT_CACHE_SNAPSHOT[0] == path
+            and _CONTEXT_CACHE_SNAPSHOT[1] == signature
+        ):
+            return dict(_CONTEXT_CACHE_SNAPSHOT[2])
+    if signature is None:
+        _store_context_cache_snapshot(path, signature, {})
         return {}
     try:
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-        return data.get("context_lengths") or {}
+        cache = data.get("context_lengths", {}) if isinstance(data, dict) else {}
+        if not isinstance(cache, dict):
+            cache = {}
+        _store_context_cache_snapshot(path, signature, cache)
+        return dict(cache)
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
+        _store_context_cache_snapshot(path, signature, {})
         return {}
 
 
@@ -1109,6 +1148,7 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
+        _store_context_cache_snapshot(path, _context_cache_signature(path), cache)
         logger.info("Cached context length %s -> %s tokens", key, f"{length:,}")
     except Exception as e:
         logger.debug("Failed to save context length cache: %s", e)
@@ -1158,6 +1198,7 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
+        _store_context_cache_snapshot(path, _context_cache_signature(path), cache)
     except Exception as e:
         logger.debug("Failed to invalidate context length cache entry %s: %s", key, e)
 

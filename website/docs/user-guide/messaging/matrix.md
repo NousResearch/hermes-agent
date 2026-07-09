@@ -408,30 +408,38 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-In Matrix conversations, Hermes exposes Matrix-specific tools to the agent:
+In Matrix conversations Hermes can expose Discord-style compact Matrix tools:
 
-- `matrix_send_reaction`
-- `matrix_redact_message`
-- `matrix_create_room`
-- `matrix_invite_user`
-- `matrix_fetch_history`
-- `matrix_set_presence`
+- `matrix` — safe room actions: `send_reaction`, `fetch_history`, `set_presence`
+- `matrix_admin` — gated actions: `redact_message`, `invite_user`, `create_room`
 
-These tools are scoped to Matrix contexts and are not available in non-Matrix toolsets. Admin-style tools are disabled by default: redaction requires `MATRIX_TOOLS_ALLOW_REDACTION=true`, invites require `MATRIX_TOOLS_ALLOW_INVITES=true`, and room creation requires `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`. Public room creation also requires `MATRIX_ALLOW_PUBLIC_ROOMS=true`.
-Matrix tools are limited to the current Matrix room by default. Explicit
-cross-room targets require `MATRIX_TOOLS_ALLOW_CROSS_ROOM=true`; redaction and
-invite-like cross-room actions additionally require
-`MATRIX_TOOLS_ALLOW_CROSS_ROOM_DESTRUCTIVE=true`. If `MATRIX_ALLOWED_ROOMS` is
-set, Matrix tools may only target those rooms.
+Enable via `hermes tools` / `platform_toolsets` (same pattern as Discord). The
+`hermes-matrix` platform toolset lists both; **admin stays default-off**.
 
-Reaction controls use:
+Prefer `config.yaml` for non-secret gates:
 
-- ✅ approve once
-- ♾️ approve always
-- ❌ deny
-- number reactions for `/model` choices
+```yaml
+matrix:
+  tools:
+    allow_cross_room: false
+    allow_cross_room_destructive: false
+    allow_redaction: false
+    allow_invites: false
+    allow_room_create: false
+    allow_public_rooms: false
+    # Optional tool target whitelist (room IDs). Empty = no extra whitelist.
+    allowed_rooms: ""
+```
 
-Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
+Legacy env overrides still work when the YAML key is unset:
+`MATRIX_TOOLS_ALLOW_CROSS_ROOM`, `MATRIX_TOOLS_ALLOW_CROSS_ROOM_DESTRUCTIVE`,
+`MATRIX_TOOLS_ALLOW_REDACTION`, `MATRIX_TOOLS_ALLOW_INVITES`,
+`MATRIX_TOOLS_ALLOW_ROOM_CREATE`, `MATRIX_ALLOW_PUBLIC_ROOMS`.
+
+Room-local by default: tools target the current Matrix room unless
+`matrix.tools.allow_cross_room` is true. Destructive cross-room redaction/invite
+also requires `allow_cross_room_destructive`.
+
 
 ### Media Limits
 

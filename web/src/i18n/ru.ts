@@ -287,7 +287,7 @@ export const ru: Translations = {
     nameRule:
       "Допускаются только строчные буквы, цифры, _ и -; имя должно начинаться с буквы или цифры и быть не длиннее 64 символов.",
     invalidName: "Недопустимое имя профиля",
-    cloneFrom: "Клонировать конфигурацию из",
+    cloneFrom: "Клонировать конфигурацию из профиля",
     cloneFromNone: "Не клонировать (пустой профиль)",
     allProfiles: "Профили",
     noProfiles: "Профили не найдены.",
@@ -297,7 +297,7 @@ export const ru: Translations = {
     skills: "Навыки",
     rename: "Переименовать",
     editSoul: "Редактировать SOUL.md",
-    soulSection: "SOUL.md (личность / системный промпт)",
+    soulSection: "SOUL.md (личность / системная инструкция)",
     soulPlaceholder: "# Как должен вести себя этот агент…",
     saveSoul: "Сохранить SOUL",
     soulSaved: "SOUL.md сохранён",
@@ -314,13 +314,13 @@ export const ru: Translations = {
 
   pluginsPage: {
     contextEngineLabel: "Движок контекста",
-    dashboardSlots: "Слоты панели",
+    dashboardSlots: "Слоты панели управления",
     disableRuntime: "Отключить",
     enableAfterInstall: "Включить после установки",
     enableRuntime: "Включить",
     forceReinstall: "Принудительная переустановка (сначала удалить существующую папку)",
     headline:
-      "Поиск, установка, включение и обновление плагинов Hermes (аналог hermes plugins).",
+      "Поиск, установка, включение и обновление плагинов Hermes (аналог команды hermes plugins).",
     identifierLabel: "Git URL или owner/repo",
     inactive: "неактивно",
     installBtn: "Установить из Git",
@@ -330,13 +330,13 @@ export const ru: Translations = {
     missingEnvWarn: "Задайте эти переменные в разделе «Ключи», прежде чем плагин сможет работать:",
     noDashboardTab: "Нет вкладки в панели управления",
     openTab: "Открыть",
-    orphanHeading: "Расширения только для панели (без соответствующего файла plugin.yaml для агента)",
+    orphanHeading: "Расширения только для панели управления (без соответствующего файла plugin.yaml для агента)",
     pluginListHeading: "Установленные плагины",
     providerDefaults: "Встроенный (по умолчанию)",
     providersHeading: "Плагины-провайдеры рантайма",
     providersHint:
       "Записывает memory.provider (пусто = встроенный) и context.engine в config.yaml. Применяется со следующей сессии.",
-    refreshDashboard: "Пересканировать расширения панели",
+    refreshDashboard: "Пересканировать расширения панели управления",
     removeConfirm: "Удалить этот плагин из ~/.hermes/plugins/?",
     removeHint: "Удалять можно только плагины, установленные пользователем в ~/.hermes/plugins.",
     rescanHeading: "Реестр SPA-плагинов",
@@ -593,7 +593,7 @@ export const ru: Translations = {
     loading: "Загрузка доски Kanban…",
     loadFailed: "Не удалось загрузить доску Kanban: ",
     loadFailedHint:
-      "Бэкенд автоматически создаёт kanban.db при первом чтении. Если ошибка повторяется, проверьте логи панели.",
+      "Бэкенд автоматически создаёт kanban.db при первом чтении. Если ошибка повторяется, проверьте логи панели управления.",
     board: "Доска",
     newBoard: "+ Новая доска",
     newBoardTitle: "Новая доска",

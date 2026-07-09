@@ -219,7 +219,7 @@ _HERMES_SECRET_ENV_VARS: "frozenset[str]" = _build_secret_env_vars()
 # Compiled alternation of known secret env var names for KEY=VALUE redaction.
 # Prefix-anchored per line (^) to avoid matching mid-prose identifiers.
 _HERMES_KNOWN_ENV_RE = re.compile(
-    r"^(\s*(?:export\s+)?(" + "|".join(sorted(_HERMES_SECRET_ENV_VARS, key=len, reverse=True)) + r"))\s*=\s*(['\"]?)(\S+?)\3(?=\s*$)",
+    r"^(\s*(?:export\s+)?(" + "|".join(sorted(_HERMES_SECRET_ENV_VARS, key=len, reverse=True)) + r"))\s*=\s*(['\"]?)(\S+?)\3(?=\s*(?:#.*)?$)",
     re.MULTILINE,
 )
 

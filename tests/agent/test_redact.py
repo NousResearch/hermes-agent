@@ -1046,3 +1046,88 @@ class TestRedactCdpUrl:
 
     def test_none_returns_empty(self):
         assert redact_cdp_url(None) == ""
+
+
+class TestKnownHermesSecretEnvVars:
+    """Tests for known Hermes secret env var redaction (code_file=True path).
+
+    The _HERMES_KNOWN_ENV_RE pass runs regardless of code_file mode so that
+    opaque API keys without recognized vendor prefixes are still redacted
+    when cat'ing .env files through the terminal.
+    """
+
+    def test_plain_env_var_redacted_under_code_file(self):
+        """Plain KEY=VALUE with known secret env var name is redacted."""
+        result = redact_sensitive_text(
+            "MISTRAL_API_KEY=abc123opaqueSecretValue", force=True, code_file=True
+        )
+        assert "abc123opaqueSecretValue" not in result
+        assert "MISTRAL_API_KEY=***" in result
+
+    def test_export_env_var_redacted_under_code_file(self):
+        """export KEY=VALUE is redacted."""
+        result = redact_sensitive_text(
+            "export MISTRAL_API_KEY=abc123opaqueSecretValue", force=True, code_file=True
+        )
+        assert "abc123opaqueSecretValue" not in result
+        assert "export MISTRAL_API_KEY=***" in result
+
+    def test_inline_comment_preserved_value_redacted(self):
+        """KEY=VALUE # comment — value redacted, comment preserved (issue #61352 review)."""
+        result = redact_sensitive_text(
+            "MISTRAL_API_KEY=abc123secret # used for tests",
+            force=True, code_file=True,
+        )
+        assert "abc123secret" not in result
+        assert "MISTRAL_API_KEY=*** # used for tests" in result
+
+    def test_export_inline_comment_preserved_value_redacted(self):
+        """export KEY=VALUE # comment — value redacted, comment preserved."""
+        result = redact_sensitive_text(
+            "export MISTRAL_API_KEY=abc123secret # prod key",
+            force=True, code_file=True,
+        )
+        assert "abc123secret" not in result
+        assert "export MISTRAL_API_KEY=*** # prod key" in result
+
+    def test_quoted_value_with_comment_redacted(self):
+        """KEY="value" # comment — quoted value redacted."""
+        result = redact_sensitive_text(
+            'MISTRAL_API_KEY="abc123secret" # comment',
+            force=True, code_file=True,
+        )
+        assert "abc123secret" not in result
+        assert 'MISTRAL_API_KEY="***" # comment' in result
+
+    def test_value_with_spaces_before_comment_redacted(self):
+        """KEY=value   # comment — extra spaces before comment handled."""
+        result = redact_sensitive_text(
+            "GEMINI_API_KEY=AQ.opaqueSecret   # my key",
+            force=True, code_file=True,
+        )
+        assert "AQ.opaqueSecret" not in result
+        assert "GEMINI_API_KEY=***   # my key" in result
+
+    def test_non_secret_var_passes_through_under_code_file(self):
+        """MAX_TOKENS=100 is NOT a known Hermes secret env var — must survive."""
+        result = redact_sensitive_text(
+            "MAX_TOKENS=100", force=True, code_file=True
+        )
+        assert result == "MAX_TOKENS=100"
+
+    def test_multiline_block_with_comments(self):
+        """Several known env vars in a multiline block, some with comments."""
+        text = (
+            "MISTRAL_API_KEY=abc123secret # mistral key\n"
+            "GEMINI_API_KEY=AQ.opaque456\n"
+            "MAX_TOKENS=100\n"
+            "TAVILY_API_KEY=tvly-secret789  # search key\n"
+        )
+        result = redact_sensitive_text(text, force=True, code_file=True)
+        assert "abc123secret" not in result
+        assert "AQ.opaque456" not in result
+        assert "tvly-secret789" not in result
+        assert "MAX_TOKENS=100" in result
+        assert "MISTRAL_API_KEY=*** # mistral key" in result
+        assert "GEMINI_API_KEY=***" in result
+        assert "TAVILY_API_KEY=***  # search key" in result

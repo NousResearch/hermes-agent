@@ -207,6 +207,47 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
     return "\n".join(parts)
 
 
+def _extract_text_from_slack_attachments(attachments: list) -> str:
+    """Extract readable text from legacy Slack message ``attachments``.
+
+    Apps such as Alertmanager, Grafana, PagerDuty, and CI bots post messages
+    with an empty top-level ``text`` and the real content inside ``attachments``
+    (Slack's legacy secondary-content format) or nested Block Kit ``blocks``.
+    Without this, such messages are invisible when the agent reads thread
+    history — e.g. an alert that started the very thread the agent was asked to
+    investigate would come through blank.
+
+    Prefers structured fields (``pretext``/``title``/``text``/``fields``) and
+    only falls back to an attachment's ``fallback`` string when it carries
+    nothing else.
+    """
+    if not attachments:
+        return ""
+
+    lines: list[str] = []
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        got: list[str] = [
+            str(att[key]) for key in ("pretext", "title", "text") if att.get(key)
+        ]
+        for field in att.get("fields", []) or []:
+            if not isinstance(field, dict):
+                continue
+            got += [str(field[k]) for k in ("title", "value") if field.get(k)]
+        nested = att.get("blocks")
+        if nested:
+            block_text = _extract_text_from_slack_blocks(nested)
+            if block_text:
+                got.append(block_text)
+        # Only use the (often duplicative) fallback when nothing structured exists.
+        if not got and att.get("fallback"):
+            got.append(str(att["fallback"]))
+        lines += got
+
+    return "\n".join(line for line in lines if line).strip()
+
+
 def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> str:
     """Return a compact, redacted JSON view of the current message's Block Kit payload."""
     if not blocks:
@@ -3785,7 +3826,18 @@ class SlackAdapter(BasePlatformAdapter):
                 ):
                     continue
 
-                msg_text = msg.get("text", "").strip()
+                msg_text = (msg.get("text") or "").strip()
+                # Apps (Alertmanager, Grafana, CI bots) often post with an empty
+                # ``text`` and the content in blocks/attachments — fall back so
+                # messages that started or populate the thread aren't dropped.
+                if not msg_text:
+                    msg_text = _extract_text_from_slack_blocks(
+                        msg.get("blocks")
+                    ).strip()
+                if not msg_text:
+                    msg_text = _extract_text_from_slack_attachments(
+                        msg.get("attachments")
+                    ).strip()
                 if not msg_text:
                     continue
 
@@ -3889,6 +3941,14 @@ class SlackAdapter(BasePlatformAdapter):
                 return ""
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
             text = (parent.get("text") or "").strip()
+            # App-posted parents (e.g. an Alertmanager alert) carry their content
+            # in blocks/attachments with an empty ``text`` — fall back to those.
+            if not text:
+                text = _extract_text_from_slack_blocks(parent.get("blocks")).strip()
+            if not text:
+                text = _extract_text_from_slack_attachments(
+                    parent.get("attachments")
+                ).strip()
             if bot_uid:
                 text = text.replace(f"<@{bot_uid}>", "").strip()
             return text

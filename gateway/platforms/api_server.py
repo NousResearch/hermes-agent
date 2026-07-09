@@ -1979,6 +1979,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 event_name = event_type.replace("tool.", "tool.")
                 _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
+        agent_ref: list = [None]
+
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": user_message}}))
@@ -1992,6 +1994,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    agent_ref=agent_ref,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -2017,6 +2020,21 @@ class APIServerAdapter(BasePlatformAdapter):
             finally:
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
+
+        async def _interrupt_stream_task(reason: str) -> None:
+            """Stop the agent run cleanly when the SSE client goes away."""
+            agent = agent_ref[0]
+            if agent is not None:
+                try:
+                    agent.interrupt(reason)
+                except Exception:
+                    pass
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
         task = asyncio.create_task(_run_and_signal())
         try:
@@ -2051,10 +2069,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 data = json.dumps(payload, ensure_ascii=False)
                 await response.write(f"event: {name}\ndata: {data}\n\n".encode("utf-8"))
                 last_write = time.monotonic()
-        except (asyncio.CancelledError, ConnectionResetError):
-            task.cancel()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError) as exc:
+            # Client closed the SSE stream mid-run. Interrupt the agent so it
+            # stops LLM/tool work instead of writing to a dead transport.
+            await _interrupt_stream_task("SSE client disconnected")
+            logger.info(
+                "[api_server] session SSE client disconnected for %s (%s); agent interrupted",
+                session_id,
+                type(exc).__name__,
+            )
+        except asyncio.CancelledError:
+            await _interrupt_stream_task("SSE task cancelled")
+            logger.info("[api_server] session SSE task cancelled for %s", session_id)
             raise
         except Exception as exc:
+            await _interrupt_stream_task(f"SSE stream error: {type(exc).__name__}")
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
 

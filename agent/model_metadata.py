@@ -240,6 +240,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Gemma (open models served via AI Studio)
     "gemma-4": 256000,  # Gemma 4 family
     "gemma4": 256000,  # Ollama-style naming (e.g. gemma4:31b-cloud)
+    "gemma4:qat": 256000,  # QAT variants (e.g. gemma4:27b-qat)
     "gemma-4-31b": 256000,
     "gemma-3": 131072,
     "gemma": 8192,  # fallback for older gemma models

@@ -1052,13 +1052,23 @@ def _load_context_cache() -> Dict[str, int]:
         return {}
 
 
+def _context_cache_key(model: str, base_url: str) -> str:
+    """Canonical ``model@base_url`` key for the persistent context cache.
+
+    Trailing slashes are stripped so ``http://host/v1`` and
+    ``http://host/v1/`` share one entry instead of creating duplicates
+    that can go stale independently.
+    """
+    return f"{model}@{(base_url or '').rstrip('/')}"
+
+
 def save_context_length(model: str, base_url: str, length: int) -> None:
     """Persist a discovered context length for a model+provider combo.
 
     Cache key is ``model@base_url`` so the same model name served from
     different providers can have different limits.
     """
-    key = f"{model}@{base_url}"
+    key = _context_cache_key(model, base_url)
     cache = _load_context_cache()
     if cache.get(key) == length:
         return  # already stored
@@ -1075,18 +1085,28 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
 
 def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
     """Look up a previously discovered context length for model+provider."""
-    key = f"{model}@{base_url}"
+    key = _context_cache_key(model, base_url)
     cache = _load_context_cache()
-    return cache.get(key)
+    hit = cache.get(key)
+    if hit is not None:
+        return hit
+    # Legacy rows written before key normalization may carry a trailing
+    # slash — honor them rather than re-probing.
+    if base_url and base_url != base_url.rstrip("/"):
+        return cache.get(f"{model}@{base_url}")
+    return None
 
 
 def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     """Drop a stale cache entry so it gets re-resolved on the next lookup."""
-    key = f"{model}@{base_url}"
+    key = _context_cache_key(model, base_url)
     cache = _load_context_cache()
-    if key not in cache:
+    # Also clear any legacy un-normalized row for the same pair.
+    legacy_key = f"{model}@{base_url}"
+    if key not in cache and legacy_key not in cache:
         return
-    del cache[key]
+    cache.pop(key, None)
+    cache.pop(legacy_key, None)
     path = _get_context_cache_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1473,6 +1493,12 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
     hosting behind a reverse proxy, etc.  For non-Ollama servers the POST
     returns 404/405 quickly; the function handles errors gracefully.
 
+    Results are cached in ``_LOCAL_CTX_PROBE_CACHE`` (same 30s TTL,
+    positive-only — see ``_query_local_context_length``) so back-to-back
+    resolutions during one startup issue a single POST instead of one per
+    call site. Failures are never memoized: a server that isn't up yet must
+    be re-probed once it comes up.
+
     For hosted servers the GGUF ``model_info.*.context_length`` is the
     authoritative source: the user can't set their own ``num_ctx``, and the
     OpenAI-compat ``/v1/models`` endpoint correctly omits ``context_length``
@@ -1484,6 +1510,25 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
     The order is flipped vs ``query_ollama_num_ctx()`` because local users
     control ``num_ctx`` themselves; hosted users can't.
     """
+    import time as _time
+
+    # Namespaced cache key: shares the TTL store with
+    # _query_local_context_length but never collides with its (model, url)
+    # keys — the two probes can return different values for the same pair.
+    cache_key = ("ollama_show", _strip_provider_prefix(model), base_url.rstrip("/"))
+    now = _time.monotonic()
+    cached = _LOCAL_CTX_PROBE_CACHE.get(cache_key)
+    if cached is not None and (now - cached[1]) < _LOCAL_CTX_PROBE_TTL_SECONDS:
+        return cached[0]
+
+    result = _query_ollama_api_show_uncached(model, base_url, api_key=api_key)
+    if result:  # positive-only — never memoize a failed probe
+        _LOCAL_CTX_PROBE_CACHE[cache_key] = (result, now)
+    return result
+
+
+def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+    """Uncached body of ``_query_ollama_api_show`` — one POST to ``/api/show``."""
     import httpx
 
     server_url = base_url.rstrip("/")

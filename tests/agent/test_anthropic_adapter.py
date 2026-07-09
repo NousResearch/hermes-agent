@@ -1710,6 +1710,37 @@ class TestBuildAnthropicKwargs:
 # ---------------------------------------------------------------------------
 
 
+    def test_unmapped_effort_warns_and_falls_back_to_medium(self, caplog):
+        """minimal/max have no THINKING_BUDGET entry on the manual
+        (non-adaptive) path; this must be visible via a warning, not
+        silently treated the same as medium."""
+        import logging
+        with caplog.at_level(logging.WARNING):
+            kwargs = build_anthropic_kwargs(
+                model="minimax-m2",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=None,
+                max_tokens=4096,
+                reasoning_config={"effort": "minimal"},
+            )
+        assert kwargs["thinking"]["budget_tokens"] == 8000
+        assert any("THINKING_BUDGET" in r.message for r in caplog.records)
+
+    def test_mapped_effort_does_not_warn(self, caplog):
+        """Sanity check: a properly-mapped effort level should NOT warn."""
+        import logging
+        with caplog.at_level(logging.WARNING):
+            kwargs = build_anthropic_kwargs(
+                model="minimax-m2",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=None,
+                max_tokens=4096,
+                reasoning_config={"effort": "high"},
+            )
+        assert kwargs["thinking"]["budget_tokens"] == 16000
+        assert not any("THINKING_BUDGET" in r.message for r in caplog.records)
+
+
 class TestGetAnthropicMaxOutput:
     def test_opus_4_6(self):
         from agent.anthropic_adapter import _get_anthropic_max_output

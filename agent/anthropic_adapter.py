@@ -2641,7 +2641,14 @@ def build_anthropic_kwargs(
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
-            budget = THINKING_BUDGET.get(effort, 8000)
+            if effort not in THINKING_BUDGET:
+                logger.warning(
+                    "reasoning_effort=%r has no entry in THINKING_BUDGET for "
+                    "this provider transport; falling back to 'medium' "
+                    "budget (%d tokens)",
+                    effort, THINKING_BUDGET["medium"],
+                )
+            budget = THINKING_BUDGET.get(effort, THINKING_BUDGET["medium"])
             if _supports_adaptive_thinking(model):
                 kwargs["thinking"] = {
                     "type": "adaptive",

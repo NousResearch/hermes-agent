@@ -213,6 +213,35 @@ See `hermes claw migrate --help` for all options, or use the `openclaw-migration
 
 ---
 
+## Telegram group Q&A (optional)
+
+Telegram group Q&A is disabled by default. When explicitly enabled, only allowed group/supergroup chat IDs can use `/ask`, `/question`, `/status`, and `/brief` as read-only Q&A commands. Direct bot mentions and replies to bot messages use the same path; other group messages are ignored and every mutation is blocked before Gateway/LLM.
+
+The adapter uses `neo.group_qa` from the adjacent `neo-marierie` workspace and only its public projection. `trusted` is for genuinely trusted friend groups only: it may answer wake/sleep times, meals, location, work, completed/todo items, and a minimal read-only HRT cycle summary. It never reads or answers `private spark`; HRT notes are excluded; and mutations remain blocked.
+
+```bash
+TELEGRAM_GROUP_QA_ENABLED=false
+TELEGRAM_ALLOWED_GROUP_CHATS=
+TELEGRAM_GROUP_QA_DETAIL_LEVEL=safe
+TELEGRAM_GROUP_QA_BRIEF_MAX_CHARS=700
+TELEGRAM_GROUP_QA_ALLOWED_TOPICS=wake,sleep,meal,outing,work_now,work_time,completed_today,todo_today,availability,light_status,hrt
+TELEGRAM_GROUP_QA_DENY_SENSITIVE=true
+TELEGRAM_GROUP_QA_MAX_ANSWER_CHARS=300
+TELEGRAM_GROUP_QA_PUBLIC_PROJECT_ALLOWLIST=
+```
+
+`/brief` uses a Bot API Rich Message first: its title and section headings are structured, times are emphasized, and each meal's parenthetical aside is shown as a subtle note. If Rich Message is unsupported or Telegram rejects it, Hermes sends the same safe plain-text fallback. Korean text is kept intact; only Telegram Markdown control characters in projected user text are escaped immediately before rich delivery. `private spark` and HRT raw notes are excluded in both forms. `TELEGRAM_ALLOWED_GROUP_CHATS` is the preferred name. If it is empty, Hermes falls back to the existing `TELEGRAM_GROUP_ALLOWED_CHATS`. `TELEGRAM_GROUP_QA_DENY_SENSITIVE=false` is deprecated compatibility only; sensitive-topic refusal remains enforced. Group menus show only `/brief`, `/ask`, `/question`, `/status`; private DM menus stay unchanged. The command-menu change takes effect after service restart; this change does not restart it.
+
+The Hermes venv must be able to import `neo.group_qa` (for example, the `neo-marierie` workspace is installed editable). After editing `/home/opc/.hermes/.env`, apply it outside a Hermes chat session:
+
+```bash
+systemctl --user restart hermes-gateway.service
+systemctl --user status hermes-gateway.service --no-pager
+journalctl --user -u hermes-gateway.service -n 80 --no-pager
+```
+
+---
+
 ## Contributing
 
 We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.

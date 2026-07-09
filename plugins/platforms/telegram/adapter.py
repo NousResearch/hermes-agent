@@ -17,6 +17,8 @@ import html as _html
 import re
 import threading
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
@@ -519,6 +521,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
+        # Skip the CJK rich-message garble guard — Telegram Desktop can
+        # garble CJK glyphs in rich messages (#47653), so the adapter skips
+        # rich for CJK content by default.  Korean/CJK-primary users can
+        # opt in with extra.skip_cjk_rich_check: true.
+        self._skip_cjk_rich_check: bool = self._coerce_bool_extra("skip_cjk_rich_check", False)
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -1340,6 +1347,8 @@ class TelegramAdapter(BasePlatformAdapter):
         The legacy MarkdownV2 path renders the same text cleanly, so skip rich
         delivery up front until affected clients age out.
         """
+        if getattr(self, "_skip_cjk_rich_check", False):
+            return False
         return bool(content and self._RICH_CJK_RE.search(content))
 
     def _needs_rich_rendering(self, content: str) -> bool:
@@ -2865,16 +2874,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 max_commands = telegram_menu_max_commands()
                 menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+                group_commands = self._group_qa_menu_commands(BotCommand)
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall
                 # through to AllGroupChats or Default).
-                for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
+                for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats):
                     scope_name = getattr(scope_cls, "__name__", str(scope_cls))
                     try:
                         await self._bot.set_my_commands(bot_commands, scope=scope_cls())
                         logger.info("[%s] set_my_commands OK for scope %s (%d cmds)", self.name, scope_name, len(bot_commands))
                     except Exception as scope_err:
                         logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name, scope_err)
+                await self._bot.set_my_commands(group_commands, scope=BotCommandScopeAllGroupChats())
                 # Forum topics don't inherit AllGroupChats — Telegram resolves
                 # commands via BotCommandScopeChat(chat_id) for forum groups.
                 # Lazy registration happens in _ensure_forum_commands on first
@@ -6604,7 +6615,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Return Telegram chats authorized at group scope."""
         raw = self.config.extra.get("group_allowed_chats")
         if raw is None:
-            raw = os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS", "")
+            raw = os.getenv("TELEGRAM_ALLOWED_GROUP_CHATS", "").strip()
+            if not raw:
+                raw = os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -7330,9 +7343,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if chat_id in self._forum_command_registered:
                     return
                 from telegram import BotCommand, BotCommandScopeChat
-                from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=telegram_menu_max_commands())
-                bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+                bot_commands = self._group_qa_menu_commands(BotCommand)
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)
                 logger.info("[%s] Lazy-registered %d commands for forum chat %s", self.name, len(bot_commands), chat_id)
@@ -7358,6 +7369,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
+            return
+        if self._is_group_chat(msg) and await self._handle_group_qa_text(msg):
             return
         # Early user-level auth check: reject unauthorized users before any
         # text batching, observe-buffer persistence, event building, or response
@@ -7387,6 +7400,9 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
+        if self._is_group_chat(msg) and await self._handle_group_qa_command(msg):
+            # Must not reach the personal Gateway/LLM flow.
+            return
         if not self._should_process_message(msg, is_command=True):
             return
         if not self._is_user_authorized_from_message(msg):
@@ -7403,6 +7419,280 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
+
+    @staticmethod
+    def _group_qa_command_parts(text: str) -> tuple[str, str] | None:
+        """Parse read-only group Q&A commands, including @bot suffixes."""
+        match = re.match(r"^/(ask|question|status|brief)(?:@[A-Za-z0-9_]+)?(?:\s+(.*))?$", text.strip(), re.IGNORECASE | re.DOTALL)
+        if not match:
+            return None
+        return match.group(1).casefold(), (match.group(2) or "").strip()
+
+    @staticmethod
+    def _group_qa_menu_commands(bot_command_cls):
+        # Groups are mention/reply-first. Private-DM commands are registered
+        # through the normal Telegram scopes and remain unchanged.
+        return []
+
+    @staticmethod
+    def _trusted_group_model_prompt(context: str) -> str:
+        return """너는 마리리의 허용된 친구 단체방에서만 답하는 네오마리리야.
+한국어 반말로 1~4문장, 부드럽고 가볍게 답해. 이 방에서는 read-only다.
+기록 변경, 체크인/체크아웃, 프로젝트·일정·파일 변경과 모든 tool 사용은 하지 마.
+모르면 '기록상으론 잘 모르겠어'라고 해. spark/private spark, credential, token,
+.env, DM 원문, message-log 원문, 계좌·세금, 정확한 집 주소는 절대 말하지 마.
+HRT는 아래 read-only 요약 범위에서만 답해.
+
+""" + context
+
+    @staticmethod
+    def _trusted_group_state_path() -> Path:
+        return Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))) / "cache" / "telegram_trusted_group_sessions.json"
+
+    def _trusted_group_model_session(self, message: Message, idle_minutes: int) -> tuple[str, str]:
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        thread_id = self._effective_message_thread_id(message)
+        base = f"telegram:trusted_forum:{chat_id}:{thread_id}" if thread_id else f"telegram:trusted_group:{chat_id}"
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+        path = self._trusted_group_state_path()
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except Exception:
+            raw = {}
+        record = raw.get(base) if isinstance(raw, dict) else None
+        generation = record.get("generation_id") if isinstance(record, dict) else None
+        try:
+            last = datetime.fromisoformat(record.get("last_bot_reply_at")) if isinstance(record, dict) else None
+        except (TypeError, ValueError):
+            last = None
+        if not generation or not last or (now - last).total_seconds() > idle_minutes * 60:
+            generation = now.strftime("%Y%m%dT%H%M%S")
+        return base, f"{base}:{generation}"
+
+    async def _handle_trusted_group_model(self, message: Message, question: str, settings) -> bool:
+        try:
+            from neo.group_qa import build_group_public_status, build_trusted_group_model_context, is_group_model_hard_deny
+            from neo.paths import NeoPaths
+        except Exception:
+            return True
+        if is_group_model_hard_deny(question):
+            await self._reply_group_qa(message, "그건 여기선 말 못 해.")
+            return True
+        try:
+            status = build_group_public_status(
+                NeoPaths(Path(os.getenv("NEO_MARIERIE_ROOT", "/home/opc/neo-marierie"))),
+                public_project_allowlist=settings.public_project_allowlist,
+                detail_level="trusted",
+            )
+            context = build_trusted_group_model_context(status)
+            base, session_id = self._trusted_group_model_session(message, settings.model_session_idle_minutes)
+        except Exception:
+            logger.warning("[%s] Trusted group model projection failed", self.name)
+            await self._reply_group_qa(message, "기록상으론 잘 모르겠어")
+            return True
+        event = self._build_message_event(message, MessageType.TEXT)
+        event.text = question
+        event.source = dataclasses.replace(event.source, user_id=None, user_id_alt=None, session_key_override=base, session_id_override=session_id, read_only_route=True)
+        event.channel_prompt = self._trusted_group_model_prompt(context)
+        event.metadata["trusted_group_model_route"] = True
+        event.metadata["trusted_group_state_key"] = base
+        # Apply group-route-only model/reasoning overrides via the gateway
+        # runner's session-scoped override maps.  These are picked up by
+        # _resolve_session_agent_runtime (highest priority) and
+        # _resolve_session_reasoning_config respectively.
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        _model_override_applied = False
+        _reasoning_override_applied = False
+        if runner is not None and settings.model_override:
+            overrides = getattr(runner, "_session_model_overrides", None)
+            if isinstance(overrides, dict):
+                overrides[base] = {"model": settings.model_override}
+                _model_override_applied = True
+        if runner is not None and settings.reasoning_effort:
+            try:
+                from hermes_constants import parse_reasoning_effort
+                reasoning_cfg = parse_reasoning_effort(settings.reasoning_effort)
+                if reasoning_cfg is not None:
+                    set_reasoning = getattr(runner, "_set_session_reasoning_override", None)
+                    if callable(set_reasoning):
+                        set_reasoning(base, reasoning_cfg)
+                        _reasoning_override_applied = True
+            except Exception:
+                pass
+        try:
+            await self.handle_message(event)
+        finally:
+            if _model_override_applied:
+                overrides = getattr(runner, "_session_model_overrides", None)
+                if isinstance(overrides, dict):
+                    overrides.pop(base, None)
+            if _reasoning_override_applied:
+                set_reasoning = getattr(runner, "_set_session_reasoning_override", None)
+                if callable(set_reasoning):
+                    set_reasoning(base, None)
+        return True
+
+    def _group_qa_addressed_text(self, message: Message) -> str | None:
+        text = str(getattr(message, "text", "") or "").strip()
+        if not text or text.startswith("/"):
+            return None
+        username = (getattr(getattr(self, "_bot", None), "username", None) or "").lstrip("@")
+        mentioned = bool(username and re.search(rf"(?<![A-Za-z0-9_])@{re.escape(username)}\b", text, re.IGNORECASE))
+        if not mentioned and not self._is_reply_to_bot(message):
+            return None
+        return re.sub(rf"(?<![A-Za-z0-9_])@{re.escape(username)}\b", "", text, flags=re.IGNORECASE).strip(" ,:：") if mentioned else text
+
+    async def _reply_group_qa(self, message: Message, content: str) -> None:
+        """Send a generic, non-diagnostic group-Q&A response."""
+        try:
+            await message.reply_text(content)
+        except Exception:
+            logger.warning("[%s] Unable to send group Q&A reply", self.name)
+
+    @staticmethod
+    def _escape_group_qa_rich_text(value: object) -> str:
+        """Escape public projection text before embedding it in rich Markdown."""
+        text = " ".join(str(value or "").split())
+        return re.sub(r"([\\`*_{}\[\]()<>#+\-.!|~])", r"\\\1", text)
+
+    def _render_group_qa_brief_rich(self, payload: object) -> str | None:
+        """Render neo's portable public payload as Bot API Rich Message markdown."""
+        if not isinstance(payload, dict) or payload.get("kind") != "group_qa_brief":
+            return None
+        sections = payload.get("sections")
+        if not isinstance(sections, list):
+            return None
+        title = self._escape_group_qa_rich_text(payload.get("title") or "오늘 브리프")
+        lines = [f"# {title}"]
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            heading = self._escape_group_qa_rich_text(section.get("title"))
+            rows = section.get("rows")
+            if not heading or not isinstance(rows, list):
+                continue
+            lines.extend(["", f"## {heading}"])
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                text = self._escape_group_qa_rich_text(row.get("text"))
+                if not text:
+                    continue
+                time = self._escape_group_qa_rich_text(row.get("time"))
+                lines.append(f"**{time}** {text}" if time else text)
+                note = self._escape_group_qa_rich_text(row.get("note"))
+                if note:
+                    # Rich Markdown has no portable muted inline node; italics
+                    # is the supported subtle fallback for the secondary note.
+                    lines.append(f"_{note}_")
+        rendered = "\n".join(lines).strip()
+        return rendered if rendered else None
+
+    async def _reply_group_qa_brief(self, message: Message, response: object) -> None:
+        """Prefer Bot API Rich Message for `/brief`, then use safe plain text."""
+        fallback = str(getattr(response, "text", "") or "기록상으로는 잘 모르겠어.")
+        rich_markdown = self._render_group_qa_brief_rich(getattr(response, "rich", None))
+        if rich_markdown and self._bot_supports_rich():
+            try:
+                chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+                reply_to = getattr(message, "message_id", None)
+                thread_id = self._effective_message_thread_id(message)
+                metadata = {"thread_id": thread_id} if thread_id else None
+                result = await self._try_send_rich(
+                    chat_id, rich_markdown,
+                    str(reply_to) if reply_to is not None else None,
+                    metadata,
+                )
+                if result is not None:
+                    # A transient result deliberately does not legacy-resend:
+                    # Telegram may already have accepted the rich message.
+                    if result.success:
+                        return
+                    logger.warning("[%s] Group /brief rich delivery did not complete", self.name)
+                    return
+            except Exception:
+                # Rendering/delivery must never take down this read-only path.
+                logger.warning("[%s] Group /brief rich rendering failed; using fallback", self.name)
+        await self._reply_group_qa(message, fallback)
+
+    async def _handle_group_qa_command(self, message: Message) -> bool:
+        """Use neo's public projection for group commands and fail closed."""
+        parsed = self._group_qa_command_parts(str(getattr(message, "text", "")))
+        if parsed is None:
+            # No group command, including mutations, reaches the personal flow.
+            return True
+        command, question = parsed
+        try:
+            from neo.group_qa import (
+                answer_group_question, build_group_brief_response,
+                build_group_public_status,
+                classify_group_question,
+                normalize_chat_id,
+                parse_group_qa_settings,
+            )
+            from neo.paths import NeoPaths
+        except Exception:
+            # Optional dependency unavailable: no internal detail to the group.
+            logger.warning("[%s] Group Q&A core unavailable; command ignored", self.name)
+            return True
+        settings = parse_group_qa_settings(os.environ)
+        chat_id = normalize_chat_id(getattr(getattr(message, "chat", None), "id", ""))
+        if not settings.enabled or not settings.allowed_group_chats or chat_id not in settings.allowed_group_chats:
+            return True
+        # Existing Hermes sender authorization remains an extra gate.
+        if not self._is_user_authorized_from_message(message):
+            return True
+        if settings.detail_level == "trusted" and settings.model_enabled:
+            prompt = question or ("오늘 요약 알려줘" if command == "brief" else "짧게 상태 알려줘")
+            return await self._handle_trusted_group_model(message, prompt, settings)
+        if command == "brief":
+            try:
+                root = Path(os.getenv("NEO_MARIERIE_ROOT", "/home/opc/neo-marierie"))
+                public_status = build_group_public_status(NeoPaths(root), public_project_allowlist=settings.public_project_allowlist, detail_level=settings.detail_level)
+                response = build_group_brief_response(public_status, max_chars=settings.brief_max_chars, detail_level=settings.detail_level)
+            except Exception:
+                logger.warning("[%s] Group /brief projection failed", self.name)
+                await self._reply_group_qa(message, "기록상으로는 잘 모르겠어.")
+                return True
+            await self._reply_group_qa_brief(message, response)
+            return True
+        if command == "status" and not question:
+            await self._reply_group_qa(message, "단체방에서는 /status 뒤에 짧은 질문을 붙여줘.")
+            return True
+        classification = classify_group_question(question, settings.allowed_topics)
+        try:
+            root = Path(os.getenv("NEO_MARIERIE_ROOT", "/home/opc/neo-marierie"))
+            public_status = build_group_public_status(
+                NeoPaths(root), public_project_allowlist=settings.public_project_allowlist, detail_level=settings.detail_level,
+            )
+            answer = answer_group_question(classification, public_status, max_chars=settings.max_answer_chars)
+        except Exception:
+            logger.warning("[%s] Group Q&A projection failed", self.name)
+            await self._reply_group_qa(message, "기록상으로는 잘 모르겠어.")
+            return True
+        # Question text and projection fields are deliberately not logged.
+        logger.info("[%s] Group Q&A command handled for chat %s (%s)", self.name, chat_id, command)
+        await self._reply_group_qa(message, answer)
+        return True
+
+    async def _handle_group_qa_text(self, message: Message) -> bool:
+        question = self._group_qa_addressed_text(message)
+        if question is None:
+            return False
+        try:
+            from neo.group_qa import answer_group_question, build_group_public_status, classify_group_question, normalize_chat_id, parse_group_qa_settings
+            from neo.paths import NeoPaths
+        except Exception:
+            return True
+        settings = parse_group_qa_settings(os.environ)
+        chat_id = normalize_chat_id(getattr(getattr(message, "chat", None), "id", ""))
+        if not settings.enabled or chat_id not in settings.allowed_group_chats or not self._is_user_authorized_from_message(message):
+            return True
+        if settings.detail_level == "trusted" and settings.model_enabled:
+            return await self._handle_trusted_group_model(message, question, settings)
+        status = build_group_public_status(NeoPaths(Path(os.getenv("NEO_MARIERIE_ROOT", "/home/opc/neo-marierie"))), public_project_allowlist=settings.public_project_allowlist, detail_level=settings.detail_level)
+        await self._reply_group_qa(message, answer_group_question(classify_group_question(question, settings.allowed_topics), status, max_chars=settings.max_answer_chars))
+        return True
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
@@ -8403,6 +8693,21 @@ class TelegramAdapter(BasePlatformAdapter):
         another agent run to swap it to 👍/👎 — which never happens if the
         cancellation was the last activity in the chat.
         """
+        if event.metadata.get("trusted_group_model_route") and outcome == ProcessingOutcome.SUCCESS:
+            try:
+                path = self._trusted_group_state_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+                if not isinstance(raw, dict):
+                    raw = {}
+                base = str(event.metadata.get("trusted_group_state_key") or "")
+                if base and getattr(event.source, "session_id_override", None):
+                    raw[base] = {"generation_id": event.source.session_id_override.rsplit(":", 1)[-1], "last_bot_reply_at": datetime.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")}
+                    tmp = path.with_suffix(".tmp")
+                    tmp.write_text(json.dumps(raw, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+                    tmp.replace(path)
+            except Exception:
+                logger.warning("[%s] Trusted group model state update failed", self.name)
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)

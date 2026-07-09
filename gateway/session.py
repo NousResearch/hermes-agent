@@ -156,6 +156,12 @@ class SessionSource:
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
 
+    # Adapter-local overrides for routes that must never share normal platform
+    # history. They are intentionally excluded from wire serialization.
+    session_key_override: Optional[str] = None
+    session_id_override: Optional[str] = None
+    read_only_route: bool = False
+
     # Internal, wire-INVISIBLE trust signal: True when this event was delivered
     # to the gateway over the per-instance-authenticated relay WebSocket (the
     # Team Gateway connector). The connector authenticates the gateway's socket
@@ -853,6 +859,8 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    if source.session_key_override:
+        return source.session_key_override
     ns = _session_key_namespace(profile)
     platform = source.platform.value
     if source.chat_type == "dm":
@@ -1445,6 +1453,12 @@ class SessionStore:
         Creates a session record in SQLite when a new session starts.
         """
         session_key = self._generate_session_key(source)
+        if source.session_id_override:
+            with self._lock:
+                self._ensure_loaded_locked()
+                existing = self._entries.get(session_key)
+                if existing and existing.session_id != source.session_id_override:
+                    force_new = True
         now = _now()
 
         # SQLite calls are made outside the lock to avoid holding it during I/O.
@@ -1576,7 +1590,7 @@ class SessionStore:
                     return recovered_entry
 
             # Create new session
-            session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            session_id = source.session_id_override or f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
             entry = SessionEntry(
                 session_key=session_key,

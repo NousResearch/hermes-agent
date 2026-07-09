@@ -16471,6 +16471,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        # Trusted Telegram group turns are adapter-authenticated read-only
+        # conversations. Never expose any tool schema, even if Telegram's
+        # normal platform configuration grants one to private DMs.
+        if getattr(source, "read_only_route", False):
+            enabled_toolsets = []
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

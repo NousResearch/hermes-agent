@@ -535,6 +535,83 @@ def remove_folder(conn: sqlite3.Connection, project_id: str, path: str) -> bool:
     return cur.rowcount > 0
 
 
+def move_folder(
+    conn: sqlite3.Connection,
+    project_id: str,
+    old_path: str,
+    new_path: str,
+) -> str:
+    """Move/redirect a folder to a new absolute path on the same project.
+
+    Preserves the folder's ``is_primary`` / ``label`` / ``added_at`` and updates
+    ``projects.primary_path`` when the moved folder was the project's primary
+    repo. Path normalization (absolute, user-expanded, no trailing separator) is
+    applied to the new path. Returns the normalized new path.
+
+    Raises ``ValueError`` when ``old_path`` is not in the project, when the
+    normalized ``new_path`` collides with another folder already on the same
+    project, or when the project itself is missing.
+    """
+    old_norm = _normalize_path(old_path)
+    new_norm = _normalize_path(new_path)
+
+    if not new_norm:
+        raise ValueError("new folder path must not be empty")
+
+    if get_project(conn, project_id) is None:
+        raise ValueError(f"no such project: {project_id}")
+
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT is_primary, label, added_at FROM project_folders "
+            "WHERE project_id = ? AND path = ?",
+            (project_id, old_norm),
+        ).fetchone()
+
+        if row is None:
+            raise ValueError(f"folder not in project: {old_norm}")
+
+        if old_norm == new_norm:
+            # No-op move: surface success with the existing path so callers can
+            # treat "submitted same path" as idempotent.
+            return new_norm
+
+        # Refuse the move if the target would collide with another folder on
+        # the same project (PRIMARY KEY would silently no-op an INSERT OR
+        # IGNORE; an UPDATE down below would clobber the existing row).
+        dup = conn.execute(
+            "SELECT 1 FROM project_folders "
+            "WHERE project_id = ? AND path = ?",
+            (project_id, new_norm),
+        ).fetchone()
+        if dup is not None:
+            raise ValueError(
+                f"project already has folder at {new_norm}; "
+                "remove it first or pick a different path"
+            )
+
+        conn.execute(
+            "UPDATE project_folders SET path = ? "
+            "WHERE project_id = ? AND path = ?",
+            (new_norm, project_id, old_norm),
+        )
+
+        # is_primary / label / added_at are preserved by the UPDATE above
+        # (only `path` is touched). The PRIMARY KEY on (project_id, path) lets
+        # the UPDATE land cleanly: it retargets the row in place.
+
+        # Reflect the move on projects.primary_path if this folder was primary,
+        # so external readers (project_for_path, the desktop tree view) see the
+        # new path immediately without a full re-add.
+        if row["is_primary"]:
+            conn.execute(
+                "UPDATE projects SET primary_path = ? WHERE id = ?",
+                (new_norm, project_id),
+            )
+
+    return new_norm
+
+
 def _set_primary_locked(
     conn: sqlite3.Connection, project_id: str, path: str
 ) -> None:

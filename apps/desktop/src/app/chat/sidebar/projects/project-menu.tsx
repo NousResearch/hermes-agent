@@ -18,9 +18,11 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import { $panesFlipped, dismissAutoProject } from '@/store/layout'
 import {
+  $projects,
   copyPath,
   deleteProject,
   openProjectAddFolder,
+  openProjectEditFolders,
   openProjectRename,
   revealPath,
   setActiveProject,
@@ -87,6 +89,14 @@ export function ProjectMenu({
 }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
+  const projects = useStore($projects)
+  // The full ProjectInfo (with the folder list) lives in the `$projects` atom,
+  // not on the SidebarProjectTree node we render in the kebab menu. Look it up
+  // here so the Edit folders menu can disable itself for projects with zero
+  // folders (auto projects are also excluded since the menu is hidden for them
+  // a few lines down via `!project.isAuto`).
+  const projectInfo = projects.find(proj => proj.id === project.id)
+  const folderCount = projectInfo?.folders.length ?? 0
   const target = { id: project.id, name: project.label }
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
@@ -157,6 +167,13 @@ export function ProjectMenu({
               <DropdownMenuItem onSelect={() => openProjectAddFolder(target)}>
                 <Codicon name="new-folder" size="0.875rem" />
                 <span>{p.menuAddFolder}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!project.path || folderCount === 0}
+                onSelect={() => openProjectEditFolders(target)}
+              >
+                <Codicon name="folder-library" size="0.875rem" />
+                <span>{p.menuEditFolders}</span>
               </DropdownMenuItem>
               <DropdownMenuItem disabled={isActive} onSelect={() => void setActiveProject(project.id)}>
                 <Codicon name="target" size="0.875rem" />

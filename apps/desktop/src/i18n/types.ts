@@ -1243,7 +1243,18 @@ export interface Translations {
       createTitle: string
       createDesc: string
       renameTitle: string
-      addFolderTitle: string
+            addFolderTitle: string
+      editFoldersTitle: string
+      editFoldersDesc: string
+      editFoldersEmpty: string
+      editFolderPick: string
+      editFolderSave: string
+      editFolderRevert: string
+      editFolderConflict: string
+      editFolderChanged: string
+      editFoldersDone: string
+      editFoldersFailed: string
+      editFoldersMoveFailed: string
       namePlaceholder: string
       foldersLabel: string
       ideaLabel: string
@@ -1261,6 +1272,7 @@ export interface Translations {
       menuAppearance: string
       noColor: string
       menuAddFolder: string
+      menuEditFolders: string
       menuSetActive: string
       menuDelete: string
       reveal: string

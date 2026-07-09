@@ -575,6 +575,43 @@ export async function addProjectFolder(
   reconcileProjects()
 }
 
+// Move/redirect a project's folder to a new absolute path without removing it.
+// Preserves the folder's is_primary / label / added_at on the backend; the
+// optimistic cache updates the row in place and, when the moved folder was the
+// primary, retargets projects.primary_path + the tree node's `path`. A failed
+// write restores the snapshot so the UI rolls back cleanly.
+export async function moveProjectFolder(id: string, oldPath: string, newPath: string): Promise<void> {
+  const snap = snapshotProjects()
+  const oldTrimmed = oldPath.trim()
+  const newTrimmed = newPath.trim()
+
+  $projects.set(
+    snap.projects.map(proj => {
+      if (proj.id !== id) return proj
+
+      const folders = (proj.folders ?? []).map(f =>
+        f.path === oldTrimmed ? { ...f, path: newTrimmed } : f
+      )
+
+      const primaryTouched = proj.primary_path === oldTrimmed
+      return {
+        ...proj,
+        folders,
+        ...(primaryTouched && { primary_path: newTrimmed })
+      }
+    })
+  )
+
+  if (snap.tree.some(node => node.id === id && node.path === oldTrimmed)) {
+    $projectTree.set(snap.tree.map(node => (node.id === id ? { ...node, path: newTrimmed } : node)))
+  }
+
+  await persistOrRollback(snap, () =>
+    gatewayRequest('projects.move_folder', { id, path: oldTrimmed, new_path: newTrimmed })
+  )
+  reconcileProjects()
+}
+
 // True when the session currently open in the main pane belongs to `projectId`.
 // Used so deleting a project you have a session open from kicks you back to the
 // intro draft instead of stranding you in a now-orphaned view.
@@ -628,7 +665,7 @@ export async function setActiveProject(id: null | string): Promise<void> {
 // menu can open create / rename / add-folder flows without prop threading
 // (mirrors $profileCreateRequest).
 export interface ProjectDialogState {
-  mode: 'add-folder' | 'create' | 'rename'
+  mode: 'add-folder' | 'create' | 'edit-folders' | 'rename'
   projectId?: string
   name?: string
 }
@@ -654,6 +691,23 @@ export function openProjectRename(project: { id: string; name: string }): void {
 
 export function openProjectAddFolder(project: { id: string; name: string }): void {
   $projectDialog.set({ mode: 'add-folder', name: project.name, projectId: project.id })
+}
+
+// Open the "edit folders" dialog for an existing project. The dialog reads the
+// project's current folders off the live `$projects` atom so the user can move
+// (redirect) any folder to a new absolute path without losing its is_primary /
+// label / added_at.
+export function openProjectEditFolders(project: { id: string; name: string }): void {
+  if ($projectsRpcAvailable.get() === false) {
+    notify({
+      kind: 'warning',
+      message: translateNow('sidebar.projects.staleBackend')
+    })
+
+    return
+  }
+
+  $projectDialog.set({ mode: 'edit-folders', name: project.name, projectId: project.id })
 }
 
 export function closeProjectDialog(): void {

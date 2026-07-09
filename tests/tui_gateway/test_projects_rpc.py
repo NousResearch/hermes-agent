@@ -25,6 +25,7 @@ def test_methods_registered():
         "projects.update",
         "projects.add_folder",
         "projects.remove_folder",
+        "projects.move_folder",
         "projects.set_primary",
         "projects.archive",
         "projects.set_active",
@@ -170,6 +171,54 @@ def test_add_folder_and_for_cwd(tmp_path):
     assert resolved["project"]["id"] == pid
     # branch key is present (empty string when not a git repo).
     assert "branch" in resolved
+
+
+def test_move_folder_updates_primary_and_returns_normalized_path(tmp_path):
+    # The RPC must take {id, path, new_path}, retarget the primary, and return
+    # both the project snapshot and the normalized new path so the desktop can
+    # show the user the canonical form it landed on.
+    original = tmp_path / "oldrepo"
+    original.mkdir()
+    pid = _call("projects.create", {"name": "Repo", "folders": [str(original)]})["project"]["id"]
+
+    new_dir = tmp_path / "newrepo"
+    new_dir.mkdir()
+
+    res = _call(
+        "projects.move_folder",
+        {"id": pid, "path": str(original) + "/", "new_path": str(new_dir) + "/"},
+    )
+
+    # Trailing slash normalized out on the response.
+    assert res["path"] == str(new_dir)
+    assert res["project"]["primary_path"] == str(new_dir)
+    assert [f["path"] for f in res["project"]["folders"]] == [str(new_dir)]
+    assert res["project"]["folders"][0]["is_primary"] is True
+
+    # List view reflects the move.
+    listing = _call("projects.list")["projects"]
+    moved = next(p for p in listing if p["id"] == pid)
+    assert moved["primary_path"] == str(new_dir)
+
+
+def test_move_folder_collision_returns_structured_error(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    pid = _call("projects.create", {"name": "P", "folders": [str(a), str(b)]})["project"]["id"]
+
+    resp = server._methods["projects.move_folder"](1, {"id": pid, "path": str(a), "new_path": str(b)})
+
+    assert "error" in resp
+    # Bad-arg error code (5063) is what _projects_method wraps ValueError as.
+    assert resp["error"]["code"] == server._E_PROJECT_ARG
+
+
+def test_move_folder_unknown_project_returns_error():
+    resp = server._methods["projects.move_folder"](1, {"id": "nope", "path": "/a", "new_path": "/b"})
+    assert "error" in resp
+    assert resp["error"]["code"] == server._E_NO_PROJECT
 
 
 def test_update_and_archive(tmp_path):

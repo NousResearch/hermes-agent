@@ -75,6 +75,20 @@ def build_parser(
     p_rm.add_argument("project", help="Project id or slug")
     p_rm.add_argument("path", help="Folder path")
 
+    p_mv = sub.add_parser(
+        "move-folder",
+        help="Move/redirect a project's folder to a new absolute path",
+        description=(
+            "Rewrites a folder's path on a project without removing it. "
+            "The folder's is_primary / label / added_at are preserved; when the "
+            "moved folder is the project's primary, projects.primary_path is "
+            "updated too. Use this after a folder was renamed or moved on disk."
+        ),
+    )
+    p_mv.add_argument("project", help="Project id or slug")
+    p_mv.add_argument("path", help="Current folder path")
+    p_mv.add_argument("new_path", help="New folder path (absolute)")
+
     p_rename = sub.add_parser("rename", help="Rename a project")
     p_rename.add_argument("project", help="Project id or slug")
     p_rename.add_argument("name", help="New name")
@@ -127,6 +141,7 @@ def projects_command(args: argparse.Namespace) -> int:
         "show": _cmd_show,
         "add-folder": _cmd_add_folder,
         "remove-folder": _cmd_remove_folder,
+        "move-folder": _cmd_move_folder,
         "rename": _cmd_rename,
         "set-primary": _cmd_set_primary,
         "use": _cmd_use,
@@ -252,6 +267,20 @@ def _cmd_remove_folder(args, conn, proj) -> int:
         print(f"project: folder not in project: {args.path}", file=sys.stderr)
         return 1
     print(f"Removed {args.path} from {proj.slug}")
+    return 0
+
+
+@_with_project
+def _cmd_move_folder(args, conn, proj) -> int:
+    """Rewrite a folder's path on this project without removing it.
+
+    The folder's is_primary / label / added_at are preserved; when the moved
+    folder is the project's primary, projects.primary_path is updated too.
+    ValueError (unknown folder, collision, bad path) bubbles to ``_with_project``,
+    which prints ``project: <reason>`` and returns 2.
+    """
+    new_path = pdb.move_folder(conn, proj.id, args.path, args.new_path)
+    print(f"Moved {args.path} -> {new_path} on {proj.slug}")
     return 0
 
 

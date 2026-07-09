@@ -19,22 +19,34 @@ import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-ide
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import {
+  $projects,
   $projectDialog,
   addProjectFolder,
   closeProjectDialog,
   createProject,
   generateProjectIdea,
+  moveProjectFolder,
   pickProjectFolder,
   renameProject
 } from '@/store/projects'
 
+// Local-only edit state for the edit-folders dialog. Kept outside the atom so
+// the user can stage several folder moves before committing them in one shot —
+// the per-row optimistic cache update only fires on Save.
+interface FolderEdit {
+  original: string
+  current: string
+}
+
 // Single dialog mounted once in the sidebar; it renders create / rename /
-// add-folder flows driven by the $projectDialog atom. Folders are chosen via
-// the native directory picker (reused from the default-project-dir setting).
+// add-folder / edit-folders flows driven by the $projectDialog atom. Folders
+// are chosen via the native directory picker (reused from the default-project-
+// dir setting).
 export function ProjectDialog() {
   const { t } = useI18n()
   const p = t.sidebar.projects
   const state = useStore($projectDialog)
+  const projects = useStore($projects)
   const open = state !== null
   const mode = state?.mode ?? 'create'
 
@@ -44,6 +56,7 @@ export function ProjectDialog() {
   const [templates, setTemplates] = useState<ProjectIdeaTemplate[]>([])
   const [generatingIdea, setGeneratingIdea] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [folderEdits, setFolderEdits] = useState<FolderEdit[]>([])
   const nameRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -55,11 +68,21 @@ export function ProjectDialog() {
       setGeneratingIdea(false)
       setSubmitting(false)
 
+      // Seed the edit-folders staging buffer from the project's current
+      // folders. Done here (not in render) so a re-open resets in-flight edits
+      // and so a concurrent refresh can't sneak a fresh folder in mid-edit.
+      if (mode === 'edit-folders') {
+        const proj = projects.find(p2 => p2.id === state?.projectId)
+        setFolderEdits((proj?.folders ?? []).map(f => ({ original: f.path, current: f.path })))
+      } else {
+        setFolderEdits([])
+      }
+
       if (mode !== 'add-folder') {
         window.setTimeout(() => nameRef.current?.select(), 0)
       }
     }
-  }, [open, mode, state?.name])
+  }, [open, mode, state?.name, state?.projectId, projects])
 
   const onOpenChange = (next: boolean) => {
     if (!next) {
@@ -108,6 +131,25 @@ export function ProjectDialog() {
     }
   }
 
+  // Pick a new path for one row in the edit-folders staging buffer. The picker
+  // returns an absolute path; we replace just that row's `current` so the user
+  // can stage several moves before committing them all in one submit.
+  const pickFolderEdit = async (originalPath: string) => {
+    try {
+      const dir = await pickProjectFolder()
+
+      if (!dir) {
+        return
+      }
+
+      setFolderEdits(prev =>
+        prev.map(f => (f.original === originalPath ? { ...f, current: dir } : f))
+      )
+    } catch (err) {
+      notifyError(err, p.editFoldersMoveFailed)
+    }
+  }
+
   const submit = async () => {
     const trimmed = name.trim()
     const projectId = state?.projectId
@@ -123,7 +165,29 @@ export function ProjectDialog() {
     // A project owns sessions by folder (cwd-prefix), so creation requires at
     // least one — a folder-less project couldn't hold a session anyway.
     if (mode === 'create' && trimmed && folders.length) {
-      await runSubmit(() => createProject({ folders, idea: idea.trim() || undefined, name: trimmed, use: true }))
+      await runSubmit(() =>
+        createProject({ folders, idea: idea.trim() || undefined, name: trimmed, use: true })
+      )
+      return
+    }
+
+    // Commit staged folder moves in original-path order. We process them
+    // sequentially so the cache stays consistent: a later move's optimistic
+    // write sees the prior move's already-updated primary_path / repos.
+    // Backend `projects.move_folder` is idempotent for same-path, so an empty
+    // edit closes immediately.
+    if (mode === 'edit-folders' && projectId) {
+      const moves = folderEdits.filter(f => f.original !== f.current)
+      if (!moves.length) {
+        closeProjectDialog()
+        return
+      }
+
+      await runSubmit(async () => {
+        for (const move of moves) {
+          await moveProjectFolder(projectId, move.original, move.current)
+        }
+      })
     }
   }
 
@@ -145,7 +209,14 @@ export function ProjectDialog() {
     }
   }
 
-  const title = mode === 'rename' ? p.renameTitle : mode === 'add-folder' ? p.addFolderTitle : p.createTitle
+  const title =
+    mode === 'rename'
+      ? p.renameTitle
+      : mode === 'add-folder'
+        ? p.addFolderTitle
+        : mode === 'edit-folders'
+          ? p.editFoldersTitle
+          : p.createTitle
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -153,9 +224,10 @@ export function ProjectDialog() {
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {mode === 'create' && <DialogDescription>{p.createDesc}</DialogDescription>}
+          {mode === 'edit-folders' && <DialogDescription>{p.editFoldersDesc}</DialogDescription>}
         </DialogHeader>
 
-        {mode !== 'add-folder' && (
+        {mode !== 'add-folder' && mode !== 'edit-folders' && (
           <Input
             autoFocus
             disabled={submitting}
@@ -280,7 +352,131 @@ export function ProjectDialog() {
           </Button>
         )}
 
-        {mode !== 'add-folder' && (
+        {mode === 'edit-folders' && (
+          <div className="flex flex-col gap-2">
+            <span className="text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{p.foldersLabel}</span>
+            {folderEdits.length === 0 ? (
+              <span className="text-[0.75rem] text-(--ui-text-quaternary)">{p.editFoldersEmpty}</span>
+            ) : (
+              <ul className="flex flex-col gap-1.5">
+                {folderEdits.map(edit => {
+                  const changed = edit.original !== edit.current
+                  // Collision: a staged `current` matches another row's `original`
+                  // (the only case the backend can reject), or duplicates another
+                  // row's staged `current` (would only happen across two rows
+                  // pointing at the same new path).
+                  const otherOriginals = new Set(
+                    folderEdits.filter(o => o.original !== edit.original).map(o => o.original)
+                  )
+                  const otherCurrents = folderEdits
+                    .filter(o => o.original !== edit.original)
+                    .map(o => o.current)
+                  const collision =
+                    otherCurrents.includes(edit.current) ||
+                    (changed && otherOriginals.has(edit.current))
+                  return (
+                    <li
+                      className={cn(
+                        'flex items-center gap-2 rounded-md bg-(--ui-control-hover-background) px-2 py-1 text-[0.75rem]'
+                      )}
+                      key={edit.original}
+                    >
+                      <Codicon
+                        className="shrink-0 text-(--ui-text-tertiary)"
+                        name={changed ? 'arrow-right' : 'folder'}
+                        size="0.75rem"
+                      />
+                      <div className="flex min-w-0 flex-1 flex-col">
+                        <span
+                          className={cn(
+                            'truncate text-(--ui-text-quaternary)',
+                            changed && 'line-through'
+                          )}
+                          title={edit.original}
+                        >
+                          {edit.original}
+                        </span>
+                        {changed && (
+                          <span
+                            className={cn(
+                              'truncate',
+                              collision ? 'text-(--ui-text-danger, #f48771)' : 'text-foreground'
+                            )}
+                            title={edit.current}
+                          >
+                            {edit.current}
+                          </span>
+                        )}
+                      </div>
+                      {changed && (
+                        <span className="shrink-0 text-[0.625rem] uppercase text-(--ui-text-quaternary)">
+                          {p.editFolderChanged}
+                        </span>
+                      )}
+                      <Button
+                        aria-label={p.editFolderPick}
+                        className="size-5 shrink-0 text-(--ui-text-quaternary) hover:text-foreground"
+                        disabled={submitting}
+                        onClick={() => void pickFolderEdit(edit.original)}
+                        size="icon-xs"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Codicon name="folder-opened" size="0.75rem" />
+                      </Button>
+                      {changed && (
+                        <Button
+                          aria-label={p.editFolderRevert}
+                          className="size-5 shrink-0 text-(--ui-text-quaternary) hover:text-foreground"
+                          disabled={submitting}
+                          onClick={() =>
+                            setFolderEdits(prev =>
+                              prev.map(f =>
+                                f.original === edit.original ? { ...f, current: f.original } : f
+                              )
+                            )
+                          }
+                          size="icon-xs"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <Codicon name="discard" size="0.75rem" />
+                        </Button>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {(mode === 'add-folder' || mode === 'edit-folders') && (
+          <DialogFooter>
+            <Button
+              disabled={submitting}
+              onClick={() => onOpenChange(false)}
+              type="button"
+              variant="ghost"
+            >
+              {t.common.cancel}
+            </Button>
+            <Button
+              disabled={
+                submitting ||
+                // Block Save when no edits were staged — submit() would close
+                // immediately, but a stray Enter shouldn't get a no-op reply.
+                (mode === 'edit-folders' && folderEdits.every(f => f.original === f.current))
+              }
+              onClick={() => void submit()}
+              type="button"
+            >
+              {mode === 'edit-folders' ? p.editFoldersDone : p.addFolder}
+            </Button>
+          </DialogFooter>
+        )}
+
+        {mode !== 'add-folder' && mode !== 'edit-folders' && (
           <DialogFooter>
             <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
               {t.common.cancel}

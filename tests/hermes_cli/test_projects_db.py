@@ -110,6 +110,114 @@ def test_paths_normalized(conn):
     assert proj.primary_path == "/a/c"
 
 
+def test_move_folder_preserves_attributes_and_updates_primary(conn, tmp_path):
+    # Moving the primary folder retargets projects.primary_path and keeps
+    # is_primary / label / added_at intact (the only behavior that callers
+    # downstream — desktop sidebar tree, project_for_path — depend on).
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    pid = pdb.create_project(conn, name="P", folders=[str(old)])
+    new_path = pdb.move_folder(conn, pid, str(old), str(new))
+    assert new_path == str(new)
+
+    proj = pdb.get_project(conn, pid)
+    assert proj.primary_path == str(new)
+    assert [f.path for f in proj.folders] == [str(new)]
+    assert proj.folders[0].is_primary is True
+
+
+def test_move_folder_preserves_label(conn, tmp_path):
+    # The label lives on the row; a move must not drop it.
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    b_renamed = tmp_path / "b-renamed"
+    a.mkdir()
+    b.mkdir()
+    b_renamed.mkdir()
+    pid = pdb.create_project(conn, name="P", folders=[str(a)])
+    pdb.add_folder(conn, pid, str(b), label="docs")
+    pdb.move_folder(conn, pid, str(b), str(b_renamed))
+
+    proj = pdb.get_project(conn, pid)
+    moved = next(f for f in proj.folders if f.path == str(b_renamed))
+    assert moved.label == "docs"
+
+
+def test_move_non_primary_does_not_touch_primary(conn, tmp_path):
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    secondary_new = tmp_path / "secondary-new"
+    primary.mkdir()
+    secondary.mkdir()
+    secondary_new.mkdir()
+    pid = pdb.create_project(conn, name="P", folders=[str(primary)])
+    pdb.add_folder(conn, pid, str(secondary))
+
+    pdb.move_folder(conn, pid, str(secondary), str(secondary_new))
+
+    proj = pdb.get_project(conn, pid)
+    assert proj.primary_path == str(primary)
+    paths = {f.path for f in proj.folders}
+    assert paths == {str(primary), str(secondary_new)}
+    assert str(secondary) not in paths
+
+
+def test_move_folder_idempotent_when_paths_match(conn, tmp_path):
+    # Moving a folder onto its own current path is a no-op success — the
+    # desktop dialog relies on this when a user picks the same folder again.
+    a = tmp_path / "a"
+    a.mkdir()
+    pid = pdb.create_project(conn, name="P", folders=[str(a)])
+    same = pdb.move_folder(conn, pid, str(a), str(a))
+    assert same == str(a)
+
+    proj = pdb.get_project(conn, pid)
+    assert proj.primary_path == str(a)
+    assert [f.path for f in proj.folders] == [str(a)]
+
+
+def test_move_folder_rejects_collision(conn, tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    pid = pdb.create_project(conn, name="P", folders=[str(a), str(b)])
+    with pytest.raises(ValueError, match="already has folder"):
+        pdb.move_folder(conn, pid, str(a), str(b))
+
+
+def test_move_folder_rejects_missing_old(conn, tmp_path):
+    a = tmp_path / "a"
+    a.mkdir()
+    pid = pdb.create_project(conn, name="P", folders=[str(a)])
+    with pytest.raises(ValueError, match="folder not in project"):
+        pdb.move_folder(conn, pid, str(tmp_path / "ghost"), str(tmp_path / "elsewhere"))
+
+
+def test_move_folder_rejects_missing_project(conn):
+    with pytest.raises(ValueError, match="no such project"):
+        pdb.move_folder(conn, "p_does_not_exist", "/old", "/new")
+
+
+def test_move_folder_normalizes_paths(conn, tmp_path):
+    # Same normalization as add/remove: trailing slash dropped, .. collapsed.
+    a_b = tmp_path / "a" / "b"
+    a_b.mkdir(parents=True)
+    c_e = tmp_path / "c" / "e"  # the post-normalization target
+    c_e.mkdir(parents=True)
+
+    pid = pdb.create_project(conn, name="P", folders=[str(a_b)])
+    # The ".."-collapsed form is OS-portable when rooted at tmp_path: it just
+    # needs _normalize_path to drop the trailing separator.
+    new_path = pdb.move_folder(conn, pid, str(a_b) + os.sep, str(c_e) + os.sep)
+    assert new_path == str(c_e)
+
+    proj = pdb.get_project(conn, pid)
+    assert proj.primary_path == str(c_e)
+
+
 def test_project_for_path_longest_prefix(conn):
     outer = pdb.create_project(conn, name="Outer", folders=["/www"])
     inner = pdb.create_project(conn, name="Inner", folders=["/www/app"])

@@ -52,6 +52,51 @@ def test_add_remove_folder(tmp_path):
         assert len(pdb.get_project(conn, "p").folders) == 1
 
 
+def test_move_folder_rewrites_path_and_keeps_primary(tmp_path):
+    # `hermes project move-folder <slug> <old> <new>` retargets the folder in
+    # place and, for the project's primary, also bumps projects.primary_path so
+    # downstream lookups (`projects.for_cwd`, desktop sidebar tree) see the
+    # new path immediately.
+    old = tmp_path / "old"
+    extra = tmp_path / "extra"
+    new = tmp_path / "new"
+    old.mkdir()
+    extra.mkdir()
+    new.mkdir()
+
+    _run(["create", "P", str(old), str(extra)])
+    assert _run(["move-folder", "p", str(old), str(new)]) == 0
+
+    with pdb.connect_closing() as conn:
+        proj = pdb.get_project(conn, "p")
+        assert proj.primary_path == str(new)
+        paths = {f.path for f in proj.folders}
+        assert paths == {str(new), str(extra)}
+        # The moved folder keeps its is_primary flag.
+        assert proj.folders[0].is_primary is True
+        # And the extra folder (not moved) is untouched.
+        untouched = next(f for f in proj.folders if f.path == str(extra))
+        assert untouched.is_primary is False
+
+
+def test_move_folder_unknown_old_path_errors(tmp_path, capsys):
+    _run(["create", "P", str(tmp_path / "a")])
+    rc = _run(["move-folder", "p", str(tmp_path / "ghost"), str(tmp_path / "b")])
+    assert rc == 2  # bad-arg from _with_project
+    err = capsys.readouterr().err
+    assert "folder not in project" in err
+
+
+def test_move_folder_collision_errors(tmp_path, capsys):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _run(["create", "P", str(tmp_path / "a"), str(tmp_path / "b")])
+    rc = _run(["move-folder", "p", str(tmp_path / "a"), str(tmp_path / "b")])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "already has folder" in err
+
+
 def test_rename_and_archive(tmp_path):
     _run(["create", "Old Name", str(tmp_path)])
     assert _run(["rename", "old-name", "New Name"]) == 0

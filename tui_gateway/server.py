@@ -10857,6 +10857,24 @@ def _(rid, params, pdb, conn) -> dict:
     return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
 
 
+@_projects_method("projects.move_folder")
+def _(rid, params, pdb, conn) -> dict:
+    """Move/redirect a folder on a project to a new absolute path.
+
+    Keeps the folder's ``is_primary`` / ``label`` / ``added_at`` and updates
+    ``projects.primary_path`` when the moved folder was the primary. Surfaces
+    ValueError as a structured 5063 so the desktop toast can show it verbatim.
+    """
+    proj = _require_project(pdb, conn, params)
+    new_path = pdb.move_folder(
+        conn,
+        proj.id,
+        str(params.get("path") or ""),
+        str(params.get("new_path") or ""),
+    )
+    return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict(), "path": new_path})
+
+
 @_projects_method("projects.set_primary")
 def _(rid, params, pdb, conn) -> dict:
     proj = _require_project(pdb, conn, params)

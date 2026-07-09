@@ -16264,8 +16264,14 @@ def main(
                 # Surface security advisories before the agent runs — short
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()
-                cli.chat(query, images=single_query_images or None)
-                cli._print_exit_summary(clear_screen=False)
+                try:
+                    cli.chat(query, images=single_query_images or None)
+                except KeyboardInterrupt:
+                    _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+                    cli._print_exit_summary(clear_screen=False)
+                    sys.exit(130)
+                else:
+                    cli._print_exit_summary(clear_screen=False)
         finally:
             _finalize_single_query(cli)
         return

@@ -237,12 +237,14 @@ function buildNavItems(
   const items = [...builtIn];
 
   for (const manifest of manifests) {
+    // Guard against malformed manifests: require a valid tab object.
+    if (!manifest.tab || typeof manifest.tab !== "object") continue;
     if (manifest.tab.override) continue;
     if (manifest.tab.hidden) continue;
 
     const pluginItem: NavItem = {
-      path: manifest.tab.path,
-      label: manifest.label,
+      path: manifest.tab.path || `/${manifest.name}`,
+      label: manifest.label || manifest.name,
       icon: resolveIcon(manifest.icon),
     };
 
@@ -293,6 +295,8 @@ function buildRoutes(
   const addons: PluginManifest[] = [];
 
   for (const m of manifests) {
+    // Guard against malformed manifests: require a valid tab object.
+    if (!m.tab || typeof m.tab !== "object") continue;
     if (m.tab.override) {
       byOverride.set(m.tab.override, m);
     } else {
@@ -446,10 +450,10 @@ export default function App() {
   const pluginTabMeta = useMemo(
     () =>
       manifests
-        .filter((m) => !m.tab.hidden)
+        .filter((m) => m.tab && typeof m.tab === "object" && !m.tab.hidden)
         .map((m) => ({
-          path: m.tab.override ?? m.tab.path,
-          label: m.label,
+          path: m.tab.override ?? m.tab.path ?? `/${m.name}`,
+          label: m.label ?? m.name,
         })),
     [manifests],
   );

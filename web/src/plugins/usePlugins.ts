@@ -28,7 +28,12 @@ export function usePlugins() {
     api
       .getPlugins()
       .then((list) => {
-        setManifests(list);
+        // Defensive: ensure every manifest has a valid tab object.
+        const cleaned = (list ?? []).map((m) => ({
+          ...m,
+          tab: m.tab && typeof m.tab === "object" ? m.tab : { path: `/${m.name}` },
+        }));
+        setManifests(cleaned);
         if (list.length === 0) setLoading(false);
       })
       .catch(() => setLoading(false));

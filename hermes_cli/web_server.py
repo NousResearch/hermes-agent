@@ -16238,6 +16238,7 @@ def _discover_dashboard_plugins() -> list:
                     "slots": slots,
                     "entry": data.get("entry", "dist/index.js"),
                     "css": data.get("css"),
+                    "integrity": data.get("integrity"),
                     "has_api": bool(safe_api),
                     "source": source,
                     "_dir": str(dashboard_dir),

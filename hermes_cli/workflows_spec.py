@@ -10,9 +10,26 @@ from typing import Any, Literal
 from croniter import croniter
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from hermes_cli.workflows_expr import validate_condition_shape
+
 _NODE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 TriggerType = Literal["manual", "schedule", "webhook", "kanban_event"]
+InputFieldKind = Literal[
+    "text",
+    "long_text",
+    "document",
+    "prompt",
+    "criteria",
+    "url",
+    "repo_path",
+    "boolean",
+    "number",
+    "integer",
+    "object",
+]
+IntakeMode = Literal["single", "batch", "continuous"]
+SplitStrategy = Literal["none", "lines", "documents"]
 NodeType = Literal[
     "pass",
     "switch",
@@ -26,6 +43,32 @@ NodeType = Literal[
 ]
 
 
+class InputFieldSpec(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    kind: InputFieldKind = "text"
+    label: str | None = None
+    description: str | None = None
+    required: bool = False
+    default: Any = None
+    min_length: int | None = Field(default=None, ge=0)
+    max_length: int | None = Field(default=None, ge=0)
+    max_bytes: int | None = Field(default=None, ge=0)
+    min: float | None = None
+    max: float | None = None
+    accepts: list[str] = Field(default_factory=list)
+
+
+class TriggerIntakeSpec(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    mode: IntakeMode = "single"
+    item_source: str | None = None
+    ready_when: dict[str, Any] | None = None
+    dedupe_key: str | None = None
+    split_strategy: SplitStrategy = "none"
+
+
 class TriggerSpec(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -35,6 +78,8 @@ class TriggerSpec(BaseModel):
     schedule: str | None = None
     expr: str | None = None
     input: dict[str, Any] = Field(default_factory=dict)
+    input_schema: dict[str, InputFieldSpec] = Field(default_factory=dict)
+    intake: TriggerIntakeSpec = Field(default_factory=TriggerIntakeSpec)
     description: str | None = None
 
 
@@ -180,6 +225,8 @@ def _model_field_names(model_cls: type[BaseModel]) -> set[str]:
 
 _WORKFLOW_FIELDS = _model_field_names(WorkflowSpec)
 _TRIGGER_FIELDS = _model_field_names(TriggerSpec)
+_INPUT_FIELD_FIELDS = _model_field_names(InputFieldSpec)
+_INTAKE_FIELDS = _model_field_names(TriggerIntakeSpec)
 _NODE_FIELDS = _model_field_names(NodeSpec)
 _EDGE_FIELDS = _model_field_names(EdgeSpec)
 _RETRY_FIELDS = _model_field_names(RetrySpec)
@@ -219,6 +266,19 @@ def unknown_spec_field_errors(raw: Any) -> list[str]:
         for index, trigger in enumerate(triggers):
             if isinstance(trigger, Mapping):
                 _collect_unknown_keys(trigger, _TRIGGER_FIELDS, f"on trigger [{index}]", errors)
+                input_schema = trigger.get("input_schema")
+                if isinstance(input_schema, Mapping):
+                    for field_name, field_spec in input_schema.items():
+                        if isinstance(field_spec, Mapping):
+                            _collect_unknown_keys(
+                                field_spec,
+                                _INPUT_FIELD_FIELDS,
+                                f"on trigger [{index}] input_schema {field_name!r}",
+                                errors,
+                            )
+                intake = trigger.get("intake")
+                if isinstance(intake, Mapping):
+                    _collect_unknown_keys(intake, _INTAKE_FIELDS, f"on trigger [{index}] intake", errors)
 
     nodes = raw.get("nodes")
     if isinstance(nodes, Mapping):
@@ -268,6 +328,33 @@ def _blank_prompt(value: Any) -> bool:
     return False
 
 
+RESULT_CONTRACT_PRIMITIVES = frozenset({"string", "number", "boolean", "array", "object"})
+
+
+def _validate_result_contract_spec(contract: Mapping[str, Any], *, node_id: str) -> None:
+    for key, expected in contract.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"agent_task node {node_id} result_contract keys must be non-empty strings")
+        if not isinstance(expected, str):
+            raise ValueError(f"agent_task node {node_id} result_contract {key} must be a string")
+        token = expected.strip()
+        if token in RESULT_CONTRACT_PRIMITIVES:
+            continue
+        if "|" in token:
+            allowed = [part.strip() for part in token.split("|") if part.strip()]
+            if not allowed:
+                raise ValueError(f"agent_task node {node_id} empty result_contract enum for {key}")
+            continue
+        raise ValueError(f"agent_task node {node_id} invalid result_contract token for {key}: {expected}")
+
+
+def _validate_condition_context(condition: Any, *, where: str) -> None:
+    try:
+        validate_condition_shape(condition)
+    except ValueError as exc:
+        raise ValueError(f"{where}: {exc}") from exc
+
+
 def _cycle_path(spec: WorkflowSpec) -> list[str] | None:
     adjacency: dict[str, list[str]] = {node_id: [] for node_id in spec.nodes}
     for edge in spec.edges:
@@ -309,11 +396,22 @@ def _cycle_path(spec: WorkflowSpec) -> list[str] | None:
 
 def validate_graph(spec: WorkflowSpec) -> None:
     for trigger in spec.triggers:
+        trigger_label = trigger.id or trigger.type
+        if trigger.intake.mode == "batch":
+            raise ValueError(f"trigger {trigger_label!r} batch intake is not supported in this release")
+        if trigger.intake.item_source:
+            raise ValueError(f"trigger {trigger_label!r} item_source is not supported in this release")
+        if trigger.intake.split_strategy != "none":
+            raise ValueError(f"trigger {trigger_label!r} split_strategy is not supported in this release")
+        if trigger.intake.ready_when:
+            _validate_condition_context(
+                trigger.intake.ready_when,
+                where=f"trigger {trigger_label!r} ready_when",
+            )
         expr = trigger.cron or trigger.schedule or trigger.expr
         if trigger.type == "schedule":
             if not expr:
                 raise ValueError("schedule trigger requires cron or schedule")
-            trigger_label = trigger.id or "schedule"
             try:
                 croniter(expr, 0)
             except ValueError as exc:
@@ -373,11 +471,15 @@ def validate_graph(spec: WorkflowSpec) -> None:
                     raise ValueError(
                         f"switch case {node_id}.{name} requires matching outgoing edge"
                     )
+                when = case.get("when")
+                if when is not None:
+                    _validate_condition_context(when, where=f"switch case {node_id}.{name} when")
         if node.type == "agent_task":
             if not str(node.profile or "").strip():
                 raise ValueError(f"agent_task node {node_id} requires a non-blank profile")
             if _blank_prompt(node.prompt):
                 raise ValueError(f"agent_task node {node_id} requires a non-empty prompt")
+            _validate_result_contract_spec(node.result_contract, node_id=node_id)
 
     cycle = _cycle_path(spec)
     if cycle:

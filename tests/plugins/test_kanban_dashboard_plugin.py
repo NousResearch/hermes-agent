@@ -305,7 +305,7 @@ def test_task_detail_and_board_include_workflow_link_metadata(client):
         task_id = kb.create_task(
             conn,
             title="workflow-created task",
-            created_by="workflow:exec/123",
+            created_by="workflow:exec/123:version:7:node:implement",
             workflow_template_id="wf1",
             current_step_key="implement",
         )
@@ -317,10 +317,13 @@ def test_task_detail_and_board_include_workflow_link_metadata(client):
         for task in column["tasks"]
         if task["id"] == task_id
     )
+
     expected = {
         "template_id": "wf1",
         "current_step_key": "implement",
         "execution_id": "exec/123",
+        "version": 7,
+        "node_id": "implement",
         "href": "/workflows?execution=exec%2F123",
     }
     assert board_task["workflow"] == expected

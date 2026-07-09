@@ -205,6 +205,72 @@ def test_workflow_dashboard_has_no_dead_builder_code() -> None:
         assert dead_marker not in text, f"Dead code marker still present: {dead_marker}"
 
 
+def test_workflow_dashboard_trigger_inspector_authors_input_and_intake_without_json() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    for marker in [
+        "Input schema",
+        "Intake mode",
+        "Add input field",
+        "Input field name",
+        "Input field kind",
+        "Required input",
+        "Dedupe key",
+        "Ready when field path",
+        "$.input.repo_path",
+        "function inputRowsFromTrigger",
+        "function inputSchemaFromRows",
+        "function triggerIntakeFromForm",
+        "setTriggerInputRows",
+        "setTriggerIntakeMode",
+    ]:
+        assert marker in text
+    assert "Advanced JSON remains available" in text
+
+
+def test_workflow_dashboard_honestly_scopes_batch_and_documents() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    assert "Batch splitting and document uploads are not supported in this release" in text
+    assert "Phase 1 supports scalar manual and continuous input items" in text
+    assert "Attach documents" not in text
+    assert "Prepared " not in text
+    assert "document(s) as input.documents" not in text
+
+
+def test_workflow_dashboard_exposes_operator_controls_for_type_and_cancel() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    assert "Cell type" in text
+    assert "Change selected cell type" in text
+    assert "function cancelSelectedExecution" in text
+    assert "/cancel" in text
+    assert "Cancel Execution" in text
+    assert "Cannot cancel terminal execution" in text
+
+
+def test_workflow_dashboard_wires_manual_tick_and_feed_item_controls() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    for marker in [
+        "function manualTick",
+        'api("/tick"',
+        "Manual Tick",
+        "function loadInputFeedItems",
+        '"/input-feeds/" + encodeURIComponent(feedId) + "/items"',
+        "function updateInputFeedItem",
+        '"/input-items/" + encodeURIComponent(itemId)',
+        "Update Item From JSON",
+        "Refresh Feed Items",
+        "Input feed items",
+    ]:
+        assert marker in text
+
+
+def test_workflow_dashboard_execution_tab_does_not_duplicate_node_runs() -> None:
+    text = BUNDLE.read_text(encoding="utf-8")
+    start = text.index("function renderBottomPanel")
+    bottom_body = text[start : text.index("var spec = activeSpec", start)]
+    assert "renderNodeRuns(), renderTimeline()" not in bottom_body
+    assert "renderTimeline()" in bottom_body
+
+
 def test_workflow_dashboard_uses_three_zone_builder_layout() -> None:
     text = BUNDLE.read_text(encoding="utf-8")
     css = (ROOT / "plugins" / "workflows" / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")

@@ -650,7 +650,7 @@ hermes workflow tick --limit 10
 hermes workflow executions show wfexec_abc123 --json
 ```
 
-**Dispatcher note:** `workflow.dispatch_in_gateway` defaults to `false`. Until you opt in (`hermes config set workflow.dispatch_in_gateway true` and restart the gateway), scheduled triggers, waits, and completed `agent_task` nodes only advance when something calls `hermes workflow tick` (the dashboard run button triggers one tick best-effort).
+**Dispatcher note:** `workflow.dispatch_in_gateway` defaults to `true`, matching Kanban. A running gateway advances scheduled triggers, waits, retries, completed `agent_task` nodes, and ready input-feed items automatically. To opt out and require manual ticks, run `hermes config set workflow.dispatch_in_gateway false` and restart the gateway; roll back with `hermes config set workflow.dispatch_in_gateway true` plus another gateway restart.
 
 For the schema, condition DSL, template rules, dashboard builder, and Kanban integration details, see the [Workflows user guide](/user-guide/features/workflows).
 

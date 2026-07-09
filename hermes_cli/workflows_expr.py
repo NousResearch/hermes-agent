@@ -10,6 +10,8 @@ from typing import Any
 _MISSING = object()
 _UNRESOLVED = object()
 
+_STRING_OPS = {"contains", "starts_with", "ends_with", "regex"}
+
 _COMPARISONS = {
     "eq": operator.eq,
     "ne": operator.ne,
@@ -104,6 +106,86 @@ def _binary_values(cond: Mapping[str, Any], data: Any, op: str) -> tuple[Any, An
     return _value(cond["left"], data), _value(cond["right"], data)
 
 
+def validate_condition_shape(cond: Mapping[str, Any]) -> None:
+    """Validate a workflow condition tree without resolving runtime data."""
+    if not isinstance(cond, Mapping):
+        raise ValueError("condition must be a mapping")
+    op = cond.get("op")
+    if not isinstance(op, str) or not op:
+        raise ValueError("condition requires op")
+
+    def require_keys(allowed: set[str], required: set[str] | None = None) -> None:
+        required = required or set()
+        unknown = set(cond) - allowed
+        if unknown:
+            raise ValueError(f"{op} has unsupported field(s): {', '.join(sorted(unknown))}")
+        missing = required - set(cond)
+        if missing:
+            raise ValueError(f"{op} requires {', '.join(sorted(missing))}")
+
+    def validate_path(path: Any) -> None:
+        if not isinstance(path, str):
+            raise ValueError("path operand must be a string")
+        try:
+            resolve_path({}, path, default=None)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+    def validate_operand(value: Any, name: str) -> None:
+        if isinstance(value, Mapping):
+            if set(value) != {"path"}:
+                raise ValueError(f"{name} object operand must be a path reference")
+            validate_path(value["path"])
+
+    if op in {"and", "or"}:
+        require_keys({"op", "args"}, {"args"})
+        args = cond["args"]
+        if not isinstance(args, Sequence) or isinstance(args, (str, bytes, bytearray)) or not args:
+            raise ValueError(f"{op} requires non-empty args")
+        for arg in args:
+            validate_condition_shape(arg)
+        return
+
+    if op == "not":
+        if "args" in cond:
+            require_keys({"op", "args"}, {"args"})
+            args = cond["args"]
+            if not isinstance(args, Sequence) or isinstance(args, (str, bytes, bytearray)):
+                raise ValueError("not requires exactly one arg")
+            if len(args) != 1:
+                raise ValueError("not requires exactly one arg")
+            validate_condition_shape(args[0])
+            return
+        require_keys({"op", "arg"}, {"arg"})
+        validate_condition_shape(cond["arg"])
+        return
+
+    if op in {"exists", "missing"}:
+        sources = [source for source in ("path", "arg", "left") if source in cond]
+        if len(sources) != 1:
+            raise ValueError("unary condition requires one operand")
+        require_keys({"op", sources[0]})
+        source = sources[0]
+        if source == "path":
+            validate_path(cond["path"])
+        else:
+            validate_operand(cond[source], source)
+        return
+
+    if op in _COMPARISONS or op in _STRING_OPS:
+        require_keys({"op", "left", "right"}, {"left", "right"})
+        validate_operand(cond["left"], "left")
+        validate_operand(cond["right"], "right")
+        if op == "regex" and isinstance(cond["right"], str):
+            try:
+                re.compile(cond["right"])
+            except re.error as exc:
+                raise ValueError(f"invalid regex: {exc}") from exc
+        return
+
+    raise ValueError(f"unsupported condition op: {op}")
+
+
 def eval_condition(cond: Mapping[str, Any], data: Any) -> bool:
     if not isinstance(cond, Mapping):
         raise ValueError("condition must be a mapping")
@@ -142,7 +224,7 @@ def eval_condition(cond: Mapping[str, Any], data: Any) -> bool:
         except TypeError:
             return False
 
-    if op not in {"contains", "starts_with", "ends_with", "regex"}:
+    if op not in _STRING_OPS:
         raise ValueError(f"unsupported condition op: {op}")
 
     left, right = _binary_values(cond, data, op)

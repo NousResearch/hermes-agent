@@ -97,6 +97,7 @@ Always validate before deploy. The validation surface checks deployable workflow
 - each `agent_task` has `profile` and `prompt`
 - only currently implemented primitives are used (`manual`/`schedule` triggers and `pass`, `switch`, `agent_task`, `wait`, `parallel`, `join`, `fail` nodes)
 - optional `result_contract` entries use enforced flat types (`string`, `number`, `boolean`, `array`, `object`) or enum strings such as `approved|rejected`
+- switch-case `when` and trigger `intake.ready_when` condition trees use the supported condition DSL shape at deploy time
 
 Also review the draft manually before deploy for semantic issues that graph validation cannot fully prove yet, such as whether prompt placeholders refer to the intended input/upstream node output and whether scheduled trigger strings express the schedule you meant.
 
@@ -260,6 +261,44 @@ triggers:
       topic: "AI agent research"
       min_score: 0.75
 ```
+
+### Manual and continuous input
+
+Manual runs and continuous input feeds use the same input-schema and readiness rules.
+
+```yaml
+triggers:
+  - type: manual
+    id: intake
+    input_schema:
+      repo_path:
+        kind: repo_path
+        required: true
+      criteria:
+        kind: criteria
+        default: "focus on release blockers"
+    intake:
+      mode: continuous
+      dedupe_key: "$.input.repo_path"
+      ready_when:
+        op: and
+        args:
+          - op: exists
+            path: "$.input.repo_path"
+          - op: exists
+            path: "$.input.criteria"
+```
+
+The dashboard trigger inspector exposes scalar input-schema fields, `intake.mode`, `dedupe_key`, and `ready_when` without requiring Advanced YAML. Public run surfaces (CLI, dashboard, and tools) validate `input_schema` and `ready_when` before starting a manual run or admitting a feed item. The raw dedupe source value is hashed before it is stored in `workflows.db`; duplicate detection still works without persisting the source string in `workflow_input_items.dedupe_value`.
+
+Continuous feed lifecycle:
+
+- `open` feeds accept new items.
+- `paused` and `closed` feeds do not accept new items until resumed.
+- Items start as `queued` or `needs_input`; the dispatcher claims ready queued items fairly after already queued executions.
+- Linked items become terminal when their execution reaches `succeeded`, `failed`, `cancelled`, or `blocked`.
+
+Phase 1 supports scalar manual and continuous input items. Batch splitting, document upload/splitting, `intake.item_source`, and non-`none` `split_strategy` are not supported in this release; validate/deploy rejects those runtime semantics instead of silently ignoring them.
 
 ### Edges and ports
 
@@ -431,7 +470,7 @@ The error payload includes the node id, type `fail`, and rendered output.
 
 ### Condition DSL reference
 
-Conditions are YAML objects. There is no Python `eval`; unsupported operators raise validation errors during execution.
+Conditions are YAML objects. There is no Python `eval`; unsupported operators and malformed condition shapes are rejected during workflow validate/deploy for switch cases and `intake.ready_when`, before a run starts.
 
 #### Paths
 
@@ -526,7 +565,7 @@ When a workflow reaches an `agent_task` node, the dispatcher creates or reuses a
 | `assignee` | node `profile` |
 | `workspace_kind`, `workspace_path` | node fields |
 | `skills`, `max_retries`, `goal_mode`, `goal_max_turns`, `model_override` | node fields |
-| `created_by` | `workflow:<execution_id>` |
+| `created_by` | `workflow:<execution_id>:version:<version>:node:<node_id>` (older cards may still show `workflow:<execution_id>`) |
 | `workflow_template_id` | workflow `id` |
 | `current_step_key` | node id |
 | `idempotency_key` | `workflow:<execution_id>:<node_id>` |

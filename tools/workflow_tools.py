@@ -13,6 +13,7 @@ from hermes_cli import workflows_assistant, workflows_db as wfdb
 from hermes_cli import workflows_dispatcher
 from hermes_cli.config import load_config
 from hermes_cli.workflows_capabilities import require_implemented_primitives
+from hermes_cli.workflows_redaction import redact_sensitive
 from hermes_cli.workflows_spec import (
     WorkflowSpec,
     reject_unknown_spec_fields,
@@ -56,10 +57,10 @@ def _connect_initialized():
 
 def _error_text(exc: BaseException) -> str:
     if isinstance(exc, KeyError) and exc.args:
-        return str(exc.args[0])
+        return str(redact_sensitive(str(exc.args[0])))
     if isinstance(exc, json.JSONDecodeError):
         return f"invalid JSON: {exc.msg} at line {exc.lineno} column {exc.colno}"
-    return str(exc)
+    return str(redact_sensitive(str(exc)))
 
 
 def _assistant_runtime_error(tool_name: str) -> str:
@@ -130,16 +131,32 @@ def _definition_to_dict(record, *, include_spec: bool = False) -> dict[str, Any]
         "workflow_id": record.workflow_id,
     }
     if include_spec:
-        payload["spec"] = record.spec.model_dump(mode="json", by_alias=True)
+        payload["spec"] = redact_sensitive(record.spec.model_dump(mode="json", by_alias=True))
     return payload
+
+
+def _event_to_dict(event: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(event)
+    payload = redacted.get("payload")
+    if isinstance(payload, (dict, list, str)):
+        redacted["payload"] = redact_sensitive(payload)
+    return redacted
+
+
+def _node_run_to_dict(node_run: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(node_run)
+    for key in ("input", "output", "payload", "error"):
+        if key in redacted:
+            redacted[key] = redact_sensitive(redacted[key])
+    return redacted
 
 
 def _execution_to_dict(execution: wfdb.WorkflowExecution) -> dict[str, Any]:
     return {
-        "context": execution.context,
+        "context": redact_sensitive(execution.context),
         "created_at": execution.created_at,
         "execution_id": execution.execution_id,
-        "input": execution.input,
+        "input": redact_sensitive(execution.input),
         "status": execution.status,
         "trigger_id": execution.trigger_id,
         "trigger_type": execution.trigger_type,
@@ -268,11 +285,10 @@ def _handle_run(args: dict, **_kw) -> str:
     try:
         input_data = _input_from_args(args)
         with _connect_initialized() as conn:
-            execution_id = wfdb.start_execution(
+            execution_id = wfdb.start_manual_execution(
                 conn,
                 workflow_id,
                 input_data=input_data,
-                trigger_type="manual",
             )
         # Advance cheap nodes inline (same as CLI run / dashboard Run) so
         # simple graphs finish immediately and agent_task nodes materialize
@@ -285,7 +301,7 @@ def _handle_run(args: dict, **_kw) -> str:
             execution = wfdb.get_execution(conn, execution_id)
         payload = {
             "execution_id": execution.execution_id,
-            "input": execution.input,
+            "input": redact_sensitive(execution.input),
             "status": execution.status,
             "version": execution.version,
             "workflow_id": execution.workflow_id,
@@ -311,9 +327,13 @@ def _handle_execution_show(args: dict, **_kw) -> str:
             execution = wfdb.get_execution(conn, execution_id)
             payload = _execution_to_dict(execution)
             if args.get("include_node_runs"):
-                payload["node_runs"] = wfdb.list_node_runs(conn, execution_id)
+                payload["node_runs"] = [
+                    _node_run_to_dict(row) for row in wfdb.list_node_runs(conn, execution_id)
+                ]
             if args.get("include_events"):
-                payload["events"] = wfdb.list_events(conn, execution_id)
+                payload["events"] = [
+                    _event_to_dict(event) for event in wfdb.list_events(conn, execution_id)
+                ]
         return tool_result(payload)
     except Exception as exc:
         logger.exception("workflow_execution_show failed")

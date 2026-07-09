@@ -280,6 +280,69 @@ def test_agent_task_accepts_result_contract():
     assert spec.model_dump()["nodes"]["done"]["result_contract"] == {}
 
 
+def test_agent_task_rejects_unknown_result_contract_token_at_deploy_time():
+    raw = _minimal_spec()
+    raw["nodes"] = {
+        "ask": {
+            "type": "agent_task",
+            "profile": "worker",
+            "prompt": "Return JSON",
+            "result_contract": {"summary": "strng"},
+        }
+    }
+    raw["edges"] = []
+    spec = WorkflowSpec.model_validate(raw)
+
+    with pytest.raises(ValueError, match="invalid result_contract token.*strng"):
+        validate_graph(spec)
+
+
+def test_agent_task_rejects_empty_result_contract_enum_at_deploy_time():
+    raw = _minimal_spec()
+    raw["nodes"] = {
+        "ask": {
+            "type": "agent_task",
+            "profile": "worker",
+            "prompt": "Return JSON",
+            "result_contract": {"status": " | "},
+        }
+    }
+    raw["edges"] = []
+    spec = WorkflowSpec.model_validate(raw)
+
+    with pytest.raises(ValueError, match="empty result_contract enum"):
+        validate_graph(spec)
+
+
+def test_trigger_ready_when_rejects_malformed_condition_at_deploy_time():
+    raw = _minimal_spec()
+    raw["triggers"] = [{
+        "type": "manual",
+        "id": "manual",
+        "intake": {"ready_when": {"op": "and", "args": []}},
+    }]
+    spec = WorkflowSpec.model_validate(raw)
+
+    with pytest.raises(ValueError, match="trigger 'manual' ready_when"):
+        validate_graph(spec)
+
+
+def test_switch_when_rejects_malformed_condition_at_deploy_time():
+    raw = _minimal_spec()
+    raw["nodes"] = {
+        "route": {
+            "type": "switch",
+            "cases": [{"name": "bad", "when": {"op": "eq", "left": {"path": "input.missing"}, "right": 1}}],
+        },
+        "done": {"type": "pass"},
+    }
+    raw["edges"] = [{"from": "route.bad", "to": "done"}]
+    spec = WorkflowSpec.model_validate(raw)
+
+    with pytest.raises(ValueError, match="switch case route.bad when"):
+        validate_graph(spec)
+
+
 def test_agent_task_accepts_provider_and_model_fields() -> None:
     spec = WorkflowSpec.model_validate(
         {
@@ -496,6 +559,77 @@ def test_known_fields_aliases_and_descriptions_pass_strict_check():
     }
 
     assert unknown_spec_field_errors(raw) == []
+
+
+def test_trigger_input_schema_and_intake_metadata_validate_and_dump():
+    spec = WorkflowSpec.model_validate({
+        "id": "intake_demo",
+        "name": "Intake Demo",
+        "version": 1,
+        "triggers": [{
+            "type": "manual",
+            "id": "kickoff",
+            "input": {"static": True},
+            "input_schema": {
+                "brief": {"kind": "long_text", "label": "Brief", "required": True, "min_length": 10},
+                "score": {"kind": "number", "required": True, "min": 0, "max": 1},
+                "docs": {"kind": "document", "accepts": ["text/markdown"]},
+            },
+            "intake": {
+                "mode": "continuous",
+                "item_source": "kickoff_cell",
+                "ready_when": {"op": "exists", "path": "$.input.brief"},
+                "dedupe_key": "$.input.source_id",
+                "split_strategy": "documents",
+            },
+        }],
+        "nodes": {"start": {"type": "pass"}},
+    })
+
+    trigger = spec.triggers[0]
+    assert trigger.input == {"static": True}
+    assert trigger.input_schema["brief"].kind == "long_text"
+    assert trigger.intake.mode == "continuous"
+    dumped = spec.model_dump(mode="json")
+    assert dumped["triggers"][0]["input_schema"]["score"]["min"] == 0
+    assert dumped["triggers"][0]["input_schema"]["score"]["max"] == 1
+    assert dumped["triggers"][0]["input_schema"]["docs"]["accepts"] == ["text/markdown"]
+
+
+def test_unknown_trigger_input_schema_and_intake_fields_rejected():
+    from hermes_cli.workflows_spec import unknown_spec_field_errors
+
+    raw = _minimal_spec()
+    raw["triggers"][0]["input_schema"] = {"brief": {"kind": "text", "lable": "Brief"}}
+    raw["triggers"][0]["intake"] = {"mode": "continuous", "dedup_key": "$.input.id"}
+
+    joined = "; ".join(unknown_spec_field_errors(raw))
+
+    assert "unknown field 'lable' on trigger [0] input_schema 'brief'" in joined
+    assert "unknown field 'dedup_key' on trigger [0] intake" in joined
+
+
+def test_unsupported_batch_or_document_intake_is_rejected_by_graph_validation():
+    raw = _minimal_spec()
+    raw["triggers"][0]["intake"] = {"mode": "batch"}
+    spec = WorkflowSpec.model_validate(raw)
+
+    with pytest.raises(ValueError, match="batch intake is not supported"):
+        validate_graph(spec)
+
+    raw = _minimal_spec()
+    raw["triggers"][0]["intake"] = {"mode": "continuous", "split_strategy": "documents"}
+    spec = WorkflowSpec.model_validate(raw)
+
+    with pytest.raises(ValueError, match="split_strategy"):
+        validate_graph(spec)
+
+    raw = _minimal_spec()
+    raw["triggers"][0]["intake"] = {"mode": "continuous", "item_source": "documents"}
+    spec = WorkflowSpec.model_validate(raw)
+
+    with pytest.raises(ValueError, match="item_source"):
+        validate_graph(spec)
 
 
 def test_load_spec_from_object_strict_ingestion():

@@ -49,8 +49,21 @@ WAIT_SPEC = {
     "edges": [{"from": "start", "to": "pause"}],
 }
 
+REQUIRED_RUN_SPEC = {
+    "id": "dashboard_required_run",
+    "name": "Dashboard Required Run",
+    "version": 1,
+    "triggers": [{
+        "type": "manual",
+        "id": "manual",
+        "input_schema": {"brief": {"kind": "long_text", "required": True, "min_length": 3}},
+        "intake": {"ready_when": {"op": "exists", "path": "$.input.brief"}},
+    }],
+    "nodes": {"start": {"type": "pass", "output": {"ok": True}}},
+}
 
-def _load_plugin_router():
+
+def _load_plugin_module():
     plugin_file = PLUGIN_DIR / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
     spec = importlib.util.spec_from_file_location(
@@ -60,7 +73,27 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod
+
+
+def _load_plugin_router():
+    return _load_plugin_module().router
+
+
+def test_dashboard_api_error_helpers_redact_secret_values():
+    mod = _load_plugin_module()
+    bad_secret = "sk-dashboardsecret1234567890"
+    runtime_secret = "sk-dashboardruntime1234567890"
+
+    bad_request = mod._http_400(ValueError(f"provider failed api_key={bad_secret}"))
+    runtime = mod._assistant_runtime_http(f"provider failed {runtime_secret}")
+
+    bad_text = json.dumps(bad_request.detail)
+    runtime_text = json.dumps(runtime.detail)
+    assert bad_secret not in bad_text
+    assert runtime_secret not in runtime_text
+    assert "provider failed" in bad_text
+    assert "provider failed" in runtime_text
 
 
 @pytest.fixture
@@ -86,6 +119,154 @@ def _deploy(client: TestClient, spec: dict = PASS_SPEC) -> dict:
     return r.json()["definition"]
 
 
+CONTINUOUS_SPEC = {
+    "id": "continuous_demo",
+    "name": "Continuous Demo",
+    "version": 1,
+    "triggers": [
+        {
+            "type": "manual",
+            "id": "kickoff",
+            "input_schema": {
+                "repo_path": {"kind": "repo_path", "required": True},
+                "prompt": {"kind": "prompt", "required": True, "min_length": 10},
+            },
+            "intake": {"mode": "continuous", "dedupe_key": "$.input.repo_path"},
+        }
+    ],
+    "nodes": {"start": {"type": "pass", "output": {"repo": "${ input.repo_path }"}}},
+}
+
+
+def test_dashboard_input_feed_api_opens_enqueues_updates_and_lists_items(client):
+    _deploy(client, CONTINUOUS_SPEC)
+
+    feed_res = client.post(
+        "/api/plugins/workflows/definitions/continuous_demo/input-feeds",
+        json={"trigger_id": "kickoff"},
+    )
+    assert feed_res.status_code == 200, feed_res.text
+    feed = feed_res.json()["feed"]
+    assert feed["workflow_id"] == "continuous_demo"
+    assert feed["status"] == "open"
+
+    item_res = client.post(
+        f"/api/plugins/workflows/input-feeds/{feed['feed_id']}/items",
+        json={"input": {"repo_path": "/repo", "prompt": "short"}},
+    )
+    assert item_res.status_code == 200, item_res.text
+    item = item_res.json()["item"]
+    assert item["status"] == "needs_input"
+    assert "at least 10 characters" in item["criteria"]["messages"][0]
+
+    update_res = client.patch(
+        f"/api/plugins/workflows/input-items/{item['item_id']}",
+        json={"input": {"repo_path": "/repo", "prompt": "Review README drift"}},
+    )
+    assert update_res.status_code == 200, update_res.text
+    assert update_res.json()["item"]["status"] == "queued"
+
+    list_res = client.get(f"/api/plugins/workflows/input-feeds/{feed['feed_id']}/items")
+    assert list_res.status_code == 200, list_res.text
+    assert [row["item_id"] for row in list_res.json()["items"]] == [item["item_id"]]
+
+
+def test_dashboard_input_feed_api_redacts_or_omits_dedupe_value(client):
+    secret_spec = {
+        "id": "secret_feed_demo",
+        "name": "Secret Feed Demo",
+        "version": 1,
+        "triggers": [{
+            "type": "manual",
+            "id": "kickoff",
+            "input_schema": {"api_key": {"kind": "text", "required": True}},
+            "intake": {"mode": "continuous", "dedupe_key": "$.input.api_key"},
+        }],
+        "nodes": {"start": {"type": "pass"}},
+    }
+    _deploy(client, secret_spec)
+    feed = client.post(
+        "/api/plugins/workflows/definitions/secret_feed_demo/input-feeds",
+        json={"trigger_id": "kickoff"},
+    ).json()["feed"]
+
+    item_res = client.post(
+        f"/api/plugins/workflows/input-feeds/{feed['feed_id']}/items",
+        json={"input": {"api_key": "super-secret-key"}},
+    )
+    assert item_res.status_code == 200, item_res.text
+    item = item_res.json()["item"]
+    assert "dedupe_value" not in item
+    assert item["input"]["api_key"] == "[REDACTED]"
+    assert "super-secret-key" not in item_res.text
+
+    list_res = client.get(f"/api/plugins/workflows/input-feeds/{feed['feed_id']}/items")
+    assert list_res.status_code == 200, list_res.text
+    assert "dedupe_value" not in list_res.json()["items"][0]
+    assert "super-secret-key" not in list_res.text
+
+
+def test_dashboard_input_feed_api_rejects_non_continuous_trigger(client):
+    _deploy(client, PASS_SPEC)
+
+    feed_res = client.post(
+        "/api/plugins/workflows/definitions/dashboard_demo/input-feeds",
+        json={"trigger_id": "manual"},
+    )
+
+    assert feed_res.status_code == 400
+    assert "continuous manual input trigger" in feed_res.text
+
+
+def test_dashboard_tick_endpoint_advances_workflows(client, monkeypatch):
+    calls: list[int] = []
+
+    def fake_tick(*, limit: int = 1) -> int:
+        calls.append(limit)
+        return 3
+
+    monkeypatch.setattr(workflows_dispatcher, "tick", fake_tick)
+
+    r = client.post("/api/plugins/workflows/tick", json={"limit": 2})
+
+    assert r.status_code == 200, r.text
+    assert r.json() == {"processed": 3}
+    assert calls == [2]
+
+
+def test_dashboard_input_feed_api_can_pause_resume_and_start_execution(client):
+    _deploy(client, CONTINUOUS_SPEC)
+    feed = client.post(
+        "/api/plugins/workflows/definitions/continuous_demo/input-feeds",
+        json={"trigger_id": "kickoff"},
+    ).json()["feed"]
+
+    pause = client.post(
+        f"/api/plugins/workflows/input-feeds/{feed['feed_id']}/status",
+        json={"status": "paused"},
+    )
+    assert pause.status_code == 200, pause.text
+    assert pause.json()["feed"]["status"] == "paused"
+
+    ready = client.post(
+        f"/api/plugins/workflows/input-feeds/{feed['feed_id']}/items",
+        json={"input": {"repo_path": "/repo", "prompt": "Review README drift"}},
+    ).json()["item"]
+    assert ready["status"] == "queued"
+    assert workflows_dispatcher.tick(limit=1) == 0
+
+    resume = client.post(
+        f"/api/plugins/workflows/input-feeds/{feed['feed_id']}/status",
+        json={"status": "open"},
+    )
+    assert resume.status_code == 200, resume.text
+    assert workflows_dispatcher.tick(limit=1) == 1
+
+    items = client.get(f"/api/plugins/workflows/input-feeds/{feed['feed_id']}/items").json()["items"]
+    assert items[0]["status"] in {"running", "succeeded"}
+    assert items[0]["execution_id"]
+
+
 def test_dashboard_delete_definition_removes_workflow_and_related_runs(client):
     definition = _deploy(client, PASS_SPEC)
     run = client.post(
@@ -101,6 +282,33 @@ def test_dashboard_delete_definition_removes_workflow_and_related_runs(client):
     assert client.get(f"/api/plugins/workflows/definitions/{definition['workflow_id']}").status_code == 404
     assert client.get("/api/plugins/workflows/definitions").json()["definitions"] == []
     assert client.get("/api/plugins/workflows/executions").json()["executions"] == []
+
+
+def test_dashboard_run_rejects_missing_required_input_before_creating_execution(client):
+    _deploy(client, REQUIRED_RUN_SPEC)
+
+    r = client.post(
+        "/api/plugins/workflows/definitions/dashboard_required_run/run",
+        json={"input": {}},
+    )
+
+    assert r.status_code == 400
+    assert "brief is required" in r.json()["detail"]
+    assert client.get("/api/plugins/workflows/executions").json()["executions"] == []
+
+
+def test_dashboard_run_accepts_valid_required_input(client):
+    _deploy(client, REQUIRED_RUN_SPEC)
+
+    r = client.post(
+        "/api/plugins/workflows/definitions/dashboard_required_run/run",
+        json={"input": {"brief": "ship it"}},
+    )
+
+    assert r.status_code == 200, r.text
+    execution = r.json()["execution"]
+    assert execution["status"] == "succeeded"
+    assert execution["input"] == {"brief": "ship it"}
 
 
 def test_dashboard_delete_definition_returns_404_for_missing_workflow(client):
@@ -737,6 +945,80 @@ def test_dashboard_bundle_contains_validation_checklist_and_dispatcher_banner():
     assert "loadWorkflowStatus" in bundle
 
 
+def test_dashboard_run_inputs_prefer_typed_trigger_input_schema():
+    fields = _run_node_input_fields_for_spec(
+        {
+            "id": "typed_input_demo",
+            "name": "Typed Input Demo",
+            "version": 1,
+            "triggers": [
+                {
+                    "id": "kickoff",
+                    "type": "manual",
+                    "input": {"legacy": ""},
+                    "input_schema": {
+                        "repo_path": {"kind": "repo_path", "label": "Repository path", "required": True},
+                        "instructions": {"kind": "prompt", "required": True},
+                        "criteria": {"kind": "criteria"},
+                        "document": {"kind": "document", "accepts": [".md", ".txt"]},
+                    },
+                    "intake": {"mode": "continuous", "dedupe_key": "$.input.repo_path"},
+                }
+            ],
+            "nodes": {"start": {"type": "pass"}},
+        }
+    )
+
+    assert fields == [
+        {"name": "repo_path", "kind": "repo_path", "label": "Repository path", "required": True, "description": ""},
+        {"name": "instructions", "kind": "prompt", "label": "instructions", "required": True, "description": ""},
+        {"name": "criteria", "kind": "criteria", "label": "criteria", "required": False, "description": ""},
+        {"name": "document", "kind": "document", "label": "document", "required": False, "description": ""},
+    ]
+
+
+def test_dashboard_feed_input_fields_can_target_continuous_trigger():
+    spec = {
+        "id": "multi_trigger_demo",
+        "name": "Multi Trigger Demo",
+        "version": 1,
+        "triggers": [
+            {
+                "id": "manual_once",
+                "type": "manual",
+                "input_schema": {"manual_only": {"kind": "text"}},
+            },
+            {
+                "id": "feed",
+                "type": "manual",
+                "input_schema": {"repo_path": {"kind": "repo_path", "required": True}},
+                "intake": {"mode": "continuous"},
+            },
+        ],
+        "nodes": {"start": {"type": "pass"}},
+    }
+
+    fields = _run_node_input_fields_for_spec(spec, spec["triggers"][1])
+
+    assert fields == [
+        {"name": "repo_path", "kind": "repo_path", "label": "repo_path", "required": True, "description": ""},
+    ]
+
+
+def test_dashboard_bundle_contains_feed_controls_and_honest_scalar_scope():
+    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+
+    assert "renderInputFeedPanel" in bundle
+    assert "Open Continuous Feed" in bundle
+    assert "Add Item To Feed" in bundle
+    assert "Phase 1 supports scalar manual and continuous input items" in bundle
+    assert "Batch splitting and document uploads are not supported in this release" in bundle
+    assert "input.documents" not in bundle
+    assert "This workflow has no manual trigger with intake.mode: continuous." in bundle
+    assert 'api("/definitions/" + encodeURIComponent(workflowId) + "/input-feeds"' in bundle
+    assert 'api("/input-feeds/" + encodeURIComponent(feedId) + "/items"' in bundle
+
+
 def test_dashboard_validation_checklist_waits_for_parsed_spec_before_showing_failures():
     bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
     render_body = bundle[
@@ -962,8 +1244,11 @@ def _run_node_summary_rows(spec):
     return _run_dashboard_function("nodeSummaryRows", [spec])
 
 
-def _run_node_input_fields_for_spec(spec):
-    return _run_dashboard_function("inputFieldsForSpec", [spec])
+def _run_node_input_fields_for_spec(spec, preferred_trigger=None):
+    args = [spec]
+    if preferred_trigger is not None:
+        args.append(preferred_trigger)
+    return _run_dashboard_function("inputFieldsForSpec", args)
 
 
 def _run_validation_checklist(spec, capabilities=None):

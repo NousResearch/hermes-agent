@@ -70,6 +70,18 @@
   font-weight: 600;
 }
 
+.hermes-workflows .hermes-workflows-input-feed-panel {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius, 0.75rem);
+  background: color-mix(in srgb, var(--color-card) 88%, transparent);
+}
+
+.hermes-workflows .hermes-workflows-input-feed-panel form {
+  margin-top: 0.75rem;
+}
+
 /* Main body: left sidebar + canvas center */
 .hermes-workflows .hermes-workflows-body {
   display: flex;
@@ -628,6 +640,10 @@
     border-left: none;
     border-top: 1px solid var(--color-border);
   }
+  .hermes-workflows .hermes-workflows-input-field-row,
+  .hermes-workflows .hermes-workflows-input-field-editor {
+    grid-template-columns: 1fr;
+  }
 }
 
 .hermes-workflows .hermes-workflows-panel {
@@ -679,6 +695,33 @@
   gap: 0.5rem;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.hermes-workflows .hermes-workflows-trigger-editor,
+.hermes-workflows .hermes-workflows-input-field-list,
+.hermes-workflows .hermes-workflows-input-field-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.hermes-workflows .hermes-workflows-trigger-editor {
+  border: 1px solid var(--color-border);
+  border-radius: calc(var(--radius, 0.75rem) * 0.75);
+  padding: 0.65rem;
+  background: color-mix(in srgb, var(--color-card) 90%, transparent);
+}
+
+.hermes-workflows .hermes-workflows-input-field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.hermes-workflows .hermes-workflows-input-field-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .hermes-workflows .hermes-workflows-timeline,

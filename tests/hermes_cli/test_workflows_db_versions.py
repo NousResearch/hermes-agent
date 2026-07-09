@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from argparse import Namespace
 
 import pytest
@@ -60,6 +61,99 @@ def test_init_db_runs_schema_once_per_resolved_path(tmp_path, monkeypatch):
         assert calls["executescript"] == 2
     finally:
         wfdb._INITIALIZED_DB_PATHS.clear()
+
+
+def test_init_db_upgrades_pre_continuous_input_database_without_losing_rows(tmp_path):
+    db_path = tmp_path / "legacy-workflows.db"
+    spec = _spec(True)
+    spec_json = json.dumps(spec.model_dump(mode="json", by_alias=True), sort_keys=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE workflow_definitions (
+                workflow_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                spec_json TEXT NOT NULL,
+                checksum TEXT NOT NULL,
+                created_by TEXT,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (workflow_id, version)
+            );
+            CREATE TABLE workflow_executions (
+                execution_id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                input_json TEXT NOT NULL,
+                context_json TEXT NOT NULL,
+                trigger_type TEXT NOT NULL,
+                trigger_id TEXT,
+                claim_lock TEXT,
+                claim_expires INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE workflow_node_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                execution_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                input_json TEXT,
+                output_json TEXT,
+                error TEXT,
+                started_at INTEGER,
+                completed_at INTEGER
+            );
+            CREATE TABLE workflow_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                execution_id TEXT NOT NULL,
+                node_run_id INTEGER,
+                kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE workflow_schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id TEXT NOT NULL,
+                version INTEGER,
+                trigger_id TEXT,
+                schedule TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                next_run_at INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO workflow_definitions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (spec.id, spec.version, spec.name, 1, spec_json, "legacy-checksum", "legacy", 10),
+        )
+        conn.execute(
+            "INSERT INTO workflow_executions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("exec-legacy", spec.id, spec.version, "succeeded", '{"ok":true}', '{"node":{}}', "manual", None, None, None, 11, 12),
+        )
+        conn.execute(
+            "INSERT INTO workflow_node_runs (execution_id, node_id, status, started_at, completed_at) VALUES (?, ?, ?, ?, ?)",
+            ("exec-legacy", "start", "succeeded", 11, 12),
+        )
+
+    wfdb._INITIALIZED_DB_PATHS.clear()
+    wfdb.init_db(db_path)
+
+    with wfdb.connect(db_path) as conn:
+        definitions = wfdb.list_definitions(conn)
+        execution = wfdb.get_execution(conn, "exec-legacy")
+        node_columns = {row["name"] for row in conn.execute("PRAGMA table_info(workflow_node_runs)")}
+        tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+    assert [(record.workflow_id, record.version) for record in definitions] == [("immutable_demo", 1)]
+    assert execution.workflow_id == "immutable_demo"
+    assert execution.input == {"ok": True}
+    assert {"wait_until", "kanban_task_id", "kanban_board"}.issubset(node_columns)
+    assert {"workflow_input_feeds", "workflow_input_items"}.issubset(tables)
 
 
 def test_redeploy_same_version_same_checksum_is_idempotent(tmp_path, monkeypatch):

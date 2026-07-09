@@ -45,10 +45,10 @@ def _connect_initialized():
 
 def _error_text(exc: BaseException) -> str:
     if isinstance(exc, KeyError) and exc.args:
-        return str(exc.args[0])
+        return str(redact_sensitive(str(exc.args[0])))
     if isinstance(exc, json.JSONDecodeError):
         return f"invalid JSON: {exc.msg} at line {exc.lineno} column {exc.colno}"
-    return str(exc)
+    return str(redact_sensitive(str(exc)))
 
 
 def _http_400(exc: BaseException) -> HTTPException:
@@ -98,8 +98,9 @@ def _assistant_runtime_http(detail: str | None = None) -> HTTPException:
         "private",
         "jwt",
     }
-    if detail and not any(kw in detail.lower() for kw in sensitive_keywords):
-        message = message + " (" + detail + ")"
+    redacted_detail = str(redact_sensitive(detail)) if detail else None
+    if redacted_detail and detail and not any(kw in detail.lower() for kw in sensitive_keywords):
+        message = message + " (" + redacted_detail + ")"
     return HTTPException(
         status_code=502,
         detail={
@@ -237,6 +238,34 @@ def _event_to_dict(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _feed_to_dict(feed: wfdb.WorkflowInputFeed) -> dict[str, Any]:
+    return {
+        "created_at": feed.created_at,
+        "feed_id": feed.feed_id,
+        "status": feed.status,
+        "trigger_id": feed.trigger_id,
+        "updated_at": feed.updated_at,
+        "version": feed.version,
+        "workflow_id": feed.workflow_id,
+    }
+
+
+def _input_item_to_dict(item: wfdb.WorkflowInputItem) -> dict[str, Any]:
+    return {
+        "created_at": item.created_at,
+        "criteria": redact_sensitive(item.criteria),
+        "execution_id": item.execution_id,
+        "feed_id": item.feed_id,
+        "input": redact_sensitive(item.input),
+        "item_id": item.item_id,
+        "status": item.status,
+        "trigger_id": item.trigger_id,
+        "updated_at": item.updated_at,
+        "version": item.version,
+        "workflow_id": item.workflow_id,
+    }
+
+
 def _input_from_payload(payload: Any) -> dict[str, Any]:
     if payload in (None, ""):
         return {}
@@ -253,6 +282,12 @@ def _input_from_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(input_data, dict):
         raise ValueError("workflow input must be a JSON object")
     return input_data
+
+
+def _object_payload(payload: Any, *, what: str) -> dict[str, Any]:
+    if payload in (None, ""):
+        return {}
+    return _yaml_or_object(payload, what=what)
 
 
 class PromptAssistantDraftRequest(BaseModel):
@@ -524,6 +559,126 @@ def delete_definition(workflow_id: str) -> dict[str, Any]:
     return {"deleted": True, "workflow_id": workflow_id}
 
 
+@router.post("/definitions/{workflow_id}/input-feeds")
+async def open_input_feed(
+    workflow_id: str,
+    request: Request,
+    version: int | None = Query(default=None),
+) -> dict[str, Any]:
+    try:
+        payload = _object_payload(await _read_body(request), what="input feed request")
+        trigger_id = payload.get("trigger_id")
+        if trigger_id is not None and not isinstance(trigger_id, str):
+            raise ValueError("trigger_id must be a string")
+        with _connect_initialized() as conn:
+            feed = wfdb.open_input_feed(
+                conn,
+                workflow_id,
+                trigger_id=trigger_id,
+                version=version,
+            )
+    except (json.JSONDecodeError, yaml.YAMLError, ValueError) as exc:
+        raise _http_400(exc) from exc
+    except KeyError as exc:
+        raise _http_404(exc) from exc
+    return {"feed": _feed_to_dict(feed)}
+
+
+@router.get("/input-feeds")
+def list_input_feeds(
+    workflow_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+) -> dict[str, Any]:
+    with _connect_initialized() as conn:
+        feeds = wfdb.list_input_feeds(conn, status=status)
+    if workflow_id:
+        feeds = [feed for feed in feeds if feed.workflow_id == workflow_id]
+    return {"feeds": [_feed_to_dict(feed) for feed in feeds]}
+
+
+@router.get("/input-feeds/{feed_id}")
+def get_input_feed(feed_id: str) -> dict[str, Any]:
+    try:
+        with _connect_initialized() as conn:
+            feed = wfdb.get_input_feed(conn, feed_id)
+    except KeyError as exc:
+        raise _http_404(exc) from exc
+    return {"feed": _feed_to_dict(feed)}
+
+
+@router.post("/input-feeds/{feed_id}/status")
+async def set_input_feed_status(feed_id: str, request: Request) -> dict[str, Any]:
+    try:
+        payload = _object_payload(await _read_body(request), what="input feed status request")
+        status = payload.get("status")
+        if not isinstance(status, str):
+            raise ValueError("status must be a string")
+        with _connect_initialized() as conn:
+            feed = wfdb.set_input_feed_status(conn, feed_id, status)
+    except (json.JSONDecodeError, yaml.YAMLError, ValueError) as exc:
+        raise _http_400(exc) from exc
+    except KeyError as exc:
+        raise _http_404(exc) from exc
+    return {"feed": _feed_to_dict(feed)}
+
+
+@router.post("/input-feeds/{feed_id}/items")
+async def enqueue_input_item(feed_id: str, request: Request) -> dict[str, Any]:
+    try:
+        input_data = _input_from_payload(await _read_body(request))
+        with _connect_initialized() as conn:
+            item = wfdb.enqueue_input_item(conn, feed_id, input_data)
+    except (json.JSONDecodeError, yaml.YAMLError, ValueError) as exc:
+        raise _http_400(exc) from exc
+    except KeyError as exc:
+        raise _http_404(exc) from exc
+    return {"item": _input_item_to_dict(item)}
+
+
+@router.get("/input-feeds/{feed_id}/items")
+def list_input_items(
+    feed_id: str,
+    status: str | None = Query(default=None),
+) -> dict[str, Any]:
+    try:
+        with _connect_initialized() as conn:
+            wfdb.get_input_feed(conn, feed_id)
+            items = wfdb.list_input_items(conn, feed_id=feed_id, status=status)
+    except KeyError as exc:
+        raise _http_404(exc) from exc
+    return {"items": [_input_item_to_dict(item) for item in items]}
+
+
+@router.patch("/input-items/{item_id}")
+async def update_input_item(item_id: str, request: Request) -> dict[str, Any]:
+    try:
+        input_data = _input_from_payload(await _read_body(request))
+        with _connect_initialized() as conn:
+            item = wfdb.update_input_item(conn, item_id, input_data)
+    except (json.JSONDecodeError, yaml.YAMLError, ValueError) as exc:
+        raise _http_400(exc) from exc
+    except KeyError as exc:
+        raise _http_404(exc) from exc
+    return {"item": _input_item_to_dict(item)}
+
+
+@router.post("/tick")
+async def tick_workflows(request: Request) -> dict[str, Any]:
+    try:
+        payload = _yaml_or_object(await _read_body(request), what="tick request")
+        raw_limit = payload.get("limit", 1)
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("limit must be an integer") from exc
+        if limit < 1 or limit > 100:
+            raise ValueError("limit must be between 1 and 100")
+        processed = await asyncio.to_thread(workflows_dispatcher.tick, limit=limit)
+    except (json.JSONDecodeError, yaml.YAMLError, ValueError) as exc:
+        raise _http_400(exc) from exc
+    return {"processed": processed}
+
+
 @router.post("/definitions/{workflow_id}/run")
 async def run_workflow(
     workflow_id: str,
@@ -535,11 +690,10 @@ async def run_workflow(
 
         def _run():
             with _connect_initialized() as conn:
-                execution_id = wfdb.start_execution(
+                execution_id = wfdb.start_manual_execution(
                     conn,
                     workflow_id,
                     input_data=input_data,
-                    trigger_type="manual",
                     version=version,
                 )
             try:

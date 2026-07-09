@@ -159,6 +159,37 @@ def test_workflow_handlers_return_json_strings(_isolated_workflow_home):
         assert "error" not in payload
 
 
+def test_workflow_run_tool_rejects_missing_required_input_before_creating_execution(
+    _isolated_workflow_home,
+):
+    _enable_workflow_toolset(_isolated_workflow_home)
+
+    from hermes_cli import workflows_db as wfdb
+    from hermes_cli.workflows_spec import WorkflowSpec
+    from tools.registry import registry
+
+    spec = WorkflowSpec.model_validate({
+        "id": "tool_required_run",
+        "name": "Tool Required Run",
+        "version": 1,
+        "triggers": [{
+            "type": "manual",
+            "id": "manual",
+            "input_schema": {"brief": {"kind": "long_text", "required": True}},
+        }],
+        "nodes": {"start": {"type": "pass"}},
+    })
+    wfdb.init_db()
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+
+    payload = json.loads(registry.dispatch("workflow_run", {"workflow_id": spec.id, "input": {}}))
+
+    assert "brief is required" in payload["error"]
+    with wfdb.connect() as conn:
+        assert conn.execute("SELECT count(*) FROM workflow_executions").fetchone()[0] == 0
+
+
 def test_workflow_validate_tool_accepts_yaml_text(_isolated_workflow_home):
     _enable_workflow_toolset(_isolated_workflow_home)
     from tools.registry import registry
@@ -680,6 +711,50 @@ def test_workflow_execution_show_includes_node_runs_and_events(_isolated_workflo
     kinds = [event["kind"] for event in full["events"]]
     assert "execution_started" in kinds
     assert "execution_succeeded" in kinds
+
+
+def test_workflow_execution_show_redacts_model_facing_input_context_runs_and_events(
+    _isolated_workflow_home,
+):
+    _enable_workflow_toolset(_isolated_workflow_home)
+
+    from hermes_cli import workflows_db as wfdb
+    from hermes_cli.workflows_spec import WorkflowSpec
+    from tools.registry import registry
+
+    spec = WorkflowSpec.model_validate({
+        "id": "secret_execution_demo",
+        "name": "Secret Execution Demo",
+        "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {
+            "start": {
+                "type": "pass",
+                "output": {"api_key": "${ input.api_key }", "safe": "visible"},
+            }
+        },
+    })
+    wfdb.init_db()
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+
+    secret = "sk-modeltoolsecret1234567890"
+    run_payload = json.loads(
+        registry.dispatch("workflow_run", {"workflow_id": spec.id, "input": {"api_key": secret, "safe": "visible"}})
+    )
+    execution_id = run_payload["execution_id"]
+    full_result = registry.dispatch(
+        "workflow_execution_show",
+        {"execution_id": execution_id, "include_node_runs": True, "include_events": True},
+    )
+    full = json.loads(full_result)
+
+    assert "error" not in full
+    assert secret not in full_result
+    assert full["input"]["api_key"] == "[REDACTED]"
+    assert full["context"]["node"]["start"]["output"]["api_key"] == "[REDACTED]"
+    assert full["node_runs"][0]["output"]["api_key"] == "[REDACTED]"
+    assert any(event["payload"] for event in full["events"])
 
 
 def test_workflow_deploy_auto_bump_on_checksum_conflict(_isolated_workflow_home):

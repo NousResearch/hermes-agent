@@ -257,6 +257,97 @@ def test_run_input_creates_execution_and_lists_it(workflow_home, tmp_path, capsy
     assert show_payload["context"]["node"]["done"]["output"] == {"finished": True}
 
 
+def test_execution_drilldown_json_redacts_secret_like_values(workflow_home, tmp_path, capsys):
+    spec_path = tmp_path / "secret-workflow.yaml"
+    spec_path.write_text(
+        """
+id: secret-cli
+name: Secret CLI
+version: 1
+triggers:
+  - type: manual
+    id: manual
+nodes:
+  start:
+    type: pass
+    output:
+      api_key: "${ input.api_key }"
+      nested:
+        token: "${ input.token }"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "input.json"
+    input_path.write_text(
+        json.dumps({"api_key": "sk-test-secret-1234567890", "token": "tok-secret-abc", "safe": "visible"}),
+        encoding="utf-8",
+    )
+    assert _run(["deploy", str(spec_path)], capsys)[0] == 0
+    rc, out, err = _run(["run", "secret-cli", "--input", str(input_path), "--json"], capsys)
+    assert rc == 0
+    assert err == ""
+    execution_id = json.loads(out)["execution_id"]
+
+    outputs = []
+    for args in (
+        ["executions", "list", "--workflow", "secret-cli", "--json"],
+        ["executions", "show", execution_id, "--json"],
+        ["executions", "node-runs", execution_id, "--json"],
+        ["executions", "events", execution_id, "--json"],
+    ):
+        rc, out, err = _run(args, capsys)
+        assert rc == 0
+        assert err == ""
+        outputs.append(out)
+
+    combined = "\n".join(outputs)
+    assert "sk-test-secret-1234567890" not in combined
+    assert "tok-secret-abc" not in combined
+    assert "[REDACTED]" in combined
+
+    listed = json.loads(outputs[0])[0]
+    assert listed["input"]["api_key"] == "[REDACTED]"
+    shown = json.loads(outputs[1])
+    assert shown["context"]["input"]["token"] == "[REDACTED]"
+    node_run = json.loads(outputs[2])["node_runs"][0]
+    assert node_run["output"]["api_key"] == "[REDACTED]"
+
+
+def test_run_rejects_missing_required_input_before_creating_execution(
+    workflow_home,
+    tmp_path,
+    capsys,
+):
+    spec_path = tmp_path / "required.yaml"
+    spec_path.write_text(
+        """
+id: required-run
+name: Required Run
+version: 1
+triggers:
+  - type: manual
+    id: manual
+    input_schema:
+      brief:
+        kind: long_text
+        required: true
+nodes:
+  start:
+    type: pass
+""".lstrip(),
+        encoding="utf-8",
+    )
+    assert _run(["deploy", str(spec_path)], capsys)[0] == 0
+
+    rc, out, err = _run(["run", "required-run", "--json"], capsys)
+
+    assert rc == 1
+    assert out == ""
+    assert "brief is required" in err
+    with wfdb.connect() as conn:
+        assert conn.execute("SELECT count(*) FROM workflow_executions").fetchone()[0] == 0
+
+
 def _start_queued_execution(workflow_id: str, input_data: dict | None = None) -> str:
     """Seed a queued execution without the run command's inline tick."""
     wfdb.init_db()

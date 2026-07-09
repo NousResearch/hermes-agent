@@ -13,7 +13,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import workflows_db as wfdb
 from hermes_cli.workflows_engine import EngineResult, run_in_memory_until_waiting
 from hermes_cli.workflows_prompts import render_agent_prompt, render_prompt_text
-from hermes_cli.workflows_spec import WorkflowSpec
+from hermes_cli.workflows_spec import RESULT_CONTRACT_PRIMITIVES, WorkflowSpec
 
 
 class _AgentTaskMaterializationError(RuntimeError):
@@ -94,7 +94,10 @@ def _schedule_input(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any
     return {}
 
 
-def _fire_due_schedules(conn: sqlite3.Connection, *, now: int) -> None:
+def _fire_due_schedules(conn: sqlite3.Connection, *, now: int, limit: int) -> int:
+    if limit <= 0:
+        return 0
+    started = 0
     with wfdb.write_txn(conn):
         rows = conn.execute(
             """
@@ -103,8 +106,9 @@ def _fire_due_schedules(conn: sqlite3.Connection, *, now: int) -> None:
                AND next_run_at IS NOT NULL
                AND next_run_at <= ?
              ORDER BY next_run_at, id
+             LIMIT ?
             """,
-            (now,),
+            (now, limit),
         ).fetchall()
         for row in rows:
             try:
@@ -131,6 +135,8 @@ def _fire_due_schedules(conn: sqlite3.Connection, *, now: int) -> None:
                 """,
                 (wfdb._next_cron_run(row["schedule"], now), now, row["id"]),
             )
+            started += 1
+    return started
 
 
 def _resume_due_waits(conn: sqlite3.Connection, *, now: int) -> None:
@@ -195,6 +201,27 @@ def _resume_due_retries(conn: sqlite3.Connection, *, now: int) -> None:
             )
 
 
+def _start_ready_feed_items(conn: sqlite3.Connection, *, now: int, limit: int) -> int:
+    started = 0
+    while started < limit:
+        with wfdb.write_txn(conn):
+            item = wfdb.claim_next_ready_input_item(conn)
+            if item is None:
+                break
+            execution_id = wfdb.start_execution(
+                conn,
+                item.workflow_id,
+                input_data=item.input,
+                trigger_type="input_feed",
+                trigger_id=item.trigger_id,
+                version=item.version,
+                now=now,
+            )
+            wfdb.mark_input_item_running(conn, item.item_id, execution_id, now=now)
+        started += 1
+    return started
+
+
 def _render_agent_prompt(node: Any, context: dict[str, Any]) -> str:
     return render_agent_prompt(node.prompt, context)
 
@@ -231,7 +258,7 @@ def _create_or_get_agent_task(
             title=_render_agent_task_title(node, spec=spec, node_id=node_id, context=context),
             body=_render_agent_prompt(node, context),
             assignee=node.profile,
-            created_by=f"workflow:{execution_id}",
+            created_by=f"workflow:{execution_id}:version:{spec.version}:node:{node_id}",
             workspace_kind=node.workspace_kind or "scratch",
             workspace_path=node.workspace_path,
             skills=node.skills or None,
@@ -267,6 +294,10 @@ def _validate_result_contract(output: Any, contract: dict[str, Any]) -> list[str
             errors.append(f"missing required result key: {key}")
             continue
         value = output[key]
+        if not isinstance(expected, str):
+            errors.append(f"result key {key} contract must be string")
+            continue
+        expected = expected.strip()
         if expected == "string" and not isinstance(value, str):
             errors.append(f"result key {key} must be string")
         elif expected == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
@@ -277,11 +308,18 @@ def _validate_result_contract(output: Any, contract: dict[str, Any]) -> list[str
             errors.append(f"result key {key} must be array")
         elif expected == "object" and not isinstance(value, dict):
             errors.append(f"result key {key} must be object")
-        elif isinstance(expected, str) and "|" in expected:
+        elif expected in RESULT_CONTRACT_PRIMITIVES:
+            continue
+        elif "|" in expected:
             allowed = {part.strip() for part in expected.split("|") if part.strip()}
+            if not allowed:
+                errors.append(f"result key {key} has empty result_contract enum")
+                continue
             actual = "true" if value is True else "false" if value is False else str(value)
             if actual not in allowed:
                 errors.append(f"result key {key} must be one of {sorted(allowed)}")
+        else:
+            errors.append(f"result key {key} has invalid result_contract token: {expected}")
     return errors
 
 
@@ -927,6 +965,18 @@ def _finish(
                 execution_id=execution_id,
                 result=result,
             )
+            if result.status == "failed" and result.error and result.error.get("waiting_nodes"):
+                conn.execute(
+                    """
+                    UPDATE workflow_node_runs
+                       SET status = 'failed', error = ?, completed_at = ?, wait_until = NULL
+                     WHERE execution_id = ?
+                       AND status = 'waiting'
+                       AND wait_until IS NULL
+                       AND kanban_task_id IS NULL
+                    """,
+                    (_json_dumps(result.error), now, execution_id),
+                )
         except _AgentTaskMaterializationError as exc:
             result = _materialization_failure_result(
                 conn,
@@ -972,14 +1022,21 @@ def tick(
     processed = 0
     wfdb.init_db(db_path)
     with wfdb.connect(db_path) as conn:
-        _fire_due_schedules(conn, now=tick_now)
         _resume_due_waits(conn, now=tick_now)
         _resume_due_retries(conn, now=tick_now)
         _resume_completed_agent_tasks(conn, now=tick_now)
+        wfdb.sync_terminal_input_items(conn, now=tick_now)
         while processed < limit:
             claimed = _claim_next(conn, now=tick_now, lease_seconds=lease_seconds)
             if claimed is None:
-                break
+                scheduled = _fire_due_schedules(conn, now=tick_now, limit=limit - processed)
+                if scheduled:
+                    continue
+                started = _start_ready_feed_items(conn, now=tick_now, limit=1)
+                if not started:
+                    break
+                processed += started
+                continue
             execution_id, token = claimed
             execution = None
             spec = None
@@ -1016,4 +1073,5 @@ def tick(
                 now=tick_now,
             ):
                 processed += 1
+        wfdb.sync_terminal_input_items(conn, now=tick_now)
     return processed

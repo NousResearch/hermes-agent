@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from hermes_cli import workflows_db as wfdb
 from hermes_cli import workflows_dispatcher
 from hermes_cli.workflows_capabilities import require_implemented_primitives
+from hermes_cli.workflows_redaction import redact_sensitive
 from hermes_cli.workflows_spec import (
     WorkflowSpec,
     reject_unknown_spec_fields,
@@ -216,16 +217,31 @@ def _definition_to_dict(record: wfdb.WorkflowDefinitionRecord, *, include_spec: 
         "workflow_id": record.workflow_id,
     }
     if include_spec:
-        payload["spec"] = record.spec.model_dump(mode="json", by_alias=True)
+        payload["spec"] = redact_sensitive(record.spec.model_dump(mode="json", by_alias=True))
     return payload
+
+
+def _event_to_dict(event: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(event)
+    if "payload" in redacted:
+        redacted["payload"] = redact_sensitive(redacted["payload"])
+    return redacted
+
+
+def _node_run_to_dict(node_run: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(node_run)
+    for key in ("input", "output", "payload", "error"):
+        if key in redacted:
+            redacted[key] = redact_sensitive(redacted[key])
+    return redacted
 
 
 def _execution_to_dict(execution: wfdb.WorkflowExecution) -> dict[str, Any]:
     return {
-        "context": execution.context,
+        "context": redact_sensitive(execution.context),
         "created_at": execution.created_at,
         "execution_id": execution.execution_id,
-        "input": execution.input,
+        "input": redact_sensitive(execution.input),
         "status": execution.status,
         "trigger_id": execution.trigger_id,
         "trigger_type": execution.trigger_type,
@@ -324,11 +340,10 @@ def _cmd_set_enabled(args: argparse.Namespace, *, enabled: bool) -> int:
 def _cmd_run(args: argparse.Namespace) -> int:
     input_data = _read_input(getattr(args, "input", None))
     with _connect_initialized() as conn:
-        execution_id = wfdb.start_execution(
+        execution_id = wfdb.start_manual_execution(
             conn,
             args.workflow_id,
             input_data=input_data,
-            trigger_type="manual",
         )
     # Advance cheap nodes immediately so simple graphs finish inline and
     # agent_task nodes materialize their Kanban tasks without waiting for
@@ -419,7 +434,10 @@ def _cmd_executions_node_runs(args: argparse.Namespace) -> int:
     with _connect_initialized() as conn:
         node_runs = wfdb.list_node_runs(conn, args.execution_id)
     if getattr(args, "json", False):
-        _print_json({"execution_id": args.execution_id, "node_runs": node_runs})
+        _print_json({
+            "execution_id": args.execution_id,
+            "node_runs": [_node_run_to_dict(run) for run in node_runs],
+        })
         return 0
     if not node_runs:
         print("(no node runs)")
@@ -433,7 +451,7 @@ def _cmd_executions_node_runs(args: argparse.Namespace) -> int:
         print(line)
         error = run.get("error")
         if error:
-            print(f"  error: {json.dumps(error, sort_keys=True)}")
+            print(f"  error: {json.dumps(redact_sensitive(error), sort_keys=True)}")
     return 0
 
 
@@ -441,13 +459,16 @@ def _cmd_executions_events(args: argparse.Namespace) -> int:
     with _connect_initialized() as conn:
         events = wfdb.list_events(conn, args.execution_id)
     if getattr(args, "json", False):
-        _print_json({"execution_id": args.execution_id, "events": events})
+        _print_json({
+            "execution_id": args.execution_id,
+            "events": [_event_to_dict(event) for event in events],
+        })
         return 0
     if not events:
         print("(no events)")
         return 0
     for event in events:
-        payload = event.get("payload") or {}
+        payload = redact_sensitive(event.get("payload") or {})
         line = f"{_format_epoch(event['created_at'])}  {event['kind']}"
         if payload:
             line += f"  {json.dumps(payload, sort_keys=True)}"
@@ -546,16 +567,16 @@ def run_slash(rest: str) -> str:
         return _SLASH_WORKFLOW_HELP
 
     _wrap = argparse.ArgumentParser(prog="/workflow-wrap", add_help=False)
-    _wrap.exit_on_error = False  # type: ignore[attr-defined]
+    _wrap.exit_on_error = False
     _top_sub = _wrap.add_subparsers(dest="_top")
     workflow_parser = build_parser(_top_sub)
     workflow_parser.prog = "/workflow"
-    workflow_parser.exit_on_error = False  # type: ignore[attr-defined]
+    workflow_parser.exit_on_error = False
     for _action in workflow_parser._actions:
         if isinstance(_action, argparse._SubParsersAction):
             for _name, _choice in _action.choices.items():
                 _choice.prog = f"/workflow {_name}"
-                _choice.exit_on_error = False  # type: ignore[attr-defined]
+                _choice.exit_on_error = False
 
     buf_out = io.StringIO()
     buf_err = io.StringIO()

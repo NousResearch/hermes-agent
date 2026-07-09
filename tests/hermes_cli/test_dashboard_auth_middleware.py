@@ -257,6 +257,24 @@ def test_gated_require_token_endpoint_still_rejects_no_cookie(gated_app):
     )
 
 
+def test_gated_mounted_workflow_plugin_routes_require_and_accept_dashboard_auth(gated_app, monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    unauthenticated = gated_app.get("/api/plugins/workflows/status")
+    assert unauthenticated.status_code == 401, (
+        "Mounted workflow plugin route must stay protected under the dashboard gate; "
+        f"got {unauthenticated.status_code}: {unauthenticated.text}"
+    )
+
+    _complete_stub_login(gated_app)
+    authenticated = gated_app.get("/api/plugins/workflows/status")
+    assert authenticated.status_code == 200, (
+        "Mounted workflow plugin route should accept a valid dashboard cookie; "
+        f"got {authenticated.status_code}: {authenticated.text}"
+    )
+    assert authenticated.json()["dispatcher"]["dispatch_in_gateway"] is True
+
+
 # A representative spread of the OTHER ``_require_token`` endpoints (there are
 # 14 in total). The install popup was just the reported symptom; the same bug
 # made API-key reveal, provider validation, the OAuth-provider connect flow,

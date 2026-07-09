@@ -17,6 +17,8 @@ from croniter import croniter
 
 from hermes_constants import get_hermes_home
 from . import kanban_db as kb
+from hermes_cli.workflows_expr import resolve_path
+from hermes_cli.workflows_intake import evaluate_intake
 from hermes_cli.workflows_spec import WorkflowSpec
 
 
@@ -46,7 +48,35 @@ class WorkflowExecution:
     updated_at: int
 
 
-_TERMINAL_EXECUTION_STATUSES = {"cancelled", "failed", "succeeded"}
+@dataclass(frozen=True)
+class WorkflowInputFeed:
+    feed_id: str
+    workflow_id: str
+    version: int
+    trigger_id: str | None
+    status: str
+    created_at: int
+    updated_at: int
+
+
+@dataclass(frozen=True)
+class WorkflowInputItem:
+    item_id: str
+    feed_id: str
+    workflow_id: str
+    version: int
+    trigger_id: str | None
+    status: str
+    input: dict[str, Any]
+    criteria: dict[str, Any]
+    dedupe_value: str | None
+    execution_id: str | None
+    created_at: int
+    updated_at: int
+
+
+_TERMINAL_EXECUTION_STATUSES = {"blocked", "cancelled", "failed", "succeeded"}
+_MUTABLE_INPUT_ITEM_STATUSES = {"needs_input", "queued"}
 _INIT_DB_LOCK = threading.Lock()
 _INITIALIZED_DB_PATHS: set[Path] = set()
 
@@ -120,6 +150,31 @@ CREATE TABLE IF NOT EXISTS workflow_schedules (
     updated_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS workflow_input_feeds (
+    feed_id     TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    version     INTEGER NOT NULL,
+    trigger_id  TEXT,
+    status      TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workflow_input_items (
+    item_id       TEXT PRIMARY KEY,
+    feed_id       TEXT NOT NULL,
+    workflow_id   TEXT NOT NULL,
+    version       INTEGER NOT NULL,
+    trigger_id    TEXT,
+    status        TEXT NOT NULL,
+    input_json    TEXT NOT NULL,
+    criteria_json TEXT NOT NULL,
+    dedupe_value  TEXT,
+    execution_id  TEXT,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_workflow_executions_status
     ON workflow_executions(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_workflow_executions_definition
@@ -128,6 +183,13 @@ CREATE INDEX IF NOT EXISTS idx_workflow_events_execution
     ON workflow_events(execution_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_workflow_schedules_enabled
     ON workflow_schedules(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_input_feeds_status
+    ON workflow_input_feeds(status, workflow_id, version);
+CREATE INDEX IF NOT EXISTS idx_workflow_input_items_status
+    ON workflow_input_items(status, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_input_items_dedupe
+    ON workflow_input_items(feed_id, dedupe_value)
+    WHERE dedupe_value IS NOT NULL;
 """
 
 
@@ -172,6 +234,21 @@ def init_db(db_path: Path | None = None) -> None:
                 conn.execute("ALTER TABLE workflow_node_runs ADD COLUMN kanban_task_id TEXT")
             if "kanban_board" not in columns:
                 conn.execute("ALTER TABLE workflow_node_runs ADD COLUMN kanban_board TEXT")
+            dedupe_index = next(
+                (
+                    row
+                    for row in conn.execute("PRAGMA index_list(workflow_input_items)")
+                    if row["name"] == "idx_workflow_input_items_dedupe"
+                ),
+                None,
+            )
+            if dedupe_index is not None and not bool(dedupe_index["unique"]):
+                conn.execute("DROP INDEX idx_workflow_input_items_dedupe")
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_input_items_dedupe
+                    ON workflow_input_items(feed_id, dedupe_value)
+                    WHERE dedupe_value IS NOT NULL
+            """)
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_workflow_node_runs_kanban_task
                     ON workflow_node_runs(kanban_task_id)
@@ -237,6 +314,35 @@ def _record_from_row(row: sqlite3.Row) -> WorkflowDefinitionRecord:
         checksum=row["checksum"],
         created_by=row["created_by"],
         created_at=row["created_at"],
+    )
+
+
+def _feed_from_row(row: sqlite3.Row) -> WorkflowInputFeed:
+    return WorkflowInputFeed(
+        feed_id=row["feed_id"],
+        workflow_id=row["workflow_id"],
+        version=row["version"],
+        trigger_id=row["trigger_id"],
+        status=row["status"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _item_from_row(row: sqlite3.Row) -> WorkflowInputItem:
+    return WorkflowInputItem(
+        item_id=row["item_id"],
+        feed_id=row["feed_id"],
+        workflow_id=row["workflow_id"],
+        version=row["version"],
+        trigger_id=row["trigger_id"],
+        status=row["status"],
+        input=_json_loads_or_empty(row["input_json"]),
+        criteria=_json_loads_or_empty(row["criteria_json"]),
+        dedupe_value=row["dedupe_value"],
+        execution_id=row["execution_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 
@@ -442,6 +548,8 @@ def delete_definition(conn: sqlite3.Connection, workflow_id: str) -> bool:
         )
         conn.execute("DELETE FROM workflow_executions WHERE workflow_id = ?", (workflow_id,))
         conn.execute("DELETE FROM workflow_schedules WHERE workflow_id = ?", (workflow_id,))
+        conn.execute("DELETE FROM workflow_input_items WHERE workflow_id = ?", (workflow_id,))
+        conn.execute("DELETE FROM workflow_input_feeds WHERE workflow_id = ?", (workflow_id,))
         conn.execute("DELETE FROM workflow_definitions WHERE workflow_id = ?", (workflow_id,))
     return True
 
@@ -485,6 +593,380 @@ def start_execution(
             ),
         )
     return execution_id
+
+
+def _continuous_feed_trigger(spec: WorkflowSpec, trigger_id: str | None):
+    candidates = [
+        trigger
+        for trigger in spec.triggers
+        if trigger.type == "manual" and trigger.intake.mode == "continuous"
+    ]
+    if trigger_id is None:
+        if candidates:
+            return candidates[0]
+        raise ValueError("workflow has no continuous manual input trigger")
+    for trigger in spec.triggers:
+        if trigger.id == trigger_id:
+            if trigger in candidates:
+                return trigger
+            raise ValueError(f"workflow trigger is not a continuous manual input trigger: {trigger_id}")
+    raise KeyError(f"workflow trigger not found: {trigger_id}")
+
+
+def _trigger_for_feed(conn: sqlite3.Connection, feed: WorkflowInputFeed):
+    spec = get_definition(conn, feed.workflow_id, feed.version)
+    return _continuous_feed_trigger(spec, feed.trigger_id)
+
+
+def _dedupe_value(trigger: Any, input_data: dict[str, Any]) -> str | None:
+    if not trigger.intake.dedupe_key:
+        return None
+    try:
+        value = resolve_path({"input": input_data}, trigger.intake.dedupe_key, default=None)
+    except ValueError:
+        return None
+    if value is None:
+        return None
+    raw = value if isinstance(value, str) else _json_dumps(value)
+    return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _materialize_input(trigger: Any, input_data: dict[str, Any]) -> dict[str, Any]:
+    materialized = dict(trigger.input)
+    for name, field in trigger.input_schema.items():
+        if name not in materialized and field.default is not None:
+            materialized[name] = field.default
+    materialized.update(input_data)
+    return materialized
+
+
+def _dedupe_item_row(
+    conn: sqlite3.Connection,
+    feed_id: str,
+    dedupe: str | None,
+    *,
+    exclude_item_id: str | None = None,
+) -> sqlite3.Row | None:
+    if dedupe is None:
+        return None
+    if exclude_item_id is None:
+        return conn.execute(
+            "SELECT * FROM workflow_input_items WHERE feed_id = ? AND dedupe_value = ? ORDER BY created_at LIMIT 1",
+            (feed_id, dedupe),
+        ).fetchone()
+    return conn.execute(
+        """
+        SELECT * FROM workflow_input_items
+         WHERE feed_id = ? AND dedupe_value = ? AND item_id != ?
+         ORDER BY created_at LIMIT 1
+        """,
+        (feed_id, dedupe, exclude_item_id),
+    ).fetchone()
+
+
+def _criteria_for(trigger: Any, input_data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    evaluation = evaluate_intake(trigger, input_data)
+    criteria = dict(evaluation.criteria)
+    criteria["messages"] = evaluation.messages
+    return evaluation.status, criteria
+
+
+def _manual_trigger(spec: WorkflowSpec, trigger_id: str | None):
+    if trigger_id is not None:
+        for trigger in spec.triggers:
+            if trigger.id == trigger_id:
+                if trigger.type != "manual":
+                    raise ValueError(f"workflow trigger is not manual: {trigger_id}")
+                return trigger
+        raise KeyError(f"workflow trigger not found: {trigger_id}")
+    for trigger in spec.triggers:
+        if trigger.type == "manual":
+            return trigger
+    return None
+
+
+def start_manual_execution(
+    conn: sqlite3.Connection,
+    workflow_id: str,
+    *,
+    input_data: dict[str, Any],
+    trigger_id: str | None = None,
+    version: int | None = None,
+    now: int | None = None,
+) -> str:
+    definition = _definition_record(conn, workflow_id, version)
+    trigger = _manual_trigger(definition.spec, trigger_id)
+    materialized = dict(input_data)
+    resolved_trigger_id = trigger_id
+    if trigger is not None:
+        materialized = _materialize_input(trigger, input_data)
+        evaluation = evaluate_intake(trigger, materialized)
+        if not evaluation.ready:
+            raise ValueError("; ".join(evaluation.messages) or "workflow input is not ready")
+        resolved_trigger_id = trigger.id
+    return start_execution(
+        conn,
+        workflow_id,
+        input_data=materialized,
+        trigger_type="manual",
+        trigger_id=resolved_trigger_id,
+        version=version,
+        now=now,
+    )
+
+
+def open_input_feed(
+    conn: sqlite3.Connection,
+    workflow_id: str,
+    *,
+    trigger_id: str | None = None,
+    version: int | None = None,
+    now: int | None = None,
+) -> WorkflowInputFeed:
+    definition = _definition_record(conn, workflow_id, version)
+    trigger = _continuous_feed_trigger(definition.spec, trigger_id)
+    feed_id = f"wffeed_{secrets.token_hex(8)}"
+    ts = int(time.time()) if now is None else now
+    with write_txn(conn):
+        conn.execute(
+            """
+            INSERT INTO workflow_input_feeds (
+                feed_id, workflow_id, version, trigger_id, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'open', ?, ?)
+            """,
+            (feed_id, workflow_id, definition.version, trigger.id, ts, ts),
+        )
+    return get_input_feed(conn, feed_id)
+
+
+def get_input_feed(conn: sqlite3.Connection, feed_id: str) -> WorkflowInputFeed:
+    row = conn.execute("SELECT * FROM workflow_input_feeds WHERE feed_id = ?", (feed_id,)).fetchone()
+    if row is None:
+        raise KeyError(f"workflow input feed not found: {feed_id}")
+    return _feed_from_row(row)
+
+
+def list_input_feeds(conn: sqlite3.Connection, *, status: str | None = None) -> list[WorkflowInputFeed]:
+    if status is None:
+        rows = conn.execute("SELECT * FROM workflow_input_feeds ORDER BY created_at, feed_id").fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM workflow_input_feeds WHERE status = ? ORDER BY created_at, feed_id",
+            (status,),
+        ).fetchall()
+    return [_feed_from_row(row) for row in rows]
+
+
+def set_input_feed_status(conn: sqlite3.Connection, feed_id: str, status: str) -> WorkflowInputFeed:
+    if status not in {"open", "paused", "closed"}:
+        raise ValueError(f"invalid feed status: {status}")
+    now = int(time.time())
+    with write_txn(conn):
+        updated = conn.execute(
+            "UPDATE workflow_input_feeds SET status = ?, updated_at = ? WHERE feed_id = ?",
+            (status, now, feed_id),
+        ).rowcount
+    if not updated:
+        raise KeyError(f"workflow input feed not found: {feed_id}")
+    return get_input_feed(conn, feed_id)
+
+
+def get_input_item(conn: sqlite3.Connection, item_id: str) -> WorkflowInputItem:
+    row = conn.execute("SELECT * FROM workflow_input_items WHERE item_id = ?", (item_id,)).fetchone()
+    if row is None:
+        raise KeyError(f"workflow input item not found: {item_id}")
+    return _item_from_row(row)
+
+
+def list_input_items(
+    conn: sqlite3.Connection,
+    *,
+    feed_id: str | None = None,
+    status: str | None = None,
+) -> list[WorkflowInputItem]:
+    clauses = []
+    params: list[Any] = []
+    if feed_id is not None:
+        clauses.append("feed_id = ?")
+        params.append(feed_id)
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = conn.execute(
+        f"SELECT * FROM workflow_input_items{where} ORDER BY created_at, item_id",
+        params,
+    ).fetchall()
+    return [_item_from_row(row) for row in rows]
+
+
+def enqueue_input_item(
+    conn: sqlite3.Connection,
+    feed_id: str,
+    input_data: dict[str, Any],
+    *,
+    now: int | None = None,
+) -> WorkflowInputItem:
+    feed = get_input_feed(conn, feed_id)
+    trigger = _trigger_for_feed(conn, feed)
+    materialized = _materialize_input(trigger, input_data)
+    status, criteria = _criteria_for(trigger, materialized)
+    dedupe = _dedupe_value(trigger, materialized)
+    row = _dedupe_item_row(conn, feed_id, dedupe)
+    if row is not None:
+        return _item_from_row(row)
+    item_id = f"wfitem_{secrets.token_hex(8)}"
+    ts = int(time.time()) if now is None else now
+    try:
+        with write_txn(conn):
+            conn.execute(
+                """
+                INSERT INTO workflow_input_items (
+                    item_id, feed_id, workflow_id, version, trigger_id, status,
+                    input_json, criteria_json, dedupe_value, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item_id,
+                    feed_id,
+                    feed.workflow_id,
+                    feed.version,
+                    feed.trigger_id,
+                    status,
+                    _json_dumps(materialized),
+                    _json_dumps(criteria),
+                    dedupe,
+                    ts,
+                    ts,
+                ),
+            )
+    except sqlite3.IntegrityError:
+        row = _dedupe_item_row(conn, feed_id, dedupe)
+        if row is not None:
+            return _item_from_row(row)
+        raise
+    return get_input_item(conn, item_id)
+
+
+def update_input_item(
+    conn: sqlite3.Connection,
+    item_id: str,
+    input_data: dict[str, Any],
+    *,
+    now: int | None = None,
+) -> WorkflowInputItem:
+    item = get_input_item(conn, item_id)
+    if item.status not in _MUTABLE_INPUT_ITEM_STATUSES:
+        raise ValueError(f"workflow input item is not mutable: {item_id}")
+    feed = get_input_feed(conn, item.feed_id)
+    trigger = _trigger_for_feed(conn, feed)
+    materialized = _materialize_input(trigger, input_data)
+    status, criteria = _criteria_for(trigger, materialized)
+    dedupe = _dedupe_value(trigger, materialized)
+    row = _dedupe_item_row(conn, item.feed_id, dedupe, exclude_item_id=item_id)
+    if row is not None:
+        raise ValueError(f"workflow input item dedupe conflict: {item_id} conflicts with {row['item_id']}")
+    ts = int(time.time()) if now is None else now
+    try:
+        with write_txn(conn):
+            conn.execute(
+                """
+                UPDATE workflow_input_items
+                   SET input_json = ?, criteria_json = ?, dedupe_value = ?, status = ?, updated_at = ?
+                 WHERE item_id = ?
+                """,
+                (_json_dumps(materialized), _json_dumps(criteria), dedupe, status, ts, item_id),
+            )
+    except sqlite3.IntegrityError:
+        row = _dedupe_item_row(conn, item.feed_id, dedupe, exclude_item_id=item_id)
+        if row is not None:
+            raise ValueError(f"workflow input item dedupe conflict: {item_id} conflicts with {row['item_id']}") from None
+        raise
+    return get_input_item(conn, item_id)
+
+
+def claim_next_ready_input_item(conn: sqlite3.Connection) -> WorkflowInputItem | None:
+    if not conn.in_transaction:
+        raise RuntimeError("claim_next_ready_input_item must be called inside write_txn")
+    row = conn.execute(
+        """
+        SELECT item.* FROM workflow_input_items item
+          JOIN workflow_input_feeds feed ON feed.feed_id = item.feed_id
+         WHERE feed.status = 'open' AND item.status = 'queued'
+         ORDER BY item.created_at, item.item_id
+         LIMIT 1
+        """
+    ).fetchone()
+    return _item_from_row(row) if row is not None else None
+
+
+def mark_input_item_running(
+    conn: sqlite3.Connection,
+    item_id: str,
+    execution_id: str,
+    *,
+    now: int | None = None,
+) -> WorkflowInputItem:
+    ts = int(time.time()) if now is None else now
+    with write_txn(conn):
+        updated = conn.execute(
+            """
+            UPDATE workflow_input_items
+               SET status = 'running', execution_id = ?, updated_at = ?
+             WHERE item_id = ? AND status = 'queued'
+            """,
+            (execution_id, ts, item_id),
+        ).rowcount
+    if not updated:
+        raise ValueError(f"workflow input item is not queued: {item_id}")
+    return get_input_item(conn, item_id)
+
+
+def mark_input_item_terminal(
+    conn: sqlite3.Connection,
+    item_id: str,
+    status: str,
+    *,
+    now: int | None = None,
+) -> WorkflowInputItem:
+    if status not in _TERMINAL_EXECUTION_STATUSES:
+        raise ValueError(f"invalid terminal status: {status}")
+    ts = int(time.time()) if now is None else now
+    with write_txn(conn):
+        updated = conn.execute(
+            """
+            UPDATE workflow_input_items
+               SET status = ?, updated_at = ?
+             WHERE item_id = ?
+            """,
+            (status, ts, item_id),
+        ).rowcount
+    if not updated:
+        raise KeyError(f"workflow input item not found: {item_id}")
+    return get_input_item(conn, item_id)
+
+
+def sync_terminal_input_items(conn: sqlite3.Connection, *, now: int | None = None) -> int:
+    ts = int(time.time()) if now is None else now
+    terminal_statuses = tuple(sorted(_TERMINAL_EXECUTION_STATUSES))
+    placeholders = ", ".join("?" for _ in terminal_statuses)
+    with write_txn(conn):
+        updated = conn.execute(
+            f"""
+            UPDATE workflow_input_items
+               SET status = (
+                    SELECT status FROM workflow_executions
+                     WHERE workflow_executions.execution_id = workflow_input_items.execution_id
+               ), updated_at = ?
+             WHERE status = 'running'
+               AND execution_id IN (
+                    SELECT execution_id FROM workflow_executions
+                     WHERE status IN ({placeholders})
+               )
+            """,
+            (ts, *terminal_statuses),
+        ).rowcount
+    return int(updated)
 
 
 def list_executions(

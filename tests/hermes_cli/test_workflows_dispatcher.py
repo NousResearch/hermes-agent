@@ -254,6 +254,43 @@ def test_tick_runs_queued_pass_switch_execution(tmp_path, monkeypatch):
     assert "execution_succeeded" in events
 
 
+def test_tick_starts_ready_feed_items_before_queued_execution_loop(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    spec = WorkflowSpec.model_validate({
+        "id": "intake_demo",
+        "name": "Intake Demo",
+        "version": 1,
+        "triggers": [{
+            "type": "manual",
+            "id": "kickoff",
+            "input": {"mode": "review"},
+            "input_schema": {"score": {"kind": "number", "required": True, "default": 0.9}},
+            "intake": {"mode": "continuous"},
+        }],
+        "nodes": {"start": {"type": "pass", "output": {"score": "${ input.score }", "mode": "${ input.mode }"}}},
+    })
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        feed = wfdb.open_input_feed(conn, "intake_demo", trigger_id="kickoff")
+        item = wfdb.enqueue_input_item(conn, feed.feed_id, {})
+
+    assert workflows_dispatcher.tick(limit=1) == 1
+    with wfdb.connect() as conn:
+        item = wfdb.get_input_item(conn, item.item_id)
+        execution = wfdb.get_execution(conn, item.execution_id)
+        assert item.status == "running"
+        assert execution.status == "queued"
+        assert execution.input == {"mode": "review", "score": 0.9}
+
+    assert workflows_dispatcher.tick(limit=1) == 1
+    with wfdb.connect() as conn:
+        item = wfdb.get_input_item(conn, item.item_id)
+        execution = wfdb.get_execution(conn, item.execution_id)
+    assert execution.status == "succeeded"
+    assert item.status == "succeeded"
+
+
 def test_list_node_runs_keeps_repeated_event_only_successes(tmp_path, monkeypatch):
     exec_id = _start_spec_execution(tmp_path, monkeypatch, _switch_spec())
     with wfdb.connect() as conn:
@@ -319,6 +356,92 @@ def test_tick_respects_limit(tmp_path, monkeypatch):
             for exec_id in (first, second)
         }
     assert sorted(statuses.values()) == ["queued", "succeeded"]
+
+
+def test_tick_prefers_existing_queued_execution_over_new_feed_admission(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    spec = WorkflowSpec.model_validate({
+        "id": "fair_feed_demo",
+        "name": "Fair Feed Demo",
+        "version": 1,
+        "triggers": [{
+            "type": "manual",
+            "id": "kickoff",
+            "intake": {"mode": "continuous"},
+        }],
+        "nodes": {"start": {"type": "pass", "output": {"done": True}}},
+    })
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        manual = wfdb.start_execution(conn, spec.id, input_data={}, trigger_type="manual", now=1)
+        feed = wfdb.open_input_feed(conn, spec.id, trigger_id="kickoff", now=2)
+        item = wfdb.enqueue_input_item(conn, feed.feed_id, {}, now=3)
+
+    assert workflows_dispatcher.tick(limit=1, now=10) == 1
+
+    with wfdb.connect() as conn:
+        assert wfdb.get_execution(conn, manual).status == "succeeded"
+        item = wfdb.get_input_item(conn, item.item_id)
+        assert item.status == "queued"
+        assert item.execution_id is None
+
+
+def test_tick_counts_schedule_admission_against_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    spec = WorkflowSpec.model_validate({
+        "id": "schedule_budget_demo",
+        "name": "Schedule Budget Demo",
+        "version": 1,
+        "triggers": [
+            {"type": "schedule", "id": "a", "cron": "* * * * *"},
+            {"type": "schedule", "id": "b", "cron": "* * * * *"},
+        ],
+        "nodes": {"start": {"type": "pass", "output": {"ok": True}}},
+    })
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        conn.execute("UPDATE workflow_schedules SET next_run_at = 100")
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+
+    with wfdb.connect() as conn:
+        rows = conn.execute(
+            "SELECT trigger_id, status FROM workflow_executions ORDER BY created_at, execution_id"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["trigger_id"] in {"a", "b"}
+    assert rows[0]["status"] == "succeeded"
+
+
+def test_unresumable_wait_failure_terminalizes_waiting_node_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    spec = WorkflowSpec.model_validate({
+        "id": "unresumable_wait_demo",
+        "name": "Unresumable Wait Demo",
+        "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {"joiner": {"type": "join"}},
+    })
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        exec_id = wfdb.start_execution(conn, spec.id, input_data={}, trigger_type="manual")
+
+    def fake_run(*_args, **_kwargs):
+        return EngineResult(status="waiting", context={"input": {}, "node": {}}, waiting_nodes=["joiner"])
+
+    monkeypatch.setattr(workflows_dispatcher, "run_in_memory_until_waiting", fake_run)
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+
+    execution, _claim, events = _execution_state(exec_id)
+    runs = _node_runs(exec_id, "joiner")
+    assert execution.status == "failed"
+    assert runs[0]["status"] == "failed"
+    assert "unresumable" in runs[0]["error"]
+    assert [event["kind"] for event in events][-1] == "execution_failed"
 
 
 def test_wait_node_persists_wait_until_then_resumes_when_due(tmp_path, monkeypatch):
@@ -461,6 +584,7 @@ def test_agent_task_creates_kanban_card_and_resumes_after_completion(tmp_path, m
     task = tasks[0]
     assert task.workflow_template_id == "agent_demo"
     assert task.current_step_key == "ask"
+    assert task.created_by == f"workflow:{exec_id}:version:1:node:ask"
     assert task.assignee == "worker-profile"
     assert task.workspace_path == "workflow-workspace"
     assert task.skills == ["test-driven-development"]
@@ -574,7 +698,11 @@ def test_agent_task_text_prompt_interpolates_inline_templates(tmp_path, monkeypa
         task = kb.list_tasks(kconn)[0]
 
     assert task.body is not None
-    assert "Review repo /tmp/app on branch feature/workflow" in task.body
+    assert "Security boundary" in task.body
+    assert '<workflow_untrusted_value source="node.prepare.output.repo">' in task.body
+    assert "/tmp/app" in task.body
+    assert '<workflow_untrusted_value source="node.prepare.output.branch">' in task.body
+    assert "feature/workflow" in task.body
     assert "${ node.prepare.output.repo }" not in task.body
 
 
@@ -1241,7 +1369,7 @@ def test_due_schedule_starts_once_and_advances_next_run(tmp_path, monkeypatch):
     with wfdb.connect() as conn:
         executions = [dict(row) for row in conn.execute(
             """
-            SELECT workflow_id, trigger_type, trigger_id
+            SELECT workflow_id, trigger_type, trigger_id, status
               FROM workflow_executions
              WHERE workflow_id = 'scheduled_demo'
             """
@@ -1254,6 +1382,7 @@ def test_due_schedule_starts_once_and_advances_next_run(tmp_path, monkeypatch):
         "workflow_id": "scheduled_demo",
         "trigger_type": "schedule",
         "trigger_id": "every_minute",
+        "status": "succeeded",
     }]
     assert new_next_run_at > old_next_run_at
 

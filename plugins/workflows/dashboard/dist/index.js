@@ -78,6 +78,8 @@
   };
 
   const PRIVACY_NOTE = "Workflow inputs and outputs are stored locally in Hermes workflow/Kanban history. Do not paste secrets; common secret-looking keys are redacted in dashboard views.";
+  const SCALAR_INPUT_KINDS = ["text", "long_text", "prompt", "criteria", "url", "repo_path", "boolean", "number", "integer"];
+  const INTAKE_SCOPE_NOTE = "Phase 1 supports scalar manual and continuous input items. Batch splitting and document uploads are not supported in this release.";
 
   function asArray(value) {
     return Array.isArray(value) ? value : [];
@@ -215,7 +217,7 @@
     });
   }
 
-  function inputFieldsForSpec(spec) {
+  function inputFieldsForSpec(spec, preferredTrigger) {
     function kindForInputValue(value) {
       function kindForLiteral(literal) {
         if (typeof literal === "boolean") return "boolean";
@@ -226,16 +228,22 @@
       if (Array.isArray(value)) return "json";
       if (value && typeof value === "object") {
         const type = String(value.kind || value.type || "").toLowerCase();
-        if (type === "integer") return "integer";
-        if (["number", "float"].indexOf(type) !== -1) return "number";
-        if (["boolean", "bool"].indexOf(type) !== -1) return "boolean";
-        if (["object", "array"].indexOf(type) !== -1) return "json";
-        if (type === "string" || type === "text") return "text";
+        const typedKinds = { text: true, long_text: true, document: true, prompt: true, criteria: true, url: true, repo_path: true, boolean: true, number: true, integer: true, object: true };
+        if (typedKinds[type]) return type === "object" ? "json" : type;
+        if (["float"].indexOf(type) !== -1) return "number";
+        if (["bool"].indexOf(type) !== -1) return "boolean";
+        if (["array"].indexOf(type) !== -1) return "json";
+        if (type === "string") return "text";
         if (value.default !== undefined) return kindForLiteral(value.default);
         if (value.example !== undefined) return kindForLiteral(value.example);
         return "json";
       }
       return kindForLiteral(value);
+    }
+    function triggerInputSchemaObject(trigger) {
+      const schema = trigger && trigger.input_schema;
+      if (!schema || typeof schema !== "object" || Array.isArray(schema)) return {};
+      return schema;
     }
     function triggerInputObject(trigger) {
       const rawInput = trigger && trigger.input;
@@ -247,7 +255,26 @@
       }
       return rawInput;
     }
+    function fieldsFromInputSchema(schema) {
+      return Object.keys(schema).map(function (key) {
+        const field = schema[key] && typeof schema[key] === "object" && !Array.isArray(schema[key]) ? schema[key] : {};
+        return {
+          name: key,
+          kind: kindForInputValue(field),
+          label: String(field.label || key),
+          required: !!field.required,
+          description: String(field.description || ""),
+        };
+      });
+    }
+    const preferredSchema = triggerInputSchemaObject(preferredTrigger);
+    if (Object.keys(preferredSchema).length) return fieldsFromInputSchema(preferredSchema);
     const triggers = asArray(spec && spec.triggers);
+    const schemaTrigger = triggers.find(function (trigger) {
+      if (!trigger || typeof trigger !== "object") return false;
+      return String(trigger.type || trigger.trigger_type || "") === "manual" && Object.keys(triggerInputSchemaObject(trigger)).length;
+    }) || triggers.find(function (trigger) { return Object.keys(triggerInputSchemaObject(trigger)).length; });
+    if (schemaTrigger) return fieldsFromInputSchema(triggerInputSchemaObject(schemaTrigger));
     const manualTrigger = triggers.find(function (trigger) {
       if (!trigger || typeof trigger !== "object") return false;
       return String(trigger.type || trigger.trigger_type || "") === "manual" && Object.keys(triggerInputObject(trigger)).length;
@@ -275,6 +302,59 @@
       return "";
     });
     return Object.keys(found).sort().map(function (name) { return { name: name, kind: found[name] }; });
+  }
+
+  function inputRowsFromTrigger(trigger) {
+    const schema = trigger && trigger.input_schema && typeof trigger.input_schema === "object" && !Array.isArray(trigger.input_schema) ? trigger.input_schema : {};
+    return Object.keys(schema).sort().map(function (name) {
+      const field = schema[name] && typeof schema[name] === "object" && !Array.isArray(schema[name]) ? schema[name] : {};
+      let kind = String(field.kind || "text");
+      if (kind === "object" || kind === "json" || kind === "document") kind = "text";
+      if (SCALAR_INPUT_KINDS.indexOf(kind) === -1) kind = "text";
+      return {
+        name: name,
+        kind: kind,
+        required: !!field.required,
+        defaultValue: field.default === undefined || field.default === null ? "" : String(field.default),
+        minLength: field.min_length === undefined || field.min_length === null ? "" : String(field.min_length),
+        maxLength: field.max_length === undefined || field.max_length === null ? "" : String(field.max_length),
+      };
+    });
+  }
+
+  function inputSchemaFromRows(rows) {
+    const schema = {};
+    asArray(rows).forEach(function (row) {
+      const name = workflowIdFromText(row && row.name ? row.name : "").replace(/-/g, "_");
+      if (!name) return;
+      const kind = SCALAR_INPUT_KINDS.indexOf(row.kind) !== -1 ? row.kind : "text";
+      const field = { kind: kind };
+      if (row.required) field.required = true;
+      if (row.defaultValue !== undefined && String(row.defaultValue).trim() !== "") field.default = String(row.defaultValue);
+      const minLength = String(row.minLength || "").trim();
+      const maxLength = String(row.maxLength || "").trim();
+      if (minLength) field.min_length = Math.max(0, parseInt(minLength, 10) || 0);
+      if (maxLength) field.max_length = Math.max(0, parseInt(maxLength, 10) || 0);
+      schema[name] = field;
+    });
+    return schema;
+  }
+
+  function readyPathFromTrigger(trigger) {
+    const cond = trigger && trigger.intake && trigger.intake.ready_when;
+    if (!cond || typeof cond !== "object" || Array.isArray(cond)) return "";
+    if (String(cond.op || "") === "exists" && typeof cond.path === "string") return cond.path;
+    return "";
+  }
+
+  function triggerIntakeFromForm(mode, dedupeKey, readyPath) {
+    const safeMode = mode === "continuous" ? "continuous" : "single";
+    const intake = { mode: safeMode };
+    const dedupe = String(dedupeKey || "").trim();
+    const ready = String(readyPath || "").trim();
+    if (dedupe) intake.dedupe_key = dedupe;
+    if (ready) intake.ready_when = { op: "exists", path: ready };
+    return intake;
   }
 
   function inputObjectForFields(fields, values) {
@@ -955,6 +1035,36 @@
     const stateCellType = useState("pass");
     const cellType = stateCellType[0];
     const setCellType = stateCellType[1];
+    const stateTriggerInputRows = useState([]);
+    const triggerInputRows = stateTriggerInputRows[0];
+    const setTriggerInputRows = stateTriggerInputRows[1];
+    const stateTriggerInputName = useState("");
+    const triggerInputName = stateTriggerInputName[0];
+    const setTriggerInputName = stateTriggerInputName[1];
+    const stateTriggerInputKind = useState("text");
+    const triggerInputKind = stateTriggerInputKind[0];
+    const setTriggerInputKind = stateTriggerInputKind[1];
+    const stateTriggerInputRequired = useState(true);
+    const triggerInputRequired = stateTriggerInputRequired[0];
+    const setTriggerInputRequired = stateTriggerInputRequired[1];
+    const stateTriggerInputDefault = useState("");
+    const triggerInputDefault = stateTriggerInputDefault[0];
+    const setTriggerInputDefault = stateTriggerInputDefault[1];
+    const stateTriggerInputMinLength = useState("");
+    const triggerInputMinLength = stateTriggerInputMinLength[0];
+    const setTriggerInputMinLength = stateTriggerInputMinLength[1];
+    const stateTriggerInputMaxLength = useState("");
+    const triggerInputMaxLength = stateTriggerInputMaxLength[0];
+    const setTriggerInputMaxLength = stateTriggerInputMaxLength[1];
+    const stateTriggerIntakeMode = useState("single");
+    const triggerIntakeMode = stateTriggerIntakeMode[0];
+    const setTriggerIntakeMode = stateTriggerIntakeMode[1];
+    const stateTriggerDedupeKey = useState("");
+    const triggerDedupeKey = stateTriggerDedupeKey[0];
+    const setTriggerDedupeKey = stateTriggerDedupeKey[1];
+    const stateTriggerReadyPath = useState("");
+    const triggerReadyPath = stateTriggerReadyPath[0];
+    const setTriggerReadyPath = stateTriggerReadyPath[1];
     const stateTriggerSchedule = useState("");
     const triggerSchedule = stateTriggerSchedule[0];
     const setTriggerSchedule = stateTriggerSchedule[1];
@@ -982,12 +1092,6 @@
     const stateNewWorkflowName = useState("");
     const newWorkflowName = stateNewWorkflowName[0];
     const setNewWorkflowName = stateNewWorkflowName[1];
-    const stateNewCellType = useState("pass");
-    const newCellType = stateNewCellType[0];
-    const setNewCellType = stateNewCellType[1];
-    const stateNewTriggerType = useState("manual");
-    const newTriggerType = stateNewTriggerType[0];
-    const setNewTriggerType = stateNewTriggerType[1];
     const stateNewTriggerSchedule = useState("0 9 * * *");
     const newTriggerSchedule = stateNewTriggerSchedule[0];
     const setNewTriggerSchedule = stateNewTriggerSchedule[1];
@@ -1081,6 +1185,27 @@
     const stateRunPanelOpen = useState(false);
     const runPanelOpen = stateRunPanelOpen[0];
     const setRunPanelOpen = stateRunPanelOpen[1];
+    const stateInputFeeds = useState([]);
+    const inputFeeds = stateInputFeeds[0];
+    const setInputFeeds = stateInputFeeds[1];
+    const stateInputFeedItems = useState([]);
+    const inputFeedItems = stateInputFeedItems[0];
+    const setInputFeedItems = stateInputFeedItems[1];
+    const stateSelectedFeedId = useState("");
+    const selectedFeedId = stateSelectedFeedId[0];
+    const setSelectedFeedId = stateSelectedFeedId[1];
+    const stateFeedInputValues = useState({});
+    const feedInputValues = stateFeedInputValues[0];
+    const setFeedInputValues = stateFeedInputValues[1];
+    const stateFeedInputText = useState("{}");
+    const feedInputText = stateFeedInputText[0];
+    const setFeedInputText = stateFeedInputText[1];
+    const stateShowAdvancedFeedInputJson = useState(false);
+    const showAdvancedFeedInputJson = stateShowAdvancedFeedInputJson[0];
+    const setShowAdvancedFeedInputJson = stateShowAdvancedFeedInputJson[1];
+    const stateFeedBusy = useState(false);
+    const feedBusy = stateFeedBusy[0];
+    const setFeedBusy = stateFeedBusy[1];
     const stateEvents = useState([]);
     const events = stateEvents[0];
     const setEvents = stateEvents[1];
@@ -1108,6 +1233,9 @@
     const stateRunning = useState(false);
     const running = stateRunning[0];
     const setRunning = stateRunning[1];
+    const stateTicking = useState(false);
+    const ticking = stateTicking[0];
+    const setTicking = stateTicking[1];
     const initialExecutionId = initialExecutionIdFromLocation();
 
     function fail(err) {
@@ -1166,6 +1294,160 @@
       return null;
     }
 
+    function selectedInputTrigger(spec) {
+      const triggers = asArray(spec && spec.triggers);
+      return triggers.find(function (trigger) {
+        return trigger && String(trigger.type || trigger.trigger_type || "") === "manual" && trigger.intake && trigger.intake.mode === "continuous";
+      }) || null;
+    }
+
+    function loadInputFeedItems(feedId) {
+      if (!feedId) {
+        setInputFeedItems([]);
+        return Promise.resolve([]);
+      }
+      return api("/input-feeds/" + encodeURIComponent(feedId) + "/items").then(function (res) {
+        const rows = asArray(res.items);
+        setInputFeedItems(rows);
+        return rows;
+      }).catch(function () {
+        setInputFeedItems([]);
+        return [];
+      });
+    }
+
+    function loadInputFeeds(workflowId) {
+      const id = workflowId || workflowIdForDefinition(selectedDefinition);
+      if (!id) {
+        setInputFeeds([]);
+        setSelectedFeedId("");
+        setInputFeedItems([]);
+        return Promise.resolve([]);
+      }
+      return api("/input-feeds?workflow_id=" + encodeURIComponent(id)).then(function (res) {
+        const rows = asArray(res.feeds);
+        const nextFeedId = rows.some(function (feed) { return feed.feed_id === selectedFeedId; }) ? selectedFeedId : (rows[0] && rows[0].feed_id ? rows[0].feed_id : "");
+        setInputFeeds(rows);
+        setSelectedFeedId(nextFeedId);
+        return nextFeedId ? loadInputFeedItems(nextFeedId).then(function () { return rows; }) : rows;
+      }).catch(function () {
+        setInputFeeds([]);
+        setSelectedFeedId("");
+        setInputFeedItems([]);
+        return [];
+      });
+    }
+
+    function openContinuousFeed() {
+      const definition = selectedDefinition || {};
+      const workflowId = workflowIdForDefinition(definition);
+      const trigger = selectedInputTrigger(definition.spec);
+      if (!workflowId) {
+        setError("Deploy or select a workflow before opening an input feed.");
+        return;
+      }
+      if (!trigger) {
+        setError("This workflow has no manual trigger with intake.mode: continuous.");
+        return;
+      }
+      setFeedBusy(true);
+      setError("");
+      api("/definitions/" + encodeURIComponent(workflowId) + "/input-feeds" + versionQuery(definition.version), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trigger_id: trigger && (trigger.id || trigger.name) || null }),
+      }).then(function (res) {
+        const feed = res.feed || {};
+        setSelectedFeedId(feed.feed_id || "");
+        setStatus("Opened continuous input feed " + safeString(feed.feed_id));
+        return loadInputFeeds(workflowId);
+      }).catch(fail).finally(function () { setFeedBusy(false); });
+    }
+
+    function setSelectedFeedStatus(nextStatus) {
+      const feedId = selectedFeedId || (inputFeeds[0] && inputFeeds[0].feed_id);
+      if (!feedId) return;
+      setFeedBusy(true);
+      api("/input-feeds/" + encodeURIComponent(feedId) + "/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      }).then(function () {
+        setStatus("Set input feed " + safeString(feedId) + " to " + safeString(nextStatus));
+        return loadInputFeeds();
+      }).catch(fail).finally(function () { setFeedBusy(false); });
+    }
+
+    function manualTick() {
+      setTicking(true);
+      setError("");
+      api("/tick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 1 }),
+      }).then(function (res) {
+        setStatus("Manual tick processed " + safeString(res.processed || 0) + " workflow(s).");
+        return Promise.all([loadExecutions(), loadInputFeeds()]);
+      }).catch(fail).finally(function () { setTicking(false); });
+    }
+
+    function updateInputFeedItem(item) {
+      const itemId = item && item.item_id;
+      const itemStatus = safeString(item && item.status);
+      const feedId = selectedFeedId || (inputFeeds[0] && inputFeeds[0].feed_id);
+      if (!itemId || ["needs_input", "queued"].indexOf(itemStatus) === -1) return;
+      const text = window.prompt("Update input item JSON", jsonBlock((item && item.input) || {}));
+      if (text === null) return;
+      let input = {};
+      try {
+        input = JSON.parse(text || "{}");
+      } catch (err) {
+        fail(err);
+        return;
+      }
+      setFeedBusy(true);
+      setError("");
+      api("/input-items/" + encodeURIComponent(itemId), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: input }),
+      }).then(function (res) {
+        const updated = res.item || {};
+        setStatus("Updated input item " + safeString(updated.item_id || itemId) + " (" + safeString(updated.status) + ").");
+        return Promise.all([loadInputFeeds(), loadInputFeedItems(feedId)]);
+      }).catch(fail).finally(function () { setFeedBusy(false); });
+    }
+
+    function addItemToFeed(event) {
+      if (event) event.preventDefault();
+      const feedId = selectedFeedId || (inputFeeds[0] && inputFeeds[0].feed_id);
+      if (!feedId) {
+        setError("Open a continuous input feed before adding items.");
+        return;
+      }
+      let input = {};
+      try {
+        const spec = runInputSpec() || (selectedDefinition && selectedDefinition.spec);
+        input = showAdvancedFeedInputJson ? JSON.parse(feedInputText || "{}") : inputObjectForFields(inputFieldsForSpec(spec, selectedInputTrigger(spec)), feedInputValues);
+      } catch (err) {
+        fail(err);
+        return;
+      }
+      setFeedBusy(true);
+      setError("");
+      api("/input-feeds/" + encodeURIComponent(feedId) + "/items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: input }),
+      }).then(function (res) {
+        const item = res.item || {};
+        setStatus("Added input item " + safeString(item.item_id) + " (" + safeString(item.status) + ").");
+        setFeedInputValues({});
+        setFeedInputText("{}");
+        return loadInputFeeds();
+      }).catch(fail).finally(function () { setFeedBusy(false); });
+    }
+
     function selectNodeForInspector(node) {
       setSelectedNode(node);
       setNodeJson(jsonBlock(node));
@@ -1176,6 +1458,16 @@
       const assistantOutput = node && node.result_contract ? jsonBlock(node.result_contract) : '{"summary":"string","status":"string"}';
       setCellId(node && (node.id || node.name) ? String(node.id || node.name) : "");
       setCellType(node && node.specKind === "trigger" ? String(node.trigger_type || node.type || "manual") : String((node && node.type) || "pass"));
+      setTriggerInputRows(node && node.specKind === "trigger" ? inputRowsFromTrigger(node) : []);
+      setTriggerInputName("");
+      setTriggerInputKind("text");
+      setTriggerInputRequired(true);
+      setTriggerInputDefault("");
+      setTriggerInputMinLength("");
+      setTriggerInputMaxLength("");
+      setTriggerIntakeMode(node && node.specKind === "trigger" && node.intake && node.intake.mode === "continuous" ? "continuous" : "single");
+      setTriggerDedupeKey(node && node.specKind === "trigger" && node.intake && node.intake.dedupe_key ? String(node.intake.dedupe_key) : "");
+      setTriggerReadyPath(node && node.specKind === "trigger" ? readyPathFromTrigger(node) : "");
       setTriggerSchedule(node && (node.schedule || node.cron || node.expr) ? String(node.schedule || node.cron || node.expr) : "");
       setCellOutputText(node && node.output !== undefined && node.output !== null ? (typeof node.output === "string" ? node.output : jsonBlock(node.output)) : "");
       setCellSeconds(node && node.seconds !== undefined && node.seconds !== null ? String(node.seconds) : "60");
@@ -1217,7 +1509,12 @@
         setRefineText("");
         if (definition && definition.spec) updateEditorText(specToEditorText(definition.spec));
         setSelectedNode(null);
-        if (definition) setRunWorkflowId(definition.workflow_id || definition.id || workflowId);
+        if (definition) {
+          setRunWorkflowId(definition.workflow_id || definition.id || workflowId);
+          loadInputFeeds(definition.workflow_id || definition.id || workflowId);
+        } else {
+          loadInputFeeds("");
+        }
         return definition;
       });
     }
@@ -1482,6 +1779,27 @@
       }).catch(fail).finally(function () { setRunning(false); });
     }
 
+    function cancelSelectedExecution() {
+      const execution = selectedExecution || {};
+      const executionId = execution.execution_id || execution.id || "";
+      const executionStatus = safeString(execution.status);
+      if (!executionId) {
+        setStatus("Select an execution before cancelling it.");
+        return;
+      }
+      if (["succeeded", "failed", "cancelled", "blocked"].indexOf(executionStatus) !== -1) {
+        setStatus("Cannot cancel terminal execution " + safeString(executionId));
+        return;
+      }
+      setError("");
+      api("/executions/" + encodeURIComponent(executionId) + "/cancel", { method: "POST" }).then(function (res) {
+        const nextExecution = res.execution || execution;
+        setSelectedExecution(nextExecution);
+        setStatus(res.cancelled ? "Cancelled execution " + safeString(executionId) : "Cannot cancel terminal execution " + safeString(executionId));
+        return loadExecutions(executionId);
+      }).catch(fail);
+    }
+
     function draftFromGoal(event) {
       event.preventDefault();
       const goal = (goalText || "").trim();
@@ -1645,6 +1963,33 @@
       setNodeMessage("Applied node JSON to editor draft.");
     }
 
+    function addTriggerInputFieldFromUi() {
+      const rawName = String(triggerInputName || "").trim();
+      const name = workflowIdFromText(rawName).replace(/-/g, "_");
+      if (!name) {
+        setNodeMessage("Enter an input field name before adding it.");
+        return;
+      }
+      const row = {
+        name: name,
+        kind: SCALAR_INPUT_KINDS.indexOf(triggerInputKind) !== -1 ? triggerInputKind : "text",
+        required: !!triggerInputRequired,
+        defaultValue: triggerInputDefault,
+        minLength: triggerInputMinLength,
+        maxLength: triggerInputMaxLength,
+      };
+      setTriggerInputRows(asArray(triggerInputRows).filter(function (existing) { return existing.name !== name; }).concat([row]));
+      setTriggerInputName("");
+      setTriggerInputDefault("");
+      setTriggerInputMinLength("");
+      setTriggerInputMaxLength("");
+      setNodeMessage("Added input field " + safeString(name) + ". Apply to update the workflow draft.");
+    }
+
+    function removeTriggerInputField(name) {
+      setTriggerInputRows(asArray(triggerInputRows).filter(function (row) { return row && row.name !== name; }));
+    }
+
     function applyAgentCellForm() {
       if (!selectedNode) return;
       if (cellType !== "agent_task") {
@@ -1753,6 +2098,10 @@
           const clean = cleanedNodeForSpec(Object.assign({}, trigger, { id: nextId, type: nextType }));
           if (titleText) clean.title = titleText;
           else delete clean.title;
+          const schema = inputSchemaFromRows(triggerInputRows);
+          if (Object.keys(schema).length) clean.input_schema = schema;
+          else delete clean.input_schema;
+          clean.intake = triggerIntakeFromForm(triggerIntakeMode, triggerDedupeKey, triggerReadyPath);
           if (nextType === "schedule") clean.schedule = triggerSchedule.trim() || trigger.schedule || trigger.cron || "0 9 * * *";
           else {
             delete clean.schedule;
@@ -1803,7 +2152,6 @@
       const id = Object.keys(nextSpec.nodes || {}).slice(-1)[0];
       const node = findSpecNode(nextSpec, id);
       if (node) selectNodeForInspector(node);
-      setNewCellType(safeType);
     }
 
     function addTriggerOfType(type) {
@@ -1813,7 +2161,6 @@
       setActiveDraftSpec(nextSpec, "Added " + safeString(safeType) + " trigger.");
       const trigger = asArray(nextSpec.triggers).slice(-1)[0];
       if (trigger) selectNodeForInspector(Object.assign({}, trigger, { id: trigger.id || trigger.name, specKind: "trigger", trigger_type: trigger.type }));
-      setNewTriggerType(safeType);
     }
 
     function addSwitchCaseFromUi() {
@@ -1841,7 +2188,6 @@
       const id = Object.keys(nextSpec.nodes || {}).slice(-1)[0];
       const node = findSpecNode(nextSpec, id);
       if (node) selectNodeForInspector(node);
-      setNewCellType(safeType);
     }
 
     function deleteSelectedCell() {
@@ -1956,6 +2302,15 @@
       );
     }
 
+    function renderExecutionActions() {
+      if (!selectedExecution) return null;
+      const executionStatus = safeString(selectedExecution.status);
+      const terminal = ["succeeded", "failed", "cancelled", "blocked"].indexOf(executionStatus) !== -1;
+      return h("div", { className: "hermes-workflows-row" },
+        h("button", { type: "button", onClick: cancelSelectedExecution, disabled: terminal }, terminal ? "Cannot cancel terminal execution" : "Cancel Execution")
+      );
+    }
+
     function renderTimeline() {
       return h("div", { className: "hermes-workflows-timeline" },
         h("p", { className: "hermes-workflows-privacy-note" }, PRIVACY_NOTE),
@@ -1968,7 +2323,8 @@
           h("div", { className: "hermes-workflows-meta" },
             safeString(selectedExecution.workflow_id) + " · created " + safeString(selectedExecution.created_at)
           ),
-          h("pre", { className: "hermes-workflows-pre" }, jsonBlock(selectedExecution.input))
+          h("pre", { className: "hermes-workflows-pre" }, jsonBlock(selectedExecution.input)),
+          renderExecutionActions()
         ) : h("p", { className: "hermes-workflows-muted" }, "Select an execution to inspect it."),
         renderNodeRuns(),
         events.length ? events.map(function (row) {
@@ -2197,6 +2553,7 @@
     }
 
     function renderTriggerInspector() {
+      const rows = asArray(triggerInputRows);
       return h("div", { className: "hermes-workflows-stack" },
         h("label", null,
           h("span", { className: "hermes-workflows-muted" }, "Trigger type"),
@@ -2205,7 +2562,69 @@
         cellType === "schedule" ? h("label", null,
           h("span", { className: "hermes-workflows-muted" }, "Schedule / cron"),
           h("input", { value: triggerSchedule, onChange: function (event) { setTriggerSchedule(event.target.value); }, placeholder: "0 9 * * *" })
-        ) : null
+        ) : null,
+        h("div", { className: "hermes-workflows-trigger-editor", "aria-label": "Input schema" },
+          h("div", { className: "hermes-workflows-item-title" },
+            h("strong", null, "Input schema"),
+            h("span", { className: "hermes-workflows-meta" }, "Advanced JSON remains available")
+          ),
+          h("p", { className: "hermes-workflows-muted" }, INTAKE_SCOPE_NOTE),
+          rows.length ? h("div", { className: "hermes-workflows-input-field-list" }, rows.map(function (row) {
+            return h("div", { key: row.name, className: "hermes-workflows-input-field-row" },
+              h("span", null, safeString(row.name)),
+              h("span", { className: "hermes-workflows-badge" }, safeString(row.kind)),
+              h("span", { className: "hermes-workflows-meta" }, row.required ? "required" : "optional"),
+              h("button", { type: "button", onClick: function () { removeTriggerInputField(row.name); } }, "Remove")
+            );
+          })) : h("p", { className: "hermes-workflows-muted" }, "No input fields yet. Add fields below, then Apply."),
+          h("div", { className: "hermes-workflows-input-field-editor" },
+            h("label", null,
+              h("span", { className: "hermes-workflows-muted" }, "Input field name"),
+              h("input", { value: triggerInputName, onChange: function (event) { setTriggerInputName(event.target.value); }, placeholder: "repo_path" })
+            ),
+            h("label", null,
+              h("span", { className: "hermes-workflows-muted" }, "Input field kind"),
+              h("select", { value: triggerInputKind, onChange: function (event) { setTriggerInputKind(event.target.value); } }, SCALAR_INPUT_KINDS.map(function (kind) {
+                return h("option", { key: kind, value: kind }, kind);
+              }))
+            ),
+            h("label", { className: "hermes-workflows-run-advanced-toggle" },
+              h("input", { type: "checkbox", checked: triggerInputRequired, onChange: function (event) { setTriggerInputRequired(event.target.checked); } }),
+              h("span", null, "Required input")
+            ),
+            h("label", null,
+              h("span", { className: "hermes-workflows-muted" }, "Default value"),
+              h("input", { value: triggerInputDefault, onChange: function (event) { setTriggerInputDefault(event.target.value); }, placeholder: "optional" })
+            ),
+            h("label", null,
+              h("span", { className: "hermes-workflows-muted" }, "Min length"),
+              h("input", { type: "number", min: "0", value: triggerInputMinLength, onChange: function (event) { setTriggerInputMinLength(event.target.value); }, placeholder: "0" })
+            ),
+            h("label", null,
+              h("span", { className: "hermes-workflows-muted" }, "Max length"),
+              h("input", { type: "number", min: "0", value: triggerInputMaxLength, onChange: function (event) { setTriggerInputMaxLength(event.target.value); }, placeholder: "optional" })
+            ),
+            h("button", { type: "button", onClick: addTriggerInputFieldFromUi }, "Add input field")
+          )
+        ),
+        h("div", { className: "hermes-workflows-trigger-editor", "aria-label": "Intake mode" },
+          h("strong", null, "Intake mode"),
+          h("label", null,
+            h("span", { className: "hermes-workflows-muted" }, "Mode"),
+            h("select", { value: triggerIntakeMode, onChange: function (event) { setTriggerIntakeMode(event.target.value); } },
+              h("option", { value: "single" }, "single"),
+              h("option", { value: "continuous" }, "continuous")
+            )
+          ),
+          h("label", null,
+            h("span", { className: "hermes-workflows-muted" }, "Dedupe key"),
+            h("input", { value: triggerDedupeKey, onChange: function (event) { setTriggerDedupeKey(event.target.value); }, placeholder: "$.input.repo_path" })
+          ),
+          h("label", null,
+            h("span", { className: "hermes-workflows-muted" }, "Ready when field path"),
+            h("input", { value: triggerReadyPath, onChange: function (event) { setTriggerReadyPath(event.target.value); }, placeholder: "$.input.repo_path" })
+          )
+        )
       );
     }
 
@@ -2264,6 +2683,12 @@
         h("span", { className: "hermes-workflows-muted" }, "ID"),
         h("input", { value: cellId, onChange: function (event) { setCellId(event.target.value); }, placeholder: "cell-id" })
       );
+      var typeField = selectedNode.specKind === "trigger" ? null : h("label", null,
+        h("span", { className: "hermes-workflows-muted" }, "Cell type"),
+        h("select", { value: cellType, "aria-label": "Change selected cell type", onChange: function (event) { setCellType(event.target.value); } }, ["pass", "switch", "agent_task", "wait", "parallel", "join", "fail"].map(function (type) {
+          return h("option", { key: type, value: type }, type);
+        }))
+      );
       var body;
       if (kind === "agent_task") {
         body = renderAgentTaskInspector();
@@ -2282,6 +2707,7 @@
       return h("div", { className: "hermes-workflows-stack" },
         header,
         idField,
+        typeField,
         body,
         h("div", { className: "hermes-workflows-row" },
           h("button", { type: "button", onClick: applyHandler, className: "hermes-workflows-primary" }, "Apply"),
@@ -2407,6 +2833,7 @@
           h("button", { type: "button", disabled: deploying || !hasDraft, onClick: deployDefinition, className: "hermes-workflows-primary" }, deploying ? "Deploying…" : "Deploy"),
           persisted ? h("button", { type: "button", disabled: deleting, onClick: deleteWorkflow, "aria-label": "Delete workflow" }, deleting ? "Deleting…" : "Delete") : null,
           persisted ? h("button", { type: "button", disabled: running, onClick: function () { setRunWorkflowId(workflowIdForDefinition(selectedDefinition)); setRunPanelOpen(true); } }, running ? "Running…" : "Run") : null,
+          h("button", { type: "button", disabled: ticking, onClick: manualTick }, ticking ? "Ticking…" : "Manual Tick"),
           h("button", { type: "button", disabled: loading, onClick: function () { refresh(); } }, loading ? "Refreshing…" : "Refresh"),
           h("button", { type: "button", onClick: function() { setShowAdvancedYaml(!showAdvancedYaml); } }, showAdvancedYaml ? "Hide YAML" : "YAML")
         )
@@ -2543,6 +2970,99 @@
       );
     }
 
+    function renderFeedInputField(field) {
+      var name = safeString(field && field.name);
+      var kind = safeString((field && field.kind) || "text");
+      var label = safeString((field && field.label) || name);
+      var value = feedInputValues[name] === undefined || feedInputValues[name] === null ? "" : feedInputValues[name];
+      var disabled = !!(field && field.disabled);
+      function updateValue(event) {
+        var next = Object.assign({}, feedInputValues);
+        next[name] = event.target.value;
+        setFeedInputValues(next);
+      }
+      var hint = field && field.description ? h("span", { className: "hermes-workflows-muted" }, safeString(field.description)) : null;
+      return h("label", { key: name, className: "hermes-workflows-run-field" },
+        h("span", null, label + (field && field.required ? " *" : "")),
+        kind === "boolean" ? h("select", { value: value, disabled: disabled, onChange: updateValue },
+          h("option", { value: "" }, "Not set"),
+          h("option", { value: "true" }, "true"),
+          h("option", { value: "false" }, "false")
+        ) : (kind === "json" || kind === "long_text" || kind === "prompt" || kind === "criteria" || kind === "document") ? h("textarea", {
+          value: value,
+          disabled: disabled,
+          onChange: updateValue,
+          placeholder: kind,
+          rows: kind === "document" || kind === "prompt" || kind === "criteria" ? 5 : 3,
+        }) : h("input", {
+          type: kind === "number" || kind === "integer" ? "number" : (kind === "url" ? "url" : "text"),
+          step: kind === "integer" ? "1" : "any",
+          value: value,
+          disabled: disabled,
+          onChange: updateValue,
+          placeholder: kind,
+        }),
+        hint
+      );
+    }
+
+    function renderInputFeedPanel() {
+      if (!selectedDefinition) return null;
+      var spec = selectedDefinition.spec || null;
+      var workflowId = workflowIdForDefinition(selectedDefinition);
+      var trigger = selectedInputTrigger(spec);
+      var fields = inputFieldsForSpec(spec, trigger);
+      var selectedFeed = inputFeeds.find(function (feed) { return feed.feed_id === selectedFeedId; }) || inputFeeds[0] || null;
+      var feedId = selectedFeed && selectedFeed.feed_id;
+      var feedOpen = selectedFeed && selectedFeed.status === "open";
+      return h("div", { className: "hermes-workflows-input-feed-panel" },
+        h("div", { className: "hermes-workflows-item-title" },
+          h("strong", null, "Continuous input feed"),
+          selectedFeed ? h("span", { className: "hermes-workflows-badge" }, safeString(selectedFeed.status)) : h("span", { className: "hermes-workflows-badge" }, "not open")
+        ),
+        h("p", { className: "hermes-workflows-muted" }, "Open a feed, then add scalar repo paths, prompts, or criteria. Ready items launch normal executions as the dispatcher ticks."),
+        h("p", { className: "hermes-workflows-muted" }, INTAKE_SCOPE_NOTE),
+        h("div", { className: "hermes-workflows-row" },
+          h("button", { type: "button", disabled: feedBusy || !workflowId, onClick: openContinuousFeed, className: "hermes-workflows-primary" }, feedBusy ? "Opening…" : "Open Continuous Feed"),
+          inputFeeds.length ? h("select", { value: selectedFeedId, onChange: function (event) { const id = event.target.value; setSelectedFeedId(id); loadInputFeedItems(id); } }, inputFeeds.map(function (feed) {
+            return h("option", { key: feed.feed_id, value: feed.feed_id }, safeString(feed.status) + " · " + safeString(feed.feed_id).slice(0, 12));
+          })) : null,
+          feedId ? h("button", { type: "button", disabled: feedBusy, onClick: function () { setSelectedFeedStatus("open"); } }, "Resume Feed") : null,
+          feedId ? h("button", { type: "button", disabled: feedBusy, onClick: function () { setSelectedFeedStatus("paused"); } }, "Pause Feed") : null,
+          feedId ? h("button", { type: "button", disabled: feedBusy, onClick: function () { setSelectedFeedStatus("closed"); } }, "Close Feed") : null,
+          feedId ? h("button", { type: "button", disabled: feedBusy, onClick: function () { loadInputFeedItems(feedId); } }, "Refresh Feed Items") : null
+        ),
+        feedId ? h("section", { className: "hermes-workflows-feed-items", "aria-label": "Input feed items" },
+          h("div", { className: "hermes-workflows-item-title" },
+            h("strong", null, "Feed items"),
+            h("span", { className: "hermes-workflows-badge" }, String(inputFeedItems.length))
+          ),
+          inputFeedItems.length ? inputFeedItems.map(function (item) {
+            const itemStatus = safeString(item.status);
+            const canUpdate = feedOpen && ["needs_input", "queued"].indexOf(itemStatus) !== -1;
+            return h("div", { key: item.item_id, className: "hermes-workflows-feed-item" },
+              h("div", { className: "hermes-workflows-item-title" },
+                h("strong", null, safeString(item.item_id).slice(0, 18)),
+                h("span", { className: "hermes-workflows-badge" }, itemStatus)
+              ),
+              h("pre", { className: "hermes-workflows-pre" }, jsonBlock(item.input || {})),
+              h("button", { type: "button", disabled: feedBusy || !canUpdate, onClick: function () { updateInputFeedItem(item); } }, canUpdate ? "Update Item From JSON" : "Item Not Editable")
+            );
+          }) : h("p", { className: "hermes-workflows-muted" }, "No feed items yet.")
+        ) : null,
+        feedId ? h("form", { className: "hermes-workflows-stack", onSubmit: addItemToFeed },
+          !feedOpen ? h("p", { className: "hermes-workflows-muted" }, "This feed is " + safeString(selectedFeed.status) + "; resume it before adding items.") : null,
+          fields.length && !showAdvancedFeedInputJson ? h("div", { className: "hermes-workflows-run-fields" }, fields.map(function (field) { return renderFeedInputField(Object.assign({}, field, { disabled: !feedOpen })); })) : null,
+          h("label", { className: "hermes-workflows-run-advanced-toggle" },
+            h("input", { type: "checkbox", checked: showAdvancedFeedInputJson, disabled: !feedOpen, onChange: function (event) { setShowAdvancedFeedInputJson(event.target.checked); } }),
+            h("span", null, "Use advanced JSON input")
+          ),
+          showAdvancedFeedInputJson ? h("textarea", { value: feedInputText, disabled: !feedOpen, onChange: function (event) { setFeedInputText(event.target.value); }, rows: 8, "aria-label": "Input feed item JSON" }) : null,
+          h("button", { type: "submit", className: "hermes-workflows-primary", disabled: feedBusy || !feedOpen }, feedBusy ? "Adding…" : "Add Item To Feed")
+        ) : null
+      );
+    }
+
     function renderRunInputField(field) {
       var name = safeString(field && field.name);
       var kind = safeString((field && field.kind) || "text");
@@ -2553,18 +3073,18 @@
         setInputFieldValues(next);
       }
       return h("label", { key: name, className: "hermes-workflows-run-field" },
-        h("span", null, name),
+        h("span", null, (field && field.label ? safeString(field.label) : name) + (field && field.required ? " *" : "")),
         kind === "boolean" ? h("select", { value: value, onChange: updateValue },
           h("option", { value: "" }, "Not set"),
           h("option", { value: "true" }, "true"),
           h("option", { value: "false" }, "false")
-        ) : kind === "json" ? h("textarea", {
+        ) : (kind === "json" || kind === "long_text" || kind === "prompt" || kind === "criteria" || kind === "document") ? h("textarea", {
           value: value,
           onChange: updateValue,
-          placeholder: "JSON value",
-          rows: 3,
+          placeholder: kind === "document" ? "Paste document text" : kind,
+          rows: kind === "document" || kind === "prompt" || kind === "criteria" ? 5 : 3,
         }) : h("input", {
-          type: kind === "number" || kind === "integer" ? "number" : "text",
+          type: kind === "number" || kind === "integer" ? "number" : (kind === "url" ? "url" : "text"),
           step: kind === "integer" ? "1" : "any",
           value: value,
           onChange: updateValue,
@@ -2626,7 +3146,7 @@
         ),
         h("div", { className: "hermes-workflows-bottom-content" },
           bottomTab === "checklist" ? renderValidationChecklist() :
-          bottomTab === "timeline" ? h("div", { className: "hermes-workflows-stack" }, renderNodeRuns(), renderTimeline()) :
+          bottomTab === "timeline" ? h("div", { className: "hermes-workflows-stack" }, renderTimeline()) :
           null
         )
       );
@@ -2659,6 +3179,7 @@
           )
         ),
         renderRunStartPanel(),
+        renderInputFeedPanel(),
         renderBottomPanel(),
         showAdvancedYaml ? renderAdvancedYaml() : null
       )

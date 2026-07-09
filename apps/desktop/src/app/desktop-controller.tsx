@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
@@ -37,7 +37,7 @@ import {
   unpinSession
 } from '../store/layout'
 import { respondToApprovalAction } from '../store/native-notifications'
-import { $paneOpen } from '../store/panes'
+import { $paneOpen, setPaneOpen } from '../store/panes'
 import { setPetActivity } from '../store/pet'
 import { setPetScale } from '../store/pet-gallery'
 import {
@@ -88,7 +88,7 @@ import {
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
-import { shouldShowContextualPreviewRail } from './contextual-preview-rail'
+import { nextContextualPreviewPaneOpen, shouldShowContextualPreviewRail } from './contextual-preview-rail'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { useKeybinds } from './hooks/use-keybinds'
@@ -240,6 +240,20 @@ export function DesktopController() {
     routedSessionId,
     selectedStoredSessionId
   })
+
+  const nextPreviewPaneOpen = nextContextualPreviewPaneOpen({
+    currentView,
+    hasPreviewTarget: previewTargetPresent,
+    paneOpen: previewPaneOpen,
+    routedSessionId,
+    selectedStoredSessionId
+  })
+
+  useLayoutEffect(() => {
+    if (previewPaneOpen !== nextPreviewPaneOpen) {
+      setPaneOpen(PREVIEW_PANE_ID, nextPreviewPaneOpen)
+    }
+  }, [nextPreviewPaneOpen, previewPaneOpen])
 
   const titlebarToolGroups = useGroupRegistry<TitlebarTool>()
   const statusbarItemGroups = useGroupRegistry<StatusbarItem>()

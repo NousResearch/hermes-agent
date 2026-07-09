@@ -14,6 +14,14 @@ export function contextualPreviewSessionId({
   return selectedStoredSessionId?.trim() || routedSessionId?.trim() || ''
 }
 
+export interface ContextualPreviewPaneState extends ContextualPreviewRailState {
+  paneOpen: boolean
+}
+
+export function nextContextualPreviewPaneOpen(state: ContextualPreviewPaneState): boolean {
+  return shouldShowContextualPreviewRail(state)
+}
+
 export function shouldShowContextualPreviewRail(state: ContextualPreviewRailState): boolean {
   return state.currentView === 'chat' && state.hasPreviewTarget && Boolean(contextualPreviewSessionId(state))
 }

@@ -40,7 +40,7 @@ export type RightRailTabId = typeof RIGHT_RAIL_PREVIEW_TAB_ID | `preview:${strin
 
 ensurePaneRegistered(CHAT_SIDEBAR_PANE_ID, { open: true })
 ensurePaneRegistered(FILE_BROWSER_PANE_ID, { open: false })
-ensurePaneRegistered(PREVIEW_PANE_ID, { open: true })
+ensurePaneRegistered(PREVIEW_PANE_ID, { open: false })
 
 export const $sidebarOpen: ReadableAtom<boolean> = computed(
   $paneStates,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldShowContextualPreviewRail } from './contextual-preview-rail'
+import { nextContextualPreviewPaneOpen, shouldShowContextualPreviewRail } from './contextual-preview-rail'
 
 describe('contextual preview rail visibility', () => {
   it('stays hidden for the new-chat route even when stale preview tabs exist', () => {
@@ -58,6 +58,42 @@ describe('contextual preview rail visibility', () => {
       shouldShowContextualPreviewRail({
         currentView: 'chat',
         hasPreviewTarget: false,
+        routedSessionId: 'session-1',
+        selectedStoredSessionId: null
+      })
+    ).toBe(false)
+  })
+
+  it('collapses the pane-open state when the last preview/editor tab is gone', () => {
+    expect(
+      nextContextualPreviewPaneOpen({
+        currentView: 'chat',
+        hasPreviewTarget: false,
+        paneOpen: true,
+        routedSessionId: 'session-1',
+        selectedStoredSessionId: null
+      })
+    ).toBe(false)
+  })
+
+  it('opens the pane-open state when a contextual preview/editor target appears', () => {
+    expect(
+      nextContextualPreviewPaneOpen({
+        currentView: 'chat',
+        hasPreviewTarget: true,
+        paneOpen: false,
+        routedSessionId: 'session-1',
+        selectedStoredSessionId: null
+      })
+    ).toBe(true)
+  })
+
+  it('collapses stale pane-open state behind full-screen and non-chat routes', () => {
+    expect(
+      nextContextualPreviewPaneOpen({
+        currentView: 'settings',
+        hasPreviewTarget: true,
+        paneOpen: true,
         routedSessionId: 'session-1',
         selectedStoredSessionId: null
       })

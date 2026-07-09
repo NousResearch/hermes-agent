@@ -25,6 +25,21 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _configured_codex_binary() -> str:
+    """Resolve the app-server executable from the active profile config."""
+    try:
+        from hermes_cli.codex_runtime_switch import get_configured_codex_binary
+        from hermes_cli.config import load_config
+
+        return get_configured_codex_binary(load_config())
+    except Exception:
+        logger.debug(
+            "codex app-server binary config unavailable; using PATH default",
+            exc_info=True,
+        )
+        return "codex"
+
+
 def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
     """Map a Codex app-server ``item/started`` notification to a Hermes
     tool-progress event ``(tool_name, preview, args)``.
@@ -374,6 +389,7 @@ def run_codex_app_server_turn(
 
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            codex_bin=_configured_codex_binary(),
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,

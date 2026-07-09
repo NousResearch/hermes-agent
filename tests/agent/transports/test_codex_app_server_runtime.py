@@ -200,6 +200,43 @@ class TestSpawnEnvIsolation:
             "subprocesses (gh, git, aws, npm) need the user's real HOME."
         )
 
+    def test_configured_binary_path_with_spaces_is_one_argv_element(
+        self, monkeypatch
+    ):
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        configured = "/Applications/Codex Preview.app/Contents/Resources/codex"
+
+        client = cas.CodexAppServerClient(codex_bin=configured)
+        client._closed = True
+
+        assert captured["cmd"][:2] == [configured, "app-server"]
+
     def test_spawn_env_sets_CODEX_HOME_when_provided(self, monkeypatch):
         """CODEX_HOME isolation must still work — that's the whole point
         of the codex_home arg."""

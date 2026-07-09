@@ -346,7 +346,7 @@ class TestMigrate:
         blocks. This is what OpenClaw calls 'migrate native codex plugins.'"""
         from hermes_cli import codex_runtime_plugin_migration as crpm
 
-        def fake_query(codex_home=None, timeout=8.0):
+        def fake_query(codex_home=None, timeout=8.0, codex_bin="codex"):
             return [
                 {"name": "google-calendar", "marketplace": "openai-curated",
                  "enabled": True},
@@ -362,6 +362,29 @@ class TestMigrate:
         assert "enabled = true" in text
         assert "google-calendar@openai-curated" in report.migrated_plugins
         assert "github@openai-curated" in report.migrated_plugins
+
+    def test_plugin_discovery_uses_configured_codex_binary(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        captured = {}
+
+        def fake_query(codex_home=None, timeout=8.0, codex_bin="codex"):
+            captured["codex_bin"] = codex_bin
+            return [], None
+
+        monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query)
+        configured = "/Applications/Codex.app/Contents/Resources/codex"
+
+        migrate(
+            {"model": {"codex_bin": configured}},
+            codex_home=tmp_path,
+            discover_plugins=True,
+            expose_hermes_tools=False,
+        )
+
+        assert captured["codex_bin"] == configured
 
     def test_plugin_discovery_skips_unavailable_plugins(self):
         """Plugins where codex reports availability != AVAILABLE should
@@ -416,7 +439,7 @@ class TestMigrate:
         completes. The error surfaces in the report but doesn't abort."""
         from hermes_cli import codex_runtime_plugin_migration as crpm
 
-        def fake_query_fails(codex_home=None, timeout=8.0):
+        def fake_query_fails(codex_home=None, timeout=8.0, codex_bin="codex"):
             return [], "codex CLI not available"
         monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query_fails)
 
@@ -464,7 +487,7 @@ class TestMigrate:
 
         # First run: only github
         monkeypatch.setattr(crpm, "_query_codex_plugins",
-                            lambda codex_home=None, timeout=8.0: (
+                            lambda codex_home=None, timeout=8.0, codex_bin="codex": (
                                 [{"name": "github", "marketplace": "openai-curated", "enabled": True}],
                                 None,
                             ))
@@ -475,7 +498,7 @@ class TestMigrate:
 
         # Second run: only canva (github went away)
         monkeypatch.setattr(crpm, "_query_codex_plugins",
-                            lambda codex_home=None, timeout=8.0: (
+                            lambda codex_home=None, timeout=8.0, codex_bin="codex": (
                                 [{"name": "canva", "marketplace": "openai-curated", "enabled": True}],
                                 None,
                             ))
@@ -745,7 +768,7 @@ class TestStripUnmanagedPluginTables:
         )
 
         # Simulate codex's plugin/list reporting the same plugin tasks@openai-curated.
-        def fake_query(codex_home=None, timeout=8.0):
+        def fake_query(codex_home=None, timeout=8.0, codex_bin="codex"):
             return (
                 [{"name": "tasks", "marketplace": "openai-curated", "enabled": True}],
                 None,
@@ -779,7 +802,7 @@ class TestStripUnmanagedPluginTables:
             "enabled = true\n"
         )
 
-        def fake_query(codex_home=None, timeout=8.0):
+        def fake_query(codex_home=None, timeout=8.0, codex_bin="codex"):
             return ([], "plugin/list query failed: codex not installed")
 
         monkeypatch.setattr(

@@ -1,5 +1,3 @@
-'use strict'
-
 // Profile-delete routing logic for the `hermes:api` IPC handler.
 //
 // When the renderer issues DELETE /api/profiles/<name>, the handler must

@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
+  <img src="assets/brand/ix-agency-lockup-dark-preview.png" alt="IX Agency" width="100%">
 </p>
 
-# Hermes Agent ☤
+# IX Agency
 
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
@@ -37,7 +37,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 支持 Linux、macOS、WSL2 和 Android (Termux)。安装程序会自动处理平台特定的配置。
 
-> **Android / Termux：** 已测试的手动安装路径请参考 [Termux 指南](https://hermes-agent.nousresearch.com/docs/getting-started/termux)。在 Termux 上，Hermes 会安装精选的 `.[termux]` 扩展，因为完整的 `.[all]` 扩展会拉取 Android 不兼容的语音依赖。
+> **Android / Termux：** 已测试的手动安装路径请参考 [Termux 指南](https://hermes-agent.nousresearch.com/docs/getting-started/termux)。在 Termux 上，IX Agency 会安装精选的 `.[termux]` 扩展，因为完整的 `.[all]` 扩展会拉取 Android 不兼容的语音依赖。
 >
 > **Windows：** 在 PowerShell 中运行：
 > ```powershell
@@ -74,7 +74,7 @@ hermes doctor       # 诊断问题
 
 ## 省去到处收集 API Key — Nous Portal
 
-Hermes 始终允许你使用任意服务商，这点不会改变。但如果你不想为模型、网页搜索、图像生成、TTS、云浏览器分别去申请五个不同的 API Key，**[Nous Portal](https://portal.nousresearch.com)** 用一个订阅就能覆盖全部：
+IX Agency 始终允许你使用任意服务商，这点不会改变。但如果你不想为模型、网页搜索、图像生成、TTS、云浏览器分别去申请五个不同的 API Key，**[Nous Portal](https://portal.nousresearch.com)** 用一个订阅就能覆盖全部：
 
 - **300+ 模型** — 用 `/model <name>` 随时切换
 - **Tool Gateway** — 网页搜索（Firecrawl）、图像生成（FAL）、文本转语音（OpenAI）、云浏览器（Browser Use），全部通过订阅托管。无需额外注册任何账户。
@@ -93,7 +93,7 @@ hermes setup --portal
 
 ## CLI 与消息平台 快速对照
 
-Hermes 有两种入口：用 `hermes` 启动终端 UI，或运行网关从 Telegram、Discord、Slack、WhatsApp、Signal 或 Email 与之对话。进入对话后，许多斜杠命令在两种界面中通用。
+IX Agency 有两种入口：用 `hermes` 启动终端 UI，或运行网关从 Telegram、Discord、Slack、WhatsApp、Signal 或 Email 与之对话。进入对话后，许多斜杠命令在两种界面中通用。
 
 | 操作 | CLI | 消息平台 |
 |------|-----|----------|
@@ -137,7 +137,7 @@ Hermes 有两种入口：用 `hermes` 启动终端 UI，或运行网关从 Teleg
 
 ## 从 OpenClaw 迁移
 
-如果你来自 OpenClaw，Hermes 可以自动导入你的设置、记忆、技能和 API 密钥。
+如果你来自 OpenClaw，IX Agency 可以自动导入你的设置、记忆、技能和 API 密钥。
 
 **首次安装时：** 安装向导（`hermes setup`）会自动检测 `~/.openclaw` 并在配置开始前提供迁移选项。
 

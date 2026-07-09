@@ -278,7 +278,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     console.print()
     console.print(
         "[green]✓ Bitwarden Secrets Manager is enabled.[/green]  "
-        "Secrets will be pulled at the start of every Hermes process."
+        "Secrets will be pulled at the start of every IX Agency process."
     )
     console.print(
         "  Status:  [cyan]hermes secrets bitwarden status[/cyan]\n"
@@ -327,7 +327,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         return 0
     if not token_set:
         console.print(
-            f"\n  [yellow]Enabled but {token_env} is not set — Hermes will skip BSM "
+            f"\n  [yellow]Enabled but {token_env} is not set — IX Agency will skip BSM "
             "and warn on next startup.[/yellow]"
         )
     if not project_id:
@@ -420,7 +420,7 @@ def cmd_disable(args: argparse.Namespace) -> int:
     save_config(cfg)
     console.print(
         "[green]Disabled.[/green]  Bitwarden secrets will NOT be pulled on the next "
-        "Hermes invocation.\n"
+        "IX Agency invocation.\n"
         "  Your access token is left in .env — remove it manually if you also want "
         "to revoke the credential."
     )

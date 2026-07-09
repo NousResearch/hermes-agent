@@ -1,5 +1,5 @@
 """
-Hermes Agent Uninstaller.
+IX Agency Uninstaller.
 
 Provides options for:
 - Full uninstall: Remove everything including configs and data
@@ -51,7 +51,7 @@ def find_shell_configs() -> list:
 
 
 def remove_path_from_shell_configs():
-    """Remove Hermes PATH entries from shell configuration files."""
+    """Remove IX Agency PATH entries from shell configuration files."""
     configs = find_shell_configs()
     removed_from = []
     
@@ -65,7 +65,8 @@ def remove_path_from_shell_configs():
             skip_next = False
             
             for line in content.split('\n'):
-                # Skip the "# Hermes Agent" comment and following line
+                # Skip the "# Hermes Agent" installer marker comment (written
+                # by scripts/install.sh) and the following PATH line.
                 if '# Hermes Agent' in line or '# hermes-agent' in line:
                     skip_next = True
                     continue
@@ -144,7 +145,7 @@ def remove_node_symlinks(hermes_home: Path) -> list:
     We check all candidate directories so that uninstall works regardless of
     how the install was done (e.g. a root FHS install that placed links in
     ``/usr/local/bin``, or an older install that used ``~/.local/bin`` before
-    the FHS fix).  Only symlinks that resolve into this Hermes home's ``node``
+    the FHS fix).  Only symlinks that resolve into this IX Agency home's ``node``
     directory are removed — links the user has repointed elsewhere (nvm, fnm,
     etc.) are left untouched.
     """
@@ -320,7 +321,7 @@ def uninstall_gateway_service():
 
 
 def _hermes_path_markers(hermes_home: Path) -> list[str]:
-    """Path-entry substrings that identify Hermes-owned User-PATH entries."""
+    """Path-entry substrings that identify IX Agency-owned User-PATH entries."""
     root = str(hermes_home).rstrip("\\/")
     # Match on prefix so sub-entries (git\cmd, git\bin, git\usr\bin, node, etc.)
     # all get swept.  Also match the bare hermes-agent install dir.
@@ -333,7 +334,7 @@ def _hermes_path_markers(hermes_home: Path) -> list[str]:
 
 
 def remove_path_from_windows_registry(hermes_home: Path) -> list[str]:
-    """Strip Hermes-owned entries from User-scope PATH in the registry.
+    """Strip IX Agency-owned entries from User-scope PATH in the registry.
 
     Returns the list of removed path entries.  Operates on HKCU\\Environment,
     same key the installer wrote to via ``[Environment]::SetEnvironmentVariable``.
@@ -512,16 +513,16 @@ def run_gui_uninstall(args):
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA, Colors.BOLD))
-    print(color("│         ⚕ Hermes Chat GUI Uninstaller                  │", Colors.MAGENTA, Colors.BOLD))
+    print(color("│         ⚕ IX Agency Chat GUI Uninstaller                  │", Colors.MAGENTA, Colors.BOLD))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA, Colors.BOLD))
     print()
 
     if not summary["gui_installed"]:
-        print("No Hermes Chat GUI installation was found.")
+        print("No IX Agency Chat GUI installation was found.")
         print(f"  Checked: {hermes_home}, and the standard app locations for this OS.")
         return
 
-    print(color("This removes the Chat GUI only. The Hermes agent stays installed.", Colors.CYAN))
+    print(color("This removes the Chat GUI only. The IX Agency agent stays installed.", Colors.CYAN))
     print()
     print(color("Will remove:", Colors.YELLOW, Colors.BOLD))
     for p in summary["source_built_artifacts"]:
@@ -533,7 +534,7 @@ def run_gui_uninstall(args):
     print()
     if agent_is_installed(hermes_home):
         print(color("Kept intact:", Colors.GREEN, Colors.BOLD))
-        print(f"  • The Hermes agent at {hermes_home / 'hermes-agent'}")
+        print(f"  • The IX Agency agent at {hermes_home / 'hermes-agent'}")
         print(f"  • Your config, sessions, and secrets under {hermes_home}")
         print()
 
@@ -559,7 +560,7 @@ def run_gui_uninstall(args):
     print(color("│            ✓ Chat GUI Uninstalled!                      │", Colors.GREEN, Colors.BOLD))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.GREEN, Colors.BOLD))
     print()
-    print("The Hermes agent is still installed. Run 'hermes' to use the CLI,")
+    print("The IX Agency agent is still installed. Run 'hermes' to use the CLI,")
     print("or 'hermes uninstall' to remove the agent too.")
     print()
 
@@ -609,7 +610,7 @@ def run_uninstall(args):
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA, Colors.BOLD))
-    print(color("│            ⚕ Hermes Agent Uninstaller                  │", Colors.MAGENTA, Colors.BOLD))
+    print(color("│            ⚕ IX Agency Uninstaller                  │", Colors.MAGENTA, Colors.BOLD))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA, Colors.BOLD))
     print()
     
@@ -679,7 +680,7 @@ def run_uninstall(args):
     # Final confirmation
     print()
     if full_uninstall:
-        print(color("⚠️  WARNING: This will permanently delete ALL Hermes data!", Colors.RED, Colors.BOLD))
+        print(color("⚠️  WARNING: This will permanently delete ALL IX Agency data!", Colors.RED, Colors.BOLD))
         print(color("   Including: configs, API keys, sessions, scheduled jobs, logs", Colors.RED))
         if remove_profiles:
             print(color(
@@ -688,7 +689,7 @@ def run_uninstall(args):
                 Colors.RED
             ))
     else:
-        print("This will remove the Hermes code but keep your configuration and data.")
+        print("This will remove the IX Agency code but keep your configuration and data.")
     
     print()
     try:
@@ -719,12 +720,12 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
     print()
     print(color("Would inspect/remove:", Colors.YELLOW, Colors.BOLD))
     print("  • Gateway services and standalone gateway processes")
-    print("  • Hermes PATH entries from shell configs / Windows User PATH")
-    print("  • Hermes wrapper scripts and Hermes-managed node/npm/npx symlinks")
+    print("  • IX Agency PATH entries from shell configs / Windows User PATH")
+    print("  • IX Agency wrapper scripts and IX Agency-managed node/npm/npx symlinks")
     print("  • Desktop Chat GUI artifacts")
     print(f"  • Code checkout: {project_root}")
     if full_uninstall:
-        print(f"  • Hermes config/data: {hermes_home}")
+        print(f"  • IX Agency config/data: {hermes_home}")
         if _is_default_hermes_home(hermes_home):
             profiles = _discover_named_profiles()
             if profiles:
@@ -732,7 +733,7 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
                 for prof in profiles:
                     print(f"    - {prof.name}: {prof.path}")
     else:
-        print(f"  • Keep Hermes config/data: {hermes_home}")
+        print(f"  • Keep IX Agency config/data: {hermes_home}")
     print()
 
 
@@ -782,7 +783,7 @@ def _perform_uninstall(
             for entry in removed_path_entries:
                 log_success(f"Removed from User PATH: {entry}")
         else:
-            log_info("No Hermes-owned PATH entries in User environment")
+            log_info("No IX Agency-owned PATH entries in User environment")
 
         log_info("Removing HERMES_HOME / HERMES_GIT_BASH_PATH User env vars...")
         removed_env = remove_hermes_env_vars_windows()
@@ -790,7 +791,7 @@ def _perform_uninstall(
             for name in removed_env:
                 log_success(f"Removed User env var: {name}")
         else:
-            log_info("No Hermes-set User env vars to remove")
+            log_info("No IX Agency-set User env vars to remove")
     
     # 3. Remove wrapper script
     log_info("Removing hermes command...")
@@ -802,15 +803,15 @@ def _perform_uninstall(
         log_info("No wrapper script found")
 
     # 3b. Remove node/npm/npx symlinks the installer left in ~/.local/bin
-    #     (only when they still point into this Hermes home's node dir, so we
+    #     (only when they still point into this IX Agency home's node dir, so we
     #     never clobber an existing nvm / user-managed Node).
-    log_info("Removing Hermes-managed node/npm/npx symlinks...")
+    log_info("Removing IX Agency-managed node/npm/npx symlinks...")
     removed_node_links = remove_node_symlinks(hermes_home)
     if removed_node_links:
         for link in removed_node_links:
             log_success(f"Removed {link}")
     else:
-        log_info("No Hermes-managed node/npm/npx symlinks found")
+        log_info("No IX Agency-managed node/npm/npx symlinks found")
 
     # 3c. Remove the desktop Chat GUI's artifacts too (built renderer/release,
     #     node_modules, the packaged app bundle, and the Electron userData
@@ -911,7 +912,7 @@ def _perform_uninstall(
         print(color("Reload your shell to complete the process:", Colors.YELLOW))
         print("  source ~/.bashrc  # or ~/.zshrc")
     print()
-    print("Thank you for using Hermes Agent! ⚕")
+    print("Thank you for using IX Agency! ⚕")
     print()
 
 

@@ -1,6 +1,6 @@
 """Windows subprocess compatibility helpers.
 
-Hermes is developed on Linux / macOS and tested natively on Windows too.
+IX Agency is developed on Linux / macOS and tested natively on Windows too.
 Several common subprocess patterns break silently-or-loudly on Windows:
 
 * ``["npm", "install", ...]`` — on Windows ``npm`` is ``npm.cmd``, a batch

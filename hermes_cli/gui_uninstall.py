@@ -1,5 +1,5 @@
 """
-Hermes Desktop (Chat GUI) uninstaller.
+IX Agency Desktop (Chat GUI) uninstaller.
 
 The desktop GUI ships in two shapes and this module knows how to find and
 remove the artifacts of both, on Linux, macOS, and Windows, WITHOUT touching
@@ -22,7 +22,7 @@ the Python agent or the user's config/data:
        - Linux:   ``~/.local/share/applications`` .desktop entry + AppImage
 
 In both shapes the Electron runtime keeps a ``userData`` directory keyed on
-the app name ("Hermes"), separate from ``$HERMES_HOME``:
+the internal app name ("Hermes"), separate from ``$HERMES_HOME``:
   - macOS:   ``~/Library/Application Support/Hermes``
   - Windows: ``%APPDATA%\\Hermes``
   - Linux:   ``$XDG_CONFIG_HOME/Hermes`` (default ``~/.config/Hermes``)
@@ -70,9 +70,11 @@ def _agent_root(hermes_home: Path) -> Path:
 def desktop_userdata_dir() -> Path:
     """Return the Electron ``userData`` directory for the desktop app.
 
-    Mirrors Electron's ``app.getPath('userData')`` for an app named "Hermes"
-    on each platform. This is GUI-only state (connection.json, updates.json,
-    Chromium cache) and never holds agent config or sessions.
+    Mirrors Electron's ``app.getPath('userData')`` for the app's internal
+    product name "Hermes" (the display brand is IX Agency, but the packaged
+    identity stays Hermes for updater compatibility). This is GUI-only state
+    (connection.json, updates.json, Chromium cache) and never holds agent
+    config or sessions.
     """
     home = Path.home()
     if sys.platform == "darwin":
@@ -113,7 +115,7 @@ def packaged_gui_app_paths() -> "list[Path]":
 
     Returns every candidate for the current OS; the caller filters to those
     that actually exist. We never glob system-wide — only the well-known
-    electron-builder output locations for the "Hermes" product.
+    electron-builder output locations for the "IX Agency" product.
     """
     home = Path.home()
     paths: list[Path] = []

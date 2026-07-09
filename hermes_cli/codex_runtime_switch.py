@@ -1,6 +1,6 @@
 """Shared logic for the /codex-runtime slash command.
 
-Toggles `model.openai_runtime` between "auto" (= chat_completions, Hermes'
+Toggles `model.openai_runtime` between "auto" (= chat_completions, IX Agency'
 default) and "codex_app_server" (= hand turns to a codex subprocess).
 
 Both CLI (cli.py) and gateway (gateway/run.py) call into this module so the
@@ -205,9 +205,9 @@ def apply(
         ok, ver = _check_binary_cached()
         if ok:
             msg_lines.append(f"codex CLI: {ver}")
-        # Auto-migrate Hermes' MCP servers + Codex's installed curated
+        # Auto-migrate IX Agency' MCP servers + Codex's installed curated
         # plugins into ~/.codex/config.toml so the spawned codex subprocess
-        # sees the same tool surface AND can call back into Hermes for
+        # sees the same tool surface AND can call back into IX Agency for
         # browser/web/delegate_task/vision/memory tools (#7 fix).
         # Failures are non-fatal — the runtime change still proceeds.
         try:
@@ -234,7 +234,7 @@ def apply(
                     f"Codex plugin discovery skipped: "
                     f"{mig_report.plugin_query_error}"
                 )
-            # Permissions + Hermes tool callback are always-on production
+            # Permissions + IX Agency tool callback are always-on production
             # bits the user benefits from knowing about.
             if mig_report.wrote_permissions_default:
                 msg_lines.append(
@@ -243,14 +243,14 @@ def apply(
                 )
             if "hermes-tools" in mig_report.migrated:
                 msg_lines.append(
-                    "Hermes tool callback registered: codex can now use "
+                    "IX Agency tool callback registered: codex can now use "
                     "web_search, web_extract, browser_*, vision_analyze, "
                     "image_generate, skill_view, skills_list, text_to_speech, "
                     "kanban_* (worker + orchestrator) via MCP."
                 )
                 msg_lines.append(
                     "  (delegate_task, memory, session_search, todo run "
-                    "only on the default Hermes runtime — they need the "
+                    "only on the default IX Agency runtime — they need the "
                     "agent loop context.)"
                 )
             msg_lines.append(f"  (config: {mig_report.target_path})")
@@ -261,14 +261,14 @@ def apply(
         msg_lines.append(
             "OpenAI/Codex turns now run through `codex app-server` "
             "(terminal/file ops/patching inside Codex; "
-            "Hermes tools available via MCP callback)."
+            "IX Agency tools available via MCP callback)."
         )
         msg_lines.append(
             "Effective on next session — current cached agent keeps "
             "the prior runtime to preserve prompt cache."
         )
     else:
-        msg_lines.append("OpenAI/Codex turns will use the default Hermes runtime.")
+        msg_lines.append("OpenAI/Codex turns will use the default IX Agency runtime.")
         msg_lines.append("Effective on next session.")
     return CodexRuntimeStatus(
         success=True,

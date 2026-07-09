@@ -15,7 +15,7 @@ Design rules:
   decide how to degrade. A raw network/HTTP error here surfaces as
   :class:`BillingError` (or a subclass) carrying the parsed server ``error`` code,
   HTTP status, ``portalUrl`` deep-link, and ``retry_after``.
-- **Auth** = the OAuth bearer JWT Hermes already holds for inference
+- **Auth** = the OAuth bearer JWT IX Agency already holds for inference
   (``get_provider_auth_state("nous")["access_token"]``). No API-key auth on these.
 - **Portal base URL** resolves with the same precedence as the device-flow login
   (``auth.py``): ``HERMES_PORTAL_BASE_URL`` → ``NOUS_PORTAL_BASE_URL`` → the

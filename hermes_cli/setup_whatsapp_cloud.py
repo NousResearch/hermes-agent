@@ -25,7 +25,7 @@ in Meta's App Dashboard, with a one-line description and the field's
 expected shape ("starts with EAA", "15-17 digits", "32 hex chars", etc.).
 
 The wizard intentionally does NOT smoke-test the webhook itself — the
-Hermes gateway and the cloudflared tunnel both run in separate
+IX Agency gateway and the cloudflared tunnel both run in separate
 processes the user starts AFTER this wizard exits, so any in-wizard
 probe would fail by design. Instead the final SETUP COMPLETE block
 prints the exact curl command the user can run from a third terminal
@@ -241,7 +241,7 @@ def run_whatsapp_cloud_setup() -> int:
     print("⚕ WhatsApp Business Cloud API Setup")
     print("=" * 50)
     print()
-    print("This wizard configures Hermes to talk to WhatsApp via Meta's")
+    print("This wizard configures IX Agency to talk to WhatsApp via Meta's")
     print("official Cloud API. It's the production-grade path:")
     print()
     print("  • No QR codes, no Node.js bridge subprocess")
@@ -465,7 +465,7 @@ def run_whatsapp_cloud_setup() -> int:
     print("SETUP COMPLETE — Next steps")
     print("─" * 50)
     print()
-    print("  Hermes needs a public HTTPS URL to receive WhatsApp messages.")
+    print("  IX Agency needs a public HTTPS URL to receive WhatsApp messages.")
     print("  The recommended path is Cloudflare Tunnel (free, no port")
     print("  forwarding, no DNS setup).")
     print()
@@ -481,7 +481,7 @@ def run_whatsapp_cloud_setup() -> int:
     print("         cloudflared tunnel --url http://localhost:8090")
     print("       Note the printed https://<random>.trycloudflare.com URL.")
     print()
-    print("    3. Start the Hermes gateway in another terminal:")
+    print("    3. Start the IX Agency gateway in another terminal:")
     print("         hermes gateway")
     print()
     print("    4. Verify your local config is reachable. From a third")

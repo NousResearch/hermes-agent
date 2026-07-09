@@ -1,7 +1,7 @@
 """
 Doctor command for hermes CLI.
 
-Diagnoses issues with Hermes Agent setup.
+Diagnoses issues with IX Agency setup.
 """
 
 import os
@@ -554,7 +554,7 @@ def run_doctor(args):
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
+    print(color("│                 🩺 IX Agency Doctor                        │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
 
     _section("Security Advisories")
@@ -1114,7 +1114,7 @@ def run_doctor(args):
             check_warn("OpenAI Codex auth", "(not logged in)")
             if codex_status.get("error"):
                 check_info(codex_status["error"])
-            # Native OAuth uses Hermes' own device-code flow — the Codex CLI is
+            # Native OAuth uses IX Agency' own device-code flow — the Codex CLI is
             # only needed to import existing tokens from ~/.codex/auth.json.
             # Attach the hint to the Codex auth row so it doesn't read as
             # remediation for whichever provider happens to print next (#27975).
@@ -1183,13 +1183,13 @@ def run_doctor(args):
         else:
             check_info(f"{_DHH}/SOUL.md exists but is empty — edit it to customize personality")
     else:
-        check_warn(f"{_DHH}/SOUL.md not found", "(create it to give Hermes a custom personality)")
+        check_warn(f"{_DHH}/SOUL.md not found", "(create it to give IX Agency a custom personality)")
         if should_fix:
             soul_path.parent.mkdir(parents=True, exist_ok=True)
             soul_path.write_text(
-                "# Hermes Agent Persona\n\n"
-                "<!-- Edit this file to customize how Hermes communicates. -->\n\n"
-                "You are Hermes, a helpful AI assistant.\n",
+                "# IX Agency Persona\n\n"
+                "<!-- Edit this file to customize how IX Agency communicates. -->\n\n"
+                "You are IX Agency, a helpful AI assistant.\n",
                 encoding="utf-8",
             )
             check_ok(f"Created {_DHH}/SOUL.md with basic template")
@@ -1712,7 +1712,7 @@ def run_doctor(args):
                         # tooling (esbuild/vite, etc.), not runtime code that ships
                         # to users. Manual npm remediation may error with a known
                         # arborist crash (edgesOut / isDescendantOf) on this monorepo
-                        # tree — in that case it is an npm bug, not a Hermes one.
+                        # tree — in that case it is an npm bug, not a IX Agency one.
                         check_info(
                             "  ^ build-time tooling (not runtime); if manual npm remediation "
                             "errors with an arborist crash it's a known npm bug — clears "

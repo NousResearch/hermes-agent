@@ -134,7 +134,7 @@ def _s6_running() -> bool:
     — only works as root: for any other UID, the symlink at
     ``/proc/1/exe`` is unreadable and ``resolve()`` silently returns the
     path unchanged, so the resolved name is the literal ``"exe"`` and
-    detection always fails. Since every Hermes runtime call inside the
+    detection always fails. Since every IX Agency runtime call inside the
     container drops to hermes via ``s6-setuidgid``, that silent failure
     made the entire service-manager runtime-registration path inert in
     production (PR #30136 review).
@@ -424,7 +424,7 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     ``0700``. It also ``mkfifo``s ``<svc>/supervise/control`` with mode
     ``0600``. Because s6-supervise runs as PID 1's effective UID (root)
     these dirs end up root-owned mode 0700, and an unprivileged client
-    (the ``hermes`` user — UID 10000 — running every Hermes runtime
+    (the ``hermes`` user — UID 10000 — running every IX Agency runtime
     operation via ``s6-setuidgid``) gets ``EACCES`` on any ``s6-svc``,
     ``s6-svstat``, or ``s6-svwait`` invocation against the slot.
 

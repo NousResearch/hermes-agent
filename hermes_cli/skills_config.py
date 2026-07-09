@@ -1,5 +1,5 @@
 """
-Skills configuration for Hermes Agent.
+Skills configuration for IX Agency.
 `hermes skills` enters this module.
 
 Toggle individual skills or categories on/off, globally or per-platform.

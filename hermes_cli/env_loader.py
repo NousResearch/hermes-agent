@@ -1,4 +1,4 @@
-"""Helpers for loading Hermes .env files consistently across entrypoints."""
+"""Helpers for loading IX Agency .env files consistently across entrypoints."""
 
 from __future__ import annotations
 
@@ -177,7 +177,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     copy-pasting API keys from terminals or rich-text editors.
 
     We delegate to ``hermes_cli.config._sanitize_env_lines`` which
-    already knows all valid Hermes env-var names and can split
+    already knows all valid IX Agency env-var names and can split
     concatenated lines correctly.
     """
     if not path.exists():
@@ -222,7 +222,7 @@ def load_hermes_dotenv(
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
 ) -> list[Path]:
-    """Load Hermes environment files with user config taking precedence.
+    """Load IX Agency environment files with user config taking precedence.
 
     Behavior:
     - `~/.hermes/.env` overrides stale shell-exported values when present.
@@ -306,7 +306,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     """Pull secrets from every enabled external source into env.
 
     Runs AFTER dotenv loads so .env values are visible (sources use them
-    to locate bootstrap tokens) but BEFORE the rest of Hermes reads
+    to locate bootstrap tokens) but BEFORE the rest of IX Agency reads
     ``os.environ`` for credentials.  Any failure here is logged and
     swallowed — external secret sources must never block startup.
 

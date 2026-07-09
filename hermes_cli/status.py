@@ -1,7 +1,7 @@
 """
 Status command for hermes CLI.
 
-Shows the status of all Hermes Agent components.
+Shows the status of all IX Agency components.
 """
 
 import os
@@ -103,12 +103,12 @@ from hermes_constants import is_termux as _is_termux
 
 
 def show_status(args):
-    """Show status of all Hermes Agent components."""
+    """Show status of all IX Agency components."""
     deep = getattr(args, 'deep', False)
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│                 ⚕ Hermes Agent Status                  │", Colors.CYAN))
+    print(color("│                 ⚕ IX Agency Status                  │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
 
     # =========================================================================

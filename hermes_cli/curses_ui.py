@@ -1,4 +1,4 @@
-"""Shared curses-based UI components for Hermes CLI.
+"""Shared curses-based UI components for IX Agency CLI.
 
 Used by `hermes tools` and `hermes skills` for interactive checklists.
 Provides a curses multi-select with keyboard navigation, plus a

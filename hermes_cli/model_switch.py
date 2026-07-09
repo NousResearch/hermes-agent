@@ -123,7 +123,7 @@ def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
 
 _HERMES_MODEL_WARNING = (
     "Nous Research Hermes 3 & 4 models are NOT agentic and are not designed "
-    "for use with Hermes Agent. They lack the tool-calling capabilities "
+    "for use with IX Agency. They lack the tool-calling capabilities "
     "required for agent workflows. Consider using an agentic model instead "
     "(Claude, GPT, Gemini, DeepSeek, etc.)."
 )
@@ -1606,7 +1606,7 @@ def list_authenticated_providers(
     # "nous" pulls from the remote model-catalog manifest published at
     # https://hermes-agent.nousresearch.com/docs/api/model-catalog.json so
     # newly added Portal models surface in the /model picker without
-    # requiring a Hermes release. Falls back to the in-repo
+    # requiring a IX Agency release. Falls back to the in-repo
     # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
     curated["nous"] = get_curated_nous_model_ids()
     # Ollama Cloud uses dynamic discovery (no static curated list)
@@ -1642,7 +1642,7 @@ def list_authenticated_providers(
             live = [current_model]
         curated["lmstudio"] = live
 
-    # --- 1. Check Hermes-mapped providers ---
+    # --- 1. Check IX Agency-mapped providers ---
     from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
     from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
@@ -1730,20 +1730,20 @@ def list_authenticated_providers(
         seen_mdev_ids.add(mdev_id)
         _record_builtin_endpoint(slug)
 
-    # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
+    # --- 2. Check IX Agency-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
     from hermes_cli.auth import PROVIDER_REGISTRY as _auth_registry
 
-    # Build reverse mapping: models.dev ID → Hermes provider ID.
+    # Build reverse mapping: models.dev ID → IX Agency provider ID.
     # HERMES_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot")
-    # while _PROVIDER_MODELS and config.yaml use Hermes IDs ("copilot").
+    # while _PROVIDER_MODELS and config.yaml use IX Agency IDs ("copilot").
     _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
 
     for pid, overlay in HERMES_OVERLAYS.items():
         if pid.lower() in seen_slugs:
             continue
 
-        # Resolve Hermes slug — e.g. "github-copilot" → "copilot"
+        # Resolve IX Agency slug — e.g. "github-copilot" → "copilot"
         hermes_slug = _mdev_to_hermes.get(pid, pid)
         if hermes_slug.lower() in seen_slugs:
             continue
@@ -1983,7 +1983,7 @@ def list_authenticated_providers(
             if ep_name.lower() in seen_slugs:
                 continue
             display_name = ep_cfg.get("name", "") or ep_name
-            # ``base_url`` is Hermes's canonical write key (matches
+            # ``base_url`` is IX Agency's canonical write key (matches
             # custom_providers and _save_custom_provider); ``api`` / ``url``
             # remain as fallbacks for hand-edited / legacy configs.
             api_url = (
@@ -2001,7 +2001,7 @@ def list_authenticated_providers(
             if default_model:
                 models_list.append(default_model)
             # Also include the full models list from config.
-            # Hermes writes ``models:`` as a dict keyed by model id, but older
+            # IX Agency writes ``models:`` as a dict keyed by model id, but older
             # or hand-edited configs may use strings or ``[{id: ...}]`` rows.
             for model_id in _declared_model_ids(ep_cfg.get("models", [])):
                 if model_id not in models_list:
@@ -2192,7 +2192,7 @@ def list_authenticated_providers(
             if group_key not in groups:
                 # Strip per-model suffix so "Ollama — GLM 5.1" becomes
                 # "Ollama" for the grouped row. Em dash is the convention
-                # Hermes's own writer uses; a hyphen variant is accepted
+                # IX Agency's own writer uses; a hyphen variant is accepted
                 # for hand-edited configs.
                 display_name = raw_name
                 for sep in ("—", " - "):
@@ -2222,7 +2222,7 @@ def list_authenticated_providers(
                     groups[group_key]["discover_models"] = False
 
             # The singular ``model:`` field only holds the currently
-            # active model. Hermes's own writer (main.py::_save_custom_provider)
+            # active model. IX Agency's own writer (main.py::_save_custom_provider)
             # stores every configured model as a dict under ``models:``;
             # downstream readers (agent/models_dev.py, gateway/run.py,
             # run_agent.py, hermes_cli/config.py) already consume that dict.

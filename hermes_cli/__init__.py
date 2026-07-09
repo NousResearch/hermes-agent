@@ -1,5 +1,5 @@
 """
-Hermes CLI - Unified command-line interface for Hermes Agent.
+IX Agency CLI - Unified command-line interface for IX Agency.
 
 Provides subcommands for:
 - hermes chat          - Interactive chat (same as ./hermes)

@@ -376,7 +376,7 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         "send",
         help="Send a message to a configured platform (scripts, cron jobs, CI).",
         description=(
-            "Pipe text from any shell script to any messaging platform Hermes "
+            "Pipe text from any shell script to any messaging platform IX Agency "
             "is already configured for. Reuses the gateway's platform "
             "credentials (~/.hermes/.env + ~/.hermes/config.yaml) — no LLM, "
             "no agent loop, no running gateway required for bot-token "

@@ -1,5 +1,5 @@
 """
-Unified self-relaunch for Hermes CLI.
+Unified self-relaunch for IX Agency CLI.
 
 Preserves critical flags (--tui, --dev, --profile, --model, etc.) across
 process replacement so that ``hermes sessions browse`` or post-setup relaunch

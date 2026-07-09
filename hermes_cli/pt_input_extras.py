@@ -3,7 +3,7 @@
 Imported once at CLI startup. Each helper installs a small mapping into
 prompt_toolkit's `ANSI_SEQUENCES` so byte sequences emitted by modern
 keyboard protocols (Kitty / xterm `modifyOtherKeys`) decode to existing
-key tuples Hermes already binds.
+key tuples IX Agency already binds.
 
 Kept in a standalone module — separate from `cli.py` — so the registrations
 can be unit-tested without importing the whole CLI runtime.
@@ -32,7 +32,7 @@ def install_shift_enter_alias() -> int:
 
     Default macOS Terminal and stock Windows Terminal still send the same
     byte for Enter and Shift+Enter, so there is no fix for those terminals
-    at the application layer — the sequences above never reach Hermes.
+    at the application layer — the sequences above never reach IX Agency.
 
     Returns the number of sequences whose mapping was changed.
     """

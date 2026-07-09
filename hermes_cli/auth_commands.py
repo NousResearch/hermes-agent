@@ -453,7 +453,7 @@ def auth_remove_command(args) -> None:
         raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
     print(f"Removed {provider} credential #{index} ({removed.label})")
 
-    # Unified removal dispatch.  Every credential source Hermes reads from
+    # Unified removal dispatch.  Every credential source IX Agency reads from
     # (env vars, external OAuth files, auth.json blocks, custom config)
     # has a RemovalStep registered in agent.credential_sources.  The step
     # handles its source-specific cleanup and we centralise suppression +

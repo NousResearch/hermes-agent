@@ -126,7 +126,7 @@ class CatalogError(Exception):
 
 
 def _catalog_root() -> Path:
-    """Return the optional-mcps/ directory shipped with this Hermes install."""
+    """Return the optional-mcps/ directory shipped with this IX Agency install."""
     # Prefer the env-var override / packaged location; fall back to the repo's
     # optional-mcps/ next to the package (source checkout).
     return get_optional_mcps_dir(Path(__file__).parent.parent / "optional-mcps")
@@ -162,7 +162,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     if mv != _MANIFEST_VERSION:
         raise CatalogError(
             f"{path}: manifest_version {mv!r} unsupported "
-            f"(this Hermes understands version {_MANIFEST_VERSION})"
+            f"(this IX Agency understands version {_MANIFEST_VERSION})"
         )
 
     name = data.get("name") or ""
@@ -268,7 +268,7 @@ def list_catalog() -> List[CatalogEntry]:
     Invalid manifests are skipped silently (CI tests catch them at PR time).
     Manifests with a future ``manifest_version`` are also skipped, but the
     skip is surfaced via :func:`catalog_diagnostics` so the picker / catalog
-    UIs can tell the user their Hermes is out of date.
+    UIs can tell the user their IX Agency is out of date.
     """
     root = _catalog_root()
     if not root.exists():
@@ -303,8 +303,8 @@ def catalog_diagnostics() -> List[tuple]:
 
     Returns a list of ``(entry_name, kind, message)`` tuples where ``kind``
     is one of:
-      - ``future_manifest`` — manifest_version is newer than this Hermes
-        understands. Update Hermes to install this entry.
+      - ``future_manifest`` — manifest_version is newer than this IX Agency
+        understands. Update IX Agency to install this entry.
       - ``invalid`` — manifest is malformed in some other way (caught by
         CI for shipped manifests; user-modified manifests can hit this).
     """
@@ -744,7 +744,7 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
     print(color(
         f"  ✓ Installed '{entry.name}' "
         f"({'enabled' if enable else 'disabled'}). "
-        f"Start a new Hermes session to load its tools.",
+        f"Start a new IX Agency session to load its tools.",
         Colors.GREEN,
     ))
     if entry.post_install:

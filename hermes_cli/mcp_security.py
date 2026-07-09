@@ -10,7 +10,7 @@ blocks two high-signal abuse shapes seen in the wild:
    interpreter whose inline script writes to OS persistence surfaces
    (``~/.ssh/authorized_keys``, ``/etc/ssh``, ``/etc/pam.d``, ``sudoers``,
    crontab, shell rc files). The campaign planted ``command: bash`` MCP entries
-   whose payload appended an attacker SSH key to ``authorized_keys``; Hermes
+   whose payload appended an attacker SSH key to ``authorized_keys``; IX Agency
    re-executed them on every cron tick / startup, re-installing the backdoor.
 
 3. A hardcoded indicator-of-compromise (IOC) blocklist for that campaign — the

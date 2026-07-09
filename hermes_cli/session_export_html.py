@@ -1,5 +1,5 @@
 """
-HTML Export generator for Hermes sessions.
+HTML Export generator for IX Agency sessions.
 Generates a standalone, beautiful HTML file with all messages embedded.
 Supports single and multi-session exports with a professional sidebar.
 No remote dependencies.
@@ -561,7 +561,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             {sessions_html}
             
             <footer>
-                Built with ☤ Hermes Agent • Generated on {generated_at}
+                Built with ☤ IX Agency • Generated on {generated_at}
             </footer>
         </div>
     </div>
@@ -773,7 +773,7 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
         <aside class="sidebar">
             <div class="sidebar-header">
                 <div class="sidebar-brand">
-                    {ICON_HERMES} Hermes History
+                    {ICON_HERMES} IX Agency History
                 </div>
                 <div class="search-container">
                     {ICON_SEARCH}
@@ -790,7 +790,7 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
     sessions_html_list = []
     for s in sessions:
         sid = s.get("id", "N/A")
-        title = s.get("title") or "Hermes Session"
+        title = s.get("title") or "IX Agency Session"
         model = s.get("model", "Unknown")
         started_at = _format_timestamp(s.get("started_at", 0))
         messages = s.get("messages", [])
@@ -836,7 +836,7 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
         sessions_html_list.append(session_html)
 
     return HTML_TEMPLATE.format(
-        page_title="Hermes Session Export" if is_multi else _escape_html(sessions[0].get("title", "Hermes Session")),
+        page_title="IX Agency Session Export" if is_multi else _escape_html(sessions[0].get("title", "IX Agency Session")),
         sidebar_html=sidebar_html,
         sessions_html="\n".join(sessions_html_list),
         main_margin="var(--sidebar-width)" if is_multi else "0",

@@ -1,6 +1,6 @@
-"""Profile distributions — shareable, packaged Hermes profiles via git.
+"""Profile distributions — shareable, packaged IX Agency profiles via git.
 
-A distribution is a Hermes profile published as a git repository (or
+A distribution is a IX Agency profile published as a git repository (or
 installed from a local directory for development). Install with one command
 from a git URL, update in place, and keep your local memories / sessions /
 credentials untouched.
@@ -322,7 +322,7 @@ def check_hermes_requires(spec: str, current_version: str) -> None:
     }[op]
     if not ok:
         raise DistributionError(
-            f"This distribution requires Hermes {op}{target}, "
+            f"This distribution requires IX Agency {op}{target}, "
             f"but you have {current_version}."
         )
 
@@ -335,7 +335,7 @@ def check_hermes_requires(spec: str, current_version: str) -> None:
 def _env_template_from_manifest(manifest: DistributionManifest) -> str:
     """Generate a ``.env.template`` body from env_requires."""
     lines = [
-        "# Environment variables required by this Hermes distribution.",
+        "# Environment variables required by this IX Agency distribution.",
         "# Copy to `.env` and fill in your own values before running.",
         "",
     ]
@@ -412,7 +412,7 @@ def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
         if not (cloned / MANIFEST_FILENAME).is_file():
             raise DistributionError(
                 f"No {MANIFEST_FILENAME} at the root of {src_str!r}. "
-                "This repository is not a Hermes profile distribution."
+                "This repository is not a IX Agency profile distribution."
             )
         return cloned, src_str
 
@@ -503,7 +503,7 @@ def plan_install(
     if manifest is None:
         raise DistributionError(
             f"No {MANIFEST_FILENAME} found at the distribution root — "
-            "this source is not a Hermes distribution."
+            "this source is not a IX Agency distribution."
         )
 
     # Version check up-front so we fail fast

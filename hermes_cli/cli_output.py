@@ -1,4 +1,4 @@
-"""Shared CLI output helpers for Hermes CLI modules.
+"""Shared CLI output helpers for IX Agency CLI modules.
 
 Extracts the identical ``print_info/success/warning/error`` and ``prompt()``
 functions previously duplicated across setup.py, tools_config.py,

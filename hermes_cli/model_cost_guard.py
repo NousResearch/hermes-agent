@@ -17,7 +17,7 @@ GPT55_SUGGESTION = "did you mean to select openai/gpt-5.5?"
 
 @dataclass(frozen=True)
 class ExpensiveModelWarning:
-    """Confirmation payload for models above Hermes' cost guardrail."""
+    """Confirmation payload for models above IX Agency' cost guardrail."""
 
     model: str
     provider: str
@@ -110,7 +110,7 @@ def expensive_model_warning(
     lines = [
         "!!! EXPENSIVE MODEL WARNING !!!",
         "",
-        f"{model} has known pricing above Hermes' safety threshold.",
+        f"{model} has known pricing above IX Agency' safety threshold.",
         f"Input tokens: {_format_money(input_cost)}",
         f"Output tokens: {_format_money(output_cost)}",
         (

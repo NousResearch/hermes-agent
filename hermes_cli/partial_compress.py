@@ -4,7 +4,7 @@ Inspired by Claude Code's Rewind menu "Summarize up to here" action
 (v2.1.139–v2.1.142, Week 20, May 2026):
 https://code.claude.com/docs/en/whats-new/2026-w20
 
-Hermes already has ``/compress`` (full-history compaction) and an
+IX Agency already has ``/compress`` (full-history compaction) and an
 automatic token-budget tail-protection heuristic inside
 ``ContextCompressor``. What was missing is *user-chosen* boundary
 control: "fold everything before this point into a summary, but keep

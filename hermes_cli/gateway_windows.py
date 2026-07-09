@@ -56,7 +56,7 @@ _FALLBACK_PATTERNS = re.compile(
 _ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IGNORECASE)
 
 _TASK_NAME_DEFAULT = "Hermes_Gateway"
-_TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
+_TASK_DESCRIPTION = "IX Agency Gateway - Messaging Platform Integration"
 _TASK_LOGON_DELAY = "PT30S"
 _TASK_RESTART_INTERVAL = "PT1M"
 _TASK_RESTART_COUNT = 999
@@ -86,7 +86,7 @@ def _assert_windows() -> None:
 
 
 def _preserve_hermes_home_path(path: str | Path) -> str:
-    """Render Hermes-owned paths under the configured HERMES_HOME spelling.
+    """Render IX Agency-owned paths under the configured HERMES_HOME spelling.
 
     Windows installs may keep ``%LOCALAPPDATA%\\hermes`` as a symlink/junction to
     another drive. Runtime state should still identify itself by the configured
@@ -198,7 +198,7 @@ def _is_running_as_admin() -> bool:
 
 
 def _current_profile_cli_args() -> list[str]:
-    """Return CLI args that preserve the current Hermes profile."""
+    """Return CLI args that preserve the current IX Agency profile."""
     from hermes_cli.gateway import _profile_arg
 
     profile_arg = _profile_arg()
@@ -308,7 +308,7 @@ def get_task_script_path() -> Path:
 
     Lives under ``%LOCALAPPDATA%\\hermes\\gateway-service\\<task_name>.cmd``
     (or ``<HERMES_HOME>/gateway-service/<task_name>.cmd`` so per-profile
-    Hermes installs stay self-contained).
+    IX Agency installs stay self-contained).
     """
     _assert_windows()
     from hermes_cli.config import get_hermes_home
@@ -643,7 +643,7 @@ def _write_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
 def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, str]:
     """Create or replace the Scheduled Task. Returns (success, detail).
 
-    Always recreate instead of ``/Change``. Older Hermes builds and failed
+    Always recreate instead of ``/Change``. Older IX Agency builds and failed
     experiments may have left repeat/restart settings on the task; ``/Change``
     preserves those stale triggers and can make the gateway relaunch every
     minute. Delete+create gives us a clean ONLOGON task every install.
@@ -1065,7 +1065,7 @@ def install(
         print("  UAC is Windows' admin approval prompt; it is needed to create/update the Scheduled Task.")
         if prompt_yes_no("  Open the UAC prompt now?", False):
             if _launch_elevated_install(force=force, start_now=start_now, start_on_login=start_on_login):
-                print("✓ Launched elevated Hermes gateway install prompt.")
+                print("✓ Launched elevated IX Agency gateway install prompt.")
                 if start_now:
                     print("  Approve the Windows UAC prompt; the elevated install will start the gateway afterwards.")
                 else:
@@ -1106,7 +1106,7 @@ def install(
         print("  UAC is Windows' admin approval prompt; it is needed to create/update the Scheduled Task.")
         if prompt_yes_no("  Open the UAC prompt now?", False):
             if _launch_elevated_install(force=force, start_now=start_now, start_on_login=start_on_login):
-                print("✓ Launched elevated Hermes gateway install prompt.")
+                print("✓ Launched elevated IX Agency gateway install prompt.")
                 if start_now:
                     print("  Approve the Windows UAC prompt; the elevated install will start the gateway afterwards.")
                 else:
@@ -1209,7 +1209,7 @@ def uninstall() -> None:
             print("  UAC is Windows' admin approval prompt; it is needed to remove the Scheduled Task.")
             if prompt_yes_no("  Open the UAC prompt now?", False):
                 if _launch_elevated_uninstall():
-                    print("✓ Launched elevated Hermes gateway uninstall prompt.")
+                    print("✓ Launched elevated IX Agency gateway uninstall prompt.")
                     print("  Approve the Windows UAC prompt, then run: hermes gateway status")
                     return
                 print("⚠ Elevated uninstall prompt was unavailable or cancelled.")

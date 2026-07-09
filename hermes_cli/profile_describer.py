@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 MAX_SKILLS_FOR_PROMPT = 60
 
 
-_SYSTEM_PROMPT = """You are a profile-describer for the Hermes Agent kanban board.
+_SYSTEM_PROMPT = """You are a profile-describer for the IX Agency kanban board.
 
 A user runs multiple "profiles" — distinct agent identities, each with their
 own skills, model, and configuration. The kanban board's orchestrator routes
@@ -70,7 +70,7 @@ Rules:
                          refactors functions, opens GitHub PRs."
   - 1-2 sentences, <= 280 characters total.
   - Never invent capabilities the skills don't suggest.
-  - Never write "Hermes Agent profile" or other meta-narration.
+  - Never write "IX Agency profile" or other meta-narration.
   - No code fences, no preamble, no closing remarks. Output only JSON.
 """
 

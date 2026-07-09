@@ -1,7 +1,7 @@
 """Validation for the ``platform_toolsets`` config section.
 
 Pure, side-effect-free helpers so the logic is unit-testable without importing
-the tool registry or launching Hermes (mirrors the decoupled-helper pattern used
+the tool registry or launching IX Agency (mirrors the decoupled-helper pattern used
 elsewhere in the CLI).
 
 Motivated by #38798: a config migration silently rewrote the valid toolset name

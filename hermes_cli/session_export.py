@@ -168,7 +168,7 @@ def _render_full_markdown(sessions: List[Dict[str, Any]]) -> str:
         lines.append("")
         _append_session_messages(lines, session, heading_level=2)
     else:
-        lines.append("# Hermes sessions export")
+        lines.append("# IX Agency sessions export")
         lines.append("")
         for session in sessions:
             lines.append(f"## Session: {_heading_text(_session_title_or_id(session))}")

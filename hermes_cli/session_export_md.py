@@ -1,4 +1,4 @@
-"""Markdown/QMD export helpers for Hermes sessions.
+"""Markdown/QMD export helpers for IX Agency sessions.
 
 This module is intentionally filesystem-only: it formats already-exported
 SessionDB dictionaries and writes them to user-selected export directories. It

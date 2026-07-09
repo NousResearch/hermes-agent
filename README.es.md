@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
+  <img src="assets/brand/ix-agency-lockup-dark-preview.png" alt="IX Agency" width="100%">
 </p>
 
-# Hermes Agent ☤
+# IX Agency
 <p align="center">
-  <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
+  <a href="https://hermes-agent.nousresearch.com/">IX Agency</a> | <a href="https://hermes-agent.nousresearch.com/">IX Agency Desktop</a>
 </p>
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentación"></a>
@@ -42,7 +42,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 ### Windows (nativo, PowerShell)
 
-> **Nota:** En Windows nativo, Hermes funciona sin WSL — la CLI, el gateway, la TUI y las herramientas funcionan de forma nativa. Si prefieres usar WSL2, el comando de Linux/macOS de arriba también funciona allí. ¿Encontraste un error? Por favor [crea un issue](https://github.com/NousResearch/hermes-agent/issues).
+> **Nota:** En Windows nativo, IX Agency funciona sin WSL — la CLI, el gateway, la TUI y las herramientas funcionan de forma nativa. Si prefieres usar WSL2, el comando de Linux/macOS de arriba también funciona allí. ¿Encontraste un error? Por favor [crea un issue](https://github.com/NousResearch/hermes-agent/issues).
 
 Ejecuta esto en PowerShell:
 
@@ -50,11 +50,11 @@ Ejecuta esto en PowerShell:
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-El instalador se encarga de todo: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **y un Git Bash portátil** (MinGit, descomprimido en `%LOCALAPPDATA%\hermes\git` — no requiere administrador, completamente aislado de cualquier instalación de Git del sistema). Hermes usa este Git Bash incluido para ejecutar comandos de shell.
+El instalador se encarga de todo: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **y un Git Bash portátil** (MinGit, descomprimido en `%LOCALAPPDATA%\hermes\git` — no requiere administrador, completamente aislado de cualquier instalación de Git del sistema). IX Agency usa este Git Bash incluido para ejecutar comandos de shell.
 
 Si ya tienes Git instalado, el instalador lo detecta y lo usa en su lugar. De lo contrario, una descarga de ~45MB de MinGit es todo lo que necesitas — no tocará ni interferirá con ningún Git del sistema.
 
-> **Android / Termux:** La ruta manual probada está documentada en la [guía de Termux](https://hermes-agent.nousresearch.com/docs/getting-started/termux). En Termux, Hermes instala el extra `.[termux]` curado porque el extra completo `.[all]` actualmente incluye dependencias de voz incompatibles con Android.
+> **Android / Termux:** La ruta manual probada está documentada en la [guía de Termux](https://hermes-agent.nousresearch.com/docs/getting-started/termux). En Termux, IX Agency instala el extra `.[termux]` curado porque el extra completo `.[all]` actualmente incluye dependencias de voz incompatibles con Android.
 >
 > **Windows:** Windows nativo es totalmente compatible — el comando de PowerShell de arriba instala todo. Si prefieres usar WSL2, el comando de Linux también funciona allí. La instalación nativa de Windows se encuentra en `%LOCALAPPDATA%\hermes`; WSL2 instala en `~/.hermes` como en Linux.
 
@@ -87,7 +87,7 @@ hermes doctor       # Diagnostica cualquier problema
 
 ## Evita la colección de claves API — Nous Portal
 
-Hermes funciona con cualquier proveedor que quieras — eso no cambiará. Pero si prefieres no recopilar cinco claves API separadas para el modelo, búsqueda web, generación de imágenes, TTS y un navegador en la nube, **[Nous Portal](https://portal.nousresearch.com)** las cubre todas bajo una sola suscripción:
+IX Agency funciona con cualquier proveedor que quieras — eso no cambiará. Pero si prefieres no recopilar cinco claves API separadas para el modelo, búsqueda web, generación de imágenes, TTS y un navegador en la nube, **[Nous Portal](https://portal.nousresearch.com)** las cubre todas bajo una sola suscripción:
 
 - **Más de 300 modelos** — elige cualquiera con `/model <nombre>`
 - **Tool Gateway** — búsqueda web (Firecrawl), generación de imágenes (FAL), texto a voz (OpenAI), navegador en la nube (Browser Use), todo enrutado a través de tu suscripción. Sin cuentas adicionales.
@@ -106,7 +106,7 @@ Puedes seguir usando tus propias claves por herramienta cuando quieras — el ga
 
 ## Referencia rápida: CLI vs Mensajería
 
-Hermes tiene dos puntos de entrada: inicia la interfaz de terminal con `hermes`, o ejecuta el gateway y habla con él desde Telegram, Discord, Slack, WhatsApp, Signal o Email. Una vez en una conversación, muchos comandos de barra son compartidos entre ambas interfaces.
+IX Agency tiene dos puntos de entrada: inicia la interfaz de terminal con `hermes`, o ejecuta el gateway y habla con él desde Telegram, Discord, Slack, WhatsApp, Signal o Email. Una vez en una conversación, muchos comandos de barra son compartidos entre ambas interfaces.
 
 | Acción                              | CLI                                           | Plataformas de mensajería                                                         |
 | ----------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -150,7 +150,7 @@ Toda la documentación está en **[hermes-agent.nousresearch.com/docs](https://h
 
 ## Migración desde OpenClaw
 
-Si vienes de OpenClaw, Hermes puede importar automáticamente tu configuración, memorias, habilidades y claves API.
+Si vienes de OpenClaw, IX Agency puede importar automáticamente tu configuración, memorias, habilidades y claves API.
 
 **Durante la configuración inicial:** El asistente de configuración (`hermes setup`) detecta automáticamente `~/.openclaw` y ofrece migrar antes de que comience la configuración.
 
@@ -208,7 +208,7 @@ scripts/run_tests.sh
 - 💬 [Discord](https://discord.gg/NousResearch)
 - 📚 [Skills Hub](https://agentskills.io)
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
-- 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Servidor MCP de control de escritorio Linux para Hermes y otros hosts MCP, con árboles de accesibilidad AT-SPI, entrada Wayland/X11, capturas de pantalla y targeting de ventanas del compositor.
+- 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Servidor MCP de control de escritorio Linux para IX Agency y otros hosts MCP, con árboles de accesibilidad AT-SPI, entrada Wayland/X11, capturas de pantalla y targeting de ventanas del compositor.
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Puente WeChat comunitario: Ejecuta Hermes Agent y OpenClaw en la misma cuenta de WeChat.
 
 ---

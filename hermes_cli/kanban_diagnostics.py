@@ -875,7 +875,7 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     on the dispatcher and a different operator response).
 
     The signal is age-based on purpose: it's identity-agnostic, so it
-    works for Hermes profiles, registered lanes, external workers, and
+    works for IX Agency profiles, registered lanes, external workers, and
     typos uniformly. No registry to curate, no per-board allowlist.
     """
     threshold_seconds = float(
@@ -1040,7 +1040,7 @@ def config_from_kanban_config(kanban_cfg: Optional[dict]) -> dict:
 
 
 def config_from_runtime_config(raw_config: Optional[dict]) -> dict:
-    """Build diagnostics config from the full Hermes runtime config.
+    """Build diagnostics config from the full IX Agency runtime config.
 
     Carries through ``kanban``, ``auxiliary``, and ``model`` keys so triage-
     aware rules can inspect the active aux-helper and main-model state.

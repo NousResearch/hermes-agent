@@ -848,8 +848,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # after all text chunks.
     if platform == Platform.TELEGRAM:
         disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
+        token = getattr(pconfig, "token", None) or os.getenv("TELEGRAM_BOT_TOKEN", "")
+
         return await _send_telegram(
-            pconfig.token,
+            token,
             chat_id,
             message,
             media_files=media_files,

@@ -878,6 +878,39 @@ class TestSendToPlatformChunking:
         assert bot.send_message.await_count >= 2
         assert max(send_lengths) <= 4096
 
+    def test_telegram_send_uses_env_token_when_config_token_is_empty(self, monkeypatch):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        tokens = []
+        parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
+        constants_mod = SimpleNamespace(ParseMode=parse_mode)
+        telegram_mod = SimpleNamespace(
+            Bot=lambda token, **_kwargs: tokens.append(token) or bot,
+            MessageEntity=lambda **_kw: SimpleNamespace(**_kw),
+            constants=constants_mod,
+        )
+        monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
+        monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "env-token")
+
+        result = asyncio.run(
+            _send_to_platform(
+                Platform.TELEGRAM,
+                SimpleNamespace(enabled=True, token="", extra={}),
+                "123",
+                "hello",
+            )
+        )
+
+        assert result["success"] is True
+        assert tokens == ["env-token"]
+        bot.send_message.assert_awaited_once()
+
     def test_telegram_media_attaches_after_long_text_chunks(self, tmp_path, monkeypatch):
         """Long text is split into multiple chunks, then media is attached."""
         image_path = tmp_path / "photo.png"

@@ -699,8 +699,7 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
 
         response = {
             "success": True,
-            # Match browser_tool.browser_type: run typed text through the
-            # secret-pattern redactor so API keys / tokens don't leak into
+            # Match browser_tool.browser_type: never echo raw typed text into
             # tool progress or chat history.  The raw text is still typed into
             # the page; only the returned display value is redacted.
             "typed": display_text,

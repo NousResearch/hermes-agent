@@ -3095,10 +3095,8 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     if result.get("success"):
         response = {
             "success": True,
-            # Run typed text through the secret-pattern redactor so API keys /
-            # tokens don't leak into tool progress or chat history.  Normal
-            # text passes through unchanged.  The raw value was already sent
-            # to the browser command above.
+            # Never echo raw typed text into tool progress or chat history.
+            # The raw value was already sent to the browser command above.
             "typed": display_text,
             "element": ref
         }

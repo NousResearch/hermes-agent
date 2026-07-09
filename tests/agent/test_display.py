@@ -87,34 +87,55 @@ class TestBuildToolPreview:
         result = build_tool_preview("read_file", {"path": "./package.json", "offset": 1, "limit": 5})
         assert result == "package.json L1-5"
 
-    def test_browser_type_preview_redacts_api_key(self):
-        secret = "sk-proj-ABCD1234567890EFGH"
+    def test_browser_type_preview_hides_typed_text(self):
+        secret = "not-a-real-password-123!"
         result = build_tool_preview("browser_type", {"ref": "@e3", "text": secret})
         assert result is not None
         assert secret not in result
-        assert "sk-pro" in result and "..." in result
+        assert result == "[typed text hidden]"
 
-    def test_browser_type_preview_keeps_normal_text(self):
+    def test_browser_type_preview_hides_normal_text_too(self):
         text = "hello world search query"
         result = build_tool_preview("browser_type", {"ref": "@e3", "text": text})
         assert result is not None
-        assert text in result
+        assert text not in result
+        assert result == "[typed text hidden]"
 
-    def test_browser_type_display_args_redact_api_key(self):
-        secret = "ghp_ABCDEFGHIJ1234567890"
+    def test_browser_type_display_args_hide_typed_text(self):
+        secret = "ghp_ABCDEF1234567890secret"
         safe_args = redact_tool_args_for_display(
             "browser_type", {"ref": "@e3", "text": secret}
         )
+        assert isinstance(safe_args, dict)
         assert secret not in str(safe_args)
         assert safe_args["ref"] == "@e3"
-        assert safe_args["text"].startswith("ghp_AB")
+        assert safe_args["text"] == "[typed text hidden]"
 
-    def test_browser_type_display_args_keep_normal_text(self):
+    def test_browser_type_display_args_hide_normal_text(self):
         text = "my_normal_password_123"
         safe_args = redact_tool_args_for_display(
             "browser_type", {"ref": "@e3", "text": text}
         )
-        assert safe_args == {"ref": "@e3", "text": text}
+        assert isinstance(safe_args, dict)
+        assert safe_args == {"ref": "@e3", "text": "[typed text hidden]"}
+
+    def test_display_args_redact_sensitive_named_values_recursively(self):
+        safe_args = redact_tool_args_for_display(
+            "mcp__1password__item_edit",
+            {
+                "password": "plain-password",
+                "fields": [
+                    {"idOrTitle": "API key", "type": "concealed", "value": "secret-value"},
+                    {"idOrTitle": "note", "type": "text", "value": "visible-value"},
+                ],
+            },
+        )
+        assert isinstance(safe_args, dict)
+        assert "plain-password" not in repr(safe_args)
+        assert "secret-value" not in repr(safe_args)
+        assert safe_args["password"] == "[redacted]"
+        assert safe_args["fields"][0]["value"] == "[redacted]"
+        assert safe_args["fields"][1]["value"] == "visible-value"
 
     def test_unknown_tool_with_fallback_key(self):
         """Unknown tool but with a recognized fallback key should still preview."""
@@ -272,7 +293,7 @@ class TestCuteToolMessagePreviewLength:
         )
         assert "2x: Review PR A | Review PR B" in line
 
-    def test_browser_type_cute_message_redacts_api_key(self):
+    def test_browser_type_cute_message_hides_typed_text(self):
         secret = "sk-proj-ABCD1234567890EFGH"
         line = get_cute_tool_message(
             "browser_type",
@@ -282,9 +303,10 @@ class TestCuteToolMessagePreviewLength:
         )
 
         assert secret not in line
-        assert "sk-pro" in line
+        assert "[typed text hidden]" in line
+        assert "sk-pro" not in line
 
-    def test_browser_type_cute_message_keeps_normal_text(self):
+    def test_browser_type_cute_message_hides_normal_text(self):
         text = "hello world"
         line = get_cute_tool_message(
             "browser_type",
@@ -293,7 +315,8 @@ class TestCuteToolMessagePreviewLength:
             result='{"success": true, "typed": "hello world"}',
         )
 
-        assert text in line
+        assert text not in line
+        assert "[typed text hidden]" in line
 
 
 class TestEditDiffPreview:

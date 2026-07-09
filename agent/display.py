@@ -340,17 +340,88 @@ def _read_file_line_label(args: dict) -> str:
     return f"L{offset}-{offset + limit - 1}"
 
 
+_DISPLAY_SECRET_PLACEHOLDER = "[redacted]"
+_DISPLAY_TYPED_TEXT_PLACEHOLDER = "[typed text hidden]"
+
+_SENSITIVE_ARG_KEYS = frozenset({
+    "accesstoken",
+    "apikey",
+    "authorization",
+    "authtoken",
+    "clientsecret",
+    "cookie",
+    "credentials",
+    "newpassword",
+    "passphrase",
+    "password",
+    "passwd",
+    "privatekey",
+    "pwd",
+    "refreshtoken",
+    "secret",
+    "sessiontoken",
+    "token",
+})
+
+_SENSITIVE_ARG_KEY_PARTS = (
+    "apikey",
+    "authsecret",
+    "authtoken",
+    "clientsecret",
+    "password",
+    "passphrase",
+    "privatekey",
+    "refreshtoken",
+    "secrettoken",
+    "sessiontoken",
+)
+
+
+def _normalise_arg_key(key: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(key).lower())
+
+
+def _is_sensitive_arg_key(key: Any) -> bool:
+    normalised = _normalise_arg_key(key)
+    if not normalised:
+        return False
+    if normalised in _SENSITIVE_ARG_KEYS:
+        return True
+    return any(part in normalised for part in _SENSITIVE_ARG_KEY_PARTS)
+
+
+def _redact_display_arg_value(key: Any, value: Any) -> Any:
+    """Recursively redact display-only copies of tool arguments."""
+    if _is_sensitive_arg_key(key):
+        return _DISPLAY_SECRET_PLACEHOLDER
+
+    if isinstance(value, dict):
+        concealed = str(value.get("type", "")).lower() == "concealed"
+        return {
+            item_key: (
+                _DISPLAY_SECRET_PLACEHOLDER
+                if concealed and _normalise_arg_key(item_key) == "value"
+                else _redact_display_arg_value(item_key, item_value)
+            )
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_display_arg_value(key, item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_display_arg_value(key, item) for item in value)
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=True)
+    return value
+
+
 def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
-    """Apply secret redaction to browser_type text in display-facing payloads.
+    """Remove browser_type raw typed text from display-facing payloads.
 
-    Backends sometimes echo the attempted input in error strings or fallback
-    metadata.  When the raw typed value contains a recognizable secret (API
-    key, token, JWT, etc.) the redacted form differs from the raw value, so we
-    replace every occurrence of the raw value with its redacted form before a
-    browser_type result reaches logs, callbacks, the model, or chat history.
-
-    Normal typed text (search queries, addresses, form fields) matches no
-    secret pattern, so it passes through unchanged and stays readable.
+    ``browser_type`` is commonly used for passwords, OTPs, account numbers, and
+    ordinary form entries that do not match API-key/token regexes.  Therefore the
+    presentation layer must never echo the literal typed value.  Replace any raw
+    occurrence with a stable placeholder before a browser_type result reaches
+    logs, callbacks, the model, or chat history.
 
     Redaction is forced here regardless of the global ``security.redact_secrets``
     preference: a typed credential leaking into chat history is a security
@@ -361,10 +432,7 @@ def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
     needle = str(typed_text)
     if needle == "":
         return value
-    redacted = redact_sensitive_text(needle, force=True)
-    if redacted == needle:
-        # Nothing secret-looking in the typed text; leave payload untouched.
-        return value
+    redacted = _DISPLAY_TYPED_TEXT_PLACEHOLDER
     if isinstance(value, str):
         return value.replace(needle, redacted)
     if isinstance(value, dict):
@@ -382,18 +450,23 @@ def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
 def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | None:
     """Return a copy of tool args safe for logs/progress UI.
 
-    For ``browser_type`` the ``text`` argument is run through the same
-    secret-pattern redactor used for logs.  Recognizable credentials (API
-    keys, tokens) are masked before the value reaches tool progress
-    notifications; normal typed text is left intact for debuggability.
+    Display surfaces are visible to humans in gateway chats and can persist as
+    permanent messages.  Never expose browser-typed text, and recursively mask
+    values carried under credential-like argument names or 1Password-style
+    ``type=concealed`` field payloads.  This function only sanitizes the copy
+    used for progress/log callbacks; raw arguments still go to the tool.
     """
     if not isinstance(args, dict):
         return args
-    if tool_name == "browser_type" and isinstance(args.get("text"), str):
-        safe_args = dict(args)
-        safe_args["text"] = redact_sensitive_text(args["text"], force=True)
-        return safe_args
-    return args
+    safe_args = {
+        key: _redact_display_arg_value(key, value)
+        for key, value in args.items()
+    }
+    if tool_name == "browser_type" and "text" in safe_args:
+        safe_args["text"] = _DISPLAY_TYPED_TEXT_PLACEHOLDER
+    if tool_name == "process" and safe_args.get("action") in {"write", "submit"} and "data" in safe_args:
+        safe_args["data"] = _DISPLAY_TYPED_TEXT_PLACEHOLDER
+    return safe_args
 
 
 def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, list[str]]:

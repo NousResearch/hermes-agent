@@ -36,6 +36,16 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { normalizeSessionTitle } from "@/lib/chat-title";
+import {
+  PTY_RECONNECT_INPUT_MESSAGE,
+  type PtyConnectionState,
+  shouldBlockPtyInput,
+  shouldReconnectPtyOnPageResume,
+} from "@/lib/pty-reconnect";
+import {
+  normalizePtyMobileInput,
+  shouldTreatInputAsMobileReplacement,
+} from "@/lib/pty-mobile-input";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -160,27 +170,53 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const forceFreshPtyRef = useRef(false);
+  const blockedInputNoticeRef = useRef(false);
+  const lastResumeReconnectAtRef = useRef(0);
+  const ptyInputLineRef = useRef("");
+  const mobileReplacementInputUntilRef = useRef(0);
+  const [ptyState, setPtyState] =
+    useState<PtyConnectionState>("connecting");
+  const ptyStateRef = useRef<PtyConnectionState>("connecting");
+  const [lastCloseCode, setLastCloseCode] = useState<number | null>(null);
   // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
   // started a new session that ended the current PTY child), the PTY socket
   // closes with a normal code. Before this fix the terminal just printed
   // "[session ended]" and went dead — the only recovery was a full page
-  // refresh. `sessionEnded` flips on that clean close and renders an explicit
-  // "Start new session" affordance; clicking it bumps `reconnectNonce`, which
-  // is a dependency of the connect effect, so a fresh PTY spawns in place.
-  const [sessionEnded, setSessionEnded] = useState(false);
+  // refresh. `ptyState === "ended"` renders an explicit "Start new session"
+  // affordance; clicking it bumps `reconnectNonce`, which is a dependency of
+  // the connect effect, so a fresh PTY spawns in place.
   const [reconnectNonce, setReconnectNonce] = useState(0);
+  useEffect(() => {
+    ptyStateRef.current = ptyState;
+  }, [ptyState]);
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
   }, []);
-  const reconnect = useCallback(() => {
+  const reconnectPty = useCallback(() => {
+    forceFreshPtyRef.current = false;
+    reconnectAttemptRef.current = 0;
+    clearReconnectTimer();
+    blockedInputNoticeRef.current = false;
+    ptyInputLineRef.current = "";
+    mobileReplacementInputUntilRef.current = 0;
+    setBanner(null);
+    setLastCloseCode(null);
+    setPtyState("connecting");
+    setReconnectNonce((n) => n + 1);
+  }, [clearReconnectTimer]);
+  const startFreshPty = useCallback(() => {
     forceFreshPtyRef.current = true;
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
-    setSessionEnded(false);
+    blockedInputNoticeRef.current = false;
+    ptyInputLineRef.current = "";
+    mobileReplacementInputUntilRef.current = 0;
     setBanner(null);
+    setLastCloseCode(null);
+    setPtyState("connecting");
     setReconnectNonce((n) => n + 1);
   }, [clearReconnectTimer]);
   const startFreshDashboardChat = useCallback(() => {
@@ -190,9 +226,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     forceFreshPtyRef.current = true;
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
+    blockedInputNoticeRef.current = false;
+    ptyInputLineRef.current = "";
+    mobileReplacementInputUntilRef.current = 0;
     setSearchParams(next, { replace: true });
-    setSessionEnded(false);
     setBanner(null);
+    setLastCloseCode(null);
+    setPtyState("connecting");
     setReconnectNonce((n) => n + 1);
   }, [clearReconnectTimer, searchParams, setSearchParams]);
   // Raw state for the mobile side-sheet + a derived value that force-
@@ -556,7 +596,42 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.loadAddon(new WebLinksAddon());
 
+    let mobileInputCleanup: (() => void) | null = null;
     term.open(host);
+
+    const textarea = term.textarea;
+    if (textarea) {
+      textarea.setAttribute("autocomplete", "off");
+      textarea.setAttribute("autocorrect", "off");
+      textarea.setAttribute("autocapitalize", "off");
+      textarea.setAttribute("spellcheck", "false");
+
+      const isMobileLike =
+        typeof navigator !== "undefined" &&
+        /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+      const markReplacementInput = (ev: Event) => {
+        const input = ev as InputEvent;
+        if (
+          shouldTreatInputAsMobileReplacement(
+            input.inputType,
+            input.data,
+            isMobileLike,
+          )
+        ) {
+          mobileReplacementInputUntilRef.current = Date.now() + 350;
+        }
+      };
+      const markCompositionEnd = () => {
+        mobileReplacementInputUntilRef.current = Date.now() + 350;
+      };
+
+      textarea.addEventListener("beforeinput", markReplacementInput, true);
+      textarea.addEventListener("compositionend", markCompositionEnd, true);
+      mobileInputCleanup = () => {
+        textarea.removeEventListener("beforeinput", markReplacementInput, true);
+        textarea.removeEventListener("compositionend", markCompositionEnd, true);
+      };
+    }
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
@@ -693,10 +768,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const attempt = Math.min(reconnectAttemptRef.current + 1, 5);
       reconnectAttemptRef.current = attempt;
       const delayMs = Math.min(250 * 2 ** (attempt - 1), 3000);
-      setSessionEnded(false);
-      setBanner(
-        `Chat connection interrupted (code ${code}). Reconnecting…`,
-      );
+      setBanner(null);
+      setLastCloseCode(code);
+      setPtyState("reconnecting");
       reconnectTimerRef.current = setTimeout(() => {
         reconnectTimerRef.current = null;
         setReconnectNonce((n) => n + 1);
@@ -724,7 +798,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       clearReconnectTimer();
       reconnectAttemptRef.current = 0;
       setBanner(null);
-      setSessionEnded(false);
+      setLastCloseCode(null);
+      setPtyState("open");
+      blockedInputNoticeRef.current = false;
       // Connected — cancel any pending reconnect from a prior transient drop.
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
@@ -775,7 +851,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // pty_ws in web_server.py); echo it verbatim alongside the close code.
       const why = ev.reason ? ` reason=${ev.reason}` : "";
       console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
+      setLastCloseCode(ev.code);
       if (ev.code === 4401) {
+        setPtyState("closed");
         setBanner(
           ev.reason
             ? `Auth failed (${ev.reason}). Reload to refresh the session.`
@@ -785,6 +863,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
       if (ev.code === 4403) {
         // Host/Origin mismatch (DNS-rebinding guard).
+        setPtyState("closed");
         setBanner(
           ev.reason
             ? `Refused: ${ev.reason}.`
@@ -793,6 +872,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return;
       }
       if (ev.code === 4404) {
+        setPtyState("closed");
         setBanner(
           ev.reason
             ? `Chat websocket unavailable: ${ev.reason}.`
@@ -801,6 +881,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return;
       }
       if (ev.code === 4408) {
+        setPtyState("closed");
         setBanner(
           ev.reason
             ? `Refused: ${ev.reason}.`
@@ -810,6 +891,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
       if (ev.code === 1011) {
         // Server already wrote an ANSI error frame.
+        setPtyState("closed");
         return;
       }
       // Keep-alive close-code contract (web_server.pty_ws + pty_session):
@@ -817,10 +899,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       //   4409 = superseded by a newer tab attaching the same token → stay quiet.
       if (ev.code === 4410) {
         term.write(`\r\n\x1b[90m[session ended]\x1b[0m\r\n`);
-        setSessionEnded(true);
+        setPtyState("ended");
         return;
       }
       if (ev.code === 4409) {
+        setPtyState("closed");
         return;
       }
       if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
@@ -837,7 +920,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       term.write(
         `\r\n\x1b[90m[session ended (code ${ev.code})]\x1b[0m\r\n`,
       );
-      setSessionEnded(true);
+      setPtyState("ended");
     };
 
     // Keystrokes → PTY.
@@ -857,13 +940,33 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
       const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
       onDataDisposable = term.onData((data) => {
-        if (ws.readyState !== WebSocket.OPEN) return;
+        if (
+          ws.readyState !== WebSocket.OPEN ||
+          shouldBlockPtyInput(ptyStateRef.current)
+        ) {
+          if (!blockedInputNoticeRef.current) {
+            blockedInputNoticeRef.current = true;
+            term.write(
+              `\r\n\x1b[33m[${PTY_RECONNECT_INPUT_MESSAGE}]\x1b[0m\r\n`,
+            );
+          }
+          return;
+        }
 
         if (SGR_MOUSE_RE.test(data)) {
           return;
         }
 
-        ws.send(data);
+        const normalized = normalizePtyMobileInput(
+          data,
+          ptyInputLineRef.current,
+          Date.now() <= mobileReplacementInputUntilRef.current,
+        );
+        ptyInputLineRef.current = normalized.nextLine;
+        if (normalized.normalized) {
+          mobileReplacementInputUntilRef.current = 0;
+        }
+        ws.send(normalized.data);
       });
 
       onResizeDisposable = term.onResize(({ cols, rows }) => {
@@ -880,6 +983,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       syncMetricsRef.current = null;
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
+      mobileInputCleanup?.();
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(
@@ -957,6 +1061,55 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
   }, [isActive]);
 
+  const maybeReconnectOnPageResume = useCallback(() => {
+    const visibilityState =
+      typeof document !== "undefined" ? document.visibilityState : "visible";
+    const online =
+      typeof navigator === "undefined" ? true : navigator.onLine !== false;
+    const socketReadyState = wsRef.current?.readyState ?? null;
+
+    if (banner && ptyStateRef.current === "closed") {
+      return;
+    }
+
+    if (
+      shouldReconnectPtyOnPageResume({
+        isActive,
+        visibilityState,
+        online,
+        socketReadyState,
+        ptyState: ptyStateRef.current,
+      })
+    ) {
+      const now = Date.now();
+      if (now - lastResumeReconnectAtRef.current < 1000) {
+        return;
+      }
+      lastResumeReconnectAtRef.current = now;
+      reconnectPty();
+    }
+  }, [banner, isActive, reconnectPty]);
+
+  useEffect(() => {
+    if (!isActive || typeof window === "undefined") {
+      return;
+    }
+
+    const onResume = () => maybeReconnectOnPageResume();
+
+    document.addEventListener("visibilitychange", onResume);
+    window.addEventListener("pageshow", onResume);
+    window.addEventListener("focus", onResume);
+    window.addEventListener("online", onResume);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onResume);
+      window.removeEventListener("pageshow", onResume);
+      window.removeEventListener("focus", onResume);
+      window.removeEventListener("online", onResume);
+    };
+  }, [isActive, maybeReconnectOnPageResume]);
+
   // Keep the live xterm theme in sync when the active theme's terminal
   // colors change (e.g. user switches to a custom YAML theme mid-session).
   useEffect(() => {
@@ -980,6 +1133,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // above the app sidebar (`z-50`) and mobile chrome (`z-40`).  The main
   // dashboard column uses `relative z-2`, which traps `position:fixed`
   // descendants below those layers (see Toast.tsx).
+  const reconnectBanner =
+    ptyState === "reconnecting"
+      ? `Chat connection interrupted${
+          lastCloseCode ? ` (code ${lastCloseCode})` : ""
+        }. Reconnecting...`
+      : null;
+  const visibleBanner = banner ?? reconnectBanner;
+  const showReconnectOverlay =
+    ptyState === "reconnecting" || (ptyState === "closed" && !banner);
   const mobileModelToolsPortal =
     isActive &&
     narrow &&
@@ -1071,9 +1233,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       <PluginSlot name="chat:top" />
       {mobileModelToolsPortal}
 
-      {banner && (
+      {visibleBanner && (
         <div className="border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">
-          {banner}
+          {visibleBanner}
         </div>
       )}
 
@@ -1093,16 +1255,37 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 
+          {showReconnectOverlay && (
+            <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">
+              <div className="flex max-w-[min(28rem,calc(100vw-3rem))] flex-col items-start gap-2 border border-warning/60 bg-black/80 px-3 py-2 text-xs text-warning shadow-lg">
+                <div className="tracking-wide">
+                  {ptyState === "reconnecting"
+                    ? "Chat is reconnecting."
+                    : "Chat disconnected."}
+                </div>
+                <Button
+                  size="sm"
+                  outlined
+                  onClick={reconnectPty}
+                  prefix={<RotateCcw className="h-4 w-4" />}
+                  aria-label="Reconnect chat"
+                >
+                  Reconnect now
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* NS-504: the agent process exited (e.g. `/exit` or a new session).
               Offer an in-place restart so the user never has to refresh the
               whole page to get a working chat back. */}
-          {sessionEnded && (
-            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/60">
+          {ptyState === "ended" && (
+            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
               <div className="text-sm tracking-wide text-white/80">
                 Session ended.
               </div>
               <Button
-                onClick={reconnect}
+                onClick={startFreshPty}
                 prefix={<RotateCcw className="h-4 w-4" />}
                 aria-label="Start a new chat session"
               >

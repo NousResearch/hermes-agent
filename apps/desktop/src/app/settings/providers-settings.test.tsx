@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -73,8 +73,12 @@ afterEach(() => {
 
 async function renderProvidersSettings() {
   const { ProvidersSettings } = await import('./providers-settings')
+  let result: ReturnType<typeof render>
+  await act(async () => {
+    result = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="accounts" />)
+  })
 
-  return render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="accounts" />)
+  return result!
 }
 
 describe('ProvidersSettings', () => {
@@ -82,7 +86,9 @@ describe('ProvidersSettings', () => {
     await renderProvidersSettings()
 
     const remove = await screen.findByRole('button', { name: 'Remove Nous Portal' })
-    fireEvent.click(remove)
+    await act(async () => {
+      fireEvent.click(remove)
+    })
 
     await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous'))
     expect(listOAuthProviders).toHaveBeenCalledTimes(2)
@@ -91,7 +97,9 @@ describe('ProvidersSettings', () => {
   it('keeps provider selection separate from account removal', async () => {
     await renderProvidersSettings()
 
-    fireEvent.click(await screen.findByText('Nous Portal'))
+    await act(async () => {
+      fireEvent.click(await screen.findByText('Nous Portal'))
+    })
 
     expect(startManualProviderOAuth).toHaveBeenCalledWith('nous')
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
@@ -132,7 +140,9 @@ describe('ProvidersSettings', () => {
     listOAuthProviders.mockResolvedValue({ providers: [] })
 
     const { ProvidersSettings } = await import('./providers-settings')
-    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+    await act(async () => {
+      render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+    })
 
     expect(await screen.findByText('WidgetAI')).toBeTruthy()
   })
@@ -158,14 +168,18 @@ describe('ProvidersSettings', () => {
 
     // Typing narrows the list to matching providers only.
     const search = screen.getByPlaceholderText('Search providers…')
-    fireEvent.change(search, { target: { value: 'mid' } })
+    await act(async () => {
+      fireEvent.change(search, { target: { value: 'mid' } })
+    })
 
     await waitFor(() => expect(screen.queryByText('Acme')).toBeNull())
     expect(screen.getByText('Middle')).toBeTruthy()
     expect(screen.queryByText('Zebra')).toBeNull()
 
     // A non-matching query shows the empty-state copy.
-    fireEvent.change(search, { target: { value: 'nonesuch-xyz' } })
+    await act(async () => {
+      fireEvent.change(search, { target: { value: 'nonesuch-xyz' } })
+    })
     expect(await screen.findByText('No providers match your search.')).toBeTruthy()
   })
 })

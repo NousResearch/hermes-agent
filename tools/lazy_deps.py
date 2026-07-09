@@ -139,8 +139,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # `hermes telemetry export --otlp`. Tracks the `otlp` extra in
     # pyproject.toml — bump both together.
     "export.otlp": (
-        "opentelemetry-sdk==1.30.0",
-        "opentelemetry-exporter-otlp-proto-http==1.30.0",
+        "opentelemetry-sdk==1.39.1",
+        "opentelemetry-exporter-otlp-proto-http==1.39.1",
     ),
 
     # ─── Memory providers ──────────────────────────────────────────────────

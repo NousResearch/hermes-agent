@@ -31,7 +31,7 @@ import logging
 import os
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,14 @@ def _span_attrs(ev: Dict[str, Any]) -> Dict[str, Any]:
                        "cache_write_tokens", "reasoning_tokens", "latency_ms"),
         "tool_call": ("tool_name", "duration_ms", "result_class"),
         "error": ("error_class", "subsystem", "recovery"),
+        "gateway_health": ("name", "gateway_state", "old_state", "new_state",
+                           "exit_reason", "restart_requested", "active_agents",
+                           "gateway_busy", "gateway_drainable", "platform_count",
+                           "fatal_platform_count", "profile", "install_id", "version",
+                           "supervision_mode", "pid"),
+        "gateway_diagnostic": ("name", "subsystem", "error_class", "error_code",
+                               "redacted_message", "platform", "old_state", "new_state",
+                               "profile", "version", "severity"),
     }
     for col in keep_by_kind.get(kind, ()):  # type: ignore[arg-type]
         v = ev.get(col)
@@ -225,14 +233,29 @@ class OTLPStreamer:
     Register with ``emitter.subscribe(streamer)``. Fail-isolated by the emitter.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        *,
+        event_filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
+    ):
         self._provider, self._processor = _make_provider(config)
+        self._event_filter = event_filter
         self.exported = 0
 
     def __call__(self, batch: List[Dict[str, Any]]) -> None:
+        if self._event_filter is not None:
+            batch = [ev for ev in batch if self._event_filter(ev)]
+        if not batch:
+            return
         self.exported += export_batch(self._provider, batch)
 
     def shutdown(self) -> None:
+        try:
+            from agent.telemetry.emitter import get_emitter
+            get_emitter().unsubscribe(self)
+        except Exception:
+            pass
         try:
             self._processor.force_flush()
             self._provider.shutdown()
@@ -255,8 +278,15 @@ def is_enabled(config: Dict[str, Any]) -> bool:
     return bool(otlp.get("enabled") and otlp.get("endpoint"))
 
 
-def start_streaming(config: Dict[str, Any]) -> Optional[OTLPStreamer]:
+def start_streaming(
+    config: Dict[str, Any],
+    *,
+    event_filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
+) -> Optional[OTLPStreamer]:
     """If OTLP is enabled, attach a streamer to the singleton emitter.
+
+    ``event_filter`` is used by plane-specific exporters, e.g. gateway-health
+    export, so enabling one plane does not silently export unrelated telemetry.
 
     Non-interactive context (startup): attempts a lazy install with prompt=False
     so a configured-but-missing SDK is installed once (gated by
@@ -272,7 +302,7 @@ def start_streaming(config: Dict[str, Any]) -> Optional[OTLPStreamer]:
                        "be installed/imported; install 'hermes-agent[otlp]'")
         return None
     from agent.telemetry.emitter import get_emitter
-    streamer = OTLPStreamer(config)
+    streamer = OTLPStreamer(config, event_filter=event_filter)
     get_emitter().subscribe(streamer)
     return streamer
 

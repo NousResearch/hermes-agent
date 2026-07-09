@@ -14,7 +14,7 @@ constants and the aggregate upload gate (no uploader ships).
 
 from __future__ import annotations
 
-from . import emitter, events, metrics, policy, spans
+from . import emitter, events, gateway_health, gateway_health_export, metrics, policy, spans
 
 emit = emitter.emit
 get_emitter = emitter.get_emitter
@@ -22,6 +22,8 @@ get_emitter = emitter.get_emitter
 __all__ = [
     "emitter",
     "events",
+    "gateway_health",
+    "gateway_health_export",
     "metrics",
     "policy",
     "spans",

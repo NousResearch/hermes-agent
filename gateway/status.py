@@ -11,6 +11,7 @@ that will be useful when we add named profiles (multiple agents running
 concurrently under distinct configurations).
 """
 
+import copy
 import hashlib
 import json
 import os
@@ -757,6 +758,7 @@ def write_runtime_status(
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
+    previous_payload = copy.deepcopy(payload)
     current_record = _build_pid_record()
     payload.setdefault("platforms", {})
     payload["kind"] = current_record["kind"]
@@ -791,6 +793,11 @@ def write_runtime_status(
         payload["platforms"][platform] = platform_payload
 
     _write_json_file(path, payload)
+    try:
+        from agent.telemetry.gateway_health import emit_runtime_status_transition
+        emit_runtime_status_transition(previous_payload, payload)
+    except Exception:
+        pass
 
 
 def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]:

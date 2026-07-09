@@ -46,6 +46,8 @@ The app checks for updates in the background and offers a one-click update when 
 hermes update
 ```
 
+IX Agency builds auto-update from the AWS S3 feed (`https://intelliverse-x-desktop.s3.amazonaws.com/ix-agency`): the app polls on launch and every 4 hours, and the **Update available** button installs in place. Releasing a new version is just a version bump merged to `main` — see [RELEASING.md](./RELEASING.md) for the full pipeline.
+
 ---
 
 ## Requirements

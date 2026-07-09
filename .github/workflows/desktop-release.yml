@@ -1,8 +1,12 @@
 # desktop-release.yml — IX Agency desktop release chain (fork-only; upstream
-# hermes-agent has no packaged-release CI).
+# hermes-agent has no packaged-release CI). Full docs: apps/desktop/RELEASING.md
 #
-# Trigger: push an `ix-desktop-v*` tag whose version matches
-# apps/desktop/package.json (e.g. ix-desktop-v0.17.0), or run manually.
+# Triggers:
+#   - automatically from desktop-auto-release.yml on every merge to main that
+#     bumps apps/desktop/package.json version (workflow_call),
+#   - push an `ix-desktop-v*` tag whose version matches
+#     apps/desktop/package.json (e.g. ix-desktop-v0.17.0),
+#   - or run manually (workflow_dispatch).
 #
 # Each platform job builds with electron-builder and publishes DIRECTLY to
 # s3://intelliverse-x-desktop/ix-agency/ (package.json > build.publish):
@@ -25,6 +29,7 @@ on:
   push:
     tags: ["ix-desktop-v*"]
   workflow_dispatch: {}
+  workflow_call: {}
 
 concurrency:
   group: desktop-release-${{ github.ref }}
@@ -112,3 +117,19 @@ jobs:
             apps/desktop/release/*.rpm
             apps/desktop/release/latest*.yml
           if-no-files-found: warn
+
+  # End-to-end feed check: after all 3 platforms publish, confirm the public
+  # S3 feed serves the new version on every channel and every artifact it
+  # references is downloadable with the exact size the channel file records.
+  verify-feed:
+    needs: build-publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify public update feed serves this version
+        run: |
+          EXPECT_VERSION="$(node -p "require('./apps/desktop/package.json').version")" \
+            node apps/desktop/scripts/verify-update-feed.mjs

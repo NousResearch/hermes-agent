@@ -1,0 +1,78 @@
+# desktop-auto-release.yml — publish IX Agency automatically on merge.
+# Full docs: apps/desktop/RELEASING.md
+#
+# On every push (merge) to main that touches apps/desktop or the desktop
+# workflows, this decides whether a release is needed:
+#   - reads the version in apps/desktop/package.json,
+#   - skips if the public S3 feed already serves that version (so ordinary
+#     merges that don't bump the version are no-ops),
+#   - otherwise runs the full desktop-release build+publish chain (3 OS
+#     matrix -> s3://intelliverse-x-desktop/ix-agency/) and then tags the
+#     commit ix-desktop-v<version> for traceability.
+#
+# So shipping an update is just: bump "version" in apps/desktop/package.json,
+# merge to main. Installed apps see the update button within 4 hours.
+name: desktop-auto-release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/desktop/**"
+      - ".github/workflows/desktop-release.yml"
+      - ".github/workflows/desktop-auto-release.yml"
+
+permissions:
+  contents: write # to push the ix-desktop-v<version> tag after publishing
+
+concurrency:
+  group: desktop-auto-release
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare package.json version with the live S3 feed
+        id: check
+        run: |
+          VERSION="$(node -p "require('./apps/desktop/package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          LIVE="$(curl -sf https://intelliverse-x-desktop.s3.amazonaws.com/ix-agency/latest-mac.yml \
+            | awk '/^version:/ {print $2; exit}' || true)"
+          echo "package.json=$VERSION live-feed=${LIVE:-<none>}"
+          if [ "$VERSION" = "$LIVE" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "Feed already serves v$VERSION — nothing to release."
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Releasing v$VERSION (feed has ${LIVE:-nothing})."
+          fi
+
+  release:
+    needs: decide
+    if: needs.decide.outputs.release == 'true'
+    uses: ./.github/workflows/desktop-release.yml
+    secrets: inherit
+
+  tag:
+    needs: [decide, release]
+    if: needs.decide.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag the released commit ix-desktop-v<version>
+        run: |
+          TAG="ix-desktop-v${{ needs.decide.outputs.version }}"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG already exists — skipping."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "$TAG"

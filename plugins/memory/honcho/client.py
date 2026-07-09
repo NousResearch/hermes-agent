@@ -831,7 +831,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         except ImportError:
             raise ImportError(
                 "honcho-ai is required for Honcho integration. "
-                "Install it with: pip install honcho-ai  "
+                "Install it with: pip install honcho-ai==2.1.1  "
                 "(or run `hermes honcho setup` to configure)."
             )
 

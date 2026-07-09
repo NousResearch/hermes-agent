@@ -381,6 +381,17 @@ class TestCloneHonchoForProfile:
         assert "pinUserPeer" not in new_block
         assert "pinPeerName" not in new_block
 
+    def test_clone_normalizes_profile_ai_peer_to_canonical_hermes_id(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {"peerName": "eri"}},
+        }
+        honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
+        ok = honcho_cli.clone_honcho_for_profile("hermes.nafs")
+        assert ok is True
+        new_block = written["cfg"]["hosts"]["hermes_hermes_nafs"]
+        assert new_block["aiPeer"] == "hermes-nafs"
+
 
 class TestSetupWizardDeploymentShape:
     """The gateway identity-mapping tree writes pinUserPeer / userPeerAliases /

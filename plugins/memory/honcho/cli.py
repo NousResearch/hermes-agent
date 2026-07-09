@@ -8,11 +8,46 @@ from __future__ import annotations
 import json
 import os
 import sys
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from plugins.memory.honcho.client import _host_block, profile_host_key, resolve_active_host, resolve_config_path, HOST
 from hermes_cli.config import cfg_get
+
+
+def _canonical_ai_peer(profile_name: str) -> str:
+    """Return the fleet's canonical AI peer ID for a Hermes profile."""
+    raw = (profile_name or "").strip()
+    if not raw or raw in {"default", "custom"}:
+        return HOST
+    for prefix in ("hermes-", "hermes_", "hermes."):
+        if raw.startswith(prefix):
+            raw = raw[len(prefix):]
+            break
+    return f"hermes-{raw}"
+
+
+def _ensure_ai_peer_observe_me_disabled(hcfg) -> None:
+    """Best-effort default for stable AI/system peers: disable self-observation."""
+    if not getattr(hcfg, "base_url", None) or not getattr(hcfg, "workspace", None) or not getattr(hcfg, "ai_peer", None):
+        return
+
+    url = (
+        f"{hcfg.base_url.rstrip('/')}/v3/workspaces/"
+        f"{urllib.parse.quote(hcfg.workspace, safe='')}/peers/"
+        f"{urllib.parse.quote(hcfg.ai_peer, safe='')}"
+    )
+    payload = json.dumps({"configuration": {"observe_me": False}}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, method="PUT")
+    req.add_header("Content-Type", "application/json")
+    api_key = getattr(hcfg, "api_key", None)
+    if api_key and api_key != "local":
+        req.add_header("Authorization", f"Bearer {api_key}")
+
+    with urllib.request.urlopen(req, timeout=10):
+        return
 
 
 def clone_honcho_for_profile(profile_name: str) -> bool:
@@ -63,9 +98,9 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
 
     # AI peer is profile-specific; workspace is shared so all profiles
     # see the same user context, sessions, and project history.
-    # Use the bare profile name as the peer identity (not the host key)
-    # because Honcho's peer ID pattern is ^[a-zA-Z0-9_-]+$ (no dots).
-    new_block["aiPeer"] = profile_name
+    # Use the fleet's canonical peer naming to avoid nafs/hermes.nafs/
+    # hermes_nafs/hermes-nafs fragmentation across runtimes.
+    new_block["aiPeer"] = _canonical_ai_peer(profile_name)
     new_block["workspace"] = default_block.get("workspace") or cfg.get("workspace") or HOST
     new_block["enabled"] = default_block.get("enabled", True)
 
@@ -91,6 +126,7 @@ def _ensure_peer_exists(host_key: str | None = None) -> bool:
         client = get_honcho_client(hcfg)
         # peer() is idempotent -- creates if missing, returns if exists
         client.peer(hcfg.ai_peer)
+        _ensure_ai_peer_observe_me_disabled(hcfg)
         if hcfg.peer_name:
             client.peer(hcfg.peer_name)
         return True
@@ -124,8 +160,8 @@ def cmd_enable(args) -> None:
         peer_name = default_block.get("peerName") or cfg.get("peerName")
         if peer_name and "peerName" not in block:
             block["peerName"] = peer_name
-        # Use bare profile name as AI peer, not the host key
-        ai_peer = host.split(".", 1)[1] if "." in host else host
+        # Use canonical fleet naming for profile AI peers.
+        ai_peer = _canonical_ai_peer(host.split(".", 1)[1] if "." in host else host)
         block.setdefault("aiPeer", ai_peer)
         block.setdefault("workspace", default_block.get("workspace") or cfg.get("workspace") or HOST)
 
@@ -510,21 +546,21 @@ def _ensure_sdk_installed() -> bool:
         pass
 
     print("  honcho-ai is not installed.")
-    answer = _prompt("Install it now? (honcho-ai>=2.0.1)", default="y")
+    answer = _prompt("Install it now? (honcho-ai>=2.1.1)", default="y")
     if answer.lower() not in {"y", "yes"}:
-        print("  Skipping install. Run: pip install 'honcho-ai>=2.0.1'\n")
+        print("  Skipping install. Run: pip install 'honcho-ai==2.1.1'\n")
         return False
 
     print("  Installing honcho-ai...", flush=True)
     from hermes_cli.tools_config import _pip_install
 
-    result = _pip_install(["honcho-ai>=2.0.1"])
+    result = _pip_install(["honcho-ai==2.1.1"])
     if result.returncode == 0:
         print("  Installed.\n")
         return True
     else:
         print(f"  Install failed:\n{(result.stderr or '').strip()}")
-        print("  Run manually: uv pip install 'honcho-ai>=2.0.1'\n")
+        print("  Run manually: uv pip install 'honcho-ai==2.1.1'\n")
         return False
 
 

@@ -6,7 +6,7 @@ AI-native cross-session user modeling with multi-pass dialectic reasoning, sessi
 
 ## Requirements
 
-- `pip install honcho-ai`
+- `pip install honcho-ai==2.1.1`
 - A Honcho Cloud account — connect via OAuth sign-in or an API key from
   [app.honcho.dev](https://app.honcho.dev) — or a self-hosted instance
 

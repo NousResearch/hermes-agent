@@ -1791,7 +1791,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
     { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },
-    { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.0.1" },
+    { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.1.1" },
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },
     { name = "jinja2", specifier = "==3.1.6" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.5.3" },
@@ -1898,16 +1898,16 @@ wheels = [
 
 [[package]]
 name = "honcho-ai"
-version = "2.0.1"
+version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/93/30/d30ba159404050d53b4b1b1c4477f9591f43af18758be1fb7dab6afbfe7d/honcho_ai-2.0.1.tar.gz", hash = "sha256:6fdeebf9454e62bc523d57888e50359e67baafdb21f68621f9c14e08dc00623a", size = 46732, upload-time = "2026-02-09T21:03:26.99Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/18/23baf5c2bd256cf25def4beb64af1e5b38f6ac0934d0f8d7348d279f217f/honcho_ai-2.1.1.tar.gz", hash = "sha256:d273d86ce3e7361755c084b0ddc44160d49c59c538b278df606e6437bd893a61", size = 47949, upload-time = "2026-04-10T17:22:13.765Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/de/83fda0c057cfa11d6b5ed532623184591aa7dcff4a067934ba6811026229/honcho_ai-2.0.1-py3-none-any.whl", hash = "sha256:94887e61d59f353e1e1e20b395858040780f5d67ca1e9d450538646544e4e42f", size = 56780, upload-time = "2026-02-09T21:03:25.992Z" },
+    { url = "https://files.pythonhosted.org/packages/18/38/aa0a1e2eee4549ab7700605ab2797acb8c267265dd19c650ba976f96e43a/honcho_ai-2.1.1-py3-none-any.whl", hash = "sha256:a6b57b359f42b6f737aecc6ff0f00dd5d3ccf7327a3b2c3c6c1ada8cfa6ef505", size = 58271, upload-time = "2026-04-10T17:22:12.804Z" },
 ]
 
 [[package]]

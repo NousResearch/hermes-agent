@@ -1317,6 +1317,9 @@ Subcommands:
 | `install` | Run the upstream cua-driver installer (macOS, Windows, and Linux). |
 | `install --upgrade` | Re-run the installer even if cua-driver is already on PATH. The upstream script always pulls the latest release, so this performs an in-place upgrade. |
 | `status` | Print whether `cua-driver` is on `$PATH` and which version is installed. |
+| `doctor` | Run the structured cua-driver health report for Computer Use. |
+| `permissions status|grant` | Check or request macOS Accessibility + Screen Recording grants for CuaDriver. |
+| `bridge` | Run an authenticated local HTTP bridge so a remote backend can use this machine's `cua-driver`. |
 
 `hermes computer-use install` is the stable entry point for installing the
 [cua-driver](https://github.com/trycua/cua) binary used by the

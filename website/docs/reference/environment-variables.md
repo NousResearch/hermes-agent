@@ -508,6 +508,17 @@ Three dashboard-auth providers ship in the box. For a remote Hermes Desktop conn
 | `HERMES_DESKTOP_IGNORE_EXISTING` | Set to `1` to make Desktop ignore an existing `hermes` on `PATH` during backend resolution. Equivalent to `hermes desktop --ignore-existing`. |
 | `HERMES_DESKTOP_CWD` | Initial project directory for Desktop chat sessions. Set by `hermes desktop --cwd`. |
 
+### Computer Use bridge
+
+Settings for forwarding `computer_use` calls from a remote backend to a local desktop bridge. See [Computer Use → Remote Desktop/local-tool bridge](/user-guide/features/computer-use#remote-desktoplocal-tool-bridge).
+
+| Variable | Description |
+|----------|-------------|
+| `HERMES_COMPUTER_USE_BACKEND` | Set to `bridge` on the backend machine to use the HTTP bridge instead of spawning local `cua-driver`. |
+| `HERMES_COMPUTER_USE_BRIDGE_URL` | Backend-side URL of the bridge, typically a loopback SSH tunnel such as `http://127.0.0.1:18765`. Also configurable as `computer_use.bridge_url`. |
+| `HERMES_COMPUTER_USE_BRIDGE_TOKEN` | Bearer token shared by the bridge server and backend client. Store it in `~/.hermes/.env`, not shell history. Also configurable as `computer_use.bridge_token`. |
+| `HERMES_COMPUTER_USE_BRIDGE_TIMEOUT` | Backend-side HTTP timeout in seconds for bridge calls (default `30`). Raise for slow captures over high-latency links. |
+
 ### Microsoft Graph (Teams Meetings)
 
 App-only credentials for the Microsoft Graph REST client used by the upcoming Teams meeting summary pipeline. See [Register a Microsoft Graph application](/guides/microsoft-graph-app-registration) for the Azure portal walkthrough and the exact API permissions required.

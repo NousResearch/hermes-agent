@@ -75,6 +75,31 @@ hermes -t computer_use chat
 
 or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
 
+## Remote Desktop/local-tool bridge
+
+When [Hermes Desktop connects to a remote backend](../desktop.md#connecting-to-a-remote-backend), tools normally run on the **backend** machine. If Desktop is on your Mac but the backend is on a VPS, `computer_use` sees the VPS, not your Mac.
+
+For trusted setups where the remote backend should drive the local desktop, run an authenticated local bridge on the desktop host and tunnel it to the backend:
+
+```bash
+# Local desktop host, e.g. your Mac
+export HERMES_COMPUTER_USE_BRIDGE_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+hermes computer-use bridge --host 127.0.0.1 --port 8765
+```
+
+Then expose that loopback-only bridge to the backend with SSH/VPN tunnelling and point the backend at it:
+
+```bash
+# Remote backend host
+ssh -N -L 18765:127.0.0.1:8765 mac-host
+export HERMES_COMPUTER_USE_BACKEND=bridge
+export HERMES_COMPUTER_USE_BRIDGE_URL=http://127.0.0.1:18765
+export HERMES_COMPUTER_USE_BRIDGE_TOKEN="<same token>"
+hermes serve --host 0.0.0.0 --port 9119
+```
+
+The bridge is an actuator surface: it can click, type, scroll, and read the local screen through `cua-driver`. Keep the default `127.0.0.1` bind and tunnel it; only use `--allow-non-loopback` on a trusted VPN with a strong token.
+
 ## `hermes computer-use doctor` — your first triage stop
 
 `hermes computer-use doctor` runs cua-driver's structured

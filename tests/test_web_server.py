@@ -210,3 +210,46 @@ def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
     assert runner_called["hit"] is False, (
         "POSIX must not take the Windows loop-factory branch"
     )
+
+
+def test_computer_use_status_uses_bridge_status_when_bridge_backend_configured(monkeypatch):
+    monkeypatch.setenv("HERMES_COMPUTER_USE_BACKEND", "bridge")
+
+    def fake_bridge_status():
+        return {
+            "platform": "darwin",
+            "platform_supported": True,
+            "installed": True,
+            "version": "cua-driver 0.5.1",
+            "ready": True,
+            "can_grant": True,
+            "checks": [{"label": "bridge", "status": "ok", "message": "remote Mac"}],
+            "accessibility": True,
+            "screen_recording": True,
+            "screen_recording_capturable": False,
+            "source": None,
+            "error": None,
+        }
+
+    monkeypatch.setattr(
+        "tools.computer_use.bridge.bridge_computer_use_status",
+        fake_bridge_status,
+    )
+    monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+
+    from starlette.testclient import TestClient
+
+    client = TestClient(web_server.app)
+    response = client.get(
+        "/api/tools/computer-use/status",
+        headers={
+            "host": "127.0.0.1",
+            web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["platform"] == "darwin"
+    assert payload["ready"] is True
+    assert payload["checks"][0]["message"] == "remote Mac"

@@ -152,6 +152,9 @@ def _get_backend() -> ComputerUseBackend:
             if backend_name in {"cua", "cua-driver", ""}:
                 from tools.computer_use.cua_backend import CuaDriverBackend
                 _backend = CuaDriverBackend()
+            elif backend_name in {"bridge", "http", "remote", "remote-bridge"}:
+                from tools.computer_use.bridge import HttpComputerUseBridgeBackend
+                _backend = HttpComputerUseBridgeBackend()
             elif backend_name == "noop":  # pragma: no cover
                 _backend = _NoopBackend()
             else:
@@ -899,15 +902,17 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
-    Conditions: macOS, Windows, or Linux + cua-driver binary installed (or
-    override via env). cua-driver runs on all three; the Linux path is
-    headed/X11 today (Wayland via XWayland), pure-Wayland progress tracked
-    upstream. Linux users see specific blocked checks via
-    `hermes computer-use doctor` if their session is incomplete (e.g. no
-    DISPLAY set).
+    Conditions: macOS, Windows, or Linux + either a local cua-driver binary or
+    an explicitly configured HTTP bridge backend. The bridge mode is what lets
+    a remote Hermes backend forward Computer Use to a desktop host without the
+    remote machine having a GUI/cua-driver of its own.
     """
     if sys.platform not in ("darwin", "win32", "linux"):
         return False
+    backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
+    if backend_name in {"bridge", "http", "remote", "remote-bridge"}:
+        from tools.computer_use.bridge import bridge_backend_configured
+        return bridge_backend_configured()
     from tools.computer_use.cua_backend import cua_driver_binary_available
     return cua_driver_binary_available()
 

@@ -13752,6 +13752,11 @@ async def get_computer_use_status(profile: Optional[str] = None):
     from tools.computer_use.permissions import computer_use_status
 
     with _profile_scope(profile):
+        backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
+        if backend_name in {"bridge", "http", "remote", "remote-bridge"}:
+            from tools.computer_use.bridge import bridge_computer_use_status
+
+            return bridge_computer_use_status()
         return computer_use_status()
 
 

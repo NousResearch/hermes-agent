@@ -13333,6 +13333,45 @@ def main():
         "grant",
         help="Request the grants (opens the dialog attributed to CuaDriver)",
     )
+    computer_use_bridge = computer_use_sub.add_parser(
+        "bridge",
+        help="Run an authenticated local HTTP bridge for remote Computer Use",
+        description=(
+            "Expose this machine's local cua-driver as a small authenticated HTTP "
+            "bridge so a remote Hermes backend can forward computer_use calls to "
+            "the desktop host. Prefer the default loopback bind plus an SSH/VPN "
+            "tunnel; non-loopback binds require --allow-non-loopback."
+        ),
+    )
+    computer_use_bridge.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address for the bridge (default: 127.0.0.1)",
+    )
+    computer_use_bridge.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Bind port for the bridge (default: 8765)",
+    )
+    computer_use_bridge.add_argument(
+        "--token",
+        default=None,
+        help=(
+            "Bearer token for bridge requests. Prefer setting an env var so the "
+            "token is not visible in shell history."
+        ),
+    )
+    computer_use_bridge.add_argument(
+        "--token-env",
+        default="HERMES_COMPUTER_USE_BRIDGE_TOKEN",
+        help="Environment variable to read the token from (default: HERMES_COMPUTER_USE_BRIDGE_TOKEN)",
+    )
+    computer_use_bridge.add_argument(
+        "--allow-non-loopback",
+        action="store_true",
+        help="Allow binding outside loopback. Use only behind a trusted VPN/tunnel.",
+    )
 
     def cmd_computer_use(args):
         action = getattr(args, "computer_use_action", None)
@@ -13425,6 +13464,15 @@ def main():
                 sys.exit(0 if st["ready"] else 1)
             computer_use_perms.print_help()
             return
+        if action == "bridge":
+            from tools.computer_use.bridge import run_bridge_server
+            sys.exit(run_bridge_server(
+                host=str(getattr(args, "host", "127.0.0.1")),
+                port=int(getattr(args, "port", 8765)),
+                token=getattr(args, "token", None),
+                token_env=str(getattr(args, "token_env", "HERMES_COMPUTER_USE_BRIDGE_TOKEN")),
+                allow_non_loopback=bool(getattr(args, "allow_non_loopback", False)),
+            ))
         # No subcommand → show help
         computer_use_parser.print_help()
 

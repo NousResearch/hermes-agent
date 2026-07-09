@@ -89,6 +89,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
+from agent.skill_utils import is_excluded_skill_path
 
 _log = logging.getLogger(__name__)
 
@@ -6638,9 +6639,10 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
         return True
     try:
         for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            # Mirror the skill loader's resolution: skip archived copies
-            # (agent/skill_commands.py filters .archive from skill paths).
-            if any(part in {".git", ".github", ".hub", ".archive"} for part in skill_md.parts):
+            # Skip archived copies using the shared exclusion check.
+            # This mirrors the skill loader's resolution (agent/skill_commands.py)
+            # and keeps the dispatcher availability check aligned with the CLI loader.
+            if is_excluded_skill_path(skill_md):
                 continue
             if skill_md.is_file():
                 return True

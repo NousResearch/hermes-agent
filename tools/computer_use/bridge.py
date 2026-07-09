@@ -687,8 +687,10 @@ def run_bridge_server(
 
     handler = make_bridge_handler(token=token_value)
     httpd = ThreadingHTTPServer((host, int(port)), handler)
+    actual_host, actual_port = httpd.server_address[:2]
+    display_host = host if host not in {"", "0.0.0.0", "::"} else actual_host
     print(
-        f"Hermes Computer Use bridge listening on http://{host}:{port} "
+        f"Hermes Computer Use bridge listening on http://{display_host}:{actual_port} "
         "(token required)",
         flush=True,
     )

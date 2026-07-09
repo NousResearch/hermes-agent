@@ -253,3 +253,126 @@ def test_computer_use_status_uses_bridge_status_when_bridge_backend_configured(m
     assert payload["platform"] == "darwin"
     assert payload["ready"] is True
     assert payload["checks"][0]["message"] == "remote Mac"
+
+
+def test_computer_use_status_uses_desktop_bridge_status_when_connected(monkeypatch):
+    monkeypatch.setenv("HERMES_COMPUTER_USE_BACKEND", "desktop-bridge")
+
+    async def fake_desktop_bridge_status():
+        return {
+            "platform": "desktop-bridge",
+            "platform_supported": True,
+            "installed": True,
+            "version": "desktop bridge",
+            "ready": True,
+            "can_grant": False,
+            "checks": [{"label": "desktop", "status": "ok", "message": "connected"}],
+            "accessibility": True,
+            "screen_recording": True,
+            "screen_recording_capturable": False,
+            "source": None,
+            "error": None,
+            "bridge": {"kind": "desktop", "connected": True},
+        }
+
+    monkeypatch.setattr(
+        "tools.computer_use.desktop_bridge.desktop_bridge_computer_use_status_async",
+        fake_desktop_bridge_status,
+    )
+    monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+
+    from starlette.testclient import TestClient
+
+    client = TestClient(web_server.app)
+    response = client.get(
+        "/api/tools/computer-use/status",
+        headers={
+            "host": "127.0.0.1",
+            web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["platform"] == "desktop-bridge"
+    assert payload["ready"] is True
+    assert payload["bridge"]["connected"] is True
+
+
+def test_computer_use_desktop_bridge_ws_requires_valid_session_token(monkeypatch):
+    monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+
+    async def fake_handle(_ws):  # pragma: no cover - must not be reached
+        raise AssertionError("unauthenticated bridge websocket should not connect")
+
+    monkeypatch.setattr("tools.computer_use.desktop_bridge.handle_desktop_bridge_ws", fake_handle)
+
+    from starlette.testclient import TestClient
+
+    client = TestClient(web_server.app)
+    try:
+        with client.websocket_connect("/api/tools/computer-use/desktop-bridge/ws?token=wrong"):
+            raise AssertionError("expected websocket auth failure")
+    except Exception as exc:
+        assert getattr(exc, "code", None) == 4401
+
+
+def test_computer_use_desktop_bridge_ws_routes_authenticated_connection(monkeypatch):
+    monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+    monkeypatch.setattr(web_server, "_ws_request_is_allowed", lambda _ws: True)
+
+    async def fake_handle(ws):
+        await ws.accept()
+        await ws.send_json({"type": "bridge-test", "ok": True})
+        await ws.close()
+
+    monkeypatch.setattr("tools.computer_use.desktop_bridge.handle_desktop_bridge_ws", fake_handle)
+
+    from starlette.testclient import TestClient
+
+    client = TestClient(web_server.app)
+    with client.websocket_connect(
+        f"/api/tools/computer-use/desktop-bridge/ws?token={web_server._SESSION_TOKEN}"
+    ) as ws:
+        assert ws.receive_json() == {"type": "bridge-test", "ok": True}
+
+
+def test_computer_use_desktop_bridge_ws_round_trips_backend_capture(monkeypatch):
+    monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+    monkeypatch.setattr(web_server, "_ws_request_is_allowed", lambda _ws: True)
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    from starlette.testclient import TestClient
+    from tools.computer_use.backend import CaptureResult, UIElement
+    from tools.computer_use.bridge import capture_to_payload
+    from tools.computer_use.desktop_bridge import DesktopComputerUseBridgeBackend
+
+    client = TestClient(web_server.app)
+    with client.websocket_connect(
+        f"/api/tools/computer-use/desktop-bridge/ws?token={web_server._SESSION_TOKEN}"
+    ) as ws:
+        backend = DesktopComputerUseBridgeBackend(timeout=2)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(lambda: backend.capture(mode="ax", app="Finder"))
+            frame = ws.receive_json()
+
+            assert frame["type"] == "computer-use"
+            assert frame["method"] == "capture"
+            assert frame["args"] == {"mode": "ax", "app": "Finder"}
+
+            ws.send_json({
+                "id": frame["id"],
+                "ok": True,
+                "result": capture_to_payload(CaptureResult(
+                    mode="ax",
+                    width=800,
+                    height=600,
+                    app="Finder",
+                    elements=[UIElement(index=1, role="AXButton", label="OK")],
+                )),
+            })
+            capture = future.result(timeout=2)
+
+    assert capture.app == "Finder"
+    assert capture.elements[0].label == "OK"

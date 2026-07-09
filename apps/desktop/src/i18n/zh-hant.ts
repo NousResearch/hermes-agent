@@ -637,6 +637,9 @@ export const zhHant = defineLocale({
       remoteToolLocalityTitle: '工具會在遠端後端執行',
       remoteToolLocalityDesc:
         '終端機、檔案存取、MCP 和 Computer Use 都會在你連線的後端機器上執行。僅僅因為應用程式視窗在本機開啟，遠端後端並不能控制這台本機電腦；若要控制本機，請使用本機閘道，或設定專用的本機工具橋接。',
+      remoteComputerUseBridgeTitle: '使用這台 Mac 進行 Computer Use',
+      remoteComputerUseBridgeDesc:
+        '連線至遠端閘道時，Desktop 會啟動私有本機橋接，讓 Computer Use 擷取並控制這台機器，而不是遠端主機。',
       remoteUrlTitle: '遠端 URL',
       remoteUrlDesc: '遠端 Hermes 後端的基礎 URL。支援路徑前綴，例如 /hermes。',
       probing: '正在檢查此閘道的驗證方式…',

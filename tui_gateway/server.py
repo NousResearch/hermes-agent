@@ -2629,7 +2629,14 @@ def _load_enabled_toolsets() -> list[str] | None:
                 # the focus-mode coding posture returns before the fallback path
                 # that normally adds it — without this the desktop loses the
                 # project tools exactly when sitting in a repo (see below).
-                return sorted({*selection, "project"})
+                selected = {*selection, "project"}
+                try:
+                    from tools.computer_use.desktop_bridge import desktop_bridge_connected
+                    if desktop_bridge_connected():
+                        selected.add("computer_use")
+                except Exception:
+                    pass
+                return sorted(selected)
         except Exception:
             pass
 
@@ -2745,8 +2752,18 @@ def _load_enabled_toolsets() -> list[str] | None:
         # recovery above — which keys off hermes-cli's tool universe — can't
         # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
         # folding in the `project` toolset here is the gate that exposes them on
-        # exactly the surface that can follow a project move.
-        return sorted(enabled | {"project"})
+        # exactly the surface that can follow a project move. If Hermes Desktop
+        # has attached its local Computer Use bridge to a remote backend, expose
+        # `computer_use` too even when the backend is sitting in a source repo and
+        # the coding posture would otherwise hide it.
+        enabled = set(enabled) | {"project"}
+        try:
+            from tools.computer_use.desktop_bridge import desktop_bridge_connected
+            if desktop_bridge_connected():
+                enabled.add("computer_use")
+        except Exception:
+            pass
+        return sorted(enabled)
     except Exception:
         if fallback_notice is not None:
             print(

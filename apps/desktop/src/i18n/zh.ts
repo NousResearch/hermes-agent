@@ -728,6 +728,9 @@ export const zh: Translations = {
       remoteToolLocalityTitle: '工具在远程后端运行',
       remoteToolLocalityDesc:
         '终端、文件访问、MCP 和 Computer Use 都在你连接的后端机器上执行。仅仅因为应用窗口在本机打开，远程后端并不能控制这台本地电脑；要控制本机，请使用本地网关，或配置专用的本地工具桥。',
+      remoteComputerUseBridgeTitle: '使用这台 Mac 进行 Computer Use',
+      remoteComputerUseBridgeDesc:
+        '连接远程网关时，Desktop 会启动一个私有本地桥接，让 Computer Use 捕获和控制这台机器，而不是远程主机。',
       remoteUrlTitle: '远程 URL',
       remoteUrlDesc: '远程 Hermes 后端的基础 URL。支持路径前缀，例如 /hermes。',
       probing: '正在检查此网关的认证方式…',

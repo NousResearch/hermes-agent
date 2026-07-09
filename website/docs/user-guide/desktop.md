@@ -215,7 +215,7 @@ The remote gateway host is configured per [profile](./profiles.md), so each prof
 
 When Desktop connects to a remote backend, the agent's tools execute on **that backend machine**, not on the computer running the Desktop window. Terminal commands, file access, MCP servers, and tools such as Computer Use all see the remote host's environment.
 
-That means a Mac running Desktop against a VPS backend cannot control the Mac's local apps just because the UI is local. To use Computer Use on the local desktop, run a local backend for that session, or connect the remote backend to a dedicated local tool bridge/worker that executes those actions on the local machine. The built-in bridge path is documented under [Computer Use → Remote Desktop/local-tool bridge](./features/computer-use.md#remote-desktoplocal-tool-bridge).
+That means a Mac running Desktop against a VPS backend cannot control the Mac's local apps just because the UI is local. For Computer Use, enable the **Local Computer Use bridge** option in Gateway settings: Desktop starts a loopback-only local bridge and connects it to the remote backend over an authenticated reverse WebSocket. Manual/headless bridge setup is documented under [Computer Use → Remote Desktop/local-tool bridge](./features/computer-use.md#remote-desktoplocal-tool-bridge).
 
 ### Troubleshooting
 

@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import type { DesktopAuthProvider, DesktopConnectionProbeResult } from '@/global'
 import { useI18n } from '@/i18n'
@@ -21,6 +22,7 @@ interface GatewaySettingsState {
   envOverride: boolean
   mode: Mode
   remoteAuthMode: AuthMode
+  remoteComputerUseBridge: boolean
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
@@ -31,6 +33,7 @@ const EMPTY_STATE: GatewaySettingsState = {
   envOverride: false,
   mode: 'local',
   remoteAuthMode: 'token',
+  remoteComputerUseBridge: true,
   remoteOauthConnected: false,
   remoteTokenPreview: null,
   remoteTokenSet: false,
@@ -284,6 +287,7 @@ export function GatewaySettings() {
     mode: state.mode,
     profile: scope ?? undefined,
     remoteAuthMode: authMode,
+    remoteComputerUseBridge: state.remoteComputerUseBridge,
     remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
     remoteUrl: trimmedUrl
   })
@@ -339,6 +343,7 @@ export function GatewaySettings() {
         mode: state.mode,
         profile: scope ?? undefined,
         remoteAuthMode: 'oauth',
+        remoteComputerUseBridge: state.remoteComputerUseBridge,
         remoteUrl: trimmedUrl
       })
 
@@ -398,6 +403,7 @@ export function GatewaySettings() {
         mode: 'remote',
         profile: scope ?? undefined,
         remoteAuthMode: authMode,
+        remoteComputerUseBridge: state.remoteComputerUseBridge,
         remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
         remoteUrl: trimmedUrl
       })
@@ -575,6 +581,22 @@ export function GatewaySettings() {
             }
             description={g.tokenDesc}
             title={g.tokenTitle}
+          />
+        ) : null}
+
+        {state.mode === 'remote' ? (
+          <ListRow
+            action={
+              <Checkbox
+                checked={state.remoteComputerUseBridge}
+                disabled={state.envOverride}
+                onCheckedChange={checked =>
+                  setState(current => ({ ...current, remoteComputerUseBridge: checked === true }))
+                }
+              />
+            }
+            description={g.remoteComputerUseBridgeDesc}
+            title={g.remoteComputerUseBridgeTitle}
           />
         ) : null}
       </div>

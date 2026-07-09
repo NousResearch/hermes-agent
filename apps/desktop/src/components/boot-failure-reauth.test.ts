@@ -10,6 +10,7 @@ function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnec
     mode: 'remote',
     profile: null,
     remoteAuthMode: 'oauth',
+    remoteComputerUseBridge: true,
     remoteOauthConnected: false,
     remoteTokenPreview: null,
     remoteTokenSet: false,

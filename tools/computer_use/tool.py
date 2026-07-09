@@ -149,12 +149,30 @@ def _get_backend() -> ComputerUseBackend:
     with _backend_lock:
         if _backend is None:
             backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-            if backend_name in {"cua", "cua-driver", ""}:
-                from tools.computer_use.cua_backend import CuaDriverBackend
-                _backend = CuaDriverBackend()
+            if backend_name in {"desktop", "desktop-bridge", "desktop_bridge"}:
+                from tools.computer_use.desktop_bridge import DesktopComputerUseBridgeBackend
+                _backend = DesktopComputerUseBridgeBackend()
             elif backend_name in {"bridge", "http", "remote", "remote-bridge"}:
                 from tools.computer_use.bridge import HttpComputerUseBridgeBackend
                 _backend = HttpComputerUseBridgeBackend()
+            elif backend_name in {"cua", "cua-driver", ""}:
+                # When Hermes Desktop has explicitly connected its local bridge
+                # to this remote backend, prefer that local desktop over the
+                # backend host's own GUI/cua-driver. This is the no-SSH product
+                # path for remote Desktop Computer Use.
+                try:
+                    from tools.computer_use.desktop_bridge import (
+                        DesktopComputerUseBridgeBackend,
+                        desktop_bridge_connected,
+                    )
+                    if desktop_bridge_connected():
+                        _backend = DesktopComputerUseBridgeBackend()
+                    else:
+                        from tools.computer_use.cua_backend import CuaDriverBackend
+                        _backend = CuaDriverBackend()
+                except ImportError:
+                    from tools.computer_use.cua_backend import CuaDriverBackend
+                    _backend = CuaDriverBackend()
             elif backend_name == "noop":  # pragma: no cover
                 _backend = _NoopBackend()
             else:
@@ -910,6 +928,15 @@ def check_computer_use_requirements() -> bool:
     if sys.platform not in ("darwin", "win32", "linux"):
         return False
     backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
+    if backend_name in {"desktop", "desktop-bridge", "desktop_bridge"}:
+        from tools.computer_use.desktop_bridge import desktop_bridge_connected
+        return desktop_bridge_connected()
+    try:
+        from tools.computer_use.desktop_bridge import desktop_bridge_connected
+        if desktop_bridge_connected():
+            return True
+    except ImportError:
+        pass
     if backend_name in {"bridge", "http", "remote", "remote-bridge"}:
         from tools.computer_use.bridge import bridge_backend_configured
         return bridge_backend_configured()

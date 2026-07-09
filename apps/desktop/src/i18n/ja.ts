@@ -652,6 +652,9 @@ export const ja = defineLocale({
       remoteToolLocalityTitle: 'ツールはリモートバックエンドで実行されます',
       remoteToolLocalityDesc:
         'ターミナル、ファイルアクセス、MCP、Computer Use は、接続先のバックエンドマシン上で実行されます。アプリのウィンドウがこのコンピューターで開いているだけでは、リモートバックエンドはローカルデスクトップを操作できません。このコンピューターを操作するにはローカルゲートウェイを使用するか、専用のローカルツールブリッジを設定してください。',
+      remoteComputerUseBridgeTitle: 'この Mac を Computer Use に使う',
+      remoteComputerUseBridgeDesc:
+        'リモートゲートウェイ接続時、Desktop はプライベートなローカルブリッジを起動し、Computer Use がリモートホストではなくこのマシンをキャプチャして操作できるようにします。',
       remoteUrlTitle: 'リモート URL',
       remoteUrlDesc: 'リモート Hermes バックエンドのベース URL。/hermes などのパスプレフィックスもサポートしています。',
       probing: 'このゲートウェイの認証方法を確認中…',

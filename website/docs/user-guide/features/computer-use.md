@@ -79,7 +79,9 @@ or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
 
 When [Hermes Desktop connects to a remote backend](../desktop.md#connecting-to-a-remote-backend), tools normally run on the **backend** machine. If Desktop is on your Mac but the backend is on a VPS, `computer_use` sees the VPS, not your Mac.
 
-For trusted setups where the remote backend should drive the local desktop, run an authenticated local bridge on the desktop host and tunnel it to the backend:
+Hermes Desktop can manage this automatically for remote backends. When the **Local Computer Use bridge** option is enabled in Desktop's Gateway settings, Desktop starts a loopback-only local bridge, opens an authenticated reverse WebSocket to the remote backend, and the backend routes `computer_use` calls over that channel. The remote backend does not need inbound access to your laptop.
+
+For headless or non-Desktop setups, you can still run the bridge manually. Start an authenticated local bridge on the desktop host:
 
 ```bash
 # Local desktop host, e.g. your Mac
@@ -98,7 +100,7 @@ export HERMES_COMPUTER_USE_BRIDGE_TOKEN="<same token>"
 hermes serve --host 0.0.0.0 --port 9119
 ```
 
-The bridge is an actuator surface: it can click, type, scroll, and read the local screen through `cua-driver`. Keep the default `127.0.0.1` bind and tunnel it; only use `--allow-non-loopback` on a trusted VPN with a strong token.
+The bridge is an actuator surface: it can click, type, scroll, and read the local screen through `cua-driver`. Keep the default `127.0.0.1` bind. Desktop's managed bridge keeps the local side loopback-only and uses an outbound reverse channel; for manual mode, tunnel it and only use `--allow-non-loopback` on a trusted VPN with a strong token.
 
 ## `hermes computer-use doctor` — your first triage stop
 

@@ -448,6 +448,8 @@ export interface Translations {
       remoteDesc: string
       remoteToolLocalityTitle: string
       remoteToolLocalityDesc: string
+      remoteComputerUseBridgeTitle: string
+      remoteComputerUseBridgeDesc: string
       remoteUrlTitle: string
       remoteUrlDesc: string
       probing: string

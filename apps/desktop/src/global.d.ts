@@ -396,6 +396,7 @@ export interface DesktopConnectionConfig {
   // connection. Per-profile entries let a profile point at its own backend.
   profile: null | string
   remoteAuthMode: 'oauth' | 'token'
+  remoteComputerUseBridge: boolean
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
@@ -408,6 +409,7 @@ export interface DesktopConnectionConfigInput {
   // override instead of the global connection.
   profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
+  remoteComputerUseBridge?: boolean
   remoteToken?: string
   remoteUrl?: string
 }

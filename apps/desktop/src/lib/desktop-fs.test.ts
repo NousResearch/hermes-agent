@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { $connection } from '@/store/session'
 
 import {
@@ -105,7 +106,7 @@ describe('desktop filesystem facade', () => {
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-text?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/git-root?path=%2Fhome%2Fuser%2Fproject' })
-    expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd' })
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: undefined, timeoutMs: STARTUP_REQUEST_TIMEOUT_MS })
     expect(readDir).not.toHaveBeenCalled()
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()
@@ -119,7 +120,11 @@ describe('desktop filesystem facade', () => {
     await desktopDefaultCwd()
 
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fsrv%2Fproject', profile: 'remote-docker' })
-    expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'remote-docker' })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/default-cwd',
+      profile: 'remote-docker',
+      timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    })
   })
 
   it('routes file diffs through backend git in remote mode', async () => {

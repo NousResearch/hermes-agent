@@ -4,6 +4,7 @@ import type {
   HermesReadFileTextResult,
   HermesSelectPathsOptions
 } from '@/global'
+import { STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { $connection } from '@/store/session'
 
 export interface DesktopFsRemotePicker {
@@ -119,7 +120,11 @@ export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string
     return null
   }
 
-  return remoteFsApi<{ branch: string; cwd: string }>('/api/fs/default-cwd')
+  return bridge().api<{ branch: string; cwd: string }>({
+    path: '/api/fs/default-cwd',
+    profile: desktopFsProfile(),
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
 }
 
 // Reveal a path in the OS file manager (Finder / Explorer / Files). Local only.

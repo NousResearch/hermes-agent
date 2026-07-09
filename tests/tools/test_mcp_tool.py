@@ -1127,6 +1127,70 @@ class TestMCPServerTask:
                 "mcp__srv__get_prompt",
             }
 
+    def test_refresh_tools_ignores_closed_session(self):
+        """A queued dynamic refresh can race with shutdown/reconnect."""
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("srv")
+        server.session = None
+        server._registered_tool_names = ["mcp__srv__old"]
+
+        asyncio.run(server._refresh_tools())
+
+        assert server._registered_tool_names == ["mcp__srv__old"]
+
+    def test_refresh_resolves_session_after_waiting_for_rpc_lock(self):
+        """A reconnect while queued must query the replacement session."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+            old_session = MagicMock()
+            old_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+            new_session = MagicMock()
+            new_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+            server.session = old_session
+
+            await server._rpc_lock.acquire()
+            task = asyncio.create_task(server._refresh_tools())
+            await asyncio.sleep(0)
+            server.session = new_session
+            server._rpc_lock.release()
+            await task
+
+            old_session.list_tools.assert_not_awaited()
+            new_session.list_tools.assert_awaited_once()
+
+        asyncio.run(_test())
+
+    def test_refresh_discards_response_from_superseded_session(self):
+        """An old in-flight response must not mutate the current registry."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            started = asyncio.Event()
+            finish = asyncio.Event()
+            server = MCPServerTask("srv")
+            old_session = MagicMock()
+
+            async def list_tools():
+                started.set()
+                await finish.wait()
+                return SimpleNamespace(tools=[])
+
+            old_session.list_tools = AsyncMock(side_effect=list_tools)
+            server.session = old_session
+            server._registered_tool_names = ["mcp__srv__old"]
+            task = asyncio.create_task(server._refresh_tools())
+            await started.wait()
+            server.session = MagicMock()
+            finish.set()
+            await task
+
+            assert server._registered_tool_names == ["mcp__srv__old"]
+
+        asyncio.run(_test())
+
     def test_schedule_tools_refresh_keeps_task_until_done(self):
         """Background refresh tasks are strongly referenced and then discarded."""
         from tools.mcp_tool import MCPServerTask

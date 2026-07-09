@@ -1938,9 +1938,27 @@ class MCPServerTask:
             # Capture old tool names for change diff
             old_tool_names = set(self._registered_tool_names)
 
-            # 1. Fetch current tool list from server
+            # 1. Resolve the current session only after entering the RPC lock.
+            # A refresh can queue behind shutdown/reconnect; capturing before
+            # the lock would query a superseded session.
             async with self._rpc_lock:
-                tools_result = await self.session.list_tools()
+                session = self.session
+                if session is None:
+                    logger.debug(
+                        "MCP server '%s': skipping dynamic tool refresh; session is closed",
+                        self.name,
+                    )
+                    return
+                tools_result = await session.list_tools()
+
+            # Reconnect may replace the session while list_tools is in flight.
+            # Never let an old response overwrite the current registry.
+            if self.session is not session:
+                logger.debug(
+                    "MCP server '%s': discarding tool refresh from superseded session",
+                    self.name,
+                )
+                return
             new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
 
             # 2. Re-register with fresh tool list. Avoid nuke-and-repave for

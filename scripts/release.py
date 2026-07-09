@@ -1935,6 +1935,7 @@ AUTHOR_MAP = {
     "codeforgenet@icloud.com": "CodeForgeNet",  # PR #47437 salvage (compact_rows blob skip)
     "i@dex.moe": "dexhunter",  # PR #60339 salvage (skills snapshot manifest speedup)
     "1torhan@protonmail.com": "uzaylisak",  # PR #29988 salvage (detect_local_server_type process-lifetime cache)
+    "zhchl@hermes-agent.local": "8294",  # PR #50572 salvage (honor config context_length on banner)
 }
 
 

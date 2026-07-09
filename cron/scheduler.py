@@ -1493,10 +1493,25 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
 
-        # Diagnostic: log thread_id for topic-aware delivery debugging
+        # Diagnostic: log thread_id for topic-aware delivery debugging.
+        # Losing the origin thread_id is only a routing bug when we are
+        # delivering back to the SAME platform+chat the origin thread belongs to
+        # (e.g. deliver=origin into a topic-scoped chat). For cross-channel /
+        # cross-DM delivery -- a job created in a DM thread but configured
+        # deliver=<platform>:<other-chat>, or any fan-out / home-channel
+        # fallback -- the origin thread ts is meaningless in the target chat, so
+        # dropping it is correct and the warning is a false positive that fires
+        # on every tick. Gate on the same platform+chat as the origin. (We do
+        # NOT reuse _target_matches_origin here: it additionally requires the
+        # thread to match, which is exactly the dropped-thread condition we are
+        # trying to diagnose.)
         origin = _resolve_origin(job) or {}
         origin_thread = origin.get("thread_id")
-        if origin_thread and not thread_id:
+        same_conversation_as_origin = bool(origin) and (
+            str(origin.get("platform", "")).lower() == str(platform_name).lower()
+            and str(origin.get("chat_id", "")) == str(chat_id)
+        )
+        if origin_thread and not thread_id and same_conversation_as_origin:
             logger.warning(
                 "Job '%s': origin has thread_id=%s but delivery target lost it "
                 "(deliver=%s, target=%s)",

@@ -90,7 +90,13 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' }}
-        run: npm run builder -- --publish always
+        # Unset EMPTY signing vars: electron-builder treats an empty CSC_LINK
+        # as a certificate *path* and dies with "<cwd> not a file".
+        run: |
+          for v in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!v:-}" ]; then unset "$v"; fi
+          done
+          npm run builder -- --publish always
 
       - name: Upload installers as workflow artifacts (debug/QA convenience)
         uses: actions/upload-artifact@v4

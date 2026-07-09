@@ -4,6 +4,7 @@
   "private": true,
   "version": "0.17.0",
   "description": "IX Agency — AI agency desktop by Intelliverse X.",
+  "homepage": "https://admin.intelli-verse-x.ai",
   "author": "Intelliverse X",
   "type": "module",
   "main": "dist/electron-main.mjs",

@@ -1665,6 +1665,39 @@ def init_agent(
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
 
+    # Check custom_providers per-model max_tokens
+    # The top-level model.max_tokens is read above; this fallback reads
+    # per-model max_tokens from custom_providers so that models routed
+    # through a custom proxy (local-proxy, litellm, vllm) can override
+    # the output-token cap without affecting every provider.
+    if agent.max_tokens is None and _custom_providers:
+        _target = agent.base_url.rstrip("/") if agent.base_url else ""
+        if _target:
+            for _cp_entry in _custom_providers:
+                if not isinstance(_cp_entry, dict):
+                    continue
+                _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
+                if _cp_url != _target:
+                    continue
+                _cp_models = _cp_entry.get("models", {})
+                if not isinstance(_cp_models, dict):
+                    continue
+                _cp_model_cfg = _cp_models.get(agent.model, {})
+                if not isinstance(_cp_model_cfg, dict):
+                    continue
+                _cp_max_tokens = _cp_model_cfg.get("max_tokens")
+                if _cp_max_tokens is not None:
+                    try:
+                        if isinstance(_cp_max_tokens, bool):
+                            continue
+                        _parsed = int(_cp_max_tokens)
+                        if _parsed > 0:
+                            agent.max_tokens = _parsed
+                            agent._session_init_model_config["max_tokens"] = _parsed
+                    except (TypeError, ValueError):
+                        pass
+                break
+
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:
         try:

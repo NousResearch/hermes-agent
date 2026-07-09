@@ -5161,6 +5161,47 @@ class TestCompressionFallbackContextFilter:
 
     # ── L2: configured fallback chain ─────────────────────────────────
 
+    def test_alias_model_inherits_fallback_chain(self, monkeypatch):
+        """auxiliary.<task>.model may name model_aliases.<alias>.
+
+        Adam's config uses auxiliary.*.model: smart-cheap and stores the
+        fallback_chain under model_aliases.smart-cheap. This must not be
+        treated as the literal provider model name "smart-cheap".
+        """
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        fallback_client = MagicMock(name="alias_fallback_client")
+        chain = [
+            {"provider": "openai-codex", "model": "gpt-5.4", "api_mode": "codex_responses"}
+        ]
+        cfg = {
+            "model_aliases": {
+                "smart-cheap": {
+                    "provider": "zai",
+                    "model": "glm-5.2",
+                    "fallback_chain": chain,
+                }
+            }
+        }
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"model": "smart-cheap"} if task == "compression" else {},
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+
+        with patch(
+            "agent.auxiliary_client._resolve_fallback_entry",
+            return_value=(fallback_client, "gpt-5.4"),
+        ):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression", failed_provider="zai", reason="error"
+            )
+
+        assert client is fallback_client
+        assert model == "gpt-5.4"
+        assert "openai-codex" in label
+
     def test_configured_chain_skips_too_small_candidate_for_compression(self, monkeypatch):
         """When entry[0] is reachable but too small and entry[1] is large enough,
         _try_configured_fallback_chain must return entry[1], not entry[0]."""

@@ -274,12 +274,23 @@ def _auto_detect_local_model(base_url: str) -> str:
 
 def _get_model_config() -> Dict[str, Any]:
     config = load_config()
-    model_cfg = config.get("model")
-    if isinstance(model_cfg, dict):
-        cfg = dict(model_cfg)
-        # Accept "model" as alias for "default" (users intuitively write model.model)
-        if not cfg.get("default") and cfg.get("model"):
-            cfg["default"] = cfg["model"]
+    try:
+        from hermes_cli.model_aliases import apply_model_alias_to_model_config
+
+        cfg = apply_model_alias_to_model_config(config)
+    except Exception:
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict):
+            cfg = dict(model_cfg)
+            # Accept "model" as alias for "default" (users intuitively write model.model)
+            if not cfg.get("default") and cfg.get("model"):
+                cfg["default"] = cfg["model"]
+        elif isinstance(model_cfg, str) and model_cfg.strip():
+            cfg = {"default": model_cfg.strip()}
+        else:
+            cfg = {}
+
+    if cfg:
         default = (cfg.get("default") or "").strip()
         base_url = (cfg.get("base_url") or "").strip()
         is_local = "localhost" in base_url or "127.0.0.1" in base_url
@@ -289,8 +300,6 @@ def _get_model_config() -> Dict[str, Any]:
             if detected:
                 cfg["default"] = detected
         return cfg
-    if isinstance(model_cfg, str) and model_cfg.strip():
-        return {"default": model_cfg.strip()}
     return {}
 
 

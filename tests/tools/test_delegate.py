@@ -1097,7 +1097,32 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
 
+    def test_resolve_delegation_credentials_expands_model_alias_and_carries_fallback(self):
+        fallback = {
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "api_mode": "codex_responses",
+        }
+        cfg = {"model": "smart-cheap", "provider": "", "base_url": "", "api_mode": ""}
+        alias = {"provider": "zai", "model": "glm-5.2", "fallback_chain": [fallback]}
 
+        with patch("tools.delegate_tool._delegation_model_alias_entry", return_value=alias), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_resolve:
+            mock_resolve.return_value = {
+                "provider": "zai",
+                "model": "glm-5.2",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "api_key": "sk-test",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+            }
+            creds = _resolve_delegation_credentials(cfg, parent_agent=None)
+
+        self.assertEqual(creds["model"], "glm-5.2")
+        self.assertEqual(creds["provider"], "zai")
+        self.assertEqual(creds["fallback_chain"], [fallback])
+        mock_resolve.assert_called_once_with(requested="zai", target_model="glm-5.2")
 
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
@@ -3095,6 +3120,34 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+    def test_child_uses_override_fallback_chain_from_alias(self):
+        """Alias-resolved delegation fallback_chain overrides parent fallback."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [{"provider": "parent", "model": "parent-model"}]
+        alias_fallback = {
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "api_mode": "codex_responses",
+        }
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test alias fallback override",
+                context=None,
+                toolsets=None,
+                model="glm-5.2",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="zai",
+                override_fallback_model=[alias_fallback],
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["fallback_model"], [alias_fallback])
 
 
 if __name__ == "__main__":

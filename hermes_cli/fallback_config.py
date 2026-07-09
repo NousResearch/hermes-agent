@@ -52,17 +52,39 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Return the effective fallback chain merged across old and new config keys.
 
     ``fallback_providers`` remains the primary source of truth and keeps its
-    order. Legacy ``fallback_model`` entries are appended afterwards unless
-    they target the same provider/model/base_url route as an earlier entry.
-    The returned list always contains fresh dict copies.
+    order. If the primary ``model.default`` names a configured ``model_aliases``
+    entry, that alias' ``fallback_chain`` is appended next. Legacy
+    ``fallback_model`` entries are appended afterwards unless they target the
+    same provider/model/base_url route as an earlier entry. The returned list
+    always contains fresh dict copies.
     """
 
     config = config or {}
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
 
-    for key in ("fallback_providers", "fallback_model"):
-        for entry in _iter_fallback_entries(config.get(key)):
+    alias_fallback_chain: Any = None
+    try:
+        from hermes_cli.model_aliases import get_model_alias_entry
+
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict):
+            alias_name = model_cfg.get("default") or model_cfg.get("model")
+        else:
+            alias_name = model_cfg
+        alias = get_model_alias_entry(config, alias_name)
+        if alias is not None:
+            alias_fallback_chain = alias.get("fallback_chain")
+    except Exception:
+        alias_fallback_chain = None
+
+    sources = (
+        config.get("fallback_providers"),
+        alias_fallback_chain,
+        config.get("fallback_model"),
+    )
+    for raw_entries in sources:
+        for entry in _iter_fallback_entries(raw_entries):
             identity = _entry_identity(entry)
             if identity in seen:
                 continue

@@ -3802,6 +3802,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        self._model_alias_name = None
+        self._model_alias_base_url = None
+        self._model_alias_api_mode = None
+        _resolved_model_alias = None
+        try:
+            from hermes_cli.model_aliases import resolve_model_alias
+
+            _resolved_model_alias = resolve_model_alias(CLI_CONFIG, self.model)
+            if _resolved_model_alias is not None:
+                self._model_alias_name = _resolved_model_alias.get("name")
+                self._model_alias_base_url = _resolved_model_alias.get("base_url") or None
+                self._model_alias_api_mode = _resolved_model_alias.get("api_mode") or None
+                self.model = _resolved_model_alias["model"]
+        except Exception:
+            _resolved_model_alias = None
         # Read max_tokens from config (env var override: HERMES_MAX_TOKENS)
         _env_mt = os.environ.get("HERMES_MAX_TOKENS")
         if _env_mt:
@@ -3838,17 +3853,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
             provider
+            or (_resolved_model_alias.get("provider") if _resolved_model_alias is not None else None)
             or CLI_CONFIG["model"].get("provider")
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"
         )
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
-        self.api_mode = "chat_completions"
+        self.api_mode = self._model_alias_api_mode or "chat_completions"
         self.acp_command: Optional[str] = None
         self.acp_args: list[str] = []
         self.base_url = (
             base_url
+            or self._model_alias_base_url
             or CLI_CONFIG["model"].get("base_url", "")
             or os.getenv("OPENROUTER_BASE_URL", "")
         ) or None

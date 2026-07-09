@@ -417,3 +417,48 @@ class TestGatewayApprovalAllowPermanent:
         renderer hides "Always allow"."""
         payload = self._capture_gateway_payload("curl https://bit.ly/abc", "gw-no-perm")
         assert payload["allow_permanent"] is False
+
+
+
+class TestAutoApproveAuditLog:
+    """Regression tests for non-interactive auto-approve audit log (#61671)."""
+
+    def _call_gate(self, display_target: str) -> list:
+        """Call _run_approval_gate in non-interactive auto-approve context."""
+        import logging
+        from unittest.mock import patch
+        from tools.approval import _run_approval_gate
+        warnings = []
+        with patch("tools.approval.logger") as mock_log:
+            mock_log.warning.side_effect = lambda fmt, *a, **kw: warnings.append(fmt % a)
+            _run_approval_gate(
+                pattern_key="test_pattern",
+                description="test dangerous command",
+                display_target=display_target,
+                approval_callback=None,
+                cron_deny_message="",
+                autoapprove_log_prefix="[auto-approve]",
+                fail_closed_when_no_human=False,
+                no_human_block_message="",
+            )
+        return warnings
+
+    def test_display_target_included_in_audit_log(self):
+        """Auto-approve warning must include the display_target."""
+        cmd = "rm -rf /tmp/test"
+        warnings = self._call_gate(cmd)
+        assert any(cmd in w for w in warnings), (
+            f"display_target must appear in audit log, got: {warnings}"
+        )
+
+    def test_display_target_truncated_at_200_chars(self):
+        """display_target longer than 200 chars must be truncated in the log."""
+        long_cmd = "rm -rf /tmp/" + "a" * 300
+        warnings = self._call_gate(long_cmd)
+        assert warnings, "Expected at least one warning log entry"
+        assert all("a" * 201 not in w for w in warnings), (
+            "display_target must be truncated to 200 chars in audit log"
+        )
+        assert any("a" * 10 in w for w in warnings), (
+            "display_target should still partially appear in audit log"
+        )

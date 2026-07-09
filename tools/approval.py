@@ -2099,9 +2099,9 @@ def _run_approval_gate(
                 "description": description,
             }
         logger.warning(
-            "%s (pattern: %s): %s — set HERMES_INTERACTIVE or "
+            "%s (pattern: %s): %s — target: %s — set HERMES_INTERACTIVE or "
             "HERMES_GATEWAY_SESSION to require approval.",
-            autoapprove_log_prefix, pattern_key, description,
+            autoapprove_log_prefix, pattern_key, description, display_target[:200],
         )
         return {"approved": True, "message": None}
 

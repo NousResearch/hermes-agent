@@ -672,6 +672,8 @@ def session_search(
     profile: str = None,
     # External DB path (any shape)
     db_path: str = None,
+    # Debug: write raw output to file
+    debug_file: str = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
@@ -683,7 +685,21 @@ def session_search(
     Pass ``profile`` to read another profile's sessions (e.g. resolving an
     ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
     anchor is set — the agent has asked for a specific slice.
+
+    Pass ``debug_file`` to write the raw JSON output to a file path (for A/B
+    comparison and debugging — not exposed in the tool schema).
     """
+
+    def _maybe_debug(result: str) -> str:
+        if debug_file:
+            try:
+                from pathlib import Path as _P
+                _P(debug_file).parent.mkdir(parents=True, exist_ok=True)
+                _P(debug_file).write_text(result)
+            except Exception:
+                pass
+        return result
+
     try:
         from hermes_state import SessionDB, format_session_db_unavailable
     except Exception:
@@ -736,13 +752,13 @@ def session_search(
 
     # Scroll shape takes precedence — explicit anchor beats any query.
     if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
-        return _scroll(
+        return _maybe_debug(_scroll(
             db=db,
             session_id=session_id,
             around_message_id=around_message_id,
             window=window,
             current_session_id=current_session_id,
-        )
+        ))
 
     # Read shape: a session_id with no anchor → dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
@@ -775,7 +791,7 @@ def session_search(
 
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        return _maybe_debug(_list_recent_sessions(db, limit, current_session_id))
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -789,14 +805,14 @@ def session_search(
         if candidate in ("newest", "oldest"):
             sort_norm = candidate
 
-    return _discover(
+    return _maybe_debug(_discover(
         db=db,
         query=query.strip(),
         role_filter=role_list,
         limit=limit,
         sort=sort_norm,
         current_session_id=current_session_id,
-    )
+    ))
 
 
 def check_session_search_requirements() -> bool:

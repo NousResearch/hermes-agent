@@ -20909,6 +20909,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 spawn_async_diagnostic,
             )
             _shutdown_ctx = snapshot_shutdown_context(received_signal)
+            # Windows planned stops arrive via the marker watcher with
+            # signal=None, which snapshots as UNKNOWN and makes a normal
+            # `hermes gateway stop` log like an external kill (#61596).
+            # The marker consumption above already proved operator intent.
+            from gateway.shutdown_forensics import label_marker_driven_shutdown
+            label_marker_driven_shutdown(
+                _shutdown_ctx,
+                planned_takeover=planned_takeover,
+                planned_stop=planned_stop,
+                received_signal=received_signal,
+            )
         except Exception as _e:
             _shutdown_ctx = None
             logger.debug("snapshot_shutdown_context failed: %s", _e)

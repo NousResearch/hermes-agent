@@ -248,3 +248,67 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+
+class TestLabelMarkerDrivenShutdown:
+    """#61596: Windows planned stops (marker watcher → signal=None) must not
+    be reported as signal=UNKNOWN — the marker already proved intent."""
+
+    def _ctx(self):
+        from gateway.shutdown_forensics import snapshot_shutdown_context
+        return snapshot_shutdown_context(None)
+
+    def test_planned_stop_with_no_signal_is_labeled(self):
+        from gateway.shutdown_forensics import label_marker_driven_shutdown
+
+        ctx = self._ctx()
+        assert ctx["signal"] == "UNKNOWN"
+        label_marker_driven_shutdown(
+            ctx, planned_takeover=False, planned_stop=True, received_signal=None
+        )
+        assert ctx["signal"] == "PLANNED_STOP"
+
+    def test_planned_takeover_wins_over_planned_stop(self):
+        from gateway.shutdown_forensics import label_marker_driven_shutdown
+
+        ctx = self._ctx()
+        label_marker_driven_shutdown(
+            ctx, planned_takeover=True, planned_stop=True, received_signal=None
+        )
+        assert ctx["signal"] == "PLANNED_TAKEOVER"
+
+    def test_real_signal_keeps_its_true_name(self):
+        """POSIX behavior unchanged: a real SIGTERM that happens to carry a
+        planned-stop marker keeps the actual signal name."""
+        import signal as _signal
+
+        from gateway.shutdown_forensics import (
+            label_marker_driven_shutdown,
+            snapshot_shutdown_context,
+        )
+
+        ctx = snapshot_shutdown_context(_signal.SIGTERM)
+        before = ctx["signal"]
+        label_marker_driven_shutdown(
+            ctx, planned_takeover=False, planned_stop=True,
+            received_signal=_signal.SIGTERM,
+        )
+        assert ctx["signal"] == before
+        assert "TERM" in ctx["signal"]
+
+    def test_unplanned_none_signal_stays_unknown(self):
+        """A genuinely unexplained handler invocation keeps UNKNOWN."""
+        from gateway.shutdown_forensics import label_marker_driven_shutdown
+
+        ctx = self._ctx()
+        label_marker_driven_shutdown(
+            ctx, planned_takeover=False, planned_stop=False, received_signal=None
+        )
+        assert ctx["signal"] == "UNKNOWN"
+
+    def test_never_raises_on_non_dict_ctx(self):
+        from gateway.shutdown_forensics import label_marker_driven_shutdown
+
+        label_marker_driven_shutdown(
+            None, planned_takeover=False, planned_stop=True, received_signal=None
+        )

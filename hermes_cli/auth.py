@@ -232,6 +232,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "groq": ProviderConfig(
+        id="groq",
+        name="Groq (free LPU inference)",
+        auth_type="api_key",
+        inference_base_url="https://api.groq.com/openai/v1",
+        api_key_env_vars=("GROQ_API_KEY",),
+        base_url_env_var="GROQ_BASE_URL",
+    ),
     "gemini": ProviderConfig(
         id="gemini",
         name="Google AI Studio",

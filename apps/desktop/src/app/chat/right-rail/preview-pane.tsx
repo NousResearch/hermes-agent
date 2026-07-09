@@ -6,7 +6,7 @@ import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-co
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
-import { Bug, ChevronLeft, ChevronRight, ExternalLink, Maximize, Pencil, RefreshCw, Search, Square, X } from '@/lib/icons'
+import { Bug, ChevronLeft, ChevronRight, ExternalLink, Maximize, Pencil, RefreshCw, Search, Square, X, ZoomIn, ZoomOut } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
@@ -56,6 +56,9 @@ interface PreviewLoadErrorState {
 }
 
 const FILE_RELOAD_DEBOUNCE_MS = 200
+const PREVIEW_SCALE_MAX = 200
+const PREVIEW_SCALE_MIN = 50
+const PREVIEW_SCALE_STEP = 10
 const SERVER_RESTART_TIMEOUT_MS = 45_000
 const PREVIEW_WEBVIEW_PARTITION_PREFIX = 'persist:hermes-preview'
 
@@ -81,6 +84,79 @@ function normalizePreviewAddress(value: string): string {
   }
 
   return `https://${trimmed}`
+}
+
+function clampPreviewScale(value: number): number {
+  const stepped = Math.round(value / PREVIEW_SCALE_STEP) * PREVIEW_SCALE_STEP
+
+  return Math.min(PREVIEW_SCALE_MAX, Math.max(PREVIEW_SCALE_MIN, stepped))
+}
+
+function previewScaleRatio(percent: number): number {
+  return percent / 100
+}
+
+function PreviewScaleControls({
+  onDecrease,
+  onIncrease,
+  onReset,
+  percent
+}: {
+  onDecrease: () => void
+  onIncrease: () => void
+  onReset: () => void
+  percent: number
+}) {
+  const adjusted = percent !== 100
+  const warningLabel = `Preview scale adjusted to ${percent}%; sizes are not accurate`
+
+  return (
+    <div aria-label="Preview scale controls" className="pointer-events-auto flex shrink-0 items-center gap-1">
+      <Tip label="Decrease preview scale">
+        <button
+          aria-label="Decrease preview scale"
+          className="grid size-6 place-items-center rounded-sm border border-(--ui-stroke-quaternary) text-muted-foreground/85 transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring disabled:cursor-default disabled:opacity-45 disabled:hover:border-(--ui-stroke-quaternary) disabled:hover:bg-transparent disabled:hover:text-muted-foreground/85"
+          disabled={percent <= PREVIEW_SCALE_MIN}
+          onClick={onDecrease}
+          type="button"
+        >
+          <ZoomOut className="size-3" />
+        </button>
+      </Tip>
+      <Tip label={adjusted ? `${warningLabel}. Reset to 100%.` : 'Preview scale is 100%'}>
+        <button
+          aria-label="Reset preview scale to 100%"
+          className={cn(
+            'relative inline-flex h-6 items-center gap-1 rounded-sm border px-1.5 font-mono text-[0.625rem] font-semibold leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
+            adjusted
+              ? 'border-amber-400/70 bg-amber-400/15 text-amber-900 dark:text-amber-100'
+              : 'border-(--ui-stroke-quaternary) text-muted-foreground/85 hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+          )}
+          disabled={!adjusted}
+          onClick={onReset}
+          type="button"
+        >
+          {adjusted && (
+            <span aria-label={warningLabel} className="inline-flex items-center" data-preview-scale-warning="" role="img">
+              <ZoomIn className="size-3" />
+            </span>
+          )}
+          {percent}%
+        </button>
+      </Tip>
+      <Tip label="Increase preview scale">
+        <button
+          aria-label="Increase preview scale"
+          className="grid size-6 place-items-center rounded-sm border border-(--ui-stroke-quaternary) text-muted-foreground/85 transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring disabled:cursor-default disabled:opacity-45 disabled:hover:border-(--ui-stroke-quaternary) disabled:hover:bg-transparent disabled:hover:text-muted-foreground/85"
+          disabled={percent >= PREVIEW_SCALE_MAX}
+          onClick={onIncrease}
+          type="button"
+        >
+          <ZoomIn className="size-3" />
+        </button>
+      </Tip>
+    </div>
+  )
 }
 
 function loadErrorTitle(error: PreviewLoadErrorState, copy: Translations['preview']['web']): string {
@@ -196,6 +272,7 @@ export function PreviewPane({
   const [previewEngine, setPreviewEngine] = useState<PreviewEngine>('detecting')
   const [previewFrameWidth, setPreviewFrameWidth] = useState<number | null>(null)
   const [activeRatioLabel, setActiveRatioLabel] = useState<string | null>(null)
+  const [previewScalePercent, setPreviewScalePercent] = useState(100)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
@@ -207,10 +284,31 @@ export function PreviewPane({
     target.label && target.label.replace(/\/$/, '') !== currentLabel.replace(/\/$/, '') ? target.label : currentLabel
 
   const responsivePreviewActive = previewFrameWidth !== null
+  const previewSurfaceScrollActive = responsivePreviewActive || previewScalePercent !== 100
 
   const previewFrameStyle = useMemo<CSSProperties | undefined>(
     () => (previewFrameWidth === null ? undefined : { width: `${previewFrameWidth}px` }),
     [previewFrameWidth]
+  )
+
+  const previewScale = previewScaleRatio(previewScalePercent)
+
+  const previewScaleStageStyle = useMemo<CSSProperties>(
+    () => ({
+      height: `${previewScalePercent}%`,
+      width: `${previewScalePercent}%`
+    }),
+    [previewScalePercent]
+  )
+
+  const previewScaleContentStyle = useMemo<CSSProperties>(
+    () => ({
+      height: `${100 / previewScale}%`,
+      transform: `scale(${previewScale})`,
+      transformOrigin: 'top left',
+      width: `${100 / previewScale}%`
+    }),
+    [previewScale]
   )
 
   const restartingServer =
@@ -335,6 +433,18 @@ export function PreviewPane({
   const fitPreviewToPane = useCallback(() => {
     setPreviewFrameWidth(null)
     setActiveRatioLabel(null)
+  }, [])
+
+  const decreasePreviewScale = useCallback(() => {
+    setPreviewScalePercent(percent => clampPreviewScale(percent - PREVIEW_SCALE_STEP))
+  }, [])
+
+  const increasePreviewScale = useCallback(() => {
+    setPreviewScalePercent(percent => clampPreviewScale(percent + PREVIEW_SCALE_STEP))
+  }, [])
+
+  const resetPreviewScale = useCallback(() => {
+    setPreviewScalePercent(100)
   }, [])
 
 
@@ -1144,8 +1254,8 @@ export function PreviewPane({
       ref={previewShellRef}
     >
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {(!embedded || isWebPreview) && (
-          <div className="pointer-events-none flex min-h-(--titlebar-height) items-center gap-1.5 border-b border-border/60 bg-background px-2 py-1">
+        <div className="pointer-events-none flex min-h-(--titlebar-height) items-center gap-1.5 border-b border-border/60 bg-background px-2 py-1">
+          {isWebPreview ? (
             <form
               className="pointer-events-auto min-w-0 flex-1"
               onSubmit={event => {
@@ -1170,8 +1280,23 @@ export function PreviewPane({
                 />
               </Tip>
             </form>
-            {isWebPreview && (
-              <div aria-label="Preview browser controls" className="pointer-events-auto flex shrink-0 items-center gap-1">
+          ) : (
+            <div className="pointer-events-auto min-w-0 flex-1">
+              <label className="sr-only" htmlFor="preview-target">
+                Preview target
+              </label>
+              <input
+                aria-label="Preview target"
+                className="h-6 w-full min-w-0 rounded-sm border border-transparent bg-(--ui-editor-surface-background)/55 px-2 text-xs font-medium text-foreground outline-none"
+                id="preview-target"
+                readOnly
+                title={target.path || target.label || target.url}
+                value={target.label || target.path || target.url}
+              />
+            </div>
+          )}
+          {isWebPreview && (
+            <div aria-label="Preview browser controls" className="pointer-events-auto flex shrink-0 items-center gap-1">
                 <Tip label="Go back in preview">
                   <button
                     aria-label="Go back in preview"
@@ -1248,7 +1373,13 @@ export function PreviewPane({
                 </Tip>
               </div>
             )}
-            {isWebPreview && (
+          <PreviewScaleControls
+            onDecrease={decreasePreviewScale}
+            onIncrease={increasePreviewScale}
+            onReset={resetPreviewScale}
+            percent={previewScalePercent}
+          />
+          {isWebPreview && (
               <div aria-label="Preview responsive sizes" className="pointer-events-auto flex shrink-0 items-center gap-1">
                 <Tip label="Fit preview to pane">
                   <button
@@ -1327,7 +1458,6 @@ export function PreviewPane({
               </div>
             )}
           </div>
-        )}
 
         {isWebPreview && findOpen && (
           <div
@@ -1390,29 +1520,36 @@ export function PreviewPane({
         <div
           className={cn(
             'pointer-events-auto relative min-h-0 flex-1 bg-transparent overscroll-contain [contain:paint]',
-            responsivePreviewActive ? 'overflow-auto' : 'overflow-hidden'
+            previewSurfaceScrollActive ? 'overflow-auto' : 'overflow-hidden'
           )}
           data-preview-viewport=""
           ref={previewContentRef}
         >
           <div
             className={cn(
-              'relative h-full min-h-full overflow-hidden bg-transparent',
+              'relative h-full min-h-full overflow-visible bg-transparent',
               responsivePreviewActive ? 'max-w-none shrink-0' : 'w-full'
             )}
             data-preview-browser-content=""
             data-preview-frame={responsivePreviewActive ? '' : undefined}
             style={previewFrameStyle}
           >
-            <div
-              className={cn(
-                'absolute inset-0 flex bg-transparent',
-                (!isWebPreview || loadError) && 'pointer-events-none opacity-0'
-              )}
-              ref={hostRef}
-            />
-            {!isWebPreview && <LocalFilePreview reloadKey={localReloadKey} target={target} />}
-            {loadError && (
+            <div className="relative overflow-visible" data-preview-scale-stage="" style={previewScaleStageStyle}>
+              <div
+                className="relative h-full min-h-full overflow-hidden bg-transparent"
+                data-preview-scale={previewScalePercent}
+                data-preview-scale-content=""
+                style={previewScaleContentStyle}
+              >
+                <div
+                  className={cn(
+                    'absolute inset-0 flex bg-transparent',
+                    (!isWebPreview || loadError) && 'pointer-events-none opacity-0'
+                  )}
+                  ref={hostRef}
+                />
+                {!isWebPreview && <LocalFilePreview reloadKey={localReloadKey} target={target} />}
+                {loadError && (
               <PreviewLoadError
                 consoleHeight={consoleOpen ? consoleHeight : 0}
                 error={loadError}
@@ -1445,6 +1582,8 @@ export function PreviewPane({
                 <div className="absolute bottom-[24%] left-[46%] rounded-sm border border-sky-300/70 bg-black/70 px-1.5 py-0.5 text-sky-100">[3]</div>
               </div>
             )}
+              </div>
+            </div>
 
             {isWebPreview && debugOverlayOpen && (
               <div

@@ -318,6 +318,94 @@ describe('PreviewPane console state', () => {
     expect(rendered.container.querySelector('[data-preview-frame]')).toBeNull()
   })
 
+  it('defaults preview surface scaling to 100% and shows a persistent warning when adjusted', () => {
+    const rendered = render(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'url',
+          label: 'Preview',
+          source: 'http://localhost:5174',
+          url: 'http://localhost:5174'
+        }}
+      />
+    )
+
+    const scaleContent = rendered.container.querySelector('[data-preview-scale-content]') as HTMLElement | null
+
+    expect(scaleContent).toBeInstanceOf(HTMLElement)
+    expect(scaleContent?.dataset.previewScale).toBe('100')
+    expect(scaleContent?.style.transform).toBe('scale(1)')
+    expect(screen.getByRole('button', { name: 'Decrease preview scale' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Reset preview scale to 100%' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Increase preview scale' })).toBeTruthy()
+    expect(screen.getByText('100%')).toBeTruthy()
+    expect(rendered.container.querySelector('[data-preview-scale-warning]')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Increase preview scale' }))
+
+    expect(scaleContent?.dataset.previewScale).toBe('110')
+    expect(scaleContent?.style.transform).toBe('scale(1.1)')
+    expect(screen.getByText('110%')).toBeTruthy()
+    expect(screen.getByLabelText('Preview scale adjusted to 110%; sizes are not accurate')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset preview scale to 100%' }))
+
+    expect(scaleContent?.dataset.previewScale).toBe('100')
+    expect(scaleContent?.style.transform).toBe('scale(1)')
+    expect(rendered.container.querySelector('[data-preview-scale-warning]')).toBeNull()
+  })
+
+  it('exposes the same preview scale controls for local image and text previews', () => {
+    const rendered = render(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'file',
+          label: 'screenshot.png',
+          path: '/tmp/hermes/screenshot.png',
+          previewKind: 'image',
+          source: '/tmp/hermes/screenshot.png',
+          url: 'file:///tmp/hermes/screenshot.png'
+        }}
+      />
+    )
+
+    let scaleContent = rendered.container.querySelector('[data-preview-scale-content]') as HTMLElement | null
+
+    expect(screen.getByLabelText('Preview target')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Increase preview scale' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Decrease preview scale' }))
+
+    expect(scaleContent?.dataset.previewScale).toBe('90')
+    expect(scaleContent?.style.transform).toBe('scale(0.9)')
+    expect(screen.getByLabelText('Preview scale adjusted to 90%; sizes are not accurate')).toBeTruthy()
+
+    rendered.rerender(
+      <PreviewPane
+        embedded
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'file',
+          label: 'notes.md',
+          path: '/tmp/hermes/notes.md',
+          previewKind: 'text',
+          source: '/tmp/hermes/notes.md',
+          url: 'file:///tmp/hermes/notes.md'
+        }}
+      />
+    )
+
+    scaleContent = rendered.container.querySelector('[data-preview-scale-content]') as HTMLElement | null
+
+    expect(screen.getByLabelText('Preview target')).toBeTruthy()
+    expect(scaleContent?.dataset.previewScale).toBe('90')
+    expect(scaleContent?.style.transform).toBe('scale(0.9)')
+  })
+
   it('clears stale responsive sizing when switching to a local file preview', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1600 })
 

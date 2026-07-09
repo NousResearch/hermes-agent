@@ -2041,6 +2041,266 @@ def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
     assert model_entries[0].access_token == "sk-model-key"
 
 
+def test_custom_endpoint_pool_no_duplicate_same_key(tmp_path, monkeypatch):
+    """When custom_providers and model.api_key point to the same key+URL,
+    the pool must contain ONE entry, not two.
+
+    Without dedup, both entries exhaust together on a single 402/429,
+    making the pool look empty ("all keys exhausted") when the user has
+    only one key.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import yaml
+    same_key = "sk-shared-key-123"
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "Together.ai",
+                "base_url": "https://api.together.ai/v1",
+                "api_key": same_key,
+            }
+        ],
+        "model": {
+            "provider": "custom",
+            "base_url": "https://api.together.ai/v1",
+            "api_key": same_key,
+        },
+    }))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:together.ai")
+    assert pool.has_credentials()
+    entries = pool.entries()
+    assert len(entries) == 1, (
+        f"Expected 1 entry for one key, got {len(entries)}: "
+        f"{[(e.source, e.access_token) for e in entries]}"
+    )
+
+
+def test_custom_pool_dedup_propagates_exhaustion(tmp_path, monkeypatch):
+    """When load_pool encounters pre-existing duplicate entries (from before
+    the dedup fix) where one is exhausted, the survivor inherits the
+    exhausted status so a known-bad key doesn't silently revive.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    # Write auth.json with two entries that share the same fingerprint but
+    # have different exhaustion status.  Both are seeded from sources that
+    # will be active in the config below so they survive pruning.
+    _same_fp = "sha256:abc123def456"
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "credential_pool": {
+            "custom:together.ai": [
+                {
+                    "id": "entry1",
+                    "source": "config:Together.ai",
+                    "auth_type": "api_key",
+                    "access_token": "",
+                    "base_url": "https://api.together.ai/v1",
+                    "label": "Together.ai",
+                    "priority": 0,
+                    "secret_fingerprint": _same_fp,
+                    "last_status": "exhausted",
+                    "last_status_at": 1700000000.0,
+                    "last_error_code": 402,
+                    "last_error_reason": "billing_error",
+                    "last_error_message": "out of credits",
+                },
+                {
+                    "id": "entry2",
+                    "source": "model_config",
+                    "auth_type": "api_key",
+                    "access_token": "",
+                    "base_url": "https://api.together.ai/v1",
+                    "label": "model_config",
+                    "priority": 1,
+                    "secret_fingerprint": _same_fp,
+                    "last_status": None,
+                    "last_status_at": None,
+                    "last_error_code": None,
+                },
+            ],
+        },
+    })
+
+    # Config WITH matching api_key so both sources survive pruning.
+    # The config entry re-seeds with the raw key; model_config is also
+    # active because model.api_key is set.  But the _seed_custom_pool
+    # dedup prevents creating a NEW model_config entry since the same key
+    # is already present from config.
+    import yaml
+    same_key = "sk-shared-key"
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "Together.ai",
+                "base_url": "https://api.together.ai/v1",
+                "api_key": same_key,
+            }
+        ],
+        "model": {
+            "provider": "custom",
+            "base_url": "https://api.together.ai/v1",
+            "api_key": same_key,
+        },
+    }))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:together.ai")
+    entries = pool.entries()
+    assert len(entries) == 1, f"Expected 1 entry after dedup, got {len(entries)}"
+    survivor = entries[0]
+    assert survivor.last_status == "exhausted", (
+        f"Survivor should inherit exhausted status, got {survivor.last_status}"
+    )
+
+
+def test_custom_endpoint_pool_different_keys_not_deduped(tmp_path, monkeypatch):
+    """When custom_providers and model.api_key have DIFFERENT keys for the
+    same endpoint, both entries must survive — this is a legitimate multi-key
+    setup for load distribution or failover.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "Together.ai",
+                "base_url": "https://api.together.ai/v1",
+                "api_key": "sk-key-A",
+            }
+        ],
+        "model": {
+            "provider": "custom",
+            "base_url": "https://api.together.ai/v1",
+            "api_key": "sk-key-B",
+        },
+    }))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:together.ai")
+    entries = pool.entries()
+    assert len(entries) == 2, (
+        f"Expected 2 entries for different keys, got {len(entries)}"
+    )
+    tokens = {e.access_token for e in entries}
+    assert tokens == {"sk-key-A", "sk-key-B"}, f"Unexpected tokens: {tokens}"
+
+
+def test_custom_pool_dedup_manual_entries_same_key(tmp_path, monkeypatch):
+    """Two manually-added entries with the same API key are deduplicated.
+    Manual entries can't be pruned (they're not borrowed sources), so the
+    runtime _dedup_custom_pool_entries is the only mechanism that catches them.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    same_key = "sk-manual-duplicate"
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "credential_pool": {
+            "custom:together.ai": [
+                {
+                    "id": "man1",
+                    "source": "manual",
+                    "auth_type": "api_key",
+                    "access_token": same_key,
+                    "base_url": "https://api.together.ai/v1",
+                    "label": "key-1",
+                    "priority": 0,
+                },
+                {
+                    "id": "man2",
+                    "source": "manual",
+                    "auth_type": "api_key",
+                    "access_token": same_key,
+                    "base_url": "https://api.together.ai/v1",
+                    "label": "key-2",
+                    "priority": 1,
+                },
+            ],
+        },
+    })
+
+    # Config without api_key so seeding doesn't interfere
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "Together.ai",
+                "base_url": "https://api.together.ai/v1",
+            }
+        ],
+    }))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:together.ai")
+    entries = pool.entries()
+    assert len(entries) == 1, (
+        f"Expected 1 entry after manual dedup, got {len(entries)}"
+    )
+
+
+def test_custom_pool_dedup_preserves_different_keys_with_manual(tmp_path, monkeypatch):
+    """Two manually-added entries with DIFFERENT keys must NOT be deduped."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "credential_pool": {
+            "custom:together.ai": [
+                {
+                    "id": "man1",
+                    "source": "manual",
+                    "auth_type": "api_key",
+                    "access_token": "sk-key-X",
+                    "base_url": "https://api.together.ai/v1",
+                    "label": "key-X",
+                    "priority": 0,
+                },
+                {
+                    "id": "man2",
+                    "source": "manual",
+                    "auth_type": "api_key",
+                    "access_token": "sk-key-Y",
+                    "base_url": "https://api.together.ai/v1",
+                    "label": "key-Y",
+                    "priority": 1,
+                },
+            ],
+        },
+    })
+
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "Together.ai",
+                "base_url": "https://api.together.ai/v1",
+            }
+        ],
+    }))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:together.ai")
+    entries = pool.entries()
+    assert len(entries) == 2, (
+        f"Expected 2 entries for different manual keys, got {len(entries)}"
+    )
+
+
 def test_custom_pool_does_not_break_existing_providers(tmp_path, monkeypatch):
     """Existing registry providers work exactly as before with custom pool support."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

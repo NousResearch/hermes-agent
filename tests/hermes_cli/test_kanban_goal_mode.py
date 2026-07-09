@@ -296,3 +296,55 @@ def test_loop_stops_if_task_reclaimed(monkeypatch):
         first_response="x",
     )
     assert res["outcome"] == "stopped"
+
+
+# ---------------------------------------------------------------------------
+# kanban_complete pre-completion judge gate (Issue #61490)
+# ---------------------------------------------------------------------------
+def test_complete_goal_gate_unpacks_four_tuple(monkeypatch, kanban_home):
+    """kanban_complete's judge gate must unpack judge_goal's 4-tuple.
+
+    Regression test for #61490: the gate used ``verdict, reason, _ = judge_goal(...)``
+    (3-value unpack) while judge_goal returns
+    ``(verdict, reason, parse_failed, wait_directive)`` (4 values), raising
+    ``ValueError: too many values to unpack (expected 3)`` in --goal mode.
+    The orchestrator crashed on this and auto-blocked the task after 2 fails.
+    """
+    import tools.kanban_tools as kt
+
+    # Make the judge reachable so the gate is enforced.
+    monkeypatch.setattr(kt, "_goal_judge_available", lambda: True)
+
+    # Return the real 4-tuple contract judge_goal uses.
+    def _fake_judge(goal, last_response, **_kw):
+        return "done", "acceptance met", False, None
+
+    monkeypatch.setattr(kt, "judge_goal", _fake_judge)
+
+    # Goal-mode task + worker context so _enforce_worker_task_ownership passes.
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="goal task",
+            assignee="worker",
+            goal_mode=True,
+        )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    # Must NOT raise ValueError; a "done" verdict lets completion proceed.
+    out = kt._handle_complete(
+        {"task_id": tid, "summary": "all acceptance criteria met"}
+    )
+    assert "rejected by judge" not in out
+    # The task should actually complete (no tool_error string returned).
+    assert out is None or "Goal completion" not in out
+
+    # And a non-"done" verdict must still reject completion via the gate.
+    def _fake_judge_reject(goal, last_response, **_kw):
+        return "continue", "not done yet", False, None
+
+    monkeypatch.setattr(kt, "judge_goal", _fake_judge_reject)
+    out2 = kt._handle_complete(
+        {"task_id": tid, "summary": "still working"}
+    )
+    assert "rejected by judge" in out2

@@ -3,6 +3,9 @@ const os = require('node:os')
 const path = require('node:path')
 const { execFile } = require('node:child_process')
 
+const { signAndVerify } = require('./codesign-mac.cjs')
+const { build: BUILD_CONFIG } = require('../package.json')
+
 function run(command, args) {
   return new Promise((resolve, reject) => {
     execFile(command, args, (error, stdout, stderr) => {
@@ -58,6 +61,27 @@ exports.default = async function notarize(context) {
   if (!fs.existsSync(appPath)) {
     throw new Error(`Cannot notarize missing app bundle: ${appPath}`)
   }
+
+  // BUILD-266: electron-builder silently skips macOS code signing when no
+  // Developer ID identity is configured (no CSC_LINK/CSC_NAME and no
+  // matching keychain identity, as on a bare dev machine) -- it leaves
+  // whatever stale signature the Electron binary shipped with in place. That
+  // shipped straight to /Applications on 2026-07-01 with
+  // Contents/_CodeSignature/ absent and the generic Electron linker-signed
+  // stub identifier instead of com.nousresearch.hermes, and Gatekeeper
+  // rejected the app as "damaged". This afterSign hook previously only ran
+  // real notarization and did nothing when notarization creds were absent,
+  // so the badly-signed bundle sailed through with no error.
+  //
+  // signAndVerify closes that gap unconditionally, for every packaged build
+  // (`npm run pack`, `dist:mac*`, CI, or a dev's manual build) regardless of
+  // whether notarization credentials are configured: it ad-hoc signs the
+  // bundle only if it doesn't already carry a valid, non-stub signature
+  // (never clobbering a real Developer ID signature), then hard-verifies
+  // the result. A verification failure throws here, which aborts the
+  // electron-builder invocation -- a badly-signed .app can never become a
+  // build artifact, let alone get copied into /Applications.
+  await signAndVerify(appPath, { expectedIdentifier: BUILD_CONFIG.appId })
 
   const profile = String(process.env.APPLE_NOTARY_PROFILE || '').trim()
   if (profile) {

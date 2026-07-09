@@ -2,8 +2,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { listPackage } from '@electron/asar'
+
+// codesign-mac.cjs is CommonJS; test-desktop.mjs is an ES module, so pull it
+// in via createRequire rather than converting the whole file.
+const require = createRequire(import.meta.url)
+const { verifyCodesign } = require('./codesign-mac.cjs')
 
 const DESKTOP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PACKAGE_JSON = JSON.parse(fs.readFileSync(path.join(DESKTOP_ROOT, 'package.json'), 'utf8'))
@@ -284,7 +290,7 @@ function launchFresh() {
 //     integrated terminal needs this; see Phase 1F.6).
 //   - The renderer's dist/index.html is reachable (either unpacked or
 //     inside app.asar).
-function validateBundle() {
+async function validateBundle() {
   if (!exists(APP.binary)) {
     die(`Missing packaged app binary: ${APP.binary}`)
   }
@@ -338,6 +344,20 @@ function validateBundle() {
     const spawnHelper = path.join(native.prebuildsDir, 'spawn-helper')
     if (!exists(spawnHelper)) {
       die(`Missing node-pty spawn-helper (required on darwin): ${spawnHelper}`)
+    }
+  }
+
+  // BUILD-266 hard gate: the packaged .app must carry a valid, non-stub
+  // code signature before this bundle is treated as a deployable artifact.
+  // This is exactly the check that would have caught the 2026-07-01
+  // regression (Contents/_CodeSignature/ absent, identifier=Electron)
+  // before it ever reached the manual /Applications deploy step -- run this
+  // (via `npm run test:desktop:existing|fresh|all`) before doing that swap.
+  if (PLATFORM === 'darwin') {
+    try {
+      await verifyCodesign(APP.appPath, { expectedIdentifier: PACKAGE_JSON.build?.appId })
+    } catch (err) {
+      die(`Codesign verification gate failed (BUILD-266): ${err.message}`)
     }
   }
 
@@ -397,12 +417,12 @@ ensurePlatformBuilds()
 
 if (MODE === 'existing') {
   ensurePackagedApp()
-  const result = validateBundle()
+  const result = await validateBundle()
   openApp()
   printArtifacts(result)
 } else if (MODE === 'fresh') {
   ensurePackagedApp()
-  const result = validateBundle()
+  const result = await validateBundle()
   printArtifacts({ ...launchFresh(), ...result })
 } else if (MODE === 'dmg') {
   ensureDmg()
@@ -410,7 +430,7 @@ if (MODE === 'existing') {
   printArtifacts()
 } else if (MODE === 'nsis') {
   ensureNsis()
-  printArtifacts(validateBundle())
+  printArtifacts(await validateBundle())
 } else if (MODE === 'all') {
   if (PLATFORM === 'darwin') {
     ensureDmg()
@@ -419,7 +439,7 @@ if (MODE === 'existing') {
   } else {
     ensurePackagedApp()
   }
-  printArtifacts(validateBundle())
+  printArtifacts(await validateBundle())
 } else {
   help()
 }

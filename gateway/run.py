@@ -354,19 +354,24 @@ def _redact_approval_command(cmd: "str | None") -> str:
 
 
 def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
-    if _GATEWAY_AUTH_ERROR_RE.search(text):
-        return (
-            "⚠️ Provider authentication failed. Check the configured credentials; "
-            "raw provider details are in the gateway logs."
-        )
+    """Map raw provider/API errors to a short user-safe Telegram reply.
+
+    Order matters: rate-limit detection runs before auth-error detection so a
+    429 rate-limit / quota-exhausted response is not misclassified as an
+    authentication failure (#60846).
+    """
+    if _GATEWAY_RATE_LIMIT_RE.search(text):
+        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
     if _GATEWAY_PROVIDER_POLICY_RE.search(text):
         return (
             "⚠️ The model provider rejected the request. I kept the raw provider "
             "error out of chat; check gateway logs for details or try rephrasing."
         )
-    if _GATEWAY_RATE_LIMIT_RE.search(text):
-        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+    if _GATEWAY_AUTH_ERROR_RE.search(text):
+        return (
+            "⚠️ Provider authentication failed. Check the configured credentials; "
+            "raw provider details are in the gateway logs."
+        )
     return (
         "⚠️ The model provider failed after retries. I kept raw provider details "
         "out of chat; check gateway logs for diagnostics."

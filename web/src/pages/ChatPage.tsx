@@ -341,14 +341,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         aria-expanded={mobilePanelOpen}
         aria-controls="chat-side-panel"
         className={cn(
-          "shrink-0 rounded border border-current/20",
-          "min-h-10 px-3 py-2 text-xs font-medium tracking-wide",
+          "min-w-0 max-w-full shrink-0 rounded border border-current/20",
+          "min-h-9 px-2 py-1.5 text-xs font-medium tracking-wide sm:min-h-10 sm:px-3 sm:py-2",
           "text-text-secondary hover:text-midground hover:bg-midground/5",
         )}
       >
-        <span className="inline-flex items-center gap-1.5">
+        <span className="inline-flex min-w-0 items-center gap-1.5">
           <PanelRight className="h-3 w-3 shrink-0" />
-          {modelToolsLabel}
+          <span className="hidden sm:inline">{modelToolsLabel}</span>
+          <span className="sm:hidden">Panel</span>
         </span>
       </Button>,
     );
@@ -989,6 +990,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           id="chat-side-panel"
           role="complementary"
           aria-label={modelToolsLabel}
+          aria-hidden={!mobilePanelOpen}
           className={cn(
             "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
             "border-l border-current/20 text-midground",
@@ -1002,52 +1004,56 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               : "pointer-events-none translate-x-full",
           )}
         >
-          <div
-            className={cn(
-              "flex h-14 shrink-0 items-center justify-between gap-2 border-b border-current/20 px-5",
-            )}
-          >
-            <Typography
-              mondwest
-              className="text-display font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-            >
-              {t.app.modelToolsSheetTitle}
-              <br />
-              {t.app.modelToolsSheetSubtitle}
-            </Typography>
+          {mobilePanelOpen ? (
+            <>
+              <div
+                className={cn(
+                  "flex h-14 shrink-0 items-center justify-between gap-2 border-b border-current/20 px-5",
+                )}
+              >
+                <Typography
+                  mondwest
+                  className="text-display font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
+                >
+                  {t.app.modelToolsSheetTitle}
+                  <br />
+                  {t.app.modelToolsSheetSubtitle}
+                </Typography>
 
-            <Button
-              ghost
-              size="icon"
-              onClick={closeMobilePanel}
-              aria-label={t.app.closeModelTools}
-              className="h-11 w-11 p-0 text-text-secondary hover:text-midground"
-            >
-              <X />
-            </Button>
-          </div>
+                <Button
+                  ghost
+                  size="icon"
+                  onClick={closeMobilePanel}
+                  aria-label={t.app.closeModelTools}
+                  className="h-11 w-11 p-0 text-text-secondary hover:text-midground"
+                >
+                  <X />
+                </Button>
+              </div>
 
-          <div
-            className={cn(
-              "min-h-0 flex-1 overflow-y-auto overflow-x-hidden",
-              "border-t border-current/10",
-            )}
-          >
-            <div className="border-b border-current/10 px-1 py-2">
-              <ChatSidebar
-                channel={channel}
-                profile={scopedProfile}
-                onDashboardNewSessionRequest={startFreshDashboardChat}
-                onSessionTitleChange={handleSessionTitleChange}
-              />
-            </div>
-            <ChatSessionList
-              activeSessionId={resumeParam}
-              profile={scopedProfile}
-              onPicked={closeMobilePanel}
-              onNewChat={startFreshDashboardChat}
-            />
-          </div>
+              <div
+                className={cn(
+                  "min-h-0 flex-1 overflow-y-auto overflow-x-hidden",
+                  "border-t border-current/10",
+                )}
+              >
+                <div className="border-b border-current/10 px-1 py-2">
+                  <ChatSidebar
+                    channel={channel}
+                    profile={scopedProfile}
+                    onDashboardNewSessionRequest={startFreshDashboardChat}
+                    onSessionTitleChange={handleSessionTitleChange}
+                  />
+                </div>
+                <ChatSessionList
+                  activeSessionId={resumeParam}
+                  profile={scopedProfile}
+                  onPicked={closeMobilePanel}
+                  onNewChat={startFreshDashboardChat}
+                />
+              </div>
+            </>
+          ) : null}
         </div>
       </>,
       portalRoot,
@@ -1110,14 +1116,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "bg-black/20",
               "opacity-70 hover:opacity-100 hover:border-current/60",
               "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
+              "bottom-2 right-2 max-w-[calc(100%-1rem)] px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
               "lg:bottom-4 lg:right-4",
             )}
             style={{ color: terminalFg }}
           >
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
+              <span className="hidden sm:inline tracking-wide">
                 {copyState === "copied" ? "copied" : "copy last response"}
               </span>
             </span>

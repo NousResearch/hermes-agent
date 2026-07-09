@@ -110,7 +110,7 @@ export function PageHeaderProvider({
                 className={cn(
                   "flex min-w-0 sm:max-w-md sm:flex-1",
                   isChatRoute
-                    ? "w-auto shrink-0 justify-end"
+                    ? "ml-auto w-auto max-w-[52vw] shrink-0 justify-end overflow-hidden sm:max-w-md"
                     : "w-full justify-start sm:justify-end",
                 )}
               >

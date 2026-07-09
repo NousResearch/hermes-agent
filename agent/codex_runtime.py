@@ -162,10 +162,22 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     compressor = getattr(agent, "context_compressor", None)
     if compressor is not None:
         try:
-            compressor.update_from_response(usage_dict)
             context_window = getattr(turn, "model_context_window", None)
-            if isinstance(context_window, int) and context_window > 0:
-                compressor.context_length = context_window
+            if type(context_window) is int and context_window > 0:
+                configured_cap = getattr(agent, "_config_context_length", None)
+                effective_context = context_window
+                if type(configured_cap) is int and configured_cap > 0:
+                    effective_context = min(context_window, configured_cap)
+                if compressor.context_length != effective_context:
+                    compressor.update_model(
+                        model=agent.model,
+                        context_length=effective_context,
+                        base_url=agent.base_url,
+                        api_key=getattr(agent, "api_key", ""),
+                        provider=agent.provider,
+                        api_mode=agent.api_mode,
+                    )
+            compressor.update_from_response(usage_dict)
         except Exception:
             logger.debug("codex app-server usage update failed", exc_info=True)
 

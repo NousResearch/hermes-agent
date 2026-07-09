@@ -135,6 +135,55 @@ class TestRunConversationCodexPath:
         assert agent.context_compressor.last_total_tokens == 130
         assert agent.context_compressor.context_length == 200000
 
+    @pytest.mark.parametrize(
+        ("provider_window", "configured_cap", "expected_context"),
+        [
+            (372_000, 200_000, 200_000),
+            (200_000, 372_000, 200_000),
+            (372_000, None, 372_000),
+            (372_000, "invalid", 372_000),
+            (372_000, 0, 372_000),
+            (372_000, -1, 372_000),
+            (372_000, True, 372_000),
+        ],
+    )
+    def test_codex_app_server_context_length_config_is_a_cap(
+        self, monkeypatch, provider_window, configured_cap, expected_context,
+    ):
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-context-cap-1",
+                thread_id="thread-context-cap-1",
+                token_usage_last={"inputTokens": 80, "outputTokens": 20},
+                model_context_window=provider_window,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "ensure_started",
+            lambda self: "thread-context-cap-1",
+        )
+        agent = _make_codex_agent()
+        agent._config_context_length = configured_cap
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        compressor = agent.context_compressor
+        assert compressor.context_length == expected_context
+        assert compressor.threshold_tokens == compressor._compute_threshold_tokens(
+            expected_context,
+            compressor.threshold_percent,
+            compressor.max_tokens,
+        )
+        assert compressor.last_prompt_tokens == 80
+        status = compressor.get_status()
+        assert status["context_length"] == expected_context
+        assert status["usage_percent"] == pytest.approx(80 / expected_context * 100)
+
     def test_native_codex_compaction_updates_bookkeeping(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(

@@ -8852,6 +8852,64 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     return True, ""
 
 
+def _venv_lock_prefixes() -> tuple[str, str]:
+    """Return ``(venv_prefix, root_prefix)`` — lowercased, ``os.sep``-terminated —
+    identifying this install's venv directory and checkout root.
+
+    Used to decide whether a live process runs from, or imports out of, this
+    install's venv and would therefore keep its native ``.pyd`` extensions
+    mapped during an update. Factored out so the update-time venv guard and the
+    gateway-child reaper classify holders identically.
+    """
+    venv_dir = PROJECT_ROOT / "venv"
+    try:
+        venv_prefix = str(venv_dir.resolve()).lower().rstrip(os.sep) + os.sep
+    except OSError:
+        venv_prefix = str(venv_dir).lower().rstrip(os.sep) + os.sep
+    try:
+        root_prefix = str(PROJECT_ROOT.resolve()).lower().rstrip(os.sep) + os.sep
+    except OSError:
+        root_prefix = str(PROJECT_ROOT).lower().rstrip(os.sep) + os.sep
+    return venv_prefix, root_prefix
+
+
+def _process_holds_install_venv(
+    exe: str | None,
+    cmdline_raw: str,
+    cwd: str | None,
+    venv_prefix: str,
+    root_prefix: str,
+) -> bool:
+    """True if a process runs from — or imports out of — this install's venv,
+    and so keeps its native ``.pyd`` extensions mapped (blocking a dep sync).
+
+    Mirrors the three signals the venv-holder guard has always used:
+      1. the executable itself lives under ``venv\\Scripts`` (the desktop
+         backend / a gateway child running straight off the venv python),
+      2. a uv/base-interpreter trampoline whose cmdline references the venv
+         path, or
+      3. a ``-m hermes_cli.main ...`` invocation tied to THIS install (install
+         root in the cmdline or as the working directory).
+    """
+    if not exe:
+        return False
+    try:
+        exe_norm = str(Path(exe).resolve()).lower()
+    except (OSError, ValueError):
+        exe_norm = str(exe).lower()
+    cmdline_low = (cmdline_raw or "").lower()
+    cwd_low = str(cwd or "").lower().rstrip(os.sep) + os.sep
+    if exe_norm.startswith(venv_prefix):
+        return True
+    if venv_prefix in cmdline_low:
+        return True
+    if "hermes_cli.main" in cmdline_low and (
+        root_prefix in cmdline_low or cwd_low.startswith(root_prefix)
+    ):
+        return True
+    return False
+
+
 def _detect_venv_python_processes(
     *, exclude_pids: set[int] | None = None
 ) -> list[tuple[int, str, str]]:
@@ -8878,15 +8936,7 @@ def _detect_venv_python_processes(
     except Exception:
         return []
 
-    venv_dir = PROJECT_ROOT / "venv"
-    try:
-        venv_prefix = str(venv_dir.resolve()).lower().rstrip(os.sep) + os.sep
-    except OSError:
-        venv_prefix = str(venv_dir).lower().rstrip(os.sep) + os.sep
-    try:
-        root_prefix = str(PROJECT_ROOT.resolve()).lower().rstrip(os.sep) + os.sep
-    except OSError:
-        root_prefix = str(PROJECT_ROOT).lower().rstrip(os.sep) + os.sep
+    venv_prefix, root_prefix = _venv_lock_prefixes()
 
     skip: set[int] = set(exclude_pids or set())
     skip.add(os.getpid())
@@ -8910,28 +8960,10 @@ def _detect_venv_python_processes(
         exe = info.get("exe")
         if not exe or pid is None or int(pid) in skip:
             continue
-        try:
-            exe_norm = str(Path(exe).resolve()).lower()
-        except (OSError, ValueError):
-            exe_norm = str(exe).lower()
         cmdline_raw = " ".join(info.get("cmdline") or [])
-        cmdline_low = cmdline_raw.lower()
-        cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep
-
-        # Primary match: the executable itself lives under this venv
-        # (venv\Scripts\python(w).exe — the desktop backend / gateway case).
-        is_holder = exe_norm.startswith(venv_prefix)
-        # Fallback: uv/base-interpreter trampolines run a python whose exe is
-        # OUTSIDE the venv but which still imports from it and holds its .pyd
-        # files. Catch those by what they're running: a cmdline that references
-        # this venv's path, or a `-m hermes_cli.main ...` invocation tied to
-        # this install (install root in the cmdline or as the working dir).
-        if not is_holder and venv_prefix in cmdline_low:
-            is_holder = True
-        if not is_holder and "hermes_cli.main" in cmdline_low:
-            if root_prefix in cmdline_low or cwd_low.startswith(root_prefix):
-                is_holder = True
-        if not is_holder:
+        if not _process_holds_install_venv(
+            exe, cmdline_raw, info.get("cwd"), venv_prefix, root_prefix
+        ):
             continue
         name = info.get("name") or Path(exe).name
         matches.append((int(pid), str(name), cmdline_raw[:120]))
@@ -8966,6 +8998,218 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
     lines.append("    hermes update")
     lines.append("  (or use `hermes update --force-venv` to proceed anyway at your own risk)")
     return "\n".join(lines)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Best-effort liveness probe for a PID.
+
+    Prefers psutil (reliable across platforms). If psutil is unavailable,
+    conservatively reports the PID as alive so callers never delete state based
+    on an unverifiable process.
+    """
+    try:
+        import psutil
+
+        return psutil.pid_exists(int(pid))
+    except Exception:
+        # Can't verify -> assume alive (safe default: never act on a maybe-live
+        # process). The desktop's own launch gate self-heals stale markers too.
+        return True
+
+
+def _sweep_stale_update_marker() -> None:
+    """Delete a stale ``.hermes-update-in-progress`` marker under HERMES_HOME.
+
+    The desktop-driven updater (``hermes-setup.exe``) writes this marker for the
+    duration of an update so a relaunched desktop parks instead of spawning a
+    second backend that re-locks the venv (#50238). If that setup process is
+    killed mid-update — the recovery for the venv-lock wedge — the marker is
+    left behind with a now-dead PID and can strand the desktop's next launch
+    gate. ``hermes update`` is the natural recovery action, so sweep a marker
+    whose owning PID is dead here. A marker owned by a LIVE pid (a genuinely
+    concurrent update — including our own parent ``hermes-setup.exe`` when the
+    desktop drives us) is left untouched. Windows-guarded (the wedge is
+    Windows-only); never raises.
+    """
+    if not _is_windows():
+        return
+    try:
+        from hermes_constants import get_hermes_home
+
+        marker = Path(get_hermes_home()) / ".hermes-update-in-progress"
+    except Exception as exc:
+        logger.debug("Could not resolve update-marker path for sweep: %s", exc)
+        return
+    try:
+        raw = marker.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.debug("Could not read update marker %s: %s", marker, exc)
+        return
+    pid_line = (raw.splitlines() or [""])[0].strip() if raw else ""
+    try:
+        pid = int(pid_line)
+    except (TypeError, ValueError):
+        pid = None
+    # A parseable, still-alive owner => a real concurrent update: leave it.
+    if pid is not None and pid > 0 and _pid_is_alive(pid):
+        return
+    try:
+        marker.unlink()
+        print(
+            "→ Cleared a stale update-in-progress marker "
+            f"({marker.name}; owner PID {pid_line or '?'} not running)"
+        )
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.debug("Could not remove stale update marker %s: %s", marker, exc)
+
+
+def _process_is_desktop_backend(cmdline_low: str) -> bool:
+    """True for the Hermes Desktop app's supervised backend (``hermes_cli.main
+    serve`` / dashboard).
+
+    That backend is a child of the Electron app, NOT of a gateway, and the app
+    respawns it within seconds — so it must never be auto-reaped by the update
+    flow (the venv guard refuses and tells the user to close the app instead).
+    Used as a safety exclusion when reaping gateway children.
+    """
+    return "serve" in cmdline_low or "dashboard" in cmdline_low
+
+
+def _snapshot_gateway_venv_children(
+    gateway_pids: list[int],
+) -> list[tuple[int, str, str]]:
+    """Capture venv-resident helper processes spawned by the given gateways.
+
+    A gateway spawns helpers straight off the install venv's python — stdio MCP
+    servers and the perfmon probe among them. Stopping a gateway PID on Windows
+    does NOT reap those children: a graceful drain leaves them orphaned, and
+    they keep native ``.pyd`` files mapped. The venv-process guard in ``hermes
+    update`` then sees them and refuses the update indefinitely, even though the
+    only thing still touching the venv is a child of the gateway we just
+    stopped (the July 2026 ``client_lookup_mcp`` / ``hermes-perfmon`` wedge).
+
+    Snapshot the descendant tree BEFORE the gateways are stopped — once a parent
+    exits, its children's recorded ppid dangles and an after-the-fact descendant
+    walk misses them. Returns ``(pid, name, cmdline)`` for each venv holder so
+    the caller can reap them once the gateways are down. The supervised desktop
+    backend is deliberately excluded (see ``_process_is_desktop_backend``).
+    Windows-only; best-effort; never raises.
+    """
+    if not _is_windows():
+        return []
+    try:
+        import psutil
+    except Exception:
+        return []
+
+    venv_prefix, root_prefix = _venv_lock_prefixes()
+    skip = {os.getpid()}
+    try:
+        for anc in psutil.Process().parents():
+            skip.add(int(anc.pid))
+    except Exception:
+        pass
+
+    collected: dict[int, tuple[int, str, str]] = {}
+    for gpid in gateway_pids:
+        try:
+            descendants = psutil.Process(int(gpid)).children(recursive=True)
+        except Exception:
+            # gateway already gone / access denied — nothing to walk here
+            continue
+        for proc in descendants:
+            try:
+                pid = int(proc.pid)
+            except Exception:
+                continue
+            if pid in skip or pid in collected:
+                continue
+            try:
+                exe = proc.exe()
+            except Exception:
+                exe = None
+            try:
+                cmdline_raw = " ".join(proc.cmdline() or [])
+            except Exception:
+                cmdline_raw = ""
+            try:
+                cwd = proc.cwd()
+            except Exception:
+                cwd = None
+            if not _process_holds_install_venv(
+                exe, cmdline_raw, cwd, venv_prefix, root_prefix
+            ):
+                continue
+            if _process_is_desktop_backend(cmdline_raw.lower()):
+                # A desktop backend should never be parented to a gateway, but
+                # refuse to reap one even if the tree happens to look that way.
+                continue
+            try:
+                name = proc.name()
+            except Exception:
+                name = Path(exe).name if exe else str(pid)
+            collected[pid] = (pid, str(name), cmdline_raw[:120])
+    return list(collected.values())
+
+
+def _terminate_gateway_venv_children(
+    children: list[tuple[int, str, str]],
+    *,
+    wait_timeout: float = 4.0,
+) -> list[int]:
+    """Terminate the venv helpers captured by ``_snapshot_gateway_venv_children``
+    and wait (bounded) for them to exit.
+
+    Called after the gateways themselves are stopped. These are the gateway's
+    own children (stdio MCP servers, perfmon, ...); with the gateway down they
+    are orphans that will NOT respawn until the gateway restarts, so terminating
+    them is safe — and it is exactly what frees the venv so the update's
+    dependency sync can proceed. The gateway resume path re-spawns them on
+    restart. Returns the PIDs we asked to terminate. Best-effort; never raises.
+    """
+    if not _is_windows() or not children:
+        return []
+    try:
+        from gateway.status import terminate_pid
+    except Exception:
+        terminate_pid = None  # type: ignore[assignment]
+
+    asked: list[int] = []
+    for pid, _name, _cmd in children:
+        try:
+            if terminate_pid is not None:
+                # force=True -> taskkill /T /F: also reaps any grandchildren.
+                terminate_pid(int(pid), force=True)
+            else:
+                import psutil
+
+                psutil.Process(int(pid)).kill()
+            asked.append(int(pid))
+        except Exception:
+            # already gone / access denied — the venv guard re-probe is the
+            # backstop, so a failed reap at worst leaves the guard to refuse.
+            pass
+
+    # taskkill returns before the image is fully unloaded; give the reaped PIDs a
+    # bounded window to actually disappear so the venv guard that runs next sees
+    # a clean slate (and the .pyd handles are released).
+    if asked:
+        try:
+            import psutil
+
+            deadline = _time.monotonic() + max(float(wait_timeout), 0.0)
+            pending = set(asked)
+            while pending and _time.monotonic() < deadline:
+                pending = {p for p in pending if psutil.pid_exists(p)}
+                if pending:
+                    _time.sleep(0.1)
+        except Exception:
+            pass
+    return asked
 
 
 def _pause_windows_gateways_for_update() -> dict | None:
@@ -9024,6 +9268,14 @@ def _pause_windows_gateways_for_update() -> dict | None:
             )
         return None
 
+    # Snapshot the venv-resident helpers these gateways supervise (stdio MCP
+    # servers, perfmon) BEFORE we stop them. Stopping a gateway does not reap
+    # its children on Windows, so without this they survive as orphans holding
+    # venv .pyd files locked and the venv-process guard below refuses the update
+    # forever (#50238 follow-up: the July 2026 client_lookup_mcp/perfmon wedge).
+    # Captured here because a dead parent's dangling ppid defeats a later walk.
+    venv_children = _snapshot_gateway_venv_children(running_pids)
+
     profile_processes = {}
     try:
         profile_processes = {
@@ -9076,10 +9328,20 @@ def _pause_windows_gateways_for_update() -> dict | None:
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
+    # Reap the gateway's orphaned venv helpers now that the gateways are down.
+    # They will be re-spawned when the gateway restarts (resume path), so this
+    # only frees the venv for the dependency sync — it does not lose any state.
+    reaped_children = _terminate_gateway_venv_children(venv_children)
+
     if profiles:
         print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
     if force_killed:
         print(f"  → Force-stopped {len(force_killed)} gateway process(es)")
+    if reaped_children:
+        print(
+            f"  → Reaped {len(reaped_children)} venv helper process(es) the "
+            "gateway left running (MCP servers, perfmon)"
+        )
 
     if unmapped_pids:
         respawnable = sum(1 for u in unmapped if u.get("argv"))
@@ -9412,6 +9674,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     print("⚕ Updating Hermes Agent...")
     print()
+
+    # Clear a stale desktop update marker left by a killed hermes-setup.exe
+    # before anything else — running `hermes update` is the recovery path for
+    # the venv-lock wedge, and a dead-owner marker would otherwise strand the
+    # desktop's next launch gate. No-op unless Windows + a dead-owner marker.
+    _sweep_stale_update_marker()
 
     # On Windows, abort early if another hermes.exe is holding the venv shim
     # open. Continuing would result in a string of WinError 32 warnings and

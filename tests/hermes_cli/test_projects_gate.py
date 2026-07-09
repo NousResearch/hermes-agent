@@ -73,7 +73,7 @@ class TestProjectsEnabledPredicate:
 
 
 class TestCliParserGate:
-    """Verify ``hermes project`` is wired up only when the gate is open."""
+    """Verify ``hermes project`` is wired up unconditionally and the handler gates."""
 
     def test_parser_registers_full_tree_when_enabled(self, monkeypatch):
         # Force the gate open regardless of any on-disk config the test
@@ -95,21 +95,42 @@ class TestCliParserGate:
         # without raising when the gate is open.
         assert p is not None
 
-    def test_cli_dispatch_warns_when_disabled(self, monkeypatch):
-        """The CLI surface must surface a helpful message, not crash."""
-        # Force the gate closed.
-        from hermes_cli import projects_gate
+    def test_handler_returns_disabled_when_gate_off(self, monkeypatch, capsys):
+        """cmd_project() short-circuits to the disabled message + exit 1."""
+        from hermes_cli import projects_gate, main
 
         monkeypatch.setattr(projects_gate, "projects_enabled", lambda cfg=None: False)
 
-        # The predicate is consulted at parser-build time inside main.build_parser().
-        # We don't spin up the full main() in a unit test — the test below
-        # confirms the predicate returns False under the patch, which is
-        # what main.py's gate checks.
-        assert projects_gate.projects_enabled() is False
+        rc = main.cmd_project(None)
+        captured = capsys.readouterr()
 
-        msg = projects_gate.projects_disabled_message()
-        assert "disabled" in msg.lower()
+        assert rc == 1
+        assert "disabled" in captured.err.lower()
+        # projects_command must NOT have been called.
+        # (If it had been, ``None`` would crash inside the real handler.)
+
+    def test_handler_dispatches_when_gate_on(self, monkeypatch):
+        """cmd_project() delegates to projects_command() when the gate is open."""
+        from hermes_cli import projects_gate, main
+        import hermes_cli.projects_cmd as projects_cmd
+
+        monkeypatch.setattr(projects_gate, "projects_enabled", lambda cfg=None: True)
+
+        sentinel_args = object()
+        calls = []
+
+        def _spy(args):
+            calls.append(args)
+            return 0
+
+        # cmd_project re-imports ``projects_command`` from the module on every
+        # call, so patch the module attribute (not a local binding).
+        monkeypatch.setattr(projects_cmd, "projects_command", _spy)
+
+        rc = main.cmd_project(sentinel_args)
+
+        assert rc == 0
+        assert calls == [sentinel_args]
 
 
 # ---------------------------------------------------------------------------

@@ -15,14 +15,20 @@ Two defects made it dead code:
 
 Together these made a mis-sized context window present as a hung CLI rather than a
 warning. Effectiveness is now scored against the goal -- did the prompt get under the
-threshold? -- and the check is made in ``should_compress()`` against the caller's own
-token count on both sides.
+threshold? -- judged in ``update_from_response()``, the one place that sees the
+provider's real prompt count for the just-compacted conversation.
 
-That last detail matters. An analytic ``floor = current_tokens - rough_estimate(messages)``
-looks equivalent and is not: it silently absorbs the skew between the rough estimator and
-the provider's real tokenizer, reports it as incompressible overhead, and disables
-compaction on a perfectly healthy session. ``test_no_false_positive_under_tokenizer_skew``
-pins that.
+Two subtleties this pins:
+
+* The verdict must NOT live in ``should_compress()``. That runs twice per turn with
+  two different measures (a rough preflight estimate and the real post-response count,
+  #36718); the rough one can dip below the threshold and reset the strike every turn,
+  re-opening the loop. ``test_rough_preflight_reading_does_not_reopen_the_loop``.
+
+* It must not be computed analytically as ``floor = current_tokens - rough_estimate``.
+  That subtracts an estimate from a real count, absorbs the tokenizer skew into "floor",
+  and disables compaction on a healthy session.
+  ``test_no_false_positive_under_tokenizer_skew``.
 """
 import pytest
 
@@ -50,6 +56,22 @@ def _messages(n: int, size: int = 1500) -> list:
         role = "user" if i % 2 == 0 else "assistant"
         msgs.append({"role": role, "content": f"m{i} " + "z" * size})
     return msgs
+
+
+def _turn(cc, msgs, real_prompt_tokens):
+    """One agent turn as conversation_loop drives it.
+
+    should_compress() gates on the real prompt count; if it fires, compress()
+    runs and the provider then reports real usage for the shorter conversation.
+    The anti-thrashing verdict is judged in update_from_response() against that
+    real count -- not inside should_compress(), which is called twice per turn
+    with two different measures. Returns (msgs, did_compact).
+    """
+    if not cc.should_compress(real_prompt_tokens):
+        return msgs, False
+    msgs = cc.compress(msgs, current_tokens=real_prompt_tokens)
+    cc.update_from_response({"prompt_tokens": real_prompt_tokens})
+    return msgs, True
 
 
 class TestSavingsBasis:
@@ -88,21 +110,47 @@ class TestFutilityGuard:
         cc = _compressor(threshold_tokens=24_576)
         msgs = _messages(14)
         # Full prompt is far above threshold and dominated by system + tools,
-        # so it never drops no matter how much the message list shrinks.
+        # so the real count never drops no matter how the message list shrinks.
         real_prompt_tokens = 33_564
 
         fired = 0
         for _ in range(6):
-            if cc.should_compress(real_prompt_tokens):
+            msgs, did = _turn(cc, msgs, real_prompt_tokens)
+            if did:
                 fired += 1
-                msgs = cc.compress(msgs, current_tokens=real_prompt_tokens)
                 msgs.append({"role": "user", "content": "next " + "w" * 4000})
 
         assert cc._ineffective_compression_count >= 2
         assert not cc.should_compress(real_prompt_tokens), (
-            "compaction that cannot clear the threshold must stop and warn"
+            "compaction that cannot clear the threshold must stop"
         )
         assert fired <= 3, f"expected the loop to break early, compacted {fired}x"
+
+    def test_rough_preflight_reading_does_not_reopen_the_loop(self):
+        """should_compress() runs twice per turn with two different measures.
+
+        The pre-API gate uses a rough estimate that can dip below the threshold;
+        the post-response gate uses the real count that does not. If the verdict
+        lived in should_compress(), the rough reading would reset the strike
+        every turn and the loop would never stop. Judging it in
+        update_from_response() (real-vs-real) closes that hole.
+        """
+        cc = _compressor(threshold_tokens=24_576)
+        msgs = _messages(13)
+        rough, real = 20_000, 33_564  # rough dips under; real never does
+
+        fired = 0
+        for _ in range(8):
+            cc.should_compress(rough)          # pre-API gate (rough)
+            msgs, did = _turn(cc, msgs, real)  # post-response gate (real) + usage
+            if did:
+                fired += 1
+                msgs.append({"role": "user", "content": "more " + "w" * 3000})
+
+        assert fired <= 2, (
+            f"a sub-threshold rough reading must not re-open the loop; "
+            f"compacted {fired}x"
+        )
 
     def test_effective_compaction_still_resets_the_counter(self):
         """A compaction that gets the prompt under the threshold is not thrashing."""
@@ -131,26 +179,34 @@ class TestFutilityGuard:
         real_prompt = floor + int(skew * estimate_messages_tokens_rough(msgs))
         assert cc.should_compress(real_prompt)
         msgs = cc.compress(msgs, current_tokens=real_prompt)
-        real_prompt = floor + int(skew * estimate_messages_tokens_rough(msgs))
+        real_after = floor + int(skew * estimate_messages_tokens_rough(msgs))
+        cc.update_from_response({"prompt_tokens": real_after})  # provider's real count
 
-        assert real_prompt < cc.threshold_tokens, "compaction really did clear it"
-        assert not cc.should_compress(real_prompt)
+        assert real_after < cc.threshold_tokens, "compaction really did clear it"
         assert cc._ineffective_compression_count == 0, (
             "tokenizer skew must not be mistaken for an incompressible floor"
         )
 
-    def test_counter_resets_once_the_prompt_fits_again(self):
-        """One failed pass must not permanently disable compaction."""
+    def test_a_failed_pass_records_exactly_one_strike(self):
+        """A compaction that leaves the real prompt over the threshold: one strike.
+
+        The verdict is judged once, when the provider reports real usage — not on
+        every should_compress() reading.
+        """
         cc = _compressor(threshold_tokens=24_576)
         msgs = _messages(14)
 
-        cc.should_compress(33_564)
+        assert cc.should_compress(33_564)
         cc.compress(msgs, current_tokens=33_564)
-        cc.should_compress(33_564)                 # still over -> 1 strike
+        assert cc._ineffective_compression_count == 0, "no verdict before real usage"
+
+        cc.update_from_response({"prompt_tokens": 33_564})  # still over
         assert cc._ineffective_compression_count == 1
 
-        cc.should_compress(1_000)                  # now under -> forgiven
-        assert cc._ineffective_compression_count == 0
+        # A later reading, rough or real, must not add phantom strikes.
+        cc.should_compress(33_564)
+        cc.should_compress(20_000)
+        assert cc._ineffective_compression_count == 1
 
 
 class TestMinimumMessagesBranch:

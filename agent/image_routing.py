@@ -611,13 +611,19 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
 
 
 def _file_to_data_url(path: Path) -> Optional[str]:
-    """Encode a local image as a base64 data URL at its native size.
+    """Encode a local image as a base64 data URL, downscaling if oversized.
 
-    Size limits are NOT enforced here — the agent retry loop
-    (``run_agent._try_shrink_image_parts_in_messages``) shrinks on the
-    provider's first rejection. Keeping this simple means providers that
-    accept large images (OpenAI 49 MB+, Gemini 100 MB) don't pay a silent
-    quality tax just because one other provider is stricter.
+    Proactively validates both pixel dimensions and payload size against
+    common provider limits (Anthropic 5 MB / 8000px per side, others are
+    generally looser).  Images that exceed either threshold are downscaled
+    *before* encoding, so oversized originals never enter session history.
+
+    Without this proactive cap, a large image baked into immutable history
+    triggers the reactive shrink (``try_shrink_image_parts_in_messages``) on
+    *every* API call because the shrunken result is never persisted — causing
+    infinite retry loops (#61994).  The reactive shrink only runs when a
+    provider already rejected the image; by then the oversized pixels are
+    already in history and cannot be amended.
 
     Format compatibility IS handled here: if the sniffed MIME isn't one
     of ``_UNIVERSALLY_SUPPORTED_MIMES`` (i.e. it's something like AVIF,
@@ -665,6 +671,81 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         )
         raw = transcoded
         mime = "image/png"
+
+    # Proactive embed-time size limiting (#61994).
+    # Images baked into conversation history are re-sent on every turn.
+    # Anthropic rejects base64 images over 5 MB or 8000 px per side with a
+    # non-retryable 400.  Because history is immutable, a reactive shrink
+    # (try_shrink_image_parts_in_messages) can only patch the *next* API
+    # call — the oversized bytes stay in history forever, triggering the
+    # shrink on every subsequent turn.  We downscale HERE, before the image
+    # ever enters history, so the retry loop never fires.
+    #
+    # The caps below (4 MB base64, 7900 px longest side) match the identical
+    # proactive embed limits in tools/vision_tools._build_native_vision_tool_result,
+    # which was the first path to implement this pattern for vision-tool results.
+    # Using the same constants keeps behaviour consistent whether the image
+    # arrives via `build_native_content_parts` or via the vision fast-path.
+    try:
+        from tools.vision_tools import (
+            _EMBED_TARGET_BYTES,
+            _EMBED_MAX_DIMENSION,
+            _resize_image_for_vision,
+        )
+        import io as _io
+
+        # Quick dimension check via Pillow (returns False if Pillow is
+        # unavailable, falling back to byte estimate below).
+        needs_resize = False
+        try:
+            from PIL import Image as _PILImg
+            with _PILImg.open(_io.BytesIO(raw)) as _img:
+                if max(_img.size) > _EMBED_MAX_DIMENSION:
+                    needs_resize = True
+        except Exception:
+            pass  # Pillow can't decode; fall through to byte-based estimate
+
+        if not needs_resize:
+            # Base64 expands raw bytes by ~4/3 plus header overhead.
+            # Quick estimate avoids the full encode cost for small images.
+            estimated_b64 = (len(raw) * 4) // 3 + 100
+            if estimated_b64 > _EMBED_TARGET_BYTES:
+                needs_resize = True
+
+        if needs_resize:
+            _mime_to_suffix = {
+                "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp",
+                "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/bmp": ".bmp",
+            }
+            suffix = _mime_to_suffix.get(mime, ".jpg")
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(
+                prefix="hermes_ingest_", suffix=suffix, delete=False,
+            )
+            try:
+                tmp.write(raw)
+                tmp.close()
+                resized = _resize_image_for_vision(
+                    Path(tmp.name),
+                    mime_type=mime,
+                    max_base64_bytes=_EMBED_TARGET_BYTES,
+                    max_dimension=_EMBED_MAX_DIMENSION,
+                )
+                if resized:
+                    logger.info(
+                        "image_routing: proactively downscaled %s "
+                        "(dimension/byte cap) before embedding into history",
+                        path.name,
+                    )
+                    return resized
+            finally:
+                try:
+                    Path(tmp.name).unlink(missing_ok=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass  # Resize path unavailable; proceed with raw encoding
+
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 

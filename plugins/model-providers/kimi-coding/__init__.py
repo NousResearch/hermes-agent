@@ -9,6 +9,7 @@ This module covers the chat_completions path (/v1 endpoint).
 
 from typing import Any
 
+from hermes_constants import project_reasoning_effort
 from providers import register_provider
 from providers.base import OMIT_TEMPERATURE, ProviderProfile
 
@@ -17,7 +18,11 @@ class KimiProfile(ProviderProfile):
     """Kimi/Moonshot — temperature omitted, thinking xor reasoning_effort."""
 
     def build_api_kwargs_extras(
-        self, *, reasoning_config: dict | None = None, **context
+        self,
+        *,
+        reasoning_config: dict | None = None,
+        model: str | None = None,
+        **context,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Kimi reasoning controls.
 
@@ -46,7 +51,15 @@ class KimiProfile(ProviderProfile):
         # Enabled: prefer an explicit effort; only fall back to extra_body
         # thinking when no recognized effort is requested.
         effort = (reasoning_config.get("effort") or "").strip().lower()
-        if effort in {"low", "medium", "high"}:
+        # Project Hermes' global ceiling only while shaping a concrete request.
+        # Context-free profile probes retain the conservative unsupported fallback.
+        if effort == "max" and model:
+            projected_effort = project_reasoning_effort(
+                effort, ("low", "medium", "high")
+            )
+            if projected_effort is not None:
+                top_level["reasoning_effort"] = projected_effort
+        elif effort in {"low", "medium", "high"}:
             top_level["reasoning_effort"] = effort
         else:
             extra_body["thinking"] = {"type": "enabled"}

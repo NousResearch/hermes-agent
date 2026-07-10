@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from hermes_constants import project_reasoning_effort
+
 # LM Studio accepts these top-level reasoning_effort values via its
 # OpenAI-compatible chat.completions endpoint.
 _LM_VALID_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
@@ -27,10 +29,10 @@ def resolve_lmstudio_effort(
 ) -> Optional[str]:
     """Return the ``reasoning_effort`` string to send to LM Studio, or ``None``.
 
-    ``None`` means "omit the field": the user picked a level the model can't
-    honor, so let LM Studio fall back to the model's declared default rather
-    than silently substituting a different effort. When ``allowed_options`` is
-    falsy (probe failed), skip clamping and send the resolved effort anyway.
+    When options are advertised, ``max`` projects to the strongest lower
+    supported tier. Other unsupported efforts retain the existing omission
+    behavior. When ``allowed_options`` is falsy (probe failed), preserve the
+    legacy fallback instead of sending an unverified ``max`` value.
     """
     effort = "medium"
     if reasoning_config and isinstance(reasoning_config, dict):
@@ -39,10 +41,18 @@ def resolve_lmstudio_effort(
         else:
             raw = (reasoning_config.get("effort") or "").strip().lower()
             raw = _LM_EFFORT_ALIASES.get(raw, raw)
-            if raw in _LM_VALID_EFFORTS:
+            if raw == "max" or raw in _LM_VALID_EFFORTS:
                 effort = raw
     if allowed_options:
-        allowed = {_LM_EFFORT_ALIASES.get(opt, opt) for opt in allowed_options}
-        if effort not in allowed:
-            return None
-    return effort
+        allowed = set()
+        for option in allowed_options:
+            normalized_option = str(option).strip().lower()
+            allowed.add(_LM_EFFORT_ALIASES.get(normalized_option, normalized_option))
+        if effort == "none":
+            return effort if effort in allowed else None
+        if effort in allowed:
+            return effort
+        if effort == "max":
+            return project_reasoning_effort(effort, allowed)
+        return None
+    return "medium" if effort == "max" else effort

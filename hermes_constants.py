@@ -9,6 +9,7 @@ import shutil
 import stat
 import sys
 import sysconfig
+from collections.abc import Iterable
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -792,6 +793,33 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
 
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
+_REASONING_EFFORT_RANK = {
+    effort: rank for rank, effort in enumerate(VALID_REASONING_EFFORTS)
+}
+
+
+def project_reasoning_effort(
+    requested_effort: object,
+    supported_efforts: Iterable[str] | None,
+) -> str | None:
+    """Project a requested effort to the strongest supported lower tier."""
+    requested = str(requested_effort or "").strip().lower()
+    requested_rank = _REASONING_EFFORT_RANK.get(requested)
+    if requested_rank is None or supported_efforts is None:
+        return None
+
+    best_effort = None
+    best_rank = -1
+    for supported_effort in supported_efforts:
+        normalized = str(supported_effort or "").strip().lower()
+        supported_rank = _REASONING_EFFORT_RANK.get(normalized)
+        if (
+            supported_rank is not None
+            and best_rank < supported_rank <= requested_rank
+        ):
+            best_effort = normalized
+            best_rank = supported_rank
+    return best_effort
 
 
 def parse_reasoning_effort(effort) -> dict | None:

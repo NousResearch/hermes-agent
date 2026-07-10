@@ -109,6 +109,7 @@ The adapter is a subclass of `BasePlatformAdapter` from `gateway/platforms/base.
 | `send_video(chat_id, path, caption)` | Send a video |
 | `send_animation(chat_id, path, caption)` | Send a GIF/animation |
 | `send_image_file(chat_id, path, caption)` | Send image from local file |
+| `fetch_thread_context(chat_id, thread_id, *, exclude_event_id)` | Return prior thread messages as a text block (or `None`). The gateway calls this when a threaded message arrives for a session with no transcript, so the agent isn't blind to the thread's history. See the Matrix adapter for a reference implementation. Platforms that backfill at receive time via `MessageEvent.channel_context` (Discord) don't need it. |
 
 ### Interactive UX (recommended if your platform supports tappable buttons)
 

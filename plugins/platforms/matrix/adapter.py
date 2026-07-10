@@ -46,6 +46,10 @@ Environment variables:
                               when requester metadata is available (default: true)
     MATRIX_APPROVAL_TIMEOUT_SECONDS
                               Reaction approval/model-picker timeout (default: 300)
+    MATRIX_THREAD_BACKFILL_LIMIT
+                              Max prior thread messages fetched as context when a
+                              threaded message starts a fresh session; 0 disables
+                              (default: 20)
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ import mimetypes
 import os
 import re
 import time
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
 from html import escape as _html_escape
@@ -68,6 +72,7 @@ from typing import Any, Dict, Optional, Set
 try:
     from mautrix.types import (
         ContentURI,
+        Event as MatrixEvent,
         EventID,
         EventType,
         PaginationDirection,
@@ -84,12 +89,14 @@ except ImportError:
     # won't be instantiated in production, but tests may exercise
     # adapter methods so stubs must have the right attributes.
     ContentURI = EventID = RoomID = SyncToken = UserID = str  # type: ignore[misc,assignment]
+    MatrixEvent = None  # type: ignore[misc,assignment]
 
     class _EventTypeStub:  # type: ignore[no-redef]
         ROOM_MESSAGE = "m.room.message"
         REACTION = "m.reaction"
         ROOM_ENCRYPTED = "m.room.encrypted"
         ROOM_NAME = "m.room.name"
+        ROOM_REDACTION = "m.room.redaction"
 
     EventType = _EventTypeStub  # type: ignore[misc,assignment]
 
@@ -202,6 +209,148 @@ def _normalize_matrix_bang_command(text: str) -> str:
     if resolved is None:
         return text
     return f"/{resolved}{match.group(2) or ''}"
+
+
+@dataclass(frozen=True)
+class MatrixRelation:
+    """Parsed ``m.relates_to``, per the spec's Threading and Rich replies modules.
+
+    ``reply_target`` is set only for genuine replies: a rich reply, or a
+    reply within a thread where ``is_falling_back`` is false or absent.
+    A thread continuation carries its synthetic ``m.in_reply_to`` pointer
+    (added for unthreaded clients) in ``thread_fallback_target`` instead —
+    the user did not reply to that event.
+    """
+
+    thread_root: Optional[str] = None
+    reply_target: Optional[str] = None
+    thread_fallback_target: Optional[str] = None
+    is_edit: bool = False
+
+
+def _parse_relates_to(relates_to: Any) -> MatrixRelation:
+    """Interpret an event's ``m.relates_to`` content."""
+    if not isinstance(relates_to, dict):
+        return MatrixRelation()
+
+    rel_type = relates_to.get("rel_type")
+    if rel_type == "m.replace":
+        return MatrixRelation(is_edit=True)
+
+    in_reply_to = relates_to.get("m.in_reply_to")
+    target: Optional[str] = None
+    if isinstance(in_reply_to, dict):
+        target = in_reply_to.get("event_id") or None
+
+    if rel_type == "m.thread":
+        thread_root = relates_to.get("event_id") or None
+        if target is None:
+            return MatrixRelation(thread_root=thread_root)
+        if relates_to.get("is_falling_back"):
+            return MatrixRelation(
+                thread_root=thread_root, thread_fallback_target=target
+            )
+        return MatrixRelation(thread_root=thread_root, reply_target=target)
+
+    return MatrixRelation(reply_target=target)
+
+
+_REPLY_FALLBACK_SENDER_RE = re.compile(r"^<@[^>]+>\s?")
+
+_EVENT_TEXT_CACHE_SIZE = 500
+
+
+def _strip_reply_fallback(body: str) -> tuple[str, Optional[str]]:
+    """Strip a legacy rich-reply fallback and capture its quoted text.
+
+    Reply fallbacks were removed from the spec in v1.13, but clients
+    SHOULD still strip them from older events: drop leading ``> ``
+    lines, stopping at the first line without the prefix. The quoted
+    text (minus the ``<@sender>`` prefix on its first line) is returned
+    alongside the cleaned body so it can seed reply context without a
+    server round-trip.
+    """
+    if not body.startswith("> "):
+        return body, None
+
+    quoted: list[str] = []
+    remainder: list[str] = []
+    past_fallback = False
+    for line in body.split("\n"):
+        if not past_fallback:
+            if line.startswith("> ") or line == ">":
+                quoted.append(line[2:] if line.startswith("> ") else "")
+                continue
+            if line == "":
+                past_fallback = True
+                continue
+            past_fallback = True
+        remainder.append(line)
+
+    if quoted:
+        quoted[0] = _REPLY_FALLBACK_SENDER_RE.sub("", quoted[0])
+    quoted_text = "\n".join(quoted).strip() or None
+
+    clean = "\n".join(remainder) if remainder else body
+    return clean, quoted_text
+
+
+class _MxReplyQuoteExtractor(HTMLParser):
+    """Collect the text content of a leading ``<mx-reply>`` element."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._depth = 0
+        self._done = False
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "mx-reply" and not self._done:
+            self._depth += 1
+        elif tag == "br" and self._depth and not self._done:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "mx-reply" and self._depth:
+            self._depth -= 1
+            if self._depth == 0:
+                self._done = True
+
+    def handle_data(self, data: str) -> None:
+        if self._depth and not self._done:
+            self._parts.append(data)
+
+    def text(self) -> str:
+        return "".join(self._parts)
+
+
+def _extract_mx_reply_quote(formatted_body: Any) -> Optional[str]:
+    """Extract the quoted text from a legacy ``<mx-reply>`` fallback.
+
+    Per the spec the fallback is only recognised when ``formatted_body``
+    begins with the ``<mx-reply>`` start tag. The "In reply to @user"
+    header line the legacy format embeds is dropped.
+    """
+    if not isinstance(formatted_body, str):
+        return None
+    if not formatted_body.lstrip().startswith("<mx-reply"):
+        return None
+
+    parser = _MxReplyQuoteExtractor()
+    try:
+        parser.feed(formatted_body)
+        parser.close()
+    except Exception:
+        return None
+
+    text = parser.text().strip()
+    if not text:
+        return None
+
+    first, sep, rest = text.partition("\n")
+    if sep and first.strip().lower().startswith("in reply to"):
+        text = rest.strip()
+    return text or None
 
 
 class _MatrixHtmlSanitizer(HTMLParser):
@@ -841,13 +990,19 @@ class MatrixAdapter(BasePlatformAdapter):
         # Set of room IDs we've joined
         self._joined_rooms: Set[str] = set()
         # Event deduplication (bounded deque keeps newest entries)
-        from collections import deque
+        from collections import OrderedDict, deque
 
         self._processed_events: deque = deque(maxlen=1000)
         self._processed_events_set: set = set()
 
         # Buffer for undecrypted events pending key receipt.
         # Each entry: (room_id, event, timestamp)
+
+        # Recently seen event texts (inbound messages and our own sends),
+        # keyed by event id. Resolves reply targets without a server
+        # round-trip — and, in encrypted rooms, without needing the megolm
+        # session again.
+        self._event_text_cache: OrderedDict[str, tuple[str, str]] = OrderedDict()
 
         # Thread participation tracking (for require_mention bypass)
         self._threads = ThreadParticipationTracker("matrix")
@@ -896,6 +1051,13 @@ class MatrixAdapter(BasePlatformAdapter):
         self._matrix_session_scope = (
             raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         )
+        raw_backfill = config.extra.get("thread_backfill_limit")
+        if raw_backfill is None:
+            raw_backfill = os.getenv("MATRIX_THREAD_BACKFILL_LIMIT", "20")
+        try:
+            self._thread_backfill_limit: int = max(0, int(raw_backfill))
+        except (TypeError, ValueError):
+            self._thread_backfill_limit = 20
         self._process_notices: bool = os.getenv(
             "MATRIX_PROCESS_NOTICES", "false"
         ).lower() in ("true", "1", "yes")
@@ -1470,6 +1632,11 @@ class MatrixAdapter(BasePlatformAdapter):
             wait_sync=True,
         )
         client.add_event_handler(
+            EventType.ROOM_REDACTION,
+            self._on_redaction,
+            wait_sync=True,
+        )
+        client.add_event_handler(
             IntEvt.INVITE,
             self._on_invite,
             wait_sync=True,
@@ -1606,6 +1773,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     timeout=45,
                 )
                 last_event_id = str(event_id)
+                self._cache_event_text(last_event_id, self._user_id or "", chunk)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
                 # On E2EE errors, retry after sharing keys.
@@ -1621,6 +1789,9 @@ class MatrixAdapter(BasePlatformAdapter):
                             timeout=45,
                         )
                         last_event_id = str(event_id)
+                        self._cache_event_text(
+                            last_event_id, self._user_id or "", chunk
+                        )
                         logger.info(
                             "Matrix: sent event %s to %s (after key share)",
                             last_event_id,
@@ -2568,8 +2739,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
         relates_to = source_content.get("m.relates_to", {})
 
-        # Skip edits (m.replace relation).
+        # Edits (m.replace) don't dispatch a new turn, but the replacement
+        # text must refresh the seen-event cache so later replies to the
+        # edited message quote the current version.
         if relates_to.get("rel_type") == "m.replace":
+            self._apply_edit_to_cache(sender, source_content)
             return
 
         # Ignore m.notice to prevent bot-to-bot loops (m.notice is the
@@ -2595,7 +2769,7 @@ class MatrixAdapter(BasePlatformAdapter):
         event_id: str,
         body: str,
         source_content: dict,
-        relates_to: dict,
+        relation: MatrixRelation,
     ) -> Optional[tuple]:
         """Shared mention/thread/DM gating for text and media handlers.
 
@@ -2606,9 +2780,7 @@ class MatrixAdapter(BasePlatformAdapter):
         is_dm = await self._is_dm_room(room_id)
         chat_type = "dm" if is_dm else "group"
 
-        thread_id = None
-        if relates_to.get("rel_type") == "m.thread":
-            thread_id = relates_to.get("event_id")
+        thread_id = relation.thread_root
 
         formatted_body = source_content.get("formatted_body")
         # m.mentions.user_ids (MSC3952 / Matrix v1.7) — authoritative mention signal.
@@ -2706,6 +2878,276 @@ class MatrixAdapter(BasePlatformAdapter):
 
         return body, is_dm, chat_type, thread_id, display_name, source
 
+    def _cache_event_text(self, event_id: str, sender: str, body: str) -> None:
+        """Remember an event's text for later reply-context resolution."""
+        if not event_id or not body:
+            return
+        cache = self._event_text_cache
+        cache[event_id] = (sender, body)
+        cache.move_to_end(event_id)
+        while len(cache) > _EVENT_TEXT_CACHE_SIZE:
+            cache.popitem(last=False)
+
+    def _cached_event_text(self, event_id: str) -> Optional[tuple[str, str]]:
+        return self._event_text_cache.get(event_id)
+
+    def _apply_edit_to_cache(self, sender: str, source_content: dict) -> None:
+        """Refresh the cached text of an edited event from ``m.new_content``.
+
+        Without this, a reply to an edited message would surface the
+        pre-edit text as context. Only the original sender can edit an
+        event (servers enforce this), so the edit is a trustworthy text
+        source even for events that were never cached.
+        """
+        relates_to = source_content.get("m.relates_to")
+        target = relates_to.get("event_id") if isinstance(relates_to, dict) else None
+        if not target:
+            return
+
+        new_content = source_content.get("m.new_content")
+        if not isinstance(new_content, dict):
+            return
+        body = new_content.get("body")
+        if not isinstance(body, str) or not body.strip():
+            return
+
+        body, _ = _strip_reply_fallback(body)
+        self._cache_event_text(target, sender, body.strip())
+
+    async def _on_redaction(self, evt: Any) -> None:
+        """Drop redacted events from the seen-event cache.
+
+        Redacted content must not resurface as reply or thread context.
+        """
+        redacts = str(getattr(evt, "redacts", "") or "")
+        if redacts:
+            self._event_text_cache.pop(redacts, None)
+
+    async def _decrypt_fetched_event(
+        self, evt: Any, room_id: str, event_id: str
+    ) -> Optional[Any]:
+        """Decrypt a fetched event when the room is encrypted.
+
+        Returns the event unchanged when it isn't encrypted, or ``None``
+        when decryption is unavailable or fails (e.g. the megolm session
+        was never shared with this device).
+        """
+        if getattr(evt, "type", None) != EventType.ROOM_ENCRYPTED:
+            return evt
+
+        crypto = getattr(self._client, "crypto", None)
+        if crypto is None:
+            return None
+        try:
+            return await crypto.decrypt_megolm_event(evt)
+        except Exception as exc:
+            logger.debug(
+                "Matrix: could not decrypt event %s in %s: %s",
+                event_id,
+                room_id,
+                exc,
+            )
+            return None
+
+    @staticmethod
+    def _event_body(evt: Any) -> str:
+        content = getattr(evt, "content", None)
+        if isinstance(content, dict):
+            body = content.get("body", "")
+        else:
+            body = getattr(content, "body", "")
+        return body if isinstance(body, str) else ""
+
+    async def _resolve_event_context(
+        self, room_id: str, event_id: str
+    ) -> Optional[tuple[str, str]]:
+        """Resolve the sender and text of an event for reply context.
+
+        Checks the seen-event cache first, then fetches the event via
+        ``/rooms/{roomId}/event/{eventId}``, decrypting when needed.
+        Returns ``(sender, body)``, or ``None`` when the event cannot be
+        resolved — callers degrade to an id-only reference.
+        """
+        if not event_id:
+            return None
+
+        cached = self._cached_event_text(event_id)
+        if cached is not None:
+            return cached
+
+        if not self._client:
+            return None
+        try:
+            evt = await self._client.get_event(RoomID(room_id), EventID(event_id))
+        except Exception as exc:
+            logger.debug(
+                "Matrix: could not fetch event %s in %s: %s", event_id, room_id, exc
+            )
+            return None
+
+        evt = await self._decrypt_fetched_event(evt, room_id, event_id)
+        if evt is None:
+            return None
+
+        body = self._event_body(evt).strip()
+        if not body:
+            return None
+        # A fetched parent may itself be a legacy reply; keep only its own text.
+        body, _ = _strip_reply_fallback(body)
+        body = body.strip()
+        if not body:
+            return None
+
+        sender = str(getattr(evt, "sender", "") or "")
+        self._cache_event_text(event_id, sender, body)
+        return sender, body
+
+    async def _resolve_reply_context(
+        self,
+        room_id: str,
+        relation: MatrixRelation,
+        quoted_hint: Optional[str],
+    ) -> tuple[Optional[str], Optional[str], Optional[str], bool]:
+        """Build the reply fields for a genuine reply.
+
+        Returns ``(reply_to_text, author_id, author_name, is_own_message)``.
+        A legacy fallback quote wins when present (free); otherwise the
+        target event is resolved from cache or the API.
+        """
+        if not relation.reply_target:
+            return None, None, None, False
+
+        if quoted_hint:
+            return quoted_hint, None, None, False
+
+        resolved = await self._resolve_event_context(room_id, relation.reply_target)
+        if resolved is None:
+            return None, None, None, False
+
+        sender, text = resolved
+        author_name = await self._get_display_name(room_id, sender) if sender else None
+        is_own = bool(sender) and sender == self._user_id
+        return text, sender or None, author_name, is_own
+
+    async def fetch_thread_context(
+        self,
+        chat_id: str,
+        thread_id: str,
+        *,
+        exclude_event_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Render a thread's prior messages for history-less sessions.
+
+        The gateway calls this when a threaded message arrives for a
+        session with no transcript, so the agent isn't blind to what the
+        thread is about. Uses the Threading module's relations endpoint
+        (``GET /rooms/{roomId}/relations/{threadRootId}/m.thread``) plus a
+        root-event fetch, rendered chronologically like the Discord
+        channel-context block.
+        """
+        limit = self._thread_backfill_limit
+        if limit <= 0 or not self._client or not thread_id:
+            return None
+
+        method = (
+            self._client.api.Method.GET
+            if hasattr(self._client.api, "Method")
+            else "GET"
+        )
+        path = (
+            f"/_matrix/client/v1/rooms/{quote(chat_id, safe='')}"
+            f"/relations/{quote(thread_id, safe='')}/m.thread"
+        )
+        try:
+            resp = await self._client.api.request(
+                method,
+                path,
+                query_params={"dir": "b", "limit": str(limit)},
+            )
+        except Exception as exc:
+            logger.debug(
+                "Matrix: thread context fetch failed for %s in %s: %s",
+                thread_id,
+                chat_id,
+                exc,
+            )
+            return None
+
+        chunk = resp.get("chunk", []) if isinstance(resp, dict) else []
+
+        entries: list[tuple[str, str]] = []
+        root = await self._resolve_event_context(chat_id, thread_id)
+        if root is not None:
+            entries.append(root)
+
+        # The relations endpoint returns newest-first with dir=b.
+        for raw in reversed(chunk[:limit]):
+            if not isinstance(raw, dict):
+                continue
+            event_id = raw.get("event_id", "")
+            if exclude_event_id and event_id == exclude_event_id:
+                continue
+            sender = str(raw.get("sender", "") or "")
+            content = raw.get("content", {})
+            if not isinstance(content, dict):
+                continue
+            if raw.get("type") == "m.room.encrypted" or "algorithm" in content:
+                resolved = await self._resolve_encrypted_thread_event(
+                    chat_id, raw, event_id
+                )
+                if resolved is None:
+                    continue
+                sender, body = resolved
+            else:
+                body = content.get("body", "")
+                if not isinstance(body, str):
+                    continue
+                body, _ = _strip_reply_fallback(body)
+            body = body.strip()
+            if not body:
+                continue
+            self._cache_event_text(event_id, sender, body)
+            entries.append((sender, body))
+
+        if not entries:
+            return None
+
+        lines = ["[Earlier messages in this thread]"]
+        for sender, body in entries:
+            name = await self._get_display_name(chat_id, sender) if sender else sender
+            lines.append(f"[{name}] {body}")
+        return "\n".join(lines)
+
+    async def _resolve_encrypted_thread_event(
+        self, room_id: str, raw: dict, event_id: str
+    ) -> Optional[tuple[str, str]]:
+        """Decrypt one raw encrypted event from a relations response."""
+        cached = self._cached_event_text(event_id)
+        if cached is not None:
+            return cached
+
+        crypto = getattr(self._client, "crypto", None)
+        if crypto is None or MatrixEvent is None:
+            return None
+        try:
+            evt = MatrixEvent.deserialize(raw)
+            evt = await crypto.decrypt_megolm_event(evt)
+        except Exception as exc:
+            logger.debug(
+                "Matrix: skipping undecryptable thread event %s in %s: %s",
+                event_id,
+                room_id,
+                exc,
+            )
+            return None
+
+        body = self._event_body(evt).strip()
+        if not body:
+            return None
+        body, _ = _strip_reply_fallback(body)
+        sender = str(getattr(evt, "sender", "") or "")
+        return sender, body.strip()
+
     async def _handle_text_message(
         self,
         room_id: str,
@@ -2721,44 +3163,40 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         body = _normalize_matrix_bang_command(body)
 
+        relation = _parse_relates_to(relates_to)
+
         ctx = await self._resolve_message_context(
             room_id,
             sender,
             event_id,
             body,
             source_content,
-            relates_to,
+            relation,
         )
         if ctx is None:
             return
         body, is_dm, chat_type, thread_id, display_name, source = ctx
 
-        # Reply-to detection.
-        reply_to = None
-        in_reply_to = relates_to.get("m.in_reply_to", {})
-        if in_reply_to:
-            reply_to = in_reply_to.get("event_id")
-
-        # Strip reply fallback from body.
-        if reply_to and body.startswith("> "):
-            lines = body.split("\n")
-            stripped = []
-            past_fallback = False
-            for line in lines:
-                if not past_fallback:
-                    if line.startswith("> ") or line == ">":
-                        continue
-                    if line == "":
-                        past_fallback = True
-                        continue
-                    past_fallback = True
-                stripped.append(line)
-            body = "\n".join(stripped) if stripped else body
+        # Strip the legacy reply fallback (spec v1.13: no longer sent, but
+        # SHOULD still be removed), capturing its quote for reply context.
+        quoted_hint = None
+        if relation.reply_target or relation.thread_fallback_target:
+            body, quoted_hint = _strip_reply_fallback(body)
+            if quoted_hint is None:
+                quoted_hint = _extract_mx_reply_quote(
+                    source_content.get("formatted_body")
+                )
 
         # Re-run bang normalization after reply-fallback stripping so a quoted
         # reply whose actual content is a bang command (e.g. ``> quoted\n\n!model``)
         # is treated as a command, matching how ``/command`` is recognized below.
         body = _normalize_matrix_bang_command(body)
+
+        reply_to_text, reply_author_id, reply_author_name, reply_is_own = (
+            await self._resolve_reply_context(room_id, relation, quoted_hint)
+        )
+
+        self._cache_event_text(event_id, sender, body)
 
         msg_type = MessageType.TEXT
         if body.startswith("/"):
@@ -2770,7 +3208,11 @@ class MatrixAdapter(BasePlatformAdapter):
             source=source,
             raw_message=source_content,
             message_id=event_id,
-            reply_to_message_id=reply_to,
+            reply_to_message_id=relation.reply_target,
+            reply_to_text=reply_to_text,
+            reply_to_author_id=reply_author_id,
+            reply_to_author_name=reply_author_name,
+            reply_to_is_own_message=reply_is_own,
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -2947,17 +3389,31 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
 
+        relation = _parse_relates_to(relates_to)
+
         ctx = await self._resolve_message_context(
             room_id,
             sender,
             event_id,
             body,
             source_content,
-            relates_to,
+            relation,
         )
         if ctx is None:
             return
         body, is_dm, chat_type, thread_id, display_name, source = ctx
+
+        quoted_hint = None
+        if relation.reply_target or relation.thread_fallback_target:
+            body, quoted_hint = _strip_reply_fallback(body)
+            if quoted_hint is None:
+                quoted_hint = _extract_mx_reply_quote(
+                    source_content.get("formatted_body")
+                )
+
+        reply_to_text, reply_author_id, reply_author_name, reply_is_own = (
+            await self._resolve_reply_context(room_id, relation, quoted_hint)
+        )
 
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
@@ -2978,6 +3434,11 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=event_id,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=relation.reply_target,
+            reply_to_text=reply_to_text,
+            reply_to_author_id=reply_author_id,
+            reply_to_author_name=reply_author_name,
+            reply_to_is_own_message=reply_is_own,
         )
 
         await self.handle_message(msg_event)

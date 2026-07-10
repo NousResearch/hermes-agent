@@ -10388,6 +10388,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _is_shared_multi_user and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
 
+        # Thread backfill: a threaded message landing in a session with no
+        # history (fresh thread, expired session, re-keyed routing) would
+        # leave the agent blind to what the thread is about. Adapters that
+        # can reconstruct thread history expose fetch_thread_context();
+        # platforms that backfill at receive time (Discord) set
+        # channel_context themselves and are skipped by the guard below.
+        if (
+            not history
+            and source is not None
+            and getattr(source, "thread_id", None)
+            and not getattr(event, "channel_context", None)
+            and not getattr(event, "internal", False)
+        ):
+            _thread_adapter = self.adapters.get(source.platform)
+            if _thread_adapter is not None and hasattr(
+                _thread_adapter, "fetch_thread_context"
+            ):
+                try:
+                    _thread_context = await _thread_adapter.fetch_thread_context(
+                        source.chat_id,
+                        source.thread_id,
+                        exclude_event_id=getattr(event, "message_id", None),
+                    )
+                except Exception as exc:
+                    logger.debug("Thread context backfill failed: %s", exc)
+                    _thread_context = None
+                if _thread_context:
+                    event.channel_context = _thread_context
+
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
         # trigger message, not the backfill block.

@@ -79,11 +79,13 @@ export const PendingApprovalFallback: FC = () => {
       style={{ bottom: 'calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 0.875rem)' }}
     >
       <div className="pointer-events-auto rounded-xl border border-primary/30 bg-(--ui-chat-surface-background) px-3 py-2 shadow-lg backdrop-blur-xl [-webkit-backdrop-filter:blur(1rem)]">
-        <div className="flex min-w-0 items-center gap-2 text-sm text-primary">
-          <AlertCircle className="size-4 shrink-0" />
+        <div className="flex min-w-0 items-start gap-2 text-sm text-primary">
+          <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <span className="shrink-0 font-medium">{t.assistant.approval.jumpToApproval}</span>
           {request.description && (
-            <span className="min-w-0 truncate text-(--ui-text-tertiary)">{request.description}</span>
+            <span className="max-h-24 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-words text-(--ui-text-tertiary)">
+              {request.description}
+            </span>
           )}
         </div>
         <ApprovalBar request={request} surface="floating" />

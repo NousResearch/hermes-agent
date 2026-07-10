@@ -30,9 +30,9 @@ function part(toolName: string): ToolPart {
   return { toolName, type: `tool-${toolName}` } as unknown as ToolPart
 }
 
-function setRequest(command = 'rm -rf /tmp/x', allowPermanent?: boolean) {
+function setRequest(command = 'rm -rf /tmp/x', allowPermanent?: boolean, description = 'dangerous command') {
   $activeSessionId.set('sess-1')
-  setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1' })
+  setApprovalRequest({ allowPermanent, command, description, sessionId: 'sess-1' })
 }
 
 function mockGateway() {
@@ -139,6 +139,19 @@ describe('PendingToolApproval', () => {
     expect(fallback).not.toBeNull()
     expect(within(fallback as HTMLElement).getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(within(fallback as HTMLElement).getByRole('button', { name: /Reject/ })).toBeTruthy()
+  })
+
+  it('keeps multi-line fallback descriptions readable', () => {
+    const description = 'Before:\nold value\nAfter:\nnew value'
+    setRequest('apply changes', undefined, description)
+    render(<PendingApprovalFallback />)
+
+    const descriptionElement = screen.getByText((_, element) => element?.textContent === description)
+    const classes = [...descriptionElement.classList]
+
+    expect(classes).toEqual(expect.arrayContaining(['whitespace-pre-wrap', 'break-words', 'overflow-auto']))
+    expect(classes.some(className => className.startsWith('max-h-'))).toBe(true)
+    expect(classes).not.toContain('truncate')
   })
 
   it('hides the floating fallback once the inline approval bar is mounted', async () => {

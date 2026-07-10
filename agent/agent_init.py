@@ -464,6 +464,7 @@ def init_agent(
     agent._loop_retry_count = 0
     agent._loop_guard_total = 0   # session tally of loops caught (grep LOOP_GUARD in agent.log)
     agent._larp_guard_total = 0   # session tally of LARPs caught (grep LARP_GUARD)
+    agent._turns_since_compaction = None   # turns since last context compaction (LARP post-compaction window); None until first compaction
     agent._active_loop_detector = None
     try:
         from agent.loop_detector import load_loop_detection_config

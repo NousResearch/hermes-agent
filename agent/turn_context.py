@@ -500,6 +500,11 @@ def build_turn_context(
     agent._verification_stop_nudges = 0
     agent._pre_verify_nudges = 0
     agent._larp_reprompts = 0
+    # Count turns since the last context compaction (drives the optional
+    # post-compaction LARP-vigilance window). Stays None until the first
+    # compaction resets it to 0 (conversation_compression); increment per turn.
+    if isinstance(getattr(agent, "_turns_since_compaction", None), int):
+        agent._turns_since_compaction += 1
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.

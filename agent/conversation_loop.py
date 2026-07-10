@@ -5285,7 +5285,7 @@ def run_conversation(
                         larp_detection_enabled,
                     )
 
-                    if larp_detection_enabled():
+                    if larp_detection_enabled(agent=agent):
                         _larp_nudge = build_larp_nudge(
                             messages=messages,
                             final_response=final_response,

@@ -1377,6 +1377,7 @@ DEFAULT_CONFIG = {
         "judge_tier_enabled": False,    # opt-in: extra LLM check for ambiguous outcome claims
         "max_reprompts": 2,
         "exempt_toolsets": [],          # add tool-name tokens (e.g. "memory","todo") to make detection stricter
+        "post_compaction_window": 0,    # opt-in: run the guard for N turns after each compaction even if disabled (LARP spikes post-compaction)
     },
 
     "compression": {

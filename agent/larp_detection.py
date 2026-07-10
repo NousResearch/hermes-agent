@@ -60,9 +60,35 @@ _CLAIM_PATTERNS = [
     ),
 ]
 
-# "narrate then stop": the message ENDS announcing intent without doing it.
+# Present-progressive / imperative action verbs used to ANNOUNCE (not report)
+# work. Local models routinely end a turn with these instead of calling the
+# tool: "I am proceeding with X now.", "Executing now.", "Proceeding with
+# dispatch...". (Deliberately excludes status words like "waiting"/"processing".)
+_ACTION_GERUNDS = (
+    "proceeding|executing|dispatching|initiating|starting|running|creating|"
+    "fixing|correcting|continuing|beginning|generating|building|deploying|"
+    "uploading|downloading|fetching|searching|updating|writing|saving|"
+    "ingesting|installing|committing|pushing|sending|applying|implementing|"
+    "rewriting|recreating|moving|kicking\s+off"
+)
+
+# "narrate then stop": the message END announces intent instead of doing it.
+# Covers "I'll X" / "I will X" / "I am going to X" AND the present-progressive
+# "I am (now) proceeding/dispatching..." / "I'm executing..." — the dominant
+# real-world form the earlier future-only pattern missed. Requires a gerund
+# after "I am" so states ("I am unable/ready/done/sorry") don't match.
 _NARRATE_THEN_STOP = re.compile(
-    r"\bI(?:'ll|\s+will|\s+am\s+going\s+to|\s+am\s+now\s+going\s+to)\s+\w+",
+    r"\bI(?:'ll|\s+will)\s+\w+"
+    r"|\bI(?:'m|\s+am)\s+(?:now\s+|currently\s+)?(?:going\s+to\s+\w+|\w+ing\b)",
+    re.IGNORECASE,
+)
+
+# Bare terminal action announcement: a sentence STARTING with an action gerund
+# and ENDING the message with "now"/"immediately"/"…" (no trailing question).
+# Catches "Executing now.", "Starting Batch 1 now.", "Proceeding with dispatch…".
+_TERMINAL_ACTION = re.compile(
+    r"(?:^|[.!\n]\s*)(?:" + _ACTION_GERUNDS + r")\b[^?\n]*?"
+    r"(?:\bnow\b|\bimmediately\b|\.\.\.|…)[.!…\"'\s]*$",
     re.IGNORECASE,
 )
 
@@ -91,11 +117,24 @@ def _flag(sec: dict, key: str, default: bool) -> bool:
     return bool(val)
 
 
-def larp_detection_enabled(config: Optional[dict] = None) -> bool:
+def larp_detection_enabled(config: Optional[dict] = None, agent: Any = None) -> bool:
     env = os.environ.get("HERMES_LARP_DETECTION")
     if env is not None:
         return env.strip().lower() not in _FALSEY
-    return _flag(_section(config), "enabled", False)
+    sec = _section(config)
+    if _flag(sec, "enabled", False):
+        return True
+    # Opt-in high-risk window: LARPing spikes right after context compaction —
+    # the summary reads as completed-action prose with the tool calls stripped,
+    # and the model imitates it. When post_compaction_window > 0, run the guard
+    # for that many turns after each compaction even if otherwise disabled.
+    # Default 0 -> no behavior change.
+    window = int(sec.get("post_compaction_window", 0) or 0)
+    if window > 0 and agent is not None:
+        tsc = getattr(agent, "_turns_since_compaction", None)
+        if isinstance(tsc, int) and 0 <= tsc <= window:
+            return True
+    return False
 
 
 def _exempt_tokens(config: Optional[dict]) -> set[str]:
@@ -122,9 +161,17 @@ def _first_claim(text: str) -> Optional[str]:
         if _MODAL_PREFIX.search(prefix):
             continue
         return text[m.start() : m.start() + 140].strip()
-    # narrate-then-stop only when the intent is at the very END of the message.
-    tail = text[-180:]
+    # Intent-announcement (narrate-then-stop / bare terminal action) counts only
+    # at the END of the message — and NOT when the message ends by asking the
+    # user ("Want me to X now?" / "... now?"), which is correct stop-to-confirm
+    # behavior, not a LARP.
+    if text.rstrip().endswith("?"):
+        return None
+    tail = text[-200:]
     m = _NARRATE_THEN_STOP.search(tail)
+    if m:
+        return tail[m.start() : m.start() + 140].strip()
+    m = _TERMINAL_ACTION.search(tail)
     if m:
         return tail[m.start() : m.start() + 140].strip()
     return None

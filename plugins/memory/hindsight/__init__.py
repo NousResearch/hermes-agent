@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
+from agent.redact import redact_sensitive_text
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
@@ -427,6 +428,19 @@ def _normalize_retain_tags(value: Any) -> List[str]:
         seen.add(tag)
         normalized.append(tag)
     return normalized
+
+
+def _redact_retain_value(value: Any) -> Any:
+    """Copy a retain payload value, redacting every nested string value."""
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=True)
+    if isinstance(value, dict):
+        return {key: _redact_retain_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_retain_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_retain_value(item) for item in value)
+    return value
 
 
 _OBSERVATION_SCOPE_KEYWORDS = {"per_tag", "combined", "all_combinations"}
@@ -1575,17 +1589,26 @@ class HindsightMemoryProvider(MemoryProvider):
         *,
         context: str | None = None,
         document_id: str | None = None,
-        metadata: Dict[str, str] | None = None,
+        metadata: Dict[str, Any] | None = None,
         tags: List[str] | None = None,
         retain_async: bool | None = None,
     ) -> Dict[str, Any]:
+        """Build a sanitized content payload without altering protocol identity.
+
+        All content-bearing fields, including metadata values, are recursively
+        scanned. Trusted structural fields (bank_id, document_id, and
+        retain/update mode) remain unchanged so routing and append identity
+        cannot be altered by redaction. Metadata keys are trusted schema names.
+        """
         kwargs: Dict[str, Any] = {
             "bank_id": self._bank_id,
-            "content": content,
-            "metadata": metadata or self._build_metadata(message_count=1, turn_index=self._turn_index),
+            "content": _redact_retain_value(content),
+            "metadata": _redact_retain_value(
+                metadata or self._build_metadata(message_count=1, turn_index=self._turn_index)
+            ),
         }
         if context is not None:
-            kwargs["context"] = context
+            kwargs["context"] = _redact_retain_value(context)
         if document_id:
             kwargs["document_id"] = document_id
         if retain_async is not None:
@@ -1595,9 +1618,9 @@ class HindsightMemoryProvider(MemoryProvider):
             if tag not in merged_tags:
                 merged_tags.append(tag)
         if merged_tags:
-            kwargs["tags"] = merged_tags
+            kwargs["tags"] = _redact_retain_value(merged_tags)
         if self._observation_scopes:
-            kwargs["observation_scopes"] = self._observation_scopes
+            kwargs["observation_scopes"] = _redact_retain_value(self._observation_scopes)
         return kwargs
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:

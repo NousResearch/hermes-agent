@@ -643,6 +643,16 @@ class GatewaySlashCommandsMixin:
             t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
             t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
         ])
+        workspace = getattr(session_entry, "current_workspace", "") or ""
+        if not workspace:
+            try:
+                from gateway.workspace_state import default_workspace
+
+                workspace = default_workspace()
+            except Exception:
+                workspace = ""
+        if workspace:
+            lines.append(f"**Workspace:** `{workspace}`")
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
         if source.platform == Platform.MATRIX:

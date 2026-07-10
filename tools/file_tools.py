@@ -297,7 +297,7 @@ def _live_cwd_if_owned(env, task_id: str) -> str | None:
         return None
     owner = str(getattr(env, "cwd_owner", "") or "")
     tid = str(task_id or "")
-    if owner and tid and owner != "default" and tid != "default" and owner != tid:
+    if owner and tid and owner != "default" and owner != tid:
         return None
     return live
 
@@ -360,7 +360,10 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     live = _get_live_tracking_cwd(task_id)
     registered = _registered_task_cwd_override(task_id)
     configured = _configured_terminal_cwd()
-    if live and task_id not in ("", "default"):
+    # Ownership is enforced by _get_live_tracking_cwd, including for the
+    # collapsed "default" task id. A trusted live cwd is therefore always the
+    # most authoritative anchor (for example, after an interactive ``cd``).
+    if live:
         return live
     # A session-specific registered override (TUI/Desktop/ACP workspace cwd)
     # is more authoritative than the shared last-known/default anchor: it is
@@ -381,8 +384,6 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
         return preserved
     if configured:
         return configured
-    if live:
-        return live
     return None
 
 

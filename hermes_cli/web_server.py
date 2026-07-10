@@ -10052,9 +10052,6 @@ def _validate_dashboard_cron_context_from(
             )
 
 
-_CRON_PROFILE_LOCK = threading.RLock()
-
-
 def _cron_profile_dicts() -> List[Dict[str, Any]]:
     """Return dashboard profile records, falling back to a directory scan."""
     from hermes_cli import profiles as profiles_mod
@@ -10092,33 +10089,23 @@ def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[st
 def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args, **kwargs):
     """Run cron.jobs helpers against the selected profile's cron directory.
 
-    cron.jobs keeps CRON_DIR/JOBS_FILE/OUTPUT_DIR as module globals resolved
-    from the process HERMES_HOME at import time. The dashboard is a single
-    process that can inspect many profiles, so temporarily retarget those
-    globals while holding a lock and restore them immediately after the call.
+    The dashboard is a single process that can inspect many profiles. Route
+    storage through cron.jobs' execution-context override so dashboard calls
+    cannot retarget a concurrent desktop ticker's load/save transaction.
     """
     profile_name, home = _cron_profile_home(target_profile)
-    with _CRON_PROFILE_LOCK:
-        from cron import jobs as cron_jobs
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
-        )
+    from cron import jobs as cron_jobs
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
 
-        old_cron_dir = cron_jobs.CRON_DIR
-        old_jobs_file = cron_jobs.JOBS_FILE
-        old_output_dir = cron_jobs.OUTPUT_DIR
-        token = set_hermes_home_override(str(home))
-        cron_jobs.CRON_DIR = home / "cron"
-        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
-        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
-        try:
+    token = set_hermes_home_override(str(home))
+    try:
+        with cron_jobs.use_cron_store(home):
             result = getattr(cron_jobs, func_name)(*args, **kwargs)
-        finally:
-            cron_jobs.CRON_DIR = old_cron_dir
-            cron_jobs.JOBS_FILE = old_jobs_file
-            cron_jobs.OUTPUT_DIR = old_output_dir
-            reset_hermes_home_override(token)
+    finally:
+        reset_hermes_home_override(token)
 
     if isinstance(result, list):
         return [_annotate_cron_job(j, profile_name, home) for j in result]
@@ -10412,31 +10399,26 @@ def _fire_cron_job_for_profile(profile: str, job_id: str) -> bool:
     """Run ONE due cron job end-to-end for ``profile`` via the resolved
     scheduler provider's ``fire_due`` (store CAS claim + ``run_one_job``).
 
-    Retargets the ``cron.jobs`` module globals to the profile's cron dir under
-    the shared lock — same mechanism as ``_call_cron_for_profile`` — so the
-    claim and the run operate on the right profile's ``jobs.json``. Runs with
-    no live adapters; delivery falls back to the per-platform send path (the
-    dashboard process has no gateway adapter handles, exactly like the desktop
-    cron path above).
+    Scope both cron storage and the runtime Hermes home so the job's store,
+    config, credentials, scripts, skills, and output all belong to the selected
+    profile. Runs with no live adapters; delivery falls back to the per-platform
+    send path.
     """
     _profile_name, home = _cron_profile_home(profile)
-    with _CRON_PROFILE_LOCK:
-        from cron import jobs as cron_jobs
-        from cron.scheduler_provider import resolve_cron_scheduler
+    from cron import jobs as cron_jobs
+    from cron.scheduler_provider import resolve_cron_scheduler
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
 
-        old_cron_dir = cron_jobs.CRON_DIR
-        old_jobs_file = cron_jobs.JOBS_FILE
-        old_output_dir = cron_jobs.OUTPUT_DIR
-        cron_jobs.CRON_DIR = home / "cron"
-        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
-        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
-        try:
+    token = set_hermes_home_override(str(home))
+    try:
+        with cron_jobs.use_cron_store(home):
             provider = resolve_cron_scheduler()
             return bool(provider.fire_due(job_id, adapters=None, loop=None))
-        finally:
-            cron_jobs.CRON_DIR = old_cron_dir
-            cron_jobs.JOBS_FILE = old_jobs_file
-            cron_jobs.OUTPUT_DIR = old_output_dir
+    finally:
+        reset_hermes_home_override(token)
 
 
 @app.post("/api/cron/fire")
@@ -10481,7 +10463,10 @@ async def cron_fire_webhook(request: Request):
     if not job_id:
         return JSONResponse({"error": "missing job_id"}, status_code=400)
 
-    profile = _find_cron_job_profile(job_id)
+    # _find_cron_job_profile walks every profile and lists its jobs (file
+    # I/O per profile) — run it off the event loop like the other cron
+    # dashboard endpoints.
+    profile = await _run_cron_dashboard_io(_find_cron_job_profile, job_id)
     if not profile:
         # Job is gone (cancelled / completed) — nothing to fire. 200 so NAS
         # does not retry a fire that is intentionally absent.
@@ -10556,7 +10541,11 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
         # Blueprint-created jobs deliver to the dashboard's configured target by
         # default; the form's deliver slot overrides via spec["deliver"].
         spec.pop("origin", None)
-        return _call_cron_for_profile(profile, "create_job", **spec)
+        # create_job does per-profile file I/O — keep it off the event loop
+        # like the sibling cron endpoints (partial avoids **spec keys ever
+        # colliding with the wrapper's own parameters).
+        _create = functools.partial(_call_cron_for_profile, profile, "create_job", **spec)
+        return await _run_cron_dashboard_io(_create)
     except HTTPException:
         raise
     except Exception as e:

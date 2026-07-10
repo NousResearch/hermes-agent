@@ -835,6 +835,40 @@ class TestGetDueJobs:
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
 
+    def test_idless_job_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
+        """A job missing its 'id' key must not crash the tick or freeze siblings.
+
+        Regression: jobs authored by a direct jobs.json edit (bypassing
+        create_job) sometimes used the key 'job_id' instead of 'id'. The logging
+        helpers evaluated ``job.get("name", job["id"])`` -- Python evaluates the
+        default argument ``job["id"]`` eagerly, so an id-less job raised
+        ``KeyError: 'id'`` mid-tick. That exception aborted
+        ``_get_due_jobs_locked()`` BEFORE ``save_jobs()`` ran, so every healthy
+        job's fast-forwarded next_run_at was computed in memory then discarded --
+        the whole profile's scheduler froze in a per-minute loop.
+        """
+        healthy = create_job(prompt="Healthy", schedule="every 1h")
+
+        jobs = load_jobs()
+        # Push the healthy job beyond its grace window so the fast-forward path
+        # (one of the id-less-crash sites) runs.
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=35)).isoformat()
+        # A malformed record: no 'id' key, mirroring the real corruption.
+        jobs.append({
+            "name": "idless-job",
+            "schedule": {"kind": "cron", "expr": "0 4 * * *"},
+            "enabled": True,
+            "no_agent": True,
+            "next_run_at": None,
+        })
+        save_jobs(jobs)
+
+        # Must not raise KeyError.
+        due = get_due_jobs()
+
+        # The healthy sibling is still discovered despite the malformed neighbor.
+        assert any(d.get("id") == healthy["id"] for d in due)
+
 
     def test_long_execution_does_not_perpetually_defer(self, tmp_cron_dir, monkeypatch):
         """#33315: a recurring job whose runtime exceeds interval+grace must still
@@ -1412,6 +1446,117 @@ class TestMarkJobRunConcurrency:
             )
 
 
+class TestBadNextRunAtRecovery:
+    """Regression: malformed next_run_at must not crash the due scan or starve siblings.
+
+    Mirrors the id-less and non-dict-schedule patterns: a single bad persisted
+    record in jobs.json must not abort _get_due_jobs_locked before save.
+    """
+
+    def test_bad_next_run_at_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
+        """One job with unparseable next_run_at + one healthy due sibling.
+
+        get_due_jobs must succeed and return the healthy job; the bad record
+        must be repaired (next_run_at cleared so recovery can set a sane value).
+        """
+        from datetime import timezone, timedelta as td
+        now = datetime.now(timezone.utc)
+        past = (now - td(seconds=30)).isoformat()
+        future = (now + td(days=1)).isoformat()
+
+        # Bad record: next_run_at is not a valid ISO string (e.g. from hand-edit or corruption)
+        # Healthy sibling is past due with good schedule.
+        bad_job = {
+            "id": "bad-next",
+            "schedule": {"kind": "interval", "minutes": 60},
+            "next_run_at": "not-a-valid-iso-timestamp!!!",
+            "enabled": True,
+            "created_at": past,
+        }
+        good_job = {
+            "id": "good-sibling",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "next_run_at": past,
+            "enabled": True,
+            "created_at": past,
+        }
+        save_jobs([bad_job, good_job])
+
+        # Must not raise
+        due = get_due_jobs()
+
+        # The healthy job must still be returned
+        ids = [j["id"] for j in due]
+        assert "good-sibling" in ids, f"healthy sibling missing from due jobs: {ids}"
+        assert "bad-next" not in ids  # bad one may be repaired and/or not yet due after repair
+
+        # Bad job should have been auto-repaired (next_run_at stripped or fixed)
+        repaired = get_job("bad-next")
+        assert repaired is not None
+        nr = repaired.get("next_run_at")
+        if nr is not None:
+            # If still present it must now be parseable
+            datetime.fromisoformat(nr)
+
+        # Calling again must remain stable (no crash on re-scan)
+        due2 = get_due_jobs()
+        assert any(j["id"] == "good-sibling" for j in due2)
+
+
+class TestPerJobScanContainment:
+    """Structural guard: ANY per-job exception in the due scan must degrade to
+    skipping that one job for the tick — never abort the scan and starve
+    healthy siblings (the freeze class behind bad id / schedule / next_run_at).
+    """
+
+    def test_unforeseen_per_job_exception_does_not_starve_siblings(self, tmp_cron_dir):
+        """Simulate a FUTURE malformed-field variant none of the shape
+        normalizers repair, by making grace computation raise for one job
+        only. The per-job guard must skip it and still return the sibling."""
+        from datetime import timezone, timedelta as td
+        from unittest.mock import patch as mock_patch
+
+        now = datetime.now(timezone.utc)
+        past = (now - td(seconds=30)).isoformat()
+
+        poison = {
+            "id": "poison",
+            # minutes=7 tags this schedule so the patched helper can target it
+            "schedule": {"kind": "interval", "minutes": 7},
+            "next_run_at": past,
+            "enabled": True,
+            "created_at": past,
+        }
+        good = {
+            "id": "good-sibling",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "next_run_at": past,
+            "enabled": True,
+            "created_at": past,
+        }
+        save_jobs([poison, good])
+
+        import cron.jobs as jobs_mod
+        real_grace = jobs_mod._compute_grace_seconds
+
+        def selective_grace(schedule):
+            if schedule.get("minutes") == 7:
+                raise RuntimeError("simulated unforeseen malformed field")
+            return real_grace(schedule)
+
+        with mock_patch.object(jobs_mod, "_compute_grace_seconds", selective_grace):
+            due = get_due_jobs()  # must not raise
+
+        ids = [j["id"] for j in due]
+        assert "good-sibling" in ids, f"healthy sibling starved: {ids}"
+        assert "poison" not in ids
+
+        # Scheduler stays alive on subsequent ticks too.
+        with mock_patch.object(jobs_mod, "_compute_grace_seconds", selective_grace):
+            due2 = get_due_jobs()
+        assert any(j["id"] == "good-sibling" for j in due2)
+
+
 class TestSaveJobOutput:
     def test_creates_output_file(self, tmp_cron_dir):
         output_file = save_job_output("test123", "# Results\nEverything ok.")
@@ -1602,3 +1747,40 @@ class TestClaimDispatch:
         due = get_due_jobs()
         assert due == []
         assert load_jobs() == []  # cleaned up
+
+    def test_bad_schedule_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
+        """Regression for a job with non-dict 'schedule' (null / string / etc.
+
+        from direct jobs.json edit or old writer).
+
+        Such a record must not raise in _get_due_jobs_locked and must not
+        prevent healthy sibling jobs from being returned or having their
+        next_run_at advanced+persisted. Mirrors the id-less job P1 pattern.
+        """
+        past = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+
+        bad = {
+            "id": "bad-sched",
+            "name": "bad",
+            "enabled": True,
+            "schedule": None,  # poison: not a dict
+            "next_run_at": future,  # not due
+        }
+        good = {
+            "id": "good",
+            "name": "good",
+            "enabled": True,
+            "schedule": {"kind": "interval", "minutes": 5},
+            "next_run_at": past,
+        }
+        save_jobs([bad, good])
+
+        due = get_due_jobs()
+        due_ids = [j["id"] for j in due]
+        assert "good" in due_ids
+        assert "bad-sched" not in due_ids  # bad one ignored, no crash
+
+        # At minimum, the good job's record is still intact (no corruption from the bad neighbor)
+        loaded = {j["id"]: j for j in load_jobs()}
+        assert "good" in loaded

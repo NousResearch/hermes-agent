@@ -549,7 +549,12 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
 
     # Suffix quality ranking: pro/max > (no suffix) > omni/flash/mini/lite
     # Lower number = preferred
-    _SUFFIX_RANK = {"pro": 0, "max": 0, "plus": 0, "turbo": 0}
+    # "sol" is the flagship tier of the GPT-5.6 series (sol > terra > luna);
+    # without it, alias resolution would tiebreak alphabetically and pick
+    # luna (the cheapest) for `/model gpt`. Unlike pro/max/plus/turbo it is a
+    # series codename, not a generic quality word — revisit if another vendor
+    # ever ships a "-sol" suffix that isn't a flagship.
+    _SUFFIX_RANK = {"pro": 0, "max": 0, "plus": 0, "turbo": 0, "sol": 0}
     suffix_rank = _SUFFIX_RANK.get(suffix, 1)
 
     return version_key + (suffix_rank, suffix)

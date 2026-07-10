@@ -2134,7 +2134,7 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
     if isinstance(content, list):
         converted_blocks = _convert_content_to_anthropic(content)
         if not converted_blocks or all(
-            b.get("text", "").strip() == ""
+            (b.get("text") or "").strip() == ""
             for b in converted_blocks
             if isinstance(b, dict) and b.get("type") == "text"
         ):

@@ -483,19 +483,30 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     """
     import os
 
+    def _set_owned_mode(path: Path, mode: int) -> None:
+        """Set ownership before the final mode so chown cannot clear setgid."""
+        try:
+            os.chown(path, _HERMES_UID, _HERMES_GID)
+        except PermissionError:
+            # Running unprivileged: the caller owns the freshly-created entry.
+            # Darwin creates children of /tmp with group wheel even when the
+            # caller's primary group is staff; a non-member cannot retain the
+            # setgid bit. Move only the group to the caller's effective GID so
+            # the requested s6 event-dir mode is representable locally. In the
+            # container the hermes user's effective GID is _HERMES_GID, so
+            # this is also the intended fallback there.
+            try:
+                os.chown(path, -1, os.getegid())
+            except PermissionError:
+                pass
+        # chown may clear setuid/setgid bits; chmod must be the final step.
+        path.chmod(mode)
+
     def _mkdir_owned(path: Path, mode: int) -> None:
         if path.exists():
             return
         path.mkdir(parents=False, exist_ok=False)
-        path.chmod(mode)
-        try:
-            os.chown(path, _HERMES_UID, _HERMES_GID)
-        except PermissionError:
-            # Running as the hermes user already — directory is hermes-
-            # owned by default. The chown is a no-op in that case, so
-            # swallowing this keeps both root and unprivileged callers
-            # on one code path.
-            pass
+        _set_owned_mode(path, mode)
 
     # Top-level event/ dir (this is the s6-svlisten1 event-subscription
     # dir at the service root, distinct from supervise/event/).
@@ -517,11 +528,7 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     control = supervise / "control"
     if not control.exists():
         os.mkfifo(control, 0o660)
-        control.chmod(0o660)
-        try:
-            os.chown(control, _HERMES_UID, _HERMES_GID)
-        except PermissionError:
-            pass
+        _set_owned_mode(control, 0o660)
 
     # If a log/ subdir is present (the canonical s6 logger pattern —
     # see servicedir(7)), it gets its own s6-supervise instance and
@@ -537,11 +544,7 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
         log_control = log_supervise / "control"
         if not log_control.exists():
             os.mkfifo(log_control, 0o660)
-            log_control.chmod(0o660)
-            try:
-                os.chown(log_control, _HERMES_UID, _HERMES_GID)
-            except PermissionError:
-                pass
+            _set_owned_mode(log_control, 0o660)
 
 
 class S6Error(RuntimeError):

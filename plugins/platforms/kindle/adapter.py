@@ -139,12 +139,12 @@ class KindleAdapter(BasePlatformAdapter):
             # bridge must keep waiting for that final send; resolving the
             # Future on a preview truncates every streamed or multi-turn reply.
             if not (metadata and metadata.get("notify") is True):
-                # This request/response adapter does not display previews. Do
-                # not return a message_id: GatewayStreamConsumer treats one as
-                # proof that the preview is visible, then sends only the unseen
-                # suffix after edit_message() falls back. That clipped the first
-                # word(s) from Kindle replies.
-                return SendResult(success=True)
+                # This request/response adapter does not display previews. A
+                # successful result (even without a message id) tells the stream
+                # consumer that this prefix was delivered and makes its fallback
+                # final send contain only the unseen suffix. Explicitly decline
+                # the preview so the consumer keeps the complete final response.
+                return SendResult(success=False, error="streaming preview not supported")
             fut.set_result(content)
             return SendResult(success=True, message_id=chat_id)
         # No waiter (timed out, or a cron/home push). Nothing to deliver to.

@@ -1,4 +1,5 @@
 import json
+from collections import UserDict
 from types import SimpleNamespace
 
 import pytest
@@ -185,6 +186,75 @@ def test_normalize_codex_response_preserves_hosted_multi_agent_items():
         "agent_message",
         "message",
     }.issubset(item_types)
+
+
+def test_normalize_codex_response_accepts_mapping_backed_output_items():
+    """Responses SDK wrappers may expose Mapping objects instead of dicts."""
+    hosted = UserDict(
+        {
+            "type": "multi_agent_call",
+            "id": "ma_mapping",
+            "action": "spawn_agent",
+            "arguments": '{"task":"research"}',
+            "call_id": "ma_call_mapping",
+            "agent": {"agent_name": "/root"},
+        }
+    )
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            hosted,
+            {
+                "type": "message",
+                "id": "msg_root",
+                "role": "assistant",
+                "status": "completed",
+                "phase": "final_answer",
+                "agent": {"agent_name": "/root"},
+                "content": [{"type": "output_text", "text": "done"}],
+            },
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "done"
+    assert assistant_message.codex_message_items[0]["type"] == "multi_agent_call"
+
+
+def test_normalize_codex_response_handles_cyclic_hosted_item_data():
+    """Unexpected cyclic SDK/provider values must not abort normalization."""
+    hosted = {
+        "type": "multi_agent_call",
+        "id": "ma_cycle",
+        "action": "spawn_agent",
+        "arguments": '{"task":"research"}',
+        "call_id": "ma_call_cycle",
+        "agent": {"agent_name": "/root"},
+    }
+    hosted["cycle"] = hosted
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            hosted,
+            {
+                "type": "message",
+                "id": "msg_root",
+                "role": "assistant",
+                "status": "completed",
+                "phase": "final_answer",
+                "agent": {"agent_name": "/root"},
+                "content": [{"type": "output_text", "text": "done"}],
+            },
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "done"
+    assert isinstance(assistant_message.codex_message_items[0]["cycle"], str)
 
 
 def test_hosted_multi_agent_items_preserve_function_tool_continuation():

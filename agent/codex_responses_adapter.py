@@ -18,6 +18,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from agent.message_content import get_message_field, to_plain_data
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 logger = logging.getLogger(__name__)
@@ -1242,9 +1243,7 @@ def _format_responses_error(error_obj: Any, response_status: str) -> str:
 
 
 def _responses_field(value: Any, name: str, default: Any = None) -> Any:
-    if isinstance(value, dict):
-        return value.get(name, default)
-    return getattr(value, name, default)
+    return get_message_field(value, name, default)
 
 
 def _responses_agent_name(value: Any) -> Optional[str]:
@@ -1257,28 +1256,24 @@ def _responses_agent_name(value: Any) -> Optional[str]:
 
 def _responses_value_to_plain_data(value: Any) -> Any:
     """Convert SDK/namespace response values into JSON-safe plain data."""
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, dict):
-        return {
-            str(key): _responses_value_to_plain_data(item)
-            for key, item in value.items()
-            if not str(key).startswith("_") and item is not None
-        }
-    if isinstance(value, (list, tuple)):
-        return [_responses_value_to_plain_data(item) for item in value]
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         try:
-            return _responses_value_to_plain_data(
-                model_dump(mode="json", exclude_none=True)
-            )
+            value = model_dump(mode="json", exclude_none=True)
         except TypeError:
-            return _responses_value_to_plain_data(model_dump())
-    raw_attrs = getattr(value, "__dict__", None)
-    if isinstance(raw_attrs, dict):
-        return _responses_value_to_plain_data(raw_attrs)
-    return str(value)
+            value = model_dump()
+    plain = to_plain_data(value)
+    if isinstance(plain, dict):
+        return {
+            str(key): _responses_value_to_plain_data(item)
+            for key, item in plain.items()
+            if not str(key).startswith("_") and item is not None
+        }
+    if isinstance(plain, list):
+        return [_responses_value_to_plain_data(item) for item in plain]
+    if plain is None or isinstance(plain, (str, int, float, bool)):
+        return plain
+    return str(plain)
 
 
 def _responses_output_item_to_dict(item: Any, item_type: str) -> Dict[str, Any]:

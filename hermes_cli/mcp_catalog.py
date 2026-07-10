@@ -23,7 +23,6 @@ See references/mcp-catalog.md (this repo's skill) for the manifest schema.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
@@ -41,7 +40,7 @@ from hermes_cli.config import (
     get_env_value,
     save_env_value,
 )
-from hermes_cli.cli_output import prompt as _prompt_input, prompt_yes_no
+from hermes_cli.cli_output import prompt as _prompt_input
 
 _MANIFEST_VERSION = 1
 
@@ -731,9 +730,12 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
     server_cfg = _build_server_config(entry, install_dir)
     server_cfg["enabled"] = enable
 
-    cfg = load_config()
-    cfg.setdefault("mcp_servers", {})[entry.name] = server_cfg
-    save_config(cfg)
+    from hermes_cli.mcp_config import _save_mcp_server
+
+    if not _save_mcp_server(entry.name, server_cfg):
+        raise CatalogError(
+            f"catalog entry '{entry.name}' rejected: suspicious command/args configuration"
+        )
 
     # ── Probe + tool selection ──────────────────────────────────────────
     _apply_tool_selection(entry, prior_selection=prior_selection)

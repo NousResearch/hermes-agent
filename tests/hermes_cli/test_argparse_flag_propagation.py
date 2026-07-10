@@ -14,7 +14,6 @@ so the subparser only sets the attribute when the user explicitly provides it.
 import argparse
 import os
 import sys
-from unittest.mock import patch
 
 import pytest
 
@@ -154,7 +153,7 @@ class TestAcceptHooksOnAgentSubparsers:
     parser and `chat`, so `hermes gateway run --accept-hooks` failed
     with `unrecognized arguments`."""
 
-    @pytest.mark.parametrize("argv", [
+    ARGVS = [
         ["--accept-hooks", "gateway", "run", "--help"],
         ["gateway", "--accept-hooks", "run", "--help"],
         ["gateway", "run", "--accept-hooks", "--help"],
@@ -166,20 +165,57 @@ class TestAcceptHooksOnAgentSubparsers:
         ["mcp", "--accept-hooks", "serve", "--help"],
         ["mcp", "serve", "--accept-hooks", "--help"],
         ["acp", "--accept-hooks", "--help"],
-    ])
-    def test_accepted_at_every_position(self, argv):
-        """Invoking `hermes <argv>` must exit 0 (help) rather than
-        failing with `unrecognized arguments`."""
+    ]
+
+    # One driver subprocess parses ALL argvs: hermes_cli.main is a very heavy
+    # import (previously 11 separate `python -m hermes_cli.main` spawns with a
+    # 15s timeout each — a cold import on a loaded CI worker regularly blew
+    # that deadline, making this test flaky). Importing once and parsing 11
+    # times removes the repeated-import cost entirely; the generous timeout
+    # only trips on a genuine hang. `--help` exits via SystemExit(0), which
+    # the driver catches per argv.
+    _DRIVER = r"""
+import io, json, sys
+from contextlib import redirect_stdout, redirect_stderr
+
+import hermes_cli.main as main_mod
+
+argvs = json.loads(sys.argv[1])
+results = []
+for argv in argvs:
+    sys.argv = ["hermes", *argv]
+    out, err = io.StringIO(), io.StringIO()
+    code = 0
+    try:
+        with redirect_stdout(out), redirect_stderr(err):
+            main_mod.main()
+    except SystemExit as exc:
+        code = int(exc.code or 0)
+    except Exception as exc:  # noqa: BLE001 - report, don't crash the driver
+        code = -1
+        err.write(repr(exc))
+    results.append({"argv": argv, "code": code, "stderr": err.getvalue()[:300]})
+print(json.dumps(results))
+"""
+
+    def test_accepted_at_every_position(self):
+        """Every `hermes <argv>` must exit 0 (help) rather than failing
+        with `unrecognized arguments`."""
+        import json
         import subprocess
         result = subprocess.run(
-            [sys.executable, "-m", "hermes_cli.main", *argv],
+            [sys.executable, "-c", self._DRIVER, json.dumps(self.ARGVS)],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=180,
         )
         assert result.returncode == 0, (
-            f"argv={argv!r} returned {result.returncode}\n"
-            f"stdout: {result.stdout[:300]}\n"
-            f"stderr: {result.stderr[:300]}"
+            f"driver failed rc={result.returncode}\n"
+            f"stdout: {result.stdout[:500]}\nstderr: {result.stderr[:500]}"
         )
-        assert "unrecognized arguments" not in result.stderr
+        for entry in json.loads(result.stdout.strip().splitlines()[-1]):
+            assert entry["code"] == 0, (
+                f"argv={entry['argv']!r} returned {entry['code']}\n"
+                f"stderr: {entry['stderr']}"
+            )
+            assert "unrecognized arguments" not in entry["stderr"]

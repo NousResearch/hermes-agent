@@ -12,8 +12,6 @@ from tools.skill_manager_tool import (
     _validate_category,
     _validate_frontmatter,
     _validate_file_path,
-    _find_skill,
-    _resolve_skill_dir,
     _create_skill,
     _edit_skill,
     _patch_skill,
@@ -21,8 +19,6 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     skill_manage,
-    VALID_NAME_RE,
-    ALLOWED_SUBDIRS,
     MAX_NAME_LENGTH,
 )
 
@@ -182,6 +178,24 @@ class TestValidateFilePath:
         err = _validate_file_path("malicious.py")
         assert "File must be under one of:" in err
         assert "'malicious.py'" in err
+
+    def test_skill_md_accepted_at_root(self):
+        # SKILL.md is the canonical skill file and must be accepted even
+        # though it does not live under an allowed subdirectory.
+        assert _validate_file_path("SKILL.md") is None
+
+    def test_skill_md_accepted_name_prefixed(self):
+        assert _validate_file_path("my-skill/SKILL.md") is None
+
+    def test_skill_md_traversal_still_rejected(self):
+        # The SKILL.md exception must not weaken the traversal guard.
+        err = _validate_file_path("../SKILL.md")
+        assert err == "Path traversal ('..') is not allowed."
+
+    def test_other_root_md_still_rejected(self):
+        # Only SKILL.md gets the root-level exception, not arbitrary files.
+        err = _validate_file_path("README.md")
+        assert "File must be under one of:" in err
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +600,35 @@ class TestSkillManageDispatcher:
         assert result["success"] is False
         assert "does not exist" in result["error"]
 
+    def test_background_review_delete_refuses_bundled_even_with_absorbed_into(self, tmp_path):
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch("tools.skill_usage.is_protected_builtin", return_value=False), \
+                 patch("tools.skill_usage.is_hub_installed", return_value=False), \
+                 patch("tools.skill_usage.is_bundled",
+                       side_effect=lambda skill_name: skill_name == "bundled"):
+                skill_manage(action="create", name="umbrella", content=VALID_SKILL_CONTENT)
+                skill_manage(action="create", name="bundled", content=VALID_SKILL_CONTENT)
+                raw = skill_manage(
+                    action="delete",
+                    name="bundled",
+                    absorbed_into="umbrella",
+                )
+        finally:
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+        assert (tmp_path / "bundled" / "SKILL.md").exists()
+
 
 class TestSecurityScanGate:
     """_security_scan_skill is gated by skills.guard_agent_created config flag."""
@@ -835,6 +878,104 @@ class TestExternalSkillMutations:
         assert (local / "fresh-skill" / "SKILL.md").exists()
         assert not (external / "fresh-skill").exists()
 
+    def test_background_review_refuses_to_patch_external_skill(self, tmp_path):
+        """Autonomous curator runs treat skills.external_dirs as read-only."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _two_roots(local, external), patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=[external.resolve()],
+            ):
+                raw = skill_manage(
+                    action="patch",
+                    name="ext-skill",
+                    old_string="OLD_MARKER",
+                    new_string="NEW_MARKER",
+                )
+        finally:
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "external" in result["error"].lower()
+        assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
+        assert "NEW_MARKER" not in (skill_dir / "SKILL.md").read_text()
+
+    def test_background_review_refuses_to_patch_pinned_skill(self, tmp_path):
+        """#25839: the autonomous review fork respects pin like the curator
+        does — a pinned skill is off-limits to background maintenance, even
+        for patch/edit (which a foreground user-directed call is allowed to
+        perform). Without a user in the loop there is no one to consent."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        def _fake_get_record(skill_name):
+            return {"pinned": True} if skill_name == "my-skill" else {"pinned": False}
+
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                with patch("tools.skill_usage.get_record", side_effect=_fake_get_record):
+                    raw = skill_manage(
+                        action="patch",
+                        name="my-skill",
+                        old_string="Do the thing.",
+                        new_string="Do the new thing.",
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+
+    def test_background_review_unpinned_skill_not_blocked_by_pin_guard(self, tmp_path):
+        """The pin guard must not over-block: an unpinned agent-owned skill is
+        still writable by the review fork."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                from tools.skill_manager_tool import mark_background_review_skill_read
+
+                mark_background_review_skill_read(tmp_path / "my-skill" / "SKILL.md")
+                with patch(
+                    "tools.skill_usage.get_record",
+                    side_effect=lambda n: {"pinned": False},
+                ):
+                    raw = skill_manage(
+                        action="patch",
+                        name="my-skill",
+                        old_string="Do the thing.",
+                        new_string="Do the new thing.",
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+
 
 
 # ---------------------------------------------------------------------------
@@ -943,3 +1084,267 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# _delete_skill — recursive-delete safety (port of Kilo Code #11240)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteSkillRmtreeGuard:
+    """Defense-in-depth before ``shutil.rmtree`` in ``_delete_skill``.
+
+    Mirrors the Kilo Code #11227 fix: never let a recursive skill delete
+    escape the skills tree, target a skills root, or follow a symlink.
+    """
+
+    def test_normal_delete_still_works(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("good-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("good-skill", absorbed_into="")
+        assert result["success"] is True, result
+        assert not (tmp_path / "good-skill").exists()
+
+    def test_symlinked_skill_dir_refused(self, tmp_path):
+        """A skill dir that is a symlink must not be rmtree'd — rmtree would
+        otherwise follow it and delete the link target's contents."""
+        victim = tmp_path.parent / "precious_victim"
+        victim.mkdir()
+        (victim / "important.txt").write_text("DO NOT DELETE")
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        evil = skills / "evil-skill"
+        evil.symlink_to(victim, target_is_directory=True)
+        try:
+            with patch("tools.skill_manager_tool.SKILLS_DIR", skills), \
+                 patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
+                 patch("tools.skill_manager_tool._find_skill",
+                       return_value={"path": evil}):
+                result = _delete_skill("evil-skill", absorbed_into="")
+            assert result["success"] is False
+            assert "symlink" in result["error"].lower()
+            assert (victim / "important.txt").exists()
+        finally:
+            import shutil as _sh
+            _sh.rmtree(victim, ignore_errors=True)
+
+    def test_skills_root_itself_refused(self, tmp_path):
+        """If discovery ever hands back the skills root, refuse — rmtree would
+        wipe every installed skill."""
+        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
+             patch("tools.skill_manager_tool._find_skill",
+                   return_value={"path": tmp_path}):
+            result = _delete_skill("root-attack", absorbed_into="")
+        assert result["success"] is False
+        assert "skills root" in result["error"].lower()
+        assert tmp_path.exists()
+
+    def test_out_of_tree_path_refused(self, tmp_path):
+        """A path that resolves outside every known skills root is refused."""
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        outside = tmp_path / "outside_skill"
+        outside.mkdir()
+        (outside / "SKILL.md").write_text("x")
+        with patch("tools.skill_manager_tool.SKILLS_DIR", skills), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
+             patch("tools.skill_manager_tool._find_skill",
+                   return_value={"path": outside}):
+            result = _delete_skill("outside", absorbed_into="")
+        assert result["success"] is False
+        assert "skills root" in result["error"].lower()
+        assert outside.exists()
+
+
+# ---------------------------------------------------------------------------
+# Curator consolidation-pass fail-closed delete guard (#29912)
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _curator_pass(tmp_path, *, monkeypatch):
+    """Run the body as the curator/background-review fork.
+
+    Points HERMES_HOME at ``tmp_path/.hermes`` so skill_usage's archive path
+    (``get_hermes_home()``) resolves into the same tree the skill manager
+    searches, and flips ``is_background_review()`` → True so the consolidation
+    guard fires.
+    """
+    hermes_home = tmp_path / ".hermes"
+    skills_root = hermes_home / "skills"
+    skills_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    with patch("tools.skill_manager_tool.SKILLS_DIR", skills_root), \
+         patch("tools.skills_tool.SKILLS_DIR", skills_root), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_root]), \
+         patch("tools.skill_provenance.is_background_review", return_value=True):
+        yield skills_root
+
+
+def _skill_content(name: str) -> str:
+    """SKILL.md whose frontmatter ``name:`` matches the directory name.
+
+    ``skill_usage._find_skill_dir`` (used by ``archive_skill``) resolves a
+    skill by its frontmatter ``name:`` field, so archive-path tests must keep
+    the two in sync.
+    """
+    return (
+        "---\n"
+        f"name: {name}\n"
+        "description: A test skill for unit testing.\n"
+        "---\n\n"
+        f"# {name}\n\n"
+        "Step 1: Do the thing.\n"
+    )
+
+
+class TestCuratorConsolidationDeleteGuard:
+    """The curator's LLM consolidation pass must fail CLOSED on unverified
+    deletes — it may only archive a skill it absorbed into an umbrella.
+
+    Reproduces #29912: the pass archived clusters of active skills with zero
+    verified consolidations (``consolidated_this_run == 0``) because a bare
+    prune from the LLM pass was accepted. With the guard, a delete without a
+    valid ``absorbed_into`` is refused and the skill stays active; a verified
+    consolidation is archived RECOVERABLY (not rmtree'd).
+    """
+
+    def test_bare_prune_during_curator_pass_refused(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
+            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("active-skill", absorbed_into="")
+        assert result["success"] is False
+        assert result.get("_fail_closed") is True
+        # Skill must remain active on disk — fail closed, no archive.
+        assert (skills_root / "active-skill").exists()
+
+    def test_omitted_absorbed_into_during_curator_pass_refused(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
+            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("active-skill")  # absorbed_into omitted
+        assert result["success"] is False
+        assert result.get("_fail_closed") is True
+        assert (skills_root / "active-skill").exists()
+
+    def test_whitespace_absorbed_into_during_curator_pass_refused(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
+            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("active-skill", absorbed_into="   ")
+        assert result["success"] is False
+        assert result.get("_fail_closed") is True
+        assert (skills_root / "active-skill").exists()
+
+    def test_verified_consolidation_archives_recoverably(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
+            _create_skill("umbrella", _skill_content("umbrella"))
+            _create_skill("narrow", _skill_content("narrow"))
+            result = _delete_skill("narrow", absorbed_into="umbrella")
+        assert result["success"] is True, result
+        assert result.get("_archived") is True
+        assert "absorbed into 'umbrella'" in result["message"]
+        # Recoverable: moved to .archive/, NOT permanently rmtree'd.
+        assert not (skills_root / "narrow").exists()
+        assert (skills_root / ".archive" / "narrow").exists()
+        # Umbrella untouched.
+        assert (skills_root / "umbrella").exists()
+
+    def test_consolidation_into_missing_umbrella_still_rejected(self, tmp_path, monkeypatch):
+        # The pre-existing target-existence check fires before the recoverable
+        # archive — a hallucinated umbrella is refused and the skill stays put.
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            result = _delete_skill("narrow", absorbed_into="ghost-umbrella")
+        assert result["success"] is False
+        assert "does not exist" in result["error"]
+        assert (skills_root / "narrow").exists()
+
+    def test_foreground_bare_prune_unaffected(self, tmp_path):
+        # Outside the curator pass (default foreground origin), a bare prune
+        # still hard-deletes — the guard is curator-scoped only.
+        with _skill_dir(tmp_path):
+            _create_skill("user-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("user-skill", absorbed_into="")
+        assert result["success"] is True
+        assert result.get("_fail_closed") is None
+        assert result.get("_archived") is None
+        assert not (tmp_path / "user-skill").exists()
+
+    def test_dispatcher_preserves_usage_record_on_curator_archive(self, tmp_path, monkeypatch):
+        # skill_manage(delete) post-action telemetry must NOT forget a
+        # recoverable curator archive — the record persists as archived so
+        # `hermes curator restore` can bring it back.
+        from tools import skill_usage
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            _create_skill("umbrella", _skill_content("umbrella"))
+            _create_skill("narrow", _skill_content("narrow"))
+            skill_usage.mark_agent_created("narrow")
+            raw = skill_manage("delete", "narrow", absorbed_into="umbrella")
+            result = json.loads(raw)
+            assert result["success"] is True, result
+            rec = skill_usage.get_record("narrow")
+        # Record kept (not forgotten) and marked archived.
+        assert rec.get("state") == skill_usage.STATE_ARCHIVED
+
+    def test_background_review_patch_requires_skill_view_first(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            _create_skill("reviewed", _skill_content("reviewed"))
+
+            blocked = json.loads(skill_manage(
+                action="patch",
+                name="reviewed",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+            ))
+            assert blocked["success"] is False
+            assert blocked.get("_read_before_write_required") is True
+
+            viewed = json.loads(skill_view("reviewed"))
+            assert viewed["success"] is True
+
+            allowed = json.loads(skill_manage(
+                action="patch",
+                name="reviewed",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+            ))
+            assert allowed["success"] is True, allowed
+
+        _reset_background_review_read_marks()
+
+    def test_background_review_support_file_overwrite_requires_that_file_read(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            _create_skill("reviewed", _skill_content("reviewed"))
+            ref = tmp_path / ".hermes" / "skills" / "reviewed" / "references"
+            ref.mkdir()
+            (ref / "workflow.md").write_text("old workflow\n", encoding="utf-8")
+
+            # Reading SKILL.md does not authorize overwriting a linked file.
+            assert json.loads(skill_view("reviewed"))["success"] is True
+            blocked = json.loads(skill_manage(
+                action="write_file",
+                name="reviewed",
+                file_path="references/workflow.md",
+                file_content="new workflow\n",
+            ))
+            assert blocked["success"] is False
+            assert blocked.get("_read_before_write_required") is True
+
+            assert json.loads(skill_view("reviewed", "references/workflow.md"))["success"] is True
+            allowed = json.loads(skill_manage(
+                action="write_file",
+                name="reviewed",
+                file_path="references/workflow.md",
+                file_content="new workflow\n",
+            ))
+            assert allowed["success"] is True, allowed
+
+        _reset_background_review_read_marks()

@@ -1,0 +1,263 @@
+{
+  "name": "hermes",
+  "productName": "Hermes",
+  "private": true,
+  "version": "0.17.0",
+  "description": "Native desktop shell for Hermes Agent.",
+  "author": "Nous Research",
+  "type": "module",
+  "main": "dist/electron-main.mjs",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:fake-boot": "cross-env HERMES_DESKTOP_BOOT_FAKE=1 HERMES_DESKTOP_BOOT_FAKE_STEP_MS=650 npm run dev",
+    "dev:renderer": "node scripts/assert-root-install.mjs && vite --host 127.0.0.1 --port 5174",
+    "dev:electron": "wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
+    "profile:main": "wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron --inspect=9229 .",
+    "profile:main:cpu": "wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 NODE_OPTIONS=--cpu-prof HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
+    "start": "npm run build && electron .",
+    "build": "node scripts/assert-root-install.mjs && node scripts/write-build-stamp.mjs && tsc -b && vite build && node scripts/bundle-electron-main.mjs && node scripts/stage-native-deps.mjs",
+    "postbuild": "node scripts/assert-dist-built.mjs",
+    "prebuilder": "node scripts/patch-electron-builder-mac-binary.mjs",
+    "builder": "cross-env NODE_OPTIONS=--max-old-space-size=16384 node scripts/run-electron-builder.mjs",
+    "pack": "npm run build && npm run builder -- --dir",
+    "dist": "npm run build && npm run builder",
+    "dist:mac": "npm run build && npm run builder -- --mac",
+    "dist:mac:dmg": "npm run build && npm run builder -- --mac dmg",
+    "dist:mac:zip": "npm run build && npm run builder -- --mac zip",
+    "dist:win": "npm run build && npm run builder -- --win",
+    "dist:win:msi": "npm run build && npm run builder -- --win msi",
+    "dist:win:nsis": "npm run build && npm run builder -- --win nsis",
+    "dist:linux": "npm run build && npm run builder -- --linux AppImage deb rpm",
+    "test:desktop": "node scripts/test-desktop.mjs",
+    "test:desktop:all": "node scripts/test-desktop.mjs all",
+    "test:desktop:dmg": "node scripts/test-desktop.mjs dmg",
+    "test:desktop:nsis": "node scripts/test-desktop.mjs nsis",
+    "test:desktop:existing": "node scripts/test-desktop.mjs existing",
+    "test:desktop:fresh": "node scripts/test-desktop.mjs fresh",
+    "test:desktop:platforms": "node --test electron/bootstrap-platform.test.ts electron/hardening.test.ts electron/backend-env.test.ts electron/backend-probes.test.ts electron/backend-ready.test.ts electron/bootstrap-runner.test.ts electron/connection-config.test.ts electron/dashboard-token.test.ts electron/gateway-ws-probe.test.ts electron/oauth-net-request.test.ts electron/desktop-uninstall.test.ts electron/session-windows.test.ts electron/link-title-window.test.ts electron/workspace-cwd.test.ts electron/fs-read-dir.test.ts electron/git-root.test.ts electron/git-worktree-ops.test.ts electron/windows-child-process.test.ts electron/update-remote.test.ts electron/update-count.test.ts electron/update-rebuild.test.ts electron/update-marker.test.ts electron/update-relaunch.test.ts electron/windows-user-env.test.ts electron/wsl-clipboard-image.test.ts electron/titlebar-overlay-width.test.ts electron/window-state.test.ts electron/zoom.test.ts electron/windows-hermes-resolution.test.ts electron/oauth-session-request.test.ts",
+    "typecheck": "tsc -p . --noEmit",
+    "lint": "eslint src/ electron/",
+    "lint:fix": "eslint src/ electron/ --fix",
+    "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.ts' 'vite.config.ts'",
+    "fix": "npm run lint:fix && npm run fmt",
+    "test:ui": "vitest run --environment jsdom",
+    "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174"
+  },
+  "dependencies": {
+    "@assistant-ui/react": "^0.12.28",
+    "@assistant-ui/react-streamdown": "^0.1.11",
+    "@audiowave/react": "^0.6.2",
+    "@chenglou/pretext": "^0.0.6",
+    "@codemirror/commands": "^6.10.4",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/state": "^6.7.0",
+    "@codemirror/view": "^6.43.3",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@hermes/shared": "file:../shared",
+    "@icons-pack/react-simple-icons": "=13.11.1",
+    "@lezer/highlight": "^1.2.3",
+    "@nanostores/react": "^1.1.0",
+    "@nous-research/ui": "^0.13.0",
+    "@radix-ui/react-slot": "^1.2.4",
+    "@streamdown/code": "^1.1.1",
+    "@tabler/icons-react": "^3.41.1",
+    "@tailwindcss/typography": "^0.5.19",
+    "@tailwindcss/vite": "^4.2.4",
+    "@tanstack/react-query": "^5.100.6",
+    "@tanstack/react-virtual": "^3.13.24",
+    "@vscode/codicons": "^0.0.45",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/addon-unicode11": "^0.9.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/xterm": "^6.0.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
+    "d3-force": "^3.0.0",
+    "dnd-core": "^14.0.1",
+    "dompurify": "^3.4.11",
+    "fflate": "^0.8.3",
+    "hast-util-from-html-isomorphic": "^2.0.0",
+    "hast-util-to-text": "^4.0.2",
+    "ignore": "^7.0.5",
+    "katex": "^0.16.45",
+    "leva": "^0.10.1",
+    "mermaid": "^11.15.0",
+    "motion": "^12.38.0",
+    "nanostores": "^1.3.0",
+    "node-pty": "1.1.0",
+    "radix-ui": "^1.4.3",
+    "react": "^19.2.5",
+    "react-arborist": "^3.5.0",
+    "react-dnd-html5-backend": "^14.0.3",
+    "react-dom": "^19.2.5",
+    "react-router-dom": "^7.17.0",
+    "react-shiki": "^0.9.3",
+    "remark-math": "^6.0.0",
+    "remend": "^1.3.0",
+    "shiki": "^4.0.2",
+    "simple-git": "^3.36.0",
+    "streamdown": "^2.5.0",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.4",
+    "tw-shimmer": "^0.4.11",
+    "unicode-animations": "^1.0.3",
+    "unified": "^11.0.5",
+    "unist-util-visit-parents": "^6.0.2",
+    "use-stick-to-bottom": "^1.1.6",
+    "vfile": "^6.0.3",
+    "web-haptics": "^0.0.6"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.6",
+    "@eslint/js": "^9.39.4",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.3.2",
+    "@types/d3-force": "^3.0.10",
+    "@types/hast": "^3.0.4",
+    "@types/node": "^22.20.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@typescript-eslint/eslint-plugin": "^8.59.1",
+    "@typescript-eslint/parser": "^8.59.1",
+    "@vitejs/plugin-react": "^6.0.1",
+    "concurrently": "^10.0.3",
+    "cross-env": "^10.1.0",
+    "electron": "40.10.2",
+    "electron-builder": "^26.8.1",
+    "esbuild": "^0.28.1",
+    "eslint": "^9.39.4",
+    "eslint-plugin-perfectionist": "^5.9.0",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-unused-imports": "^4.4.1",
+    "globals": "^16.5.0",
+    "jsdom": "^29.1.1",
+    "prettier": "^3.8.3",
+    "rcedit": "^5.0.2",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.10",
+    "vitest": "^4.1.5",
+    "wait-on": "^9.0.5"
+  },
+  "build": {
+    "electronVersion": "40.10.2",
+    "appId": "com.nousresearch.hermes",
+    "productName": "Hermes",
+    "executableName": "Hermes",
+    "protocols": [
+      {
+        "name": "Hermes Protocol",
+        "schemes": [
+          "hermes"
+        ]
+      }
+    ],
+    "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
+    "icon": "assets/icon",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "assets/**",
+      "public/**",
+      "package.json"
+    ],
+    "beforeBuild": "scripts/before-build.mjs",
+    "beforePack": "scripts/before-pack.mjs",
+    "afterPack": "scripts/after-pack.mjs",
+    "extraResources": [
+      {
+        "from": "build/install-stamp.json",
+        "to": "install-stamp.json"
+      },
+      {
+        "from": "assets/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
+    "asar": true,
+    "afterSign": "scripts/notarize.mjs",
+    "asarUnpack": [
+      "**/*.node",
+      "**/prebuilds/**",
+      "dist/**"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "entitlements": "electron/entitlements.mac.plist",
+      "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
+      "extendInfo": {
+        "CFBundleDisplayName": "Hermes",
+        "CFBundleExecutable": "Hermes",
+        "CFBundleName": "Hermes",
+        "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
+        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
+      },
+      "gatekeeperAssess": false,
+      "hardenedRuntime": true,
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "dmg": {
+      "title": "Install Hermes",
+      "backgroundColor": "#f5f5f7",
+      "iconSize": 96,
+      "window": {
+        "width": 560,
+        "height": 360
+      },
+      "contents": [
+        {
+          "x": 160,
+          "y": 170,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 170,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "legalTrademarks": "Hermes",
+      "target": [
+        "nsis",
+        "msi"
+      ],
+      "signAndEditExecutable": false
+    },
+    "linux": {
+      "category": "Development",
+      "maintainer": "Nous Research <support@nousresearch.com>",
+      "synopsis": "Native desktop shell for Hermes Agent.",
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "shortcutName": "Hermes",
+      "uninstallDisplayName": "Hermes",
+      "warningsAsErrors": false
+    }
+  }
+}

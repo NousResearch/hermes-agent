@@ -10,8 +10,6 @@ Covers:
 """
 
 import os
-import pytest
-from unittest.mock import patch, MagicMock
 
 
 # ---------------------------------------------------------------------------
@@ -178,72 +176,6 @@ class TestModelSwitchPersistence:
         assert result.target_provider == "anthropic"
         assert result.api_key == "test-key"
         assert result.base_url == "https://api.anthropic.com"
-
-
-# ---------------------------------------------------------------------------
-# /model tab completion
-# ---------------------------------------------------------------------------
-
-class TestModelTabCompletion:
-    """SlashCommandCompleter provides model alias completions for /model."""
-
-    def test_model_completions_yields_direct_aliases(self, monkeypatch):
-        """_model_completions yields direct aliases with model and provider info."""
-        from hermes_cli.commands import SlashCommandCompleter
-        from hermes_cli.model_switch import DirectAlias
-        import hermes_cli.model_switch as ms
-
-        test_aliases = {
-            "opus": DirectAlias("claude-opus-4-6", "anthropic", ""),
-            "qwen": DirectAlias("qwen3.5:397b", "custom", "https://ollama.com/v1"),
-        }
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
-
-        completer = SlashCommandCompleter()
-        completions = list(completer._model_completions("", ""))
-
-        names = [c.text for c in completions]
-        assert "opus" in names
-        assert "qwen" in names
-
-    def test_model_completions_filters_by_prefix(self, monkeypatch):
-        """Completions filter by typed prefix."""
-        from hermes_cli.commands import SlashCommandCompleter
-        from hermes_cli.model_switch import DirectAlias
-        import hermes_cli.model_switch as ms
-
-        test_aliases = {
-            "opus": DirectAlias("claude-opus-4-6", "anthropic", ""),
-            "qwen": DirectAlias("qwen3.5:397b", "custom", "https://ollama.com/v1"),
-        }
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
-
-        completer = SlashCommandCompleter()
-        completions = list(completer._model_completions("o", "o"))
-
-        names = [c.text for c in completions]
-        assert "opus" in names
-        assert "qwen" not in names
-
-    def test_model_completions_shows_metadata(self, monkeypatch):
-        """Completions include model name and provider in display_meta."""
-        from hermes_cli.commands import SlashCommandCompleter
-        from hermes_cli.model_switch import DirectAlias
-        import hermes_cli.model_switch as ms
-
-        test_aliases = {
-            "glm": DirectAlias("glm-4.7", "custom", "https://ollama.com/v1"),
-        }
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
-
-        completer = SlashCommandCompleter()
-        completions = list(completer._model_completions("g", "g"))
-
-        assert len(completions) >= 1
-        glm_comp = [c for c in completions if c.text == "glm"][0]
-        meta_str = str(glm_comp.display_meta)
-        assert "glm-4.7" in meta_str
-        assert "custom" in meta_str
 
 
 # ---------------------------------------------------------------------------

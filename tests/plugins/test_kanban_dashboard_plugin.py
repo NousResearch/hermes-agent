@@ -247,6 +247,19 @@ def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     assert 'readSelectedBoard() || "default"' not in js
 
 
+def test_dashboard_markdown_html_is_sanitized_before_render():
+    """Markdown rendering must sanitize HTML before dangerouslySetInnerHTML."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function sanitizeMarkdownHtml(html)" in js
+    assert "MARKDOWN_ALLOWED_TAGS" in js
+    assert "sanitizeMarkdownHtml(renderMarkdown(props.source || \"\"))" in js
+    assert "dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || \"\") }" not in js
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------
@@ -735,18 +748,29 @@ def test_board_auto_initializes_missing_db(tmp_path, monkeypatch):
 
 
 def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
-    """When _SESSION_TOKEN is set (normal dashboard context), a missing or
-    wrong ?token= query param must be rejected with policy-violation."""
+    """Loopback mode: a missing or wrong ?token= must be rejected with
+    policy-violation; the correct token is accepted. The kanban WS now
+    delegates to web_server._ws_auth_ok, so we stub that with the real
+    loopback-token semantics (auth_required False → constant-time token
+    compare)."""
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
 
-    # Stub web_server so _check_ws_token has a token to compare against.
+    # Stub web_server with a loopback-mode _ws_auth_ok (auth_required False →
+    # accept only the correct ?token=). Mirrors the real gate's loopback path.
     import hermes_cli
     import types
-    stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz")
+
+    def _fake_ws_auth_ok(ws):
+        return ws.query_params.get("token", "") == "secret-xyz"
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=_fake_ws_auth_ok,
+    )
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
     monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
 
@@ -772,6 +796,51 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         "/api/plugins/kanban/events?token=secret-xyz"
     ) as ws:
         assert ws is not None  # handshake succeeded
+
+
+def test_ws_events_accepts_gated_ticket(tmp_path, monkeypatch):
+    """Gated OAuth mode: the WS must accept a single-use ?ticket= (and reject
+    a bare ?token=, even one matching _SESSION_TOKEN). This is the regression
+    for the hosted-dashboard bug where the kanban live-events WS 1008'd on
+    every gated deployment because its bespoke check only knew _SESSION_TOKEN.
+    We stub _ws_auth_ok with the real gated semantics (ticket-only)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    import hermes_cli
+    import types
+
+    def _fake_ws_auth_ok(ws):
+        # Gated mode: only a known ticket is accepted; token path rejected.
+        return ws.query_params.get("ticket", "") == "good-ticket"
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=_fake_ws_auth_ok,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    from starlette.websockets import WebSocketDisconnect
+
+    # Legacy token is rejected in gated mode, even if it's the real one.
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect("/api/plugins/kanban/events?token=secret-xyz"):
+            pass
+    assert exc.value.code == 1008
+
+    # A valid ticket is accepted.
+    with c.websocket_connect(
+        "/api/plugins/kanban/events?ticket=good-ticket"
+    ) as ws:
+        assert ws is not None
 
 
 def test_ws_events_board_query_param_default_overrides_current_board_pointer(tmp_path, monkeypatch):
@@ -806,7 +875,10 @@ def test_ws_events_board_query_param_default_overrides_current_board_pointer(tmp
     import hermes_cli
     import types
 
-    stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz")
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=lambda ws: ws.query_params.get("token", "") == "secret-xyz",
+    )
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
     monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
 
@@ -835,8 +907,6 @@ def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
     the cancellation outcome deterministically.
     """
     import asyncio
-    import types
-    import sys as _sys
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -844,10 +914,10 @@ def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
 
-    # Short-circuit the token check — this test is about the cancellation
+    # Short-circuit the auth check — this test is about the cancellation
     # path, not auth.
     import plugins.kanban.dashboard.plugin_api as pa
-    monkeypatch.setattr(pa, "_check_ws_token", lambda t: True)
+    monkeypatch.setattr(pa, "_ws_upgrade_authorized", lambda ws: True)
 
     class _FakeWS:
         def __init__(self):

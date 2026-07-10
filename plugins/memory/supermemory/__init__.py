@@ -32,6 +32,7 @@ _DEFAULT_API_TIMEOUT = 5.0
 _MIN_CAPTURE_LENGTH = 10
 _MAX_ENTITY_CONTEXT_LENGTH = 1500
 _CONVERSATIONS_URL = "https://api.supermemory.ai/v4/conversations"
+_API_KEY_URL = "http://app.supermemory.ai/integrations?connect=hermes"
 _TRIVIAL_RE = re.compile(
     r"^(ok|okay|thanks|thank you|got it|sure|yes|no|yep|nope|k|ty|thx|np)\.?$",
     re.IGNORECASE,
@@ -152,7 +153,8 @@ def _save_supermemory_config(values: dict, hermes_home: str) -> None:
         except Exception:
             existing = {}
     existing.update(values)
-    config_path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    from utils import atomic_json_write
+    atomic_json_write(config_path, existing, mode=0o600, sort_keys=True)
 
 
 def _detect_category(text: str) -> str:
@@ -262,13 +264,41 @@ def _is_trivial_message(text: str) -> bool:
 
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
+        # Lazy-install the supermemory SDK on demand. ensure() honors
+        # security.allow_lazy_installs (default true) and, on a sealed Docker
+        # venv, redirects the install to the durable target. On failure we
+        # fall through so the raw import below produces the canonical
+        # ImportError message.
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("memory.supermemory", prompt=False)
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
         from supermemory import Supermemory
 
         self._api_key = api_key
         self._container_tag = container_tag
         self._search_mode = search_mode if search_mode in _VALID_SEARCH_MODES else _DEFAULT_SEARCH_MODE
         self._timeout = timeout
-        self._client = Supermemory(api_key=api_key, timeout=timeout, max_retries=0)
+        self._client = Supermemory(
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=0,
+            default_headers={"x-sm-source": "hermes"},
+        )
+
+    def _merge_metadata(self, metadata: Optional[dict]) -> dict:
+        # sm_source routes Hermes writes into the "Hermes" Space in the Supermemory
+        # app so the user can filter / bulk-manage them per source agent. This is a
+        # functional routing key for the user, not vendor telemetry.
+        merged = {"sm_source": "hermes", **(metadata or {})}
+        legacy_source = merged.pop("source", None)
+        if legacy_source and "type" not in merged:
+            merged["type"] = str(legacy_source)
+        return merged
 
     def add_memory(self, content: str, metadata: Optional[dict] = None, *,
                    entity_context: str = "", container_tag: Optional[str] = None,
@@ -279,7 +309,7 @@ class _SupermemoryClient:
             "container_tags": [tag],
         }
         if metadata:
-            kwargs["metadata"] = metadata
+            kwargs["metadata"] = self._merge_metadata(metadata)
         if entity_context:
             kwargs["entity_context"] = _clamp_entity_context(entity_context)
         if custom_id:
@@ -348,23 +378,86 @@ class _SupermemoryClient:
         preview = (target.get("memory") or "")[:100]
         return {"success": True, "message": f'Forgot: "{preview}"', "id": memory_id}
 
-    def ingest_conversation(self, session_id: str, messages: list[dict]) -> None:
-        payload = json.dumps({
+    def ingest_conversation(self, session_id: str, messages: list[dict], metadata: dict | None = None) -> None:
+        payload: dict = {
             "conversationId": session_id,
             "messages": messages,
             "containerTags": [self._container_tag],
-        }).encode("utf-8")
+        }
+        if metadata:
+            payload["metadata"] = self._merge_metadata(metadata)
+
         req = urllib.request.Request(
             _CONVERSATIONS_URL,
-            data=payload,
+            data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
+                "x-sm-source": "hermes",
             },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=self._timeout + 3):
             return
+
+
+def _resolve_container_tag_for_setup(hermes_home: str, *, identity: str = "default") -> str:
+    config = _load_supermemory_config(hermes_home)
+    env_tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG", "").strip()
+    raw_tag = env_tag or config["container_tag"]
+    return _sanitize_tag(raw_tag.replace("{identity}", identity))
+
+
+def _probe_supermemory_connection(api_key: str, hermes_home: str, *, identity: str = "default") -> dict:
+    config = _load_supermemory_config(hermes_home)
+    status = {
+        "ok": False,
+        "error": "",
+        "container_tag": _resolve_container_tag_for_setup(hermes_home, identity=identity),
+        "profile_facts": 0,
+        "auto_recall": bool(config["auto_recall"]),
+        "auto_capture": bool(config["auto_capture"]),
+    }
+    if not (api_key or "").strip():
+        status["error"] = "SUPERMEMORY_API_KEY not set"
+        return status
+    try:
+        __import__("supermemory")
+    except ImportError:
+        status["error"] = "supermemory package not installed"
+        return status
+    try:
+        client = _SupermemoryClient(
+            api_key=api_key.strip(),
+            timeout=config["api_timeout"],
+            container_tag=status["container_tag"],
+            search_mode=config["search_mode"],
+        )
+        profile = client.get_profile()
+        facts = [
+            fact for fact in (profile.get("static") or []) + (profile.get("dynamic") or [])
+            if fact and str(fact).strip()
+        ]
+        status["profile_facts"] = len(facts)
+        status["ok"] = True
+    except Exception as exc:
+        status["error"] = str(exc).strip()[:160] or "connection failed"
+    return status
+
+
+def _format_connection_summary(status: dict) -> str:
+    recall = "on" if status.get("auto_recall") else "off"
+    capture = "on" if status.get("auto_capture") else "off"
+    container = status.get("container_tag") or _DEFAULT_CONTAINER_TAG
+    if status.get("ok"):
+        facts = int(status.get("profile_facts") or 0)
+        fact_label = "fact" if facts == 1 else "facts"
+        return (
+            f"✓ Connected · container: {container} · {facts} profile {fact_label} · "
+            f"auto_recall {recall} · auto_capture {capture}"
+        )
+    err = status.get("error") or "connection failed"
+    return f"✗ {err} · container: {container} · auto_recall {recall} · auto_capture {capture}"
 
 
 STORE_SCHEMA = {
@@ -446,27 +539,28 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._custom_containers: List[str] = []
         self._custom_container_instructions = ""
         self._allowed_containers: List[str] = []
+        self._session_turns: List[Dict[str, str]] = []
 
     @property
     def name(self) -> str:
         return "supermemory"
 
     def is_available(self) -> bool:
-        api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
-        if not api_key:
-            return False
-        try:
-            __import__("supermemory")
-            return True
-        except Exception:
-            return False
+        # Key presence only — no SDK import check. The supermemory SDK is
+        # lazy-installed when the client is first constructed in initialize()
+        # (see _SupermemoryClient.__init__). Gating availability on the SDK
+        # being importable here would be a chicken-and-egg trap: on a sealed
+        # Docker venv the package isn't present until ensure() runs, but
+        # ensure() only runs once the provider is loaded — which this gates.
+        # Mirrors honcho/mem0, which check config only. No network calls.
+        return bool(os.environ.get("SUPERMEMORY_API_KEY", ""))
 
     def get_config_schema(self):
         # Only prompt for the API key during `hermes memory setup`.
         # All other options are documented for $HERMES_HOME/supermemory.json
         # or the SUPERMEMORY_CONTAINER_TAG env var.
         return [
-            {"key": "api_key", "description": "Supermemory API key", "secret": True, "required": True, "env_var": "SUPERMEMORY_API_KEY", "url": "https://supermemory.ai"},
+            {"key": "api_key", "description": "Supermemory API key", "secret": True, "required": True, "env_var": "SUPERMEMORY_API_KEY", "url": _API_KEY_URL},
         ]
 
     def save_config(self, values, hermes_home):
@@ -476,6 +570,57 @@ class SupermemoryMemoryProvider(MemoryProvider):
         if "entity_context" in sanitized:
             sanitized["entity_context"] = _clamp_entity_context(str(sanitized["entity_context"]))
         _save_supermemory_config(sanitized, hermes_home)
+
+    def get_status_config(self, provider_config: dict) -> dict:
+        from hermes_constants import get_hermes_home
+
+        del provider_config
+        hermes_home = str(get_hermes_home())
+        api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
+        status = _probe_supermemory_connection(api_key, hermes_home)
+        return {"summary": _format_connection_summary(status)}
+
+    def post_setup(self, hermes_home: str, config: dict) -> None:
+        from pathlib import Path
+
+        from hermes_cli.config import save_config
+        from hermes_cli.memory_setup import _prompt, _write_env_vars
+
+        print("\n  Configuring supermemory:\n")
+        print(f"  Get your API key at {_API_KEY_URL}\n")
+
+        env_writes: dict[str, str] = {}
+        existing = os.environ.get("SUPERMEMORY_API_KEY", "")
+        if existing:
+            masked = f"...{existing[-4:]}" if len(existing) > 4 else "set"
+            val = _prompt(f"Supermemory API key (current: {masked}, blank to keep)", secret=True)
+        else:
+            val = _prompt("Supermemory API key", secret=True)
+        if val:
+            env_writes["SUPERMEMORY_API_KEY"] = val
+
+        if not isinstance(config.get("memory"), dict):
+            config["memory"] = {}
+        config["memory"]["provider"] = self.name
+        save_config(config)
+
+        if env_writes:
+            _write_env_vars(Path(hermes_home) / ".env", env_writes)
+
+        api_key = env_writes.get("SUPERMEMORY_API_KEY") or existing
+        # Make the freshly-entered key visible to the connection probe below.
+        # (Checks the VALUE of SUPERMEMORY_API_KEY, not whether the key string
+        # happens to name some unrelated env var.)
+        if api_key and os.environ.get("SUPERMEMORY_API_KEY") != api_key:
+            os.environ["SUPERMEMORY_API_KEY"] = api_key
+
+        status = _probe_supermemory_connection(api_key, hermes_home)
+        print(f"\n  {_format_connection_summary(status)}")
+        print("\n  Memory provider: supermemory")
+        print("  Activation saved to config.yaml")
+        if env_writes:
+            print("  API keys saved to .env")
+        print("\n  Start a new session to activate.\n")
 
     def initialize(self, session_id: str, **kwargs) -> None:
         from hermes_constants import get_hermes_home
@@ -500,12 +645,12 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._search_mode = self._config["search_mode"]
         self._entity_context = self._config["entity_context"]
         self._api_timeout = self._config["api_timeout"]
-
-        # Multi-container setup
         self._enable_custom_containers = self._config["enable_custom_container_tags"]
         self._custom_containers = self._config["custom_containers"]
         self._custom_container_instructions = self._config["custom_container_instructions"]
         self._allowed_containers = [self._container_tag] + list(self._custom_containers)
+
+        self._session_turns = []
 
         agent_context = kwargs.get("agent_context", "")
         self._write_enabled = agent_context not in {"cron", "flush", "subagent"}
@@ -533,7 +678,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         lines = [
             "# Supermemory",
             f"Active. Container: {self._container_tag}.",
-            "Use supermemory_search, supermemory_store, supermemory_forget, and supermemory_profile for explicit memory operations.",
+            "Use supermemory-search, supermemory-save, supermemory-forget, and supermemory-profile (aliases: supermemory_search, supermemory_store, supermemory_forget, supermemory_profile).",
         ]
         if self._enable_custom_containers and self._custom_containers:
             tags_str = ", ".join(self._allowed_containers)
@@ -566,31 +711,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
 
         clean_user = _clean_text_for_capture(user_content)
         clean_assistant = _clean_text_for_capture(assistant_content)
-        if not clean_user or not clean_assistant:
+        if not clean_user and not clean_assistant:
             return
-        if self._capture_mode == "all":
-            if len(clean_user) < _MIN_CAPTURE_LENGTH or len(clean_assistant) < _MIN_CAPTURE_LENGTH:
-                return
-            if _is_trivial_message(clean_user):
-                return
 
-        content = (
-            f"[role: user]\n{clean_user}\n[user:end]\n\n"
-            f"[role: assistant]\n{clean_assistant}\n[assistant:end]"
-        )
-        metadata = {"source": "hermes", "type": "conversation_turn"}
-
-        def _run():
-            try:
-                self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context)
-            except Exception:
-                logger.debug("Supermemory sync_turn failed", exc_info=True)
-
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=2.0)
-        self._sync_thread = None
-        self._sync_thread = threading.Thread(target=_run, daemon=True, name="supermemory-sync")
-        self._sync_thread.start()
+        # Buffer every turn for the single full-session document written at end/switch/shutdown
+        self._session_turns.append({"user": clean_user, "assistant": clean_assistant})
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         if not self._active or not self._write_enabled or not self._client or not self._session_id:
@@ -608,11 +733,67 @@ class SupermemoryMemoryProvider(MemoryProvider):
         if len(cleaned) == 1 and len(cleaned[0].get("content", "")) < 20:
             return
         try:
-            self._client.ingest_conversation(self._session_id, cleaned)
+            self._client.ingest_conversation(
+                self._session_id,
+                cleaned,
+                metadata={
+                    "type": "full_session",
+                    "session_id": self._session_id,
+                    "message_count": len(cleaned),
+                },
+            )
         except urllib.error.HTTPError:
             logger.warning("Supermemory session ingest failed", exc_info=True)
         except Exception:
             logger.warning("Supermemory session ingest failed", exc_info=True)
+
+        # Clear buffer so shutdown() doesn't duplicate on normal exit
+        self._session_turns = []
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Flush any buffered turns from the old session as one document, then reset for the new session."""
+        if not self._active or not self._write_enabled or not self._client:
+            self._session_id = str(new_session_id or "").strip() or self._session_id
+            self._session_turns = []
+            return
+
+        old_session_id = self._session_id
+        old_turns = list(self._session_turns)
+
+        # Flush previous session via conversations ingest (with metadata)
+        if old_turns and old_session_id:
+            messages: list[dict] = []
+            for turn in old_turns:
+                if turn.get("user"):
+                    messages.append({"role": "user", "content": turn["user"]})
+                if turn.get("assistant"):
+                    messages.append({"role": "assistant", "content": turn["assistant"]})
+
+            try:
+                self._client.ingest_conversation(
+                    old_session_id,
+                    messages,
+                    metadata={
+                        "type": "full_session",
+                        "session_id": old_session_id,
+                        "message_count": len(old_turns) * 2,
+                        "partial": not reset,
+                    },
+                )
+            except Exception:
+                logger.debug("Supermemory session-switch ingest failed", exc_info=True)
+
+        # Reset for new session
+        self._session_id = str(new_session_id or "").strip() or old_session_id
+        self._session_turns = []
+        self._turn_count = 0
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         if not self._active or not self._write_enabled or not self._client:
@@ -624,7 +805,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             try:
                 self._client.add_memory(
                     content.strip(),
-                    metadata={"source": "hermes_memory", "target": target, "type": "explicit_memory"},
+                    metadata={"target": target, "type": "explicit_memory"},
                     entity_context=self._entity_context,
                 )
             except Exception:
@@ -637,6 +818,31 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._write_thread.start()
 
     def shutdown(self) -> None:
+        # Emergency fallback (crashes only). Buffer is cleared on normal on_session_end().
+        if self._active and self._write_enabled and self._client and self._session_turns and self._session_id:
+            logger.warning("Supermemory: Saving session via shutdown (session=%s, turns=%d)", self._session_id, len(self._session_turns))
+
+            messages: list[dict] = []
+            for turn in self._session_turns:
+                if turn.get("user"):
+                    messages.append({"role": "user", "content": turn["user"]})
+                if turn.get("assistant"):
+                    messages.append({"role": "assistant", "content": turn["assistant"]})
+
+            try:
+                self._client.ingest_conversation(
+                    self._session_id,
+                    messages,
+                    metadata={
+                        "type": "full_session",
+                        "session_id": self._session_id,
+                        "message_count": len(self._session_turns) * 2,
+                        "partial": True,
+                    },
+                )
+            except Exception:
+                logger.debug("Supermemory shutdown ingest failed", exc_info=True)
+
         for attr_name in ("_prefetch_thread", "_sync_thread", "_write_thread"):
             thread = getattr(self, attr_name, None)
             if thread and thread.is_alive():
@@ -664,8 +870,25 @@ class SupermemoryMemoryProvider(MemoryProvider):
         return sanitized
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        def with_kebab_aliases(schemas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            aliases = {
+                "supermemory_store": "supermemory-save",
+                "supermemory_search": "supermemory-search",
+                "supermemory_forget": "supermemory-forget",
+                "supermemory_profile": "supermemory-profile",
+            }
+            expanded = list(schemas)
+            for schema in schemas:
+                kebab = aliases.get(schema.get("name", ""))
+                if not kebab:
+                    continue
+                copy = json.loads(json.dumps(schema))
+                copy["name"] = kebab
+                expanded.append(copy)
+            return expanded
+
         if not self._enable_custom_containers:
-            return [STORE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, PROFILE_SCHEMA]
+            return with_kebab_aliases([STORE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, PROFILE_SCHEMA])
 
         # When multi-container is enabled, add optional container_tag to relevant tools
         container_param = {
@@ -677,7 +900,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             schema = json.loads(json.dumps(base))  # deep copy
             schema["parameters"]["properties"]["container_tag"] = container_param
             schemas.append(schema)
-        return schemas
+        return with_kebab_aliases(schemas)
 
     def _tool_store(self, args: dict) -> str:
         content = str(args.get("content") or "").strip()
@@ -691,7 +914,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         if not isinstance(metadata, dict):
             metadata = {}
         metadata.setdefault("type", _detect_category(content))
-        metadata["source"] = "hermes_tool"
+        metadata.pop("source", None)
         try:
             result = self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context, container_tag=tag)
             preview = content[:80] + ("..." if len(content) > 80 else "")
@@ -776,6 +999,13 @@ class SupermemoryMemoryProvider(MemoryProvider):
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if not self._active or not self._client:
             return tool_error("Supermemory is not configured")
+        aliases = {
+            "supermemory-save": "supermemory_store",
+            "supermemory-search": "supermemory_search",
+            "supermemory-forget": "supermemory_forget",
+            "supermemory-profile": "supermemory_profile",
+        }
+        tool_name = aliases.get(tool_name, tool_name)
         if tool_name == "supermemory_store":
             return self._tool_store(args)
         if tool_name == "supermemory_search":

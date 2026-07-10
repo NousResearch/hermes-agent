@@ -221,13 +221,13 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         runner._running_agents[sk] = parent
         runner.adapters[event.source.platform] = adapter
 
-        with patch("gateway.run.merge_pending_message_event") as merge_mock:
-            handled = await runner._handle_active_session_busy_message(event, sk)
+        handled = await runner._handle_active_session_busy_message(event, sk)
 
         assert handled is True
         parent.interrupt.assert_not_called()
-        # Message must still be queued so it gets picked up on the next turn.
-        merge_mock.assert_called_once()
+        # Message must still be queued so it gets picked up on the next turn
+        # (stored via the FIFO path — its own turn, no destructive merge).
+        assert adapter._pending_messages.get(sk) is event
 
     @pytest.mark.asyncio
     async def test_ack_explains_the_demotion(self) -> None:

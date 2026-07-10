@@ -409,6 +409,8 @@ compression:
   
   # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
   # Lower values = more aggressive compression, higher values = compress later
+  # Models with context windows below 512K are floored at 0.75 (raise-only) so
+  # compaction doesn't fire with half the window still free; set above 0.75 to override.
   threshold: 0.50
 
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
@@ -846,6 +848,11 @@ platform_toolsets:
 #         priority_mode: prepend
 #         priority:
 #           - my_plugin_command
+#   webhook:
+#     extra:
+#       # Route scripts default to a 30 second timeout. Scripts must live under
+#       # the active profile's scripts directory and receive webhook JSON on stdin.
+#       script_timeout_seconds: 30
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

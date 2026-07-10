@@ -121,3 +121,26 @@ def test_intermediate_ack_uses_summary_instead_of_premature_text(agent, monkeypa
     assert result["final_response"] == "verified summary"
     assert result["turn_exit_reason"] == "max_iterations_reached(1/1)"
     agent._handle_max_iterations.assert_called_once()
+
+
+def test_later_verified_response_supersedes_pending_report(agent, monkeypatch):
+    agent.max_iterations = 2
+    agent.iteration_budget.max_total = 2
+    answers = iter([_response("premature report"), _response("verified final report")])
+    agent._interruptible_api_call = lambda _kwargs: next(answers)
+    agent._handle_max_iterations = MagicMock(return_value="replacement summary")
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
+
+    with (
+        patch(
+            "agent.verification_stop.build_verify_on_stop_nudge",
+            side_effect=["verify it", None],
+        ),
+        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+    ):
+        result = agent.run_conversation("edit changed.py")
+
+    assert result["final_response"] == "verified final report"
+    assert result["turn_exit_reason"] == "text_response(finish_reason=stop)"
+    assert result["completed"] is True
+    agent._handle_max_iterations.assert_not_called()

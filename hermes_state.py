@@ -2811,11 +2811,13 @@ class SessionDB:
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
-    def archive_sessions(self, session_ids: List[str]) -> int:
+    def archive_sessions_by_ids(self, session_ids: List[str]) -> int:
         """Soft-archive the listed sessions in one or more bounded updates.
 
         Unknown IDs are skipped. Returns the number of rows that actually
-        moved from active to archived.
+        moved from active to archived. Distinct from the filter-driven
+        :meth:`archive_sessions`, which selects rows by prune-style filters
+        rather than an explicit ID list.
         """
         unique_ids = list({sid for sid in session_ids if isinstance(sid, str) and sid})
         if not unique_ids:
@@ -2895,7 +2897,7 @@ class SessionDB:
 
             archive_ids.append(target_id)
 
-        return self.archive_sessions(archive_ids)
+        return self.archive_sessions_by_ids(archive_ids)
 
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""

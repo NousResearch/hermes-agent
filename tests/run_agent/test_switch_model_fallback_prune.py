@@ -43,7 +43,7 @@ def _switch_to_anthropic(agent):
         patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-xyz"),
         patch("agent.anthropic_adapter._is_oauth_token", return_value=False),
         patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
-        patch("hermes_cli.config.load_config_readonly", side_effect=OSError("unavailable")),
+        patch("hermes_cli.fallback_config.load_fallback_chain_strict", side_effect=OSError("unavailable")),
     ):
         agent.switch_model(
             new_model="claude-sonnet-4-5",
@@ -96,7 +96,7 @@ def test_switch_within_same_provider_preserves_chain():
 
     with (
         patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
-        patch("hermes_cli.config.load_config_readonly", side_effect=OSError("unavailable")),
+        patch("hermes_cli.fallback_config.load_fallback_chain_strict", side_effect=OSError("unavailable")),
     ):
         agent.switch_model(
             new_model="openai/gpt-5",

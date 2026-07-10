@@ -199,6 +199,33 @@ def test_apply_fallback_chain_keeps_unavailable_memo_when_unchanged():
     assert agent._unavailable_fallback_keys == memo
 
 
+def test_apply_fallback_chain_compares_authoritative_snapshot_after_pruning():
+    """Operational pruning alone must not invalidate unavailable-entry memoization."""
+    from gateway.run import GatewayRunner
+
+    authoritative = [
+        {"provider": "custom:zenmux", "model": "zenmux-fallback"},
+        {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+    ]
+    operational = [authoritative[1]]
+    memo = {("openrouter", "anthropic/claude-sonnet-4.6", "")}
+    agent = SimpleNamespace(
+        _fallback_config_chain=list(authoritative),
+        _fallback_chain=list(operational),
+        _fallback_model=operational[0],
+        _fallback_index=0,
+        _fallback_activated=False,
+        _rate_limited_until=0,
+        _unavailable_fallback_keys=set(memo),
+    )
+
+    GatewayRunner._apply_fallback_chain_to_agent(agent, list(authoritative))
+
+    assert agent._fallback_config_chain == authoritative
+    assert agent._fallback_chain == authoritative
+    assert agent._unavailable_fallback_keys == memo
+
+
 def test_background_and_main_agent_paths_call_refresh():
     """Both AIAgent construction sites must pass a refreshed chain, not the
     startup snapshot, and the cached-agent reuse path must apply the refreshed

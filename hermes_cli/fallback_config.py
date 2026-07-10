@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
+
+import yaml
 
 
 def _normalized_base_url(value: Any) -> str:
@@ -90,3 +93,44 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
             chain.append(entry)
 
     return chain
+
+
+def _read_yaml_mapping_strict(path: Path) -> dict[str, Any]:
+    """Read one YAML mapping snapshot, raising on I/O or invalid content."""
+    try:
+        with open(path, encoding="utf-8") as config_file:
+            parsed = yaml.safe_load(config_file)
+    except FileNotFoundError:
+        return {}
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{path} root must be a mapping")
+    return parsed
+
+
+def load_fallback_chain_strict() -> list[dict[str, Any]]:
+    """Read the effective user + managed fallback chain without fail-open gaps.
+
+    The general config loaders intentionally convert parse/read failures to
+    defaults so startup can continue. A live-agent refresh cannot use that
+    fail-open result: defaults are indistinguishable from a user deliberately
+    removing every fallback and would erase the session's last-known-good
+    chain. Read each source exactly once and raise on failures so the caller
+    can retain its cached chain.
+    """
+    from hermes_cli import managed_scope
+    from hermes_cli.config import _deep_merge, _expand_env_vars, get_config_path
+
+    effective = cast(
+        dict[str, Any], _expand_env_vars(_read_yaml_mapping_strict(get_config_path()))
+    )
+
+    managed_dir = managed_scope.get_managed_dir()
+    if managed_dir is not None:
+        managed = _read_yaml_mapping_strict(managed_dir / "config.yaml")
+        if managed:
+            managed_expanded = cast(dict[str, Any], _expand_env_vars(managed))
+            effective = _deep_merge(effective, managed_expanded)
+
+    return get_fallback_chain(effective)

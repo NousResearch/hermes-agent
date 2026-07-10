@@ -5819,6 +5819,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ):
             return
         old_chain = list(getattr(agent, "_fallback_chain", []) or [])
+        old_config_chain = list(
+            getattr(agent, "_fallback_config_chain", old_chain) or []
+        )
+        agent._fallback_config_chain = list(new_chain)
         agent._fallback_chain = new_chain
         agent._fallback_model = new_chain[0] if new_chain else None
         if not getattr(agent, "_fallback_activated", False):
@@ -5830,7 +5834,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # cached agent's lifetime.  Only on actual content change, so
         # the per-message no-op refresh keeps the memo's rate-limiting
         # benefit (#60955).
-        if new_chain != old_chain:
+        if new_chain != old_config_chain:
             unavailable = getattr(agent, "_unavailable_fallback_keys", None)
             if unavailable:
                 unavailable.clear()

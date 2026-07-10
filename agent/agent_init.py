@@ -1362,6 +1362,9 @@ def init_agent(
         agent._fallback_chain = [fallback_model]
     else:
         agent._fallback_chain = []
+    # Keep the last authoritative, unpruned config snapshot separate from the
+    # operational chain, which model switches may prune for the active provider.
+    agent._fallback_config_chain = list(agent._fallback_chain)
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)

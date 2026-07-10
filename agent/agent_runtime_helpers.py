@@ -2409,28 +2409,18 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     old_norm = (old_provider or "").strip().lower()
     new_norm = (new_provider or "").strip().lower()
     old_fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
+    previous_config_chain = list(
+        getattr(agent, "_fallback_config_chain", old_fallback_chain) or []
+    )
     fallback_chain_from_config = False
     fallback_chain_changed_from_config = False
     try:
-        import yaml as _yaml
+        from hermes_cli.fallback_config import load_fallback_chain_strict
 
-        from hermes_cli.config import get_config_path, load_config_readonly
-        from hermes_cli.fallback_config import get_fallback_chain
-
-        # ``load_config_readonly`` intentionally swallows YAML parse failures and
-        # returns defaults. Validate the raw file first so malformed YAML does not
-        # become indistinguishable from a deliberate empty fallback config.
-        try:
-            with open(get_config_path(), encoding="utf-8") as config_file:
-                raw_config = _yaml.safe_load(config_file)
-            if raw_config is not None and not isinstance(raw_config, dict):
-                raise ValueError("config.yaml root must be a mapping")
-        except FileNotFoundError:
-            pass
-
-        fallback_chain = list(get_fallback_chain(load_config_readonly()) or [])
+        fallback_chain = list(load_fallback_chain_strict() or [])
         fallback_chain_from_config = True
-        fallback_chain_changed_from_config = fallback_chain != old_fallback_chain
+        fallback_chain_changed_from_config = fallback_chain != previous_config_chain
+        agent._fallback_config_chain = list(fallback_chain)
     except Exception:
         fallback_chain = old_fallback_chain
 

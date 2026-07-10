@@ -8,11 +8,17 @@ import type { Msg } from '../types.js'
 // `getUiState().maxHistory ?? MAX_HISTORY`. The intro message is always
 // preserved so the session-start separator never scrolls off.
 export const capHistory = (items: Msg[], cap: number = MAX_HISTORY): Msg[] => {
-  if (items.length <= cap) {
+  const limit = Number.isFinite(cap) ? Math.max(1, Math.round(cap)) : MAX_HISTORY
+
+  if (items.length <= limit) {
     return items
   }
 
-  return items[0]?.kind === 'intro'
-    ? [items[0]!, ...items.slice(-(cap - 1))]
-    : items.slice(-cap)
+  if (items[0]?.kind === 'intro') {
+    const tailCount = limit - 1
+
+    return tailCount > 0 ? [items[0]!, ...items.slice(-tailCount)] : [items[0]!]
+  }
+
+  return items.slice(-limit)
 }

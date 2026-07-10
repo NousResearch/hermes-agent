@@ -21,6 +21,14 @@ describe('capHistory', () => {
     expect(out[0]).toBe(intro)
   })
 
+  it('preserves only the intro message at the intro-reservation boundary', () => {
+    const intro = { kind: 'intro', role: 'system', text: '' } as Msg
+    const tail = Array.from({ length: 3 }, (_, i) => msg('assistant', String(i)))
+    const out = capHistory([intro, ...tail], 1)
+
+    expect(out).toEqual([intro])
+  })
+
   it('drops oldest non-intro messages beyond the cap', () => {
     const items = Array.from({ length: 1005 }, (_, i) => msg('user', `m${i}`))
     const out = capHistory(items, 1000)
@@ -28,5 +36,12 @@ describe('capHistory', () => {
     expect(out).toHaveLength(1000)
     // First dropped message was index 0 ("m0"); first kept is "m5".
     expect((out[0] as Extract<Msg, { role: 'user' }>).text).toBe('m5')
+  })
+
+  it('normalizes invalid and low caps before slicing', () => {
+    const items = Array.from({ length: 5 }, (_, i) => msg('user', `m${i}`))
+
+    expect(capHistory(items, 0)).toEqual([items[4]])
+    expect(capHistory(items, Number.NaN)).toBe(items)
   })
 })

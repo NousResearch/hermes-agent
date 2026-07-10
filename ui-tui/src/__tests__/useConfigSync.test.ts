@@ -6,9 +6,11 @@ import {
   hydrateFullConfig,
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
+  normalizeMaxHistory,
   normalizeMouseTracking,
   normalizeStatusBar
 } from '../app/useConfigSync.js'
+import { MAX_HISTORY } from '../config/limits.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
@@ -25,6 +27,7 @@ describe('applyDisplay', () => {
             bell_on_complete: true,
             details_mode: 'expanded',
             inline_diffs: false,
+            max_history: 123,
             show_reasoning: true,
             streaming: false,
             tui_compact: true,
@@ -40,6 +43,7 @@ describe('applyDisplay', () => {
     expect(s.compact).toBe(true)
     expect(s.detailsMode).toBe('expanded')
     expect(s.inlineDiffs).toBe(false)
+    expect(s.maxHistory).toBe(123)
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
     expect(s.streaming).toBe(false)
@@ -160,6 +164,34 @@ describe('applyDisplay', () => {
 
     applyDisplay({ config: { display: { tui_statusbar: 'top' } } }, setBell)
     expect($uiState.get().statusBar).toBe('top')
+  })
+
+  it('normalizes display.max_history into $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { max_history: '42' } } }, setBell)
+    expect($uiState.get().maxHistory).toBe(42)
+
+    applyDisplay({ config: { display: { max_history: 0 } } }, setBell)
+    expect($uiState.get().maxHistory).toBe(1)
+
+    applyDisplay({ config: { display: { max_history: 'nope' } } }, setBell)
+    expect($uiState.get().maxHistory).toBe(MAX_HISTORY)
+  })
+})
+
+describe('normalizeMaxHistory', () => {
+  it('accepts positive numeric values and clamps low values to one', () => {
+    expect(normalizeMaxHistory(25)).toBe(25)
+    expect(normalizeMaxHistory(' 26 ')).toBe(26)
+    expect(normalizeMaxHistory(0)).toBe(1)
+    expect(normalizeMaxHistory('-3')).toBe(1)
+  })
+
+  it('falls back to MAX_HISTORY for invalid values', () => {
+    expect(normalizeMaxHistory(undefined)).toBe(MAX_HISTORY)
+    expect(normalizeMaxHistory('')).toBe(MAX_HISTORY)
+    expect(normalizeMaxHistory(Number.NaN)).toBe(MAX_HISTORY)
   })
 })
 
@@ -390,7 +422,7 @@ describe('hydrateFullConfig', () => {
     }) as any
 
   it('re-applies voice.record_key from a fresh config.get full response', async () => {
-    const gw = makeFakeGw({ config: { display: {}, voice: { record_key: 'ctrl+o' } } })
+    const gw = makeFakeGw({ config: { display: { max_history: 321 }, voice: { record_key: 'ctrl+o' } } })
     const setBell = vi.fn()
     const setVoiceRecordKey = vi.fn()
 
@@ -399,6 +431,7 @@ describe('hydrateFullConfig', () => {
     expect(gw.request).toHaveBeenCalledWith('config.get', { key: 'full' })
     expect(setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' }))
     expect(setBell).toHaveBeenCalledWith(false)
+    expect($uiState.get().maxHistory).toBe(321)
   })
 
   it('reapplies the latest value on each invocation (mtime-reload semantics)', async () => {

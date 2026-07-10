@@ -431,6 +431,14 @@ class PairingStore:
             del pending[matched_key]
             self._save_json(self._pending_path(platform), pending)
 
+            # A successful approval proves the requester is legitimate, so the
+            # brute-force failure streak must not carry over. Without this,
+            # isolated mistyped codes accumulate across the gateway's lifetime
+            # (the counter is persisted in _rate_limits.json and only ever
+            # reset when a lockout fires) and eventually trip a spurious
+            # lockout on a single fresh typo — rejecting even a valid code.
+            self._reset_failed_attempts(platform)
+
             # Add to approved list
             self._approve_user(platform, matched_entry["user_id"],
                                matched_entry.get("user_name", ""))
@@ -525,6 +533,19 @@ class PairingStore:
             print(f"[pairing] Platform {platform} locked out for {LOCKOUT_SECONDS}s "
                   f"after {MAX_FAILED_ATTEMPTS} failed attempts", flush=True)
         self._save_json(self._rate_limit_path(), limits)
+
+    def _reset_failed_attempts(self, platform: str) -> None:
+        """Clear the accumulated failed-approval counter after a success.
+
+        Called from the ``approve_code`` success path so that a legitimate
+        approval resets the brute-force streak (standard lockout semantics:
+        the counter tracks *consecutive* failures, not lifetime ones).
+        """
+        limits = self._load_json(self._rate_limit_path())
+        fail_key = f"_failures:{platform}"
+        if limits.get(fail_key):
+            limits[fail_key] = 0
+            self._save_json(self._rate_limit_path(), limits)
 
     # ----- Cleanup -----
 

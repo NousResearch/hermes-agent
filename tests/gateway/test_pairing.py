@@ -497,6 +497,30 @@ class TestLockout:
             code = store.generate_code("telegram", "newuser")
         assert code is None
 
+    def test_successful_approval_resets_failure_counter(self, tmp_path):
+        """A successful approval clears the brute-force streak, so isolated
+        typos across the gateway's lifetime don't accumulate into a spurious
+        lockout that rejects a valid code.
+        """
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+
+            # One short of the lockout threshold — not locked out yet.
+            for _ in range(MAX_FAILED_ATTEMPTS - 1):
+                assert store.approve_code("telegram", "WRONGCODE") is None
+            assert store._is_locked_out("telegram") is False
+
+            # A legitimate approval must reset the accumulated failures.
+            code = store.generate_code("telegram", "user1", "Alice")
+            assert store.approve_code("telegram", code) is not None
+            limits = store._load_json(store._rate_limit_path())
+            assert limits.get("_failures:telegram", 0) == 0
+
+            # Because the streak was cleared, a single fresh typo afterwards
+            # must NOT trip the lockout (it would have with the stale count).
+            assert store.approve_code("telegram", "WRONGCODE") is None
+            assert store._is_locked_out("telegram") is False
+
     def test_lockout_blocks_code_approval(self, tmp_path):
         """Regression guard for #10195: lockout must also gate approve_code.
 

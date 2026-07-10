@@ -234,20 +234,29 @@ class TestWebSearchUsesSearchBackend:
     def test_search_tool_calls_search_backend(self, monkeypatch):
         from tools import web_tools
 
+        # With the fallback chain, _get_search_backend is no longer called
+        # directly -- resolve_fallback_chain reads config and walks the
+        # registry. Verify the chain resolves the configured provider.
+        import agent.web_search_registry as registry
+
+        # Ensure plugins are loaded so firecrawl is registered
+        web_tools._ensure_web_plugins_loaded()
+
         called_with = []
-        original_get_search = web_tools._get_search_backend
 
-        def tracking_get_search():
-            result = original_get_search()
-            called_with.append(("search", result))
-            return result
+        original_resolve = registry.resolve_fallback_chain
 
-        monkeypatch.setattr(web_tools, "_get_search_backend", tracking_get_search)
+        def tracking_resolve(*, capability):
+            chain = original_resolve(capability=capability)
+            called_with.append((capability, [p.name for p in chain]))
+            return chain
+
+        monkeypatch.setattr(registry, "resolve_fallback_chain", tracking_resolve)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake")
 
         # The function will fail at Firecrawl client level but we just
-        # need to verify _get_search_backend was called
+        # need to verify resolve_fallback_chain was called
         try:
             web_tools.web_search_tool("test", 1)
         except Exception:
@@ -292,8 +301,14 @@ class TestUnconfiguredErrorEnvelopeParity:
             monkeypatch.delenv(k, raising=False)
 
     def test_unconfigured_search_emits_top_level_error(self, monkeypatch):
-        """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``
-        — matching main's ``tool_error()`` envelope, not a per-result shape.
+        """``web_search_tool`` with no creds returns a top-level error
+        envelope, not a per-result shape.
+
+        With the fallback chain, when no providers are available the tool
+        returns ``{"success": False, "error": "No web search provider
+        configured. Run `hermes tools` to set one up."}`` -- a structured
+        top-level error that function-calling models can detect via
+        ``result.get("error")``.
         """
         from tools import web_tools
 
@@ -306,9 +321,9 @@ class TestUnconfiguredErrorEnvelopeParity:
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
         assert "error" in result, f"expected top-level 'error' key, got {result}"
-        # ``Error searching web:`` prefix comes from web_tools' top-level except handler
-        assert "Error searching web:" in result["error"]
-        assert "FIRECRAWL_API_KEY" in result["error"]
+        # The error should mention configuring a provider
+        assert "No web search provider configured" in result["error"]
+        assert result.get("success") is False
         # No per-result burying
         assert "results" not in result
 

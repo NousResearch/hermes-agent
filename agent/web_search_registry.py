@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from agent.web_search_provider import WebSearchProvider
 
@@ -302,3 +302,108 @@ def _reset_for_tests() -> None:
     """Clear the registry. **Test-only.**"""
     with _lock:
         _providers.clear()
+
+
+# ---------------------------------------------------------------------------
+# Runtime fallback chain
+# ---------------------------------------------------------------------------
+
+
+def _is_provider_failure(result: Any) -> bool:
+    """Return True when a provider result indicates the call failed.
+
+    Detection rules:
+
+    * ``success: False`` -> failure.
+    * ``success: True`` but empty ``data.web`` -> failure (0 results).
+    * List result where every entry has an ``error`` key -> failure.
+    * List result with at least one content-bearing entry -> NOT a failure
+      (partial success is good enough to return to the user).
+    * Empty list -> failure.
+    """
+    if not result:
+        return True
+    if isinstance(result, dict):
+        if result.get("success") is False:
+            return True
+        # Dict-shaped: {"success": True, "data": {"web": [...]}}
+        data = result.get("data")
+        if isinstance(data, dict):
+            web = data.get("web")
+            if isinstance(web, list) and not web:
+                return True
+    if isinstance(result, list):
+        if all(isinstance(r, dict) and r.get("error") for r in result):
+            return True
+    return False
+
+
+def resolve_fallback_chain(*, capability: str) -> List[WebSearchProvider]:
+    """Return an ordered list of providers to try for *capability*.
+
+    Used by the web_tools dispatcher to implement "try provider A, if it
+    fails try provider B" semantics. The chain includes all registered
+    providers that support *capability*, ordered by :data:`_LEGACY_PREFERENCE`
+    with any unrecognised providers appended alphabetically.
+
+    If the user has set an explicit ``web.backend`` (or per-capability
+    variant), that provider is still first -- but the chain provides
+    automatic fallback when it fails mid-call.
+
+    Note: the explicitly configured provider is included even when
+    ``is_available()`` is False -- the dispatcher will attempt the call
+    and surface a typed credential error if the chain exhausts. Remaining
+    providers are filtered by ``is_available()`` so we don't waste time
+    on providers the user has no credentials for.
+    """
+    with _lock:
+        snapshot = dict(_providers)
+
+    def _capable(p: WebSearchProvider) -> bool:
+        if capability == "search":
+            return bool(p.supports_search())
+        if capability == "extract":
+            return bool(p.supports_extract())
+        return False
+
+    def _is_available_safe(p: WebSearchProvider) -> bool:
+        try:
+            return bool(p.is_available())
+        except Exception:
+            return False
+
+    # Start with explicitly configured provider (if any)
+    configured = (
+        _read_config_key("web", f"{capability}_backend")
+        or _read_config_key("web", "backend")
+    )
+    chain: List[WebSearchProvider] = []
+    seen: set = set()
+
+    if configured:
+        p = snapshot.get(configured)
+        if p and _capable(p):
+            chain.append(p)
+            seen.add(p.name)
+
+    # Add providers in legacy preference order (filtered by availability)
+    for name in _LEGACY_PREFERENCE:
+        p = snapshot.get(name)
+        if p and p.name not in seen and _capable(p) and _is_available_safe(p):
+            chain.append(p)
+            seen.add(p.name)
+
+    # Append any remaining capable+available providers alphabetically
+    for p in sorted(snapshot.values(), key=lambda x: x.name):
+        if p.name not in seen and _capable(p) and _is_available_safe(p):
+            chain.append(p)
+            seen.add(p.name)
+
+    if chain:
+        logger.debug(
+            "Web %s fallback chain: %s",
+            capability,
+            " -> ".join(p.name for p in chain),
+        )
+
+    return chain

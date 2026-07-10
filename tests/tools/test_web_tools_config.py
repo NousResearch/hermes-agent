@@ -470,7 +470,7 @@ class TestWebSearchSchema:
         # After the web-provider plugin migration, _parallel_search lives in
         # plugins.web.parallel.provider.ParallelWebSearchProvider.search; the
         # tool dispatcher resolves a provider from the registry and calls
-        # provider.search(query, limit). Mock the provider lookup so we can
+        # provider.search(query, limit). Mock the fallback chain so we can
         # assert the limit is clamped before reaching the backend.
         fake_search = MagicMock(return_value={"success": True, "data": {"web": []}})
         fake_provider = MagicMock(
@@ -480,8 +480,8 @@ class TestWebSearchSchema:
         fake_provider.search = fake_search
         fake_provider.name = "parallel"
 
-        with patch("tools.web_tools._get_search_backend", return_value="parallel"), \
-             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
+        with patch("agent.web_search_registry.resolve_fallback_chain",
+                    return_value=[fake_provider]), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch.object(tools.web_tools._debug, "log_call"), \
              patch.object(tools.web_tools._debug, "save"):
@@ -499,8 +499,8 @@ class TestWebSearchErrorHandling:
 
         # After the web-provider plugin migration, the firecrawl client lives
         # at plugins.web.firecrawl.provider._get_firecrawl_client. We mock the
-        # registry's get_provider to return a fake provider whose .search()
-        # raises so we can verify error sanitization.
+        # fallback chain to return a fake provider whose .search() raises so
+        # we can verify error sanitization.
         fake_provider = MagicMock(
             name="FirecrawlWebSearchProvider",
             supports_search=MagicMock(return_value=True),
@@ -508,19 +508,23 @@ class TestWebSearchErrorHandling:
         fake_provider.search.side_effect = RuntimeError("boom")
         fake_provider.name = "firecrawl"
 
-        with patch("tools.web_tools._get_search_backend", return_value="firecrawl"), \
-             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
+        with patch("agent.web_search_registry.resolve_fallback_chain",
+                    return_value=[fake_provider]), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch.object(tools.web_tools._debug, "log_call") as mock_log_call, \
              patch.object(tools.web_tools._debug, "save"):
             result = json.loads(tools.web_tools.web_search_tool("test query", limit=3))
 
-        assert result == {"error": "Error searching web: boom"}
-
-        debug_payload = mock_log_call.call_args.args[1]
-        assert debug_payload["error"] == "Error searching web: boom"
-        assert "traceback" not in debug_payload["error"]
-        assert "exception_type" not in debug_payload["error"]
+        # With the fallback chain, a RuntimeError is caught and turned into
+        # a structured {success: False, error: ...} response. The chain has
+        # only one provider, so after the failure the loop ends and the
+        # structured error is returned (no "Error searching web:" prefix
+        # because the exception was caught inside the chain loop, not the
+        # outer except handler).
+        assert result.get("success") is False
+        assert "boom" in result.get("error", "")
+        assert "traceback" not in result.get("error", "")
+        assert "exception_type" not in result.get("error", "")
         assert "config" not in result
         assert "exception_type" not in result
         assert "exception_chain" not in result

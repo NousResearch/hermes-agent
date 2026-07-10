@@ -49,6 +49,18 @@ def test_noauth_lmstudio_still_resolves(monkeypatch):
     assert resolved["api_key"]
 
 
+def _jwt_with_chatgpt_account(account_id: str, sub: str = "user") -> str:
+    def _part(payload: dict) -> str:
+        raw = __import__("json").dumps(payload, separators=(",", ":")).encode("utf-8")
+        return __import__("base64").urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return (
+        f"{_part({'alg': 'none', 'typ': 'JWT'})}."
+        f"{_part({'sub': sub, 'https://api.openai.com/auth': {'chatgpt_account_id': account_id}})}."
+        "sig"
+    )
+
+
 def _fake_invoke_jwt(ttl_seconds=3600):
     header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
     payload = base64.urlsafe_b64encode(
@@ -61,6 +73,99 @@ def _fake_invoke_jwt(ttl_seconds=3600):
     ).decode().rstrip("=")
     return f"{header}.{payload}.sig"
 
+
+def test_resolve_runtime_provider_pool_exhausted_raises_pool_error(monkeypatch):
+    from hermes_cli.auth import AuthError
+
+    class _Entry:
+        id = "acct1"
+        label = "primary"
+        last_error_code = 429
+        last_error_reason = "usage_limit_reached"
+        last_error_message = "The usage limit has been reached."
+        last_error_reset_at = 1779038128
+        last_status_at = None
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return None
+
+        def entries(self):
+            return [_Entry()]
+
+    def _unexpected_singleton():
+        raise AssertionError("exhausted pools must not fall through to singleton Codex auth")
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", _unexpected_singleton)
+
+    with pytest.raises(AuthError) as exc_info:
+        rp.resolve_runtime_provider(requested="openai-codex")
+
+    err = exc_info.value
+    assert err.code == "credential_pool_exhausted"
+    assert err.provider == "openai-codex"
+    assert "credential pool" in str(err)
+    assert "primary" in str(err)
+    assert "No Codex credentials stored" not in str(err)
+
+def test_credential_pool_exhausted_error_mentions_unique_codex_quota_identities():
+    class _Entry:
+        def __init__(self, idx, label, account_id, sub):
+            self.id = f"acct{idx}"
+            self.label = label
+            self.access_token = _jwt_with_chatgpt_account(account_id, sub)
+            self.last_error_code = 429
+            self.last_error_reason = "usage_limit_reached"
+            self.last_error_message = "The usage limit has been reached."
+            self.last_error_reset_at = 1779038128
+            self.last_status_at = None
+
+    class _Pool:
+        def entries(self):
+            return [
+                _Entry(1, "primary-a", "chatgpt-a", "user-a"),
+                _Entry(2, "primary-b", "chatgpt-a", "user-a"),
+                _Entry(3, "secondary", "chatgpt-b", "user-b"),
+            ]
+
+    err = rp._credential_pool_exhausted_error("openai-codex", _Pool())
+
+    assert "2 unique Codex quota identities across 3 entries" in str(err)
+    assert "duplicate entries share quota" in str(err)
+
+def test_resolve_runtime_provider_auto_pool_exhausted_skips_singleton(monkeypatch):
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return None
+
+        def entries(self):
+            return []
+
+    def _unexpected_singleton():
+        raise AssertionError("auto fallthrough must skip exhausted singleton provider")
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", _unexpected_singleton)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-fallback")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="auto")
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["api_key"] == "sk-or-fallback"
 
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     class _Entry:
@@ -303,6 +408,7 @@ def test_resolve_runtime_provider_codex(monkeypatch):
 
 def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
     monkeypatch.setattr(
         rp,
         "resolve_qwen_runtime_credentials",
@@ -363,6 +469,7 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     from hermes_cli.auth import AuthError
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
     monkeypatch.setattr(
         rp,
         "resolve_qwen_runtime_credentials",

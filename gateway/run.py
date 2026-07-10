@@ -2110,6 +2110,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "credential_pool_entry_id": runtime.get("credential_pool_entry_id"),
         "max_tokens": max_tokens,
     }
 
@@ -2132,6 +2133,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "credential_pool_entry_id": runtime.get("credential_pool_entry_id"),
     }
 
 
@@ -2191,6 +2193,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+        "credential_pool_entry_id": runtime.get("credential_pool_entry_id"),
                     "model": entry.get("model"),
                 }
             except Exception as fb_exc:
@@ -4109,6 +4112,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "api_mode": override.get("api_mode"),
                 "max_tokens": override.get("max_tokens"),
                 "credential_pool": override.get("credential_pool"),
+                "credential_pool_entry_id": override.get("credential_pool_entry_id"),
             }
             if override_runtime.get("api_key"):
                 if override_runtime.get("credential_pool") is None:
@@ -17396,6 +17400,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
+                override["credential_pool_entry_id"] = runtime.get("credential_pool_entry_id")
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
             except Exception:

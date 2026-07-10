@@ -6506,6 +6506,33 @@ class TestCredentialPoolRecovery:
         assert captured["error_context"]["reason"] == "device_code_exhausted"
 
 
+    def test_recover_with_pool_marks_active_entry_id(self, agent):
+        next_entry = SimpleNamespace(label="secondary", id="cred-2")
+        captured = {}
+
+        class _Pool:
+            def current(self):
+                return SimpleNamespace(last_status=None)
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                captured.update(kwargs)
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._credential_pool_entry_id = "cred-1"
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=False,
+            error_context={"reason": "usage_limit_reached"},
+        )
+
+        assert recovered is True
+        assert retry_same is False
+        assert captured["credential_id"] == "cred-1"
+        agent._swap_credential.assert_called_once_with(next_entry)
+
 class TestMaxTokensParam:
     """Verify _max_tokens_param returns the correct key for each provider."""
 

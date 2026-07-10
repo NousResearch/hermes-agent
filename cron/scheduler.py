@@ -3345,6 +3345,7 @@ def run_job(
             prefill_messages=prefill_messages,
             fallback_model=fallback_model,
             credential_pool=credential_pool,
+            credential_pool_entry_id=runtime.get("credential_pool_entry_id"),
             providers_allowed=pr.get("only"),
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),

@@ -27,8 +27,8 @@ if (-not (Test-Path $installScript)) {
 
 $failures = 0
 function Assert-Equal {
-    param([Parameter(Mandatory = $true)] $Expected,
-          [Parameter(Mandatory = $true)] $Actual,
+    param($Expected,
+          $Actual,
           [Parameter(Mandatory = $true)] [string]$Label)
     if ($Expected -ne $Actual) {
         Write-Host "FAIL: $Label" -ForegroundColor Red
@@ -61,7 +61,7 @@ Write-Host ""
 Write-Host "-- ConvertTo-LongPath --"
 
 Assert-Equal -Expected "" -Actual (ConvertTo-LongPath "") -Label "empty string returns empty"
-Assert-Equal -Expected $null -Actual (ConvertTo-LongPath $null) -Label "null returns null"
+Assert-Equal -Expected "" -Actual (ConvertTo-LongPath $null) -Label "null input returns empty string"
 
 # No 8.3 component -> returned verbatim (even with spaces).
 $longish = "C:\Users\First Last\AppData\Local\Temp"

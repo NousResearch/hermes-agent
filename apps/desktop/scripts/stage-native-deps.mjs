@@ -29,7 +29,7 @@ const require = createRequire(import.meta.url)
  * Locate node-pty's package root via real module resolution, so this
  * works whether it's hoisted to a workspace root or local to this app.
  */
-function resolveNodePtyRoot() {
+export function resolveNodePtyRoot() {
   const pkgJsonPath = require.resolve('node-pty/package.json', {
     paths: [projectRoot]
   })
@@ -77,9 +77,25 @@ function copyBuildRelease(srcDir, destDir) {
   }
 }
 
+export function nodeRuntimeArch(arch) {
+  return arch === 'armv7l' ? 'arm' : arch
+}
+
+export function isHostTarget(
+  platform,
+  arch,
+  { hostPlatform = process.platform, hostArch = process.arch } = {}
+) {
+  return platform === hostPlatform && nodeRuntimeArch(arch) === nodeRuntimeArch(hostArch)
+}
+
 function nativePayloadDir(root, platform, arch, { includeBuild = true } = {}) {
-  const candidates = [join(root, 'prebuilds', `${platform}-${arch}`)]
+  // Match node-pty/lib/utils.js runtime precedence: local build first, then
+  // prebuilds/<process.platform>-<process.arch>. Staging and validation must
+  // select the same payload the packaged application will load.
+  const candidates = []
   if (includeBuild) candidates.push(join(root, 'build', 'Release'))
+  candidates.push(join(root, 'prebuilds', `${platform}-${nodeRuntimeArch(arch)}`))
   return candidates.find((candidate) => {
     if (!existsSync(join(candidate, 'pty.node'))) return false
     return platform !== 'darwin' || existsSync(join(candidate, 'spawn-helper'))
@@ -89,27 +105,32 @@ function nativePayloadDir(root, platform, arch, { includeBuild = true } = {}) {
 export function findNodePtyNativePayload({
   platform = process.platform,
   arch = process.arch,
-  root = resolveNodePtyRoot()
+  root = resolveNodePtyRoot(),
+  includeBuild = isHostTarget(platform, arch)
 } = {}) {
-  return nativePayloadDir(root, platform, arch, {
-    includeBuild: platform === process.platform && arch === process.arch
-  })
+  return nativePayloadDir(root, platform, arch, { includeBuild })
 }
 
 export function assertNodePtyNativePayload(root, { platform, arch }) {
-  const payload = nativePayloadDir(root, platform, arch)
+  const payload = findNodePtyNativePayload({ root, platform, arch })
   if (payload) return payload
 
+  const runtimeArch = nodeRuntimeArch(arch)
   const helperRequirement = platform === 'darwin' ? ' plus spawn-helper' : ''
   throw new Error(
     `node-pty has no usable native payload for ${platform}-${arch}: expected pty.node${helperRequirement} ` +
-      `under prebuilds/${platform}-${arch} or build/Release`
+      `under prebuilds/${platform}-${runtimeArch}` +
+      (isHostTarget(platform, arch) ? ' or build/Release' : '')
   )
 }
 
-export function stageNodePty({ platform = process.platform, arch = process.arch } = {}) {
-  const srcRoot = resolveNodePtyRoot()
-  const destRoot = resolve(projectRoot, 'dist/node_modules/node-pty')
+export function stageNodePty({
+  platform = process.platform,
+  arch = process.arch,
+  srcRoot = resolveNodePtyRoot(),
+  destRoot = resolve(projectRoot, 'dist/node_modules/node-pty')
+} = {}) {
+  const sourcePayload = assertNodePtyNativePayload(srcRoot, { platform, arch })
 
   rmSync(destRoot, { recursive: true, force: true })
   mkdirSync(destRoot, { recursive: true })
@@ -121,32 +142,27 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
   // lib/**/*.js — the JS surface node-pty's `main` points into.
   copyGlobByExt(join(srcRoot, 'lib'), join(destRoot, 'lib'), ['.js'])
 
-  // build/Release/* — present when node-pty was compiled locally. A local
-  // build is valid only for the host platform/arch; copying it into a cross-
-  // target package would silently ship the wrong ELF/Mach-O/PE binary.
-  if (platform === process.platform && arch === process.arch) {
-    copyBuildRelease(join(srcRoot, 'build/Release'), join(destRoot, 'build/Release'))
-  }
-
-  // prebuilds/<platform>-<arch>/* — the prebuild-install payload for the
-  // *target* we're packaging, not necessarily the host running this script.
-  // Explicit extensions only, to skip the ~25MB of Windows .pdb symbols
-  // prebuild-install bundles alongside the .node/.dll.
-  const prebuildDir = join(srcRoot, 'prebuilds', `${platform}-${arch}`)
-  if (existsSync(prebuildDir)) {
-    const destPrebuild = join(destRoot, 'prebuilds', `${platform}-${arch}`)
+  const buildDir = join(srcRoot, 'build', 'Release')
+  if (sourcePayload === buildDir) {
+    // Stage exactly the host build selected by node-pty's runtime precedence.
+    copyBuildRelease(buildDir, join(destRoot, 'build', 'Release'))
+  } else {
+    // Otherwise stage only the selected target prebuild. Explicit extensions
+    // skip the ~25MB of Windows .pdb symbols bundled alongside native files.
+    const runtimeArch = nodeRuntimeArch(arch)
+    const destPrebuild = join(destRoot, 'prebuilds', `${platform}-${runtimeArch}`)
     mkdirSync(destPrebuild, { recursive: true })
-    for (const entry of readdirSync(prebuildDir, { withFileTypes: true })) {
+    for (const entry of readdirSync(sourcePayload, { withFileTypes: true })) {
       if (entry.name === 'conpty' && entry.isDirectory()) {
-        cpSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'), { recursive: true })
+        cpSync(join(sourcePayload, 'conpty'), join(destPrebuild, 'conpty'), { recursive: true })
         continue
       }
       if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        cpSync(join(sourcePayload, entry.name), join(destPrebuild, entry.name))
         continue
       }
       if (entry.name === 'spawn-helper') {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        cpSync(join(sourcePayload, entry.name), join(destPrebuild, entry.name))
       }
     }
   }

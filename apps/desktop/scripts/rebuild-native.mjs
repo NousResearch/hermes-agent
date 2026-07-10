@@ -3,7 +3,7 @@ import { rebuild } from '@electron/rebuild'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMain } from './utils.mjs'
-import { findNodePtyNativePayload } from './stage-native-deps.mjs'
+import { findNodePtyNativePayload, isHostTarget } from './stage-native-deps.mjs'
 import packageJson from '../package.json' with { type: 'json' }
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const workspaceRoot = resolve(projectRoot, '../..')
@@ -14,7 +14,7 @@ export async function rebuildNodePty({ platform = process.platform, arch = proce
     return false
   }
 
-  if (platform !== process.platform || arch !== process.arch) {
+  if (!isHostTarget(platform, arch)) {
     throw new Error(
       `cannot cross-compile node-pty for ${platform}-${arch} from ` +
         `${process.platform}-${process.arch}; install a target prebuild instead`

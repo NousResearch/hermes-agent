@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 
 _ANSI_RESET = "\033[0m"
 
+
+def _display_url(value: Any) -> str:
+    """Extract a display-only URL without assuming model argument types."""
+    if isinstance(value, dict):
+        value = value.get("url") or value.get("href")
+    return value.strip() if isinstance(value, str) else ""
+
+
 # Diff colors — resolved lazily from the skin engine so they adapt
 # to light/dark themes.  Falls back to sensible defaults on import
 # failure.  We cache after first resolution for performance.
@@ -1259,7 +1267,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     return False, ""
 
 
-def get_cute_tool_message(
+def _get_cute_tool_message(
     tool_name: str, args: dict, duration: float, result: str | None = None,
 ) -> str:
     """Generate a formatted tool completion line for CLI quiet mode.
@@ -1301,14 +1309,11 @@ def get_cute_tool_message(
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:
-            url = urls[0] if isinstance(urls, list) else str(urls)
-            # Handle dict objects from web_search results
-            if isinstance(url, dict):
-                url = url.get("url") or url.get("href") or ""
-            if not isinstance(url, str):
-                url = str(url)
+            url = _display_url(urls[0] if isinstance(urls, list) else urls)
+            if not url:
+                return _wrap(f"┊ 📄 fetch     pages  {dur}")
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-            extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
+            extra = f" +{len(urls)-1}" if isinstance(urls, list) and len(urls) > 1 else ""
             return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
         return _wrap(f"┊ 📄 fetch     pages  {dur}")
     if tool_name == "terminal":
@@ -1436,6 +1441,18 @@ def get_cute_tool_message(
 
     preview = build_tool_preview(tool_name, args) or ""
     return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")
+
+
+def get_cute_tool_message(
+    tool_name: str, args: dict, duration: float, result: str | None = None,
+) -> str:
+    """Render a completion label without letting cosmetic failures escape."""
+    try:
+        return _get_cute_tool_message(tool_name, args, duration, result=result)
+    except Exception as exc:  # noqa: BLE001 — display must never abort a turn
+        logger.debug("Tool completion label failed for %s: %s", tool_name, exc)
+        safe_name = str(tool_name or "tool")[:9]
+        return f"┊ ⚡ {safe_name:9} completed  {duration:.1f}s"
 
 
 # =========================================================================

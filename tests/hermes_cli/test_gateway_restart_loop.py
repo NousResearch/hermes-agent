@@ -115,6 +115,12 @@ class TestSshRemoteExemption:
         "ssh 127.0.0.1 hermes gateway restart",
         "ssh [::1] 'systemctl restart hermes-gateway'",        # bracketed IPv6 loopback
         "ssh [::1]:22 'systemctl restart hermes-gateway'",     # with explicit port
+        "ssh ::ffff:127.0.0.1 'systemctl restart hermes-gateway'",  # IPv4-mapped IPv6 loopback
+        "ssh [::ffff:127.0.0.1] 'hermes gateway restart'",
+        # Env-var assignment is NOT an ssh invocation — in a real shell this
+        # runs the lifecycle command LOCALLY (guard-bypass attempt).
+        "REMOTE=/usr/bin/ssh ace-ai hermes gateway restart",
+        "SSH_BIN=~/bin/ssh systemctl restart hermes-gateway",
         "ssh ace@localhost 'launchctl kickstart gui/501/ai.hermes.gateway'",
         # A lifecycle command in a LATER shell segment is NOT covered by the
         # ssh prefix (heuristic split errs toward blocking).

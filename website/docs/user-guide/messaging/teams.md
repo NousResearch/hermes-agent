@@ -22,7 +22,7 @@ Need meeting summaries from Microsoft Graph events rather than normal bot conver
 
 Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically before processing.
 
-If your Teams app has resource-specific consent (RSC) permissions that make Teams deliver every group-chat or channel message to the bot, Hermes still ignores unmentioned group/channel messages by default. Set `TEAMS_RESPOND_TO_ALL_MESSAGES=true` or `platforms.teams.extra.respond_to_all_messages: true` only when you intentionally want the bot to process every message in shared spaces by default.
+If your Teams app has resource-specific consent (RSC) permissions that make Teams deliver every group-chat or channel message to the bot, Hermes still ignores unmentioned group/channel messages by default. Set `platforms.teams.extra.respond_to_all_messages: true` only when you intentionally want the bot to process every message in shared spaces by default.
 
 Mode admins can also change the behavior for the current Teams conversation from inside Teams:
 
@@ -33,7 +33,7 @@ Mode admins can also change the behavior for the current Teams conversation from
 @Hermes /teams-mode default
 ```
 
-`all` makes Hermes process every delivered message in that conversation, `mentions` requires @mentions again, and `default` clears the conversation override so it follows `TEAMS_RESPOND_TO_ALL_MESSAGES` or `respond_to_all_messages`. Group-chat and channel mode commands must mention the bot; unmentioned command-like messages are consumed in shared spaces so they do not reach the agent as normal prompts. Hermes stores these overrides under `HERMES_HOME/state/teams_response_modes.json`.
+`all` makes Hermes process every delivered message in that conversation, `mentions` requires @mentions again, and `default` clears the conversation override so it follows `respond_to_all_messages`. Group-chat and channel mode commands must mention the bot; unmentioned command-like messages are consumed in shared spaces so they do not reach the agent as normal prompts. Hermes stores these overrides under `HERMES_HOME/state/teams_response_modes.json` by default. Set `platforms.teams.extra.response_mode_state_file` if you need a custom state-file path.
 
 ---
 
@@ -159,9 +159,6 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
-| `TEAMS_RESPOND_TO_ALL_MESSAGES` | Set `true` to process every group-chat/channel message delivered by Teams; default requires @mention outside DMs |
-| `TEAMS_MODE_ALLOWED_USERS` | Comma-separated AAD object IDs allowed to run `/teams-mode`; defaults to `TEAMS_ALLOWED_USERS` |
-| `TEAMS_RESPONSE_MODE_STATE_FILE` | Optional path for persisted per-conversation `/teams-mode` overrides |
 
 ### config.yaml
 
@@ -178,6 +175,7 @@ platforms:
       port: 3978
       respond_to_all_messages: false
       mode_allowed_users: "aad-object-id-1,aad-object-id-2"
+      response_mode_state_file: "~/.hermes/state/teams_response_modes.json"
 ```
 
 ---

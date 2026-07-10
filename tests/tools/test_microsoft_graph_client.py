@@ -29,6 +29,21 @@ def _make_provider() -> MicrosoftGraphTokenProvider:
     return provider
 
 
+class _BodyShouldNotBeRead(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        raise AssertionError("oversized Content-Length should reject before body read")
+        yield b""
+
+
+class _ChunkedBody(httpx.AsyncByteStream):
+    def __init__(self, *chunks: bytes) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
 @pytest.mark.anyio
 class TestMicrosoftGraphClient:
     async def test_attaches_bearer_token_header(self):
@@ -180,6 +195,47 @@ class TestMicrosoftGraphClient:
         ]
         assert result.content == b"sharepoint-file"
         assert result.content_type == "application/pdf"
+
+    async def test_get_bytes_rejects_oversized_content_length_before_reading_body(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                stream=_BodyShouldNotBeRead(),
+                headers={
+                    "content-length": "5",
+                    "content-type": "image/png",
+                },
+            )
+
+        client = MicrosoftGraphClient(
+            _make_provider(),
+            transport=httpx.MockTransport(handler),
+        )
+
+        with pytest.raises(ValueError, match="too large"):
+            await client.get_bytes(
+                "/teams/team/channels/channel/messages/msg/hostedContents/id/$value",
+                max_bytes=4,
+            )
+
+    async def test_get_bytes_rejects_oversized_chunked_body(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                stream=_ChunkedBody(b"12", b"345"),
+                headers={"content-type": "image/png"},
+            )
+
+        client = MicrosoftGraphClient(
+            _make_provider(),
+            transport=httpx.MockTransport(handler),
+        )
+
+        with pytest.raises(ValueError, match="too large"):
+            await client.get_bytes(
+                "/teams/team/channels/channel/messages/msg/hostedContents/id/$value",
+                max_bytes=4,
+            )
 
     async def test_download_to_file_streams_large_payload_in_chunks(
         self, tmp_path: Path, monkeypatch

@@ -765,12 +765,12 @@ class TestTeamsMessageHandling:
         assert event.source.chat_type == "group"
 
     @pytest.mark.anyio
-    async def test_channel_message_without_mention_allowed_when_respond_all_env_set(self, monkeypatch):
-        monkeypatch.setenv("TEAMS_RESPOND_TO_ALL_MESSAGES", "true")
+    async def test_channel_message_without_mention_allowed_when_respond_all_configured(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id",
             client_secret="secret",
             tenant_id="tenant",
+            respond_to_all_messages=True,
         ))
         adapter._app = MagicMock()
         adapter._app.id = "bot-id"
@@ -917,12 +917,14 @@ class TestTeamsMessageHandling:
         adapter._app.send.assert_not_awaited()
 
     @pytest.mark.anyio
-    async def test_mode_command_persists_conversation_override(self):
+    async def test_mode_command_persists_conversation_override(self, tmp_path):
+        state_file = tmp_path / "teams-response-modes.json"
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id",
             client_secret="secret",
             tenant_id="tenant",
             mode_allowed_users="aad-456",
+            response_mode_state_file=str(state_file),
         ))
         self._ready_app(adapter)
         adapter.handle_message = AsyncMock()
@@ -938,6 +940,7 @@ class TestTeamsMessageHandling:
             client_id="bot-id",
             client_secret="secret",
             tenant_id="tenant",
+            response_mode_state_file=str(state_file),
         ))
         assert restored._conversation_responds_to_all(activity.conversation.id) is True
 

@@ -18,8 +18,9 @@ Configuration in config.yaml:
           client_secret: "your-secret"      # or TEAMS_CLIENT_SECRET env var
           tenant_id: "your-tenant-id"       # or TEAMS_TENANT_ID env var
           port: 3978                        # or TEAMS_PORT env var
-          respond_to_all_messages: false     # or TEAMS_RESPOND_TO_ALL_MESSAGES env var
-          mode_allowed_users: "aad-id-1,aad-id-2" # or TEAMS_MODE_ALLOWED_USERS env var
+          respond_to_all_messages: false
+          mode_allowed_users: "aad-id-1,aad-id-2"
+          response_mode_state_file: "~/.hermes/state/teams_response_modes.json"
 """
 
 from __future__ import annotations
@@ -721,16 +722,14 @@ class TeamsAdapter(BasePlatformAdapter):
             default=True,
         )
         self._default_respond_to_all_messages = _parse_bool(
-            extra.get("respond_to_all_messages")
-            or os.getenv("TEAMS_RESPOND_TO_ALL_MESSAGES", ""),
+            extra.get("respond_to_all_messages"),
             default=False,
         )
-        self._respond_to_all_messages = self._default_respond_to_all_messages
         self._mode_allowed_users = self._parse_allowed_users(
             extra.get("mode_allowed_users")
-            or os.getenv("TEAMS_MODE_ALLOWED_USERS", "")
             or os.getenv("TEAMS_ALLOWED_USERS", "")
         )
+        self._response_mode_state_file = extra.get("response_mode_state_file")
         self._response_mode_state = self._load_response_mode_state()
         self._graph_ingest_client: Any | None = None
         self._graph_ingest_warning_logged = False
@@ -1281,7 +1280,7 @@ class TeamsAdapter(BasePlatformAdapter):
         ):
             logger.debug(
                 "[teams] Ignoring unmentioned %s message because "
-                "TEAMS_RESPOND_TO_ALL_MESSAGES is not enabled",
+                "respond_to_all_messages is not enabled",
                 chat_type,
             )
             return
@@ -1430,11 +1429,11 @@ class TeamsAdapter(BasePlatformAdapter):
         if isinstance(modes, dict) and str(chat_id) in modes:
             return "conversation override"
         if self._default_respond_to_all_messages:
-            return "config/env default"
+            return "config default"
         return "default"
 
     def _response_mode_state_path(self):
-        override = os.getenv("TEAMS_RESPONSE_MODE_STATE_FILE", "").strip()
+        override = str(self._response_mode_state_file or "").strip()
         if override:
             from pathlib import Path
 
@@ -1531,7 +1530,7 @@ class TeamsAdapter(BasePlatformAdapter):
         if not self._is_mode_admin(activity):
             await self.send(
                 chat_id,
-                "Only Teams mode admins can change the response mode. Configure `TEAMS_MODE_ALLOWED_USERS` or `mode_allowed_users` with the authorized AAD object IDs.",
+                "Only Teams mode admins can change the response mode. Configure `platforms.teams.extra.mode_allowed_users` with the authorized AAD object IDs.",
                 reply_to=reply_to,
             )
             return True

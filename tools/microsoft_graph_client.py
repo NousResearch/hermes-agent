@@ -127,19 +127,99 @@ class MicrosoftGraphClient:
         path: str,
         *,
         headers: dict[str, str] | None = None,
+        max_bytes: int | None = None,
+        chunk_size: int = 65536,
     ) -> MicrosoftGraphBinaryResponse:
         response_headers = {"Accept": "*/*"}
         if headers:
             response_headers.update(headers)
-        response = await self._request(
-            "GET",
-            path,
-            headers=response_headers,
-            follow_redirects=True,
-        )
-        return MicrosoftGraphBinaryResponse(
-            content=response.content,
-            content_type=response.headers.get("content-type"),
+        url = self._resolve_url(path)
+        limit = self._resolve_binary_max_bytes(max_bytes)
+
+        attempt = 0
+        last_error: Exception | None = None
+
+        while attempt <= self.max_retries:
+            token = await self.token_provider.get_access_token(
+                force_refresh=attempt > 0 and self._should_refresh_token(last_error)
+            )
+            request_headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": self.user_agent,
+            }
+            request_headers.update(response_headers)
+
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(self.timeout),
+                    transport=self._transport,
+                    follow_redirects=True,
+                ) as client:
+                    async with client.stream(
+                        "GET",
+                        url,
+                        headers=request_headers,
+                    ) as response:
+                        if response.status_code >= 400:
+                            # Error bodies are expected to be small and need to
+                            # be materialized so API errors include details.
+                            await response.aread()
+                            api_error = self._build_api_error("GET", url, response)
+                            last_error = api_error
+
+                            if (
+                                response.status_code == 401
+                                and attempt < self.max_retries
+                            ):
+                                self.token_provider.clear_cache()
+                                await self._sleep(self._retry_delay(response, attempt))
+                                attempt += 1
+                                continue
+
+                            if (
+                                self._should_retry(response)
+                                and attempt < self.max_retries
+                            ):
+                                await self._sleep(self._retry_delay(response, attempt))
+                                attempt += 1
+                                continue
+
+                            raise api_error
+
+                        content_length = response.headers.get("content-length")
+                        if content_length:
+                            try:
+                                declared_size = int(content_length)
+                            except ValueError:
+                                declared_size = None
+                            if declared_size is not None:
+                                self._validate_binary_size(declared_size, limit)
+
+                        chunks: list[bytes] = []
+                        total = 0
+                        async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            self._validate_binary_size(total, limit)
+                            chunks.append(chunk)
+                        return MicrosoftGraphBinaryResponse(
+                            content=b"".join(chunks),
+                            content_type=response.headers.get("content-type"),
+                        )
+            except httpx.HTTPError as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    raise MicrosoftGraphClientError(
+                        f"Microsoft Graph binary request failed for GET {url}: {exc}"
+                    ) from exc
+                await self._sleep(self._retry_delay(None, attempt))
+                attempt += 1
+                continue
+
+        raise MicrosoftGraphClientError(
+            f"Microsoft Graph binary request exhausted retries for GET {url}."
         )
 
     async def iterate_pages(
@@ -384,6 +464,34 @@ class MicrosoftGraphClient:
     @staticmethod
     def _should_refresh_token(error: Exception | None) -> bool:
         return isinstance(error, MicrosoftGraphAPIError) and error.status_code == 401
+
+    @staticmethod
+    def _resolve_binary_max_bytes(max_bytes: int | None) -> int:
+        if max_bytes is not None:
+            return int(max_bytes)
+        try:
+            from gateway.platforms.base import get_inbound_media_max_bytes
+
+            return int(get_inbound_media_max_bytes())
+        except Exception:
+            return 128 * 1024 * 1024
+
+    @staticmethod
+    def _validate_binary_size(size: int, max_bytes: int) -> None:
+        try:
+            from gateway.platforms.base import validate_inbound_media_size
+
+            validate_inbound_media_size(
+                size,
+                media_type="Graph media",
+                max_bytes=max_bytes,
+            )
+        except ImportError:
+            if max_bytes and size > max_bytes:
+                raise ValueError(
+                    f"Microsoft Graph binary response is too large "
+                    f"({size} bytes > {max_bytes} bytes)"
+                )
 
     @staticmethod
     def _retry_delay(response: httpx.Response | None, attempt: int) -> float:

@@ -1503,6 +1503,60 @@ class TestBadNextRunAtRecovery:
         assert any(j["id"] == "good-sibling" for j in due2)
 
 
+class TestPerJobScanContainment:
+    """Structural guard: ANY per-job exception in the due scan must degrade to
+    skipping that one job for the tick — never abort the scan and starve
+    healthy siblings (the freeze class behind bad id / schedule / next_run_at).
+    """
+
+    def test_unforeseen_per_job_exception_does_not_starve_siblings(self, tmp_cron_dir):
+        """Simulate a FUTURE malformed-field variant none of the shape
+        normalizers repair, by making grace computation raise for one job
+        only. The per-job guard must skip it and still return the sibling."""
+        from datetime import timezone, timedelta as td
+        from unittest.mock import patch as mock_patch
+
+        now = datetime.now(timezone.utc)
+        past = (now - td(seconds=30)).isoformat()
+
+        poison = {
+            "id": "poison",
+            # minutes=7 tags this schedule so the patched helper can target it
+            "schedule": {"kind": "interval", "minutes": 7},
+            "next_run_at": past,
+            "enabled": True,
+            "created_at": past,
+        }
+        good = {
+            "id": "good-sibling",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "next_run_at": past,
+            "enabled": True,
+            "created_at": past,
+        }
+        save_jobs([poison, good])
+
+        import cron.jobs as jobs_mod
+        real_grace = jobs_mod._compute_grace_seconds
+
+        def selective_grace(schedule):
+            if schedule.get("minutes") == 7:
+                raise RuntimeError("simulated unforeseen malformed field")
+            return real_grace(schedule)
+
+        with mock_patch.object(jobs_mod, "_compute_grace_seconds", selective_grace):
+            due = get_due_jobs()  # must not raise
+
+        ids = [j["id"] for j in due]
+        assert "good-sibling" in ids, f"healthy sibling starved: {ids}"
+        assert "poison" not in ids
+
+        # Scheduler stays alive on subsequent ticks too.
+        with mock_patch.object(jobs_mod, "_compute_grace_seconds", selective_grace):
+            due2 = get_due_jobs()
+        assert any(j["id"] == "good-sibling" for j in due2)
+
+
 class TestSaveJobOutput:
     def test_creates_output_file(self, tmp_cron_dir):
         output_file = save_job_output("test123", "# Results\nEverything ok.")

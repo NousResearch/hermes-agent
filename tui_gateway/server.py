@@ -10887,8 +10887,16 @@ def _(rid, params, pdb, conn) -> dict:
 @_projects_method("projects.assign_session")
 def _(rid, params, pdb, conn) -> dict:
     proj = _require_project(pdb, conn, params)
-    pdb.assign_session(conn, proj.id, str(params.get("session_id") or ""))
-    return _ok(rid, {"project_id": proj.id, "session_id": str(params.get("session_id") or "")})
+    session_id = str(params.get("session_id") or "").strip()
+    if not session_id:
+        raise ValueError("session_id required")
+    db = _get_db()
+    if db is None:
+        raise ValueError("state.db unavailable")
+    if db.get_session(session_id) is None:
+        raise ValueError("session not found in active profile")
+    pdb.assign_session(conn, proj.id, session_id)
+    return _ok(rid, {"project_id": proj.id, "session_id": session_id})
 
 
 @_projects_method("projects.for_cwd")
@@ -11142,7 +11150,12 @@ def _(rid, params: dict) -> dict:
         )
         return _ok(
             rid,
-            {"projects": tree["projects"], "active_id": active_id, "scoped_session_ids": tree["scoped_session_ids"]},
+            {
+                "projects": tree["projects"],
+                "active_id": active_id,
+                "scoped_session_ids": tree["scoped_session_ids"],
+                "session_project_assignments": tree["session_project_assignments"],
+            },
         )
     except Exception as e:
         return _err(rid, 5061, str(e))

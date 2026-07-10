@@ -220,6 +220,7 @@ def test_manual_session_assignment_overrides_folder_membership():
     assert by_id["p_target"]["sessionCount"] == 1
     assert by_id["p_natural"]["sessionCount"] == 0
     assert by_id["p_target"]["repos"][0]["groups"][0]["sessions"][0]["id"] == session["id"]
+    assert tree["session_project_assignments"] == {session["id"]: "p_target"}
 
 
 def test_scoped_session_ids_is_union_of_placed_sessions():

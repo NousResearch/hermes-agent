@@ -442,7 +442,8 @@ def build_tree(
     bare home dir, the HERMES_HOME subtree) — their sessions fall through to the
     flat Recents list. User-created projects are honored regardless.
 
-    Returns ``{"projects": [...], "scoped_session_ids": [...]}``. When
+    Returns ``{"projects": [...], "scoped_session_ids": [...],
+    "session_project_assignments": {...}}``. When
     ``hydrate`` is False (overview), lane ``sessions`` arrays are emptied but
     every count is preserved and each project carries up to ``preview_limit``
     ``previewSessions``. When True (drill-in), lanes carry full session rows.
@@ -561,4 +562,8 @@ def build_tree(
     # Explicit projects keep their user-chosen names untouched.
     _disambiguate_labels([p for p in result if p.get("isAuto")])
 
-    return {"projects": result, "scoped_session_ids": scoped_ids}
+    return {
+        "projects": result,
+        "scoped_session_ids": scoped_ids,
+        "session_project_assignments": {sid: pid for sid, pid in overrides.items() if pid in project_by_id},
+    }

@@ -657,6 +657,32 @@ describe('overlayLiveLanes', () => {
     expect(lane?.sessions.map(s => s.id)).toEqual(['fresh'])
   })
 
+  it('does not inject a live session into its cwd-inferred project after explicit reassignment', () => {
+    const moved = makeSession('/natural/repo', { git_repo_root: '/natural/repo', id: 'moved' })
+    const natural = projectNode({
+      id: 'p_natural',
+      repos: [{ id: '/natural/repo', label: 'repo', path: '/natural/repo', sessionCount: 0, groups: [] }]
+    })
+
+    const overlaid = overlayLiveLanes(natural, [moved], new Set(), { moved: 'p_target' })
+
+    expect(overlaid.sessionCount).toBe(0)
+    expect(overlaid.repos[0].groups).toEqual([])
+  })
+
+  it('still injects a reassigned live session into the assigned project', () => {
+    const moved = makeSession('/natural/repo', { git_repo_root: '/natural/repo', id: 'moved' })
+    const target = projectNode({
+      id: 'p_target',
+      repos: [{ id: '/natural/repo', label: 'repo', path: '/natural/repo', sessionCount: 0, groups: [] }]
+    })
+
+    const overlaid = overlayLiveLanes(target, [moved], new Set(), { moved: 'p_target' })
+
+    expect(overlaid.sessionCount).toBe(1)
+    expect(overlaid.repos[0].groups.flatMap(group => group.sessions.map(session => session.id))).toEqual(['moved'])
+  })
+
   it('evicts a deleted/archived snapshot row (and drops the lane once empty)', () => {
     const a = makeSession('/www/app', { id: 'keep', git_branch: 'main' })
     const b = makeSession('/www/app/.worktrees/baby', { id: 'gone' })
@@ -712,5 +738,23 @@ describe('overlayLivePreviews', () => {
     const previews = overlayLivePreviews([project], [], [], 3, new Set(['gone']))
 
     expect(previews['/www/app'].map(s => s.id)).toEqual(['old'])
+  })
+
+  it('uses explicit session assignments before cwd inference for live preview rows', () => {
+    const target = projectNode({ id: 'p_target', path: '/target' })
+    const natural = projectNode({ id: 'p_natural', path: '/natural' })
+    const moved = makeSession('/natural/repo', { git_repo_root: '/natural/repo', id: 'moved', last_active: 99 })
+
+    const previews = overlayLivePreviews(
+      [target, natural],
+      [moved],
+      [makeProject('p_target', ['/target']), makeProject('p_natural', ['/natural'])],
+      3,
+      new Set(),
+      { moved: 'p_target' }
+    )
+
+    expect(previews['/target'].map(s => s.id)).toEqual(['moved'])
+    expect(previews['/natural']).toBeUndefined()
   })
 })

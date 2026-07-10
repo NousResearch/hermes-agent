@@ -198,6 +198,21 @@ def test_assign_session_rpc_moves_session_between_projects(tmp_path):
     natural_tree = _call("projects.project_sessions", {"project_id": natural["id"]})["project"]
     assert natural_tree["sessionCount"] == 0
 
+    overview = _call("projects.tree", {"preview_limit": 3})
+    assert overview["session_project_assignments"] == {"assigned-session": target["id"]}
+
+
+def test_assign_session_rpc_rejects_session_missing_from_active_profile(tmp_path):
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    target = _call("projects.create", {"name": "Target", "folders": [str(target_dir)]})["project"]
+
+    resp = server._methods["projects.assign_session"](1, {"id": target["id"], "session_id": "other-profile-session"})
+
+    assert resp["error"]["code"] == 5063
+    assert "active profile" in resp["error"]["message"]
+    assert _call("projects.tree", {"preview_limit": 3})["session_project_assignments"] == {}
+
 
 def test_update_and_archive(tmp_path):
     pid = _call("projects.create", {"name": "Orig", "folders": [str(tmp_path)]})["project"]["id"]

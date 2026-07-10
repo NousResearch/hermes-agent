@@ -106,6 +106,16 @@ test('switchBranch: no-ops for a plain project folder instead of failing outside
   }
 })
 
+test('switchBranch: propagates git probe failures instead of reporting a false success', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-switch-probe-failure-'))
+
+  try {
+    await assert.rejects(() => switchBranch(dir, 'feature', path.join(dir, 'missing-git')), /ENOENT/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('listBranches: lists locals and flags the checked-out branch', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-branches-'))
 

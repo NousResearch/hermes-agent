@@ -123,7 +123,15 @@ async function gitLine(gitBin, args, cwd) {
 }
 
 async function isGitRepo(gitBin, cwd) {
-  return (await gitLine(gitBin, ['rev-parse', '--is-inside-work-tree'], cwd)) === 'true'
+  try {
+    return (await runGit(gitBin, ['rev-parse', '--is-inside-work-tree'], cwd)).trim() === 'true'
+  } catch (err) {
+    if (/not a git repository/i.test(String(err.stderr || ''))) {
+      return false
+    }
+
+    throw err
+  }
 }
 
 async function defaultBranch(gitBin, cwd) {

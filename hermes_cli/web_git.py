@@ -541,7 +541,12 @@ def _default_branch(cwd: str) -> str:
 
 
 def _is_repo(cwd: str) -> bool:
-    return _git_out(cwd, ["rev-parse", "--is-inside-work-tree"]).strip() == "true"
+    code, out, err = _git(cwd, ["rev-parse", "--is-inside-work-tree"])
+    if code == 0:
+        return out.strip() == "true"
+    if "not a git repository" in err.lower():
+        return False
+    raise RuntimeError(err.strip() or "git rev-parse --is-inside-work-tree failed")
 
 
 def _ensure_repo(cwd: str) -> None:

@@ -800,6 +800,25 @@ def test_run_and_exit_oneshot_routes_system_exit_to_hard_exit(monkeypatch, main_
     assert exits == [2]
 
 
+def test_run_and_exit_oneshot_routes_bare_system_exit_to_zero(monkeypatch, main_mod):
+    exits = []
+
+    def fake_run_oneshot(*_args, **_kwargs):
+        raise SystemExit
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(run_oneshot=fake_run_oneshot),
+    )
+    monkeypatch.setattr(main_mod, "_cleanup_oneshot_runtime", lambda: None)
+    monkeypatch.setattr(main_mod, "_exit_after_oneshot", lambda rc: exits.append(rc))
+
+    main_mod._run_and_exit_oneshot("hello")
+
+    assert exits == [None]
+
+
 def test_run_and_exit_oneshot_prints_system_exit_message(
     monkeypatch, capsys, main_mod
 ):
@@ -882,6 +901,28 @@ def test_run_and_exit_oneshot_still_exits_when_global_cleanup_raises(
     main_mod._run_and_exit_oneshot("hello")
 
     assert events == ["aux", "exit:0"]
+
+
+def test_run_and_exit_oneshot_hard_exits_when_cleanup_is_interrupted(
+    monkeypatch, main_mod
+):
+    def _raise_keyboard_interrupt():
+        raise KeyboardInterrupt
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(run_oneshot=lambda *_args, **_kwargs: 0),
+    )
+    monkeypatch.setattr(
+        main_mod, "_cleanup_oneshot_runtime", _raise_keyboard_interrupt
+    )
+    monkeypatch.setattr(main_mod, "_exit_after_oneshot", _raise_exit)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._run_and_exit_oneshot("hello")
+
+    assert exc.value.code == 0
 
 
 def test_run_and_exit_oneshot_routes_keyboard_interrupt_to_130(

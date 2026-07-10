@@ -165,8 +165,13 @@ def _run_and_exit_oneshot(
         except Exception:
             pass
         rc = 1
-    _cleanup_oneshot_runtime()
-    _exit_after_oneshot(rc)
+    try:
+        _cleanup_oneshot_runtime()
+    finally:
+        # The hard exit is the safety boundary for #43055. Even an interrupt
+        # during best-effort cleanup must not fall back into interpreter
+        # finalization, where the reported native SIGABRT occurs.
+        _exit_after_oneshot(rc)
 
 
 def _set_process_title() -> None:

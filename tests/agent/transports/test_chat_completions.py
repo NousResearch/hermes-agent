@@ -1067,6 +1067,31 @@ class TestChatCompletionsCacheStats:
         result = transport.extract_cache_stats(r)
         assert result == {"cached_tokens": 500, "creation_tokens": 100}
 
+    def test_deepseek_top_level_cache_hit_tokens(self, transport):
+        """DeepSeek uses top-level prompt_cache_hit_tokens field."""
+        r = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_cache_hit_tokens=300,
+                prompt_cache_miss_tokens=700,
+                total_tokens=1000,
+            )
+        )
+        result = transport.extract_cache_stats(r)
+        assert result == {"cached_tokens": 300, "creation_tokens": 0}
+
+    def test_deepseek_zero_cache_hit_tokens(self, transport):
+        """DeepSeek with zero cache hits should return None (no cache usage)."""
+        r = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_cache_hit_tokens=0,
+                prompt_cache_miss_tokens=1000,
+                total_tokens=1000,
+            )
+        )
+        result = transport.extract_cache_stats(r)
+        # Zero cache hits is still reported as zero, not None
+        assert result == {"cached_tokens": 0, "creation_tokens": 0}
+
 
 class TestChatCompletionsGeminiNativeExtraBodyStrip:
     """Profile extra_body (e.g. Nous portal tags) must not reach a native

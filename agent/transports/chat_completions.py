@@ -759,10 +759,23 @@ class ChatCompletionsTransport(ProviderTransport):
         return True
 
     def extract_cache_stats(self, response: Any) -> dict[str, int] | None:
-        """Extract OpenRouter/OpenAI cache stats from prompt_tokens_details."""
+        """Extract cache stats from provider responses.
+
+        Supports:
+        - DeepSeek: top-level prompt_cache_hit_tokens
+        - OpenAI/OpenRouter: nested prompt_tokens_details.cached_tokens
+        """
         usage = getattr(response, "usage", None)
         if usage is None:
             return None
+
+        # DeepSeek uses top-level prompt_cache_hit_tokens
+        cached = getattr(usage, "prompt_cache_hit_tokens", None)
+        if cached is not None:
+            # DeepSeek doesn't report creation tokens
+            return {"cached_tokens": cached or 0, "creation_tokens": 0}
+
+        # OpenAI/OpenRouter use nested prompt_tokens_details
         details = getattr(usage, "prompt_tokens_details", None)
         if details is None:
             return None

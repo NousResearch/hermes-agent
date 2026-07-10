@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
+import urllib.error
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli.models import get_copilot_model_context
+from hermes_cli.models import (
+    get_copilot_model_catalog_cached,
+    get_copilot_model_context,
+    get_copilot_reasoning_efforts,
+)
 
 
 # Sample catalog items mimicking the Copilot /models API response
@@ -44,6 +49,24 @@ _SAMPLE_CATALOG = [
             "limits": {"max_prompt_tokens": 0},
         },
     },
+    {
+        "id": "gpt-5.6-sol",
+        "capabilities": {
+            "type": "chat",
+            "limits": {"max_prompt_tokens": 922000},
+            "supports": {
+                "reasoning_effort": [
+                    "none",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                ]
+            },
+        },
+        "supported_endpoints": ["/responses"],
+    },
 ]
 
 
@@ -52,15 +75,63 @@ def _clear_cache():
     """Reset module-level cache before each test."""
     import hermes_cli.models as mod
 
-    mod._copilot_context_cache = {}
-    mod._copilot_context_cache_time = 0.0
+    mod._copilot_catalog_cache = {}
+    mod._copilot_catalog_failed_time = {}
     yield
-    mod._copilot_context_cache = {}
-    mod._copilot_context_cache_time = 0.0
+    mod._copilot_catalog_cache = {}
+    mod._copilot_catalog_failed_time = {}
 
 
 class TestGetCopilotModelContext:
     """Tests for get_copilot_model_context()."""
+
+    @patch("urllib.request.urlopen")
+    def test_authenticated_catalog_fetch_never_falls_back_to_anonymous(self, urlopen):
+        from hermes_cli.models import fetch_github_model_catalog
+
+        urlopen.side_effect = urllib.error.HTTPError(
+            "https://api.githubcopilot.com/models",
+            403,
+            "forbidden",
+            hdrs=None,
+            fp=None,
+        )
+
+        assert fetch_github_model_catalog(api_key="account-a-secret") is None
+        assert urlopen.call_count == 1
+        request = urlopen.call_args.args[0]
+        assert request.get_header("Authorization") == "Bearer account-a-secret"
+
+    @patch("urllib.request.urlopen")
+    def test_anonymous_catalog_fetch_stays_anonymous(self, urlopen):
+        from hermes_cli.models import fetch_github_model_catalog
+
+        response = MagicMock()
+        response.read.return_value = b'{"data": [{"id": "gpt-5.6-sol"}]}'
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        urlopen.return_value = response
+
+        assert fetch_github_model_catalog(api_key=None) == [{"id": "gpt-5.6-sol"}]
+        assert urlopen.call_count == 1
+        request = urlopen.call_args.args[0]
+        assert request.get_header("Authorization") is None
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
+    def test_catalog_cache_is_shared_by_context_and_reasoning(self, mock_fetch):
+        assert get_copilot_model_context("gpt-5.6-sol") == 922_000
+        assert get_copilot_reasoning_efforts("gpt-5.6-sol")[-2:] == [
+            "xhigh",
+            "max",
+        ]
+        assert mock_fetch.call_count == 1
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
+    def test_cached_catalog_returns_same_object(self, mock_fetch):
+        first = get_copilot_model_catalog_cached("test-token")
+        second = get_copilot_model_catalog_cached("test-token")
+        assert first is second
+        assert mock_fetch.call_count == 1
 
     @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
     def test_returns_max_prompt_tokens(self, mock_fetch):
@@ -93,9 +164,79 @@ class TestGetCopilotModelContext:
         get_copilot_model_context("gpt-4.1")
         assert mock_fetch.call_count == 1
 
-        # Expire the cache
-        mod._copilot_context_cache_time = time.time() - 7200
+        # Expire the account-scoped shared catalog.
+        key = mod._copilot_catalog_cache_key(None)
+        catalog, _ = mod._copilot_catalog_cache[key]
+        mod._copilot_catalog_cache[key] = (catalog, time.time() - 7200)
         get_copilot_model_context("gpt-4.1")
+        assert mock_fetch.call_count == 2
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+    def test_expired_catalog_is_dropped_when_refresh_fails(self, mock_fetch):
+        import hermes_cli.models as mod
+
+        key = mod._copilot_catalog_cache_key("account-a")
+        stale_catalog = [
+            {
+                "id": "gpt-5.6-sol",
+                "capabilities": {
+                    "type": "chat",
+                    "supports": {"reasoning_effort": ["low", "max"]},
+                },
+            }
+        ]
+        mod._copilot_catalog_cache[key] = (stale_catalog, time.time() - 7200)
+
+        assert get_copilot_model_catalog_cached("account-a") is None
+        assert key not in mod._copilot_catalog_cache
+        assert mock_fetch.call_count == 1
+        assert get_copilot_model_catalog_cached("account-a") is None
+        assert mock_fetch.call_count == 1
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+    def test_failed_fetch_is_negative_cached_per_account(self, mock_fetch):
+        assert get_copilot_reasoning_efforts("gpt-5.6-sol", "account-a") == [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+        ]
+        get_copilot_reasoning_efforts("gpt-5.6-sol", "account-a")
+        assert mock_fetch.call_count == 1
+        get_copilot_reasoning_efforts("gpt-5.6-sol", "account-b")
+        assert mock_fetch.call_count == 2
+
+    @patch("hermes_cli.models.fetch_github_model_catalog")
+    def test_catalog_cache_does_not_cross_copilot_accounts(self, mock_fetch):
+        catalog_a = [
+            {
+                "id": "gpt-5.6-sol",
+                "capabilities": {
+                    "type": "chat",
+                    "supports": {"reasoning_effort": ["low", "high"]},
+                },
+            }
+        ]
+        catalog_b = [
+            {
+                "id": "gpt-5.6-sol",
+                "capabilities": {
+                    "type": "chat",
+                    "supports": {"reasoning_effort": ["low", "high", "max"]},
+                },
+            }
+        ]
+        mock_fetch.side_effect = [catalog_a, catalog_b]
+
+        assert get_copilot_reasoning_efforts("gpt-5.6-sol", "account-a") == [
+            "low",
+            "high",
+        ]
+        assert get_copilot_reasoning_efforts("gpt-5.6-sol", "account-b") == [
+            "low",
+            "high",
+            "max",
+        ]
         assert mock_fetch.call_count == 2
 
     @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)

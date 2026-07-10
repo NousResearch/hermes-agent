@@ -26,28 +26,28 @@ class CopilotProfile(ProviderProfile):
         model: str | None = None,
         reasoning_config: dict | None = None,
         supports_reasoning: bool = False,
+        supported_reasoning_efforts: list[str] | None = None,
         **ctx,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         if supports_reasoning and model:
             try:
-                from hermes_cli.models import github_model_reasoning_efforts
+                supported_efforts = supported_reasoning_efforts or []
+                if not supported_efforts:
+                    return extra_body, {}
+                if reasoning_config and reasoning_config.get("enabled") is False:
+                    return extra_body, {}
 
-                supported_efforts = github_model_reasoning_efforts(model)
-                if supported_efforts and reasoning_config:
-                    requested_effort = reasoning_config.get("effort", "medium")
-                    if requested_effort == "max":
-                        effort = project_reasoning_effort(
-                            requested_effort, supported_efforts
-                        )
-                    elif requested_effort == "xhigh":
-                        effort = "high"
-                    else:
-                        effort = requested_effort
-                    if effort is not None and effort in supported_efforts:
-                        extra_body["reasoning"] = {"effort": effort}
-                elif supported_efforts:
-                    extra_body["reasoning"] = {"effort": "medium"}
+                effort = (
+                    reasoning_config.get("effort", "medium")
+                    if reasoning_config
+                    else "medium"
+                )
+                if effort == "minimal" and "low" in supported_efforts:
+                    effort = "low"
+                projected = project_reasoning_effort(effort, supported_efforts)
+                if projected is not None:
+                    extra_body["reasoning"] = {"effort": projected}
             except Exception:
                 pass
         return extra_body, {}

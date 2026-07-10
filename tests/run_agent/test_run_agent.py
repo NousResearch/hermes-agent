@@ -1897,6 +1897,7 @@ class TestBuildApiKwargs:
             tools=None,
             supports_reasoning=True,
             provider_profile=profile,
+            supported_reasoning_efforts=["low", "medium", "high"],
         )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
 
@@ -1915,7 +1916,29 @@ class TestBuildApiKwargs:
             supports_reasoning=True,
             reasoning_config={"enabled": True, "effort": "xhigh"},
             provider_profile=profile,
+            supported_reasoning_efforts=["low", "medium", "high"],
         )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
+    @pytest.mark.parametrize("profile_name", ["copilot", "github-models"])
+    def test_github_profiles_project_max_to_advertised_high(
+        self,
+        agent,
+        profile_name,
+    ):
+        from agent.transports import get_transport
+        from providers import get_provider_profile
+
+        kwargs = get_transport("chat_completions").build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "max"},
+            provider_profile=get_provider_profile(profile_name),
+            supported_reasoning_efforts=["low", "medium", "high"],
+        )
+
         assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
 
     def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):

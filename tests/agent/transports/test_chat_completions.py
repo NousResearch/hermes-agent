@@ -391,22 +391,17 @@ class TestChatCompletionsBuildKwargs:
         ],
     )
     def test_copilot_profile_max_projects_to_strongest_lower(
-        self, transport, monkeypatch, supported_efforts, expected
+        self, transport, supported_efforts, expected
     ):
-        from hermes_cli import models
         from providers import get_provider_profile
 
-        monkeypatch.setattr(
-            models,
-            "github_model_reasoning_efforts",
-            lambda _model: supported_efforts,
-        )
         kw = transport.build_kwargs(
             model="gpt-test",
             messages=[{"role": "user", "content": "Hi"}],
             supports_reasoning=True,
             reasoning_config={"enabled": True, "effort": "max"},
             provider_profile=get_provider_profile("copilot"),
+            supported_reasoning_efforts=supported_efforts,
         )
 
         assert kw["extra_body"]["reasoning"] == {"effort": expected}

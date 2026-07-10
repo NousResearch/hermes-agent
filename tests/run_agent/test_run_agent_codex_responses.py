@@ -57,7 +57,12 @@ def _build_agent(monkeypatch):
     return agent
 
 
-def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
+def _build_copilot_agent(
+    monkeypatch,
+    *,
+    model="gpt-5.4",
+    reasoning_config=None,
+):
     _patch_agent_bootstrap(monkeypatch)
 
     agent = run_agent.AIAgent(
@@ -70,6 +75,7 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
         max_iterations=4,
         skip_context_files=True,
         skip_memory=True,
+        reasoning_config=reasoning_config,
     )
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
@@ -429,6 +435,10 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
 
 
 def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.models.get_copilot_reasoning_efforts",
+        lambda _model, _api_key=None: ["minimal", "low", "medium", "high"],
+    )
     agent = _build_copilot_agent(monkeypatch)
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
 
@@ -455,8 +465,8 @@ def test_build_api_kwargs_copilot_responses_projects_max_to_strongest_lower(
 
     monkeypatch.setattr(
         models,
-        "github_model_reasoning_efforts",
-        lambda _model: supported_efforts,
+        "get_copilot_reasoning_efforts",
+        lambda _model, _api_key=None: supported_efforts,
     )
     agent = _build_copilot_agent(monkeypatch)
     agent.reasoning_config = {"enabled": True, "effort": "max"}
@@ -467,12 +477,56 @@ def test_build_api_kwargs_copilot_responses_projects_max_to_strongest_lower(
 
 
 def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_model(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.models.get_copilot_reasoning_efforts",
+        lambda _model, _api_key=None: [],
+    )
     agent = _build_copilot_agent(monkeypatch, model="gpt-4.1")
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
 
     assert "reasoning" not in kwargs
     assert "include" not in kwargs
     assert "prompt_cache_key" not in kwargs
+
+
+def test_copilot_gpt56_max_uses_live_catalog_capability(monkeypatch):
+    """GPT-5.6 max must survive the Copilot Responses request path."""
+    import hermes_cli.models as copilot_models
+
+    copilot_models._copilot_catalog_cache = {}
+    copilot_models._copilot_catalog_failed_time = {}
+    catalog = [
+        {
+            "id": "gpt-5.6-sol",
+            "capabilities": {
+                "type": "chat",
+                "supports": {
+                    "reasoning_effort": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max",
+                    ]
+                },
+            },
+            "supported_endpoints": ["/responses"],
+        }
+    ]
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_github_model_catalog",
+        lambda **_kwargs: catalog,
+    )
+    agent = _build_copilot_agent(
+        monkeypatch,
+        model="gpt-5.6-sol",
+        reasoning_config={"enabled": True, "effort": "max"},
+    )
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["reasoning"] == {"effort": "max"}
 
 
 # ---------------------------------------------------------------------------

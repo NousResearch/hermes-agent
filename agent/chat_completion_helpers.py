@@ -865,6 +865,24 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         # registered providers with profiles were bypassing the strip.
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
 
+        # Resolve Copilot's account-specific effort ladder before entering the
+        # generic profile hook. Pass capabilities, never credentials, through
+        # the shared provider-profile context.
+        _supports_reasoning = agent._supports_reasoning_extra_body()
+        _supported_reasoning_efforts = None
+        if getattr(_profile, "name", "") == "copilot":
+            try:
+                from hermes_cli.models import get_copilot_reasoning_efforts
+
+                _supported_reasoning_efforts = get_copilot_reasoning_efforts(
+                    agent.model,
+                    agent.api_key,
+                )
+                _supports_reasoning = bool(_supported_reasoning_efforts)
+            except Exception:
+                _supported_reasoning_efforts = []
+                _supports_reasoning = False
+
         return _ct.build_kwargs(
             model=agent.model,
             messages=api_messages,
@@ -883,7 +901,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             provider_preferences=_prefs or None,
             openrouter_min_coding_score=agent.openrouter_min_coding_score,
             anthropic_max_output=_ant_max,
-            supports_reasoning=agent._supports_reasoning_extra_body(),
+            supports_reasoning=_supports_reasoning,
+            supported_reasoning_efforts=_supported_reasoning_efforts,
             qwen_session_metadata=_qwen_meta,
         )
 

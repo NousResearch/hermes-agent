@@ -2859,7 +2859,8 @@ def fetch_github_model_catalog(
             **copilot_default_headers(),
             "Authorization": f"Bearer {api_key}",
         })
-    attempts.append(copilot_default_headers())
+    else:
+        attempts.append(copilot_default_headers())
 
     for headers in attempts:
         req = urllib.request.Request(COPILOT_MODELS_URL, headers=headers)
@@ -2886,47 +2887,62 @@ def fetch_github_model_catalog(
 
 # ─── Copilot catalog context-window helpers ─────────────────────────────────
 
-# Module-level cache: {model_id: max_prompt_tokens}
-_copilot_context_cache: dict[str, int] = {}
-_copilot_context_cache_time: float = 0.0
+# Account-scoped live model catalog cache. Copilot catalogs differ by account,
+# so never reuse one credential's capabilities for another credential.
+_copilot_catalog_cache: dict[str, tuple[list[dict[str, Any]], float]] = {}
+_copilot_catalog_failed_time: dict[str, float] = {}
 _COPILOT_CONTEXT_CACHE_TTL = 3600  # 1 hour
+_COPILOT_CONTEXT_NEGATIVE_TTL = 60  # retry failed catalog fetches after 1 minute
+
+
+def _copilot_catalog_cache_key(api_key: Optional[str]) -> str:
+    import hashlib
+
+    return hashlib.sha256(str(api_key or "").encode()).hexdigest()[:16]
+
+
+def get_copilot_model_catalog_cached(
+    api_key: Optional[str] = None,
+) -> Optional[list[dict[str, Any]]]:
+    """Return the account's live Copilot catalog with positive/negative caching."""
+    cache_key = _copilot_catalog_cache_key(api_key)
+    now = time.time()
+    cached = _copilot_catalog_cache.get(cache_key)
+    if cached is not None and now - cached[1] < _COPILOT_CONTEXT_CACHE_TTL:
+        return cached[0]
+    if now - _copilot_catalog_failed_time.get(cache_key, 0.0) < _COPILOT_CONTEXT_NEGATIVE_TTL:
+        return None
+
+    catalog = fetch_github_model_catalog(api_key=api_key)
+    if catalog:
+        _copilot_catalog_cache[cache_key] = (catalog, now)
+        _copilot_catalog_failed_time.pop(cache_key, None)
+        return catalog
+
+    # An expired account catalog is not authoritative after refresh fails.
+    # Drop it rather than preserving capabilities (for example `max`) that the
+    # account may no longer advertise.
+    _copilot_catalog_cache.pop(cache_key, None)
+    _copilot_catalog_failed_time[cache_key] = now
+    return None
 
 
 def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> Optional[int]:
-    """Look up max_prompt_tokens for a Copilot model from the live /models API.
-
-    Results are cached in-process for 1 hour to avoid repeated API calls.
-    Returns the token limit or None if not found.
-    """
-    global _copilot_context_cache, _copilot_context_cache_time
-
-    # Serve from cache if fresh
-    if _copilot_context_cache and (time.time() - _copilot_context_cache_time < _COPILOT_CONTEXT_CACHE_TTL):
-        if model_id in _copilot_context_cache:
-            return _copilot_context_cache[model_id]
-        # Cache is fresh but model not in it — don't re-fetch
-        return None
-
-    # Fetch and populate cache
-    catalog = fetch_github_model_catalog(api_key=api_key)
+    """Look up max_prompt_tokens for a Copilot model from the cached catalog."""
+    catalog = get_copilot_model_catalog_cached(api_key=api_key)
     if not catalog:
         return None
 
-    cache: dict[str, int] = {}
     for item in catalog:
-        mid = str(item.get("id") or "").strip()
-        if not mid:
+        if str(item.get("id") or "").strip() != model_id:
             continue
         caps = item.get("capabilities") or {}
         limits = caps.get("limits") or {}
         max_prompt = limits.get("max_prompt_tokens")
         if isinstance(max_prompt, int) and max_prompt > 0:
-            cache[mid] = max_prompt
-
-    _copilot_context_cache = cache
-    _copilot_context_cache_time = time.time()
-
-    return cache.get(model_id)
+            return max_prompt
+        return None
+    return None
 
 
 def _is_github_models_base_url(base_url: Optional[str]) -> bool:
@@ -3527,6 +3543,15 @@ def github_model_reasoning_efforts(
             return []
 
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
+
+
+def get_copilot_reasoning_efforts(
+    model_id: Optional[str],
+    api_key: Optional[str] = None,
+) -> list[str]:
+    """Resolve Copilot reasoning levels from the cached live account catalog."""
+    catalog = get_copilot_model_catalog_cached(api_key=api_key)
+    return github_model_reasoning_efforts(model_id, catalog=catalog)
 
 
 def probe_api_models(

@@ -97,12 +97,31 @@ def is_camofox_mode() -> bool:
     """True when Camofox backend is configured and no CDP override is active.
 
     When the user has explicitly connected to a live Chromium-family browser via
-    ``/browser connect`` (which sets ``BROWSER_CDP_URL``), the CDP connection
-    takes priority over Camofox so the browser tools operate on the real
-    browser instead of being silently routed to the Camofox backend.
+    ``/browser connect`` (which sets ``BROWSER_CDP_URL``), OR has a persistent
+    ``browser.cdp_url`` in config.yaml, the CDP connection takes priority over
+    Camofox so the browser tools operate on the real browser instead of being
+    silently routed to the Camofox backend.
+
+    Precedence mirrors ``browser_tool._get_cdp_override()`` exactly:
+    1. ``BROWSER_CDP_URL`` env var (live ``/browser connect``)
+    2. ``browser.cdp_url`` in config.yaml (persistent config)
+
+    Historically this only checked the env var, so ``browser_console`` / eval
+    (gated on ``is_camofox_mode``) routed to Camofox while ``browser_navigate`` /
+    ``browser_snapshot`` (gated on ``_get_cdp_override``, which reads BOTH) used
+    the real CDP browser — a sibling-path split that 403'd JS-eval/console on a
+    persistent ``browser.cdp_url`` setup while navigate worked.
     """
     if os.getenv("BROWSER_CDP_URL", "").strip():
         return False
+    try:
+        from hermes_cli.config import read_raw_config
+
+        browser_cfg = read_raw_config().get("browser", {})
+        if isinstance(browser_cfg, dict) and str(browser_cfg.get("cdp_url", "") or "").strip():
+            return False
+    except Exception as exc:
+        logger.debug("is_camofox_mode: could not read browser.cdp_url from config: %s", exc)
     return bool(get_camofox_url())
 
 

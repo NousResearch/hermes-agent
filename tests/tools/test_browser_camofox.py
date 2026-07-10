@@ -48,6 +48,52 @@ class TestCamofoxMode:
         monkeypatch.setenv("BROWSER_CDP_URL", "  ")
         assert is_camofox_mode() is True
 
+    def test_config_cdp_url_takes_priority(self, monkeypatch):
+        """A persistent browser.cdp_url in config.yaml disables Camofox too.
+
+        Regression: is_camofox_mode() historically only checked the env var, so
+        browser_console/eval (gated on it) 403'd against Camofox while
+        browser_navigate/snapshot (gated on _get_cdp_override, which also reads
+        config) used the real CDP browser. Both must honor the config override.
+        """
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"browser": {"cdp_url": "http://127.0.0.1:9222"}},
+        ):
+            assert is_camofox_mode() is False
+
+    def test_config_cdp_url_blank_does_not_disable_camofox(self, monkeypatch):
+        """An empty/whitespace browser.cdp_url must not suppress Camofox."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"browser": {"cdp_url": "   "}},
+        ):
+            assert is_camofox_mode() is True
+
+    def test_config_read_failure_falls_back_to_camofox(self, monkeypatch):
+        """If config can't be read, don't crash — fall back to Camofox as before."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            side_effect=RuntimeError("config unavailable"),
+        ):
+            assert is_camofox_mode() is True
+
+    def test_env_cdp_url_beats_config_lookup(self, monkeypatch):
+        """The env var short-circuits before the config read is ever attempted."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            side_effect=AssertionError("config should not be read when env is set"),
+        ):
+            assert is_camofox_mode() is False
+
     def test_health_check_unreachable(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
         assert check_camofox_available() is False

@@ -1446,3 +1446,25 @@ updates:
 #     binary_path: ""                               # "" = resolve op via PATH; else absolute path
 #     cache_ttl_seconds: 300                        # 0 disables BOTH cache layers
 #     override_existing: true                       # resolved values win over existing env
+
+# =============================================================================
+# Tool search (progressive tool disclosure)
+# =============================================================================
+# Replaces deferrable tool schemas in the model-facing tools array with three
+# small bridge tools (tool_search / tool_describe / tool_call), cutting the
+# schema entry tax every session pays on its first prefill. Deferred tools
+# stay fully usable — the model finds them by search and calls them through
+# the bridge, with guardrails/approvals/hooks firing identically.
+#
+# tools:
+#   tool_search:
+#     enabled: auto            # auto | on | off
+#     threshold_pct: 10.0
+#     search_default_limit: 5
+#     max_search_limit: 20
+#     # Built-in toolsets are never deferred unless listed here. Keep the hot
+#     # path (terminal/file/web/skills/clarify) direct; opt in only infrequent
+#     # surfaces. Trade-off: turns that use a deferred tool pay one extra
+#     # bridge round-trip to discover it.
+#     # defer_toolsets: [browser, browser-cdp, cronjob, delegation, image_gen, tts, vision, homeassistant, computer_use, session_search]
+

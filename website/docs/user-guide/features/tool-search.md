@@ -15,13 +15,12 @@ problem. When activated, MCP and plugin tools are replaced in the
 model-visible tools array by three bridge tools, and the model loads each
 specific tool's schema on demand.
 
-:::info Built-in Hermes tools never defer
-The tools that make up Hermes' core capability set (`terminal`,
-`read_file`, `write_file`, `patch`, `search_files`, `todo`, `memory`,
-`browser_*`, `web_search`, `web_extract`, `clarify`, `execute_code`,
-`delegate_task`, `session_search`, and the rest of
-`_HERMES_CORE_TOOLS`) are *always* loaded directly. Only MCP tools and
-non-core plugin tools are eligible for deferral.
+:::info Built-in Hermes tools never defer by default
+The tools that make up Hermes' core capability set
+(`_HERMES_CORE_TOOLS`) are *always* loaded directly unless you
+explicitly opt their toolset into deferral via
+`tools.tool_search.defer_toolsets`. Only MCP tools, non-core plugin
+tools, and those opted-in built-in toolsets ride the bridge.
 :::
 
 ## How it works
@@ -78,6 +77,19 @@ tools:
     threshold_pct: 10   # percentage of context — only used in auto mode
     search_default_limit: 5
     max_search_limit: 20
+    # Optional: push infrequent built-in toolsets behind the bridge.
+    # Empty by default. Keep terminal/file/web/skills/clarify direct.
+    # defer_toolsets:
+    #   - browser
+    #   - browser-cdp
+    #   - cronjob
+    #   - delegation
+    #   - image_gen
+    #   - tts
+    #   - vision
+    #   - homeassistant
+    #   - computer_use
+    #   - session_search
 ```
 
 | Key | Default | Meaning |
@@ -86,6 +98,38 @@ tools:
 | `threshold_pct` | `10` | Percentage of context length at which `auto` mode kicks in. Range 0–100. |
 | `search_default_limit` | `5` | Hits returned when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `20` | Hard upper bound the model can request via `limit`. Range 1–50. |
+| `defer_toolsets` | `[]` | Built-in toolset names to treat as deferrable (in addition to MCP/plugin tools). Empty = core tools never defer. |
+
+## Deferring infrequent built-in tools (opt-in)
+
+On MCP-light installs the built-in schemas themselves dominate the tools-array
+tax (~15–20k tokens). Opt specific infrequent toolsets into the same bridge:
+
+```yaml
+tools:
+  tool_search:
+    enabled: auto
+    defer_toolsets:
+      - browser
+      - browser-cdp
+      - cronjob
+      - delegation
+      - image_gen
+      - tts
+      - vision
+      - homeassistant
+      - computer_use
+      - session_search
+```
+
+Recommended hot path that should stay direct: `terminal`, `file`, `web`,
+`skills`, `clarify`, `todo`, `memory`, `code_execution`. Do **not** put those
+toolset names in `defer_toolsets` unless you accept an extra search/describe
+round-trip on every use.
+
+Kanban workers usually need `kanban` tools hot when that is their only
+surface — leave `kanban` out of `defer_toolsets` for worker profiles, or keep
+it direct globally and rely on check_fn gating.
 
 You can also flip the legacy boolean shape:
 

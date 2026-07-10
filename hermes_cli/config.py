@@ -2778,10 +2778,11 @@ DEFAULT_CONFIG = {
     # in the model-facing tools array with three bridge tools —
     # tool_search / tool_describe / tool_call — and surfaced on demand.
     #
-    # Core Hermes tools (terminal, read_file, write_file, patch,
-    # search_files, todo, memory, browser_*, etc.) are NEVER deferred.
-    # See tools/tool_search.py for full design notes and the
-    # openclaw-tool-search-report PDF in this PR for the rationale.
+    # Core Hermes tools never defer by default. Opt specific built-in
+    # toolsets into deferral via ``defer_toolsets`` when those schemas are
+    # themselves the entry tax (browser, cronjob, delegation, image_gen, …).
+    # Keep terminal/file/web/skills/clarify direct for the hot path.
+    # See tools/tool_search.py and website docs for design notes.
     "tools": {
         "tool_search": {
             # "auto" (default) — activate only when deferrable tool schemas
@@ -2800,6 +2801,11 @@ DEFAULT_CONFIG = {
             "search_default_limit": 5,
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
+            # Built-in toolset names to push behind the bridge. Empty by
+            # default (no behavior change). Example for infrequent core:
+            # [browser, browser-cdp, cronjob, delegation, image_gen, tts,
+            #  vision, homeassistant, computer_use, session_search]
+            "defer_toolsets": [],
         },
     },
 

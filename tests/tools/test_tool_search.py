@@ -90,15 +90,20 @@ class TestConfigParsing:
 
 class TestClassification:
     def test_core_tools_never_defer(self):
-        """The critical invariant from the OpenClaw report."""
+        """The critical invariant from the OpenClaw report.
+
+        Without an explicit ``defer_toolsets`` opt-in, core tools never defer.
+        Pass ``frozenset()`` so this assertion is independent of the developer's
+        local ``~/.hermes/config.yaml``.
+        """
         from tools.tool_search import is_deferrable_tool_name
         # Sample of core tools from _HERMES_CORE_TOOLS.
         for core_name in ["terminal", "read_file", "write_file", "patch",
                           "search_files", "todo", "memory", "browser_navigate",
                           "web_search", "session_search", "clarify",
                           "execute_code", "delegate_task", "send_message"]:
-            assert not is_deferrable_tool_name(core_name), (
-                f"Core tool '{core_name}' must NEVER be deferrable"
+            assert not is_deferrable_tool_name(core_name, frozenset()), (
+                f"Core tool '{core_name}' must NEVER be deferrable by default"
             )
 
     def test_bridge_tools_never_defer(self):
@@ -126,6 +131,166 @@ class TestClassification:
         names = {(td.get("function") or {}).get("name") for td in visible}
         assert "xx_unknown_tool" in names
         assert deferrable == []
+
+
+# ---------------------------------------------------------------------------
+# defer_toolsets opt-in (built-in toolsets behind the bridge)
+# ---------------------------------------------------------------------------
+
+
+def _register_session_search():
+    """Import a real built-in tool module so the registry holds its entry."""
+    import tools.session_search_tool  # noqa: F401 — registers at import
+    from tools.registry import registry
+    entry = registry.get_entry("session_search")
+    assert entry is not None, "session_search must be registered for these tests"
+    return entry.toolset
+
+
+class TestDeferToolsetsOptIn:
+    """``defer_toolsets`` lets named BUILT-IN toolsets ride the bridge.
+
+    Core protection stays the default: everything here requires the explicit
+    per-toolset opt-in, and the bridge/dispatch paths must agree with the
+    assembly about what was deferred (an opted-in tool that assembly strips
+    but dispatch rejects would be unreachable).
+    """
+
+    def test_config_parses_defer_toolsets(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "on",
+            "defer_toolsets": ["session_search", "  delegation  ", "", None, 7],
+        })
+        assert cfg.defer_toolsets == frozenset({"session_search", "delegation", "7"})
+
+    def test_config_defer_toolsets_defaults_empty(self):
+        from tools.tool_search import ToolSearchConfig
+        assert ToolSearchConfig.from_raw(None).defer_toolsets == frozenset()
+        assert ToolSearchConfig.from_raw(True).defer_toolsets == frozenset()
+        assert ToolSearchConfig.from_raw({"defer_toolsets": "not-a-list"}).defer_toolsets == frozenset()
+
+    def test_core_tool_defers_only_with_opt_in(self):
+        from tools.tool_search import is_deferrable_tool_name
+        toolset = _register_session_search()
+        assert not is_deferrable_tool_name("session_search", frozenset())
+        assert is_deferrable_tool_name("session_search", frozenset({toolset}))
+
+    def test_bridge_tools_never_defer_even_with_opt_in(self):
+        from tools.tool_search import is_deferrable_tool_name, BRIDGE_TOOL_NAMES
+        for name in BRIDGE_TOOL_NAMES:
+            assert not is_deferrable_tool_name(name, frozenset({"tool_search", "core"}))
+
+    def test_unknown_toolset_opt_in_is_harmless(self):
+        from tools.tool_search import is_deferrable_tool_name
+        _register_session_search()
+        assert not is_deferrable_tool_name(
+            "session_search", frozenset({"xx_no_such_toolset"})
+        )
+
+    def test_assemble_strips_opted_in_core_toolset(self):
+        from tools.tool_search import (
+            assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES,
+        )
+        toolset = _register_session_search()
+        defs = [_td("terminal", "Run a command"),
+                _td("session_search", "Search past sessions")]
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_toolsets": [toolset]}
+        )
+        result = assemble_tool_defs(defs, context_length=131072, config=cfg)
+        assert result.activated
+        names = {(td.get("function") or {}).get("name") for td in result.tool_defs}
+        assert "session_search" not in names       # deferred
+        assert "terminal" in names                 # untouched core stays
+        assert BRIDGE_TOOL_NAMES <= names          # bridge present
+
+    def test_hot_path_toolsets_stay_direct_when_infrequent_deferred(self):
+        """Acceptance: terminal stays direct while opted-in infrequent core defers.
+
+        Real registry entries are required so ``defer_toolsets`` can match the
+        toolset name. Hot tools are not opted in and therefore remain direct.
+        """
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
+        import tools.terminal_tool  # noqa: F401
+        import tools.cronjob_tools  # noqa: F401
+        import tools.delegate_tool  # noqa: F401
+        import tools.browser_tool  # noqa: F401
+        from tools.registry import registry
+
+        # Sanity: registry toolsets match the opt-in keys we will use.
+        assert registry.get_entry("terminal").toolset == "terminal"
+        assert registry.get_entry("cronjob").toolset == "cronjob"
+        assert registry.get_entry("delegate_task").toolset == "delegation"
+        assert registry.get_entry("browser_navigate").toolset == "browser"
+
+        hot = ["terminal", "process"]
+        infrequent = ["browser_navigate", "cronjob", "delegate_task"]
+        defs = [_td(n, n) for n in hot + infrequent]
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "on",
+            "defer_toolsets": ["browser", "cronjob", "delegation"],
+        })
+        result = assemble_tool_defs(defs, context_length=131072, config=cfg)
+        assert result.activated
+        names = {(td.get("function") or {}).get("name") for td in result.tool_defs}
+        for n in hot:
+            assert n in names, f"hot path tool {n} must stay direct"
+        for n in infrequent:
+            assert n not in names, f"infrequent tool {n} should be deferred"
+        assert BRIDGE_TOOL_NAMES <= names
+
+    def test_dispatch_paths_accept_opted_in_tool(self, monkeypatch):
+        """describe/tool_call must agree with assembly about the opt-in."""
+        import tools.tool_search as ts
+        toolset = _register_session_search()
+        cfg = ts.ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_toolsets": [toolset]}
+        )
+        monkeypatch.setattr(ts, "load_config", lambda: cfg)
+
+        td = _td("session_search", "Search past sessions")
+        described = json.loads(ts.dispatch_tool_describe(
+            {"name": "session_search"}, current_tool_defs=[td]))
+        assert described.get("name") == "session_search"
+        assert "error" not in described
+
+        name, args, err = ts.resolve_underlying_call(
+            {"name": "session_search", "arguments": {"query": "x"}})
+        assert err is None
+        assert name == "session_search"
+        assert args == {"query": "x"}
+
+    def test_dispatch_paths_reject_without_opt_in(self, monkeypatch):
+        import tools.tool_search as ts
+        _register_session_search()
+        cfg = ts.ToolSearchConfig.from_raw({"enabled": "on"})
+        monkeypatch.setattr(ts, "load_config", lambda: cfg)
+
+        described = json.loads(ts.dispatch_tool_describe(
+            {"name": "session_search"},
+            current_tool_defs=[_td("session_search", "Search past sessions")]))
+        assert "error" in described
+
+        _, _, err = ts.resolve_underlying_call({"name": "session_search", "arguments": {}})
+        assert err is not None
+
+    def test_session_byte_stable_across_identical_assemblies(self):
+        """Prompt-cache safety: identical input → identical tool_defs bytes."""
+        import json
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        toolset = _register_session_search()
+        defs = [_td("terminal", "Run a command"),
+                _td("session_search", "Search past sessions"),
+                _td("cronjob", "Schedule jobs")]
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "on",
+            "defer_toolsets": [toolset, "cronjob"],
+        })
+        a = assemble_tool_defs(defs, context_length=131072, config=cfg)
+        b = assemble_tool_defs(defs, context_length=131072, config=cfg)
+        assert a.activated and b.activated
+        assert json.dumps(a.tool_defs, sort_keys=True, separators=(",", ":")) ==                json.dumps(b.tool_defs, sort_keys=True, separators=(",", ":"))
 
 
 # ---------------------------------------------------------------------------

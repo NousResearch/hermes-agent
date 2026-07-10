@@ -3176,10 +3176,17 @@ def _get_auth_error_types() -> tuple:
 def _is_auth_error(exc: BaseException) -> bool:
     """Return True if ``exc`` indicates an MCP OAuth failure.
 
+    Async transport libraries may wrap the underlying OAuth exception in a
+    nested ``BaseExceptionGroup``.  Treat a group as auth-related when any
+    leaf is auth-related so startup does not retry the entire browser flow.
+
     ``httpx.HTTPStatusError`` is only treated as auth-related when the
     response status code is 401. Other HTTP errors fall through to the
     generic error path in the tool handlers.
     """
+    if isinstance(exc, BaseExceptionGroup):
+        return any(_is_auth_error(child) for child in exc.exceptions)
+
     types = _get_auth_error_types()
     if not types or not isinstance(exc, types):
         return False

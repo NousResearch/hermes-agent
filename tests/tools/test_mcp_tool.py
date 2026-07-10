@@ -2032,12 +2032,16 @@ class TestReconnection:
         asyncio.run(_test())
 
     def test_initial_oauth_failure_does_not_retry(self):
-        """Initial OAuth failures stop immediately to avoid repeated browser prompts."""
+        """Wrapped OAuth failures stop immediately to avoid repeated browser prompts."""
         from tools.mcp_tool import MCPServerTask
+        from tools.mcp_oauth import OAuthNonInteractiveError
 
         run_count = 0
         target_server = None
-        oauth_error = RuntimeError("Token exchange failed (400): Unknown client_id")
+        oauth_error = ExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [OAuthNonInteractiveError("user_skipped")],
+        )
 
         original_run_stdio = MCPServerTask._run_stdio
 
@@ -2054,14 +2058,19 @@ class TestReconnection:
             target_server = server
 
             with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
-                 patch("tools.mcp_tool._is_auth_error", return_value=True), \
                  patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                await server.run({"command": "test"})
+                await asyncio.wait_for(server.run({"command": "test"}), timeout=1)
 
             assert run_count == 1
             assert server._error is oauth_error
             assert server._ready.is_set()
             assert mock_sleep.await_count == 0
+            pending = [
+                task
+                for task in asyncio.all_tasks()
+                if task is not asyncio.current_task() and not task.done()
+            ]
+            assert pending == []
 
         asyncio.run(_test())
 

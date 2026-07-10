@@ -88,6 +88,10 @@
       {
         "command": "remoteUse.nvidia",
         "title": "Remote Use: NVIDIA Compute Surface"
+      },
+      {
+        "command": "remoteUse.gpuAgent",
+        "title": "Remote Use: GPU-Driven Agent (offline)"
       }
     ],
     "themes": [

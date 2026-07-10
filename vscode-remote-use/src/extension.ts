@@ -1266,6 +1266,14 @@ export function activate(context: vscode.ExtensionContext) {
     });
   });
 
+  const gpuAgentCmd = vscode.commands.registerCommand('remoteUse.gpuAgent', async () => {
+    const repo = getHermesRepoPath();
+    const agent = require('path').join(repo, 'templates', 'surfaces', 'gpu_agent.py');
+    const terminal = vscode.window.createTerminal('GPU-Driven Agent');
+    terminal.sendText(`python "${agent}" "Probe the GPU, then compile and run a CUDA matmul kernel, and report what happened."`);
+    terminal.show();
+  });
+
   const commandPromptCmd = vscode.commands.registerCommand('remoteUse.commandPrompt', async () => {
     const repo = getHermesRepoPath();
     const psProfilePath = require('path').join(repo, 'shell', '_commandPrompt.ps1');
@@ -1366,6 +1374,7 @@ export function activate(context: vscode.ExtensionContext) {
     htmlSurfaceCmd,
     surfacesHubCmd,
     nvidiaCmd,
+    gpuAgentCmd,
     commandPromptCmd,
     homeOSCmd
   );

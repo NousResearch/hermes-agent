@@ -127,7 +127,7 @@ import {
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
 import { hiddenWindowsChildOptions } from './windows-child-options'
-import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } from './windows-hermes-path'
+import { buildPathExtCandidates, chooseUpdaterArgs, getVenvSitePackagesEntries, resolveVenvHermesCommand } from './windows-hermes-path'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
@@ -1807,45 +1807,6 @@ function getVenvPython(venvRoot) {
 // console python also restores stdout, so the backend announces its port on the
 // normal HERMES_DASHBOARD_READY stdout line and no ready-file side channel is
 // needed.
-
-function getVenvSitePackagesEntries(venvRoot) {
-  const entries = []
-
-  if (!venvRoot) {
-    return entries
-  }
-
-  if (IS_WINDOWS) {
-    const sitePackages = path.join(venvRoot, 'Lib', 'site-packages')
-
-    if (directoryExists(sitePackages)) {
-      entries.push(sitePackages)
-    }
-
-    return entries
-  }
-
-  const version = (() => {
-    try {
-      const cfg = fs.readFileSync(path.join(venvRoot, 'pyvenv.cfg'), 'utf8')
-      const match = cfg.match(/^version_info\s*=\s*(\d+\.\d+)/im)
-
-      return match ? match[1].trim() : null
-    } catch {
-      return null
-    }
-  })()
-
-  if (version) {
-    const sitePackages = path.join(venvRoot, 'lib', `python${version}`, 'site-packages')
-
-    if (directoryExists(sitePackages)) {
-      entries.push(sitePackages)
-    }
-  }
-
-  return entries
-}
 
 function makeDashboardReadyFile() {
   const dir = path.join(app.getPath('userData'), 'backend-ready')

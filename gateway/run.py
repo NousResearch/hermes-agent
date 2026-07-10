@@ -18109,6 +18109,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "thread_id": _progress_thread_id,
                 "reply_to_message_id": event_message_id,
             }
+            if getattr(source, "feishu_topic_starter_user_id", None):
+                _status_thread_metadata["feishu_at_user_id"] = str(
+                    getattr(source, "feishu_topic_starter_user_id")
+                )
+                _feishu_starter_name = getattr(
+                    source, "feishu_topic_starter_user_name", None
+                )
+                if _feishu_starter_name:
+                    _status_thread_metadata["feishu_at_user_name"] = str(
+                        _feishu_starter_name
+                    )
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
 

@@ -89,7 +89,10 @@ dependencies = [
   "urllib3>=2.7.0,<3",
   # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
   # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
-  "cryptography==46.0.7",  # CVE-2026-39892, CVE-2026-34073
+  # Issue #60685: floor-pin (>=46.0.7) so newer compatible installs
+  # (e.g. 48.0.1, which also fixes CVE-2026-39892 and CVE-2026-34073)
+  # survive a `hermes update` instead of being force-downgraded.
+  "cryptography>=46.0.7",  # CVE-2026-39892, CVE-2026-34073 (floor pin)
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package

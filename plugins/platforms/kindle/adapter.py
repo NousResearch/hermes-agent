@@ -178,6 +178,18 @@ class KindleAdapter(BasePlatformAdapter):
         if not text:
             return web.json_response({"error": "empty note"}, status=400)
 
+        # The HTTP response is the delivery channel for exactly one agent turn.
+        # BasePlatformAdapter queues a later message for an already-active chat,
+        # so replacing this Future would route turn A's reply into request B and
+        # strand request A. Make the synchronous bridge's concurrency contract
+        # explicit: callers retry after the current turn finishes.
+        pending = self._pending.get(chat_id)
+        if pending is not None and not pending.done():
+            return web.json_response(
+                {"error": "a request for this chat is already in progress"},
+                status=409,
+            )
+
         source = self.build_source(
             chat_id=chat_id,
             chat_name="Kindle Scribe",
@@ -211,7 +223,10 @@ class KindleAdapter(BasePlatformAdapter):
         except asyncio.CancelledError:
             return web.json_response({"error": "cancelled"}, status=503)
         finally:
-            self._pending.pop(chat_id, None)
+            # Only remove our own waiter. This identity guard keeps cleanup
+            # correct if the lifecycle changes to queues or retries later.
+            if self._pending.get(chat_id) is fut:
+                self._pending.pop(chat_id, None)
 
 
 # ──────────────────────────────────────────────────────────────────────────

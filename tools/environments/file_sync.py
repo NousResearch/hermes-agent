@@ -126,6 +126,8 @@ def _sha256_file(path: str) -> str:
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
+_SYNC_BACK_MAX_EXPANDED_BYTES = _SYNC_BACK_MAX_BYTES
+_SYNC_BACK_MAX_MEMBERS = 100_000
 
 
 class FileSyncManager:
@@ -361,7 +363,27 @@ class FileSyncManager:
 
             with tempfile.TemporaryDirectory(prefix="hermes-sync-back-") as staging:
                 with tarfile.open(archive_path) as tar:
-                    tar.extractall(staging, filter="data")
+                    members = []
+                    expanded_size = 0
+                    for member in tar:
+                        if len(members) >= _SYNC_BACK_MAX_MEMBERS:
+                            logger.warning(
+                                "sync_back: remote tar has more than %d members — "
+                                "skipping extraction",
+                                _SYNC_BACK_MAX_MEMBERS,
+                            )
+                            return
+                        if member.isfile():
+                            expanded_size += member.size
+                            if expanded_size > _SYNC_BACK_MAX_EXPANDED_BYTES:
+                                logger.warning(
+                                    "sync_back: remote tar expanded size exceeds %d bytes — "
+                                    "skipping extraction",
+                                    _SYNC_BACK_MAX_EXPANDED_BYTES,
+                                )
+                                return
+                        members.append(member)
+                    tar.extractall(staging, members=members, filter="data")
 
                 applied = 0
                 upload_only_host_paths = (

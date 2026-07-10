@@ -175,6 +175,19 @@ class TestDocxExtraction(unittest.TestCase):
         with self.assertRaises(ExtractionError):
             extract_document_text(p)
 
+    def test_rejects_oversized_archive_member(self):
+        p = os.path.join(self.tmp, "large.docx")
+        _write_docx(p, self._doc('<w:p><w:r><w:t>Text</w:t></w:r></w:p>'))
+
+        import tools.read_extract as read_extract
+        original = read_extract.MAX_OFFICE_MEMBER_BYTES
+        read_extract.MAX_OFFICE_MEMBER_BYTES = 1
+        try:
+            with self.assertRaises(ExtractionError):
+                extract_document_text(p)
+        finally:
+            read_extract.MAX_OFFICE_MEMBER_BYTES = original
+
 
 # ---------------------------------------------------------------------------
 # Excel workbooks (.xlsx) — #10740
@@ -236,6 +249,20 @@ class TestXlsxExtraction(unittest.TestCase):
             fh.write(b"nope")
         with self.assertRaises(ExtractionError):
             extract_document_text(p)
+
+    def test_rejects_excessive_compression_ratio(self):
+        p = os.path.join(self.tmp, "ratio.xlsx")
+        with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("xl/workbook.xml", "x" * 10000)
+
+        import tools.read_extract as read_extract
+        original = read_extract.MAX_OFFICE_COMPRESSION_RATIO
+        read_extract.MAX_OFFICE_COMPRESSION_RATIO = 1
+        try:
+            with self.assertRaises(ExtractionError):
+                extract_document_text(p)
+        finally:
+            read_extract.MAX_OFFICE_COMPRESSION_RATIO = original
 
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,10 @@ __all__ = ["EXTRACTABLE_EXTENSIONS", "ExtractionError", "extract_document_text",
 
 EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx"})
 MAX_XLSX_BYTES = 50 * 1024 * 1024
+MAX_OFFICE_MEMBER_BYTES = 32 * 1024 * 1024
+MAX_OFFICE_TOTAL_BYTES = 100 * 1024 * 1024
+MAX_OFFICE_MEMBER_COUNT = 1024
+MAX_OFFICE_COMPRESSION_RATIO = 200
 _MAX_XLSX_ROWS_PER_SHEET = 5000
 _MAX_XLSX_COLS = 256
 
@@ -104,9 +108,32 @@ def _zip_xml(zf: zipfile.ZipFile, name: str) -> ET.Element:
         raise ExtractionError(f"Malformed XML in {name}: {exc}") from exc
 
 
+def _validate_office_archive(path: str, zf: zipfile.ZipFile) -> None:
+    try:
+        if Path(path).stat().st_size > MAX_XLSX_BYTES:
+            raise ExtractionError("Office document exceeds the compressed size limit")
+    except OSError as exc:
+        raise ExtractionError(str(exc)) from exc
+
+    infos = [info for info in zf.infolist() if not info.is_dir()]
+    if len(infos) > MAX_OFFICE_MEMBER_COUNT:
+        raise ExtractionError("Office document contains too many archive members")
+
+    total_size = 0
+    for info in infos:
+        if info.file_size > MAX_OFFICE_MEMBER_BYTES:
+            raise ExtractionError(f"Office document member is too large: {info.filename}")
+        total_size += info.file_size
+        if total_size > MAX_OFFICE_TOTAL_BYTES:
+            raise ExtractionError("Office document expands beyond the extraction limit")
+        if info.file_size and info.compress_size and info.file_size / info.compress_size > MAX_OFFICE_COMPRESSION_RATIO:
+            raise ExtractionError(f"Office document member compression ratio is too high: {info.filename}")
+
+
 def _extract_docx(path: str) -> str:
     try:
         with zipfile.ZipFile(path) as zf:
+            _validate_office_archive(path, zf)
             root = _zip_xml(zf, "word/document.xml")
     except zipfile.BadZipFile as exc:
         raise ExtractionError(f"Not a valid DOCX: {exc}") from exc
@@ -133,6 +160,7 @@ def _extract_docx(path: str) -> str:
 def _extract_xlsx(path: str) -> str:
     try:
         with zipfile.ZipFile(path) as zf:
+            _validate_office_archive(path, zf)
             names = set(zf.namelist())
             shared = _shared_strings(zf, names)
             sheets = _workbook_sheets(zf)

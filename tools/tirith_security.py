@@ -421,34 +421,24 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
             log("tirith download failed: %s", exc)
             return None, "download_failed"
 
-        # Cosign provenance verification — preferred but not mandatory.
-        # When cosign is available, we verify that the release was produced
-        # by the expected GitHub Actions workflow (full supply chain proof).
-        # Without cosign, SHA-256 checksum + HTTPS still provides integrity
-        # and transport-level authenticity.
-        cosign_verified = False
-        if shutil.which("cosign"):
-            try:
-                _download_file(f"{base_url}/checksums.txt.sig", sig_path)
-                _download_file(f"{base_url}/checksums.txt.pem", cert_path)
-            except Exception as exc:
-                logger.info("cosign artifacts unavailable (%s), proceeding with SHA-256 only", exc)
-            else:
-                cosign_result = _verify_cosign(checksums_path, sig_path, cert_path)
-                if cosign_result is True:
-                    cosign_verified = True
-                elif cosign_result is False:
-                    # Verification explicitly rejected — abort, the release
-                    # may have been tampered with.
-                    log("tirith install aborted: cosign provenance verification failed")
-                    return None, "cosign_verification_failed"
-                else:
-                    # None = execution failure (timeout/OSError) — proceed
-                    # with SHA-256 only since cosign itself is broken.
-                    logger.info("cosign execution failed, proceeding with SHA-256 only")
-        else:
-            logger.info("cosign not on PATH — installing tirith with SHA-256 verification only "
-                        "(install cosign for full supply chain verification)")
+        if not shutil.which("cosign"):
+            log("tirith install aborted: cosign is required for release provenance verification")
+            return None, "cosign_missing"
+
+        try:
+            _download_file(f"{base_url}/checksums.txt.sig", sig_path)
+            _download_file(f"{base_url}/checksums.txt.pem", cert_path)
+        except Exception as exc:
+            log("tirith install aborted: cosign artifacts unavailable: %s", exc)
+            return None, "cosign_artifacts_unavailable"
+
+        cosign_result = _verify_cosign(checksums_path, sig_path, cert_path)
+        if cosign_result is False:
+            log("tirith install aborted: cosign provenance verification failed")
+            return None, "cosign_verification_failed"
+        if cosign_result is not True:
+            log("tirith install aborted: cosign could not execute successfully")
+            return None, "cosign_exec_failed"
 
         if not _verify_checksum(archive_path, checksums_path, archive_name):
             return None, "checksum_failed"
@@ -476,8 +466,7 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
                 return None, "cross_device_copy_failed"
         os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-        verification = "cosign + SHA-256" if cosign_verified else "SHA-256 only"
-        logger.info("tirith installed to %s (%s)", dest, verification)
+        logger.info("tirith installed to %s (cosign + SHA-256)", dest)
         return dest, ""
 
     finally:

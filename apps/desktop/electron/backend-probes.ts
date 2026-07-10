@@ -20,7 +20,7 @@
  * actually works.
  *
  * Both probes are deliberately fast and forgiving:
- *   - 5s timeout (a hung interpreter beats forever, but we still give
+ *   - 15s timeout (a hung interpreter beats forever, but we still give
  *     slow disks / cold caches room to breathe)
  *   - stdio ignored (we only care about exit code; stdout/stderr are
  *     not surfaced to the user, just to recentHermesLog for forensics
@@ -34,7 +34,7 @@
 
 import { execFileSync } from 'node:child_process'
 
-const PROBE_TIMEOUT_MS = 5000
+const PROBE_TIMEOUT_MS = 15000
 
 /**
  * Return the Python snippet used to verify Hermes can import far enough to

@@ -5,16 +5,9 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
-import pytest
-
 import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
-
-
-@pytest.fixture(autouse=True)
-def _no_live_custom_provider_model_fetch(monkeypatch):
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *args, **kwargs: [])
 
 
 _MOCK_VALIDATION = {
@@ -287,6 +280,8 @@ def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     with all models collected, not N duplicate rows."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    fetch = lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected probe"))
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
 
     providers = list_authenticated_providers(
         current_provider="openrouter",
@@ -370,6 +365,109 @@ def test_custom_provider_no_key_singular_model_still_probes_live_models(monkeypa
     row = next(p for p in providers if p["name"] == "Local Ollama")
     assert row["models"] == ["llama3", "mistral", "qwen3-coder"]
     assert row["total_models"] == 3
+
+
+def test_custom_provider_explicit_model_matching_default_skips_probe(monkeypatch):
+    """Explicitness comes from ``models:``, even when dedup adds no item."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    def fail_fetch(*args, **kwargs):
+        raise AssertionError("explicit one-model catalog must not be probed")
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fail_fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="custom:local-ollama",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local Ollama",
+                "base_url": "http://localhost:11434/v1",
+                "model": "llama3",
+                "models": {"llama3": {}},
+            }
+        ],
+    )
+
+    row = next(p for p in providers if p["name"] == "Local Ollama")
+    assert row["models"] == ["llama3"]
+
+
+def test_custom_provider_group_explicit_duplicate_skips_probe(monkeypatch):
+    """A later grouped entry can explicitly narrow to an existing model."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    def fail_fetch(*args, **kwargs):
+        raise AssertionError("grouped explicit catalog must not be probed")
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fail_fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="custom:local-ollama",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local Ollama",
+                "base_url": "http://localhost:11434/v1",
+                "model": "llama3",
+            },
+            {
+                "name": "Local Ollama",
+                "base_url": "http://localhost:11434/v1",
+                "models": ["llama3"],
+            },
+        ],
+    )
+
+    row = next(p for p in providers if p["name"] == "Local Ollama")
+    assert row["models"] == ["llama3"]
+
+
+def test_custom_provider_current_only_probe_respects_explicit_catalog(monkeypatch):
+    """Normal GUI opens probe only the active singular-only provider."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    calls = []
+
+    def fetch(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["live-a", "live-b"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="custom:active",
+        current_base_url="http://active.local/v1",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Active",
+                "base_url": "http://active.local/v1",
+                "model": "seed",
+            },
+            {
+                "name": "Offline",
+                "base_url": "http://offline.local/v1",
+                "model": "offline-seed",
+            },
+            {
+                "name": "Static",
+                "base_url": "http://static.local/v1",
+                "model": "only",
+                "models": ["only"],
+            },
+        ],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+    )
+
+    assert calls == [("", "http://active.local/v1", {"headers": None})]
+    rows = {row["name"]: row for row in providers if row.get("is_user_defined")}
+    assert rows["Active"]["models"] == ["live-a", "live-b"]
+    assert rows["Offline"]["models"] == ["offline-seed"]
+    assert rows["Static"]["models"] == ["only"]
 
 
 def test_list_enumerates_dict_format_models_alongside_default(monkeypatch):

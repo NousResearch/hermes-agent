@@ -5,6 +5,15 @@ event arrives, use the CLI for inbox, send, reply, label, and attachment work.
 
 ## Python
 
+The Python example needs the separate AgentMail Python SDK, not the CLI:
+
+```bash
+pip install agentmail
+```
+
+`AgentMail()` reads `AGENTMAIL_API_KEY` from the environment. If the SDK is
+unavailable, use the `Raw` WebSocket below instead.
+
 ```python
 from agentmail import AgentMail, MessageReceivedEvent, Subscribe
 

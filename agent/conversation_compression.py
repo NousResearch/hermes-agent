@@ -762,6 +762,14 @@ def compress_context(
                             model=agent.model,
                             model_config=agent._session_init_model_config,
                             parent_session_id=old_session_id,
+                            # A gateway continuation must retain its exact peer.
+                            # Without these fields, later deferred delivery has no
+                            # safe destination and can fall back to another chat.
+                            user_id=getattr(agent, "_user_id", None),
+                            session_key=getattr(agent, "_gateway_session_key", None),
+                            chat_id=getattr(agent, "_chat_id", None),
+                            chat_type=getattr(agent, "_chat_type", None),
+                            thread_id=getattr(agent, "_thread_id", None),
                         )
                     except Exception as _cs_err:
                         # The child row could not be created (e.g. FK constraint,

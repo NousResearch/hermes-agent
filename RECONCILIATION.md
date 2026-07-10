@@ -70,6 +70,24 @@ The fixture now writes that legacy/external completion event directly, with one 
 
 Cron target resolution is deterministic. `deliver=origin` intentionally falls back to the configured home channel if an origin target is absent. That behavior can be perceived as a wrong destination, but it is an explicit policy fallback rather than current-session leakage. Changing it to fail-closed would be a separate product decision and needs its own test/rollout.
 
+### Compression continuation routing (new confirmed recurrence)
+
+A live Discord session that ended with `end_reason="compression"` had a complete peer tuple on its parent row (`session_key`, `user_id`, `chat_id`, `chat_type`, and `thread_id`). Its continuation child was stored as `source="discord"` but all five peer fields were `NULL`.
+
+`agent/conversation_compression.py` retained this tuple on the in-memory agent but did not pass it to `SessionDB.create_session()` when creating the rotation child. A deferred event arriving after compression therefore had no authoritative child destination and could be routed via a fallback rather than the original Discord thread.
+
+The rotation now forwards the exact retained peer tuple to the child row. The new behavioral regression creates a real Discord-thread parent, forces the real rotation path, and requires the persisted child tuple to match exactly.
+
+Canonical verification after the fix:
+
+```
+scripts/run_tests.sh tests/agent/test_compression*.py \
+  tests/gateway/test_compression*.py \
+  tests/run_agent/test_compression*.py -q
+```
+
+Result: **90 passed, 0 failed**.
+
 ## External audit receipt
 
 The independent Claude Max and GLM 5.2 audit runners both exhausted their bounded 12-turn source-exploration budget without emitting findings. Their receipts and failure handling are recorded in `AUDIT_ATTEMPT_RECEIPT.md`; they were not used as evidence.

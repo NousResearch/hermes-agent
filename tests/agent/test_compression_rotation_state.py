@@ -24,7 +24,12 @@ from unittest.mock import MagicMock, patch
 from hermes_state import SessionDB
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegram"):
+def _build_agent_with_db(
+    db: SessionDB,
+    session_id: str,
+    platform: str = "telegram",
+    **routing_kwargs,
+):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -38,6 +43,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegr
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
+            **routing_kwargs,
         )
 
     compressor = MagicMock()
@@ -130,3 +136,37 @@ class TestPlatformForwardedAtBoundary:
         kwargs = calls[-1].kwargs
         assert kwargs.get("platform") == "telegram"
         assert kwargs.get("boundary_reason") == "compression"
+
+
+class TestGatewayPeerPersistsOnRotation:
+    def test_discord_thread_peer_follows_compression_rotation(self, tmp_path: Path):
+        """A compression child must retain the exact Discord thread peer.
+
+        The gateway routes post-compression tool results and deferred events from
+        the durable child row. Losing this tuple leaves a Discord-labelled child
+        without a destination, allowing fallback routing to select the wrong
+        conversation.
+        """
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_DISCORD_THREAD_ROT"
+        peer = {
+            "user_id": "893357908169990215",
+            "session_key": "agent:main:discord:thread:1525239920220962968:1525239920220962968",
+            "chat_id": "1525239920220962968",
+            "chat_type": "thread",
+            "thread_id": "1525239920220962968",
+        }
+        db.create_session(parent, source="discord", **peer)
+        agent = _build_agent_with_db(
+            db,
+            parent,
+            platform="discord",
+            gateway_session_key=peer["session_key"],
+            **{key: value for key, value in peer.items() if key != "session_key"},
+        )
+
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+
+        child = db.get_session(agent.session_id)
+        assert child is not None
+        assert {key: child[key] for key in peer} == peer

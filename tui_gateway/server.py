@@ -568,24 +568,21 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         history = list(session.get("history", []))
 
     # ── Persist unflushed messages to SQLite ──────────────────────────
-    # Two sources, tried in order of freshness:
-    #   1. agent._session_messages — set by the last _persist_session()
-    #      call inside run_conversation().  This is the most recent
-    #      snapshot the agent thread wrote, and may include partial
-    #      turn data that hasn't reached session["history"] yet.
-    #   2. session["history"] — updated after run_conversation()
-    #      returns.  Stale when the agent is mid‑turn, but correct
-    #      when the turn completed before finalize.
-    # Best‑effort — the agent thread may still be mid‑turn, so only
-    # previously completed messages are guaranteed.
+    # Flush ``agent._session_messages`` via ``_persist_session``'s marker-based
+    # dedup (same contract as the gateway-shutdown flush, #13121). Do NOT pass
+    # ``conversation_history``: ``session["history"]`` and ``_session_messages``
+    # alias the SAME list once a turn completes, so passing it made
+    # ``_flush_messages_to_session_db`` treat every message as already-durable
+    # and skip it — a data-loss bug when finalize is the sole persist path after
+    # a WS disconnect/restart (e.g. the in-turn flush hit a transient SQLite
+    # failure). Markers persist the genuinely-unflushed tail without duplicating
+    # durable rows (including a resumed-but-not-run session's already-in-DB
+    # transcript, which stays in ``session["history"]`` only).
     if agent is not None and hasattr(agent, "_persist_session"):
-        snapshot = (
-            getattr(agent, "_session_messages", None)
-            or history
-        )
+        snapshot = getattr(agent, "_session_messages", None)
         if snapshot:
             try:
-                agent._persist_session(snapshot, conversation_history=history)
+                agent._persist_session(snapshot)
             except Exception:
                 pass
 

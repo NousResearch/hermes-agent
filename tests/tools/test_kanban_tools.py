@@ -1434,6 +1434,27 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "Do not shell out" in prompt or "tools — they work" in prompt
 
 
+def test_kanban_guidance_tool_availability_is_profile_aware():
+    """The guidance counters the 'I only have kanban_* tools' failure mode
+    (workers blocking with 'no terminal access' while holding their full
+    schema) WITHOUT overpromising: kanban lifecycle tools are appended on
+    top of whatever toolset the assignee profile configures
+    (model_tools._default_spawn; kanban_db resolves the profile's CLI
+    toolsets at spawn), so a hardcoded every-worker-has-terminal/browser
+    list would be false for a restricted profile."""
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    # States the additive, profile-scoped contract...
+    assert "ON TOP of your profile's" in KANBAN_GUIDANCE
+    # ...still counters the false "can only comment/block" assumption...
+    assert "Do NOT block a task claiming you lack tools" in KANBAN_GUIDANCE
+    # ...and scopes the block-escape hatch to the worker's actual schema.
+    assert "genuinely absent from your schema" in KANBAN_GUIDANCE
+    # No universal-availability promise naming specific optional tools.
+    assert "all other standard tools" not in KANBAN_GUIDANCE
+    assert "full access to terminal" not in KANBAN_GUIDANCE
+
+
 def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     """Sanity: the guidance block stays lean so it doesn't blow up the
     cached prompt.

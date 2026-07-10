@@ -274,6 +274,13 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
 }
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
+  loopDetection: {
+    enabled: 'Stop repetition loops'
+  },
+  larpDetection: {
+    enabled: 'Flag unperformed action claims',
+    judgeTierEnabled: 'LARP: extra LLM check (1 call)'
+  },
   model: 'Default Model',
   modelContextLength: 'Context Window',
   fallbackProviders: 'Fallback Models',
@@ -543,7 +550,10 @@ export const SECTIONS: DesktopConfigSection[] = [
       'security.allow_private_urls',
       'browser.allow_private_urls',
       'browser.auto_local_for_private_urls',
-      'checkpoints.enabled'
+      'checkpoints.enabled',
+      'loop_detection.enabled',
+      'larp_detection.enabled',
+      'larp_detection.judge_tier_enabled'
     ]
   },
   {

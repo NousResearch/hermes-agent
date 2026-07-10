@@ -1671,6 +1671,7 @@ class ContextCompressor(ContextEngine):
 Recovered from a deterministic fallback because the LLM context summarizer was unavailable. Continue from the protected recent messages after this summary and use current file/system state for exact details.{previous_summary_note}
 
 ## Constraints & Preferences
+- Execution rule: perform actions with tool calls. Do not report an action as done, or say you are doing/dispatching it, unless a tool call performed it this turn.
 - This fallback was generated locally without an LLM summary call.
 - Secrets and credentials were redacted before preservation.
 - The summary may be incomplete; prefer verifying current files, git state, processes, and test results instead of assuming omitted details.
@@ -1854,7 +1855,7 @@ If no outstanding task exists, write "None."]
 [What the user is trying to accomplish overall]
 
 ## Constraints & Preferences
-[User preferences, coding style, constraints, important decisions]
+[User preferences, coding style, constraints, important decisions. ALWAYS include, as the first bullet, this exact line: "Execution rule: perform actions with tool calls — never report an action as done, or announce you are doing/dispatching it, unless a tool call performs it this turn."]
 
 ## Completed Actions
 [Numbered list of concrete actions taken — include tool used, target, and outcome.

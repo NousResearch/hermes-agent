@@ -1409,6 +1409,47 @@ DEFAULT_CONFIG = {
         },
     },
 
+    "loop_detection": {
+        "enabled": True,                # default ON: stop the model when it falls into a repetition loop
+        "window_chars": 4000,
+        "consecutive_line_threshold": 6,
+        "tail_check_min_len": 64,
+        "tail_max_period": 64,
+        "tail_min_repeats": 5,
+        "ngram_size": 48,
+        "distinct_ngram_ratio_threshold": 0.15,
+        "entropy_threshold": 2.5,
+        "block_min_lines": 8,                  # paragraph/plan-cycling loop detection
+        "block_repeat_ratio_threshold": 0.5,   # trip if <=50% of substantial lines are distinct
+        "allowed_min_len": 12,
+        "check_every_bytes": 1024,
+        "relax_in_code_fence": True,
+        "use_zlib_ratio": False,
+        "zlib_ratio_threshold": 0.10,
+        "max_retries": 2,
+        # Reasoning-trace loop detection: a SEPARATE detector fed <think>/reasoning
+        # tokens (the content detector never sees them). Default ON with looser
+        # thresholds — reasoning legitimately repeats, so only egregious loops
+        # (e.g. Qwen3 cycling a plan for minutes) trip. Env kill-switch:
+        # HERMES_REASONING_LOOP_DETECTION_ENABLED=0.
+        "reasoning": {
+            "enabled": True,
+            "window_chars": 8000,
+            "consecutive_line_threshold": 10,
+            "block_min_lines": 12,
+            "block_repeat_ratio_threshold": 0.35,
+            "check_every_bytes": 1024,
+        },
+    },
+
+    "larp_detection": {
+        "enabled": False,               # OPT-IN: flag when the model claims an action it didn't perform
+        "judge_tier_enabled": False,    # opt-in: extra LLM check for ambiguous outcome claims
+        "max_reprompts": 2,
+        "exempt_toolsets": [],          # add tool-name tokens (e.g. "memory","todo") to make detection stricter
+        "post_compaction_window": 0,    # opt-in: run the guard for N turns after each compaction even if disabled (LARP spikes post-compaction)
+    },
+
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio.

@@ -551,6 +551,30 @@ def init_agent(
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()
 
+    # Repetition-loop detection state (see agent/loop_detector.py). The config is
+    # parsed once here so the streaming hot path never re-reads YAML.
+    agent._loop_detected = False
+    agent._loop_detected_reason = ""
+    agent._loop_retry_count = 0
+    agent._loop_guard_total = 0   # session tally of loops caught (grep LOOP_GUARD in agent.log)
+    agent._larp_guard_total = 0   # session tally of LARPs caught (grep LARP_GUARD)
+    agent._turns_since_compaction = None   # turns since last context compaction (LARP post-compaction window); None until first compaction
+    agent._active_loop_detector = None
+    try:
+        from agent.loop_detector import load_loop_detection_config
+
+        agent._loop_detection_cfg = load_loop_detection_config()
+    except Exception:
+        agent._loop_detection_cfg = None
+
+    agent._active_reasoning_loop_detector = None
+    try:
+        from agent.loop_detector import load_reasoning_loop_detection_config
+
+        agent._reasoning_loop_detection_cfg = load_reasoning_loop_detection_config()
+    except Exception:
+        agent._reasoning_loop_detection_cfg = None
+
     # /steer mechanism — inject a user note into the next tool result
     # without interrupting the agent. Unlike interrupt(), steer() does
     # NOT set _interrupt_requested; it waits for the current tool batch

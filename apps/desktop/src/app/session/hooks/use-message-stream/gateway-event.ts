@@ -16,7 +16,7 @@ import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { notify } from '@/store/notifications'
+import { dismissNotification, notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { followActiveSessionCwd } from '@/store/projects'
@@ -587,6 +587,44 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               }
             ]
           }))
+        }
+      } else if (event.type === 'notification.show') {
+        // Out-of-band gateway notice (the AgentNotice spine): credits/usage,
+        // depletion recovery, and loop/LARP guard fires all arrive here. The TUI
+        // renders these in its status bar; the desktop had no handler, so they
+        // were invisible. Surface them as toasts. A stable `key` collapses repeat
+        // fires (e.g. a guard tripping several times in one turn) into one toast.
+        const p = (payload ?? {}) as {
+          text?: string
+          level?: string
+          kind?: string
+          ttl_ms?: number
+          key?: string
+          id?: string
+        }
+        const kind =
+          p.level === 'error'
+            ? 'error'
+            : p.level === 'success'
+              ? 'success'
+              : p.level === 'warn'
+                ? 'warning'
+                : 'info'
+        const text = coerceGatewayText(p.text).trim()
+
+        if (text) {
+          notify({
+            id: p.key ?? p.id,
+            kind,
+            message: text,
+            durationMs: p.kind === 'ttl' && p.ttl_ms ? p.ttl_ms : undefined
+          })
+        }
+      } else if (event.type === 'notification.clear') {
+        const key = ((payload ?? {}) as { key?: string }).key
+
+        if (key) {
+          dismissNotification(key)
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'

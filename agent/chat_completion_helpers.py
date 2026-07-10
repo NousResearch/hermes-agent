@@ -1873,6 +1873,21 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
 
+    # Per-call repetition-loop detector (None when disabled -> zero overhead).
+    # Fed from content deltas below; on a trip it reuses the interrupt abort path.
+    try:
+        from agent.loop_detector import build_stream_loop_detector
+
+        agent._loop_detected = False
+        agent._loop_detected_reason = ""
+        agent._active_loop_detector = build_stream_loop_detector(agent)
+        from agent.loop_detector import build_reasoning_loop_detector
+
+        agent._active_reasoning_loop_detector = build_reasoning_loop_detector(agent)
+    except Exception:
+        agent._active_loop_detector = None
+        agent._active_reasoning_loop_detector = None
+
     if agent.api_mode == "codex_responses":
         # Codex streams internally via _run_codex_stream. The main dispatch
         # in _interruptible_api_call already calls it; we just need to
@@ -2254,12 +2269,29 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
+                # Reasoning-trace loop detection (separate detector, looser
+                # thresholds — reasoning legitimately repeats). On a trip, reuse
+                # the same interrupt/abort path as the content detector; the
+                # conversation loop discards the looped partial and re-prompts.
+                _rld = getattr(agent, "_active_reasoning_loop_detector", None)
+                if _rld is not None and not agent._loop_detected and _rld.feed(reasoning_text):
+                    agent._loop_detected = True
+                    agent._loop_detected_reason = "reasoning " + _rld.reason()
+                    agent._interrupt_requested = True
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
                 content_parts.append(delta.content)
+                # Repetition-loop detection (content channel only). On a trip,
+                # reuse the existing interrupt abort path: the poll loop force-
+                # closes the stream and raises; the conversation loop recovers.
+                _ld = getattr(agent, "_active_loop_detector", None)
+                if _ld is not None and not agent._loop_detected and _ld.feed(delta.content):
+                    agent._loop_detected = True
+                    agent._loop_detected_reason = _ld.reason()
+                    agent._interrupt_requested = True
                 if not tool_calls_acc:
                     _fire_first_delta()
                     agent._fire_stream_delta(delta.content)

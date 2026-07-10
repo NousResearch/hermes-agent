@@ -611,6 +611,21 @@ async def _token_auth_seam(request: Request, call_next):
 
 # Manual overrides for fields that need select options or custom types
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "loop_detection.enabled": {
+        "type": "boolean",
+        "description": "Stop the model when it falls into a repetition loop (recommended)",
+        "category": "tool_loop_guardrails",
+    },
+    "larp_detection.enabled": {
+        "type": "boolean",
+        "description": "Flag when the model claims an action it didn't actually perform",
+        "category": "tool_loop_guardrails",
+    },
+    "larp_detection.judge_tier_enabled": {
+        "type": "boolean",
+        "description": "Use an extra LLM check for ambiguous claims (costs 1 small call)",
+        "category": "tool_loop_guardrails",
+    },
     "model": {
         "type": "string",
         "description": "Default model (e.g. anthropic/claude-sonnet-4.6)",

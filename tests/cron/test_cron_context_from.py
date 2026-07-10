@@ -1,5 +1,6 @@
 """Tests for cron job context_from feature (issue #5439 Option C)."""
 
+import importlib
 import logging
 import sys
 from pathlib import Path
@@ -139,6 +140,41 @@ class TestBuildJobPromptContextFrom:
         assert "no output" not in prompt.lower()
         assert "not found" not in prompt.lower()
         assert "Summarize" in prompt
+
+    def test_context_from_follows_runtime_home_override_after_import(self, tmp_path, monkeypatch):
+        """context_from reads output from the active profile, not import-time OUTPUT_DIR."""
+        import hermes_constants
+        import cron.jobs as jobs
+        from cron.scheduler import _build_job_prompt
+
+        import_home = tmp_path / "import_home"
+        profile_home = tmp_path / "profiles" / "coder"
+        import_home.mkdir(parents=True)
+        profile_home.mkdir(parents=True)
+
+        with monkeypatch.context() as m:
+            m.setenv("HERMES_HOME", str(import_home))
+            importlib.reload(jobs)
+            token = hermes_constants.set_hermes_home_override(profile_home)
+            try:
+                job_a = jobs.create_job(prompt="Find profile data", schedule="every 1h")
+                jobs.save_job_output(job_a["id"], "Profile-scoped upstream output")
+                job_b = jobs.create_job(
+                    prompt="Use upstream data",
+                    schedule="every 2h",
+                    context_from=job_a["id"],
+                )
+
+                profile_output = profile_home / "cron" / "output" / job_a["id"]
+                import_output = import_home / "cron" / "output" / job_a["id"]
+                assert profile_output.exists()
+                assert not import_output.exists()
+
+                prompt = _build_job_prompt(job_b)
+                assert "Profile-scoped upstream output" in prompt
+            finally:
+                hermes_constants.reset_hermes_home_override(token)
+                importlib.reload(jobs)
 
     def test_injects_multiple_context_jobs(self, cron_env):
         from cron.jobs import create_job, OUTPUT_DIR

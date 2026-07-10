@@ -61,6 +61,12 @@ except ImportError:
 # profiles (the security boundary #4707 was filed for). Do NOT change this to
 # the default root: that re-breaks per-profile isolation. See also the dynamic
 # `_get_hermes_home()` / `_get_lock_paths()` resolution in cron/scheduler.py.
+#
+# These module-level paths are compatibility defaults only. Runtime cron IO uses
+# the dynamic helpers below so a long-lived process that enters a scoped profile
+# via ``set_hermes_home_override`` does not keep writing to an import-time
+# ``JOBS_FILE``. If tests or dashboard code deliberately monkeypatch the public
+# globals, the helpers honor that override for backward compatibility.
 HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
@@ -94,6 +100,55 @@ _jobs_lock_state = threading.local()
 # worst-case stall well under one status-alarm threshold.
 _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
+
+_IMPORT_HERMES_DIR = HERMES_DIR
+_IMPORT_CRON_DIR = CRON_DIR
+_IMPORT_JOBS_FILE = JOBS_FILE
+_IMPORT_OUTPUT_DIR = OUTPUT_DIR
+_IMPORT_TICKER_HEARTBEAT_FILE = TICKER_HEARTBEAT_FILE
+_IMPORT_TICKER_SUCCESS_FILE = TICKER_SUCCESS_FILE
+
+
+def _hermes_dir() -> Path:
+    """Return the active Hermes home for cron IO, honoring legacy monkeypatches."""
+    if HERMES_DIR != _IMPORT_HERMES_DIR:
+        return Path(HERMES_DIR)
+    return get_hermes_home().resolve()
+
+
+def _cron_dir() -> Path:
+    """Return the active cron directory for the current profile/scope."""
+    if CRON_DIR != _IMPORT_CRON_DIR:
+        return Path(CRON_DIR)
+    return _hermes_dir() / "cron"
+
+
+def _jobs_file() -> Path:
+    """Return the active jobs.json path for the current profile/scope."""
+    if JOBS_FILE != _IMPORT_JOBS_FILE:
+        return Path(JOBS_FILE)
+    return _cron_dir() / "jobs.json"
+
+
+def _output_dir() -> Path:
+    """Return the active cron output directory for the current profile/scope."""
+    if OUTPUT_DIR != _IMPORT_OUTPUT_DIR:
+        return Path(OUTPUT_DIR)
+    return _cron_dir() / "output"
+
+
+def _ticker_heartbeat_file() -> Path:
+    if TICKER_HEARTBEAT_FILE != _IMPORT_TICKER_HEARTBEAT_FILE:
+        return Path(TICKER_HEARTBEAT_FILE)
+    return _cron_dir() / "ticker_heartbeat"
+
+
+def _ticker_success_file() -> Path:
+    if TICKER_SUCCESS_FILE != _IMPORT_TICKER_SUCCESS_FILE:
+        return Path(TICKER_SUCCESS_FILE)
+    return _cron_dir() / "ticker_last_success"
+
+
 ONESHOT_GRACE_SECONDS = 120
 
 # Fallback stale-recovery window for a one-shot's running-claim (#59229) when
@@ -145,7 +200,7 @@ def _oneshot_run_claim_ttl_seconds() -> float:
 
 def _jobs_lock_file() -> Path:
     """Return the advisory lock path for the current cron directory."""
-    return CRON_DIR / ".jobs.lock"
+    return _cron_dir() / ".jobs.lock"
 
 
 @contextlib.contextmanager
@@ -265,7 +320,7 @@ def _job_output_dir(job_id: str) -> Path:
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
     if Path(text).is_absolute() or Path(text).drive:
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
-    return OUTPUT_DIR / text
+    return _output_dir() / text
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -372,10 +427,15 @@ def _secure_file(path: Path):
 
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
-    CRON_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    _secure_dir(CRON_DIR)
-    _secure_dir(OUTPUT_DIR)
+    cron_dir = _cron_dir()
+    jobs_parent = _jobs_file().parent
+    output_dir = _output_dir()
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    jobs_parent.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir(cron_dir)
+    _secure_dir(jobs_parent)
+    _secure_dir(output_dir)
 
 
 # =============================================================================
@@ -685,7 +745,7 @@ def _atomic_write_epoch(path: Path) -> None:
     torn/truncated file. Best-effort: failures are swallowed by callers.
     """
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(CRON_DIR), suffix=".tmp", prefix=".hb_")
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".hb_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(str(time.time()))
@@ -713,12 +773,12 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     Best-effort: a write failure must never disrupt the tick loop.
     """
     try:
-        _atomic_write_epoch(TICKER_HEARTBEAT_FILE)
+        _atomic_write_epoch(_ticker_heartbeat_file())
     except Exception:
         pass
     if success:
         try:
-            _atomic_write_epoch(TICKER_SUCCESS_FILE)
+            _atomic_write_epoch(_ticker_success_file())
         except Exception:
             pass
 
@@ -737,12 +797,12 @@ def get_ticker_heartbeat_age() -> Optional[float]:
     None = heartbeat file missing/unreadable (older build, never ran, or a
     torn read). Callers treat None as "cannot determine", not "dead".
     """
-    return _epoch_file_age(TICKER_HEARTBEAT_FILE)
+    return _epoch_file_age(_ticker_heartbeat_file())
 
 
 def get_ticker_success_age() -> Optional[float]:
     """Seconds since the ticker last completed a tick WITHOUT raising, or None."""
-    return _epoch_file_age(TICKER_SUCCESS_FILE)
+    return _epoch_file_age(_ticker_success_file())
 
 
 # =============================================================================
@@ -752,19 +812,20 @@ def get_ticker_success_age() -> Optional[float]:
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
-    if not JOBS_FILE.exists():
+    jobs_file = _jobs_file()
+    if not jobs_file.exists():
         return []
 
     _strict_retry = False  # track whether we used the strict=False fallback
 
     try:
-        with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+        with open(jobs_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         _strict_retry = True
         try:
-            with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+            with open(jobs_file, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
         except Exception as e:
             logger.error("Failed to auto-repair jobs.json: %s", e)
@@ -800,14 +861,15 @@ def load_jobs() -> List[Dict[str, Any]]:
 def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage. Caller must hold _jobs_lock()."""
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
+    jobs_file = _jobs_file()
+    fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, JOBS_FILE)
-        _secure_file(JOBS_FILE)
+        atomic_replace(tmp_path, jobs_file)
+        _secure_file(jobs_file)
     except BaseException:
         try:
             os.unlink(tmp_path)

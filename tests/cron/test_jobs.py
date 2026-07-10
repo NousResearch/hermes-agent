@@ -238,6 +238,52 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+class TestProfileScopedJobStorage:
+    def test_job_store_follows_active_hermes_home_without_module_reload(self, tmp_path):
+        """Cron storage must follow the active profile, not import-time JOBS_FILE.
+
+        A long-lived gateway can import ``cron.jobs`` under one HERMES_HOME and
+        later run a scoped profile task via ``set_hermes_home_override``.  That
+        second task must write to the scoped profile's cron/jobs.json without
+        requiring an importlib.reload().
+        """
+        import importlib
+        import json
+
+        import cron.jobs as jobs
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        first_home = tmp_path / "profile-a"
+        second_home = tmp_path / "profile-b"
+
+        first_token = set_hermes_home_override(first_home)
+        try:
+            # Simulate a process that imported cron.jobs while profile A was
+            # active. The production bug is that later profile-B work kept using
+            # this import-time JOBS_FILE binding.
+            importlib.reload(jobs)
+            jobs.create_job(prompt="profile A", schedule="every 1h")
+
+            second_token = set_hermes_home_override(second_home)
+            try:
+                jobs.create_job(prompt="profile B", schedule="every 1h")
+            finally:
+                reset_hermes_home_override(second_token)
+
+            first_jobs_file = first_home / "cron" / "jobs.json"
+            second_jobs_file = second_home / "cron" / "jobs.json"
+            assert first_jobs_file.exists()
+            assert second_jobs_file.exists()
+
+            first_jobs = json.loads(first_jobs_file.read_text(encoding="utf-8"))["jobs"]
+            second_jobs = json.loads(second_jobs_file.read_text(encoding="utf-8"))["jobs"]
+            assert [job["prompt"] for job in first_jobs] == ["profile A"]
+            assert [job["prompt"] for job in second_jobs] == ["profile B"]
+        finally:
+            reset_hermes_home_override(first_token)
+            importlib.reload(jobs)
+
+
 class TestJobCRUD:
     def test_create_and_get(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="30m")

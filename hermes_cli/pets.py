@@ -38,8 +38,10 @@ def _cmd_list(args) -> int:
 
     from agent.pet.manifest import ManifestError, fetch_manifest
 
+    local_path = getattr(args, "local_manifest", None)
+    verify = not getattr(args, "insecure", False)
     try:
-        entries = fetch_manifest()
+        entries = fetch_manifest(local_path=local_path, verify=verify)
     except ManifestError as exc:
         _err(f"✗ {exc}")
         return 1
@@ -71,8 +73,10 @@ def _cmd_install(args) -> int:
     from agent.pet.manifest import ManifestError
 
     slug = args.slug.strip()
+    local_path = getattr(args, "local_manifest", None)
+    verify = not getattr(args, "insecure", False)
     try:
-        pet = store.install_pet(slug, force=getattr(args, "force", False))
+        pet = store.install_pet(slug, force=getattr(args, "force", False), verify=verify, local_path=local_path)
     except (store.PetStoreError, ManifestError) as exc:
         _err(f"✗ install failed: {exc}")
         return 1
@@ -466,12 +470,16 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_list.add_argument("query", nargs="?", default="", help="Filter by slug/name substring")
     p_list.add_argument("--installed", action="store_true", help="Only show installed pets")
     p_list.add_argument("--limit", type=int, default=40, help="Max rows (0 = all)")
+    p_list.add_argument("--insecure", action="store_true", help="Skip SSL certificate verification")
+    p_list.add_argument("--local-manifest", metavar="PATH", help="Read manifest from local JSON file instead of network")
     p_list.set_defaults(func=_cmd_list)
 
     p_install = subs.add_parser("install", help="Install a pet from the gallery")
     p_install.add_argument("slug", help="Pet slug (e.g. boba)")
     p_install.add_argument("--force", action="store_true", help="Re-download even if present")
     p_install.add_argument("--select", action="store_true", help="Make it the active pet")
+    p_install.add_argument("--insecure", action="store_true", help="Skip SSL certificate verification")
+    p_install.add_argument("--local-manifest", metavar="PATH", help="Read manifest from local JSON file instead of network")
     p_install.set_defaults(func=_cmd_install)
 
     p_select = subs.add_parser("select", help="Set the active pet (writes display.pet.*)")

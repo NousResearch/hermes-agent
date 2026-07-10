@@ -149,12 +149,18 @@ def resolve_active_pet(configured_slug: str | None = None) -> InstalledPet | Non
     return pets[0] if pets else None
 
 
-def install_pet(slug: str, *, force: bool = False, timeout: float = _DOWNLOAD_TIMEOUT) -> InstalledPet:
+def install_pet(slug: str, *, force: bool = False, timeout: float = _DOWNLOAD_TIMEOUT, verify: bool = True, local_path: str | None = None) -> InstalledPet:
     """Download *slug* from the manifest into the pets directory.
 
     Idempotent: a fully-installed pet is returned as-is unless *force*.  Raises
     :class:`PetStoreError` / :class:`~agent.pet.manifest.ManifestError` on
     failure.
+
+    Pass ``local_path`` to read the manifest from a local JSON file instead of
+    fetching from the network (useful behind corporate firewalls).
+
+    Pass ``verify=False`` to skip SSL certificate verification (useful behind
+    corporate firewalls or when the petdex cert chain isn't trusted locally).
     """
     from agent.pet.manifest import find_entry
 
@@ -165,7 +171,7 @@ def install_pet(slug: str, *, force: bool = False, timeout: float = _DOWNLOAD_TI
     if existing and existing.exists and not force:
         return existing
 
-    entry = find_entry(slug, timeout=timeout)
+    entry = find_entry(slug, timeout=timeout, verify=verify, local_path=local_path)
     if entry is None:
         raise PetStoreError(f"pet '{slug}' is not in the petdex manifest")
 
@@ -181,14 +187,14 @@ def install_pet(slug: str, *, force: bool = False, timeout: float = _DOWNLOAD_TI
     sprite_ext = ".png" if entry.spritesheet_url.lower().split("?")[0].endswith(".png") else ".webp"
     sprite_path = directory / f"spritesheet{sprite_ext}"
 
-    _download(entry.spritesheet_url, sprite_path, timeout=timeout)
+    _download(entry.spritesheet_url, sprite_path, timeout=timeout, verify=verify)
 
     # Fetch the upstream pet.json if present; otherwise synthesize a minimal
     # one so the local layout is self-describing.
     meta: dict = {}
     if entry.pet_json_url and _is_petdex_host(entry.pet_json_url):
         try:
-            meta = _download_json(entry.pet_json_url, timeout=timeout)
+            meta = _download_json(entry.pet_json_url, timeout=timeout, verify=verify)
         except Exception as exc:  # noqa: BLE001 - non-fatal, fall back below
             logger.debug("pet.json fetch failed for %s: %s", slug, exc)
     if not isinstance(meta, dict) or not meta:
@@ -468,7 +474,7 @@ def rename_pet(slug: str, display_name: str) -> str | None:
     return new_slug
 
 
-def _download(url: str, dest: Path, *, timeout: float) -> None:
+def _download(url: str, dest: Path, *, timeout: float, verify: bool = True) -> None:
     import httpx
 
     try:
@@ -477,6 +483,7 @@ def _download(url: str, dest: Path, *, timeout: float) -> None:
             url,
             timeout=timeout,
             follow_redirects=True,
+            verify=verify,
             headers={"User-Agent": "hermes-agent-petdex"},
         ) as resp:
             resp.raise_for_status()
@@ -489,13 +496,14 @@ def _download(url: str, dest: Path, *, timeout: float) -> None:
         raise PetStoreError(f"download failed for {url}: {exc}") from exc
 
 
-def _download_json(url: str, *, timeout: float) -> dict:
+def _download_json(url: str, *, timeout: float, verify: bool = True) -> dict:
     import httpx
 
     resp = httpx.get(
         url,
         timeout=timeout,
         follow_redirects=True,
+        verify=verify,
         headers={"User-Agent": "hermes-agent-petdex"},
     )
     resp.raise_for_status()

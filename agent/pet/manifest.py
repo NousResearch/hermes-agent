@@ -20,9 +20,11 @@ Read-only and unauthenticated; no credentials involved.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
+from pathlib import Path
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,7 @@ _DEFAULT_TIMEOUT = 10.0
 # (``find_entry``). A short TTL collapses those into one network hit without
 # going stale for long. Cleared by :func:`clear_cache` (tests).
 _MANIFEST_TTL = 300.0
-_cache: tuple[float, list[ManifestEntry]] | None = None
+_cache: tuple[float, tuple[str, bool], list[ManifestEntry]] | None = None
 
 _prefetch_lock = threading.Lock()
 _prefetching = False
@@ -111,34 +113,65 @@ class ManifestError(RuntimeError):
     """Raised when the manifest can't be fetched or parsed."""
 
 
-def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT, force: bool = False) -> list[ManifestEntry]:
+def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT, force: bool = False, verify: bool = True, local_path: str | None = None) -> list[ManifestEntry]:
     """Return every approved pet from the public manifest.
 
     Cached in-process for ``_MANIFEST_TTL`` seconds (pass ``force=True`` to
     bypass). Follows the 307 redirect to R2.  Raises :class:`ManifestError` on
     any network/parse failure so callers can surface a clean message.
+
+    Pass ``local_path`` to read a manifest JSON file from disk instead of
+    fetching from the network (useful behind corporate firewalls). The file
+    should contain the same structure as the remote manifest::
+
+        {"pets": [{"slug": "...", "displayName": "...", ...}, ...]}
+
+    Pass ``verify=False`` to skip SSL certificate verification (useful behind
+    corporate firewalls or when the petdex cert chain isn't trusted locally).
     """
     global _cache
 
-    if not force and _cache is not None and time.monotonic() - _cache[0] < _MANIFEST_TTL:
-        return _cache[1]
+    source_key = (
+        str(Path(local_path).expanduser().resolve()) if local_path is not None else MANIFEST_URL,
+        verify,
+    )
+    if (
+        not force
+        and _cache is not None
+        and _cache[1] == source_key
+        and time.monotonic() - _cache[0] < _MANIFEST_TTL
+    ):
+        return _cache[2]
 
-    try:
-        import httpx
-    except ImportError as exc:  # pragma: no cover - httpx is a core dep
-        raise ManifestError("httpx is required to fetch the petdex manifest") from exc
+    # Local file path — read from disk instead of network
+    if local_path is not None:
+        path = Path(local_path).expanduser().resolve()
+        if not path.is_file():
+            raise ManifestError(f"local manifest file not found: {path}")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            raise ManifestError(f"could not read local manifest: {exc}") from exc
 
-    try:
-        resp = httpx.get(
-            MANIFEST_URL,
-            timeout=timeout,
-            follow_redirects=True,
-            headers={"User-Agent": "hermes-agent-petdex"},
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-    except Exception as exc:  # noqa: BLE001 - normalize to one error type
-        raise ManifestError(f"could not fetch petdex manifest: {exc}") from exc
+    else:
+        # Network fetch
+        try:
+            import httpx
+        except ImportError as exc:  # pragma: no cover - httpx is a core dep
+            raise ManifestError("httpx is required to fetch the petdex manifest") from exc
+
+        try:
+            resp = httpx.get(
+                MANIFEST_URL,
+                timeout=timeout,
+                follow_redirects=True,
+                verify=verify,
+                headers={"User-Agent": "hermes-agent-petdex"},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:  # noqa: BLE001 - normalize to one error type
+            raise ManifestError(f"could not fetch petdex manifest: {exc}") from exc
 
     pets = payload.get("pets") if isinstance(payload, dict) else None
     if not isinstance(pets, list):
@@ -152,14 +185,20 @@ def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT, force: bool = False) ->
         if entry.slug and entry.spritesheet_url:
             entries.append(entry)
 
-    _cache = (time.monotonic(), entries)
+    _cache = (time.monotonic(), source_key, entries)
     return entries
 
 
-def find_entry(slug: str, *, timeout: float = _DEFAULT_TIMEOUT) -> ManifestEntry | None:
+def find_entry(
+    slug: str,
+    *,
+    timeout: float = _DEFAULT_TIMEOUT,
+    verify: bool = True,
+    local_path: str | None = None,
+) -> ManifestEntry | None:
     """Return the manifest entry for *slug*, or ``None`` if not listed."""
     slug = slug.strip().lower()
-    for entry in fetch_manifest(timeout=timeout):
+    for entry in fetch_manifest(timeout=timeout, verify=verify, local_path=local_path):
         if entry.slug.lower() == slug:
             return entry
     return None

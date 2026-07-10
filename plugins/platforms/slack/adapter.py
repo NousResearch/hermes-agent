@@ -62,6 +62,17 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 
 logger = logging.getLogger(__name__)
 
+_SLACK_SECTION_TEXT_MAX = 3000
+
+
+def _fit_slack_section_text(text: str) -> str:
+    """Clamp mrkdwn section text to Slack's Block Kit section limit."""
+    if len(text) <= _SLACK_SECTION_TEXT_MAX:
+        return text
+    return text[: _SLACK_SECTION_TEXT_MAX - 3].rstrip() + "..."
+
+
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -3519,7 +3530,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": original_text or "Confirmation prompt",
+                    "text": _fit_slack_section_text(original_text or "Confirmation prompt"),
                 },
             },
             {
@@ -3641,7 +3652,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": original_text or "Command approval request",
+                    "text": _fit_slack_section_text(original_text or "Command approval request"),
                 },
             },
             {

@@ -335,6 +335,130 @@ class TestRealPruning:
 
 
 # =========================================================================
+# GC grace window + concurrent-gc logging (--prune=now regressions)
+# =========================================================================
+
+class TestGcGraceWindow:
+    def test_fresh_unreachable_objects_survive_gc(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """A just-dropped object must survive the gc that runs inside the trim.
+
+        Several sessions write the shared store concurrently; ``git gc
+        --prune=now`` deletes objects that a checkpoint written mid-gc still
+        references, and the resulting dangling ref aborts every later gc
+        (rc=128) until the store is hand-repaired.  The grace window keeps
+        fresh-but-unreachable objects alive, so a commit that history
+        rewriting dropped seconds ago must still resolve after gc.
+        """
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        m = CheckpointManager(enabled=True, max_snapshots=3)
+
+        assert m.ensure_checkpoint(str(work_dir), "step-0") is True
+        first_sha = m.list_checkpoints(str(work_dir))[0]["hash"]
+
+        for i in range(1, 6):
+            (work_dir / "main.py").write_text(f"v{i}\n")
+            m.new_turn()
+            m.ensure_checkpoint(str(work_dir), f"step-{i}")
+
+        # History was rewritten down to 3 snapshots → step-0's original
+        # commit is unreachable now...
+        cps = m.list_checkpoints(str(work_dir))
+        assert len(cps) == 3
+        assert first_sha not in {c["hash"] for c in cps}
+
+        # ...but the gc that ran inside the trim must have kept the fresh
+        # unreachable object (grace window), not pruned it immediately.
+        store = _store_path(checkpoint_base)
+        ok, _, _ = _run_git(
+            ["cat-file", "-e", first_sha], store, str(work_dir),
+            allowed_returncodes={1, 128},
+        )
+        assert ok, "freshly-dropped object was pruned immediately (no grace window)"
+
+    def test_gc_never_uses_immediate_prune(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """Every gc the store runs carries the documented grace window.
+
+        The user guide (checkpoints-and-rollback.md) promises physical
+        reclamation with a grace window; pin the flag so code and docs
+        cannot drift apart again.
+        """
+        import tools.checkpoint_manager as cm
+
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        real_run_git = cm._run_git
+        gc_calls = []
+
+        def recording_run_git(args, *a, **kw):
+            if args and args[0] == "gc":
+                gc_calls.append(list(args))
+            return real_run_git(args, *a, **kw)
+
+        monkeypatch.setattr("tools.checkpoint_manager._run_git", recording_run_git)
+
+        m = CheckpointManager(enabled=True, max_snapshots=1)
+        assert m.ensure_checkpoint(str(work_dir), "one") is True
+        (work_dir / "main.py").write_text("v2\n")
+        m.new_turn()
+        m.ensure_checkpoint(str(work_dir), "two")  # trims history → gc
+        prune_checkpoints(retention_days=0, checkpoint_base=checkpoint_base)
+
+        assert gc_calls, "expected at least one git gc invocation"
+        for args in gc_calls:
+            assert f"--prune={cm._GC_PRUNE_GRACE}" in args
+            assert "--prune=now" not in args
+
+
+class TestConcurrentGcLogLevel:
+    _LOCK_STDERR = (
+        "fatal: gc is already running on machine 'host' pid 4242 "
+        "(use --force if not)"
+    )
+
+    def test_concurrent_gc_lock_logged_at_debug_not_error(self, tmp_path, caplog):
+        """The routine concurrent-gc lock rejection must not log at ERROR."""
+        work = tmp_path / "work"
+        work.mkdir()
+        completed = subprocess.CompletedProcess(
+            args=["git", "gc", "--quiet"],
+            returncode=128, stdout="", stderr=self._LOCK_STDERR,
+        )
+        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
+            with caplog.at_level(logging.DEBUG, logger="tools.checkpoint_manager"):
+                ok, _, stderr = _run_git(
+                    ["gc", "--quiet"], tmp_path / "store", str(work),
+                )
+        assert ok is False  # callers still see the failure
+        assert "gc is already running" in stderr
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any(
+            r.levelno == logging.DEBUG and "another gc holds the lock" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_other_git_failure_still_logged_at_error(self, tmp_path, caplog):
+        """Only the recognized lock rejection is demoted — real failures stay ERROR."""
+        work = tmp_path / "work"
+        work.mkdir()
+        completed = subprocess.CompletedProcess(
+            args=["git", "gc", "--quiet"],
+            returncode=128, stdout="",
+            stderr="fatal: bad object refs/hermes/deadbeef",
+        )
+        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
+            with caplog.at_level(logging.DEBUG, logger="tools.checkpoint_manager"):
+                ok, _, _ = _run_git(["gc", "--quiet"], tmp_path / "store", str(work))
+        assert ok is False
+        assert any(
+            r.levelno == logging.ERROR and "Git command failed" in r.getMessage()
+            for r in caplog.records
+        )
+
+
+# =========================================================================
 # CheckpointManager — restoring
 # =========================================================================
 

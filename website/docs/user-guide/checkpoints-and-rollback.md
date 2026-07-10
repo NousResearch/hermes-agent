@@ -206,7 +206,7 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 - **Repository size** — directories with more than 50,000 files are skipped.
 - **Per-file size cap** — files larger than `max_file_size_mb` (default 10 MB) are excluded from the snapshot. Prevents accidentally swallowing datasets, model weights, or generated media.
 - **Total store size cap** — when the store exceeds `max_total_size_mb` (default 500 MB), the oldest commit per project is dropped round-robin until under the cap.
-- **Real pruning** — `max_snapshots` is enforced by rewriting the per-project ref and running `git gc --prune=now` afterwards, so loose objects don't accumulate.
+- **Real pruning** — `max_snapshots` is enforced by rewriting the per-project ref and running `git gc --prune=2.hours.ago` afterwards, so loose objects don't accumulate. Physical reclamation uses a 2-hour grace window rather than immediate pruning: several sessions can write the shared store concurrently, and the window keeps objects that a checkpoint written mid-gc still references.
 - **No-change snapshots** — if there are no changes since the last snapshot, the checkpoint is skipped.
 - **Non-fatal errors** — all errors inside the Checkpoint Manager are logged at debug level; your tools continue to run.
 

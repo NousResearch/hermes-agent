@@ -1732,11 +1732,24 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         },
     }
 
+    try:
+        import hermes_cli as _hermes_cli
+
+        _hermes_version = str(_hermes_cli.__version__)
+    except Exception:
+        _hermes_version = "0.0.0"
+
     endpoint = f"{base_url}/models/{model}:generateContent"
     response = requests.post(
         endpoint,
         params={"key": api_key},
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            # Include Hermes client context following Gemini's partner
+            # integration guidance:
+            # https://ai.google.dev/gemini-api/docs/partner-integration
+            "X-Goog-Api-Client": f"hermes-agent/{_hermes_version}",
+        },
         json=payload,
         timeout=60,
     )

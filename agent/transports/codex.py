@@ -292,6 +292,12 @@ class ResponsesApiTransport(ProviderTransport):
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 
+        # NOTE: This transport uses the OpenAI Responses API, which has a
+        # different kwarg surface than chat.completions.create(). The
+        # _VALID_TOP_LEVEL_API_KWARGS allowlist in chat_completions.py is
+        # Chat Completions-specific and must NOT be applied here. The
+        # request_overrides guard for the Responses API is tracked separately.
+        # See PR #61355 for the scope boundary discussion.
         request_overrides = params.get("request_overrides")
         if request_overrides:
             kwargs.update(request_overrides)

@@ -316,3 +316,13 @@ class TestRequestOverridesInvalidKeys:
         )
         assert kw["extra_body"]["custom_key"] == "v"
         assert "bogus" not in kw
+
+    def test_gemini_path_drops_invalid_system_key(self, transport):
+        """Gemini (profile) build_kwargs path must also drop invalid keys."""
+        kw = transport.build_kwargs(
+            model="gemini-2.5-flash", messages=_msgs(), tools=None,
+            provider_profile=get_provider_profile("gemini"),
+            request_overrides={"system": "ignored prompt"},
+        )
+        assert "system" not in kw
+        assert kw["messages"] == _msgs()

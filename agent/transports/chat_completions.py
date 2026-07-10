@@ -26,7 +26,7 @@ from agent.transports.types import NormalizedResponse, ToolCall, Usage
 # key NOT in this set is rejected rather than forwarded — a stray key (e.g.
 # ``system``, a legacy top-level system-prompt injection from an old profile
 # config) would otherwise surface as TypeError: Completions.create() got an
-# unexpected keyword argument '<key>' (hermes-agent#60821 / #61030).
+# unexpected keyword argument '<key>' (#61030).
 _VALID_TOP_LEVEL_API_KWARGS = frozenset({
     "model", "messages", "temperature", "top_p", "n", "stream",
     "stop", "max_tokens", "max_completion_tokens", "presence_penalty",
@@ -537,7 +537,7 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # Request overrides last (service_tier etc.). Merged through the
         # safe helper so a stray key can't reach chat.completions.create()
-        # as an invalid top-level kwarg (hermes-agent#60821 / #61030).
+        # as an invalid top-level kwarg (#61030).
         _safe_merge_request_overrides(api_kwargs, params.get("request_overrides"))
 
         return api_kwargs
@@ -676,7 +676,7 @@ class ChatCompletionsTransport(ProviderTransport):
         # Request overrides (user config) — merged via the safe helper so
         # keys that aren't valid chat.completions.create() arguments (e.g. a
         # legacy top-level `system` from an old profile config) are dropped
-        # instead of crashing the call with a TypeError (hermes-agent#60821).
+        # instead of crashing the call with a TypeError (#61030).
         # Runs AFTER extra_body is finalized into api_kwargs so an override's
         # extra_body merges with (rather than precedes) the profile-built body.
         _safe_merge_request_overrides(api_kwargs, params.get("request_overrides"))

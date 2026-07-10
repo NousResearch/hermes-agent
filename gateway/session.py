@@ -1803,7 +1803,10 @@ class SessionStore:
             slot.event.wait()
             if slot.error is not None:
                 raise slot.error
-            assert slot.result is not None
+            if slot.result is None:
+                raise RuntimeError(
+                    "slot.result is None after event.wait() — owner did not set result"
+                )
             return slot.result
 
         try:
@@ -1980,7 +1983,10 @@ class SessionStore:
                     published = candidate
                 else:
                     published = current
-            assert published is not None
+            if published is None:
+                raise RuntimeError(
+                    "published is None — neither candidate nor current was assigned"
+                )
             entry = published
             _needs_save = True
             if entry is candidate:

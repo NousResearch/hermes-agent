@@ -2101,10 +2101,22 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
     """Validate and convert a user message to anthropic format."""
     if isinstance(content, list):
         converted_blocks = _convert_content_to_anthropic(content)
-        if not converted_blocks or all(
-            b.get("text", "").strip() == ""
+        # Consider the message empty ONLY when there are no non-text blocks
+        # AND every text block is blank.  Note: ``all()`` over an empty
+        # generator is True, so without the non-text guard a user message
+        # carrying only tool_result/image blocks (no text at all) would be
+        # destructively replaced by the placeholder.
+        has_non_text = any(
+            isinstance(b, dict) and b.get("type") != "text"
             for b in converted_blocks
-            if isinstance(b, dict) and b.get("type") == "text"
+        )
+        if not converted_blocks or (
+            not has_non_text
+            and all(
+                b.get("text", "").strip() == ""
+                for b in converted_blocks
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
         ):
             converted_blocks = [{"type": "text", "text": "(empty message)"}]
         return {"role": "user", "content": converted_blocks}
@@ -2193,6 +2205,38 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
         ]
         if len(new_content) != len(m["content"]):
             m["content"] = new_content if new_content else [{"type": "text", "text": "(tool result removed)"}]
+
+
+def _reorder_tool_results_first(result: List[Dict[str, Any]]) -> None:
+    """Move tool_result blocks to the FRONT of each user message's content.
+
+    Anthropic requires that when an assistant turn ends with tool_use, the
+    immediately following user message present the matching tool_result
+    blocks at the start of its content array.  Context compression and
+    session restore can inject text blocks (e.g. a system-reminder) BEFORE
+    the tool_result inside the same user message, which Anthropic rejects
+    with HTTP 400 "`tool_use` ids were found without `tool_result` blocks
+    immediately after" — even though the tool_result IS present.
+
+    Reordering is a structural invariant: all tool_result blocks first
+    (preserving their relative order), then everything else (preserving
+    relative order).  Mutates ``result`` in place.
+    """
+    for m in result:
+        if m.get("role") != "user" or not isinstance(m.get("content"), list):
+            continue
+        blocks = m["content"]
+        tool_results = [
+            b for b in blocks
+            if isinstance(b, dict) and b.get("type") == "tool_result"
+        ]
+        if not tool_results or blocks[: len(tool_results)] == tool_results:
+            continue  # none present, or already leading — nothing to do
+        others = [
+            b for b in blocks
+            if not (isinstance(b, dict) and b.get("type") == "tool_result")
+        ]
+        m["content"] = tool_results + others
 
 
 def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2444,8 +2488,14 @@ def convert_messages_to_anthropic(
         # Regular user message
         result.append(_convert_user_message(content))
 
-    _strip_orphaned_tool_blocks(result)
+    # Merge BEFORE stripping: a stray user message injected between a
+    # tool_use turn and its tool_result message gets merged into one user
+    # message first, so the adjacency check in _strip_orphaned_tool_blocks
+    # sees the true post-merge shape and doesn't strip a pair that is in
+    # fact adjacent after merging.
     result = _merge_consecutive_roles(result)
+    _strip_orphaned_tool_blocks(result)
+    _reorder_tool_results_first(result)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)
 

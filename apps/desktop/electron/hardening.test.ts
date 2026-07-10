@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
 import { pathToFileURL } from 'node:url'
+
+import { test } from 'vitest'
 
 import {
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -122,171 +123,184 @@ test('resolveRequestedPathForIpc expands ~ to the home directory', () => {
   )
 })
 
-test('resolveReadableFileForIpc validates existence type size and sensitivity', async t => {
+test('resolveReadableFileForIpc validates existence type size and sensitivity', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-hardening-'))
-  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }))
 
-  const textPath = path.join(tempDir, 'notes.txt')
-  fs.writeFileSync(textPath, 'hello world', 'utf8')
+  try {
+    const textPath = path.join(tempDir, 'notes.txt')
+    fs.writeFileSync(textPath, 'hello world', 'utf8')
 
-  const fromRelative = await resolveReadableFileForIpc('notes.txt', {
-    baseDir: tempDir,
-    maxBytes: 256,
-    purpose: 'File preview'
-  })
-
-  assert.equal(fromRelative.resolvedPath, textPath)
-  assert.equal(fromRelative.stat.size, 11)
-
-  const fromFileUrl = await resolveReadableFileForIpc(pathToFileURL(textPath).toString(), {
-    purpose: 'File preview'
-  })
-
-  assert.equal(fromFileUrl.resolvedPath, textPath)
-
-  const spacedPath = path.join(tempDir, 'notes with spaces.txt')
-  fs.writeFileSync(spacedPath, 'space ok', 'utf8')
-
-  const fromSpacedFileUrl = await resolveReadableFileForIpc(pathToFileURL(spacedPath).toString(), {
-    purpose: 'File preview'
-  })
-
-  assert.equal(fromSpacedFileUrl.resolvedPath, spacedPath)
-
-  await assert.rejects(
-    resolveReadableFileForIpc('missing.txt', {
+    const fromRelative = await resolveReadableFileForIpc('notes.txt', {
       baseDir: tempDir,
-      purpose: 'Text preview'
-    }),
-    /file does not exist/
-  )
-
-  const nestedDir = path.join(tempDir, 'directory')
-  fs.mkdirSync(nestedDir)
-  await assert.rejects(
-    resolveReadableFileForIpc(nestedDir, {
-      purpose: 'Text preview'
-    }),
-    /path points to a directory/
-  )
-
-  const largePath = path.join(tempDir, 'large.txt')
-  fs.writeFileSync(largePath, 'x'.repeat(40), 'utf8')
-  await assert.rejects(
-    resolveReadableFileForIpc(largePath, {
-      maxBytes: 8,
+      maxBytes: 256,
       purpose: 'File preview'
-    }),
-    /file is too large/
-  )
+    })
 
-  const envPath = path.join(tempDir, '.env')
-  fs.writeFileSync(envPath, 'SECRET_TOKEN=123', 'utf8')
-  await assert.rejects(
-    resolveReadableFileForIpc(envPath, {
+    assert.equal(fromRelative.resolvedPath, textPath)
+    assert.equal(fromRelative.stat.size, 11)
+
+    const fromFileUrl = await resolveReadableFileForIpc(pathToFileURL(textPath).toString(), {
       purpose: 'File preview'
-    }),
-    /blocked for sensitive file/
-  )
+    })
 
-  const envTemplatePath = path.join(tempDir, '.env.example')
-  fs.writeFileSync(envTemplatePath, 'EXAMPLE_TOKEN=value', 'utf8')
+    assert.equal(fromFileUrl.resolvedPath, textPath)
 
-  const envTemplate = await resolveReadableFileForIpc(envTemplatePath, {
-    purpose: 'File preview'
-  })
+    const spacedPath = path.join(tempDir, 'notes with spaces.txt')
+    fs.writeFileSync(spacedPath, 'space ok', 'utf8')
 
-  assert.equal(envTemplate.resolvedPath, envTemplatePath)
+    const fromSpacedFileUrl = await resolveReadableFileForIpc(pathToFileURL(spacedPath).toString(), {
+      purpose: 'File preview'
+    })
+
+    assert.equal(fromSpacedFileUrl.resolvedPath, spacedPath)
+
+    await assert.rejects(
+      resolveReadableFileForIpc('missing.txt', {
+        baseDir: tempDir,
+        purpose: 'Text preview'
+      }),
+      /file does not exist/
+    )
+
+    const nestedDir = path.join(tempDir, 'directory')
+    fs.mkdirSync(nestedDir)
+    await assert.rejects(
+      resolveReadableFileForIpc(nestedDir, {
+        purpose: 'Text preview'
+      }),
+      /path points to a directory/
+    )
+
+    const largePath = path.join(tempDir, 'large.txt')
+    fs.writeFileSync(largePath, 'x'.repeat(40), 'utf8')
+    await assert.rejects(
+      resolveReadableFileForIpc(largePath, {
+        maxBytes: 8,
+        purpose: 'File preview'
+      }),
+      /file is too large/
+    )
+
+    const envPath = path.join(tempDir, '.env')
+    fs.writeFileSync(envPath, 'SECRET_TOKEN=123', 'utf8')
+    await assert.rejects(
+      resolveReadableFileForIpc(envPath, {
+        purpose: 'File preview'
+      }),
+      /blocked for sensitive file/
+    )
+
+    const envTemplatePath = path.join(tempDir, '.env.example')
+    fs.writeFileSync(envTemplatePath, 'EXAMPLE_TOKEN=value', 'utf8')
+
+    const envTemplate = await resolveReadableFileForIpc(envTemplatePath, {
+      purpose: 'File preview'
+    })
+
+    assert.equal(envTemplate.resolvedPath, envTemplatePath)
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
 })
 
-test('resolveReadableFileForIpc blocks common sensitive files', async t => {
+test('resolveReadableFileForIpc blocks common sensitive files', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-sensitive-'))
-  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }))
 
-  const sshDir = path.join(tempDir, '.ssh')
-  fs.mkdirSync(sshDir)
+  try {
+    const sshDir = path.join(tempDir, '.ssh')
+    fs.mkdirSync(sshDir)
 
-  const blockedFiles = [
-    path.join(tempDir, '.env'),
-    path.join(tempDir, '.npmrc'),
-    path.join(sshDir, 'id_ed25519'),
-    path.join(tempDir, 'cert.pem'),
-    path.join(tempDir, 'cert.p12'),
-    path.join(tempDir, 'cert.pfx')
-  ]
+    const blockedFiles = [
+      path.join(tempDir, '.env'),
+      path.join(tempDir, '.npmrc'),
+      path.join(sshDir, 'id_ed25519'),
+      path.join(tempDir, 'cert.pem'),
+      path.join(tempDir, 'cert.p12'),
+      path.join(tempDir, 'cert.pfx')
+    ]
 
-  for (const filePath of blockedFiles) {
-    fs.writeFileSync(filePath, 'secret', 'utf8')
-    await rejectsWithCode(resolveReadableFileForIpc(filePath, { purpose: 'File preview' }), 'sensitive-file')
+    for (const filePath of blockedFiles) {
+      fs.writeFileSync(filePath, 'secret', 'utf8')
+      await rejectsWithCode(resolveReadableFileForIpc(filePath, { purpose: 'File preview' }), 'sensitive-file')
+    }
+
+    const allowed = path.join(tempDir, '.env.example')
+    fs.writeFileSync(allowed, 'EXAMPLE_TOKEN=value', 'utf8')
+    assert.equal((await resolveReadableFileForIpc(allowed, { purpose: 'File preview' })).resolvedPath, allowed)
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
   }
-
-  const allowed = path.join(tempDir, '.env.example')
-  fs.writeFileSync(allowed, 'EXAMPLE_TOKEN=value', 'utf8')
-  assert.equal((await resolveReadableFileForIpc(allowed, { purpose: 'File preview' })).resolvedPath, allowed)
 })
 
-test('resolveReadableFileForIpc blocks symlinks whose realpath is sensitive', async t => {
+test('resolveReadableFileForIpc blocks symlinks whose realpath is sensitive', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-realpath-'))
-  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }))
-
-  const envPath = path.join(tempDir, '.env')
-  const linkPath = path.join(tempDir, 'safe-name.txt')
-  fs.writeFileSync(envPath, 'SECRET_TOKEN=123', 'utf8')
 
   try {
-    fs.symlinkSync(envPath, linkPath, 'file')
-  } catch (error) {
-    if (error?.code === 'EPERM' || error?.code === 'EACCES') {
-      t.skip(`symlink creation is not permitted on this platform (${error.code})`)
+    const envPath = path.join(tempDir, '.env')
+    const linkPath = path.join(tempDir, 'safe-name.txt')
+    fs.writeFileSync(envPath, 'SECRET_TOKEN=123', 'utf8')
 
-      return
+    try {
+      fs.symlinkSync(envPath, linkPath, 'file')
+    } catch (error) {
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        // symlink creation is not permitted on this platform — skip
+        return
+      }
+
+      throw error
     }
 
-    throw error
+    await rejectsWithCode(resolveReadableFileForIpc(linkPath, { purpose: 'File preview' }), 'sensitive-file')
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
   }
-
-  await rejectsWithCode(resolveReadableFileForIpc(linkPath, { purpose: 'File preview' }), 'sensitive-file')
 })
 
-test('resolveDirectoryForIpc accepts directories and rejects invalid directory targets', async t => {
+test('resolveDirectoryForIpc accepts directories and rejects invalid directory targets', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-dir-'))
-  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }))
-
-  const directory = path.join(tempDir, 'project')
-  const filePath = path.join(tempDir, 'file.txt')
-  fs.mkdirSync(directory)
-  fs.writeFileSync(filePath, 'not a directory', 'utf8')
-
-  const resolved = await resolveDirectoryForIpc(directory)
-  assert.equal(resolved.resolvedPath, directory)
-  assert.equal(resolved.stat.isDirectory(), true)
-
-  await rejectsWithCode(resolveDirectoryForIpc(filePath), 'ENOTDIR')
-  await rejectsWithCode(resolveDirectoryForIpc(path.join(tempDir, 'missing')), 'ENOENT')
-  await rejectsWithCode(resolveDirectoryForIpc('\\\\?\\C:\\secret'), 'device-path')
-})
-
-test('resolveDirectoryForIpc accepts directory symlinks or junctions', async t => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-dir-link-'))
-  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }))
-
-  const directory = path.join(tempDir, 'actual-project')
-  const linkPath = path.join(tempDir, 'linked-project')
-  fs.mkdirSync(directory)
 
   try {
-    fs.symlinkSync(directory, linkPath, process.platform === 'win32' ? 'junction' : 'dir')
-  } catch (error) {
-    if (error?.code === 'EPERM' || error?.code === 'EACCES') {
-      t.skip(`directory symlink creation is not permitted on this platform (${error.code})`)
+    const directory = path.join(tempDir, 'project')
+    const filePath = path.join(tempDir, 'file.txt')
+    fs.mkdirSync(directory)
+    fs.writeFileSync(filePath, 'not a directory', 'utf8')
 
-      return
+    const resolved = await resolveDirectoryForIpc(directory)
+    assert.equal(resolved.resolvedPath, directory)
+    assert.equal(resolved.stat.isDirectory(), true)
+
+    await rejectsWithCode(resolveDirectoryForIpc(filePath), 'ENOTDIR')
+    await rejectsWithCode(resolveDirectoryForIpc(path.join(tempDir, 'missing')), 'ENOENT')
+    await rejectsWithCode(resolveDirectoryForIpc('\\\\?\\C:\\secret'), 'device-path')
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('resolveDirectoryForIpc accepts directory symlinks or junctions', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-dir-link-'))
+
+  try {
+    const directory = path.join(tempDir, 'actual-project')
+    const linkPath = path.join(tempDir, 'linked-project')
+    fs.mkdirSync(directory)
+
+    try {
+      fs.symlinkSync(directory, linkPath, process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error) {
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        // directory symlink creation is not permitted on this platform — skip
+        return
+      }
+
+      throw error
     }
 
-    throw error
+    const resolved = await resolveDirectoryForIpc(linkPath)
+    assert.equal(resolved.resolvedPath, linkPath)
+    assert.equal(resolved.stat.isDirectory(), true)
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
   }
-
-  const resolved = await resolveDirectoryForIpc(linkPath)
-  assert.equal(resolved.resolvedPath, linkPath)
-  assert.equal(resolved.stat.isDirectory(), true)
 })

@@ -1821,6 +1821,12 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     xai_config = stt_config.get("xai") or {}
 
     def _resolve_base_url(resolved_creds: Dict[str, str]) -> str:
+        # OAuth bearers are pinned to the resolver-validated xAI origin;
+        # config/env base URL overrides only apply to API-key credentials.
+        if resolved_creds.get("provider") == "xai-oauth":
+            return str(
+                resolved_creds.get("base_url") or XAI_STT_BASE_URL
+            ).strip().rstrip("/")
         return str(
             xai_config.get("base_url")
             or get_env_value("XAI_STT_BASE_URL")

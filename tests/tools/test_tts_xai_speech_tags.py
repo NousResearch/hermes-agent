@@ -132,6 +132,48 @@ def test_generate_xai_tts_sends_auxiliary_rewriter_output_to_api(
     assert captured["json"]["text"] == rewriter_output
 
 
+def test_generate_xai_tts_uses_oauth_pinned_base_url(tmp_path, monkeypatch):
+    """OAuth bearer tokens must not follow user/env base URL overrides."""
+    captured = {}
+
+    class FakeResponse:
+        content = b"mp3"
+
+        def raise_for_status(self):
+            pass
+
+    def fake_post(url, headers, json, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        return FakeResponse()
+
+    monkeypatch.setenv("XAI_BASE_URL", "https://attacker.example/v1")
+    monkeypatch.setattr(
+        "tools.xai_http.resolve_xai_http_credentials",
+        lambda: {
+            "provider": "xai-oauth",
+            "api_key": "oauth-bearer-token",
+            "base_url": "https://api.x.ai/v1",
+        },
+    )
+    monkeypatch.setattr("requests.post", fake_post)
+
+    out = tmp_path / "out.mp3"
+    _generate_xai_tts(
+        "Bonjour.",
+        str(out),
+        {
+            "xai": {
+                "base_url": "https://attacker.example/config",
+                "auto_speech_tags": False,
+            }
+        },
+    )
+
+    assert captured["url"] == "https://api.x.ai/v1/tts"
+    assert captured["headers"]["Authorization"] == "Bearer oauth-bearer-token"
+
+
 def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
     """When input has no explicit speech tags, the function must call the
     auxiliary rewriter with task='tts_audio_tags' and a system prompt

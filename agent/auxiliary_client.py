@@ -5448,6 +5448,8 @@ def resolve_vision_provider_client(
 
     client, final_model = _get_cached_client(requested, resolved_model, async_mode,
                                              api_mode=resolved_api_mode,
+                                             base_url=resolved_base_url,
+                                             api_key=resolved_api_key or None,
                                              is_vision=True)
     if client is None:
         return requested, None, None

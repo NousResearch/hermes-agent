@@ -5,7 +5,11 @@ onto the shared process_registry.completion_queue, the rich re-injection block
 formatting, capacity rejection, and crash handling.
 """
 
+import json
+import os
 import queue
+import subprocess
+import sys
 import threading
 import time
 
@@ -221,6 +225,84 @@ def test_completed_records_pruned_to_cap():
     while time.monotonic() < deadline and ad.active_count() > 0:
         time.sleep(0.05)
     assert len(ad.list_async_delegations()) <= ad._MAX_RETAINED_COMPLETED
+
+
+def test_completion_is_persisted_and_delivery_can_be_acknowledged(tmp_path, monkeypatch):
+    """A finished child remains pending on disk until its queue consumer acks it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    dispatched = ad.dispatch_async_delegation(
+        goal="durable", context="ctx", toolsets=["terminal"], role="leaf",
+        model="m", session_key="owner", parent_session_id="parent",
+        runner=lambda: {"status": "completed", "summary": "survived"},
+    )
+    assert _drain_one() is not None
+
+    restored = queue.Queue()
+    assert ad.restore_undelivered_completions(restored) == 1
+    row = ad.get_durable_delegation(dispatched["delegation_id"])
+    assert row["origin_session"] == "owner"
+    assert row["state"] == "completed"
+    assert row["result"]["summary"] == "survived"
+    assert row["delivery_state"] == "pending"
+    assert row["delivery_attempts"] >= 2
+
+    assert ad.mark_completion_delivered(dispatched["delegation_id"])
+    assert ad.restore_undelivered_completions(queue.Queue()) == 0
+    assert ad.get_durable_delegation(dispatched["delegation_id"])["delivery_state"] == "delivered"
+
+
+def test_real_process_restart_restores_owned_completion_once(tmp_path):
+    """Real-import E2E: a fresh interpreter restores a prior process's result."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
+    producer = r'''
+import time
+from tools import async_delegation as ad
+r = ad.dispatch_async_delegation(
+    goal="restart", context=None, toolsets=None, role="leaf", model="m",
+    session_key="owner-session", parent_session_id="durable-parent",
+    runner=lambda: {"status": "completed", "summary": "after restart"},
+)
+deadline = time.time() + 5
+while ad.active_count() and time.time() < deadline:
+    time.sleep(.01)
+print(r["delegation_id"])
+'''
+    first = subprocess.run(
+        [sys.executable, "-c", producer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    delegation_id = first.stdout.strip().splitlines()[-1]
+
+    consumer = r'''
+import json
+from tools.process_registry import process_registry
+evt = process_registry.completion_queue.get_nowait()
+print(json.dumps(evt, sort_keys=True))
+'''
+    second = subprocess.run(
+        [sys.executable, "-c", consumer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    evt = json.loads(second.stdout.strip().splitlines()[-1])
+    assert evt["delegation_id"] == delegation_id
+    assert evt["session_key"] == "owner-session"
+    assert evt["parent_session_id"] == "durable-parent"
+    assert evt["summary"] == "after restart"
+
+    acker = f'''
+from tools import async_delegation as ad
+assert ad.mark_completion_delivered({delegation_id!r})
+'''
+    subprocess.run(
+        [sys.executable, "-c", acker], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    probe = subprocess.run(
+        [sys.executable, "-c", "from tools.process_registry import process_registry; print(process_registry.completion_queue.qsize())"],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
+    )
+    assert probe.stdout.strip().splitlines()[-1] == "0"
 
 
 # ---------------------------------------------------------------------------

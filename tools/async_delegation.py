@@ -36,13 +36,16 @@ logic stays in one place.
 
 from __future__ import annotations
 
+import json
 import logging
+import sqlite3
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
+from hermes_constants import get_hermes_home
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 
@@ -72,6 +75,133 @@ _records: Dict[str, Dict[str, Any]] = {}
 _DEFAULT_MAX_ASYNC_CHILDREN = 3
 # How many completed records to retain for status queries before pruning.
 _MAX_RETAINED_COMPLETED = 50
+_DURABLE_RETENTION_SECONDS = 7 * 24 * 60 * 60
+_DB_LOCK = threading.Lock()
+
+
+def _db_path():
+    return get_hermes_home() / "delegations.db"
+
+
+def _connect() -> sqlite3.Connection:
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS async_delegations (
+            delegation_id TEXT PRIMARY KEY,
+            origin_session TEXT NOT NULL,
+            origin_ui_session_id TEXT NOT NULL DEFAULT '',
+            parent_session_id TEXT,
+            state TEXT NOT NULL,
+            dispatched_at REAL NOT NULL,
+            completed_at REAL,
+            updated_at REAL NOT NULL,
+            event_json TEXT,
+            result_json TEXT,
+            delivery_state TEXT NOT NULL DEFAULT 'pending',
+            delivery_attempts INTEGER NOT NULL DEFAULT 0,
+            delivered_at REAL
+        )"""
+    )
+    return conn
+
+
+def _persist_dispatch(record: Dict[str, Any]) -> None:
+    now = time.time()
+    with _DB_LOCK, _connect() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO async_delegations
+               (delegation_id, origin_session, origin_ui_session_id,
+                parent_session_id, state, dispatched_at, updated_at,
+                delivery_state, delivery_attempts)
+               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0)""",
+            (record["delegation_id"], record.get("session_key", ""),
+             record.get("origin_ui_session_id", ""), record.get("parent_session_id"),
+             record["dispatched_at"], now),
+        )
+        cutoff = now - _DURABLE_RETENTION_SECONDS
+        conn.execute(
+            """DELETE FROM async_delegations WHERE delegation_id IN (
+                 SELECT delegation_id FROM async_delegations
+                 WHERE (delivery_state = 'delivered' AND updated_at < ?)
+                    OR (completed_at IS NOT NULL AND completed_at < ?)
+                 ORDER BY updated_at ASC
+               )""", (cutoff, cutoff),
+        )
+        conn.execute(
+            """DELETE FROM async_delegations WHERE delegation_id IN (
+                 SELECT delegation_id FROM async_delegations
+                 WHERE state != 'running' ORDER BY updated_at DESC LIMIT -1 OFFSET ?
+               )""", (_MAX_RETAINED_COMPLETED,),
+        )
+
+
+def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
+    now = time.time()
+    with _DB_LOCK, _connect() as conn:
+        conn.execute(
+            """UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
+               event_json=?, result_json=?, delivery_state='pending'
+               WHERE delegation_id=?""",
+            (event.get("status", "completed"), event.get("completed_at", now), now,
+             json.dumps(event), json.dumps(result), event["delegation_id"]),
+        )
+
+
+def _note_delivery_attempt(delegation_id: str) -> None:
+    with _DB_LOCK, _connect() as conn:
+        conn.execute(
+            "UPDATE async_delegations SET delivery_attempts=delivery_attempts+1, updated_at=? WHERE delegation_id=?",
+            (time.time(), delegation_id),
+        )
+
+
+def restore_undelivered_completions(target_queue) -> int:
+    """Enqueue durable pending completions as fresh turns after process start."""
+    with _DB_LOCK, _connect() as conn:
+        rows = conn.execute(
+            """SELECT delegation_id, event_json FROM async_delegations
+               WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
+               ORDER BY completed_at, delegation_id"""
+        ).fetchall()
+        for delegation_id, payload in rows:
+            target_queue.put(json.loads(payload))
+            conn.execute(
+                "UPDATE async_delegations SET delivery_attempts=delivery_attempts+1, updated_at=? WHERE delegation_id=?",
+                (time.time(), delegation_id),
+            )
+    return len(rows)
+
+
+def mark_completion_delivered(delegation_id: str) -> bool:
+    """Atomically acknowledge successful injection of a durable completion."""
+    now = time.time()
+    with _DB_LOCK, _connect() as conn:
+        cur = conn.execute(
+            """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
+               WHERE delegation_id=? AND delivery_state!='delivered'""",
+            (now, now, delegation_id),
+        )
+        return cur.rowcount == 1
+
+
+def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
+    with _DB_LOCK, _connect() as conn:
+        row = conn.execute(
+            """SELECT origin_session, state, dispatched_at, completed_at,
+                      result_json, delivery_state, delivery_attempts
+               FROM async_delegations WHERE delegation_id=?""", (delegation_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "delegation_id": delegation_id, "origin_session": row[0], "state": row[1],
+        "dispatched_at": row[2], "completed_at": row[3],
+        "result": json.loads(row[4]) if row[4] else None,
+        "delivery_state": row[5], "delivery_attempts": row[6],
+    }
 
 
 def _get_executor(max_workers: int) -> ThreadPoolExecutor:
@@ -96,7 +226,7 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
 def active_count() -> int:
     """Number of async delegations currently running."""
     with _records_lock:
-        return sum(1 for r in _records.values() if r.get("status") == "running")
+        return sum(1 for r in _records.values() if r.get("status") in {"running", "finalizing"})
 
 
 def _new_delegation_id() -> str:
@@ -206,6 +336,7 @@ def dispatch_async_delegation(
             }
         _records[delegation_id] = record
 
+    _persist_dispatch(record)
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
@@ -252,14 +383,20 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
         record = _records.get(delegation_id)
         if record is None:
             return
-        record["status"] = status
+        # Stay active until durable persistence and queue publication finish;
+        # otherwise process shutdown can kill this daemon worker in the narrow
+        # gap after status flips but before SQLite is committed.
+        record["status"] = "finalizing"
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None  # drop the closure; child is done
-        # Snapshot fields needed for the event while holding the lock.
         event_record = dict(record)
-        _prune_completed_locked()
 
     _push_completion_event(event_record, result, status)
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is not None:
+            record["status"] = status
+        _prune_completed_locked()
 
 
 def _push_completion_event(
@@ -309,8 +446,10 @@ def _push_completion_event(
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
     }
+    _persist_completion(evt, result)
     try:
         process_registry.completion_queue.put(evt)
+        _note_delivery_attempt(str(record.get("delegation_id") or ""))
     except Exception as exc:  # pragma: no cover
         logger.error(
             "Async delegation %s: failed to enqueue completion event; "
@@ -393,6 +532,7 @@ def dispatch_async_delegation_batch(
             }
         _records[delegation_id] = record
 
+    _persist_dispatch(record)
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
@@ -446,11 +586,10 @@ def _finalize_batch(
         record = _records.get(delegation_id)
         if record is None:
             return
-        record["status"] = status
+        record["status"] = "finalizing"
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None
         event_record = dict(record)
-        _prune_completed_locked()
 
     try:
         from tools.process_registry import process_registry
@@ -486,14 +625,22 @@ def _finalize_batch(
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
     }
+    _persist_completion(evt, combined)
     try:
         process_registry.completion_queue.put(evt)
+        _note_delivery_attempt(delegation_id)
     except Exception as exc:  # pragma: no cover
         logger.error(
             "Async delegation batch %s: failed to enqueue completion event; "
             "result lost: %s",
             delegation_id, exc,
         )
+    finally:
+        with _records_lock:
+            record = _records.get(delegation_id)
+            if record is not None:
+                record["status"] = status
+            _prune_completed_locked()
 
 
 def list_async_delegations() -> List[Dict[str, Any]]:

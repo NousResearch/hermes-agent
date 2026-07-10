@@ -182,13 +182,13 @@ def run_oneshot(
             run — even when the run fails — so pipelines can account for
             spend per invocation.
         max_turns: Optional per-turn tool-iteration cap (the ``--max-turns``
-            flag). When None, resolves from ``agent.max_turns`` in config,
-            then ``HERMES_MAX_ITERATIONS`` env, then the built-in default —
-            the same precedence an interactive CLI turn uses. Without this,
-            oneshot silently pinned every run to the built-in default and
-            ignored the profile's configured budget, which decapitated
-            long-running ``hermes -z`` workers (e.g. MeshBoard dispatches)
-            mid-task.
+            flag). When None, uses the normalized ``agent.max_turns`` value
+            returned by ``load_config()`` (default 90). The config loader
+            migrates the legacy root-level ``max_turns`` key before this code
+            runs. Without this, oneshot silently pinned every run to the
+            built-in default and ignored the profile's configured budget,
+            which decapitated long-running ``hermes -z`` workers (e.g.
+            MeshBoard dispatches) mid-task.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -307,9 +307,9 @@ def _create_session_db_for_oneshot():
 def _resolve_max_iterations(cfg: dict, cli_max_turns: Optional[int]) -> int:
     """Resolve the per-turn tool-iteration cap for a oneshot run.
 
-    Mirrors the interactive CLI precedence (see ``HermesCLI.__init__``):
-    explicit ``--max-turns`` > ``agent.max_turns`` in config > legacy
-    root-level ``max_turns`` > ``HERMES_MAX_ITERATIONS`` env > 90.
+    ``load_config()`` has already merged defaults and normalized legacy
+    root-level ``max_turns`` into ``agent.max_turns``, so the production
+    precedence here is explicit ``--max-turns`` > loaded config > 90.
 
     Historically oneshot skipped this entirely and let ``AIAgent`` fall
     back to its own default, so ``hermes -z`` ignored the profile's
@@ -321,17 +321,6 @@ def _resolve_max_iterations(cfg: dict, cli_max_turns: Optional[int]) -> int:
     if isinstance(agent_cfg, dict) and agent_cfg.get("max_turns"):
         try:
             return int(agent_cfg["max_turns"])
-        except (TypeError, ValueError):
-            pass
-    if isinstance(cfg, dict) and cfg.get("max_turns"):  # legacy root-level
-        try:
-            return int(cfg["max_turns"])
-        except (TypeError, ValueError):
-            pass
-    env_iters = os.getenv("HERMES_MAX_ITERATIONS", "").strip()
-    if env_iters:
-        try:
-            return int(env_iters)
         except (TypeError, ValueError):
             pass
     return 90
@@ -428,10 +417,10 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
-    # Resolve the per-turn iteration budget from --max-turns / config / env,
-    # matching the interactive CLI. Passing it explicitly stops AIAgent from
-    # falling back to its built-in default and silently ignoring the profile's
-    # agent.max_turns (the budget-decapitation root cause).
+    # Resolve the per-turn iteration budget from --max-turns / normalized
+    # config. Passing it explicitly stops AIAgent from falling back to its
+    # built-in default and silently ignoring the profile's agent.max_turns
+    # (the budget-decapitation root cause).
     effective_max_iterations = _resolve_max_iterations(cfg, max_turns)
 
     agent = AIAgent(

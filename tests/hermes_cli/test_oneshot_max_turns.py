@@ -3,53 +3,56 @@
 Regression coverage for the budget-decapitation bug: oneshot used to build
 its AIAgent without a max_iterations argument, so `hermes -z` silently ran
 at the AIAgent default and ignored `agent.max_turns` in config / the
-`--max-turns` flag / `HERMES_MAX_ITERATIONS`. Long-running workers (e.g.
-MeshBoard dispatches) were cut off mid-task with no way to raise the cap
-per invocation.
+`--max-turns` flag. Long-running workers (e.g. MeshBoard dispatches) were cut
+off mid-task with no way to raise the cap per invocation.
 """
+
 import pytest
 
+from hermes_cli._parser import build_top_level_parser
 from hermes_cli.oneshot import _resolve_max_iterations, run_oneshot
 
 
+class TestOneshotMaxTurnsParsing:
+    def test_max_turns_pairs_with_oneshot(self):
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        args = parser.parse_args(["-z", "hi", "--max-turns", "5"])
+        assert args.max_turns == 5
+
+    def test_absent_max_turns_is_none(self):
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        args = parser.parse_args(["-z", "hi"])
+        assert args.max_turns is None
+
+    def test_top_level_value_survives_chat_subparser(self):
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        args = parser.parse_args(["--max-turns", "7", "chat"])
+        assert args.max_turns == 7
+
+    def test_chat_subparser_value_still_parses(self):
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        args = parser.parse_args(["chat", "--max-turns", "9"])
+        assert args.max_turns == 9
+
+
 class TestResolveMaxIterations:
-    def test_cli_flag_wins(self, monkeypatch):
-        monkeypatch.setenv("HERMES_MAX_ITERATIONS", "70")
+    def test_cli_flag_wins(self):
         cfg = {"agent": {"max_turns": 120}}
         assert _resolve_max_iterations(cfg, 250) == 250
 
-    def test_config_agent_max_turns_used_when_no_flag(self, monkeypatch):
-        monkeypatch.setenv("HERMES_MAX_ITERATIONS", "70")
+    def test_config_agent_max_turns_used_when_no_flag(self):
         cfg = {"agent": {"max_turns": 120}}
         assert _resolve_max_iterations(cfg, None) == 120
 
-    def test_legacy_root_max_turns_fallback(self, monkeypatch):
-        monkeypatch.delenv("HERMES_MAX_ITERATIONS", raising=False)
-        cfg = {"max_turns": 55}
-        assert _resolve_max_iterations(cfg, None) == 55
-
-    def test_env_fallback_when_no_config(self, monkeypatch):
-        monkeypatch.setenv("HERMES_MAX_ITERATIONS", "70")
-        assert _resolve_max_iterations({}, None) == 70
-
-    def test_builtin_default_when_nothing_set(self, monkeypatch):
-        monkeypatch.delenv("HERMES_MAX_ITERATIONS", raising=False)
+    def test_builtin_default_when_loaded_value_is_missing(self):
         assert _resolve_max_iterations({}, None) == 90
 
-    def test_agent_max_turns_beats_legacy_root(self, monkeypatch):
-        monkeypatch.delenv("HERMES_MAX_ITERATIONS", raising=False)
-        cfg = {"agent": {"max_turns": 120}, "max_turns": 55}
-        assert _resolve_max_iterations(cfg, None) == 120
-
-    def test_non_numeric_config_falls_through(self, monkeypatch):
-        monkeypatch.setenv("HERMES_MAX_ITERATIONS", "70")
+    def test_non_numeric_loaded_value_uses_default(self):
         cfg = {"agent": {"max_turns": "not-a-number"}}
-        assert _resolve_max_iterations(cfg, None) == 70
+        assert _resolve_max_iterations(cfg, None) == 90
 
-    def test_zero_config_falls_through_to_env(self, monkeypatch):
-        # 0 / empty are falsy — treated as "unset", so the ladder continues.
-        monkeypatch.setenv("HERMES_MAX_ITERATIONS", "70")
-        assert _resolve_max_iterations({"agent": {"max_turns": 0}}, None) == 70
+    def test_zero_loaded_value_uses_default(self):
+        assert _resolve_max_iterations({"agent": {"max_turns": 0}}, None) == 90
 
 
 class TestRunOneshotThreadsMaxTurns:
@@ -86,7 +89,7 @@ class TestRunAgentPassesMaxIterationsToAgent:
     the actual config-precedence code runs and we assert the resolved cap
     lands on ``AIAgent(max_iterations=...)`` — the crux line."""
 
-    def _run(self, monkeypatch, *, cli_max_turns, cfg):
+    def _run(self, monkeypatch, tmp_path, *, cli_max_turns, config_yaml):
         import hermes_cli.oneshot as oneshot_mod
         import hermes_cli.config as config_mod
         import hermes_cli.runtime_provider as rp_mod
@@ -106,7 +109,12 @@ class TestRunAgentPassesMaxIterationsToAgent:
             def run_conversation(self, _prompt):
                 return {"final_response": "ok"}
 
-        monkeypatch.setattr(config_mod, "load_config", lambda *a, **k: cfg)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+        if config_yaml:
+            (tmp_path / "config.yaml").write_text(config_yaml, encoding="utf-8")
+        config_mod._LOAD_CONFIG_CACHE.clear()
+        config_mod._RAW_CONFIG_CACHE.clear()
         monkeypatch.setattr(
             rp_mod,
             "resolve_runtime_provider",
@@ -128,17 +136,36 @@ class TestRunAgentPassesMaxIterationsToAgent:
         oneshot_mod._run_agent("hi", max_turns=cli_max_turns)
         return captured
 
-    def test_cli_max_turns_lands_on_agent(self, monkeypatch):
+    def test_cli_max_turns_lands_on_agent(self, monkeypatch, tmp_path):
         captured = self._run(
-            monkeypatch, cli_max_turns=250, cfg={"agent": {"max_turns": 120}}
+            monkeypatch,
+            tmp_path,
+            cli_max_turns=250,
+            config_yaml="agent:\n  max_turns: 120\n",
         )
         assert captured["max_iterations"] == 250
 
-    def test_config_max_turns_lands_on_agent_when_no_flag(self, monkeypatch):
+    def test_config_max_turns_lands_on_agent_when_no_flag(
+        self, monkeypatch, tmp_path
+    ):
         captured = self._run(
-            monkeypatch, cli_max_turns=None, cfg={"agent": {"max_turns": 120}}
+            monkeypatch,
+            tmp_path,
+            cli_max_turns=None,
+            config_yaml="agent:\n  max_turns: 120\n",
         )
         assert captured["max_iterations"] == 120
+
+    def test_legacy_root_config_is_normalized_before_resolution(
+        self, monkeypatch, tmp_path
+    ):
+        captured = self._run(
+            monkeypatch,
+            tmp_path,
+            cli_max_turns=None,
+            config_yaml="max_turns: 55\n",
+        )
+        assert captured["max_iterations"] == 55
 
 
 if __name__ == "__main__":  # pragma: no cover

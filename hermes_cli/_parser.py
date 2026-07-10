@@ -153,6 +153,19 @@ def build_top_level_parser():
         default=None,
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.",
     )
+    # Accepted at the top level so it can pair with -z/--oneshot without the
+    # `chat` subcommand. The chat subparser suppresses its default so a value
+    # parsed before `chat` is not overwritten.
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Maximum tool-calling iterations for this invocation "
+            "(default: 90, or agent.max_turns in config)"
+        ),
+    )
     parser.add_argument(
         "--resume",
         "-r",
@@ -353,7 +366,7 @@ def build_top_level_parser():
     chat_parser.add_argument(
         "--max-turns",
         type=int,
-        default=None,
+        default=argparse.SUPPRESS,
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
     )

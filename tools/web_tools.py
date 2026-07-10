@@ -132,7 +132,11 @@ def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
     try:
         from hermes_cli.config import load_config
-        return load_config().get("web", {})
+        # ``or {}``: a present-but-null ``web:`` section (YAML ``web:`` with no
+        # body) makes ``.get("web", {})`` return None, which would break every
+        # caller that does ``_load_web_config().get(...)``. Honor the ``-> dict``
+        # contract so callers never see None.
+        return load_config().get("web") or {}
     except (ImportError, Exception):
         return {}
 
@@ -661,6 +665,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         from agent.web_search_registry import (
             get_active_search_provider,
             get_provider as _wsp_get_provider,
+            _disabled_web_plugin_for,
         )
 
         backend = _get_search_backend()
@@ -672,13 +677,29 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             provider = get_active_search_provider()
 
         if provider is None:
-            response_data = {
-                "success": False,
-                "error": (
-                    "No web search provider configured. "
-                    "Run `hermes tools` to set one up."
-                ),
-            }
+            # A bundled web plugin the user explicitly disabled looks
+            # identical to "no provider" here — point at the real cause
+            # (re-enable the plugin) rather than a generic setup hint.
+            disabled_key = _disabled_web_plugin_for(capability="search")
+            if disabled_key:
+                _vendor = disabled_key.split("/", 1)[-1]
+                response_data = {
+                    "success": False,
+                    "error": (
+                        f"web.search_backend is set to '{_vendor}', but its "
+                        f"plugin ('{disabled_key}') is disabled in config. "
+                        f"Re-enable it with `hermes plugins enable {disabled_key}` "
+                        "(or remove it from plugins.disabled)."
+                    ),
+                }
+            else:
+                response_data = {
+                    "success": False,
+                    "error": (
+                        "No web search provider configured. "
+                        "Run `hermes tools` to set one up."
+                    ),
+                }
         else:
             logger.info(
                 "Web search via %s: '%s' (limit: %d)",
@@ -814,6 +835,7 @@ async def web_extract_tool(
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,
+                _disabled_web_plugin_for,
             )
 
             provider = _wsp_get_provider(backend) if backend else None
@@ -839,6 +861,27 @@ async def web_extract_tool(
                     )
                 provider = get_active_extract_provider()
                 if provider is None:
+                    # If the configured backend is a bundled web plugin the
+                    # user explicitly disabled, the backend is set correctly
+                    # and the real fix is to re-enable the plugin — say so
+                    # instead of telling them to set web.extract_backend
+                    # (which they already did). #40190 follow-up.
+                    disabled_key = _disabled_web_plugin_for(capability="extract")
+                    if disabled_key:
+                        _vendor = disabled_key.split("/", 1)[-1]
+                        return json.dumps(
+                            {
+                                "success": False,
+                                "error": (
+                                    f"web.extract_backend is set to '{_vendor}', "
+                                    f"but its plugin ('{disabled_key}') is disabled "
+                                    "in config. Re-enable it with "
+                                    f"`hermes plugins enable {disabled_key}` "
+                                    "(or remove it from plugins.disabled)."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
                     return json.dumps(
                         {
                             "success": False,
@@ -965,7 +1008,9 @@ def check_web_api_key() -> bool:
     :func:`_is_backend_available`, which delegates non-legacy names to the
     registry.
     """
-    configured = _load_web_config().get("backend", "").lower().strip()
+    # ``or ""``: a null ``web.backend`` value yields None from ``.get``, and
+    # ``None.lower()`` would raise. Mirrors ``_get_backend``.
+    configured = (_load_web_config().get("backend") or "").lower().strip()
     if configured and _is_backend_available(configured):
         return True
     # Any built-in backend with credentials present. This is a boolean OR, so
@@ -1001,8 +1046,9 @@ if __name__ == "__main__":
     # Check if API keys are available
     web_available = check_web_api_key()
     tool_gateway_available = _is_tool_gateway_ready()
-    firecrawl_key_available = bool(os.getenv("FIRECRAWL_API_KEY", "").strip())
-    firecrawl_url_available = bool(os.getenv("FIRECRAWL_API_URL", "").strip())
+    from hermes_cli.config import get_env_value as _gev
+    firecrawl_key_available = bool((_gev("FIRECRAWL_API_KEY") or "").strip())
+    firecrawl_url_available = bool((_gev("FIRECRAWL_API_URL") or "").strip())
 
     if web_available:
         backend = _get_backend()
@@ -1020,7 +1066,7 @@ if __name__ == "__main__":
         elif backend == "ddgs":
             print("   Using DuckDuckGo via ddgs package (search only)")
         elif firecrawl_url_available:
-            print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
+            print(f"   Using self-hosted Firecrawl: {(_gev('FIRECRAWL_API_URL') or '').strip().rstrip('/')}")
         elif firecrawl_key_available:
             print("   Using direct Firecrawl cloud API")
         elif tool_gateway_available:

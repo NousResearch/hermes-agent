@@ -27,6 +27,9 @@ outputs:
   mcp_catalog:
     description: Require MCP catalog security review label.
     value: ${{ steps.classify.outputs.mcp_catalog }}
+  ci_review:
+    description: Require CI-sensitive file review label.
+    value: ${{ steps.classify.outputs.ci_review }}
 
 runs:
   using: composite

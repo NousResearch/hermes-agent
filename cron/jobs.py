@@ -1816,6 +1816,23 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     times = repeat.get("times")
                     completed = repeat.get("completed", 0)
                     if times is not None and times > 0 and completed >= times:
+                        # Issue #62002: never delete a job whose run is
+                        # alive in the same process, even if the run_claim
+                        # TTL has expired. A network-stalled run (or a
+                        # laptop that slept mid-run) can outlive the
+                        # default 1800s TTL while the run is very much
+                        # still in flight. Cross-process liveness
+                        # detection (via the run_claim TTL) is
+                        # preserved; same-process liveness is exact.
+                        from cron.scheduler import get_running_job_ids
+                        if job["id"] in get_running_job_ids():
+                            logger.debug(
+                                "Job '%s': dispatch limit reached but "
+                                "run is still alive in this process "
+                                "(#62002) — skipping stale-entry removal",
+                                job.get("name", job["id"]),
+                            )
+                            continue
                         logger.info(
                             "Job '%s': one-shot dispatch limit reached (%d/%d) "
                             "— removing stale due entry",

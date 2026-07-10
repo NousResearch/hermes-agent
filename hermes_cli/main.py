@@ -272,6 +272,7 @@ if _try_termux_ultrafast_version():
 import argparse
 import hashlib
 import json
+import platform
 import shlex
 import shutil
 import stat
@@ -1507,6 +1508,11 @@ def _tui_need_npm_install(root: Path) -> bool:
         return True
     if not lock.is_file():
         return False
+    required_esbuild_pkg = _required_esbuild_platform_package(ws_root)
+    if required_esbuild_pkg and not _esbuild_platform_binary_is_available(
+        ws_root, required_esbuild_pkg
+    ):
+        return True
     marker = ws_root / "node_modules" / ".package-lock.json"
     if not marker.is_file():
         return True
@@ -1543,6 +1549,73 @@ def _tui_need_npm_install(root: Path) -> bool:
     return False
 
 
+def _required_esbuild_platform_package(ws_root: Path) -> str | None:
+    """Return the esbuild helper package required by the current platform."""
+    esbuild_pkg = ws_root / "node_modules" / "esbuild" / "package.json"
+    if not esbuild_pkg.is_file():
+        return None
+
+    try:
+        package_data = json.loads(esbuild_pkg.read_text(encoding="utf-8"))
+        optional = package_data.get("optionalDependencies") or {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+    token = _ESBUILD_PLATFORM_TOKENS.get(sys.platform)
+    machine = platform.machine().lower()
+    if not token:
+        return None
+
+    for arch in _ESBUILD_ARCH_ALIASES.get(machine, (machine,)):
+        candidate = f"@esbuild/{token}-{arch}"
+        if candidate in optional:
+            return candidate
+    return None
+
+
+def _esbuild_platform_binary_is_available(ws_root: Path, package: str) -> bool:
+    """Accept esbuild's optional package or its postinstall fallback."""
+    if (ws_root / "node_modules" / package).is_dir():
+        return True
+
+    binary = "esbuild.exe" if sys.platform == "win32" else "esbuild"
+    fallback = (
+        ws_root
+        / "node_modules"
+        / "esbuild"
+        / "lib"
+        / f"downloaded-{package.replace('/', '-')}-{binary}"
+    )
+    return fallback.is_file()
+
+
+def _invalidate_stale_esbuild_install(ws_root: Path) -> None:
+    """Force npm to re-run esbuild's installer when its binary is missing."""
+    esbuild_dir = ws_root / "node_modules" / "esbuild"
+    esbuild_pkg = esbuild_dir / "package.json"
+    hidden_lock = ws_root / "node_modules" / ".package-lock.json"
+
+    required_esbuild_pkg = _required_esbuild_platform_package(ws_root)
+    if esbuild_pkg.is_file() and (
+        not required_esbuild_pkg
+        or _esbuild_platform_binary_is_available(ws_root, required_esbuild_pkg)
+    ):
+        return
+
+    try:
+        if esbuild_dir.exists():
+            shutil.rmtree(esbuild_dir)
+    except OSError:
+        pass
+
+    try:
+        hidden_lock.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
 _TUI_BUILD_INPUT_DIRS = (
     "src",
     "packages/hermes-ink/src",
@@ -1563,6 +1636,35 @@ _TUI_BUILD_INPUT_FILES = (
 _TUI_BUILD_INPUT_SUFFIXES = frozenset(
     {".cjs", ".js", ".jsx", ".json", ".mjs", ".ts", ".tsx"}
 )
+
+_ESBUILD_PLATFORM_TOKENS = {
+    "aix": "aix",
+    "android": "android",
+    "darwin": "darwin",
+    "freebsd": "freebsd",
+    "linux": "linux",
+    "netbsd": "netbsd",
+    "openbsd": "openbsd",
+    "sunos": "sunos",
+    "win32": "win32",
+}
+
+_ESBUILD_ARCH_ALIASES = {
+    "aarch64": ("arm64",),
+    "amd64": ("x64",),
+    "arm64": ("arm64",),
+    "armv6l": ("arm",),
+    "armv7l": ("arm",),
+    "i386": ("ia32",),
+    "i686": ("ia32",),
+    "loongarch64": ("loong64",),
+    "mips64el": ("mips64el",),
+    "ppc64": ("ppc64",),
+    "ppc64le": ("ppc64",),
+    "riscv64": ("riscv64",),
+    "s390x": ("s390x",),
+    "x86_64": ("x64",),
+}
 
 
 def _iter_tui_build_inputs(root: Path):
@@ -1817,11 +1919,13 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 tui_dir,
                 include_child_workspaces=True,
             )
+        _invalidate_stale_esbuild_install(npm_cwd)
         result = subprocess.run(
             [
                 npm,
                 "install",
                 *npm_workspace_args,
+                "--include=optional",
                 "--silent",
                 "--no-fund",
                 "--no-audit",

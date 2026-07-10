@@ -20,6 +20,34 @@ def _touch_ink(root: Path) -> None:
     ink.write_text("{}")
 
 
+def _configure_darwin_x64(main_mod, monkeypatch) -> None:
+    monkeypatch.setitem(
+        main_mod._ESBUILD_PLATFORM_TOKENS, main_mod.sys.platform, "darwin"
+    )
+    monkeypatch.setattr(main_mod.platform, "machine", lambda: "x86_64")
+
+
+def _touch_esbuild(root: Path) -> None:
+    esbuild = root / "node_modules" / "esbuild" / "package.json"
+    esbuild.parent.mkdir(parents=True, exist_ok=True)
+    esbuild.write_text(
+        '{"optionalDependencies":{"@esbuild/darwin-x64":"0.28.1"}}'
+    )
+
+
+def _touch_esbuild_fallback(root: Path, main_mod) -> None:
+    binary = "esbuild.exe" if main_mod.sys.platform == "win32" else "esbuild"
+    fallback = (
+        root
+        / "node_modules"
+        / "esbuild"
+        / "lib"
+        / f"downloaded-@esbuild-darwin-x64-{binary}"
+    )
+    fallback.parent.mkdir(parents=True, exist_ok=True)
+    fallback.write_text("binary")
+
+
 def _touch_tui_entry(root: Path) -> None:
     entry = root / "dist" / "entry.js"
     entry.parent.mkdir(parents=True, exist_ok=True)
@@ -116,6 +144,60 @@ def test_need_install_when_marker_missing(tmp_path: Path, main_mod) -> None:
     _touch_ink(tmp_path)
     (tmp_path / "package-lock.json").write_text("{}")
     assert main_mod._tui_need_npm_install(tmp_path) is True
+
+
+def test_need_install_when_esbuild_platform_binary_missing(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    _touch_ink(tmp_path)
+    _touch_esbuild(tmp_path)
+    (tmp_path / "package-lock.json").write_text("{}")
+    (tmp_path / "node_modules" / ".package-lock.json").write_text("{}")
+    _configure_darwin_x64(main_mod, monkeypatch)
+
+    assert main_mod._tui_need_npm_install(tmp_path) is True
+
+
+def test_no_install_when_esbuild_downloaded_fallback_exists(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    _touch_ink(tmp_path)
+    _touch_esbuild(tmp_path)
+    _touch_esbuild_fallback(tmp_path, main_mod)
+    (tmp_path / "package-lock.json").write_text("{}")
+    (tmp_path / "node_modules" / ".package-lock.json").write_text("{}")
+    _configure_darwin_x64(main_mod, monkeypatch)
+
+    assert main_mod._tui_need_npm_install(tmp_path) is False
+
+
+def test_invalidate_stale_esbuild_install_removes_cached_state(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    _touch_esbuild(tmp_path)
+    marker = tmp_path / "node_modules" / ".package-lock.json"
+    marker.write_text("{}")
+    _configure_darwin_x64(main_mod, monkeypatch)
+
+    main_mod._invalidate_stale_esbuild_install(tmp_path)
+
+    assert not (tmp_path / "node_modules" / "esbuild").exists()
+    assert not marker.exists()
+
+
+def test_invalidate_stale_esbuild_install_keeps_downloaded_fallback(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    _touch_esbuild(tmp_path)
+    _touch_esbuild_fallback(tmp_path, main_mod)
+    marker = tmp_path / "node_modules" / ".package-lock.json"
+    marker.write_text("{}")
+    _configure_darwin_x64(main_mod, monkeypatch)
+
+    main_mod._invalidate_stale_esbuild_install(tmp_path)
+
+    assert (tmp_path / "node_modules" / "esbuild").is_dir()
+    assert marker.is_file()
 
 
 def test_no_install_without_lockfile_when_ink_present(tmp_path: Path, main_mod) -> None:
@@ -233,6 +315,7 @@ def test_make_tui_argv_scopes_npm_install_on_termux_workspace(
         "ui-tui/packages/hermes-ink",
         "--include-workspace-root=false",
     ]
+    assert "--include=optional" in install_cmd
     assert calls[0][1]["cwd"] == str(tmp_path)
     _assert_utf8_replace_capture(calls[0][1])
     _assert_utf8_replace_capture(calls[1][1])
@@ -265,6 +348,7 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
         "install",
         "--workspace",
         "ui-tui",
+        "--include=optional",
         "--silent",
         "--no-fund",
         "--no-audit",

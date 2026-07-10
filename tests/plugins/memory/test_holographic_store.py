@@ -68,6 +68,24 @@ class TestSharedConnection:
             a.close()
             b.close()
 
+    def test_symlinked_path_shares_connection(self, tmp_path):
+        """A symlink to the same DB file must hit the same registry entry —
+        otherwise two connections to one file silently reintroduce the
+        multi-writer contention the registry exists to prevent."""
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        link_dir = tmp_path / "link"
+        link_dir.symlink_to(real_dir)
+
+        a = MemoryStore(real_dir / "memory_store.db")
+        b = MemoryStore(link_dir / "memory_store.db")
+        try:
+            assert a._conn is b._conn
+            assert len(MemoryStore._shared) == 1
+        finally:
+            a.close()
+            b.close()
+
     def test_writes_visible_across_instances(self, db_path):
         a = MemoryStore(db_path)
         b = MemoryStore(db_path)

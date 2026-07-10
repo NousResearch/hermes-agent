@@ -425,11 +425,17 @@ def _recipient_policy(
     to_addr: str,
     cc: Any = None,
     bcc: Any = None,
+    extra_allowed: Any = None,
 ) -> dict[str, Any]:
     recipients = _normalise_email_list([to_addr]) + _normalise_email_list(cc) + _normalise_email_list(bcc)
     unique = list(dict.fromkeys(recipients))
     max_recipients = int(os.getenv("EMAIL_MAX_RECIPIENTS", "10"))
-    allowed = {"thomas@lfglabs.dev"}
+    # Trusted recipients resolved from the environment. ``extra_allowed`` lets an
+    # adapter instance pass the allowlist it resolved at init time (self._allowed_users),
+    # so a reply to an already-authenticated inbound sender is permitted even if the
+    # EMAIL_ALLOWED_USERS env var is not re-read at send time. Mirrors the inbound gate.
+    allowed: set[str] = set()
+    allowed.update(_normalise_email_list(extra_allowed))
     allowed.update(_normalise_email_list(os.getenv("EMAIL_ALLOWED_RECIPIENTS")))
     allowed.update(_normalise_email_list(os.getenv("EMAIL_ALLOWED_USERS")))
     allowed.update(_normalise_email_list(os.getenv("EMAIL_OWNER_RECIPIENTS")))
@@ -1631,7 +1637,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> str:
         """Send an email through the configured Proton runtime."""
         client = self._proton_client or _load_proton_client()
-        policy = _recipient_policy(to_addr=to_addr, cc=cc, bcc=bcc)
+        policy = _recipient_policy(to_addr=to_addr, cc=cc, bcc=bcc, extra_allowed=self._allowed_users)
         if not policy["allowed"]:
             raise RuntimeError(policy["failure_reason"])
         attachment_manifest, rejected_attachments = _attachment_manifest(attachments)

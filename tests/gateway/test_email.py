@@ -1480,6 +1480,7 @@ class TestSendEmailStandalone(unittest.TestCase):
                 "EMAIL_PROVIDER": "proton",
                 "EMAIL_ADDRESS": "agent@thomas.md",
                 "PROTON_MAILBOX": str(mailbox),
+                "EMAIL_ALLOWED_RECIPIENTS": "thomas@lfglabs.dev",
             }, clear=True):
                 result = asyncio.run(
                     _standalone_send(PlatformConfig(enabled=True), "thomas@lfglabs.dev", "Hello")
@@ -1489,6 +1490,42 @@ class TestSendEmailStandalone(unittest.TestCase):
             data = json.loads(mailbox.read_text(encoding="utf-8"))
             self.assertEqual(data["sent"][0]["to"], "thomas@lfglabs.dev")
             self.assertEqual(data["sent"][0]["body"], "Hello")
+
+
+class TestRecipientPolicy(unittest.TestCase):
+    """Outbound recipient allow-policy must be config-driven, never hardcoded."""
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_unknown_recipient_rejected_without_allowlist(self):
+        """With no allowlist configured, no recipient is approved by default.
+
+        Regression: the policy previously seeded a hardcoded owner address, which
+        leaked a prod-specific default into upstream and let that one address
+        through even on a fresh install.
+        """
+        from plugins.platforms.email.adapter import _recipient_policy
+        policy = _recipient_policy(to_addr="someone@example.com")
+        self.assertFalse(policy["allowed"])
+        self.assertEqual(policy["rejected_recipients"], ["someone@example.com"])
+
+    @patch.dict(os.environ, {"EMAIL_ALLOWED_RECIPIENTS": "owner@example.com"}, clear=True)
+    def test_env_allowlist_permits_recipient(self):
+        from plugins.platforms.email.adapter import _recipient_policy
+        policy = _recipient_policy(to_addr="owner@example.com")
+        self.assertTrue(policy["allowed"])
+        self.assertEqual(policy["accepted_recipients"], ["owner@example.com"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extra_allowed_permits_resolved_sender(self):
+        """extra_allowed (adapter's resolved allowlist) approves a reply target
+        even when the EMAIL_ALLOWED_USERS env var is not present at send time."""
+        from plugins.platforms.email.adapter import _recipient_policy
+        policy = _recipient_policy(
+            to_addr="owner@example.com",
+            extra_allowed={"owner@example.com"},
+        )
+        self.assertTrue(policy["allowed"])
+        self.assertEqual(policy["accepted_recipients"], ["owner@example.com"])
 
 
 class TestSmtpConnectionCleanup(unittest.TestCase):

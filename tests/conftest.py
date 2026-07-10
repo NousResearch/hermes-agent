@@ -243,6 +243,27 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SIGNAL_ALLOWED_USERS",
     "SIGNAL_GROUP_ALLOWED_USERS",
     "EMAIL_ALLOWED_USERS",
+    # Email/Proton provider selection and outbound policy. If any of these
+    # leak in from a developer shell or CI env (notably EMAIL_PROVIDER=proton
+    # or a PROTON_* pin), the email adapter silently switches transport or
+    # changes the outbound recipient allowlist, flaking the gateway tests.
+    "EMAIL_PROVIDER",
+    "EMAIL_ALLOWED_RECIPIENTS",
+    "EMAIL_OWNER_RECIPIENTS",
+    "EMAIL_ALLOWED_DOMAINS",
+    "EMAIL_ALLOW_UNKNOWN_RECIPIENTS",
+    "EMAIL_OUTBOUND_DISABLED",
+    "EMAIL_MAX_RECIPIENTS",
+    "EMAIL_MAX_ATTACHMENTS",
+    "EMAIL_MAX_ATTACHMENT_BYTES",
+    "EMAIL_ATTACHMENT_ALLOWED_ROOTS",
+    "EMAIL_BLOCKED_ATTACHMENT_EXTS",
+    "EMAIL_BLOCKED_ATTACHMENT_MIME_TYPES",
+    "EMAIL_PROTON_SEEN_PATH",
+    "EMAIL_TRUST_FROM_HEADER",
+    "EMAIL_AUTHSERV_ID",
+    "PROTON_CLIENT_FACTORY",
+    "PROTON_MAILBOX",
     "SMS_ALLOWED_USERS",
     "MATTERMOST_ALLOWED_USERS",
     "MATRIX_ALLOWED_USERS",

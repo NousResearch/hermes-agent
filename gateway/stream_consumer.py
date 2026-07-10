@@ -982,6 +982,36 @@ class GatewayStreamConsumer:
         continuation = self._continuation_text(final_text)
         self._fallback_final_send = False
         if not continuation.strip():
+            # Some platforms treat a successful streaming preview as durable
+            # delivery. Telegram clients can instead lose or retain only part
+            # of that preview after a failed final edit, so opt-in adapters
+            # commit the completed answer with a fresh final send.
+            if (
+                final_text.strip()
+                and final_text == self._visible_prefix()
+                and getattr(
+                    self.adapter,
+                    "RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK",
+                    False,
+                ) is True
+            ):
+                delivery = await self._send_empty_fallback_final(final_text)
+                if delivery == "delivered":
+                    return
+                self._already_sent = True
+                self._fallback_prefix = ""
+                self._fallback_preserve_partial_messages = False
+                if delivery == "ambiguous":
+                    # A timeout may mean Telegram accepted the send but the
+                    # client never received the response. Preserve duplicate
+                    # suppression for that one uncertain outcome.
+                    self._final_content_delivered = True
+                else:
+                    # A confirmed failure leaves the gateway free to perform
+                    # its normal final send.
+                    self._final_response_sent = False
+                    self._final_content_delivered = False
+                return
             # Nothing new to send — the visible partial already matches final text.
             # BUT: if final_text itself has meaningful content (e.g. a timeout
             # message after a long tool call), the prefix-based continuation
@@ -1044,10 +1074,12 @@ class GatewayStreamConsumer:
                 if result.success:
                     break
                 if attempt == 0 and self._is_flood_error(result):
+                    delay = float(getattr(result, "retry_after", None) or 3.0)
                     logger.debug(
-                        "Flood control on fallback send, retrying in 3s"
+                        "Flood control on fallback send, retrying in %.1fs",
+                        delay,
                     )
-                    await asyncio.sleep(3.0)
+                    await asyncio.sleep(delay)
                 else:
                     break  # non-flood error or second attempt failed
 
@@ -1111,6 +1143,84 @@ class GatewayStreamConsumer:
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
+
+    async def _send_empty_fallback_final(self, final_text: str) -> str:
+        """Commit a completed answer after Telegram finalization fails.
+
+        Returns ``delivered`` on confirmed success, ``failed`` when the
+        gateway can safely retry, and ``ambiguous`` when a timeout may have
+        reached the platform already.
+        """
+        stale_ids = set(self._preview_message_ids)
+        if self._message_id and self._message_id != "__no_edit__":
+            stale_ids.add(str(self._message_id))
+
+        result = None
+        for attempt in range(2):
+            try:
+                result = await self.adapter.send(
+                    chat_id=self.chat_id,
+                    content=final_text,
+                    metadata=self._metadata_for_send(final=True),
+                )
+            except Exception as exc:
+                logger.debug("Empty fallback final send failed: %s", exc)
+                return (
+                    "ambiguous"
+                    if self._send_failure_may_have_delivered(exc)
+                    else "failed"
+                )
+
+            if getattr(result, "success", False):
+                break
+            if attempt == 0 and self._is_flood_error(result):
+                delay = float(getattr(result, "retry_after", None) or 3.0)
+                logger.debug(
+                    "Flood control on empty fallback final send; retrying in %.1fs",
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            return (
+                "ambiguous"
+                if self._send_failure_may_have_delivered(result)
+                else "failed"
+            )
+
+        new_message_id = getattr(result, "message_id", None)
+        delete_fn = getattr(self.adapter, "delete_message", None)
+        if delete_fn is not None:
+            for stale_id in stale_ids:
+                if not stale_id or stale_id == new_message_id:
+                    continue
+                try:
+                    await delete_fn(self.chat_id, stale_id)
+                except Exception as exc:
+                    logger.debug(
+                        "Empty fallback preview cleanup failed (%s): %s",
+                        stale_id,
+                        exc,
+                    )
+
+        self._preview_message_ids = set()
+        self._message_id = new_message_id or "__no_edit__"
+        self._already_sent = True
+        self._final_response_sent = True
+        self._final_content_delivered = True
+        self._last_sent_text = final_text
+        self._fallback_prefix = ""
+        self._fallback_preserve_partial_messages = False
+        self._notify_new_message()
+        return "delivered"
+
+    @staticmethod
+    def _send_failure_may_have_delivered(result_or_exc: Any) -> bool:
+        """Return True for timeout failures where retrying may duplicate."""
+        if getattr(result_or_exc, "retryable", None) is True:
+            return False
+        error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
+        name = result_or_exc.__class__.__name__.lower()
+        return "timeout" in error or "timed out" in error or "timeout" in name
 
     def _is_flood_error(self, result) -> bool:
         """Check if a SendResult failure is due to flood control / rate limiting."""
@@ -1246,11 +1356,12 @@ class GatewayStreamConsumer:
         if not prefix or not prefix.strip():
             return
         try:
-            await self._edit_message(
+            result = await self._edit_message(
                 message_id=self._message_id,
                 content=prefix,
             )
-            self._last_sent_text = prefix
+            if getattr(result, "success", False):
+                self._last_sent_text = prefix
         except Exception:
             pass  # best-effort — don't let this block the fallback path
 
@@ -1665,6 +1776,7 @@ class GatewayStreamConsumer:
                         self._flood_strikes = 0
                         return True
                     else:
+                        immediate_final_fallback = False
                         if (
                             finalize
                             and is_turn_final
@@ -1726,12 +1838,30 @@ class GatewayStreamConsumer:
                                 self._MAX_FLOOD_STRIKES,
                                 self._current_edit_interval,
                             )
-                            if self._flood_strikes < self._MAX_FLOOD_STRIKES:
+                            immediate_final_fallback = (
+                                finalize
+                                and is_turn_final
+                                and getattr(
+                                    self.adapter,
+                                    "FALLBACK_ON_FINAL_EDIT_FLOOD",
+                                    False,
+                                ) is True
+                            )
+                            if (
+                                self._flood_strikes < self._MAX_FLOOD_STRIKES
+                                and not immediate_final_fallback
+                            ):
                                 # Don't disable edits yet — just slow down.
                                 # Update _last_edit_time so the next edit
                                 # respects the new interval.
                                 self._last_edit_time = time.monotonic()
                                 return False
+
+                            if immediate_final_fallback:
+                                logger.debug(
+                                    "Turn-final edit hit flood control; "
+                                    "entering fallback immediately"
+                                )
 
                         # Non-flood error OR flood strikes exhausted: enter
                         # fallback mode — send only the missing tail once the
@@ -1745,8 +1875,12 @@ class GatewayStreamConsumer:
                         self._edit_supported = False
                         self._already_sent = True
                         # Best-effort: strip the cursor from the last visible
-                        # message so the user doesn't see a stuck ▉.
-                        await self._try_strip_cursor()
+                        # message so the user doesn't see a stuck ▉. A
+                        # turn-final Telegram flood skips this cosmetic edit:
+                        # another edit would consume the same flood budget and
+                        # delay the fallback send that carries the answer.
+                        if not immediate_final_fallback:
+                            await self._try_strip_cursor()
                         return False
                 else:
                     # Editing not supported — skip intermediate updates.

@@ -758,62 +758,29 @@ SESSION_SEARCH_SCHEMA = {
         "SOURCE-FIRST LIMIT\n\n"
         "  This tool searches Hermes conversation history only. It is not evidence "
         "about the current contents of external sources. If the user provided a "
-        "direct source such as a URL, phone number/contact, app/thread, file path, "
-        "account, website, or live system, inspect that original source before or "
-        "instead of session_search when accessible. Use session_search as secondary "
-        "context for what was previously said, not as primary proof of what the "
-        "source currently contains. If the original source is inaccessible, say so "
-        "and why before falling back to session history. Do not conclude 'not found' "
-        "or 'no prior correspondence' from session_search alone when a direct source "
-        "was provided.\n\n"
+        "direct source (URL, phone/contact, app/thread, file path, account, website, "
+        "live system), inspect that original source before or instead of "
+        "session_search when accessible. Use session_search as secondary context for "
+        "what was previously said, not as primary proof of current source contents. "
+        "If the original source is inaccessible, say so and why before falling back. "
+        "Do not conclude 'not found' or 'no prior correspondence' from session_search "
+        "alone when a direct source was provided.\n\n"
         "FOUR CALLING SHAPES\n\n"
-        "  1) DISCOVERY — pass `query`:\n"
-        "     session_search(query=\"auth refactor\", limit=3)\n"
-        "     Runs FTS5, dedupes hits by session lineage, returns the top N sessions. "
-        "Each result carries:\n"
-        "       - session_id, title, when, source\n"
-        "       - snippet: FTS5-highlighted match excerpt\n"
-        "       - bookend_start: first 3 user+assistant messages of the session "
-        "(the goal / kickoff)\n"
-        "       - messages: ±5 messages around the FTS5 match, with the anchor message "
-        "flagged (the hit in context)\n"
-        "       - bookend_end: last 3 user+assistant messages of the session "
-        "(the resolution / decisions)\n"
-        "       - match_message_id, messages_before, messages_after\n"
-        "     Bookends + window together let you reconstruct goal → match → resolution "
-        "without paying for the whole transcript.\n\n"
-        "  2) SCROLL — pass `session_id` + `around_message_id`:\n"
-        "     session_search(session_id=\"...\", around_message_id=12345, window=10)\n"
-        "     Returns a window of ±`window` messages centered on the anchor. No FTS5, "
-        "no bookends — just the slice. Use after a discovery call when you need more "
-        "context than the ±5 default window.\n"
-        "       - To scroll FORWARD: pass messages[-1].id back as around_message_id.\n"
-        "       - To scroll BACKWARD: pass messages[0].id back as around_message_id.\n"
-        "       - The boundary message appears in both windows — orientation marker.\n"
-        "       - When messages_before or messages_after is < window, you're at the "
-        "start or end of the session.\n\n"
-        "  3) READ — pass `session_id` only (no around_message_id):\n"
-        "     session_search(session_id=\"...\", profile=\"work\")\n"
-        "     Dumps the whole session by id (first 20 + last 10 messages when "
-        "large). This is how you resolve an `@session:<profile>/<id>` link the "
-        "user dropped into the chat: split the value on `/` into profile + id "
-        "and call session_search(session_id=id, profile=profile).\n\n"
-        "  4) BROWSE — no args:\n"
-        "     session_search()\n"
-        "     Returns recent sessions chronologically: titles, previews, timestamps. "
-        "Use when the user asks \"what was I working on\" without naming a topic.\n\n"
-        "FTS5 SYNTAX\n\n"
-        "  AND is the default — multi-word queries require all terms. Use OR explicitly "
-        "for broader recall (`alpha OR beta OR gamma`), quoted phrases for exact match "
-        "(`\"docker networking\"`), boolean (`python NOT java`), or prefix wildcards "
-        "(`deploy*`).\n\n"
-        "WHEN TO USE\n\n"
-        "  Reach for this on questions about Hermes conversation history itself, such "
-        "as \"what did we do about X\", \"where did we leave Y\", or \"find the "
-        "session where Z\". If the user provided a direct source identifier, inspect "
-        "that source first when accessible; session_search can then supply historical "
-        "context. The session DB carries what was said when; external tools show "
-        "current source/world state."
+        "  1) DISCOVERY — pass `query` (optional limit/sort). FTS5, lineage-deduped "
+        "top-N sessions with snippet, ±5 messages around the hit, bookend_start/end, "
+        "match_message_id, messages_before/after.\n"
+        "  2) SCROLL — pass `session_id` + `around_message_id` (optional window). "
+        "Window only, no FTS/bookends. To scroll FORWARD: pass messages[-1].id; to "
+        "scroll BACKWARD: pass messages[0].id. Boundary message appears in both "
+        "windows; messages_before/after < window means start/end.\n"
+        "  3) READ — pass `session_id` only (optional profile). Full session dump "
+        "(first 20 + last 10 when large). Resolve `@session:<profile>/<id>` by "
+        "splitting on `/` into profile + id.\n"
+        "  4) BROWSE — no args. Recent sessions chronologically (titles, previews, "
+        "timestamps).\n\n"
+        "FTS5 SYNTAX: AND is default; use OR, quoted phrases, NOT, or prefix "
+        "wildcards (`deploy*`). Use for Hermes conversation-history questions only; "
+        "external tools show current source/world state."
     ),
     "parameters": {
         "type": "object",
@@ -822,17 +789,14 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Search query (discovery shape). Keywords, phrases, or boolean "
-                    "expressions to find in past sessions. Omit to browse recent "
-                    "sessions. Ignored when session_id + around_message_id are set "
-                    "(scroll shape)."
+                    "expressions. Omit to browse recent sessions. Ignored for scroll "
+                    "(session_id + around_message_id)."
                 ),
             },
             "limit": {
                 "type": "integer",
                 "description": (
-                    "Discovery shape only. Max sessions to return (default 3, max 10). "
-                    "Bump to 5–10 when the topic likely spans several sessions and you "
-                    "want to pick the right one to scroll into."
+                    "Discovery only. Max sessions to return (default 3, max 10)."
                 ),
                 "default": 3,
             },
@@ -840,55 +804,46 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "enum": ["newest", "oldest"],
                 "description": (
-                    "Discovery shape only. Temporal bias on top of FTS5 ranking. Omit "
-                    "to keep relevance-only ordering (suitable for exploratory recall — "
-                    "\"what do we know about X\"). Set 'newest' for recency-shaped "
-                    "questions (\"where did we leave X\"). Set 'oldest' for "
-                    "origin-shaped questions (\"how did X start\"). Ignored in scroll "
-                    "and browse shapes."
+                    "Discovery only. Temporal bias on FTS ranking. Omit for "
+                    "relevance-only; 'newest' for recency; 'oldest' for origin. "
+                    "Ignored in scroll/browse."
                 ),
             },
             "session_id": {
                 "type": "string",
                 "description": (
-                    "Scroll shape. Session to read inside. Use the session_id returned "
-                    "from a prior discovery call. Must be paired with "
-                    "around_message_id."
+                    "Session to read/scroll. From discovery results, or id segment of "
+                    "`@session:<profile>/<id>`. With around_message_id = scroll; alone = read."
                 ),
             },
             "around_message_id": {
                 "type": "integer",
                 "description": (
-                    "Scroll shape. Message id to center the window on. From a discovery "
-                    "result use match_message_id, or any id seen in a prior window. To "
-                    "scroll forward pass the last window message's id; to scroll "
-                    "backward pass the first."
+                    "Scroll anchor message id (use match_message_id from discovery, or "
+                    "window edge ids to scroll forward/backward)."
                 ),
             },
             "window": {
                 "type": "integer",
                 "description": (
-                    "Scroll shape only. Messages to return on each side of the anchor "
-                    "(anchor itself always included). Clamped to [1, 20]. Default 5."
+                    "Scroll only. Messages on each side of the anchor (anchor included). "
+                    "Clamped to [1, 20]. Default 5."
                 ),
                 "default": 5,
             },
             "role_filter": {
                 "type": "string",
                 "description": (
-                    "Optional. Comma-separated roles to include. Discovery defaults to "
-                    "'user,assistant' (tool output is usually noise). Pass "
-                    "'user,assistant,tool' to include tool output (debugging tool "
-                    "behaviour) or 'tool' to search tool output only."
+                    "Optional comma-separated roles. Discovery defaults to "
+                    "'user,assistant'. Pass 'user,assistant,tool' or 'tool' to include "
+                    "tool output."
                 ),
             },
             "profile": {
                 "type": "string",
                 "description": (
-                    "Optional. Read sessions from another Hermes profile's database "
-                    "(read-only). Use when resolving an `@session:<profile>/<id>` link: "
-                    "pass the profile segment here with session_id as the id segment. "
-                    "Omit to use the current profile."
+                    "Optional read-only other-profile DB. For `@session:<profile>/<id>`, "
+                    "pass the profile segment with session_id as the id. Omit for current."
                 ),
             },
         },

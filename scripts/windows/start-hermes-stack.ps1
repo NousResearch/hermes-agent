@@ -207,6 +207,14 @@ $enableTui = Get-BoolEnvOrDefault -Name "HERMES_AUTOSTART_TUI" -DefaultValue $tr
 $enableBrowser = Get-BoolEnvOrDefault -Name "HERMES_AUTOSTART_BROWSER" -DefaultValue $true
 $enableNgrok = Get-BoolEnvOrDefault -Name "HERMES_AUTOSTART_NGROK" -DefaultValue $true
 $enableVoicevox = Get-BoolEnvOrDefault -Name "HERMES_AUTOSTART_VOICEVOX" -DefaultValue $true
+$apiKey = [Environment]::GetEnvironmentVariable("API_SERVER_KEY", "Process")
+if (-not $apiKey -or $apiKey.Trim().Length -lt 16) {
+    if ($enableApi -or $enableNgrok) {
+        Write-Warning "API_SERVER_KEY must be a non-placeholder secret of at least 16 characters; skipping API sidecar and ngrok."
+    }
+    $enableApi = $false
+    $enableNgrok = $false
+}
 
 $gatewayRunning = (Is-CommandRunning -Needle "hermes_cli.main gateway run") -or `
     (Is-CommandRunning -Needle "hermes_cli gateway run")

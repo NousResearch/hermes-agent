@@ -1533,6 +1533,10 @@ export const en: Translations = {
       reveal: 'Reveal in folder',
       copyPath: 'Copy path',
       removeFromSidebar: 'Hide from sidebar',
+      sortSessions: 'Sort project sessions',
+      sortRecent: 'Recent activity',
+      sortTitleAsc: 'Title: A to Z',
+      sortTitleDesc: 'Title: Z to A',
       createFailed: 'Could not create project',
       staleBackend:
         'Update the Hermes backend to create projects — your backend is older than this desktop app (Settings → Updates → Backend).',

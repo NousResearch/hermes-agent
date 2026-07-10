@@ -7,8 +7,9 @@ import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/l
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { persistentAtom } from '@/lib/persisted'
+import { projectPreviewLimit } from '@/lib/project-session-sort'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
-import { setSidebarAgentsGrouped } from '@/store/layout'
+import { $projectSessionSort, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId, $sessions, workspaceCwdForNewSession } from '@/store/session'
@@ -257,7 +258,12 @@ export async function refreshProjectTree(): Promise<void> {
   $projectTreeLoading.set(true)
 
   try {
-    const res = await gatewayRequest<ProjectTreePayload>('projects.tree', { preview_limit: 3 })
+    const sessionSort = $projectSessionSort.get()
+
+    const res = await gatewayRequest<ProjectTreePayload>('projects.tree', {
+      preview_limit: projectPreviewLimit(sessionSort)
+    })
+
     // The flat Sessions list shows everything; scoped ids are only used here to
     // reconcile the optimistic eviction layer against what the server still lists.
     const scoped = new Set(res.scoped_session_ids ?? [])

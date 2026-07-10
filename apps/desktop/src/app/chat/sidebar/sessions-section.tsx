@@ -14,7 +14,9 @@ import { sessionPinId } from '@/store/session'
 import { SidebarCount } from './chrome'
 import {
   EnteredProjectContent,
+  flattenProjectSessions,
   ProjectOverviewRow,
+  type ProjectSessionSort,
   type SidebarProjectTree,
   type SidebarSessionGroup,
   SidebarWorkspaceGroup,
@@ -121,6 +123,9 @@ interface SidebarSessionsSectionProps {
   liveSessions?: SessionInfo[]
   // Client-side optimistic eviction layer (deleted/archived ids).
   removedSessionIds?: ReadonlySet<string>
+  // Sort preference for session rows inside the Project overview and drill-in tree.
+  projectSessionLocale?: string
+  projectSessionSort?: ProjectSessionSort
   activeProjectId?: null | string
   labelMeta?: React.ReactNode
   labelIcon?: React.ReactNode
@@ -166,6 +171,8 @@ export function SidebarSessionsSection({
   projectRepoWorktrees,
   liveSessions,
   removedSessionIds,
+  projectSessionLocale,
+  projectSessionSort,
   activeProjectId,
   labelMeta,
   labelIcon,
@@ -213,9 +220,15 @@ export function SidebarSessionsSection({
     )
   }
 
-  // Sessions inside repos/worktrees are date-ordered and static.
+  // Project rows are static and can opt into a persisted title sort; every other
+  // sidebar surface keeps its own existing order and drag semantics.
   const renderRows = (items: SessionInfo[]) =>
-    flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem))
+    (projectSessionSort
+      ? flattenProjectSessions(items, projectSessionSort, projectSessionLocale)
+      : flattenSessionsWithBranches(items)
+    ).map(
+      ({ branchStem, session }) => renderRow(session, false, branchStem)
+    )
 
   const flatVirtualized =
     !showEmptyState &&
@@ -250,6 +263,8 @@ export function SidebarSessionsSection({
             removedSessionIds={removedSessionIds}
             renderRows={renderRows}
             repoWorktrees={projectRepoWorktrees}
+            sessionLocale={projectSessionLocale}
+            sessionSort={projectSessionSort ?? 'recent'}
           />
         ) : (
           emptyState

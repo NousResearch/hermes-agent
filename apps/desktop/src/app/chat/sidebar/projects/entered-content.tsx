@@ -22,6 +22,7 @@ import { removeWorktreePath } from '@/store/projects'
 import { SidebarRowStack } from '../chrome'
 
 import { useWorkspaceNodeOpen } from './model'
+import { type ProjectSessionSort, sortProjectSessions } from './session-sort'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
   mergeRepoWorktreeGroups,
@@ -42,7 +43,9 @@ export function EnteredProjectContent({
   onNewSession,
   repoWorktrees,
   liveSessions,
-  removedSessionIds
+  removedSessionIds,
+  sessionLocale,
+  sessionSort
 }: {
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
@@ -50,6 +53,8 @@ export function EnteredProjectContent({
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
+  sessionLocale?: string
+  sessionSort: ProjectSessionSort
 }) {
   if (!project.repos.length) {
     return null
@@ -68,6 +73,8 @@ export function EnteredProjectContent({
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}
+          sessionLocale={sessionLocale}
+          sessionSort={sessionSort}
           showHeader={!single}
         />
       ))}
@@ -82,7 +89,9 @@ function RepoFlatSection({
   onNewSession,
   discoveredWorktrees,
   liveSessions,
-  removedSessionIds
+  removedSessionIds,
+  sessionLocale,
+  sessionSort
 }: {
   repo: SidebarWorkspaceTree
   showHeader: boolean
@@ -91,6 +100,8 @@ function RepoFlatSection({
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
+  sessionLocale?: string
+  sessionSort: ProjectSessionSort
 }) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -171,6 +182,7 @@ function RepoFlatSection({
           onNewSession={group.isKanban ? undefined : onNewSession}
           onRemove={group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group)}
           renderRows={renderRows}
+          sortSessions={sessions => sortProjectSessions(sessions, sessionSort, sessionLocale)}
         />
       ))}
     </>

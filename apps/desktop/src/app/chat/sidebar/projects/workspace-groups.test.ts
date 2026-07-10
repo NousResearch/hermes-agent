@@ -700,6 +700,55 @@ describe('overlayLivePreviews', () => {
     expect(previews['/www/app'].map(s => s.id)).toEqual(['fresh', 'old'])
   })
 
+  it('keeps title-sorted preview membership when live rows are overlaid before the limit', () => {
+    const project = projectNode({
+      id: '/www/app',
+      previewSessions: [
+        makeSession('/www/app', { id: 'zeta', title: '20 Zeta', last_active: 300 }),
+        makeSession('/www/app', { id: 'beta', title: '10 Beta', last_active: 200 }),
+        makeSession('/www/app', { id: 'alpha', title: '2 Alpha', last_active: 100 })
+      ]
+    })
+
+    const live = [makeSession('/www/app', { id: 'first', title: '1 First', last_active: 400 })]
+
+    const previews = overlayLivePreviews([project], live, [], 3, new Set(), 'title-asc', 'en')
+
+    expect(previews['/www/app'].map(s => s.id)).toEqual(['first', 'alpha', 'beta'])
+  })
+
+  it('applies locale collation before overview truncation', () => {
+    const project = projectNode({
+      id: '/www/app',
+      previewSessions: [
+        makeSession('/www/app', { id: 'zhang', title: '张' }),
+        makeSession('/www/app', { id: 'li', title: '李' }),
+        makeSession('/www/app', { id: 'bo', title: '波' }),
+        makeSession('/www/app', { id: 'a', title: '阿' })
+      ]
+    })
+
+    const previews = overlayLivePreviews([project], [], [], 3, new Set(), 'title-asc', 'zh')
+
+    expect(previews['/www/app'].map(s => s.id)).toEqual(['a', 'bo', 'li'])
+  })
+
+  it('keeps a branch parent ahead of its child when the overview is truncated', () => {
+    const project = projectNode({
+      id: '/www/app',
+      previewSessions: [
+        makeSession('/www/app', { id: 'child', parent_session_id: 'parent', title: 'Alpha child' }),
+        makeSession('/www/app', { id: 'beta', title: 'Beta root' }),
+        makeSession('/www/app', { id: 'gamma', title: 'Gamma root' }),
+        makeSession('/www/app', { id: 'parent', title: 'Zulu parent' })
+      ]
+    })
+
+    const previews = overlayLivePreviews([project], [], [], 3, new Set(), 'title-asc', 'en')
+
+    expect(previews['/www/app'].map(s => s.id)).toEqual(['beta', 'gamma', 'parent'])
+  })
+
   it('evicts a deleted session from a project preview (snapshot + live)', () => {
     const project = projectNode({
       id: '/www/app',

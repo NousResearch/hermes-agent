@@ -31,6 +31,7 @@ import {
   $dismissedAutoProjectIds,
   $panesFlipped,
   $pinnedSessionIds,
+  $projectSessionSort,
   $sidebarAgentsGrouped,
   $sidebarCronOpen,
   $sidebarMessagingOpenIds,
@@ -110,6 +111,7 @@ import {
   PROJECT_PREVIEW_COUNT,
   ProjectBackRow,
   ProjectMenu,
+  ProjectSessionSortMenu,
   projectTreeCwd,
   sessionRecency as sessionTime,
   type SidebarProjectTree,
@@ -227,7 +229,7 @@ export function ChatSidebar({
   onManageCronJob,
   onTriggerCronJob
 }: ChatSidebarProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const s = t.sidebar
   const sidebarOpen = useStore($sidebarOpen)
   // Collapsed-but-overlay-mounted → render the full sidebar, not just the nav rail.
@@ -264,6 +266,7 @@ export function ChatSidebar({
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
   const workspaceParentOrderIds = useStore($sidebarWorkspaceParentOrderIds)
   const projectOrderIds = useStore($sidebarProjectOrderIds)
+  const projectSessionSort = useStore($projectSessionSort)
   const projects = useStore($projects)
   const projectTree = useStore($projectTree)
   const projectTreeLoading = useStore($projectTreeLoading)
@@ -732,8 +735,17 @@ export function ChatSidebar({
   // session shows under its project instantly (and with its working arc),
   // matching the flat Recents list. Keyed by project path for the rows.
   const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
-    () => overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT, removedSessionIds),
-    [projectOverview, agentSessions, projects, removedSessionIds]
+    () =>
+      overlayLivePreviews(
+        projectOverview ?? [],
+        agentSessions,
+        projects,
+        PROJECT_PREVIEW_COUNT,
+        removedSessionIds,
+        projectSessionSort,
+        locale
+      ),
+    [projectOverview, agentSessions, projects, removedSessionIds, projectSessionSort, locale]
   )
 
   const onEnterProject = useCallback(
@@ -1221,6 +1233,7 @@ export function ChatSidebar({
                 headerAction={
                   inProject && enteredProject ? (
                     <div className="group/workspace flex shrink-0 items-center gap-0.5">
+                      <ProjectSessionSortMenu />
                       {enteredProject.path && (
                         <StartWorkButton onStarted={onNewSessionInWorkspace} repoPath={enteredProject.path} />
                       )}
@@ -1247,6 +1260,7 @@ export function ChatSidebar({
                     </div>
                   ) : (
                     <div className="flex shrink-0 items-center gap-0.5">
+                      {agentsGrouped && !showAllProfiles && <ProjectSessionSortMenu />}
                       {!showAllProfiles ? (
                         <Button
                           aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
@@ -1319,6 +1333,8 @@ export function ChatSidebar({
                 projectOverview={projectOverview}
                 projectOverviewPreviews={overviewPreviews}
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
+                projectSessionLocale={locale}
+                projectSessionSort={projectSessionSort}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
                 removedSessionIds={inProject ? removedSessionIds : undefined}
                 rootClassName={cn(

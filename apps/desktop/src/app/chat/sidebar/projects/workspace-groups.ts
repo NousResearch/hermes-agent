@@ -2,6 +2,8 @@ import type { HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { normalize } from '@/lib/text'
 
+import { type ProjectSessionSort, sortProjectSessions } from './session-sort'
+
 // Session grouping is now computed authoritatively on the backend
 // (`tui_gateway/project_tree.py`, exposed via `projects.tree` /
 // `projects.project_sessions`). The desktop is a thin renderer: this module
@@ -539,7 +541,9 @@ export function overlayLivePreviews(
   live: SessionInfo[],
   explicitProjects: ProjectInfo[],
   limit: number,
-  removed: ReadonlySet<string> = new Set()
+  removed: ReadonlySet<string> = new Set(),
+  sort: ProjectSessionSort = 'recent',
+  locale = 'en'
 ): Record<string, SessionInfo[]> {
   const byProject = new Map<string, SessionInfo[]>()
 
@@ -582,7 +586,12 @@ export function overlayLivePreviews(
       }
     }
 
-    out[node.path] = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
+    const merged = [...map.values()]
+
+    const ordered =
+      sort === 'recent' ? merged.sort((a, b) => sessionRecency(b) - sessionRecency(a)) : sortProjectSessions(merged, sort, locale)
+
+    out[node.path] = ordered.slice(0, limit)
   }
 
   return out

@@ -1266,6 +1266,10 @@ export interface Translations {
       reveal: string
       copyPath: string
       removeFromSidebar: string
+      sortSessions: string
+      sortRecent: string
+      sortTitleAsc: string
+      sortTitleDesc: string
       createFailed: string
       staleBackend: string
       deleteConfirm: string

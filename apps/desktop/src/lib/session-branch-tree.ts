@@ -8,7 +8,10 @@ export interface SidebarSessionEntry {
 const recency = (session: SessionInfo): number => session.last_active || session.started_at || 0
 
 /** Flat list with branch/fork sessions nested visually under their parent. */
-export function flattenSessionsWithBranches(sessions: readonly SessionInfo[]): SidebarSessionEntry[] {
+export function flattenSessionsWithBranches(
+  sessions: readonly SessionInfo[],
+  compareSessions?: (left: SessionInfo, right: SessionInfo) => number
+): SidebarSessionEntry[] {
   if (sessions.length < 2) {
     return sessions.map(session => ({ session }))
   }
@@ -47,7 +50,7 @@ export function flattenSessionsWithBranches(sessions: readonly SessionInfo[]): S
   }
 
   for (const siblings of childrenByParent.values()) {
-    siblings.sort((left, right) => recency(right) - recency(left))
+    siblings.sort(compareSessions ?? ((left, right) => recency(right) - recency(left)))
   }
 
   // A group sorts by its freshest member, so activity on any branch lifts the
@@ -95,7 +98,11 @@ export function flattenSessionsWithBranches(sessions: readonly SessionInfo[]): S
   sessions
     .filter(session => !nestedIds.has(session.id))
     .map((session, index) => ({ index, session }))
-    .sort((a, b) => groupRecency(b.session) - groupRecency(a.session) || a.index - b.index)
+    .sort((a, b) =>
+      compareSessions
+        ? compareSessions(a.session, b.session) || a.index - b.index
+        : groupRecency(b.session) - groupRecency(a.session) || a.index - b.index
+    )
     .forEach(({ session }) => emit(session))
 
   for (const session of sessions) {

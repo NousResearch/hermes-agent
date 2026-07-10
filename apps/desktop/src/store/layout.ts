@@ -1,6 +1,7 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { isProjectSessionSort, type ProjectSessionSort } from '@/lib/project-session-sort'
 import { arraysEqual, insertUniqueId } from '@/lib/storage'
 
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
@@ -25,6 +26,7 @@ const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrder.ma
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
 const SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceParentOrder'
 const SIDEBAR_PROJECT_ORDER_STORAGE_KEY = 'hermes.desktop.projectOrder'
+const PROJECT_SESSION_SORT_STORAGE_KEY = 'hermes.desktop.projectSessionSort'
 const SIDEBAR_WORKSPACE_COLLAPSED_STORAGE_KEY = 'hermes.desktop.workspaceCollapsed'
 const SIDEBAR_DISMISSED_AUTO_PROJECTS_STORAGE_KEY = 'hermes.desktop.dismissedAutoProjects'
 const SIDEBAR_DISMISSED_WORKTREES_STORAGE_KEY = 'hermes.desktop.dismissedWorktrees'
@@ -93,6 +95,12 @@ export const $sidebarProjectOrderIds = persistentAtom(
   [] as string[],
   Codecs.stringArray
 )
+// Controls only session rows inside the Projects tree. Keeping it beside the
+// other sidebar preferences makes it survive relaunch/profile-window changes.
+export const $projectSessionSort = persistentAtom<ProjectSessionSort>(PROJECT_SESSION_SORT_STORAGE_KEY, 'recent', {
+  decode: raw => (isProjectSessionSort(raw) ? raw : 'recent'),
+  encode: value => value
+})
 // Repo/worktree nodes that the user has explicitly COLLAPSED. Absent = open, so
 // a project's folders auto-open when you enter it (and persist your collapses
 // across reloads). Keyed by stable node id (repo root / worktree path).
@@ -284,6 +292,12 @@ export function setSidebarWorkspaceParentOrderIds(ids: string[]) {
 export function setSidebarProjectOrderIds(ids: string[]) {
   if (!arraysEqual($sidebarProjectOrderIds.get(), ids)) {
     $sidebarProjectOrderIds.set(ids)
+  }
+}
+
+export function setProjectSessionSort(sort: ProjectSessionSort) {
+  if ($projectSessionSort.get() !== sort) {
+    $projectSessionSort.set(sort)
   }
 }
 

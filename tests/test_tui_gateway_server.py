@@ -7088,6 +7088,102 @@ def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
     mock_title.assert_not_called()
 
 
+def test_prompt_submit_routes_auto_title_to_profile_db_path(monkeypatch, tmp_path):
+    """A non-launch-profile session must pass THAT profile's state.db to the title worker.
+
+    Regression for the profile-scoped title bug: server.py passed the launch ``_get_db()`` to
+    ``maybe_auto_title``, so a title for a session whose row lives in another profile's DB was
+    UPDATE-dropped. The routing must hand the worker the session's own ``profile_home/state.db``.
+    """
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {
+                "final_response": "Rome was founded in 753 BC.",
+                "messages": [
+                    {"role": "user", "content": "Tell me about Rome"},
+                    {"role": "assistant", "content": "Rome was founded in 753 BC."},
+                ],
+            }
+
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    server._sessions["sid"] = _session(agent=_Agent(), profile_home=str(profile_home))
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    # Launch DB must NOT be used for a profiled session — a call would be a bug.
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    with patch("agent.title_generator.maybe_auto_title") as mock_title:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "Tell me about Rome"},
+            }
+        )
+
+    mock_title.assert_called_once()
+    assert mock_title.call_args.kwargs["db_path"] == str(profile_home / "state.db")
+
+
+def test_prompt_submit_auto_title_persists_to_profile_db(monkeypatch, tmp_path):
+    """End-to-end: the generated title is written to the session's own profile DB and readable back."""
+    from hermes_state import SessionDB
+
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    profile_db_path = profile_home / "state.db"
+    # The session row lives in the profile DB (as _ensure_session_db_row would create it).
+    setup = SessionDB(db_path=profile_db_path)
+    setup.create_session("session-key", "tui")
+    setup.close()
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {
+                "final_response": "Rome was founded in 753 BC.",
+                "messages": [
+                    {"role": "user", "content": "Tell me about Rome"},
+                    {"role": "assistant", "content": "Rome was founded in 753 BC."},
+                ],
+            }
+
+    # The real maybe_auto_title spawns the title worker on a thread with args/kwargs/name; run it
+    # synchronously so the persisted title is observable (the narrow _ImmediateThread can't).
+    class _SyncThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None, name=None):
+            self._target, self._args, self._kwargs = target, args, kwargs or {}
+
+        def start(self):
+            self._target(*self._args, **self._kwargs)
+
+    server._sessions["sid"] = _session(agent=_Agent(), profile_home=str(profile_home))
+    monkeypatch.setattr(server.threading, "Thread", _SyncThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    # Only the LLM call is stubbed; the real worker opens the profile DB and persists the title.
+    with patch("agent.title_generator.generate_title", return_value="Founding Of Rome"):
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "Tell me about Rome"},
+            }
+        )
+
+    reopened = SessionDB(db_path=profile_db_path)
+    try:
+        assert reopened.get_session_title("session-key") == "Founding Of Rome"
+    finally:
+        reopened.close()
+
+
 def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
     """When the backend fails with no visible response (e.g. invalid model slug
     → provider 4xx), the TUI must surface result['error'] as visible text

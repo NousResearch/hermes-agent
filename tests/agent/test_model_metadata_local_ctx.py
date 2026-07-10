@@ -469,11 +469,23 @@ class TestQueryLocalContextLengthLmStudio:
 
 
 class TestDetectLocalServerTypeAuth:
+    @staticmethod
+    def _lmstudio_resp():
+        """A 200 whose body is genuinely LM Studio-native (carries the marker
+        fields detect_local_server_type now requires — a bare 200 is no longer
+        sufficient, so these tests must return a real LM Studio shape)."""
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "data": [{"id": "publisher/model-a", "type": "llm", "state": "loaded",
+                      "max_context_length": 32768, "loaded_instances": []}]
+        }
+        return resp
+
     def test_passes_bearer_token_to_probe_requests(self):
         from agent.model_metadata import detect_local_server_type
 
-        resp = MagicMock()
-        resp.status_code = 200
+        resp = self._lmstudio_resp()
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock
@@ -491,8 +503,7 @@ class TestDetectLocalServerTypeAuth:
     def test_native_api_base_url_is_not_doubled(self):
         from agent.model_metadata import detect_local_server_type
 
-        resp = MagicMock()
-        resp.status_code = 200
+        resp = self._lmstudio_resp()
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock

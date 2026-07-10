@@ -41,6 +41,63 @@ class TestMemorySetupProviderRouting:
         picker.assert_called_once_with(args)
         direct.assert_not_called()
 
+    def test_picker_defaults_to_active_provider(self):
+        """The interactive picker should highlight the configured provider,
+        not always fall back to the Built-in only entry."""
+        providers = [
+            ("honcho", "API key / local", object()),
+            ("holographic", "local", object()),
+        ]
+        expected_items = [
+            ("honcho", "— API key / local"),
+            ("holographic", "— local"),
+            ("Built-in only", "— MEMORY.md / USER.md (default)"),
+        ]
+
+        with patch.object(memory_setup, "_get_available_providers", return_value=providers), \
+             patch.object(memory_setup, "_curses_select", return_value=memory_setup._CANCELLED) as picker, \
+             patch.object(memory_setup, "_print_cancelled_setup"), \
+             patch("hermes_cli.config.load_config_readonly", return_value={"memory": {"provider": "holographic"}}):
+            memory_setup.cmd_setup(SimpleNamespace())
+
+        picker.assert_called_once_with(
+            "Memory provider setup",
+            expected_items,
+            default=1,
+            cancel_returns=memory_setup._CANCELLED,
+        )
+
+    def test_picker_defaults_to_builtin_when_active_provider_is_unavailable_or_malformed(self):
+        """Missing, unavailable, and malformed provider config use the safe fallback."""
+        providers = [
+            ("honcho", "API key / local", object()),
+            ("holographic", "local", object()),
+        ]
+        expected_items = [
+            ("honcho", "— API key / local"),
+            ("holographic", "— local"),
+            ("Built-in only", "— MEMORY.md / USER.md (default)"),
+        ]
+        configs = [
+            {},
+            {"memory": {"provider": "unavailable"}},
+            {"memory": "malformed"},
+        ]
+
+        for config in configs:
+            with patch.object(memory_setup, "_get_available_providers", return_value=providers), \
+                 patch.object(memory_setup, "_curses_select", return_value=memory_setup._CANCELLED) as picker, \
+                 patch.object(memory_setup, "_print_cancelled_setup"), \
+                 patch("hermes_cli.config.load_config_readonly", return_value=config):
+                memory_setup.cmd_setup(SimpleNamespace())
+
+            picker.assert_called_once_with(
+                "Memory provider setup",
+                expected_items,
+                default=2,
+                cancel_returns=memory_setup._CANCELLED,
+            )
+
     def test_unknown_provider_reports_and_returns_early(self, capsys):
         """An unknown provider name surfaces a helpful message and returns
         before any config load/save (the not-found guard precedes those imports)."""

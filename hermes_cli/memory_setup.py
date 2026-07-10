@@ -236,7 +236,7 @@ def cmd_setup_provider(provider_name: str) -> None:
 
 def cmd_setup(args) -> None:
     """Interactive memory provider setup wizard."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import load_config, load_config_readonly, save_config
 
     providers = _get_available_providers()
 
@@ -245,14 +245,26 @@ def cmd_setup(args) -> None:
         print("  Install a plugin to ~/.hermes/plugins/ and try again.\n")
         return
 
+    picker_config = load_config_readonly()
+    mem_config = (
+        picker_config.get("memory", {})
+        if isinstance(picker_config.get("memory"), dict)
+        else {}
+    )
+    active_provider = str(mem_config.get("provider", "") or "")
+
     # Build picker items
     items = []
-    for name, desc, _ in providers:
+    active_idx = None
+    for idx, (name, desc, _) in enumerate(providers):
+        if name == active_provider:
+            active_idx = idx
         items.append((name, f"— {desc}"))
     items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
 
     builtin_idx = len(items) - 1
-    selected = _curses_select("Memory provider setup", items, default=builtin_idx, cancel_returns=_CANCELLED)
+    default_idx = active_idx if active_idx is not None else builtin_idx
+    selected = _curses_select("Memory provider setup", items, default=default_idx, cancel_returns=_CANCELLED)
     if selected == _CANCELLED:
         _print_cancelled_setup()
         return

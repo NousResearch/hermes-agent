@@ -63,15 +63,18 @@ def test_curses_select_clears_after_picker_returns(monkeypatch):
 
 def test_cmd_setup_top_level_cancel_writes_nothing(monkeypatch):
     save_config = MagicMock()
-    load_config = MagicMock(side_effect=AssertionError("cancel should not load config"))
+    load_config = MagicMock(side_effect=AssertionError("cancel should not load mutable config"))
+    load_config_readonly = MagicMock(return_value={"memory": {"provider": "fake"}})
 
     monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [("fake", "local", object())])
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: kwargs["cancel_returns"])
     monkeypatch.setattr("hermes_cli.config.load_config", load_config)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", load_config_readonly)
     monkeypatch.setattr("hermes_cli.config.save_config", save_config)
 
     memory_setup.cmd_setup(SimpleNamespace())
 
+    load_config_readonly.assert_called_once_with()
     load_config.assert_not_called()
     save_config.assert_not_called()
 

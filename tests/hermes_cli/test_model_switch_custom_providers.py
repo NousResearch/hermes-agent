@@ -371,11 +371,13 @@ def test_custom_provider_explicit_model_matching_default_skips_probe(monkeypatch
     """Explicitness comes from ``models:``, even when dedup adds no item."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    calls = []
 
-    def fail_fetch(*args, **kwargs):
-        raise AssertionError("explicit one-model catalog must not be probed")
+    def fetch(*args, **kwargs):
+        calls.append((args, kwargs))
+        return ["unexpected-live-model"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fail_fetch)
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
 
     providers = list_authenticated_providers(
         current_provider="custom:local-ollama",
@@ -391,6 +393,7 @@ def test_custom_provider_explicit_model_matching_default_skips_probe(monkeypatch
     )
 
     row = next(p for p in providers if p["name"] == "Local Ollama")
+    assert calls == []
     assert row["models"] == ["llama3"]
 
 
@@ -398,11 +401,13 @@ def test_custom_provider_group_explicit_duplicate_skips_probe(monkeypatch):
     """A later grouped entry can explicitly narrow to an existing model."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    calls = []
 
-    def fail_fetch(*args, **kwargs):
-        raise AssertionError("grouped explicit catalog must not be probed")
+    def fetch(*args, **kwargs):
+        calls.append((args, kwargs))
+        return ["unexpected-live-model"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fail_fetch)
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
 
     providers = list_authenticated_providers(
         current_provider="custom:local-ollama",
@@ -422,6 +427,7 @@ def test_custom_provider_group_explicit_duplicate_skips_probe(monkeypatch):
     )
 
     row = next(p for p in providers if p["name"] == "Local Ollama")
+    assert calls == []
     assert row["models"] == ["llama3"]
 
 

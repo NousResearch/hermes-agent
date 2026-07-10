@@ -177,6 +177,13 @@ def build_top_level_parser():
             "the most recent session (workspace-scoped, like -c with no name)"
         ),
     )
+    _inherited_flag(
+        parser,
+        "--no-streaming",
+        action="store_true",
+        default=False,
+        help="Disable streaming output; wait for the full response before displaying (CLI only)",
+    )
     parser.add_argument(
         "--no-restore-cwd",
         action="store_true",
@@ -448,11 +455,12 @@ def build_top_level_parser():
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)",
     )
-    chat_parser.add_argument(
+    _inherited_flag(
+        chat_parser,
         "--no-streaming",
         action="store_true",
         default=False,
-        help="Disable streaming output; wait for the full response before displaying",
+        help="Disable streaming output; wait for the full response before displaying (CLI only)",
     )
     _inherited_flag(
         chat_parser,

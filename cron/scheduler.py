@@ -114,20 +114,26 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
-def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
+def _resolve_cron_disabled_toolsets(cfg: dict, job: dict | None = None) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
-    Three protected toolsets are always disabled in cron context:
-      - ``cronjob`` — would let a cron-spawned agent schedule more cron jobs
-      - ``messaging`` — interactive, needs a live gateway session
-      - ``clarify`` — interactive, blocks waiting for user input
+    ``cronjob`` and ``clarify`` are always disabled in cron context.
+    ``messaging`` is disabled by default too, but router/fan-out jobs can
+    explicitly opt in with job-scoped ``enabled_toolsets: ["messaging"]``.
 
     User-level ``agent.disabled_toolsets`` from config.yaml is layered on top
     so per-job ``enabled_toolsets`` cannot bypass policy that applies to
     ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
     past config.yaml's denylist).
     """
-    disabled = ["cronjob", "messaging", "clarify"]
+    disabled = ["cronjob", "clarify"]
+    job_cfg = job if job is not None else cfg
+    job_enabled = {
+        str(name).strip()
+        for name in (job_cfg or {}).get("enabled_toolsets") or []
+    }
+    if "messaging" not in job_enabled:
+        disabled.append("messaging")
     agent_cfg = (cfg or {}).get("agent") or {}
     user_disabled = agent_cfg.get("disabled_toolsets") or []
     for name in user_disabled:
@@ -2261,13 +2267,24 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 # silent skip — do not pollute the prompt with error messages
 
     # Always prepend cron execution guidance so the agent knows how
-    # delivery works and can suppress delivery when appropriate.
+    # delivery works and can suppress delivery when appropriate. Messaging is
+    # exceptional and only available when this job explicitly opted in.
+    messaging_enabled = "messaging" in {
+        str(name).strip() for name in job.get("enabled_toolsets") or []
+    }
+    delivery_guidance = (
+        "You may use send_message only when this job's prompt explicitly asks "
+        "for an additional or differently targeted message. Your final response "
+        "is still automatically delivered by the scheduler. "
+        if messaging_enabled
+        else "Your final response will be automatically delivered to the user — "
+        "do NOT use send_message or try to deliver the output yourself. Just "
+        "produce your report/output as your final response and the system "
+        "handles the rest. "
+    )
     cron_hint = (
-        "[IMPORTANT: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
+        "[IMPORTANT: You are running as a scheduled cron job. DELIVERY: "
+        f"{delivery_guidance}"
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "
@@ -3062,7 +3079,7 @@ def run_job(
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
+            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg, job),
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project

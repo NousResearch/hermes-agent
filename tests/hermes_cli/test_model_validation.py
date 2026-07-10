@@ -737,6 +737,40 @@ class TestEnsureLmStudioModelLoaded:
             "echo_load_config": True,
         }
 
+    def test_previous_model_with_multiple_loaded_instances_unloads_nothing(self):
+        calls = []
+        initial = [
+            {"key": "qwen/qwen3.6-35b-a3b", "type": "llm"},
+            {
+                "key": "old/model",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "old-instance-1", "config": {"context_length": 128000}},
+                    {"id": "old-instance-2", "config": {"context_length": 64000}},
+                ],
+            },
+        ]
+        load_responses = [{"load_config": {"context_length": 128000}}]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], load_responses, calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "qwen/qwen3.6-35b-a3b",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+                previous_model="old/model",
+            )
+
+        assert result == 128000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models", "load"]
+        assert calls[1][1] == {
+            "model": "qwen/qwen3.6-35b-a3b",
+            "echo_load_config": True,
+        }
+
     def test_previous_model_qwen_alias_does_not_match_unrelated_suffix(self):
         calls = []
         initial = [

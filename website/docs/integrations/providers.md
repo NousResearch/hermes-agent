@@ -852,7 +852,7 @@ You can use the CLI to estimate if the model will fit: `lms load model-name --co
 
 To set persistent per-model defaults: My Models tab → gear icon on the model → set context size.
 
-**Model switching:** By default, when switching between LM Studio models on the same endpoint, Hermes asks LM Studio to unload the previously selected Hermes model before loading the new one. It only sends an unload request for a matching loaded instance, so downloaded-only models and unrelated resident models are left alone. This avoids accidental VRAM overcommit on single-GPU systems when switching between large local models. If you intentionally keep the previous LM Studio model resident, opt out in `config.yaml`:
+**Model switching:** By default, when switching between LM Studio models on the same endpoint, Hermes asks LM Studio to unload the previously selected Hermes model before loading the new one. It only sends an unload request for a matching loaded instance, so downloaded-only models and unrelated resident models are left alone. If several instances of the previous model are resident, Hermes cannot tell which one it was using and leaves them all loaded. This avoids accidental VRAM overcommit on single-GPU systems when switching between large local models. If you intentionally keep the previous LM Studio model resident, opt out in `config.yaml`:
 
 ```yaml
 model:

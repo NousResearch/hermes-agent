@@ -3385,6 +3385,12 @@ def ensure_lmstudio_model_loaded(
                 previous_matches = embedded_matches if len(embedded_matches) == 1 else []
         for raw in previous_matches:
             instance_ids = loaded_instance_ids(raw)
+            if len(instance_ids) > 1:
+                # ``previous_model`` names a catalog model, not an LM Studio
+                # instance. With several resident instances of that model,
+                # Hermes cannot tell which one it was serving — leave them
+                # all loaded rather than evicting one the user loaded.
+                continue
             previous_loaded_ids.extend(instance_ids)
             if instance_ids:
                 contexts_for_restore = loaded_contexts(raw)

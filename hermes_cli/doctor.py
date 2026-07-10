@@ -10,7 +10,7 @@ import subprocess
 import shutil
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import get_project_root, get_hermes_home, get_env_path, get_env_value_prefer_dotenv
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 from hermes_constants import agent_browser_runnable
@@ -2058,7 +2058,7 @@ def run_doctor(args):
                                supports_health_check) -> _ConnectivityResult:
         key = ""
         for ev in env_vars:
-            key = os.getenv(ev, "")
+            key = (get_env_value_prefer_dotenv(ev) or "").strip()
             if key:
                 break
         if not key:

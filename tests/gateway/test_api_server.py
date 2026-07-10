@@ -764,7 +764,8 @@ class TestHealthDetailedEndpoint:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data["status"] == "ok"
+                assert data["status"] == "degraded"
+                assert data["readiness"]["checks"]["gateway"]["status"] == "degraded"
                 assert data["gateway_state"] is None
                 assert data["platforms"] == {}
                 # No runtime file ⇒ state None ⇒ not busy, not drainable.
@@ -788,6 +789,36 @@ class TestHealthDetailedEndpoint:
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed", headers=headers)
                 assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_health_detailed_reports_runtime_readiness(self, adapter):
+        """Detailed health exposes bounded readiness probes without changing /health."""
+        app = _create_app(adapter)
+        expected = {
+            "status": "degraded",
+            "checks": {
+                "state_db": {"status": "ok"},
+                "config": {"status": "degraded", "detail": "using last-known-good"},
+            },
+        }
+        with patch("gateway.status.read_runtime_status", return_value={"gateway_state": "running"}), \
+             patch("gateway.platforms.api_server.collect_runtime_readiness", return_value=expected):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health/detailed")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["status"] == "degraded"
+                assert data["readiness"] == expected
+
+    @pytest.mark.asyncio
+    async def test_public_health_does_not_run_readiness_probes(self, adapter):
+        app = _create_app(adapter)
+        with patch("gateway.platforms.api_server.collect_runtime_readiness") as probe:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health")
+                assert resp.status == 200
+                assert (await resp.json())["status"] == "ok"
+        probe.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

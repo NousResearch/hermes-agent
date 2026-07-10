@@ -61,6 +61,7 @@ from gateway.platforms.base import (
     validate_media_delivery_path,
 )
 from agent.redact import redact_sensitive_text
+from gateway.readiness import collect_runtime_readiness
 
 logger = logging.getLogger(__name__)
 
@@ -901,6 +902,28 @@ class APIServerAdapter(BasePlatformAdapter):
         # (the /v1/runs path tracks its own in-flight set via _run_streams).
         self._inflight_agent_runs: int = 0
 
+    def _readiness_queue_depths(self) -> tuple[int, int, int]:
+        """Return queue counts only; readiness must never inspect payloads."""
+        process_depth = 0
+        delegation_depth = 0
+        try:
+            from tools.process_registry import process_registry
+
+            process_depth = process_registry.completion_queue.qsize()
+        except Exception:
+            pass
+        try:
+            from tools.async_delegation import list_async_delegations
+
+            delegation_depth = sum(
+                1
+                for record in list_async_delegations()
+                if record.get("status") in {"queued", "running"}
+            )
+        except Exception:
+            pass
+        return len(self._run_streams), process_depth, delegation_depth
+
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
         """Normalize configured CORS origins into a stable tuple."""
@@ -1397,8 +1420,17 @@ class APIServerAdapter(BasePlatformAdapter):
         # This endpoint is served BY the gateway process, so it is by definition
         # alive — gateway_running is True. Derive busy/drainable from the same
         # shared contract /api/status uses so the two surfaces never disagree.
+        api_depth, process_depth, delegation_depth = self._readiness_queue_depths()
+        readiness = collect_runtime_readiness(
+            model_name=self._model_name,
+            runtime_status=runtime,
+            api_run_queue_depth=api_depth,
+            process_completion_queue_depth=process_depth,
+            delegation_completion_queue_depth=delegation_depth,
+        )
         return web.json_response({
-            "status": "ok",
+            "status": readiness["status"],
+            "readiness": readiness,
             "platform": "hermes-agent",
             "version": _hermes_version(),
             "gateway_state": gw_state,

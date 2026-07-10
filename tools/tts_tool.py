@@ -341,7 +341,7 @@ def _load_tts_config() -> Dict[str, Any]:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("tts", {})
+        return config.get("tts") or {}
     except ImportError:
         logger.debug("hermes_cli.config not available, using default TTS config")
         return {}
@@ -949,7 +949,7 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
         Path to the saved audio file.
     """
     _edge_tts = _import_edge_tts()
-    edge_config = tts_config.get("edge", {}) or {}
+    edge_config = tts_config.get("edge") or {}
     voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
 
@@ -982,7 +982,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     if not api_key:
         raise ValueError("ELEVENLABS_API_KEY not set. Get one at https://elevenlabs.io/")
 
-    el_config = tts_config.get("elevenlabs", {})
+    el_config = tts_config.get("elevenlabs") or {}
     voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
 
@@ -1026,7 +1026,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     """
     api_key, base_url, is_managed = _resolve_openai_audio_client_config()
 
-    oai_config = tts_config.get("openai", {})
+    oai_config = tts_config.get("openai") or {}
     model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
     custom_base_url = oai_config.get("base_url")
@@ -1204,7 +1204,7 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     if not api_key:
         raise ValueError("No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY.")
 
-    xai_config = tts_config.get("xai", {})
+    xai_config = tts_config.get("xai") or {}
     voice_id = str(xai_config.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
     language = str(xai_config.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
     sample_rate = int(xai_config.get("sample_rate", DEFAULT_XAI_SAMPLE_RATE))
@@ -1443,7 +1443,7 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
     if not api_key:
         raise ValueError("MISTRAL_API_KEY not set. Get one at https://console.mistral.ai/")
 
-    mi_config = tts_config.get("mistral", {})
+    mi_config = tts_config.get("mistral") or {}
     model = mi_config.get("model", DEFAULT_MISTRAL_TTS_MODEL)
     voice_id = mi_config.get("voice_id") or DEFAULT_MISTRAL_TTS_VOICE_ID
 
@@ -1694,7 +1694,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
         )
 
-    raw_gemini_config = tts_config.get("gemini", {})
+    raw_gemini_config = tts_config.get("gemini") or {}
     gemini_config = raw_gemini_config if isinstance(raw_gemini_config, dict) else {}
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
     voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
@@ -1858,7 +1858,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
     """
     import sys
 
-    neutts_config = tts_config.get("neutts", {})
+    neutts_config = tts_config.get("neutts") or {}
     ref_audio = neutts_config.get("ref_audio", "") or _default_neutts_ref_audio()
     ref_text = neutts_config.get("ref_text", "") or _default_neutts_ref_text()
     model = neutts_config.get("model", "neuphonic/neutts-air-q4-gguf")
@@ -1996,7 +1996,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
     PiperVoice = _import_piper()
     import wave
 
-    piper_config = tts_config.get("piper", {}) if isinstance(tts_config, dict) else {}
+    piper_config = tts_config.get("piper") or {} if isinstance(tts_config, dict) else {}
     voice_name = piper_config.get("voice") or DEFAULT_PIPER_VOICE
     download_dir = Path(piper_config.get("voices_dir") or _get_piper_voices_dir()).expanduser()
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -2619,7 +2619,7 @@ def stream_tts_to_speaker(
         model_id = DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
 
         tts_config = _load_tts_config()
-        el_config = tts_config.get("elevenlabs", {})
+        el_config = tts_config.get("elevenlabs") or {}
         voice_id = el_config.get("voice_id", voice_id)
         model_id = el_config.get("streaming_model_id",
                                  el_config.get("model_id", model_id))

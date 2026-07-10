@@ -294,8 +294,11 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Slack" in prompt
-        assert "cannot search" in prompt.lower()
-        assert "pin" in prompt.lower()
+        assert "does not automatically expose a native slack api tool" in prompt.lower()
+        assert "inspect the available tools and skills first" in prompt.lower()
+        assert "bounded helper when present" in prompt.lower()
+        assert "do not infer lack of access" in prompt.lower()
+        assert "write or admin actions" in prompt.lower()
         assert "current message's slack block/attachment payload" in prompt.lower()
 
     def test_discord_prompt_with_channel_topic(self):

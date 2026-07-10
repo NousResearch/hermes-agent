@@ -497,11 +497,15 @@ def build_session_context_prompt(
         lines.append("")
         lines.append(
             "**Platform notes:** You are running inside Slack. "
-            "You do NOT have access to Slack-specific APIs — you cannot search "
-            "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. The gateway may inline the "
-            "current message's Slack block/attachment payload when available, but "
-            "you still cannot call Slack APIs yourself."
+            "Slack does not automatically expose a native Slack API tool. Do not "
+            "claim that channel history, member lookup, pinning, or admin actions "
+            "are available unless a loaded tool, plugin, or profile-provided bounded "
+            "helper supports them. For read-only requests such as channel history, "
+            "thread context, or member lookup, inspect the available tools and skills "
+            "first and use a bounded helper when present; do not infer lack of access "
+            "from this generic note. Never promise write or admin actions without an "
+            "explicit supporting tool. The gateway may also inline the current "
+            "message's Slack block/attachment payload when available."
         )
     elif context.source.platform == Platform.DISCORD:
         # Inject the Discord IDs block only when the agent actually has

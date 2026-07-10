@@ -4563,6 +4563,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "provider": getattr(self, "provider", ""),
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -5066,12 +5067,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                _sb_p = snapshot.get("provider", "")
+                _sb_ml = snapshot["model_short"] + (" (" + _sb_p + ")" if _sb_p else "")
+                text = "⚕ " + _sb_ml + " · " + duration_label
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                _sb_p2 = snapshot.get("provider", "")
+                _sb_ml2 = snapshot["model_short"] + (" (" + _sb_p2 + ")" if _sb_p2 else "")
+                parts = ["⚕ " + _sb_ml2, percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -5097,7 +5102,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            _sb_p3 = snapshot.get("provider", "")
+            _sb_ml3 = snapshot["model_short"] + (" (" + _sb_p3 + ")" if _sb_p3 else "")
+            parts = ["⚕ " + _sb_ml3, context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)

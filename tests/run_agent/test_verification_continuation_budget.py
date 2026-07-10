@@ -102,3 +102,22 @@ def test_pre_verify_preserves_composed_report_at_budget_limit(agent, monkeypatch
     _assert_pending_response_survives(agent, result)
     assert result["messages"][1]["_pre_verify_synthetic"] is True
     assert result["messages"][2]["_pre_verify_synthetic"] is True
+
+
+def test_intermediate_ack_uses_summary_instead_of_premature_text(agent, monkeypatch):
+    agent.valid_tool_names = ["web_search"]
+    agent._intent_ack_continuation = True
+    agent._looks_like_codex_intermediate_ack = MagicMock(return_value=True)
+    agent._interruptible_api_call = lambda _kwargs: _response("I'll inspect the files now")
+    agent._handle_max_iterations = MagicMock(return_value="verified summary")
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "0")
+
+    with (
+        patch("hermes_cli.plugins.has_hook", return_value=False),
+        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+    ):
+        result = agent.run_conversation("inspect /tmp/project")
+
+    assert result["final_response"] == "verified summary"
+    assert result["turn_exit_reason"] == "max_iterations_reached(1/1)"
+    agent._handle_max_iterations.assert_called_once()

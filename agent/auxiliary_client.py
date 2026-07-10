@@ -5044,10 +5044,90 @@ def resolve_provider_client(
         return None, None
 
     elif pconfig.auth_type == "vertex":
-        # Google Vertex AI — Gemini via the OpenAI-compatible endpoint with an
-        # OAuth2 bearer token (NOT a static key). We build a standard OpenAI
-        # client pointed at the runtime-computed Vertex base_url with a fresh
-        # token; no custom SDK or message translation needed.
+        # Vertex Model Garden hosts multiple publisher families through one
+        # provider name: Google's Gemini via the OpenAI-compat aggregator,
+        # Anthropic's Claude via native Messages at ``publishers/anthropic/
+        # models/*:rawPredict``. Wire protocol is chosen by model prefix.
+        # Mirrors ``hermes_cli/runtime_provider.py``'s main-agent dispatch
+        # so auxiliary tasks (vision, compression, curator, session_search)
+        # route the same way as the top-level turn.
+        try:
+            from agent.anthropic_vertex_adapter import is_anthropic_vertex_model
+        except ImportError:
+            def is_anthropic_vertex_model(_m: str) -> bool:
+                return False
+
+        # ``is_anthropic_vertex_model`` intentionally requires the fully-
+        # qualified ``anthropic/<model>`` form so mistakes in main-agent
+        # config surface as a loud Vertex 404 (see the classifier's
+        # docstring for why). Auxiliary callers see the model AFTER
+        # ``agent_init.py::normalize_model_for_provider`` has stripped the
+        # prefix — set_runtime_main then stores the bare form
+        # (``claude-opus-4-8``) as the "runtime main model", and vision /
+        # compression / title generation read that bare form via
+        # ``_read_main_model()``. Widen detection here to also match bare
+        # ``claude-*`` (case-insensitive) so aux dispatch stays correct
+        # across both forms, without touching the strict classifier the
+        # main-agent path relies on. Mirrors bedrock's dual accept of
+        # ``anthropic.claude-*`` and bare ``claude-*``.
+        _model_lc = (model or "").strip().lower()
+        _is_anthropic = (
+            is_anthropic_vertex_model(model)
+            or _model_lc.startswith("claude-")
+        )
+
+        if _is_anthropic:
+            # Claude on Vertex → AnthropicVertex SDK (Anthropic Messages
+            # wire). Same shape as the aws_sdk branch's Bedrock Anthropic
+            # path — build a real Anthropic client, wrap it in the
+            # OpenAI-compatible AnthropicAuxiliaryClient shim.
+            try:
+                from agent.anthropic_vertex_adapter import (
+                    build_anthropic_vertex_base_url,
+                    build_anthropic_vertex_client,
+                    get_anthropic_vertex_config,
+                    has_anthropic_vertex_credentials,
+                )
+            except ImportError:
+                logger.warning("resolve_provider_client: vertex-anthropic "
+                               "requested but the anthropic SDK / google-auth "
+                               "is not installed")
+                return None, None
+
+            if not has_anthropic_vertex_credentials():
+                logger.debug("resolve_provider_client: vertex-anthropic "
+                             "requested but no GCP credentials found")
+                return None, None
+
+            project_id, region = get_anthropic_vertex_config()
+            if not project_id:
+                logger.warning("resolve_provider_client: vertex-anthropic "
+                               "requested but project_id resolution failed")
+                return None, None
+
+            final_model = _normalize_resolved_model(model, provider)
+            try:
+                real_client = build_anthropic_vertex_client(project_id, region)
+            except (ImportError, RuntimeError) as exc:
+                logger.warning("resolve_provider_client: cannot create "
+                               "AnthropicVertex client: %s", exc)
+                return None, None
+
+            display_base_url = build_anthropic_vertex_base_url(project_id, region)
+            client = AnthropicAuxiliaryClient(
+                real_client, final_model, api_key="vertex-adc",
+                base_url=display_base_url,
+            )
+            logger.debug("resolve_provider_client: vertex anthropic (%s, %s/%s)",
+                         final_model, project_id, region)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
+
+        # Gemini on Vertex (default when no explicit model, or a
+        # ``google/...`` slug) — OpenAI-compat aggregator with an OAuth2
+        # bearer token (NOT a static key). We build a standard OpenAI
+        # client pointed at the runtime-computed Vertex base_url with a
+        # fresh token; no custom SDK or message translation needed.
         try:
             from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
         except ImportError:
@@ -5075,7 +5155,7 @@ def resolve_provider_client(
             logger.warning("resolve_provider_client: cannot create Vertex "
                            "client: %s", exc)
             return None, None
-        logger.debug("resolve_provider_client: vertex (%s)", final_model)
+        logger.debug("resolve_provider_client: vertex gemini (%s)", final_model)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 

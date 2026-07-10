@@ -8178,6 +8178,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         scheduled at startup is never resumed a second time.
         """
         window = _auto_continue_freshness_window()
+
+        # Resume-request DROPBOX (SGR-6EA95669): external tools (the
+        # safe-restart watcher) ask for a resume via atomic request files in
+        # <HERMES_HOME>/gateway/resume_requests/ instead of editing
+        # sessions.json (two-writers/last-writer-wins clobber race — the old
+        # gateway's final save during a drain overwrote the watcher's flag,
+        # and this method's boot enumeration then never saw the session).
+        # Consuming requests HERE, before the candidate snapshot, means a
+        # request flows through the exact same gates as a gateway-marked
+        # session: mark_resume_pending (suspended wins), _AUTO_RESUME_REASONS,
+        # allowlist auth, loop breaker, freshness window. Fail-open: a broken
+        # dropbox must never block resume of gateway-marked sessions.
+        try:
+            from gateway import resume_requests as _resume_requests
+
+            for _req_key, _req_reason in _resume_requests.sweep_resume_requests(
+                _hermes_home
+            ):
+                try:
+                    if self.session_store.mark_resume_pending(_req_key, _req_reason):
+                        logger.warning(
+                            "PHASE=dropbox_resume key=%s reason=%s (external "
+                            "resume request honored)",
+                            _req_key, _req_reason,
+                        )
+                    else:
+                        logger.warning(
+                            "PHASE=dropbox_resume_skipped key=%s reason=%s "
+                            "(unknown session or suspended)",
+                            _req_key, _req_reason,
+                        )
+                except Exception as _req_exc:
+                    logger.warning(
+                        "dropbox resume request for %s failed: %s",
+                        _req_key, _req_exc,
+                    )
+        except Exception as _sweep_exc:
+            logger.warning("resume-request dropbox sweep failed: %s", _sweep_exc)
+
         try:
             with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
                 self.session_store._ensure_loaded_locked()  # noqa: SLF001
@@ -22557,7 +22596,7 @@ def _run_planned_stop_watcher(
         stop_event.wait(poll_interval)
 
 
-def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
+def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60, runner=None):
     """Background thread for gateway-only periodic chores (NOT cron).
 
     Split out of the historical ``_start_cron_ticker`` so the cron *trigger*
@@ -22583,6 +22622,22 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     tick_count = 0
     while not stop_event.is_set():
         tick_count += 1
+
+        # Resume-request dropbox (SGR-6EA95669): honor EXTERNAL resume
+        # requests that arrive AFTER boot (the boot sweep in
+        # _schedule_resume_pending_sessions only runs once). Cheap gate: one
+        # listdir; only when a request file exists do we schedule the full
+        # resume pass — on the event loop thread, because it creates tasks.
+        if runner is not None and loop is not None:
+            try:
+                from gateway import resume_requests as _rr
+                _dropbox = _rr.dropbox_dir(_hermes_home)
+                if any(name.endswith(".json") for name in os.listdir(_dropbox)):
+                    loop.call_soon_threadsafe(runner._schedule_resume_pending_sessions)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                logger.debug("resume-request dropbox poll error: %s", e)
 
         if tick_count % CHANNEL_DIR_EVERY == 0 and adapters:
             try:
@@ -23176,7 +23231,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     housekeeping_thread = threading.Thread(
         target=_start_gateway_housekeeping,
         args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop(),
+                "runner": runner},
         daemon=True,
         name="gateway-housekeeping",
     )

@@ -99,3 +99,43 @@ def test_terminal_cwd_not_pinned_for_nonexistent_workspace(monkeypatch, tmp_path
 
     # Inherited value is preserved (not overwritten with a bogus path).
     assert captured["env"]["TERMINAL_CWD"] == "/pre/existing/anchor"
+
+
+def test_tmpdir_routed_into_workspace_only_when_valid(monkeypatch, tmp_path):
+    """TMPDIR follows the same valid-workspace guard as TERMINAL_CWD.
+
+    Valid workspace: TMPDIR is routed into it so per-task scratch (tempfile,
+    terminal snapshot files, browser profiles) lives and dies with the task
+    instead of accumulating in /tmp.
+
+    Invalid workspace: the inherited process configuration must survive —
+    Python consults TMPDIR first when choosing a temp directory
+    (``tempfile.gettempdir``), so pointing it at a missing path would break
+    every temp write in the worker. Same guard, same rationale as the
+    TERMINAL_CWD safeguard above.
+    """
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "w").mkdir(parents=True)
+    (root / "profiles" / "w" / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    missing = tmp_path / "does-not-exist"
+
+    # Valid workspace → TMPDIR pinned to it (inherited value overridden).
+    monkeypatch.setenv("TMPDIR", "/pre/existing/tmp")
+    captured = _capture_spawn_env(kb, monkeypatch, str(workspace))
+    assert captured["env"]["TMPDIR"] == str(workspace)
+
+    # Invalid workspace → inherited TMPDIR preserved, not clobbered.
+    captured = _capture_spawn_env(kb, monkeypatch, str(missing))
+    assert captured["env"]["TMPDIR"] == "/pre/existing/tmp"
+
+    # Invalid workspace with no inherited TMPDIR → stays unset.
+    monkeypatch.delenv("TMPDIR", raising=False)
+    captured = _capture_spawn_env(kb, monkeypatch, str(missing))
+    assert "TMPDIR" not in captured["env"]

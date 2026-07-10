@@ -7742,13 +7742,19 @@ def _default_spawn(
     # here (leave the inherited value rather than write a meaningless one).
     if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
         env["TERMINAL_CWD"] = workspace
-    # Route the worker's temp writes into its own workspace. Python tempfile,
-    # the terminal wrapper's snapshot files (LocalEnvironment.get_temp_dir
-    # honors TMPDIR), Chrome scratch, and the gpu_sklearn handoff dirs all
-    # follow TMPDIR — so per-task scratch lives and dies with the workspace
-    # instead of accumulating in /tmp (a 24 GB tmpfs measured 100% full from
-    # exactly this: 82k gpu_sklearn_* dirs, browser profiles, shell snapshots).
-    env["TMPDIR"] = workspace
+        # Route the worker's temp writes into its own workspace. Python
+        # tempfile, the terminal wrapper's snapshot files
+        # (LocalEnvironment.get_temp_dir honors TMPDIR), Chrome scratch, and
+        # the gpu_sklearn handoff dirs all follow TMPDIR — so per-task
+        # scratch lives and dies with the workspace instead of accumulating
+        # in /tmp (a 24 GB tmpfs measured 100% full from exactly this: 82k
+        # gpu_sklearn_* dirs, browser profiles, shell snapshots). Guarded by
+        # the same valid-workspace condition as TERMINAL_CWD above: Python
+        # consults TMPDIR first when choosing a temp directory
+        # (tempfile.gettempdir), so pointing it at a relative or missing
+        # path would break every temp write in the worker — when the
+        # workspace is invalid, leave the inherited TMPDIR untouched.
+        env["TMPDIR"] = workspace
     if task.branch_name:
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
     if task.current_run_id is not None:

@@ -280,6 +280,46 @@ def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
     assert snapshot.gateway_pids == (123,)
 
 
+@pytest.mark.parametrize(
+    ("service_installed", "service_running", "gateway_pids", "expected_manager", "expected_mismatch"),
+    [
+        (False, False, (321,), "manual process", False),
+        (True, False, (321,), "manual process", True),
+        (True, True, (321,), "launchd", False),
+        (True, False, (), "launchd", False),
+        (False, False, (), "manual process", False),
+    ],
+)
+def test_macos_runtime_snapshot_reports_actual_process_owner(
+    monkeypatch,
+    tmp_path,
+    service_installed,
+    service_running,
+    gateway_pids,
+    expected_manager,
+    expected_mismatch,
+):
+    plist_path = tmp_path / "com.nousresearch.hermes.gateway.plist"
+    if service_installed:
+        plist_path.touch()
+
+    monkeypatch.setattr(gateway, "is_termux", lambda: False)
+    monkeypatch.setattr(gateway, "is_linux", lambda: False)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: True)
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda: list(gateway_pids))
+    monkeypatch.setattr(gateway, "get_launchd_plist_path", lambda: plist_path)
+    monkeypatch.setattr(gateway, "_probe_launchd_service_running", lambda: service_running)
+
+    snapshot = gateway.get_gateway_runtime_snapshot()
+
+    assert snapshot.manager == expected_manager
+    assert snapshot.service_installed is service_installed
+    assert snapshot.service_running is service_running
+    assert snapshot.gateway_pids == gateway_pids
+    assert snapshot.has_process_service_mismatch is expected_mismatch
+
+
 def test_running_under_gateway_supervisor_markers(monkeypatch):
     _clear_supervisor_markers(monkeypatch)
     assert gateway._running_under_gateway_supervisor() is False

@@ -1338,10 +1338,20 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
         )
 
     if is_macos():
+        service_installed = get_launchd_plist_path().exists()
+        service_running = _probe_launchd_service_running()
+        # A live profile PID is launchd-owned only when launchd itself reports a
+        # running service. Keep the launchd label for an installed-but-stopped
+        # service with no process so status can still describe how it is managed.
+        manager = (
+            "launchd"
+            if service_running or (service_installed and not gateway_pids)
+            else "manual process"
+        )
         return GatewayRuntimeSnapshot(
-            manager="launchd",
-            service_installed=get_launchd_plist_path().exists(),
-            service_running=_probe_launchd_service_running(),
+            manager=manager,
+            service_installed=service_installed,
+            service_running=service_running,
             gateway_pids=gateway_pids,
             service_scope="launchd",
         )

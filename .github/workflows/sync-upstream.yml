@@ -1,0 +1,87 @@
+# Weekly rebase of lanyard/portal-integration onto Nous upstream/main.
+# Schedule fires from this file on the fork default branch (main).
+# The job mutates the live gateway checkout only under hermes-agent/ —
+# never HERMES_HOME data (config, cron, skills, MCP, projects.db).
+name: Sync upstream (Lanyard portal)
+
+on:
+  schedule:
+    # Sunday 00:00 America/New_York during EST = 05:00 UTC.
+    # During EDT the same wall-clock is 04:00 UTC (~1h DST drift accepted).
+    - cron: "0 5 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hermes-lanyard-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Rebase portal-integration onto upstream/main
+    runs-on: [self-hosted, linux, hermes-sync]
+    defaults:
+      run:
+        shell: bash
+        working-directory: /home/jrubin/.hermes/hermes-agent
+
+    steps:
+      - name: Refuse if working tree dirty
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::Working tree is dirty — refusing sync. Commit or stash local experiments, then re-run."
+            git status
+            exit 1
+          fi
+          echo "Working tree clean."
+
+      - name: Ensure remotes (origin=fork, upstream=Nous)
+        run: |
+          set -euo pipefail
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/NousResearch/hermes-agent.git
+          else
+            git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          fi
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin https://github.com/LanyardBrain/hermes-agent.git
+          else
+            git remote add origin https://github.com/LanyardBrain/hermes-agent.git
+          fi
+          git remote -v
+
+      - name: Fetch, checkout, rebase
+        run: |
+          set -euo pipefail
+          git fetch upstream main
+          git fetch origin
+          git checkout lanyard/portal-integration
+          # Track origin if needed
+          git branch -u origin/lanyard/portal-integration 2>/dev/null || true
+          echo "Before rebase: $(git rev-parse --short HEAD)"
+          git rebase upstream/main
+          echo "After rebase:  $(git rev-parse --short HEAD)"
+
+      - name: Portal smoke tests
+        run: |
+          set -euo pipefail
+          if [[ -x ./venv/bin/python ]]; then
+            PY=./venv/bin/python
+          else
+            PY=python3
+          fi
+          "$PY" -m pytest \
+            tests/gateway/test_session_env.py \
+            tests/gateway/relay/test_portal_metadata.py \
+            -q --tb=short
+
+      - name: Push force-with-lease
+        run: |
+          set -euo pipefail
+          git push --force-with-lease origin lanyard/portal-integration
+          echo "Pushed HEAD=$(git rev-parse HEAD)"
+          git log -1 --oneline
+          echo "Gateway not restarted (manual when convenient). HERMES_HOME data untouched."

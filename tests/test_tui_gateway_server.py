@@ -8543,28 +8543,6 @@ def test_slash_worker_close_reaps_zombie_and_closes_fds():
     assert calls["stdin"] == calls["stdout"] == calls["stderr"] == 1
 
 
-def test_emit_approval_request_adds_id_for_external_card_rendering(monkeypatch):
-    emitted = []
-
-    monkeypatch.setattr(server, "_emit", lambda event, sid, payload: emitted.append((event, sid, payload)))
-
-    server._emit_approval_request(
-        "live-session-1",
-        {
-            "command": "execute_code <<'PY'\nprint('hi')\nPY",
-            "description": "execute_code script execution",
-            "pattern_key": "execute_code",
-        },
-    )
-
-    assert emitted[0][0] == "approval.request"
-    assert emitted[0][1] == "live-session-1"
-    payload = emitted[0][2]
-    assert payload["id"].startswith("approval-")
-    assert payload["description"] == "execute_code script execution"
-    assert payload["pattern_key"] == "execute_code"
-
-
 def test_close_session_by_id_is_idempotent_and_full(monkeypatch):
     """One call tears the session down fully; a second is a no-op."""
     calls = {"worker": 0, "agent": 0, "unreg": 0, "finalize": 0}

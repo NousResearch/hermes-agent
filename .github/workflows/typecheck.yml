@@ -4,10 +4,15 @@ name: Typecheck
 on:
   workflow_call:
 
+concurrency:
+  group: typecheck-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   typecheck:
     name: Check TypeScript
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       matrix:
         package:
@@ -37,6 +42,7 @@ jobs:
   desktop-build:
     name: Build desktop app
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

@@ -32,4 +32,35 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
             "doctor` first to see active advisories and their IDs."
         ),
     )
+    # ------------------------------------------------------------------
+    # --upstream : READONLY diagnostic for UH1..UH5, UH9 + UH10.
+    # Pure inspection. --json / --compact are only effective with
+    # --upstream and are mutually exclusive with --fix / --ack.
+    # ------------------------------------------------------------------
+    doctor_parser.add_argument(
+        "--upstream",
+        action="store_true",
+        help=(
+            "READONLY diagnostic of upstream reference, tracking, "
+            "ahead/behind, mutual paths, and update safety (UH10). "
+            "Combines with --json / --compact. Does not modify the "
+            "working tree or invoke any mutating git command."
+        ),
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Emit a pure JSON object describing upstream health. "
+            "Only effective with --upstream."
+        ),
+    )
+    doctor_parser.add_argument(
+        "--compact",
+        action="store_true",
+        help=(
+            "Emit a single stable line summarizing upstream health. "
+            "Only effective with --upstream."
+        ),
+    )
     doctor_parser.set_defaults(func=cmd_doctor)

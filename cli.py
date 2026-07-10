@@ -4979,9 +4979,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             with self._pet_lock:
                 self._pet_frame_idx += 1
             app = getattr(self, "_app", None)
-            if app is not None:
+            loop = getattr(app, "loop", None) if app is not None else None
+            if loop is not None:
                 try:
-                    app.invalidate()
+                    # The animation runs on a daemon thread; prompt_toolkit's
+                    # invalidate() touches the asyncio loop, so schedule it on
+                    # the main thread instead of calling it directly (#62288).
+                    loop.call_soon_threadsafe(app.invalidate)
                 except Exception:
                     pass
 
@@ -4989,6 +4993,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if self._pet_anim_running:
             return
         self._pet_resolve_config()
+        # If no pet is enabled, don't spawn a daemon thread at all.  The loop
+        # would otherwise keep running and repeatedly touching config/loop
+        # state for no visible effect (#62288).
+        if not self._pet_enabled:
+            return
         self._pet_anim_running = True
         self._pet_anim_thread = threading.Thread(target=self._pet_anim_loop, daemon=True)
         self._pet_anim_thread.start()

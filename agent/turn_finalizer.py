@@ -320,7 +320,7 @@ def finalize_turn(
                 # truncated partial (the "The" case from #34452).
                 _is_partial_fragment = (
                     not _is_empty_terminal
-                    and not continuation_budget_exhausted
+                    and not iteration_limit_fallback
                     and not str(_turn_exit_reason).startswith("text_response")
                     and len(_stripped) <= 24
                     and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}

@@ -38,6 +38,7 @@ PRD_NINE_SITE_AFFINITY_RECORD = {
     "get_sessions:list_sessions_rich(page)": "_read_sessions_page -> _open_session_db_for_profile",
     "get_sessions:session_count(total)": "_read_sessions_page -> _open_session_db_for_profile",
     "search_sessions:search_sessions_by_id": "_read_session_search -> _open_session_db_for_profile",
+    "search_sessions:search_sessions_by_title": "_read_session_search -> _open_session_db_for_profile",
     "search_sessions:get_session(compression_root/current)": "_read_session_search -> _open_session_db_for_profile",
     "search_sessions:get_session(compression_root/parent)": "_read_session_search -> _open_session_db_for_profile",
     "search_sessions:search_messages(FTS)": "_read_session_search -> _open_session_db_for_profile",
@@ -48,7 +49,7 @@ PRD_NINE_SITE_AFFINITY_RECORD = {
 
 
 def test_affinity_record_covers_prd_sites_and_paired_total_count():
-    assert len(PRD_NINE_SITE_AFFINITY_RECORD) == 10
+    assert len(PRD_NINE_SITE_AFFINITY_RECORD) == 11
     assert all(
         target.endswith("_open_session_db_for_profile")
         for target in PRD_NINE_SITE_AFFINITY_RECORD.values()
@@ -324,6 +325,13 @@ def test_search_sessions_offloads_all_sessiondb_reads(monkeypatch):
                     "started_at": 1,
                 }
             ]
+
+        def search_sessions_by_title(self, query, *, limit, include_archived):
+            self._record()
+            assert query == "root"
+            assert limit == 2
+            assert include_archived is True
+            return []
 
         def search_messages(self, *, query, limit):
             self._record()

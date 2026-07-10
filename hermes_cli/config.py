@@ -1172,6 +1172,18 @@ DEFAULT_CONFIG = {
         # default is 1800s) plus runtime slack.  Set to 0 to disable the
         # gate and restore pre-fix behaviour (always inject).
         "gateway_auto_continue_freshness": 3600,
+        # Max seconds the gateway waits for boot auto-resume turns to finish
+        # before it releases the startup-restore inbound gate.  While startup
+        # restore is in progress the gateway QUEUES every inbound message
+        # instead of replying, so no channel gets an answer until this gate
+        # opens.  Without a bound, one pathologically long resumed turn (seen
+        # live: a 760s / 46-API-call turn) holds the gate shut and every
+        # channel's inbound piles up unanswered for minutes.  On timeout the
+        # gate releases and the slow resume turn keeps running in the
+        # background; duplicate-agent protection is unaffected because the
+        # resume slot is claimed synchronously before the gate runs.  Set to 0
+        # to disable the bound (pre-fix "wait forever" behaviour).
+        "gateway_startup_restore_drain_timeout": 30,
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly

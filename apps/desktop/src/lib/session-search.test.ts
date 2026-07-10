@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { sessionMatchesSearch } from './session-search'
+import { rankTitleMatchesFirst, sessionMatchesSearch, sessionTitleMatches } from './session-search'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -62,5 +62,41 @@ describe('sessionMatchesSearch', () => {
 
   it('does not match unrelated queries', () => {
     expect(sessionMatchesSearch(makeSession(), 'totally-unrelated')).toBe(false)
+  })
+})
+
+describe('sessionTitleMatches', () => {
+  it('matches only the assigned title, case-insensitively', () => {
+    const session = makeSession()
+
+    expect(sessionTitleMatches(session, 'desktop search')).toBe(true)
+    expect(sessionTitleMatches(session, 'DESKTOP')).toBe(true)
+    // preview-only text is NOT a title match
+    expect(sessionTitleMatches(session, 'Fix Desktop session')).toBe(false)
+  })
+
+  it('never matches untitled sessions or empty queries', () => {
+    expect(sessionTitleMatches(makeSession({ title: null }), 'anything')).toBe(false)
+    expect(sessionTitleMatches(makeSession(), '')).toBe(false)
+    expect(sessionTitleMatches(makeSession(), '   ')).toBe(false)
+  })
+})
+
+describe('rankTitleMatchesFirst', () => {
+  it('floats title matches above preview/content matches, order preserved within groups', () => {
+    const contentHit = makeSession({ id: 'content-1', preview: 'mentions deploy in text', title: 'Other' })
+    const titleHitA = makeSession({ id: 'title-a', title: 'Deploy pipeline' })
+    const contentHit2 = makeSession({ id: 'content-2', preview: 'deploy again', title: null })
+    const titleHitB = makeSession({ id: 'title-b', title: 'Big deploy day' })
+
+    const ranked = rankTitleMatchesFirst([contentHit, titleHitA, contentHit2, titleHitB], 'deploy')
+
+    expect(ranked.map(s => s.id)).toEqual(['title-a', 'title-b', 'content-1', 'content-2'])
+  })
+
+  it('returns input unchanged for an empty query', () => {
+    const sessions = [makeSession({ id: 'a' }), makeSession({ id: 'b' })]
+
+    expect(rankTitleMatchesFirst(sessions, '')).toEqual(sessions)
   })
 })

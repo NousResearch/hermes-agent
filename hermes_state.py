@@ -6174,6 +6174,73 @@ class SessionDB:
         )
         return [row for _, row in ranked[:limit]]
 
+    def search_sessions_by_title(
+        self,
+        query: str,
+        limit: int = 20,
+        include_archived: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Search surfaced sessions by case-insensitive title substring.
+
+        Titles are human-assigned intent (``/title`` on any platform, the
+        desktop rename action, auto-titling), so a title hit should outrank a
+        message-content hit in cross-surface search. Matches rank exact >
+        prefix > substring, tiebroken by recency (``started_at`` DESC), and
+        only listable rows are returned (sub-agent runs and compression
+        continuations excluded — same visibility contract as the sidebar).
+
+        A plain ``LIKE`` scan is deliberate: ``sessions`` is a small table
+        (tens of thousands of rows), so no FTS index is warranted.
+        """
+        needle = (query or "").strip().lower()
+        if not needle or limit <= 0:
+            return []
+
+        like_pattern = (
+            "%"
+            + needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            + "%"
+        )
+        where = [
+            "s.title IS NOT NULL",
+            "TRIM(s.title) != ''",
+            "LOWER(s.title) LIKE ? ESCAPE '\\'",
+            _LISTABLE_CHILD_SQL,
+            f"{_delegate_from_json('s.model_config')} IS NULL",
+        ]
+        params: List[Any] = [like_pattern]
+        if not include_archived:
+            where.append("s.archived = 0")
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT s.id, s.title, s.source, s.model, s.started_at, "
+                "(SELECT m.content FROM messages m "
+                " WHERE m.session_id = s.id AND m.role = 'user' "
+                " ORDER BY m.timestamp ASC LIMIT 1) AS preview "
+                f"FROM sessions s WHERE {' AND '.join(where)} "
+                "ORDER BY s.started_at DESC "
+                "LIMIT ?",
+                params + [max(limit * 4, limit)],
+            ).fetchall()
+
+        def score(row) -> int:
+            title = (row["title"] or "").strip().lower()
+            if title == needle:
+                return 0
+            if title.startswith(needle):
+                return 1
+            return 2
+
+        ranked = sorted(enumerate(rows), key=lambda item: (score(item[1]), item[0]))
+        out: List[Dict[str, Any]] = []
+        for _, row in ranked[:limit]:
+            d = dict(row)
+            preview = (d.get("preview") or "").strip()
+            d["preview"] = preview[:200] if preview else ""
+            out.append(d)
+        return out
+
     def search_sessions(
         self,
         source: str = None,

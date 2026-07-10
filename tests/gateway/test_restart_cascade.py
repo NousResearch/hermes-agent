@@ -1051,6 +1051,46 @@ def test_restart_initiated_ttl_bridged_from_config(monkeypatch):
     assert _os.environ["HERMES_RESTART_INITIATED_TTL_SECS"] == "240"
 
 
+def test_startup_restore_drain_timeout_in_bridge_map():
+    """The startup-restore drain-timeout knob is wired into the single-sourced
+    bridge map (so the startup block bridges it without a bespoke if-branch)."""
+    from gateway.run import _AGENT_CONFIG_ENV_BRIDGE as _M
+    assert _M["gateway_startup_restore_drain_timeout"] == "HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT"
+
+
+def test_startup_restore_drain_timeout_bridged_and_read(monkeypatch):
+    """config → env bridge feeds the live helper; a non-positive value opts out
+    of the bound (returns the raw config value, which the caller treats as
+    'wait forever')."""
+    from gateway.run import (
+        _bridge_agent_config_to_env as _bridge,
+        _startup_restore_drain_timeout_secs as _drain,
+        _STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT as _DEFAULT,
+    )
+    monkeypatch.delenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", raising=False)
+    # default when unset
+    assert _drain() == float(_DEFAULT)
+    # config value bridged and read back
+    _bridge({"gateway_startup_restore_drain_timeout": 45})
+    assert _os.environ["HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT"] == "45"
+    assert _drain() == 45.0
+    # opt-out sentinel survives the round-trip (0 => caller waits unbounded)
+    _bridge({"gateway_startup_restore_drain_timeout": 0})
+    assert _drain() == 0.0
+    # malformed env falls back to the module default
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "not-a-number")
+    assert _drain() == float(_DEFAULT)
+
+
+def test_startup_restore_drain_default_matches_config(monkeypatch):
+    """The DEFAULT_CONFIG agent value equals the live helper's no-env fallback,
+    so surfacing it in config changed no effective value."""
+    from hermes_cli.config import DEFAULT_CONFIG
+    from gateway.run import _startup_restore_drain_timeout_secs as _drain
+    monkeypatch.delenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", raising=False)
+    assert float(DEFAULT_CONFIG["agent"]["gateway_startup_restore_drain_timeout"]) == _drain()
+
+
 def test_restart_family_defaults_match_live_helper_fallbacks(monkeypatch):
     """I-2 (pinned to the LIVE helper, not a literal): the DEFAULT_CONFIG agent
     values equal what each helper returns with NO env set — so surfacing them in

@@ -4383,6 +4383,29 @@ def _read_session_search(profile: Optional[str], q: str, safe_limit: int):
                 },
             )
 
+        # Title matches second: titles are human-assigned intent (`/title` on
+        # any platform, desktop rename, auto-titling), so a title hit outranks
+        # a message-content hit. This is what makes a session titled on
+        # Discord findable by that title from the desktop app even after it
+        # scrolls out of the sidebar's loaded window.
+        for row in db.search_sessions_by_title(
+            q, limit=safe_limit, include_archived=True
+        ):
+            sid = row.get("id")
+            preview = (row.get("preview") or "").strip()
+            title = (row.get("title") or "").strip()
+            add_lineage_result(
+                sid,
+                {
+                    "snippet": preview or title,
+                    "title": title,
+                    "role": None,
+                    "source": row.get("source"),
+                    "model": row.get("model"),
+                    "session_started": row.get("started_at"),
+                },
+            )
+
         # Auto-add prefix wildcards so partial words match
         # e.g. "nimb" → "nimb*" matches "nimby"
         # Preserve quoted phrases and existing wildcards as-is

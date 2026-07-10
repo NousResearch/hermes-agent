@@ -729,7 +729,14 @@ def recover_with_credential_pool(
     # that seeded the pool.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
-    if current_provider and pool_provider and current_provider != pool_provider:
+    # Guard: skip credential pool recovery when the pool is scoped to a
+    # different provider than the agent.  Only guard when the pool has a
+    # known provider — an empty pool provider means "unscoped" (applies to
+    # any provider).  An empty agent provider is treated as a mismatch
+    # because swapping the pool's credentials would set base_url/api_key
+    # without fixing the empty provider field, leaving the agent in a
+    # corrupted state (provider="" model="").
+    if pool_provider and current_provider != pool_provider:
         # Custom endpoints use two naming conventions for the SAME provider:
         # the agent carries the generic ``custom`` label while the pool is
         # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string
@@ -1268,6 +1275,12 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_activated = False
         agent._fallback_index = 0
 
+        # Reset the stale-call circuit breaker (#58962): the streak measured
+        # the FALLBACK provider we're leaving; the restored primary deserves
+        # a fresh stream attempt before the breaker can trip again.
+        from agent.chat_completion_helpers import _reset_stale_streak
+        _reset_stale_streak(agent)
+
         # Undo the fallback's identity rewrite so the prompt is
         # byte-identical to the stored copy again (prefix cache match).
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
@@ -1551,6 +1564,17 @@ def anthropic_prompt_cache_policy(
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
+    # Kimi / Moonshot family via OpenRouter: same cache_control wire format
+    # as Claude on OpenRouter (envelope layout).  Without this branch
+    # moonshotai/kimi-k2.6 falls through to (False, False), serving ~1%
+    # cache hits on 64K-token prompts and re-billing the full prompt on
+    # every turn.  Observed within-turn progression with cache enabled:
+    # 1% → 67% → 84% → 97% (#25970).  Reuses the canonical family matcher
+    # (covers bare k1./k2./k25 release slugs the substring check missed).
+    from agent.anthropic_adapter import _model_name_is_kimi_family
+    is_kimi = (
+        _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
+    )
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
     # Nous Portal proxies to OpenRouter behind the scenes — identical
     # OpenAI-wire envelope cache_control semantics. Treat it as an
@@ -1564,7 +1588,7 @@ def anthropic_prompt_cache_policy(
 
     if is_native_anthropic:
         return True, True
-    if (is_openrouter or is_nous_portal) and is_claude:
+    if (is_openrouter or is_nous_portal) and (is_claude or is_kimi):
         return True, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter
@@ -1821,13 +1845,30 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # ── Swap core runtime fields ──
         agent.model = new_model
         agent.provider = new_provider
-        # Use new base_url when provided; only fall back to current when the
-        # new provider genuinely has no endpoint (e.g. native SDK providers).
-        # Without this guard the old provider's URL (e.g. Ollama's localhost
-        # address) would persist silently after switching to a cloud provider
-        # that returns an empty base_url string.
+        # Use the new base_url when provided. When it's empty AND the
+        # provider is actually changing, do NOT fall back to the current
+        # (old provider's) URL — that silently pairs the new provider label
+        # with the previous provider's endpoint (e.g. new_provider=minimax
+        # paired with the leftover api.githubcopilot.com URL), and every
+        # request after the switch 400s at the wrong host. This mismatched
+        # pair also gets snapshotted into _primary_runtime below, so it
+        # keeps re-applying on every subsequent turn until a full restart.
+        # Fail loud instead: the caller (model_switch.switch_model())
+        # already resolves base_url for every real provider, so an empty
+        # value here means resolution failed upstream, not that the
+        # provider genuinely has none. Re-selecting the SAME provider with
+        # an empty base_url (e.g. a credential-only refresh) is still fine
+        # to keep the current URL. See #47828.
+        old_norm_provider = (old_provider or "").strip().lower()
+        new_norm_provider = (new_provider or "").strip().lower()
         if base_url:
             agent.base_url = base_url
+        elif old_norm_provider != new_norm_provider:
+            raise ValueError(
+                f"switch_model: no base_url resolved for provider "
+                f"'{new_provider}' (switching from '{old_provider}'); "
+                "refusing to keep the previous provider's endpoint"
+            )
         agent.api_mode = api_mode
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
@@ -1941,6 +1982,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
             if _sm_timeout is not None:
                 agent._client_kwargs["timeout"] = _sm_timeout
+            # Reapply provider-specific headers (e.g. OpenRouter HTTP-Referer,
+            # X-Title) that were lost when _client_kwargs was rebuilt from
+            # scratch.  Without this, model switches clear attribution headers
+            # and OpenRouter logs show "Unknown" for subsequent requests.
+            agent._apply_client_headers_for_base_url(effective_base)
             agent.client = agent._create_openai_client(
                 dict(agent._client_kwargs),
                 reason="switch_model",
@@ -2013,6 +2059,14 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
+
+    # ── Reset the cross-turn stale-call circuit breaker (#58962) ──
+    # The breaker's error text tells the user to "switch models ... then
+    # retry"; without this reset the streak stays latched and the freshly
+    # selected (healthy) provider would keep short-circuiting before any
+    # stream is even attempted.
+    from agent.chat_completion_helpers import _reset_stale_streak
+    _reset_stale_streak(agent)
 
     # ── Update _primary_runtime so the change persists across turns ──
     _cc = agent.context_compressor if hasattr(agent, "context_compressor") and agent.context_compressor else None
@@ -2123,12 +2177,12 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
 
-    # Check plugin hooks for a block directive before executing anything.
+    # Check plugin hooks for a block or approval directive before executing.
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
         try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            block_message = get_pre_tool_call_block_message(
+            from hermes_cli.plugins import resolve_pre_tool_block
+            block_message = resolve_pre_tool_block(
                 function_name,
                 function_args,
                 task_id=effective_task_id or "",
@@ -2139,7 +2193,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 middleware_trace=list(_tool_middleware_trace),
             )
         except Exception:
-            pass
+            block_message = None
     if block_message is not None:
         result = json.dumps({"error": block_message}, ensure_ascii=False)
         try:
@@ -2437,6 +2491,41 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             continue
         filtered.append(msg)
     messages = filtered
+
+    # --- Drop empty / malformed tool_calls arrays on assistant messages ---
+    # An assistant message carrying ``tool_calls: []`` (an empty array) — or a
+    # non-list value under the key — is semantically identical to an assistant
+    # message with no tool calls, but strict OpenAI-compatible providers reject
+    # the empty array outright: DeepSeek v4 returns HTTP 400 "Invalid
+    # 'messages[N].tool_calls': empty array. Expected an array with minimum
+    # length 1, but got an empty array instead." (#58755, follow-up to #56980).
+    # Empty arrays reach here from session resume, host-fed histories, or the
+    # consecutive-assistant merge in ``repair_message_sequence`` (which
+    # preserves a pre-existing ``[]`` on the surviving turn). This is the final
+    # pre-API chokepoint, so normalize defensively — and, per the #56980
+    # review, do it HERE on the per-call copy rather than in
+    # ``repair_message_sequence``, which would destructively rewrite the
+    # persisted trajectory. Shallow-copy the message before dropping the key so
+    # stored history (and prompt caching) stays byte-stable.
+    normalized: List[Dict[str, Any]] = []
+    dropped_empty_tool_calls = 0
+    for msg in messages:
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and "tool_calls" in msg
+            and not (isinstance(msg["tool_calls"], list) and msg["tool_calls"])
+        ):
+            msg = {k: v for k, v in msg.items() if k != "tool_calls"}
+            dropped_empty_tool_calls += 1
+        normalized.append(msg)
+    if dropped_empty_tool_calls:
+        messages = normalized
+        _ra().logger.debug(
+            "Pre-call sanitizer: dropped empty/invalid tool_calls on %d "
+            "assistant message(s)",
+            dropped_empty_tool_calls,
+        )
 
     # --- Repair tool_calls whose function.name is empty/missing ---
     # Some providers (and partially-streamed responses) emit a tool_call with
@@ -3122,21 +3211,20 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
 
 
 
-def force_close_tcp_sockets(client: Any) -> int:
-    """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.
+def force_close_tcp_sockets(client: Any, *, release_fds: bool = False) -> int:
+    """Abort in-flight TCP I/O by shutting down pool sockets.
 
     When a provider drops a connection mid-stream — or the user issues an
     interrupt — we want to unblock httpx's reader/writer immediately rather
     than waiting for the kernel's per-connection timeout. ``shutdown(SHUT_RDWR)``
     achieves that: it sends FIN, breaks any pending ``recv``/``send`` with EOF
-    or ``EPIPE``, but does NOT release the file descriptor.
+    or ``EPIPE``.
 
-    Historically this helper also called ``socket.close()`` so the FD got
-    released immediately, but that's unsafe when (as is the case for both the
-    interrupt-abort path and stale-call kill path) the helper runs on a
-    different thread than the one driving the request:
+    By default (``release_fds=False``) this helper does **not** call
+    ``socket.close()`` / release the FD. That default is load-bearing for
+    cross-thread abort paths (#29507):
 
-      * The Python ``socket.socket`` we close here is the SAME object held by
+      * The Python ``socket.socket`` we close is the SAME object held by
         httpx's pool, so closing it via Python sets its ``_fd`` to -1 and
         future operations on that Python object fail safely.
       * BUT the SSL wrapper (``ssl.SSLSocket``'s underlying OpenSSL ``BIO``)
@@ -3148,15 +3236,20 @@ def force_close_tcp_sockets(client: Any) -> int:
         wrong file (issue #29507: 24-byte TLS application-data record
         clobbering SQLite header bytes 5..28).
 
-    The fix is to let the owning thread own the close. ``shutdown()`` from any
-    thread is FD-safe; ``close()`` is not. The httpx connection's own close
-    path — which runs from the worker thread when it unwinds — will release
-    the FD via the same ``socket.socket`` object, and because Python's socket
-    close atomically swaps ``_fd`` to -1 *before* issuing ``os.close``, there
-    is no FD-aliasing window when only one thread closes.
+    ``shutdown()`` from any thread is FD-safe; ``close()`` is not when a
+    stranger thread still has the BIO holding the raw FD.
 
-    Returns the number of sockets shut down. (Field kept as
-    ``tcp_force_closed=N`` in the log line for backwards-compatible parsing.)
+    When the **owning** thread is disposing of a client that is no longer
+    shared (``_close_openai_client`` after replace / request-complete), pass
+    ``release_fds=True``. httpx's own ``client.close()`` does not reliably
+    ``os.close()`` sockets that were already ``shutdown()``'d, so without an
+    explicit ``sock.close()`` those FDs stay in kernel CLOSED state forever
+    and accumulate under long-lived gateways (issue #61979 — ~1 CLOSED fd
+    per ~6 minutes through a local proxy path).
+
+    Returns the number of sockets shut down (and optionally closed). Field
+    kept as ``tcp_force_closed=N`` in log lines for backwards-compatible
+    parsing.
     """
     import socket as _socket
 
@@ -3168,7 +3261,13 @@ def force_close_tcp_sockets(client: Any) -> int:
             except OSError:
                 # Already shut down / not connected / FD invalid — all benign.
                 pass
-            # IMPORTANT (#29507): do NOT call sock.close() here. See docstring.
+            # IMPORTANT (#29507): never release FDs from stranger-thread
+            # abort paths. Only the owning-thread close path may opt in.
+            if release_fds:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
             shutdown_count += 1
     except Exception as exc:
         _ra().logger.debug("Force-close TCP sockets sweep error: %s", exc)

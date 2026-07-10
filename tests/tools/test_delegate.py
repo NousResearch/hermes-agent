@@ -13,6 +13,7 @@ import json
 import os
 import threading
 import time
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,7 @@ from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     DelegateEvent,
     _get_max_concurrent_children,
+    _load_config,
     _LEGACY_EVENT_MAP,
     MAX_DEPTH,
     check_delegate_requirements,
@@ -1270,6 +1272,24 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         )
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_forwards_runtime_request_overrides_and_output_cap(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "model": "real-model",
+            "base_url": "https://gateway.example/v1",
+            "api_key": "gateway-key",
+            "api_mode": "chat_completions",
+            "request_overrides": {"extra_body": {"store": False}},
+            "max_output_tokens": 3072,
+        }
+        creds = _resolve_delegation_credentials(
+            {"model": "real-model", "provider": "gateway"},
+            _make_mock_parent(depth=0),
+        )
+        self.assertEqual(creds["request_overrides"], {"extra_body": {"store": False}})
+        self.assertEqual(creds["max_output_tokens"], 3072)
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_standard_provider_not_overwritten_by_configured_name(self, mock_resolve):
         """Standard (non-custom) providers must still return runtime identity,
         not the configured name, to preserve existing behaviour for openrouter,
@@ -1473,6 +1493,8 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         parent.providers_ignored = ["openai/gpt-4o-mini"]
         parent.providers_order = ["google/gemini-2.5-pro"]
         parent.provider_sort = "price"
+        parent.provider_require_parameters = True
+        parent.provider_data_collection = "deny"
 
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
@@ -1491,6 +1513,44 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertIsNone(kwargs["providers_ignored"])
             self.assertIsNone(kwargs["providers_order"])
             self.assertIsNone(kwargs["provider_sort"])
+            self.assertIs(kwargs["provider_require_parameters"], False)
+            self.assertEqual(kwargs["provider_data_collection"], "")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_same_provider_inherits_all_routing_preferences(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "nous"
+        parent.providers_allowed = ["deepseek"]
+        parent.providers_ignored = ["deepinfra"]
+        parent.providers_order = ["anthropic"]
+        parent.provider_sort = "throughput"
+        parent.provider_require_parameters = True
+        parent.provider_data_collection = "deny"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+            delegate_task(goal="Keep routing", parent_agent=parent)
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["providers_allowed"], ["deepseek"])
+        self.assertEqual(kwargs["providers_ignored"], ["deepinfra"])
+        self.assertEqual(kwargs["providers_order"], ["anthropic"])
+        self.assertEqual(kwargs["provider_sort"], "throughput")
+        self.assertIs(kwargs["provider_require_parameters"], True)
+        self.assertEqual(kwargs["provider_data_collection"], "deny")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -2418,6 +2478,71 @@ class TestDelegateEventEnum(unittest.TestCase):
 
 class TestConcurrencyDefaults(unittest.TestCase):
     """Tests for the concurrency default and no hard ceiling."""
+
+    def test_load_config_prefers_active_persistent_config_over_cli_defaults(self):
+        stale_cli = types.ModuleType("cli")
+        stale_cli.CLI_CONFIG = {
+            "delegation": {
+                "max_iterations": 45,
+                "model": "",
+                "provider": "",
+                "base_url": "",
+                "api_key": "",
+            }
+        }
+        active_config = {
+            "delegation": {
+                "max_iterations": 50,
+                "max_concurrent_children": 50,
+                "max_spawn_depth": 10,
+            }
+        }
+
+        with patch.dict("sys.modules", {"cli": stale_cli}):
+            with patch(
+                "hermes_cli.config.load_config_readonly", return_value=active_config
+            ):
+                self.assertEqual(_load_config()["max_concurrent_children"], 50)
+                self.assertEqual(_get_max_concurrent_children(), 50)
+
+    def test_load_config_falls_back_to_cli_config_when_persistent_load_fails(self):
+        fallback_cli = types.ModuleType("cli")
+        fallback_cli.CLI_CONFIG = {
+            "delegation": {
+                "max_iterations": 45,
+                "max_concurrent_children": 8,
+            }
+        }
+
+        with patch.dict("sys.modules", {"cli": fallback_cli}):
+            with patch(
+                "hermes_cli.config.load_config_readonly",
+                side_effect=RuntimeError("boom"),
+            ):
+                self.assertEqual(_load_config()["max_concurrent_children"], 8)
+
+    def test_load_config_prefers_cli_config_when_user_config_ignored(self):
+        # `hermes chat --ignore-user-config` sets HERMES_IGNORE_USER_CONFIG=1,
+        # which only load_cli_config() honors. The delegation loader must keep
+        # CLI_CONFIG authoritative under the flag so user config.yaml
+        # delegation keys stay suppressed.
+        ignoring_cli = types.ModuleType("cli")
+        ignoring_cli.CLI_CONFIG = {
+            "delegation": {
+                "max_iterations": 45,
+                "max_concurrent_children": 4,
+            }
+        }
+        user_config = {"delegation": {"max_concurrent_children": 50}}
+
+        with patch.dict("sys.modules", {"cli": ignoring_cli}):
+            with patch.dict(os.environ, {"HERMES_IGNORE_USER_CONFIG": "1"}):
+                with patch(
+                    "hermes_cli.config.load_config_readonly",
+                    return_value=user_config,
+                ) as mock_loader:
+                    self.assertEqual(_load_config()["max_concurrent_children"], 4)
+                    mock_loader.assert_not_called()
 
     @patch("tools.delegate_tool._load_config", return_value={})
     def test_default_is_three(self, mock_cfg):

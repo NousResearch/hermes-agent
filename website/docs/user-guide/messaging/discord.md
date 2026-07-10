@@ -271,8 +271,10 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DISCORD_BOT_TOKEN` | **Yes** | — | Bot token from the [Discord Developer Portal](https://discord.com/developers/applications). |
-| `DISCORD_ALLOWED_USERS` | **Yes** | — | Comma-separated Discord user IDs allowed to interact with the bot. Without this **or** `DISCORD_ALLOWED_ROLES`, the gateway denies all users. |
+| `DISCORD_ALLOWED_USERS` | Conditional | — | Comma-separated Discord user IDs allowed to interact with the bot. Without this **or** `DISCORD_ALLOWED_ROLES`, the gateway denies all users unless `DISCORD_ALLOW_ALL_USERS=true`, `GATEWAY_ALLOW_ALL_USERS=true`, or `DISCORD_ALLOWED_CHANNELS` explicitly scopes guild access. |
 | `DISCORD_ALLOWED_ROLES` | No | — | Comma-separated Discord role IDs. Any member with one of these roles is authorized — OR semantics with `DISCORD_ALLOWED_USERS`. Auto-enables the **Server Members Intent** on connect. Useful when moderation teams churn: new mods get access as soon as the role is granted, no config push needed. |
+| `DISCORD_ALLOW_ALL_USERS` | No | `false` | Explicit opt-in to allow every Discord user who can reach the bot. This restores the pre-0.18 open behavior for Discord only; use only for trusted/private guilds or development. |
+| `GATEWAY_ALLOW_ALL_USERS` | No | `false` | Global allow-all opt-in for every gateway platform. Prefer the platform-specific `DISCORD_ALLOW_ALL_USERS` unless you intentionally want all connected platforms open. |
 | `DISCORD_HOME_CHANNEL` | No | — | Channel ID where the bot sends proactive messages (cron output, reminders, notifications). |
 | `DISCORD_HOME_CHANNEL_NAME` | No | `"Home"` | Display name for the home channel in logs and status output. |
 | `DISCORD_COMMAND_SYNC_POLICY` | No | `"safe"` | Controls native slash-command startup sync. `"safe"` diffs existing global commands and only updates what changed, recreating commands when Discord metadata changes cannot be applied via patch. `"bulk"` preserves the old `tree.sync()` behavior. `"off"` skips startup sync entirely. |
@@ -775,9 +777,34 @@ Refreshing the directory (`/channels refresh` on platforms that expose it, or a 
 
 ### Bot is online but not responding to messages
 
-**Cause**: Message Content Intent is disabled.
+**Cause**: Either Message Content Intent is disabled, or Discord auth is failing closed because no access policy is configured.
 
-**Fix**: Go to [Developer Portal](https://discord.com/developers/applications) → your app → Bot → Privileged Gateway Intents → enable **Message Content Intent** → Save Changes. Restart the gateway.
+**Fix**:
+
+1. Go to [Developer Portal](https://discord.com/developers/applications) → your app → Bot → Privileged Gateway Intents → enable **Message Content Intent** → Save Changes.
+2. Verify that at least one Discord access policy is configured:
+
+   ```bash
+   # recommended: allow specific users
+   DISCORD_ALLOWED_USERS=284102345871466496
+
+   # or allow a trusted guild/dev bot to behave like pre-0.18 Discord
+   DISCORD_ALLOW_ALL_USERS=true
+   ```
+
+3. Restart the gateway:
+
+   ```bash
+   hermes gateway restart
+   ```
+
+If the gateway log says Discord is connected and REST API checks work, but every inbound message is silent, look for this warning in `~/.hermes/logs/gateway.log`:
+
+```text
+No Discord access policy configured; inbound Discord messages will be denied by default.
+```
+
+Hermes 0.18 intentionally fails closed on externally reachable adapters. A Discord bot with no `DISCORD_ALLOWED_USERS`, no `DISCORD_ALLOWED_ROLES`, no `DISCORD_ALLOWED_CHANNELS`, and no explicit allow-all flag will connect successfully but deny inbound users before normal message handling.
 
 ### "Disallowed Intents" error on startup
 

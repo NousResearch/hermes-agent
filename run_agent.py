@@ -288,26 +288,20 @@ def _routermint_headers() -> dict:
     }
 
 
-def _pool_may_recover_from_rate_limit(
-    pool, *, provider: str | None = None, base_url: str | None = None
-) -> bool:
+def _pool_may_recover_from_rate_limit(pool) -> bool:
     """Decide whether to wait for credential-pool rotation instead of falling back.
 
     The existing pool-rotation path requires the pool to (1) exist and (2) have
     at least one entry not currently in exhaustion cooldown.  But rotation is
     only meaningful when the pool has more than one entry.
 
-    With a single-credential pool (common for Gemini OAuth, Vertex service
-    accounts, and any "one personal key" configuration), the primary entry
-    just 429'd and there is nothing to rotate to.  Waiting for the pool
-    cooldown to expire means retrying against the same exhausted quota — the
-    daily-quota 429 will recur immediately, and the retry budget is burned.
+    With a single-credential pool (common for Vertex service accounts and any
+    "one personal key" configuration), the primary entry just 429'd and there
+    is nothing to rotate to.  Waiting for the pool cooldown to expire means
+    retrying against the same exhausted quota — the daily-quota 429 will recur
+    immediately, and the retry budget is burned.
 
-    Additionally, Google CloudCode / Gemini CLI rate limits are ACCOUNT-level
-    throttles — even a multi-entry pool shares the same quota window, so
-    rotation won't recover.  Skip straight to the fallback for those (#13636).
-
-    In those cases we must fall back to the configured ``fallback_model``
+    In that case we must fall back to the configured ``fallback_model``
     instead.  Returns True only when rotation has somewhere to go.
 
     See issues #11314 and #13636.
@@ -315,10 +309,6 @@ def _pool_may_recover_from_rate_limit(
     if pool is None:
         return False
     if not pool.has_available():
-        return False
-    # CloudCode / Gemini CLI quotas are account-wide — all pool entries share
-    # the same throttle window, so rotation can't recover.  Prefer fallback.
-    if str(base_url or "").startswith("cloudcode-pa://"):
         return False
     return len(pool.entries()) > 1
 
@@ -993,6 +983,29 @@ class AIAgent:
         except Exception:
             pass
 
+    def _emit_pending_fallback_notice(self) -> None:
+        """Surface the one-shot fallback-switch notice on successful recovery.
+
+        A provider/model switch is a durable state change operators must see,
+        unlike transient retry chatter that ``_clear_status_buffer`` drops.
+        ``try_activate_fallback`` records the switch in
+        ``self._pending_fallback_notice``; this emits it exactly once via
+        ``_emit_status`` and then clears it, so a successful fallback still
+        produces one visible notice.  On terminal failure the buffered switch
+        line is flushed instead (and this notice discarded) — see
+        ``_flush_status_buffer`` — so the user always sees the switch once.
+        """
+        try:
+            notice = getattr(self, "_pending_fallback_notice", None)
+            if notice:
+                # Clear before emitting so a (swallowed) callback error can't
+                # leave the notice set for a stale re-emit on a later turn.
+                self._pending_fallback_notice = None
+                self._emit_status(notice)
+        except Exception:
+            # Never break the conversation loop on a notice hiccup.
+            pass
+
     def _flush_status_buffer(self) -> None:
         """Emit buffered retry messages — call on terminal failure.
 
@@ -1000,6 +1013,10 @@ class AIAgent:
         was tried before the turn gave up.
         """
         try:
+            # The buffered trace already carries the fallback switch line, so
+            # drop any one-shot fallback notice to avoid a stale duplicate
+            # leaking into a later successful turn.
+            self._pending_fallback_notice = None
             buf = getattr(self, "_retry_status_buffer", None)
             if not buf:
                 return
@@ -2155,7 +2172,10 @@ class AIAgent:
         # widens exposure vs the old empty-body "HTTP 400" string).
         response = getattr(error, "response", None)
         if response is not None:
-            snippet = (getattr(response, "text", None) or "").strip()
+            try:
+                snippet = (getattr(response, "text", None) or "").strip()
+            except Exception:
+                snippet = ""
             if snippet:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
@@ -3898,30 +3918,70 @@ class AIAgent:
 
     @staticmethod
     def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
+        """Build an httpx.Client with proactive idle-connection reaping.
+
+        Previously this method injected a custom ``httpx.HTTPTransport``
+        with ``socket_options`` (``SO_KEEPALIVE``, ``TCP_KEEPIDLE``, …) to
+        prevent CLOSE-WAIT accumulation on long-lived connections (#10324).
+
+        That approach broke streaming for providers behind reverse proxies
+        (OpenResty, Cloudflare, etc.) because the custom socket options
+        conflict with the proxy's chunked-transfer handling (#54049,
+        #12952).  It also stripped ``TCP_NODELAY``, stalling TLS handshakes
+        and SSE encoding.
+
+        The fix moves connection lifecycle management from the socket layer
+        to the HTTP pool layer: ``keepalive_expiry=20.0`` tells httpx to
+        close idle pooled connections *before* a reverse proxy's typical
+        30–60 s timeout drops them, preventing CLOSE-WAIT accumulation
+        without modifying socket options.  The default httpx transport
+        preserves OS TCP defaults (including ``TCP_NODELAY``).
+
+        ``verify`` carries per-provider ``ssl_ca_cert`` / ``ssl_verify`` and
+        ``HERMES_CA_BUNDLE`` settings.  It is passed on the client AND on
+        the plain no-proxy mounts (a mounted transport owns the SSL context
+        for its scheme).
+        """
         try:
             import httpx as _httpx
-            import socket as _socket
 
-            if "api.githubcopilot.com" in str(base_url or "").lower():
-                return _httpx.Client(verify=verify)
-
-            _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
-            if hasattr(_socket, "TCP_KEEPIDLE"):
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
-            elif hasattr(_socket, "TCP_KEEPALIVE"):
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
-            # When a custom transport is provided, httpx won't auto-read proxy
-            # from env vars (allow_env_proxies = trust_env and transport is None).
-            # Explicitly read proxy settings while still honoring NO_PROXY for
-            # loopback / local endpoints such as a locally hosted sub2api.
+            # Explicitly read proxy settings so requests route through
+            # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
             _proxy = _get_proxy_for_base_url(base_url)
-            # verify lives on the transport: httpx ignores the client-level
-            # ``verify`` when a custom ``transport=`` is supplied.
+
+            # Proactive pool reaping: close idle connections at 20 s,
+            # before reverse proxies (30–60 s typical) send FIN and
+            # cause CLOSE-WAIT accumulation.
+            _limits = _httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=100,
+                keepalive_expiry=20.0,
+            )
+
+            # Timeouts: generous read=None for SSE streaming endpoints.
+            _timeout = _httpx.Timeout(
+                connect=15.0,
+                read=None,
+                write=15.0,
+                pool=10.0,
+            )
+
+            # When _proxy is None (NO_PROXY bypass or no proxy configured),
+            # mount plain transports to prevent httpx from reading env proxy
+            # vars and creating an HTTPProxy mount that would bypass our
+            # NO_PROXY resolution.
+            _mounts = {}
+            if _proxy is None:
+                _mounts = {
+                    "http://": _httpx.HTTPTransport(verify=verify),
+                    "https://": _httpx.HTTPTransport(verify=verify),
+                }
             return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts, verify=verify),
+                limits=_limits,
+                timeout=_timeout,
                 proxy=_proxy,
+                mounts=_mounts or None,
+                verify=verify,
             )
         except Exception:
             return None
@@ -3932,17 +3992,18 @@ class AIAgent:
         return create_openai_client(self, client_kwargs, reason=reason, shared=shared)
 
     @staticmethod
-    def _force_close_tcp_sockets(client: Any) -> int:
+    def _force_close_tcp_sockets(client: Any, *, release_fds: bool = False) -> int:
         """Forwarder — see ``agent.agent_runtime_helpers.force_close_tcp_sockets``."""
         from agent.agent_runtime_helpers import force_close_tcp_sockets
-        return force_close_tcp_sockets(client)
+        return force_close_tcp_sockets(client, release_fds=release_fds)
 
     def _close_openai_client(self, client: Any, *, reason: str, shared: bool) -> None:
         if client is None:
             return
-        # Force-close TCP sockets first to prevent CLOSE-WAIT accumulation,
-        # then do the graceful SDK-level close.
-        force_closed = self._force_close_tcp_sockets(client)
+        # Owning-thread dispose: shutdown + release FDs so already-shutdown
+        # sockets don't linger in kernel CLOSED state (#61979). Cross-thread
+        # abort uses _abort_request_openai_client (release_fds=False) instead.
+        force_closed = self._force_close_tcp_sockets(client, release_fds=True)
         try:
             client.close()
             logger.info(
@@ -4489,13 +4550,6 @@ class AIAgent:
         """Whether a rate-limit retry should wait for same-provider credentials."""
         pool = self._credential_pool
         if pool is None:
-            return False
-        if (
-            str(getattr(self, "base_url", "")).startswith("cloudcode-pa://")
-        ):
-            # CloudCode/Gemini quota windows are usually account-level throttles.
-            # Prefer the configured fallback immediately instead of waiting out
-            # Retry-After while a pooled OAuth credential may still appear usable.
             return False
         return pool.has_available()
 
@@ -5316,7 +5370,7 @@ class AIAgent:
             "google/gemini-2",
             "google/gemma-4",
             "qwen/qwen3",
-            "tencent/hy3-preview",
+            "tencent/hy3",
             "xiaomi/",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)

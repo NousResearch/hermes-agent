@@ -58,6 +58,10 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from gateway.platforms.webhook_filters import (
+    DEFAULT_SCRIPT_TIMEOUT_SECONDS,
+    WebhookRouteProcessor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +82,6 @@ DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 _RATE_WINDOW_SECONDS = 60.0
-
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
 _LOOPBACK_HOSTS = frozenset({
@@ -155,6 +158,15 @@ class WebhookAdapter(BasePlatformAdapter):
         self._max_body_bytes: int = int(
             config.extra.get("max_body_bytes", 1_048_576)
         )  # 1MB
+        self._script_timeout_seconds: int = int(
+            config.extra.get(
+                "script_timeout_seconds",
+                DEFAULT_SCRIPT_TIMEOUT_SECONDS,
+            )
+        )
+        self._route_processor = WebhookRouteProcessor(
+            script_timeout_seconds=self._script_timeout_seconds
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -571,6 +583,45 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
+        if not self._route_processor.route_filters_match(
+            route_config, payload, event_type, request.headers
+        ):
+            logger.info(
+                "[webhook] filtered event=%s route=%s",
+                event_type,
+                route_name,
+            )
+            return web.json_response(
+                {
+                    "status": "ignored",
+                    "reason": "filter",
+                    "route": route_name,
+                }
+            )
+
+        if route_config.get("script"):
+            # run_route_script shells out (subprocess.run, up to its timeout);
+            # run it in a worker thread so it can't block the gateway event loop.
+            keep, transformed_payload = await asyncio.to_thread(
+                self._route_processor.run_route_script,
+                route_config.get("script"),
+                payload,
+            )
+            if not keep:
+                logger.info(
+                    "[webhook] script ignored event=%s route=%s",
+                    event_type,
+                    route_name,
+                )
+                return web.json_response(
+                    {
+                        "status": "ignored",
+                        "reason": "script",
+                        "route": route_name,
+                    }
+                )
+            payload = transformed_payload or payload
+
         # Format prompt from template
         prompt_template = route_config.get("prompt", "")
         prompt = self._render_prompt(
@@ -888,9 +939,28 @@ class WebhookAdapter(BasePlatformAdapter):
         # Checked independently of (and before) legacy V1 below — a sender
         # that only ever sends V2 headers must still validate here; nesting
         # this inside `if generic_sig:` would silently skip V2-only senders.
+        #
+        # The presence of X-Webhook-Signature-V2 alone selects V2 mode and
+        # commits to it — it must NOT fall through to the V1 branch just
+        # because the timestamp is missing/malformed/expired. A sender
+        # migrating to V2 typically sends both V1 and V2 headers together
+        # for compatibility; if incomplete V2 fell through to V1, an
+        # attacker who captured one such mixed request could strip the
+        # X-Webhook-Timestamp header from a replay and have it validate
+        # against the still-present, still-unprotected V1 signature instead
+        # — silently downgrading a V2-protected request back to the replay
+        # hole V2 exists to close.
         v2_sig = request.headers.get("X-Webhook-Signature-V2", "")
-        v2_timestamp = request.headers.get("X-Webhook-Timestamp", "")
-        if v2_sig and v2_timestamp:
+        if v2_sig:
+            v2_timestamp = request.headers.get("X-Webhook-Timestamp", "")
+            if not v2_timestamp:
+                logger.warning(
+                    "[webhook] Route '%s' sent X-Webhook-Signature-V2 with "
+                    "no X-Webhook-Timestamp — rejecting rather than "
+                    "falling back to legacy V1",
+                    request.match_info.get("route_name", ""),
+                )
+                return False
             try:
                 ts = int(v2_timestamp)
             except (TypeError, ValueError):
@@ -911,6 +981,8 @@ class WebhookAdapter(BasePlatformAdapter):
         # (deprecated — no replay protection, since the signature only
         # covers the body: a captured (body, signature) pair replays
         # indefinitely with no timestamp binding it to a specific delivery.)
+        # Only reachable when X-Webhook-Signature-V2 was not sent at all —
+        # see the guard above.
         generic_sig = request.headers.get("X-Webhook-Signature", "")
         if generic_sig:
             expected = hmac.new(

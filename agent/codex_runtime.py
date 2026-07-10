@@ -228,6 +228,76 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     }
 
 
+def _record_codex_app_server_compaction(
+    agent,
+    turn,
+    *,
+    approx_tokens: int | None = None,
+    force: bool = False,
+) -> bool:
+    """Record a Codex-native context compaction boundary in Hermes state.
+
+    The app-server owns the compacted thread context, so Hermes should not
+    rewrite local transcript rows here; state.db records the boundary via the
+    session event/usage counters while preserving the visible transcript.
+    """
+    if not force and not getattr(turn, "compacted", False):
+        return False
+
+    thread_id = getattr(turn, "thread_id", None) or ""
+    turn_id = getattr(turn, "turn_id", None) or ""
+    logger.info(
+        "codex app-server compaction observed: session=%s thread=%s turn=%s force=%s",
+        getattr(agent, "session_id", None) or "none",
+        thread_id,
+        turn_id,
+        force,
+    )
+    if not force:
+        try:
+            from agent.conversation_compression import COMPACTION_STATUS
+
+            agent._emit_status(COMPACTION_STATUS)
+        except Exception:
+            pass
+
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is not None:
+        compressor.compression_count = getattr(
+            compressor, "compression_count", 0
+        ) + 1
+        compressor.last_compression_rough_tokens = approx_tokens or 0
+        if not getattr(turn, "token_usage_last", None):
+            compressor.last_prompt_tokens = -1
+            compressor.last_completion_tokens = 0
+            compressor.awaiting_real_usage_after_compression = True
+
+    agent._last_compaction_in_place = False
+    try:
+        if getattr(agent, "event_callback", None):
+            agent.event_callback(
+                "session:compress",
+                {
+                    "platform": getattr(agent, "platform", None) or "",
+                    "session_id": getattr(agent, "session_id", None) or "",
+                    "old_session_id": "",
+                    "in_place": False,
+                    "compression_count": getattr(
+                        compressor, "compression_count", 0
+                    )
+                    if compressor is not None
+                    else 0,
+                    "runtime": "codex_app_server",
+                    "thread_id": thread_id,
+                    "turn_id": turn_id,
+                },
+            )
+    except Exception:
+        logger.debug("event_callback error on codex session:compress", exc_info=True)
+
+    return True
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -393,6 +463,7 @@ def run_codex_app_server_turn(
     agent._iters_since_skill = (
         getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     )
+    _record_codex_app_server_compaction(agent, turn)
     usage_result = _record_codex_app_server_usage(agent, turn)
     api_calls = 1
 
@@ -500,6 +571,14 @@ def _event_field(event: Any, name: str, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+def _item_field(item: Any, name: str, default: Any = None) -> Any:
+    """Field access for nested Response items (attr-style SDK object or dict)."""
+    value = getattr(item, name, None)
+    if value is None and isinstance(item, dict):
+        value = item.get(name, default)
+    return value if value is not None else default
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
 
@@ -562,6 +641,7 @@ def _consume_codex_event_stream(
     collected_text_deltas: List[str] = []
     has_tool_calls = False
     first_delta_fired = False
+    active_message_phase: str | None = None
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
@@ -595,9 +675,35 @@ def _consume_codex_event_stream(
         if event_type == "error":
             _raise_stream_error(event)
 
+        # Track the phase of the active streamed message item.  Codex/Harmony
+        # ``commentary``/``analysis`` text is mid-turn preamble/progress
+        # narration, never the final answer.  We still collect completed output
+        # items for replay, but route those deltas to the reasoning callback so
+        # they display like thinking text instead of assistant content.
+        if event_type == "response.output_item.added":
+            item = _event_field(event, "item")
+            item_type = _item_field(item, "type", "")
+            if item_type == "message":
+                phase = _item_field(item, "phase", None)
+                active_message_phase = phase.strip().lower() if isinstance(phase, str) else None
+            else:
+                active_message_phase = None
+            if "function_call" in str(item_type):
+                has_tool_calls = True
+            continue
+
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
             delta_text = _event_field(event, "delta", "")
-            if delta_text:
+            is_commentary_delta = active_message_phase in {"commentary", "analysis"}
+            if delta_text and is_commentary_delta:
+                # Commentary streams through the reasoning channel, not the
+                # visible answer stream (and stays out of output_text).
+                if on_reasoning_delta is not None:
+                    try:
+                        on_reasoning_delta(delta_text)
+                    except Exception:
+                        logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+            elif delta_text:
                 collected_text_deltas.append(delta_text)
                 if not has_tool_calls:
                     if not first_delta_fired:

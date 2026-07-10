@@ -7488,10 +7488,16 @@ def test_make_agent_reads_nested_max_turns(monkeypatch):
 
 def test_make_agent_waits_for_shared_mcp_discovery(monkeypatch):
     _setup_make_agent_mocks(monkeypatch, {})
+    started = []
     waited = []
 
     from hermes_cli import mcp_startup
 
+    monkeypatch.setattr(
+        mcp_startup,
+        "start_background_mcp_discovery",
+        lambda **kwargs: started.append(kwargs),
+    )
     monkeypatch.setattr(
         mcp_startup,
         "wait_for_mcp_discovery",
@@ -7501,6 +7507,9 @@ def test_make_agent_waits_for_shared_mcp_discovery(monkeypatch):
     with patch("run_agent.AIAgent"):
         server._make_agent("sid1", "key1")
 
+    assert started == [
+        {"logger": server.logger, "thread_name": "tui-agent-mcp-discovery"}
+    ]
     assert waited == [0.75]
 
 

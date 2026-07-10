@@ -12122,6 +12122,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
+                # Goal continuation: streaming already delivered the body, so
+                # the caller's goal hook (which runs off _agent_result) never
+                # fires (#62202).  Run it here while `response` is still in
+                # scope — the judge sees the actual text that was streamed.
+                try:
+                    await self._post_turn_goal_continuation(
+                        session_entry=session_entry,
+                        source=source,
+                        final_response=response or "",
+                    )
+                except Exception as _goal_exc:
+                    logger.debug("goal continuation hook failed (streaming): %s", _goal_exc)
                 return None
 
             return response

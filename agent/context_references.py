@@ -126,7 +126,15 @@ def preprocess_context_references(
     if loop and loop.is_running():
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
+            future = pool.submit(asyncio.run, coro)
+            try:
+                return future.result(timeout=300)
+            except concurrent.futures.TimeoutError:
+                return ContextReferenceResult(
+                    message=message,
+                    original_message=message,
+                    warnings=["Context reference resolution timed out after 300s"],
+                )
     return asyncio.run(coro)
 
 

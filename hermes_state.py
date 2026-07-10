@@ -2628,7 +2628,7 @@ class SessionDB:
             if not include_inactive:
                 message_where += " AND active = 1"
             message_rows = conn.execute(
-                f"SELECT * FROM messages WHERE {message_where} ORDER BY timestamp, id",
+                f"SELECT * FROM messages WHERE {message_where} ORDER BY id",
                 (session_id,),
             ).fetchall()
             source_messages = [dict(row) for row in message_rows]
@@ -2661,6 +2661,13 @@ class SessionDB:
             ]
             session_values = dict(source_session)
             session_values["id"] = target_id
+            # This command copies exactly one session/conversation.  Preserve
+            # the transcript, but intentionally orphan lineage metadata: a
+            # copied child cannot reference a missing source-profile parent,
+            # and an unrelated target-profile row with the same id must not
+            # become a false ancestor.
+            if "parent_session_id" in session_values:
+                session_values["parent_session_id"] = None
             placeholders = ", ".join("?" for _ in session_columns)
             conn.execute(
                 f"INSERT INTO sessions ({', '.join(session_columns)}) VALUES ({placeholders})",

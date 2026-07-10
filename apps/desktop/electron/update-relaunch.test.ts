@@ -162,6 +162,7 @@ test('collectRelaunchEnv preserves HERMES_HOME + HERMES_DESKTOP_* + sandbox opt-
     HERMES_DESKTOP_REMOTE_URL: 'http://box:9119',
     HERMES_DESKTOP_REMOTE_TOKEN: 'secret',
     HERMES_DESKTOP_HERMES_ROOT: '/home/u/dev/hermes',
+    HERMES_DESKTOP_APP_NAME: 'HermesSandbox',
     ELECTRON_DISABLE_SANDBOX: '1', // sandbox opt-out — preserved
     PATH: '/usr/bin', // not preserved
     HOME: '/home/u', // not preserved
@@ -173,6 +174,7 @@ test('collectRelaunchEnv preserves HERMES_HOME + HERMES_DESKTOP_* + sandbox opt-
     HERMES_DESKTOP_REMOTE_URL: 'http://box:9119',
     HERMES_DESKTOP_REMOTE_TOKEN: 'secret',
     HERMES_DESKTOP_HERMES_ROOT: '/home/u/dev/hermes',
+    HERMES_DESKTOP_APP_NAME: 'HermesSandbox',
     ELECTRON_DISABLE_SANDBOX: '1'
   })
   assert.deepEqual(collectRelaunchEnv(null), {})

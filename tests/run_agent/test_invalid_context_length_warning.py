@@ -33,10 +33,13 @@ def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-
 
 def test_valid_integer_context_length_no_warning():
     """Plain integer context_length should work silently."""
+    # model must match config default — the override is scoped to it (see
+    # _scope_config_context_length_to_default_model in agent/agent_init.py).
     with patch("run_agent.logger") as mock_logger:
         agent = _build_agent({"default": "gpt5.4", "provider": "custom",
                               "base_url": "http://localhost:4000/v1",
-                              "context_length": 256000})
+                              "context_length": 256000},
+                             model="gpt5.4")
     assert agent._config_context_length == 256000
     # No warning about invalid context_length
     for c in mock_logger.warning.call_args_list:
@@ -59,10 +62,13 @@ def test_string_k_suffix_context_length_warns():
 
 def test_string_numeric_context_length_works():
     """context_length: '256000' (string) should parse fine via int()."""
+    # model must match config default — the override is scoped to it (see
+    # _scope_config_context_length_to_default_model in agent/agent_init.py).
     with patch("run_agent.logger") as mock_logger:
         agent = _build_agent({"default": "gpt5.4", "provider": "custom",
                               "base_url": "http://localhost:4000/v1",
-                              "context_length": "256000"})
+                              "context_length": "256000"},
+                             model="gpt5.4")
     assert agent._config_context_length == 256000
     for c in mock_logger.warning.call_args_list:
         assert "Invalid" not in str(c)

@@ -257,6 +257,31 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _scope_config_context_length_to_default_model(
+    model_cfg: Any, agent_model: Any, config_context_length: Optional[int]
+) -> Optional[int]:
+    """Drop model.context_length unless it was written for this session's model.
+
+    The override in config.yaml is tied to model.default — the model the
+    config's author configured — not necessarily the model this particular
+    session ends up on (e.g. a per-session model_override to a different
+    provider/model). Read the config default the same way
+    hermes_cli.web_server.get_model_info does (`default`, falling back to
+    `name`); if it names a model and this session's model differs, drop the
+    override so auto-detection resolves the real window for the actual
+    model instead. Mirrors the /model switch guard in
+    agent_runtime_helpers.py, which clears _config_context_length on swap
+    for the same reason.
+    """
+    if config_context_length is None or not isinstance(model_cfg, dict):
+        return config_context_length
+    _default_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "").strip()
+    _agent_model = str(agent_model or "").strip()
+    if _default_model and _agent_model and _agent_model != _default_model:
+        return None
+    return config_context_length
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1651,6 +1676,12 @@ def init_agent(
                 file=sys.stderr,
             )
             _config_context_length = None
+
+    # Scope the override to the config's default model — see
+    # _scope_config_context_length_to_default_model for why.
+    _config_context_length = _scope_config_context_length_to_default_model(
+        _model_cfg, agent.model, _config_context_length
+    )
 
     # Resolve custom_providers list once for reuse below (startup
     # context-length override and plugin context-engine init).

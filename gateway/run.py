@@ -9201,12 +9201,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if owner is not None:
                     logger.error(
                         "Profile '%s' and '%s' both configure %s with the same "
-                        "credential — refusing to start the duplicate (a single "
-                        "bot token cannot be polled twice). Give each profile its "
-                        "own %s credential.",
+                        "credential — refusing to start the duplicate (one "
+                        "credential cannot be consumed twice). Give each profile "
+                        "its own %s credential.",
                         owner, profile_name, platform.value, platform.value,
                     )
-                    await self._safe_adapter_disconnect(adapter, platform)
+                    # This adapter has not connected and therefore owns no
+                    # resources to clean up. Calling disconnect here can mutate
+                    # the shared platform state and, for a same-credential Photon
+                    # adapter, shut down the primary profile's live sidecar.
                     continue
                 claimed[(platform, fp)] = profile_name
 
@@ -9445,13 +9448,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _adapter_credential_fingerprint(adapter: Any) -> Optional[str]:
         """Return a stable, log-safe fingerprint of an adapter's credential.
 
-        Used only to detect two profiles claiming the same bot token. Returns a
-        salted hash (never the token itself) of the adapter's primary
-        credential, or None when no credential is discoverable (in which case
-        we don't attempt conflict detection for it).
+        Used only to detect two profiles claiming the same platform credential.
+        Returns a salted hash (never the credential itself) of the adapter's
+        primary credential, or None when no credential is discoverable (in
+        which case we don't attempt conflict detection for it).
         """
         token = None
-        for attr in ("token", "bot_token", "_token", "api_token", "_bot_token"):
+        for attr in (
+            "token",
+            "bot_token",
+            "_token",
+            "api_token",
+            "_bot_token",
+            # Photon/Spectrum authenticates with project credentials instead
+            # of a bot token. Including its secret keeps multiplexed profiles
+            # from spawning competing sidecars for the same account and port.
+            "_project_secret",
+        ):
             val = getattr(adapter, attr, None)
             if isinstance(val, str) and val.strip():
                 token = val.strip()

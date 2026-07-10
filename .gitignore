@@ -69,7 +69,7 @@ environments/benchmarks/evals/
 # (Live path ~/.hermes/memory/ is outside this repo; this guards in-repo dev
 # runs where HERMES_HOME overlaps the checkout.)
 .hermes/memory/
-memory/
+/memory/
 **/memory/index.db
 *.memory-index.db
 

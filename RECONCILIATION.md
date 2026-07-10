@@ -52,18 +52,13 @@ scripts/run_tests.sh \
   tests/gateway/test_session_env.py -q
 ```
 
-Result: 131 passed. One separate artifact-delivery test timed out.
+Result: **132 passed, 0 failed**.
 
-### Baseline comparison for the unrelated timeout
+### Repaired notifier-artifact fixture
 
-The timeout was run unchanged against detached base `0da22bf07d`:
+The original missing-artifact test timed out both at detached base `0da22bf07d` and audit HEAD. An isolated diagnostic established why: the production completion tool correctly rejects nonexistent artifact paths before it creates a completion event, while the test purported to exercise the *notifier* handling a completion event containing a stale path.
 
-```
-scripts/run_tests.sh tests/hermes_cli/test_kanban_notify.py \
-  -k notifier_artifact_delivery_skips_missing_files -q
-```
-
-It failed identically at base and audit HEAD, timing out in the watcher collection loop before adapter send. It is therefore not attributed to the `chat_type` change and was deliberately not folded into this routing patch.
+The fixture now writes that legacy/external completion event directly, with one real and one missing artifact. This isolates the notifier contract and is covered by the 132-pass canonical run above. The fixture repair is committed separately as `47e11de55d`.
 
 ## Other reported paths
 

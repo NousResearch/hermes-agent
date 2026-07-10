@@ -510,21 +510,21 @@ def _ensure_sdk_installed() -> bool:
         pass
 
     print("  honcho-ai is not installed.")
-    answer = _prompt("Install it now? (honcho-ai>=2.0.1)", default="y")
+    answer = _prompt("Install it now? (honcho-ai==2.2.0)", default="y")
     if answer.lower() not in {"y", "yes"}:
-        print("  Skipping install. Run: pip install 'honcho-ai>=2.0.1'\n")
+        print("  Skipping install. Run: pip install 'honcho-ai==2.2.0'\n")
         return False
 
     print("  Installing honcho-ai...", flush=True)
     from hermes_cli.tools_config import _pip_install
 
-    result = _pip_install(["honcho-ai>=2.0.1"])
+    result = _pip_install(["honcho-ai==2.2.0"])
     if result.returncode == 0:
         print("  Installed.\n")
         return True
     else:
         print(f"  Install failed:\n{(result.stderr or '').strip()}")
-        print("  Run manually: uv pip install 'honcho-ai>=2.0.1'\n")
+        print("  Run manually: uv pip install 'honcho-ai==2.2.0'\n")
         return False
 
 

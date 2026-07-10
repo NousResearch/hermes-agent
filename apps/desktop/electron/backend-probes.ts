@@ -34,7 +34,19 @@
 
 import { execFileSync } from 'node:child_process'
 
-const PROBE_TIMEOUT_MS = 5000
+/**
+ * Timeout for backend import probes, in milliseconds.
+ *
+ * 5 000 ms is too short on Windows machines where the Python import probe
+ * (`import yaml; import dotenv; import hermes_cli.config`) plus
+ * `windowsHide:true` spawn overhead can exceed 5 s on cold start / under
+ * AV/endpoint-security scanning.  A probe that times out is treated as a
+ * broken venv, triggering an infinite repair restart loop.
+ *
+ * 60 000 ms gives slow disks, cold caches, and security-scanning CI machines
+ * adequate room to breathe while still catching genuinely hung interpreters.
+ */
+const PROBE_TIMEOUT_MS = 60000
 
 /**
  * Return the Python snippet used to verify Hermes can import far enough to
@@ -79,7 +91,16 @@ function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, str
     })
 
     return true
-  } catch {
+  } catch (err) {
+    // Log timeout specifically so users on slow machines can diagnose
+    // the death-loop (https://github.com/NousResearch/hermes-agent/issues/61764).
+    if (err && typeof err === 'object' && 'killed' in err && (err as any).killed) {
+      console.warn(
+        `[probe] Backend import probe timed out after ${PROBE_TIMEOUT_MS}ms for ${pythonPath}. ` +
+        'This may be normal on cold-start / slow Windows machines. ' +
+        'The resolver will try the next candidate rung.',
+      )
+    }
     return false
   }
 }

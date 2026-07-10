@@ -4044,7 +4044,9 @@ class GatewaySlashCommandsMixin:
             # Same engine the desktop popover uses (PR #54907). The system
             # prompt / tools / skills / memory slices read off the live agent;
             # the conversation slice is estimated from the session transcript.
-            breakdown_lines = self._context_breakdown_lines(agent, source)
+            breakdown_lines = await asyncio.to_thread(
+                self._context_breakdown_lines, agent, source
+            )
             if breakdown_lines:
                 lines.append("")
                 lines.extend(breakdown_lines)

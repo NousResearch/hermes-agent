@@ -468,6 +468,32 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if user_block:
                 volatile_parts.append(user_block)
 
+    # ── Session Handoff: auto-load continuity files ──
+    # Reads all *.md files from ~/.hermes/session_handoff/ at session build
+    # time. Allows continuity between sessions without the user needing to
+    # explicitly reference files or paste context into chat.
+    # Cache-safe: read once at build_system_prompt_parts() time, byte-stable
+    # for the session lifetime (same tier as memory and user profile).
+    try:
+        from pathlib import Path as _SHPath
+        from hermes_constants import get_hermes_home as _SHget_hh
+        _sh_dir = _SHPath(_SHget_hh()) / "session_handoff"
+        if _sh_dir.is_dir():
+            _sh_parts = []
+            for _sh_f in sorted(_sh_dir.glob("*.md")):
+                if _sh_f.is_file():
+                    _sh_content = _sh_f.read_text(encoding="utf-8", errors="replace")
+                    if _sh_content.strip():
+                        _sh_parts.append(
+                            f"--- Handoff: {_sh_f.name} ---\n{_sh_content.strip()}"
+                        )
+            if _sh_parts:
+                volatile_parts.append(
+                    "# Session Handoff\n" + "\n\n".join(_sh_parts)
+                )
+    except Exception:
+        pass
+
     # External memory provider system prompt block (additive to built-in)
     if agent._memory_manager:
         try:

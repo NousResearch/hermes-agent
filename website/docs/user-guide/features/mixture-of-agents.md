@@ -61,6 +61,11 @@ For each main model call when provider `moa` is selected, Hermes:
 
 Because MoA is selected through the normal model system, it composes automatically with `/goal`, gateway sessions, TUI sessions, and Desktop chat.
 
+The aggregator inherits the active session's reasoning setting, including
+`max`, just like the same model would outside MoA. Reference models keep their
+provider-default reasoning settings because they are advisory calls rather
+than the acting model.
+
 ## Configure presets
 
 You can configure named MoA presets from:

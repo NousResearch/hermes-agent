@@ -2136,8 +2136,15 @@ def _run_approval_gate(
     is_gateway = _is_gateway_approval_context()
 
     if not is_cli and not is_gateway:
-        # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        # Cron sessions: respect cron_mode config. Use the CONTEXT-AWARE
+        # _is_cron_session() (ContextVar-first, os.environ fallback) — NOT a raw
+        # env_var_enabled("HERMES_CRON_SESSION"): a cron-spawned subagent runs in
+        # a bare ThreadPoolExecutor worker that does NOT inherit os.environ's
+        # marker; its cron identity lives only in the re-bound ContextVar
+        # (_bind_child_cron_session → set_cron_session). Reading the raw env var
+        # here let a cron child AUTO-APPROVE dangerous commands (curl | bash),
+        # defeating cron_mode: deny (regression from the upstream gate refactor).
+        if _is_cron_session():
             if _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
@@ -2364,28 +2371,6 @@ def check_dangerous_command(command: str, env_type: str,
             "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
         ),
     )
-
-
-    if not is_cli and not is_gateway:
-        # Cron sessions: respect cron_mode config
-        if _is_cron_session():
-            if _get_cron_approval_mode() == "deny":
-                return {
-                    "approved": False,
-                    "message": (
-                        f"BLOCKED: Command flagged as dangerous ({description}) "
-                        "but cron jobs run without a user present to approve it. "
-                        "Find an alternative approach that avoids this command. "
-                        "To allow dangerous commands in cron jobs, set "
-                        "approvals.cron_mode: approve in config.yaml."
-                    ),
-                }
-        logger.warning(
-            "AUTO-APPROVED dangerous command in non-interactive non-gateway context "
-            "(pattern: %s): %s — set HERMES_INTERACTIVE or HERMES_GATEWAY_SESSION to require approval.",
-            description, command[:200],
-        )
-        return {"approved": True, "message": None}
 
 
 def request_tool_approval(

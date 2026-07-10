@@ -170,6 +170,77 @@ def _get_service_pids() -> set:
     return pids
 
 
+def _service_units_for_gateway_pids(pids: list[int] | tuple[int, ...]) -> dict[int, str]:
+    """Return service-manager units currently supervising the given gateway PIDs.
+
+    ``hermes gateway status`` normally decides whether to render the systemd /
+    launchd status path from the *expected* unit path for the active profile.
+    On hosts upgraded from the pre-profile unit naming scheme, the live gateway
+    can still be supervised by ``hermes-gateway.service`` while a profile-scoped
+    CLI invocation expects ``hermes-gateway-<profile>.service``.  In that case
+    the PID is service-managed, not manual; use the service manager's MainPID
+    view as a fallback so the status text does not misclassify it.
+    """
+    wanted = {pid for pid in pids if pid and pid > 0}
+    if not wanted:
+        return {}
+    units: dict[int, str] = {}
+
+    if supports_systemd_services():
+        for scope_args, scope_label in ((["systemctl", "--user"], "user"), (["systemctl"], "system")):
+            try:
+                result = subprocess.run(
+                    scope_args
+                    + [
+                        "list-units",
+                        "hermes-gateway*",
+                        "--plain",
+                        "--no-legend",
+                        "--no-pager",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+            for line in result.stdout.strip().splitlines():
+                parts = line.split()
+                if not parts or not parts[0].endswith(".service"):
+                    continue
+                svc = parts[0]
+                try:
+                    show = subprocess.run(
+                        scope_args + ["show", svc, "--property=MainPID", "--value"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    pid = int(show.stdout.strip())
+                except (ValueError, subprocess.TimeoutExpired):
+                    continue
+                if pid in wanted:
+                    units[pid] = f"{svc} ({scope_label})"
+
+    if is_macos():
+        try:
+            label = get_launchd_label()
+            result = subprocess.run(
+                ["launchctl", "list", label],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                pid = _parse_launchd_pid_from_list_output(result.stdout)
+                if pid in wanted:
+                    units[pid] = f"{label} (launchd)"
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    return units
+
+
 def _get_parent_pid(pid: int) -> int | None:
     """Return the parent PID for ``pid``, or ``None`` when unavailable.
 
@@ -6986,7 +7057,18 @@ def _gateway_command_inner(args):
             pids = list(snapshot.gateway_pids)
             if pids:
                 print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
-                print("  (Running manually, not as a system service)")
+                service_units = _service_units_for_gateway_pids(pids)
+                if service_units:
+                    rendered_units = ", ".join(
+                        f"PID {pid}: {unit}" for pid, unit in sorted(service_units.items())
+                    )
+                    print(f"  (Service-managed: {rendered_units})")
+                    print(
+                        "  Note: no service file matching this profile name was found; "
+                        "this is a service/profile naming mismatch, not a manual gateway."
+                    )
+                else:
+                    print("  (Running manually, not as a system service)")
                 runtime_lines = _runtime_health_lines()
                 if runtime_lines:
                     print()
@@ -6994,7 +7076,14 @@ def _gateway_command_inner(args):
                     for line in runtime_lines:
                         print(f"  {line}")
                 print()
-                if is_termux():
+                if service_units:
+                    if supports_systemd_services():
+                        print("To inspect the owning service:")
+                        print("  systemctl --user status 'hermes-gateway*.service'")
+                    elif is_macos():
+                        print("To inspect the owning service:")
+                        print(f"  launchctl list {get_launchd_label()}")
+                elif is_termux():
                     print("Termux note:")
                     print("  Android may stop background jobs when Termux is suspended")
                 elif is_wsl():

@@ -1863,6 +1863,45 @@ class TestGatewaySystemServiceRouting:
         assert "Gateway process is running for this profile" in out
         assert "PID(s): 4321" in out
 
+    def test_gateway_status_does_not_label_service_managed_pid_as_manual(self, monkeypatch, capsys):
+        missing_unit = SimpleNamespace(exists=lambda: False)
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: missing_unit,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_gateway_runtime_snapshot",
+            lambda system=False: gateway_cli.GatewayRuntimeSnapshot(
+                manager="manual process",
+                service_installed=False,
+                service_running=False,
+                gateway_pids=(4321,),
+            ),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_service_units_for_gateway_pids",
+            lambda pids: {4321: "hermes-gateway.service (user)"},
+        )
+        monkeypatch.setattr(gateway_cli, "_runtime_health_lines", lambda: [])
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
+
+        out = capsys.readouterr().out
+        assert "✓ Gateway is running (PID: 4321)" in out
+        assert "Service-managed: PID 4321: hermes-gateway.service (user)" in out
+        assert "service/profile naming mismatch" in out
+        assert "Running manually, not as a system service" not in out
+        assert "systemctl --user status 'hermes-gateway*.service'" in out
+
     def test_gateway_status_on_termux_shows_manual_guidance(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: True)

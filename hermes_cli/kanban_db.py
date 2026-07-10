@@ -90,6 +90,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+from hermes_cli import kanban_safety
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -1678,7 +1679,7 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
-def connect(
+def _connect_under_maintenance_lock(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
@@ -1782,6 +1783,68 @@ def connect(
             conn.close()
             raise
     return conn
+
+
+def _is_malformed_database_error(exc: BaseException) -> bool:
+    if isinstance(exc, KanbanDbCorruptError):
+        return True
+    if not isinstance(exc, sqlite3.DatabaseError) or _is_busy_error(exc):
+        return False
+    message = str(exc).lower()
+    return any(
+        token in message
+        for token in (
+            "file is not a database",
+            "database disk image is malformed",
+            "database corrupt",
+            "malformed database schema",
+            "disk i/o error",
+        )
+    )
+
+
+def _persist_quarantine(
+    path: Path, exc: BaseException, *, source: str
+) -> None:
+    reason = exc.reason if isinstance(exc, KanbanDbCorruptError) else str(exc)
+    try:
+        kanban_safety.quarantine_board(path, reason=reason, source=source)
+    except Exception as marker_exc:
+        raise kanban_safety.QuarantinePersistenceError(
+            f"failed to persist quarantine for {path}: {reason}"
+        ) from marker_exc
+
+
+def _persist_quarantine_and_raise(
+    path: Path, exc: BaseException, *, source: str
+) -> None:
+    _persist_quarantine(path, exc, source=source)
+    kanban_safety.assert_board_not_quarantined(path)
+    raise kanban_safety.KanbanSafetyError("failed to activate quarantine") from exc
+
+
+def connect(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> sqlite3.Connection:
+    """Open a board under persistent quarantine and maintenance fencing."""
+    path = Path(db_path) if db_path is not None else kanban_db_path(board=board)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    kanban_safety.assert_board_not_quarantined(path)
+    try:
+        with kanban_safety.maintenance_lock(path, exclusive=False):
+            # A maintainer may have created a marker while this caller waited.
+            kanban_safety.assert_board_not_quarantined(path)
+            return _connect_under_maintenance_lock(path)
+    except kanban_safety.BoardQuarantinedError:
+        raise
+    except Exception as exc:
+        if _is_malformed_database_error(exc):
+            _persist_quarantine_and_raise(
+                path, exc, source="kanban_db.connect"
+            )
+        raise
 
 
 @contextlib.contextmanager
@@ -2303,44 +2366,73 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
             time.sleep(random.uniform(_BUSY_RETRY_MIN_S, _BUSY_RETRY_MAX_S))
 
 
+def _physical_main_db_path(conn: sqlite3.Connection) -> Path | None:
+    """Resolve the physical main DB path; in-memory/test doubles have no fence."""
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except (AttributeError, TypeError):
+        if isinstance(conn, sqlite3.Connection):
+            raise kanban_safety.MaintenanceLockError(
+                "failed to resolve physical database path for write transaction"
+            )
+        return None
+    except sqlite3.DatabaseError as exc:
+        raise kanban_safety.MaintenanceLockError(
+            f"failed to resolve physical database path: {exc}"
+        ) from exc
+    for row in rows:
+        if len(row) >= 3 and str(row[1]) == "main":
+            raw_path = str(row[2] or "")
+            if not raw_path or raw_path == ":memory:":
+                return None
+            return Path(raw_path).expanduser().resolve()
+    if isinstance(conn, sqlite3.Connection):
+        raise kanban_safety.MaintenanceLockError("main database is not attached")
+    return None
+
+
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
-    """Context manager for an IMMEDIATE write transaction.
-
-    Use for any multi-statement write (creating a task + link, claiming a
-    task + recording an event, etc.).  A claim CAS inside this context is
-    atomic -- at most one concurrent writer can succeed.
-
-    The explicit ROLLBACK on exception is wrapped in try/except so that
-    a SQLite auto-rollback (which leaves no active transaction) does not
-    shadow the original exception with a spurious rollback error.
-    """
-    _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
+    """Run an IMMEDIATE transaction inside the board's shared maintenance fence."""
+    db_path = _physical_main_db_path(conn)
+    fence = (
+        kanban_safety.maintenance_lock(db_path, exclusive=False)
+        if db_path is not None
+        else contextlib.nullcontext()
+    )
     try:
-        yield conn
-    except Exception:
-        try:
-            conn.execute("ROLLBACK")
-        except sqlite3.OperationalError:
-            # SQLite has already auto-rolled-back the transaction (typical
-            # under EIO, lock contention, or corruption). Nothing to undo;
-            # do not let this secondary failure shadow the real one.
-            pass
-        raise
-    else:
-        try:
-            _execute_boundary_with_retry(conn, "COMMIT")
-        except Exception:
-            # COMMIT exhausted retries with the txn still open; roll back so the
-            # connection isn't poisoned for the next BEGIN IMMEDIATE.
+        if db_path is not None:
+            kanban_safety.assert_board_not_quarantined(db_path)
+        with fence:
+            if db_path is not None:
+                kanban_safety.assert_board_not_quarantined(db_path)
+            _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
             try:
-                conn.execute("ROLLBACK")
-            except sqlite3.OperationalError:
-                pass
-            raise
-        # Post-commit file-length check: header page_count must match actual file pages.
-        # A discrepancy means a torn-extend — raise now rather than silently corrupt.
-        _check_file_length_invariant(conn)
+                yield conn
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.OperationalError:
+                    pass
+                raise
+            else:
+                try:
+                    _execute_boundary_with_retry(conn, "COMMIT")
+                except Exception:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.OperationalError:
+                        pass
+                    raise
+                _check_file_length_invariant(conn)
+    except kanban_safety.BoardQuarantinedError:
+        raise
+    except Exception as exc:
+        if db_path is not None and _is_malformed_database_error(exc):
+            _persist_quarantine(
+                db_path, exc, source="kanban_db.write_txn"
+            )
+        raise
 
 
 # ---------------------------------------------------------------------------

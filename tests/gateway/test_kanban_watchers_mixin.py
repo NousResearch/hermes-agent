@@ -9,7 +9,15 @@ from __future__ import annotations
 
 import inspect
 
-from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+from gateway import kanban_watchers as watchers
+from gateway.kanban_watchers import (
+    GatewayKanbanWatchersMixin,
+    _is_quarantine_fence_error,
+    _should_skip_process_local_quarantine,
+    _should_skip_quarantined_board,
+)
+from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_safety as safety
 
 KANBAN_METHODS = [
     "_kanban_notifier_watcher",
@@ -67,3 +75,101 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     h3, st3 = _acquire_singleton_lock(lock)
     assert st3 == "held" and h3 is not None
     _release_singleton_lock(h3)
+
+
+def test_same_fingerprint_quarantine_does_not_expire_with_time(tmp_path, monkeypatch):
+    db_path = tmp_path / "kanban.db"
+    db_path.write_bytes(b"broken")
+    safety.quarantine_board(db_path, reason="malformed", source="watcher-test")
+
+    monkeypatch.setattr("gateway.kanban_watchers.time.monotonic", lambda: 10**12)
+
+    assert _should_skip_quarantined_board(db_path)
+
+
+def test_process_local_fallback_only_recovers_after_fingerprint_change():
+    disabled: dict[str, object] = {"tour-platform": {"path": "/tmp/db", "db": "old"}}
+
+    assert _should_skip_process_local_quarantine(
+        disabled, "tour-platform", {"path": "/tmp/db", "db": "old"}
+    )
+    assert disabled
+
+    assert not _should_skip_process_local_quarantine(
+        disabled, "tour-platform", {"path": "/tmp/db", "db": "new"}
+    )
+    assert disabled == {}
+
+
+def test_process_local_fence_recovers_after_board_generation_bump(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect(db_path):
+        pass
+    board_state_fingerprint = getattr(watchers, "_board_state_fingerprint")
+    initial_fingerprint = board_state_fingerprint(db_path)
+    disabled = {"tour-platform": initial_fingerprint}
+
+    assert _should_skip_process_local_quarantine(
+        disabled, "tour-platform", initial_fingerprint
+    )
+
+    safety.bump_board_generation(db_path)
+    current_fingerprint = board_state_fingerprint(db_path)
+
+    assert not _should_skip_process_local_quarantine(
+        disabled, "tour-platform", current_fingerprint
+    )
+    assert disabled == {}
+
+
+def test_gateway_only_classifies_marker_persistence_failure_for_local_fallback(tmp_path):
+    marker = {"reason": "malformed"}
+    assert not _is_quarantine_fence_error(
+        safety.BoardQuarantinedError(tmp_path, marker)
+    )
+    quarantine_persistence_error = getattr(safety, "QuarantinePersistenceError")
+    assert _is_quarantine_fence_error(
+        quarantine_persistence_error("marker fsync failed")
+    )
+    assert not _is_quarantine_fence_error(safety.MaintenanceLockError("busy"))
+
+
+def test_persistent_marker_prevents_redundant_process_local_fence(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    db_path.write_bytes(b"broken")
+    safety.quarantine_board(db_path, reason="malformed", source="watcher-test")
+
+    should_record = getattr(watchers, "_should_record_process_local_quarantine")
+    assert not should_record(
+        db_path, is_corruption_error=True
+    )
+
+
+def test_marker_persistence_failure_requires_process_local_fence(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    db_path.write_bytes(b"broken")
+
+    should_record = getattr(watchers, "_should_record_process_local_quarantine")
+    assert should_record(
+        db_path, is_corruption_error=True
+    )
+
+
+def test_watcher_recovers_only_after_clear_or_board_generation_change(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect(db_path):
+        pass
+    safety.quarantine_board(
+        db_path, reason="maintenance", source="watcher-test"
+    )
+    assert _should_skip_quarantined_board(db_path)
+
+    current_fingerprint = safety.db_fingerprint(db_path)
+    safety.clear_quarantine(db_path, expected_fingerprint=current_fingerprint)
+    assert not _should_skip_quarantined_board(db_path)
+
+    safety.quarantine_board(db_path, reason="malformed", source="watcher-test")
+    safety.bump_board_generation(db_path)
+    assert not _should_skip_quarantined_board(db_path)

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_safety as safety
 
 
 @pytest.fixture
@@ -4140,18 +4141,18 @@ def test_init_db_refuses_corrupt_existing_file(tmp_path):
     # Ensure the cache doesn't mask the guard.
     kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
 
-    with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+    with pytest.raises(safety.BoardQuarantinedError) as excinfo:
         kb.init_db(db_path=db_path)
 
     err = excinfo.value
     assert err.db_path == db_path
-    assert err.backup_path is not None
-    assert err.backup_path.exists()
-    assert err.backup_path.read_bytes() == original
+    backups = list(tmp_path.glob("kanban.db.corrupt.*.bak"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+    assert safety.quarantine_marker_path(db_path).exists()
     # Original bytes untouched — no schema was written on top.
     assert db_path.read_bytes() == original
     assert str(db_path) in str(err)
-    assert str(err.backup_path) in str(err)
 
 
 def test_connect_refuses_corrupt_existing_file(tmp_path):
@@ -4159,46 +4160,38 @@ def test_connect_refuses_corrupt_existing_file(tmp_path):
     _write_corrupt_db(db_path)
     kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
 
-    with pytest.raises(kb.KanbanDbCorruptError):
+    with pytest.raises(safety.BoardQuarantinedError):
         kb.connect(db_path=db_path)
+
+    assert safety.active_quarantine(db_path) is not None
 
 
 def test_repeated_corrupt_open_reuses_single_backup(tmp_path):
-    """Repeated quarantines of the same corrupt bytes must not amplify disk usage.
-
-    Regression for the gateway dispatcher's 5-min retry loop on shared kanban
-    DBs across multi-profile fleets: each retry on an unchanged corrupt file
-    used to create a fresh ``.corrupt.<timestamp>.bak`` until disk filled. The
-    content-addressed backup name is deterministic in the DB's sha256, so
-    N retries of the same bytes share one backup.
-    """
+    """Persistent quarantine stops unchanged corrupt retries from amplifying backups."""
     db_path = tmp_path / "kanban.db"
     original = _write_corrupt_db(db_path)
 
-    backups: set[Path] = set()
     for _ in range(10):
         kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
-        with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+        with pytest.raises(safety.BoardQuarantinedError):
             kb.connect(db_path=db_path)
-        assert excinfo.value.backup_path is not None
-        backups.add(excinfo.value.backup_path)
 
+    backups = set(tmp_path.glob("kanban.db.corrupt.*.bak"))
     assert len(backups) == 1, f"expected 1 deterministic backup, got {len(backups)}"
     (backup,) = backups
-    assert backup.exists()
     assert backup.read_bytes() == original
 
-    # Mutate the corrupt bytes — fingerprint changes, separate backup preserved.
+    # Even if the corrupt bytes change, a persistent marker must remain active;
+    # replacement is only recognized by an explicit board-generation bump.
     with db_path.open("r+b") as f:
         f.seek(4096)
         f.write(b"\xAB" * 64)
     kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
-    with pytest.raises(kb.KanbanDbCorruptError) as excinfo2:
+    with pytest.raises(safety.BoardQuarantinedError):
         kb.connect(db_path=db_path)
-    second_backup = excinfo2.value.backup_path
-    assert second_backup is not None
-    assert second_backup != backup
-    assert second_backup.exists()
+
+    assert set(tmp_path.glob("kanban.db.corrupt.*.bak")) == {backup}
+    assert safety.active_quarantine(db_path) is not None
 
 
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):

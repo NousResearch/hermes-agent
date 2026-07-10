@@ -25,6 +25,78 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _should_skip_quarantined_board(db_path: Path) -> bool:
+    """Persistent watcher gate; unreadable safety metadata fails closed."""
+    try:
+        from hermes_cli import kanban_safety
+
+        return kanban_safety.active_quarantine(Path(db_path)) is not None
+    except Exception as exc:
+        logger.error("kanban dispatcher: cannot verify quarantine for %s: %s", db_path, exc)
+        return True
+
+
+def _board_state_fingerprint(db_path: Path) -> object:
+    """Fingerprint storage plus generations for the process-local fallback fence."""
+    path = Path(db_path)
+    try:
+        from hermes_cli import kanban_safety
+
+        generations = kanban_safety.read_generations(path)
+        return {
+            "path": str(path),
+            "storage": kanban_safety.db_fingerprint(path),
+            "generations": {
+                "service_generation": generations.service_generation,
+                "board_generation": generations.board_generation,
+            },
+        }
+    except Exception:
+        # Keep an unverifiable board fenced. Repairing metadata changes this
+        # fallback value to the full state above and releases the local fence.
+        return {"path": str(path), "state": "unavailable"}
+
+
+def _should_skip_process_local_quarantine(
+    disabled_boards: dict[str, object], slug: str, fingerprint: object
+) -> bool:
+    """Keep the last-resort local fence until the DB fingerprint changes."""
+    disabled_fingerprint = disabled_boards.get(slug)
+    if disabled_fingerprint is None:
+        return False
+    if disabled_fingerprint == fingerprint:
+        return True
+    disabled_boards.pop(slug, None)
+    return False
+
+
+def _fingerprint_display_path(fingerprint: object) -> str:
+    if isinstance(fingerprint, dict):
+        return str(fingerprint.get("path") or "<unknown>")
+    return str(fingerprint)
+
+
+def _is_quarantine_fence_error(exc: Exception) -> bool:
+    try:
+        from hermes_cli import kanban_safety
+
+        error_types = tuple(
+            cls
+            for name in ("QuarantinePersistenceError",)
+            if isinstance((cls := getattr(kanban_safety, name, None)), type)
+        )
+        return bool(error_types) and isinstance(exc, error_types)
+    except Exception:
+        return False
+
+
+def _should_record_process_local_quarantine(
+    db_path: Path, *, is_corruption_error: bool
+) -> bool:
+    """Use local fallback only when no active persistent fence is available."""
+    return is_corruption_error and not _should_skip_quarantined_board(db_path)
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -940,27 +1012,16 @@ class GatewayKanbanWatchersMixin:
         HEALTH_WINDOW = 6
         bad_ticks = 0
         last_warn_at = 0
-        # Avoid hot-looping corrupt-looking board DBs, but do not suppress
-        # same-fingerprint retries forever: transient WAL/open races can
-        # surface as "database disk image is malformed" for one tick.
-        CORRUPT_BOARD_RETRY_AFTER_SECONDS = 300
-        disabled_corrupt_boards: dict[
-            str, tuple[tuple[str, int | None, int | None], float]
-        ] = {}
+        # Last-resort process-local fallback only when persistent marker
+        # creation itself is impossible. It never expires by time.
+        disabled_corrupt_boards: dict[str, object] = {}
 
-        def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
-            path = _kb.kanban_db_path(slug)
-            try:
-                resolved = str(path.expanduser().resolve())
-            except Exception:
-                resolved = str(path)
-            try:
-                stat = path.stat()
-            except OSError:
-                return (resolved, None, None)
-            return (resolved, stat.st_mtime_ns, stat.st_size)
+        def _board_db_fingerprint(slug: str) -> object:
+            return _board_state_fingerprint(_kb.kanban_db_path(slug))
 
         def _is_corrupt_board_db_error(exc: Exception) -> bool:
+            if _is_quarantine_fence_error(exc):
+                return True
             corrupt_guard_error = getattr(_kb, "KanbanDbCorruptError", None)
             if corrupt_guard_error is not None and isinstance(exc, corrupt_guard_error):
                 return True
@@ -982,29 +1043,14 @@ class GatewayKanbanWatchersMixin:
             connection handle or accidentally claim across each other.
             """
             conn = None
+            db_path = _kb.kanban_db_path(slug)
+            if _should_skip_quarantined_board(db_path):
+                return None
             fingerprint = _board_db_fingerprint(slug)
-            disabled_entry = disabled_corrupt_boards.get(slug)
-            if disabled_entry is not None:
-                disabled_fingerprint, disabled_at = disabled_entry
-                age = time.monotonic() - disabled_at
-                if (
-                    disabled_fingerprint == fingerprint
-                    and age < CORRUPT_BOARD_RETRY_AFTER_SECONDS
-                ):
-                    return None
-                if disabled_fingerprint == fingerprint:
-                    logger.info(
-                        "kanban dispatcher: board %s database fingerprint unchanged "
-                        "after %.0fs quarantine; retrying dispatch",
-                        slug,
-                        age,
-                    )
-                else:
-                    logger.info(
-                        "kanban dispatcher: board %s database changed; retrying dispatch",
-                        slug,
-                    )
-                disabled_corrupt_boards.pop(slug, None)
+            if _should_skip_process_local_quarantine(
+                disabled_corrupt_boards, slug, fingerprint
+            ):
+                return None
             try:
                 conn = _kb.connect(board=slug)
                 # `connect()` runs the schema + idempotent migration on
@@ -1024,32 +1070,40 @@ class GatewayKanbanWatchersMixin:
                     max_in_progress_per_profile=max_in_progress_per_profile,
                 )
             except sqlite3.DatabaseError as exc:
-                if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
+                is_corruption_error = _is_corrupt_board_db_error(exc)
+                if _should_record_process_local_quarantine(
+                    db_path, is_corruption_error=is_corruption_error
+                ):
+                    disabled_corrupt_boards[slug] = fingerprint
                     logger.error(
                         "kanban dispatcher: board %s database %s is not a valid "
                         "SQLite database; pausing dispatch for this board until "
-                        "the file changes, the gateway restarts, or the "
-                        "quarantine timer expires. Move or restore the file, "
+                        "the file changes or the gateway restarts. Move or restore the file, "
                         "then run `hermes kanban init` if you need a fresh board.",
                         slug,
-                        fingerprint[0],
+                        _fingerprint_display_path(fingerprint),
                     )
+                    return None
+                if is_corruption_error:
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None
             except Exception as exc:
-                if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
+                is_corruption_error = _is_corrupt_board_db_error(exc)
+                if _should_record_process_local_quarantine(
+                    db_path, is_corruption_error=is_corruption_error
+                ):
+                    disabled_corrupt_boards[slug] = fingerprint
                     logger.error(
                         "kanban dispatcher: board %s database %s is not a valid "
                         "SQLite database; pausing dispatch for this board until "
-                        "the file changes, the gateway restarts, or the "
-                        "quarantine timer expires. Move or restore the file, "
+                        "the file changes or the gateway restarts. Move or restore the file, "
                         "then run `hermes kanban init` if you need a fresh board.",
                         slug,
-                        fingerprint[0],
+                        _fingerprint_display_path(fingerprint),
                     )
+                    return None
+                if is_corruption_error:
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None

@@ -1225,6 +1225,64 @@ class TestImportEdgeCases:
         assert (hermes_home / "config.yaml").exists()
         assert (hermes_home / "sessions" / "s0599.json").exists()
 
+    def test_import_rejects_excessive_member_count(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        zip_path = tmp_path / "too-many.zip"
+        self._make_backup_zip(zip_path, {"config.yaml": "model: test\n", "extra.txt": "x"})
+
+        import hermes_cli.backup as backup_mod
+        monkeypatch.setattr(backup_mod, "_MAX_IMPORT_MEMBERS", 1)
+
+        with pytest.raises(SystemExit):
+            backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+
+    def test_import_rejects_excessive_archive_size(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        zip_path = tmp_path / "oversized.zip"
+        self._make_backup_zip(zip_path, {"config.yaml": "model: test\n"})
+
+        import hermes_cli.backup as backup_mod
+        monkeypatch.setattr(backup_mod, "_MAX_IMPORT_ARCHIVE_BYTES", 1)
+
+        with pytest.raises(SystemExit):
+            backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+
+    def test_import_rejects_excessive_compression_ratio(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        zip_path = tmp_path / "ratio.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("config.yaml", "x" * 10000)
+
+        import hermes_cli.backup as backup_mod
+        monkeypatch.setattr(backup_mod, "_MAX_IMPORT_COMPRESSION_RATIO", 1)
+
+        with pytest.raises(SystemExit):
+            backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+
+    def test_import_rejects_duplicate_member_names(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        zip_path = tmp_path / "duplicate.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: first\n")
+            with pytest.warns(UserWarning):
+                zf.writestr("config.yaml", "model: second\n")
+
+        import hermes_cli.backup as backup_mod
+        with pytest.raises(SystemExit):
+            backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+
 
 # ---------------------------------------------------------------------------
 # Profile restoration tests
@@ -1862,7 +1920,7 @@ class TestQuickSnapshotProjectsKanban:
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         # The board db was copied via _safe_copy_db (not raw copy).
-        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
+        assert any(Path(s).parts[-3:] == ("boards", "work", "kanban.db") for s in called["db"]), called["db"]
         copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]
@@ -2466,15 +2524,88 @@ class TestMemoryProviderExternalPaths:
         monkeypatch.setattr(Path, "home", lambda: dst_home)
 
         from hermes_cli.backup import run_import
+        import hermes_cli.backup as backup_mod
+        monkeypatch.setattr(
+            backup_mod,
+            "_collect_memory_provider_external_paths",
+            lambda **kwargs: [dst_home / ".honcho"],
+        )
         run_import(Namespace(zipfile=str(zip_path), force=True))
 
         restored = dst_home / ".honcho" / "config.json"
         assert restored.exists()
         assert restored.read_text() == '{"peer":"bob"}'
         # Credential-shaped file tightened.
-        assert (restored.stat().st_mode & 0o777) == 0o600
+        if os.name != "nt":
+            assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into HERMES_HOME.
         assert not (hermes_home / "_external").exists()
+
+    def test_import_restores_wrapped_external_state(self, tmp_path, monkeypatch):
+        dst_home = tmp_path / "dst"
+        dst_home.mkdir()
+        hermes_home = dst_home / ".hermes"
+
+        zip_path = tmp_path / "wrapped.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr(".hermes/config.yaml", "model: {}\n")
+            zf.writestr(".hermes/_external/.honcho/config.json", '{"peer":"bob"}')
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: dst_home)
+
+        import hermes_cli.backup as backup_mod
+        monkeypatch.setattr(
+            backup_mod,
+            "_collect_memory_provider_external_paths",
+            lambda **kwargs: [dst_home / ".honcho"],
+        )
+        backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert (dst_home / ".honcho" / "config.json").read_text() == '{"peer":"bob"}'
+        assert not (hermes_home / "_external").exists()
+
+    def test_restore_collection_includes_declared_missing_path(self, tmp_path, monkeypatch):
+        import hermes_cli.backup as backup_mod
+        import plugins.memory as memory_plugins
+
+        missing = tmp_path / ".honcho"
+
+        class _Provider:
+            def backup_paths(self):
+                return [str(missing)]
+
+        monkeypatch.setattr(memory_plugins, "_get_active_memory_provider", lambda: "honcho")
+        monkeypatch.setattr(memory_plugins, "load_memory_provider", lambda name: _Provider())
+
+        assert backup_mod._collect_memory_provider_external_paths() == []
+        assert backup_mod._collect_memory_provider_external_paths(
+            include_missing=True,
+        ) == [missing]
+
+    def test_import_skips_undeclared_external_path(self, tmp_path, monkeypatch):
+        dst_home = tmp_path / "dst"
+        dst_home.mkdir()
+        hermes_home = dst_home / ".hermes"
+        hermes_home.mkdir()
+
+        zip_path = tmp_path / "backup.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: {}\n")
+            zf.writestr("_external/.profile", "unexpected")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: dst_home)
+
+        import hermes_cli.backup as backup_mod
+        monkeypatch.setattr(
+            backup_mod,
+            "_collect_memory_provider_external_paths",
+            lambda **kwargs: [],
+        )
+        backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert not (dst_home / ".profile").exists()
 
     def test_import_blocks_external_path_traversal(self, tmp_path, monkeypatch):
         """A malicious _external/ member that escapes the home dir is blocked."""

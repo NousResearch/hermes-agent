@@ -131,15 +131,22 @@ _SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
 # home-relative location on import. Anything not under home is skipped.
 _EXTERNAL_PREFIX = "_external/"
 
+_MAX_IMPORT_MEMBERS = 100_000
+_MAX_IMPORT_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+_MAX_IMPORT_MEMBER_BYTES = 512 * 1024 * 1024
+_MAX_IMPORT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+_MAX_IMPORT_COMPRESSION_RATIO = 1_000
+_IMPORT_COPY_CHUNK_BYTES = 1024 * 1024
 
-def _collect_memory_provider_external_paths() -> List[Path]:
-    """Return existing absolute paths the active memory provider stores
-    outside HERMES_HOME, resolved from config only (no network, no init).
+
+def _collect_memory_provider_external_paths(*, include_missing: bool = False) -> List[Path]:
+    """Return absolute paths the active memory provider stores outside HERMES_HOME.
 
     Reads ``memory.provider`` from config, loads just that provider, and asks
     it for ``backup_paths()``. Returns an empty list when no external provider
     is active or the provider can't be loaded — backup must never fail because
-    of a flaky plugin.
+    of a flaky plugin. Restore callers may include declared paths that do not
+    exist yet on the destination machine.
     """
     try:
         from plugins.memory import _get_active_memory_provider, load_memory_provider
@@ -173,7 +180,7 @@ def _collect_memory_provider_external_paths() -> List[Path]:
             p = Path(raw).expanduser()
         except Exception:
             continue
-        if not p.exists():
+        if not include_missing and not p.exists():
             continue
         try:
             resolved = p.resolve()
@@ -495,6 +502,59 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
     return True, ""
 
 
+def _validate_import_members(zf: zipfile.ZipFile) -> tuple[bool, str]:
+    infos = [info for info in zf.infolist() if not info.is_dir()]
+    if len(infos) > _MAX_IMPORT_MEMBERS:
+        return False, f"zip contains too many files (maximum {_MAX_IMPORT_MEMBERS:,})"
+
+    total_bytes = 0
+    seen_names: set[str] = set()
+    for info in infos:
+        if info.filename in seen_names:
+            return False, f"zip contains a duplicate file name: {info.filename}"
+        seen_names.add(info.filename)
+        if info.file_size > _MAX_IMPORT_MEMBER_BYTES:
+            return False, f"zip member is too large: {info.filename}"
+        total_bytes += info.file_size
+        if total_bytes > _MAX_IMPORT_TOTAL_BYTES:
+            return False, "zip expands beyond the maximum import size"
+        if info.file_size and info.compress_size and (
+            info.file_size / info.compress_size > _MAX_IMPORT_COMPRESSION_RATIO
+        ):
+            return False, f"zip member compression ratio is too high: {info.filename}"
+
+    return True, ""
+
+
+def _copy_zip_member(
+    zf: zipfile.ZipFile,
+    member: zipfile.ZipInfo,
+    target: Path,
+) -> None:
+    with zf.open(member) as src, open(target, "wb") as dst:
+        shutil.copyfileobj(src, dst, length=_IMPORT_COPY_CHUNK_BYTES)
+
+
+def _normalized_import_member_name(filename: str, prefix: str) -> str:
+    if prefix and filename.startswith(prefix):
+        return filename[len(prefix):]
+    return filename
+
+
+def _is_allowed_external_target(target: Path, allowed_roots: List[Path]) -> bool:
+    try:
+        resolved_target = target.resolve()
+    except OSError:
+        return False
+    for root in allowed_roots:
+        try:
+            resolved_target.relative_to(root.resolve())
+            return True
+        except (ValueError, OSError):
+            continue
+    return False
+
+
 def _detect_prefix(zf: zipfile.ZipFile) -> str:
     """Detect if the zip has a common directory prefix wrapping all entries.
 
@@ -527,6 +587,10 @@ def run_import(args) -> None:
         print(f"Error: File not found: {zip_path}")
         sys.exit(1)
 
+    if zip_path.stat().st_size > _MAX_IMPORT_ARCHIVE_BYTES:
+        print("Error: Backup archive exceeds the maximum import size")
+        sys.exit(1)
+
     if not zipfile.is_zipfile(zip_path):
         print(f"Error: Not a valid zip file: {zip_path}")
         sys.exit(1)
@@ -540,8 +604,19 @@ def run_import(args) -> None:
             print(f"Error: {reason}")
             sys.exit(1)
 
+        ok, reason = _validate_import_members(zf)
+        if not ok:
+            print(f"Error: {reason}")
+            sys.exit(1)
+
         prefix = _detect_prefix(zf)
-        members = [n for n in zf.namelist() if not n.endswith("/")]
+        members = sorted(
+            (info for info in zf.infolist() if not info.is_dir()),
+            key=lambda info: _normalized_import_member_name(
+                info.filename,
+                prefix,
+            ).startswith(_EXTERNAL_PREFIX),
+        )
         file_count = len(members)
 
         print(f"Backup contains {file_count} files")
@@ -577,14 +652,22 @@ def run_import(args) -> None:
         restored_external = 0
         skipped_runtime: list[str] = []
         home_dir = Path.home().resolve()
+        allowed_external_roots: Optional[List[Path]] = None
         t0 = time.monotonic()
 
-        for member in members:
+        for member_info in members:
+            member = member_info.filename
+            rel = _normalized_import_member_name(member, prefix)
+
             # External memory-provider state captured under the reserved
             # ``_external/`` arc prefix restores to its original home-relative
             # location (e.g. ~/.honcho/config.json), NOT under HERMES_HOME.
-            if member.startswith(_EXTERNAL_PREFIX):
-                ext_rel = member[len(_EXTERNAL_PREFIX):]
+            if rel.startswith(_EXTERNAL_PREFIX):
+                if allowed_external_roots is None:
+                    allowed_external_roots = _collect_memory_provider_external_paths(
+                        include_missing=True,
+                    )
+                ext_rel = rel[len(_EXTERNAL_PREFIX):]
                 if not ext_rel:
                     continue
                 target = home_dir / ext_rel
@@ -594,10 +677,12 @@ def run_import(args) -> None:
                 except ValueError:
                     errors.append(f"  {member}: path traversal blocked")
                     continue
+                if not _is_allowed_external_target(target, allowed_external_roots):
+                    errors.append(f"  {member}: not declared by the active memory provider")
+                    continue
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(member) as src, open(target, "wb") as dst:
-                        dst.write(src.read())
+                    _copy_zip_member(zf, member_info, target)
                     # External provider configs commonly hold credentials.
                     if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
                         try:
@@ -611,12 +696,6 @@ def run_import(args) -> None:
                 if restored % 500 == 0:
                     print(f"  {restored}/{file_count} files ...")
                 continue
-
-            # Strip prefix if detected
-            if prefix and member.startswith(prefix):
-                rel = member[len(prefix):]
-            else:
-                rel = member
 
             if not rel:
                 continue
@@ -642,8 +721,7 @@ def run_import(args) -> None:
 
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(member) as src, open(target, "wb") as dst:
-                    dst.write(src.read())
+                _copy_zip_member(zf, member_info, target)
                 if target.name in _SECRET_FILE_NAMES:
                     os.chmod(target, 0o600)
                 restored += 1

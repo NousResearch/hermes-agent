@@ -19,12 +19,19 @@ def _make_cli():
     return cli
 
 
-def test_renders_when_enabled():
-    """Visible text is printed when the config flag is on."""
+def test_renders_box_frame():
+    """Text is rendered inside a dimmed box frame with left border."""
     cli = _make_cli()
     with patch("cli._cprint") as mock_print:
         cli._on_interim_assistant("Found the bug at line 42.")
-    mock_print.assert_called_once_with("  Found the bug at line 42.")
+    calls = [c[0][0] for c in mock_print.call_args_list]
+    assert any("Found the bug at line 42." in c for c in calls), f"text not in calls: {calls}"
+    # Box frame: top, content, bottom — at least 3 calls
+    assert len(calls) >= 3, f"expected >=3 box lines, got {len(calls)}: {calls}"
+    # Top line has ╭ and ◆ marker
+    assert "╭" in calls[0] and "◆" in calls[0], f"top line missing box: {calls[0]}"
+    # Bottom line has ╰
+    assert "╰" in calls[-1], f"bottom line missing box: {calls[-1]}"
 
 
 def test_silent_when_disabled():
@@ -52,12 +59,21 @@ def test_skips_empty_text():
     mock_print.assert_not_called()
 
 
-def test_strips_whitespace():
-    """Leading/trailing whitespace is stripped before printing."""
+def test_strips_whitespace_in_box():
+    """Leading/trailing whitespace is stripped before boxing."""
     cli = _make_cli()
     with patch("cli._cprint") as mock_print:
         cli._on_interim_assistant("  ok  ")
-    mock_print.assert_called_once_with("  ok")
+    calls = [c[0][0] for c in mock_print.call_args_list]
+    # Content line has box padding (│  ...  │) but no raw user whitespace
+    content_lines = [c for c in calls if "│" in c]
+    assert content_lines, f"no content line found: {calls}"
+    # After stripping ANSI and box chars, should be exactly "  ok  "
+    # (box padding is "  " on each side; original "  ok  " → stripped "ok")
+    import re
+    clean = re.sub(r'\x1b\[[0-9;]*m', '', content_lines[0])
+    clean = clean.replace('│', '').strip()
+    assert clean == "ok", f"expected 'ok', got {clean!r}"
 
 
 def test_respects_already_streamed_when_enabled():

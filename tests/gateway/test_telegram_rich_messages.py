@@ -1213,3 +1213,97 @@ async def test_try_edit_rich_records_streamed_final_for_reply_recovery(monkeypat
     result = await adapter._try_edit_rich("12345", "5724", "Готово. Основной бот живой.")
     assert result is not None and result.success
     assert rich_sent_store.lookup("12345", "5724") == "Готово. Основной бот живой."
+
+
+class TestRichStoreCorruptedIndexTrim:
+    """Regression: scalar entries in rich_sent_index.json must not crash trim.
+
+    Before the fix, a scalar (non-dict) value persisted by a bad writer or
+    manual edit would make the trim branch crash at ``kv[1].get("ts", 0)``
+    (AttributeError on a string), and the broad except on line 67 silently
+    drops the write — poisoning all future record() calls for the profile.
+    The fix sanitizes non-dict entries before trimming.
+    """
+
+    def test_scalar_entry_survives_trim(self, monkeypatch, tmp_path):
+        """Seed scalar + valid entries, trigger trim, verify records intact."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import json, time
+        from gateway import rich_sent_store
+
+        # Lower the cap so record() triggers a trim after adding the new entry.
+        monkeypatch.setattr(rich_sent_store, "_MAX_ENTRIES", 3)
+
+        store_dir = tmp_path / "state"
+        store_dir.mkdir(parents=True, exist_ok=True)
+        store_file = store_dir / "rich_sent_index.json"
+        now = int(time.time())
+        # 3 valid entries + 1 scalar = 4 total. After sanitize: 3 valid.
+        # Add new -> 4 valid > _MAX_ENTRIES(3) -> trim removes oldest.
+        store_file.write_text(json.dumps({
+            "100:1": {"t": "first valid", "ts": now - 300},
+            "100:2": {"t": "second valid", "ts": now - 200},
+            "100:3": {"t": "third valid", "ts": now - 100},
+            "100:4": "scalar bad entry",
+        }))
+
+        rich_sent_store.record("100", "99", "new record")
+
+        # New entry must be retrievable.
+        assert rich_sent_store.lookup("100", "99") == "new record"
+        # Scalar must have been dropped.
+        with open(store_file, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        assert "100:4" not in data
+        # At least the two newest seeded entries survive trim.
+        assert rich_sent_store.lookup("100", "2") == "second valid"
+        assert rich_sent_store.lookup("100", "3") == "third valid"
+
+    def test_all_scalar_entries_record_succeeds(self, monkeypatch, tmp_path):
+        """Index with only scalar entries — record() must not crash."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import json
+        from gateway import rich_sent_store
+
+        monkeypatch.setattr(rich_sent_store, "_MAX_ENTRIES", 2)
+
+        store_dir = tmp_path / "state"
+        store_dir.mkdir(parents=True, exist_ok=True)
+        store_file = store_dir / "rich_sent_index.json"
+        store_file.write_text(json.dumps({
+            "200:1": "scalar one",
+            "200:2": 42,
+        }))
+
+        rich_sent_store.record("200", "3", "valid new record")
+        assert rich_sent_store.lookup("200", "3") == "valid new record"
+
+    def test_mixed_corruption_preserves_valid_and_new(self, monkeypatch, tmp_path):
+        """None, list, and string scalars mixed with valid entries."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import json, time
+        from gateway import rich_sent_store
+
+        monkeypatch.setattr(rich_sent_store, "_MAX_ENTRIES", 4)
+
+        store_dir = tmp_path / "state"
+        store_dir.mkdir(parents=True, exist_ok=True)
+        store_file = store_dir / "rich_sent_index.json"
+        now = int(time.time())
+        store_file.write_text(json.dumps({
+            "300:1": {"t": "old valid", "ts": now - 500},
+            "300:2": None,
+            "300:3": {"t": "mid valid", "ts": now - 300},
+            "300:4": [1, 2, 3],
+            "300:5": {"t": "newest valid", "ts": now - 100},
+        }))
+
+        rich_sent_store.record("300", "6", "appended")
+
+        assert rich_sent_store.lookup("300", "3") == "mid valid"
+        assert rich_sent_store.lookup("300", "5") == "newest valid"
+        assert rich_sent_store.lookup("300", "6") == "appended"
+        with open(store_file, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        for k in ("300:2", "300:4"):
+            assert k not in data

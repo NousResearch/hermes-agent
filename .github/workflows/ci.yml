@@ -154,14 +154,18 @@ jobs:
     steps:
       - name: Evaluate job results
         env:
-          RESULTS: ${{ toJSON(needs.*.result) }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "$RESULTS" | python3 -c "
+          echo "$NEEDS" | python3 -c "
           import json, sys
-          results = json.load(sys.stdin)
-          failed = [r for r in results if r == 'failure']
+          needs = json.load(sys.stdin)
+          failed = [name for name, info in needs.items() if info['result'] == 'failure']
+          for name, info in sorted(needs.items()):
+              result = info['result']
+              icon = '✅' if result in ('success', 'skipped') else '❌'
+              print(f'{icon} {name}: {result}')
           if failed:
-              print(f'::error::{len(failed)} job(s) failed')
+              print(f'::error::{len(failed)} job(s) failed: {\", \".join(failed)}')
               sys.exit(1)
           print('All checks passed (or were skipped)')
           "

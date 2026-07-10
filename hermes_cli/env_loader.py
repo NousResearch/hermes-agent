@@ -232,7 +232,19 @@ def load_hermes_dotenv(
     """
     loaded: list[Path] = []
 
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    if hermes_home:
+        home_path = Path(hermes_home)
+    else:
+        # Environment home (HERMES_HOME, with the HT_HOME alias) or the
+        # platform default (~/.ht-ai-agent after the Phase 6 migration, an
+        # un-migrated ~/.hermes honored in place). Env-only on purpose — no
+        # profile contextvar — this value is threaded into consumers like
+        # resolve_cache_home(), which mirrors this exact resolution.
+        from hermes_constants import _get_platform_default_hermes_home
+        from ht_compat import resolve_env
+
+        raw = (resolve_env("HERMES_HOME", "") or "").strip()
+        home_path = Path(raw) if raw else _get_platform_default_hermes_home()
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 

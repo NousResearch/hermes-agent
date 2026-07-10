@@ -21,6 +21,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
+from ht_compat import resolve_env as _resolve_brand_env
 from typing import Any, Optional
 from utils import atomic_json_write
 
@@ -52,7 +53,7 @@ def _get_process_hermes_home() -> Path:
     profile directory when a profile-context task happens to be active at write
     time.  See issue #56986.
     """
-    val = os.environ.get("HERMES_HOME", "").strip()
+    val = (_resolve_brand_env("HERMES_HOME", "") or "").strip()
     if val:
         return Path(val)
     return _get_platform_default_hermes_home()

@@ -252,6 +252,36 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
 
 
 @pytest.mark.asyncio
+async def test_session_chat_accepts_ht_headers_and_mirrors_them(auth_adapter, session_db):
+    """Phase 6 backward compat: the new X-HT-Session-* request headers are
+    honored, and responses carry both the legacy X-Hermes-* and new X-HT-*
+    spellings so old and new clients both work."""
+    session_id = session_db.create_session("ht-header-session", "api_server")
+    session_db.set_session_title(session_id, "HT")
+
+    mock_run = AsyncMock(return_value=({"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}))
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hi"},
+                # Send only the NEW header spelling.
+                headers={"Authorization": "Bearer sk-test", "X-HT-Session-Key": "client-99"},
+            )
+            assert resp.status == 200
+
+    # The new header was read and reached the agent as the gateway session key.
+    _, kwargs = mock_run.call_args
+    assert kwargs["gateway_session_key"] == "client-99"
+    # Both spellings are emitted on the response.
+    assert resp.headers["X-Hermes-Session-Id"] == session_id
+    assert resp.headers["X-HT-Session-Id"] == session_id
+    assert resp.headers["X-Hermes-Session-Key"] == "client-99"
+    assert resp.headers["X-HT-Session-Key"] == "client-99"
+
+
+@pytest.mark.asyncio
 async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
     session_id = session_db.create_session("image-session", "api_server")
     image_payload = [

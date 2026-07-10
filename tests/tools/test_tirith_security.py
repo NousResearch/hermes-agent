@@ -1182,17 +1182,20 @@ class TestHermesHomeIsolation:
         assert hermes_home is not None, "HERMES_HOME should be set by conftest"
         assert "hermes_test" in hermes_home, "Should point to test temp dir"
 
-    def test_get_hermes_home_fallback(self):
-        """Without HERMES_HOME set, falls back to the active OS home."""
+    def test_get_hermes_home_fallback(self, monkeypatch, tmp_path):
+        """Without HERMES_HOME set, falls back to the platform default home.
+
+        Pinned against a controlled fake home with a CONCRETE expected path —
+        deriving `expected` from the same resolver the code under test calls
+        would compare the function to itself and catch nothing."""
+        import hermes_constants
         from tools.tirith_security import _get_hermes_home
+
+        monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
+        monkeypatch.setattr(hermes_constants.Path, "home", lambda: tmp_path)
         with patch.dict(os.environ, {}, clear=True):
-            # Remove HERMES_HOME entirely. With HOME also absent, expanduser
-            # falls back to the account database; compute expected under the
-            # same environment instead of after patch.dict restores HOME.
-            os.environ.pop("HERMES_HOME", None)
-            expected = os.path.join(os.path.expanduser("~"), ".hermes")
             result = _get_hermes_home()
-        assert result == expected
+        assert result == str(tmp_path / ".ht-ai-agent")
 
 
 # ---------------------------------------------------------------------------

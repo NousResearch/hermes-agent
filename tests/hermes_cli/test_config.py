@@ -31,11 +31,26 @@ from hermes_cli.config import (
 
 
 class TestGetHermesHome:
-    def test_default_path(self):
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("HERMES_HOME", None)
-            home = get_hermes_home()
-            assert home == Path.home() / ".hermes"
+    def test_default_path(self, monkeypatch, tmp_path):
+        # Pin the CONCRETE default paths against a controlled fake home —
+        # asserting `get_hermes_home() == _get_platform_default_hermes_home()`
+        # would compare the resolver to itself and pass for any value it
+        # computed, wrong or right.
+        import hermes_constants
+
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HT_HOME", raising=False)
+        monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
+        monkeypatch.setattr(hermes_constants.Path, "home", lambda: tmp_path)
+
+        # Fresh install (neither dir exists): the HT-branded default.
+        assert get_hermes_home() == tmp_path / ".ht-ai-agent"
+
+        # An un-migrated populated legacy install is honored in place.
+        legacy = tmp_path / ".hermes"
+        legacy.mkdir()
+        (legacy / "config.yaml").write_text("model: x\n")
+        assert get_hermes_home() == tmp_path / ".hermes"
 
     def test_env_override(self):
         with patch.dict(os.environ, {"HERMES_HOME": "/custom/path"}):

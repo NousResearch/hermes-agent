@@ -47,6 +47,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+# Phase 6 backward compat: accept both the new X-HT-Session-Token and the
+# legacy X-Hermes-Session-Token loopback auth header.
+from ht_compat import read_brand_header
+
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -318,9 +322,10 @@ def _has_valid_session_token(request: Request) -> bool:
     The dedicated session header avoids collisions with reverse proxies that
     already use ``Authorization`` (for example Caddy ``basic_auth``). We still
     accept the legacy Bearer path for backward compatibility with older
-    dashboard bundles.
+    dashboard bundles. Both the new ``X-HT-Session-Token`` and legacy
+    ``X-Hermes-Session-Token`` spellings are accepted (Phase 6 compat).
     """
-    session_header = request.headers.get(_SESSION_HEADER_NAME, "")
+    session_header = read_brand_header(request.headers, "Session-Token", "")
     if session_header and hmac.compare_digest(
         session_header.encode(),
         _SESSION_TOKEN.encode(),

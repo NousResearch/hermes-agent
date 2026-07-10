@@ -3619,6 +3619,106 @@ class TestSessionIdHeader:
             assert call_kwargs["session_id"] == "some-session"
 
 
+class TestHtSessionIdHeader:
+    """Phase 6: the new X-HT-Session-Id spelling must flow through the SAME
+    security gate, sanitization, and history-load path as the legacy
+    X-Hermes-Session-Id. The gate's own comment says that without it any
+    unauthenticated client could read arbitrary session history by
+    guessing/enumerating session IDs — so the new spelling needs the same
+    negative coverage, not just the happy path."""
+
+    @pytest.mark.asyncio
+    async def test_ht_session_id_used_and_loads_history(self, auth_adapter):
+        """X-HT-Session-Id alone continues the session: id honored, history
+        loaded from SessionDB, and the response dual-emits both spellings."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        db_history = [
+            {"role": "user", "content": "stored message"},
+            {"role": "assistant", "content": "stored reply"},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = db_history
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-HT-Session-Id": "ht-session-1", "Authorization": "Bearer sk-secret"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Continue"}]},
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["session_id"] == "ht-session-1"
+            assert call_kwargs["conversation_history"] == db_history
+            assert resp.headers.get("X-Hermes-Session-Id") == "ht-session-1"
+            assert resp.headers.get("X-HT-Session-Id") == "ht-session-1"
+
+    @pytest.mark.asyncio
+    async def test_session_continuation_requires_api_key_for_both_spellings(self, adapter):
+        """Without an API key configured, session continuation is rejected with
+        403 for BOTH header spellings and the agent is never invoked. If only
+        the legacy spelling hit the gate, X-HT-Session-Id would be an
+        unauthenticated read of arbitrary session history."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                for header in ("X-HT-Session-Id", "X-Hermes-Session-Id"):
+                    resp = await cli.post(
+                        "/v1/chat/completions",
+                        headers={header: "someone-elses-session"},
+                        json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                    )
+                    assert resp.status == 403, f"{header} must hit the auth gate"
+                assert mock_run.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_ht_traversal_session_id_rejected(self, auth_adapter):
+        """The path-traversal sanitization applies to the new spelling too."""
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                for bad in ("../../../../etc/pwned", "/abs/path", "..\\win"):
+                    resp = await cli.post(
+                        "/v1/chat/completions",
+                        headers={"X-HT-Session-Id": bad, "Authorization": "Bearer sk-secret"},
+                        json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                    )
+                    assert resp.status == 400, f"{bad!r} should be rejected"
+                assert mock_run.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_new_spelling_wins_when_both_sent(self, auth_adapter):
+        """Headers are new-preferred by design (ht_compat.read_brand_header):
+        when both spellings arrive with different values, X-HT-Session-Id
+        wins. Pinned so a precedence flip is a deliberate decision, not an
+        accident."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = []
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "X-HT-Session-Id": "new-spelling-wins",
+                        "X-Hermes-Session-Id": "legacy-spelling",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["session_id"] == "new-spelling-wins"
+
+
 # ---------------------------------------------------------------------------
 # X-Hermes-Session-Key header (long-term memory scoping)
 # ---------------------------------------------------------------------------

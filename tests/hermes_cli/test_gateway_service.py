@@ -1968,10 +1968,16 @@ class TestDetectVenvDir:
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
 
-    def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
-        # Simulate sudo: Path.home() returns /root, target user is alice
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+    def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch, tmp_path):
+        # Simulate sudo with a CONTROLLED fake root home (an empty tmp dir) so
+        # the default-home resolver's .exists() checks are deterministic —
+        # pointing at the literal /root made the result depend on whether the
+        # host really has /root/.hermes or /root/.ht-ai-agent.
+        fake_root = tmp_path / "root"
+        fake_root.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_root))
         monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HT_HOME", raising=False)
         monkeypatch.setattr(
             gateway_cli, "_system_service_identity",
             lambda run_as_user=None: ("alice", "alice", "/home/alice"),
@@ -1983,13 +1989,17 @@ class TestSystemUnitHermesHome:
 
         unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
-        assert 'HERMES_HOME=/home/alice/.hermes' in unit
-        assert '/root/.hermes' not in unit
+        assert 'HERMES_HOME=/home/alice/.ht-ai-agent' in unit
+        assert str(fake_root) not in unit
 
-    def test_system_unit_remaps_profile_to_target_user(self, monkeypatch):
-        # Simulate sudo with a profile: HERMES_HOME was resolved under root
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
-        monkeypatch.setenv("HERMES_HOME", "/root/.hermes/profiles/coder")
+    def test_system_unit_remaps_profile_to_target_user(self, monkeypatch, tmp_path):
+        # Simulate sudo with a profile: HERMES_HOME was resolved under the
+        # calling user's home. A controlled fake home keeps .resolve() from
+        # following a real /root/.hermes symlink on migrated hosts.
+        fake_root = tmp_path / "root"
+        fake_root.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_root))
+        monkeypatch.setenv("HERMES_HOME", str(fake_root / ".hermes" / "profiles" / "coder"))
         monkeypatch.setattr(
             gateway_cli, "_system_service_identity",
             lambda run_as_user=None: ("alice", "alice", "/home/alice"),
@@ -2002,11 +2012,13 @@ class TestSystemUnitHermesHome:
         unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
         assert 'HERMES_HOME=/home/alice/.hermes/profiles/coder' in unit
-        assert '/root/' not in unit
+        assert str(fake_root) not in unit
 
-    def test_system_unit_preserves_custom_hermes_home(self, monkeypatch):
+    def test_system_unit_preserves_custom_hermes_home(self, monkeypatch, tmp_path):
         # Custom HERMES_HOME not under any user's home — keep as-is
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        fake_root = tmp_path / "root"
+        fake_root.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_root))
         monkeypatch.setenv("HERMES_HOME", "/opt/hermes-shared")
         monkeypatch.setattr(
             gateway_cli, "_system_service_identity",
@@ -2032,33 +2044,58 @@ class TestSystemUnitHermesHome:
 class TestHermesHomeForTargetUser:
     """Unit tests for _hermes_home_for_target_user()."""
 
-    def test_remaps_default_home(self, monkeypatch):
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+    def test_remaps_default_home(self, monkeypatch, tmp_path):
+        # Controlled empty fake home → the resolver deterministically returns
+        # the fresh-install default (no dependence on the host's real /root).
+        fake_root = tmp_path / "root"
+        fake_root.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_root))
         monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HT_HOME", raising=False)
 
         result = gateway_cli._hermes_home_for_target_user("/home/alice")
-        assert result == "/home/alice/.hermes"
+        assert result == "/home/alice/.ht-ai-agent"
 
-    def test_remaps_profile_path(self, monkeypatch):
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
-        monkeypatch.setenv("HERMES_HOME", "/root/.hermes/profiles/coder")
+    def test_remaps_profile_path(self, monkeypatch, tmp_path):
+        fake_root = tmp_path / "root"
+        fake_root.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_root))
+        monkeypatch.setenv("HERMES_HOME", str(fake_root / ".hermes" / "profiles" / "coder"))
 
         result = gateway_cli._hermes_home_for_target_user("/home/alice")
         assert result == "/home/alice/.hermes/profiles/coder"
 
-    def test_keeps_custom_path(self, monkeypatch):
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+    def test_keeps_custom_path(self, monkeypatch, tmp_path):
+        fake_root = tmp_path / "root"
+        fake_root.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_root))
         monkeypatch.setenv("HERMES_HOME", "/opt/hermes")
 
         result = gateway_cli._hermes_home_for_target_user("/home/alice")
         assert result == "/opt/hermes"
 
-    def test_noop_when_same_user(self, monkeypatch):
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/home/alice")))
-        monkeypatch.delenv("HERMES_HOME", raising=False)
+    def test_keeps_custom_path_under_calling_home(self, monkeypatch, tmp_path):
+        # A custom HERMES_HOME under the calling user's home that is NOT one of
+        # the known data-dir names must be preserved verbatim — re-anchoring it
+        # under the target user would bake a different (likely nonexistent)
+        # path into the systemd unit.
+        fake_root = tmp_path / "root"
+        fake_root.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_root))
+        monkeypatch.setenv("HERMES_HOME", str(fake_root / "custom-hermes"))
 
         result = gateway_cli._hermes_home_for_target_user("/home/alice")
-        assert result == "/home/alice/.hermes"
+        assert result == str(fake_root / "custom-hermes")
+
+    def test_noop_when_same_user(self, monkeypatch, tmp_path):
+        fake_home = tmp_path / "alice"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HT_HOME", raising=False)
+
+        result = gateway_cli._hermes_home_for_target_user(str(fake_home))
+        assert result == str(fake_home / ".ht-ai-agent")
 
 
 class TestGeneratedUnitUsesDetectedVenv:

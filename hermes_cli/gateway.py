@@ -2572,25 +2572,35 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
 
     When installing a system service via sudo, get_hermes_home() resolves to
     root's home.  This translates it to the target user's equivalent path:
-      /root/.hermes                    → /home/alice/.hermes
-      /root/.hermes/profiles/coder     → /home/alice/.hermes/profiles/coder
+      /root/.ht-ai-agent               → /home/alice/.ht-ai-agent
+      /root/.ht-ai-agent/profiles/coder → /home/alice/.ht-ai-agent/profiles/coder
+      /root/.hermes  (legacy install)  → /home/alice/.hermes
+      /root/custom-hermes              → /root/custom-hermes  (kept as-is)
       /opt/custom-hermes               → /opt/custom-hermes  (kept as-is)
+
+    Only the two known data-dir layouts (``.ht-ai-agent`` / ``.hermes`` at the
+    top of the calling user's home, including profile subdirs) are re-anchored.
+    Any other path — even one under the calling user's home — is a deliberate
+    custom HERMES_HOME and is preserved verbatim, matching the pre-rebrand
+    "custom path kept as-is" contract.
     """
     current_hermes = get_hermes_home().resolve()
-    current_default = (Path.home() / ".hermes").resolve()
-    target_default = Path(target_home_dir) / ".hermes"
+    calling_home = Path.home().resolve()
 
-    # Default ~/.hermes → remap to target user's default
-    if current_hermes == current_default:
-        return str(target_default)
-
-    # Profile or subdir of ~/.hermes → preserve the relative structure
     try:
-        relative = current_hermes.relative_to(current_default)
-        return str(target_default / relative)
+        relative = current_hermes.relative_to(calling_home)
     except ValueError:
-        # Completely custom path (not under ~/.hermes) — keep as-is
+        # Not under the calling user's home (e.g. /opt/data) — keep as-is.
         return str(current_hermes)
+
+    # hermes_constants owns the brand dir names; systemd units are POSIX-only.
+    from hermes_constants import _LEGACY_HOME_POSIX, _NEW_HOME_POSIX
+
+    top = relative.parts[0] if relative.parts else ""
+    if top in (_NEW_HOME_POSIX, _LEGACY_HOME_POSIX):
+        return str(Path(target_home_dir) / relative)
+    # Custom location under the calling user's home — keep as-is.
+    return str(current_hermes)
 
 
 def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:

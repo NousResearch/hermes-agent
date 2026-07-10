@@ -573,13 +573,16 @@ class PetRenderer:
     @property
     def available(self) -> bool:
         """True only when the renderer has a spritesheet AND stdout is an
-        interactive TTY.  Without the TTY guard, the animation loop writes
-        ANSI escape sequences and frame data unconditionally to stdout --
-        in a Docker container (or any non-TTY context) every frame becomes
-        a log line, growing the container log at ~68 lines/second and
-        potentially filling the host disk (issue #61964).
+        interactive TTY.
+
+        Non-TTY rendering is intentionally unsupported: without the TTY
+        guard the animation loop writes ANSI escape sequences and frame
+        data unconditionally to stdout -- in a Docker container (or any
+        pipe/redirect context) every frame becomes a log line, growing
+        the container log at ~68 lines/second and potentially filling the
+        host disk (issue #61964).  If you need frames in a non-TTY
+        context, read the spritesheet directly via PetRenderer.frame().
         """
-        import sys
         if not getattr(sys.stdout, "isatty", lambda: False)():
             return False
         return self.mode != "off" and Path(self.spritesheet).is_file()

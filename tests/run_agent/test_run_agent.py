@@ -6681,6 +6681,61 @@ class TestAnthropicCredentialRefresh:
         agent._anthropic_client.messages.create.assert_called_once_with(model="MiniMax-M3")
         assert result is response
 
+    def test_anthropic_streaming_falls_back_on_iterator_usage_aggregation_error(self):
+        """Main-turn path: SDK crash during stream iteration must use create().
+
+        #60683 fails inside accumulate_event() on message_delta while the
+        event loop is iterating — outside get_final_message(). Fallback must
+        call messages.create() directly (prefer_stream=False), not
+        _anthropic_messages_create() which would re-enter messages.stream().
+        """
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant-oat01-current-token",
+                base_url="https://api.minimaxi.com/anthropic",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        response = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="ok")],
+            stop_reason="end_turn",
+            usage=None,
+        )
+
+        class _BoomStream:
+            def __iter__(self):
+                raise AttributeError(
+                    "'NoneType' object has no attribute 'output_tokens'"
+                )
+
+            def get_final_message(self):
+                raise AssertionError("get_final_message should not be reached")
+
+        stream_cm = MagicMock()
+        stream_cm.__enter__.return_value = _BoomStream()
+        stream_cm.__exit__.return_value = False
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.return_value = stream_cm
+        agent._anthropic_client.messages.create.return_value = response
+        agent._interrupt_requested = False
+
+        with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False):
+            result = agent._interruptible_streaming_api_call(
+                {"model": "MiniMax-M3", "messages": []}
+            )
+
+        agent._anthropic_client.messages.stream.assert_called_once()
+        agent._anthropic_client.messages.create.assert_called_once()
+        assert result is response
+
     def test_anthropic_messages_create_honors_disable_streaming(self):
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),

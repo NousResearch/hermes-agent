@@ -592,6 +592,33 @@ skills:
 
 When on, any flagged `skill_manage` write surfaces as an approval prompt with the scanner's rationale. Accepted writes land; denied writes return an explanatory error to the agent.
 
+### SKILL.md size ratchet
+
+Hermes keeps the existing 100,000-character hard ceiling for agent-written skill files, but `SKILL.md` also has a softer prompt-efficiency ratchet. Supporting files under `references/`, `templates/`, `scripts/`, and `assets/` are not subject to this soft guard.
+
+```yaml
+skills:
+  skill_md_size_guard: auto          # off | auto | warn | enforce
+  skill_md_soft_limit_chars: 20000   # default
+  skill_md_max_growth_chars: 5000    # default; existing skills only
+  skill_md_size_overrides:           # optional; exact skill directory names
+    production-deployments:
+      mode: enforce
+      soft_limit_chars: 20000
+      max_growth_chars: 2000
+```
+
+A write triggers the guard when it creates or grows a `SKILL.md` above the soft limit, crosses that limit, or adds more than the configured growth allowance in one edit. Shrinking edits are always allowed, including edits that reduce a legacy oversized skill but leave it above the soft limit. Exact-name overrides inherit any omitted values from the global policy, so strict operational skills can be ratcheted without imposing the same ceiling on creative, research, or model-specific skills.
+
+Modes:
+
+- `auto` (default) — warn on foreground/user-directed writes, but block autonomous background-review growth.
+- `warn` — allow the write and return a structured `size_advisory` to the agent.
+- `enforce` — block triggering foreground and background writes before touching the file.
+- `off` — keep only the historical 100,000-character hard ceiling.
+
+The warning/error directs the agent to keep triggers, authority boundaries, and routing in `SKILL.md`, move branch-specific detail into support files, and leave concise pointers behind. Direct filesystem edits and hand-placed skills remain outside `skill_manage` enforcement.
+
 ### Write approval for skill writes
 
 Independent of the content scanner above, `skills.write_approval` gates **every** agent skill write (create / edit / patch / delete / supporting files) behind your explicit approval — the same approve/deny mechanism as dangerous commands:

@@ -2330,6 +2330,22 @@ DEFAULT_CONFIG = {
         "inline_shell": False,
         # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
         "inline_shell_timeout": 10,
+        # Keep SKILL.md as a lean trigger/authority/router while allowing rich
+        # references/templates/scripts in the same bundle.  The absolute agent-
+        # write ceiling remains 100k; this is a prompt-efficiency ratchet:
+        #   auto    — warn foreground writes; block background-review growth
+        #   warn    — warn all writes but allow them
+        #   enforce — block triggering foreground and background writes
+        #   off     — hard 100k ceiling only (legacy behavior)
+        # Shrinking edits are always allowed.  A write triggers when SKILL.md
+        # grows while already above the soft limit, crosses that limit, or adds
+        # more than max_growth_chars in one edit. Supporting files are exempt.
+        "skill_md_size_guard": "auto",
+        "skill_md_soft_limit_chars": 20_000,
+        "skill_md_max_growth_chars": 5_000,
+        # Optional exact skill-name overrides. Each mapping may set ``mode``,
+        # ``soft_limit_chars``, and/or ``max_growth_chars``.
+        "skill_md_size_overrides": {},
         # Run the keyword/pattern security scanner on skills the agent
         # writes via skill_manage (create/edit/patch).  Off by default
         # because the agent can already execute the same code paths via

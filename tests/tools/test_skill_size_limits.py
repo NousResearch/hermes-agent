@@ -1,11 +1,12 @@
 """Tests for skill content size limits.
 
-Agent writes (create/edit/patch/write_file) are constrained to
-MAX_SKILL_CONTENT_CHARS (100k) and MAX_SKILL_FILE_BYTES (1 MiB).
-Hand-placed and hub-installed skills have no hard limit.
+Agent writes keep the 100k hard ceiling and apply a configurable soft SKILL.md
+ratchet. Supporting files retain the hard character/byte limits only.
+Hand-placed and hub-installed skills have no storage hard limit.
 """
 
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -13,6 +14,10 @@ from tools.skill_manager_tool import (
     MAX_SKILL_CONTENT_CHARS,
     _validate_content_size,
     skill_manage,
+)
+from tools.skill_size_guard import (
+    DEFAULT_SKILL_MD_MAX_GROWTH_CHARS,
+    DEFAULT_SKILL_MD_SOFT_LIMIT_CHARS,
 )
 
 
@@ -190,6 +195,233 @@ class TestWriteFileSizeLimit:
             file_content="# Normal\n\n" + ("x" * 5000),
         ))
         assert result["success"] is True
+
+
+class TestSkillMdSizeGuard:
+    """The soft guard warns foreground writes and ratchets automatic growth."""
+
+    def test_auto_warns_foreground_create_above_soft_limit(self, isolate_skills):
+        content = _make_skill_content(DEFAULT_SKILL_MD_SOFT_LIMIT_CHARS + 500)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"skill_md_size_guard": "auto"}},
+        ):
+            result = json.loads(
+                skill_manage(action="create", name="large-foreground", content=content)
+            )
+
+        assert result["success"] is True
+        advisory = result["size_advisory"]
+        assert advisory["effective_mode"] == "warn"
+        assert advisory["after_chars"] == len(content)
+        assert advisory["soft_limit_chars"] == DEFAULT_SKILL_MD_SOFT_LIMIT_CHARS
+        assert "references/" in advisory["message"]
+
+    def test_auto_blocks_background_create_above_soft_limit(self, isolate_skills):
+        content = _make_skill_content(DEFAULT_SKILL_MD_SOFT_LIMIT_CHARS + 500)
+
+        with (
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"skills": {"skill_md_size_guard": "auto"}},
+            ),
+            patch("tools.skill_provenance.is_background_review", return_value=True),
+        ):
+            result = json.loads(
+                skill_manage(action="create", name="large-background", content=content)
+            )
+
+        assert result["success"] is False
+        assert result["size_guard"]["effective_mode"] == "enforce"
+        assert result["size_guard"]["after_chars"] == len(content)
+        assert not (isolate_skills / "large-background").exists()
+
+    def test_enforce_blocks_large_single_patch_and_preserves_file(self, isolate_skills):
+        content = _make_skill_content(5_000)
+        created = json.loads(
+            skill_manage(action="create", name="patch-ratchet", content=content)
+        )
+        skill_md = isolate_skills / created["path"] / "SKILL.md"
+        before = skill_md.read_text(encoding="utf-8")
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "skills": {
+                    "skill_md_size_guard": "enforce",
+                    "skill_md_soft_limit_chars": DEFAULT_SKILL_MD_SOFT_LIMIT_CHARS,
+                    "skill_md_max_growth_chars": DEFAULT_SKILL_MD_MAX_GROWTH_CHARS,
+                }
+            },
+        ):
+            result = json.loads(
+                skill_manage(
+                    action="patch",
+                    name="patch-ratchet",
+                    old_string="# Test Skill",
+                    new_string="# Test Skill\n" + ("y" * (DEFAULT_SKILL_MD_MAX_GROWTH_CHARS + 1)),
+                )
+            )
+
+        assert result["success"] is False
+        assert "single-write growth" in result["error"]
+        assert skill_md.read_text(encoding="utf-8") == before
+
+    def test_enforce_allows_shrinking_an_oversized_skill(self, isolate_skills):
+        skill_dir = isolate_skills / "legacy-large"
+        skill_dir.mkdir()
+        content = _make_skill_content(DEFAULT_SKILL_MD_SOFT_LIMIT_CHARS + 5_000)
+        content = content.replace("name: test-skill", "name: legacy-large")
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(content, encoding="utf-8")
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"skill_md_size_guard": "enforce"}},
+        ):
+            result = json.loads(
+                skill_manage(
+                    action="patch",
+                    name="legacy-large",
+                    old_string="x" * 100,
+                    new_string="y",
+                    replace_all=True,
+                )
+            )
+
+        assert result["success"] is True
+        assert len(skill_md.read_text(encoding="utf-8")) < len(content)
+        assert "size_advisory" not in result
+
+    @pytest.mark.parametrize(
+        "file_path",
+        ["SKILL.md", "explicit-main-patch/SKILL.md"],
+    )
+    def test_explicit_skill_md_patch_cannot_bypass_guard(
+        self, isolate_skills, file_path
+    ):
+        content = _make_skill_content(5_000)
+        created = json.loads(
+            skill_manage(action="create", name="explicit-main-patch", content=content)
+        )
+        skill_md = isolate_skills / created["path"] / "SKILL.md"
+        before = skill_md.read_text(encoding="utf-8")
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"skill_md_size_guard": "enforce"}},
+        ):
+            result = json.loads(
+                skill_manage(
+                    action="patch",
+                    name="explicit-main-patch",
+                    file_path=file_path,
+                    old_string="# Test Skill",
+                    new_string="# Test Skill\n" + ("z" * (DEFAULT_SKILL_MD_MAX_GROWTH_CHARS + 1)),
+                )
+            )
+
+        assert result["success"] is False
+        assert skill_md.read_text(encoding="utf-8") == before
+
+    def test_explicit_skill_md_write_cannot_bypass_guard(self, isolate_skills):
+        content = _make_skill_content(1_000)
+        created = json.loads(
+            skill_manage(action="create", name="explicit-main-write", content=content)
+        )
+        skill_md = isolate_skills / created["path"] / "SKILL.md"
+        before = skill_md.read_text(encoding="utf-8")
+        replacement = _make_skill_content(DEFAULT_SKILL_MD_SOFT_LIMIT_CHARS + 500)
+        replacement = replacement.replace("name: test-skill", "name: explicit-main-write")
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"skill_md_size_guard": "enforce"}},
+        ):
+            result = json.loads(
+                skill_manage(
+                    action="write_file",
+                    name="explicit-main-write",
+                    file_path="SKILL.md",
+                    file_content=replacement,
+                )
+            )
+
+        assert result["success"] is False
+        assert skill_md.read_text(encoding="utf-8") == before
+
+    def test_guard_does_not_apply_to_support_file_growth(self, isolate_skills):
+        content = _make_skill_content(1_000)
+        json.loads(skill_manage(action="create", name="large-reference", content=content))
+        json.loads(
+            skill_manage(
+                action="write_file",
+                name="large-reference",
+                file_path="references/data.md",
+                file_content="small",
+            )
+        )
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"skill_md_size_guard": "enforce"}},
+        ):
+            result = json.loads(
+                skill_manage(
+                    action="patch",
+                    name="large-reference",
+                    file_path="references/data.md",
+                    old_string="small",
+                    new_string="x" * (DEFAULT_SKILL_MD_MAX_GROWTH_CHARS + 1),
+                )
+            )
+
+        assert result["success"] is True
+        assert "size_advisory" not in result
+
+    def test_exact_skill_override_can_enforce_a_stricter_policy(self, isolate_skills):
+        content = _make_skill_content(1_500)
+        config = {
+            "skills": {
+                "skill_md_size_guard": "auto",
+                "skill_md_soft_limit_chars": DEFAULT_SKILL_MD_SOFT_LIMIT_CHARS,
+                "skill_md_size_overrides": {
+                    "strict-skill": {
+                        "mode": "enforce",
+                        "soft_limit_chars": 1_000,
+                    }
+                },
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config):
+            strict = json.loads(
+                skill_manage(action="create", name="strict-skill", content=content)
+            )
+            ordinary = json.loads(
+                skill_manage(action="create", name="ordinary-skill", content=content)
+            )
+
+        assert strict["success"] is False
+        assert strict["size_guard"]["policy_source"] == "override:strict-skill"
+        assert strict["size_guard"]["soft_limit_chars"] == 1_000
+        assert ordinary["success"] is True
+        assert "size_advisory" not in ordinary
+
+    def test_off_mode_suppresses_foreground_advisory(self, isolate_skills):
+        content = _make_skill_content(DEFAULT_SKILL_MD_SOFT_LIMIT_CHARS + 500)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"skill_md_size_guard": "off"}},
+        ):
+            result = json.loads(
+                skill_manage(action="create", name="large-opt-out", content=content)
+            )
+
+        assert result["success"] is True
+        assert "size_advisory" not in result
 
 
 class TestHandPlacedSkillsNoLimit:

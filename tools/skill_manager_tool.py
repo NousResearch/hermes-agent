@@ -45,6 +45,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
+from tools.skill_size_guard import (
+    attach_skill_md_size_advisory as _attach_skill_md_size_advisory,
+    blocked_by_skill_md_size_guard as _blocked_by_skill_md_size_guard,
+    evaluate_skill_md_size_guard as _evaluate_skill_md_size_guard,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -743,11 +748,28 @@ def _validate_file_path(file_path: str) -> Optional[str]:
     return None
 
 
+def _is_skill_md_file_path(file_path: Optional[str]) -> bool:
+    """Return True for the accepted explicit spellings of the main skill file."""
+    if not file_path:
+        return False
+    normalized = Path(file_path)
+    return (
+        normalized.name == "SKILL.md"
+        and len(normalized.parts) in {1, 2}
+    )
+
+
 def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Path], Optional[str]]:
-    """Resolve a supporting-file path and ensure it stays within the skill directory."""
+    """Resolve a skill file path and ensure it stays within the skill directory."""
     from tools.path_security import validate_within_dir
 
-    target = skill_dir / file_path
+    # _validate_file_path accepts both SKILL.md and <name>/SKILL.md for the
+    # canonical main file. Normalize both to the actual root SKILL.md instead
+    # of accidentally creating a nested copy that bypasses main-file checks.
+    if _is_skill_md_file_path(file_path):
+        target = skill_dir / "SKILL.md"
+    else:
+        target = skill_dir / file_path
     error = validate_within_dir(target, skill_dir)
     if error:
         return None, error
@@ -810,6 +832,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
+    size_guard = _evaluate_skill_md_size_guard(name, None, content)
+    if size_guard and size_guard.get("effective_mode") == "enforce":
+        return _blocked_by_skill_md_size_guard(size_guard)
+
     # Check for name collisions across all directories
     existing = _find_skill(name)
     if existing:
@@ -855,7 +881,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "To add reference files, templates, or scripts, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
     )
-    return result
+    return _attach_skill_md_size_advisory(result, size_guard)
 
 
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
@@ -884,6 +910,9 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+    size_guard = _evaluate_skill_md_size_guard(name, original_content, content)
+    if size_guard and size_guard.get("effective_mode") == "enforce":
+        return _blocked_by_skill_md_size_guard(size_guard)
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
@@ -903,12 +932,13 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    return {
+    result = {
         "success": True,
         "message": f"Skill '{name}' updated (full rewrite).",
         "path": str(existing["path"]),
         "_change": {"description": _desc},
     }
+    return _attach_skill_md_size_advisory(result, size_guard)
 
 
 def _patch_skill(
@@ -937,8 +967,8 @@ def _patch_skill(
     if guard:
         return guard
 
+    is_skill_md = not file_path or _is_skill_md_file_path(file_path)
     if file_path:
-        # Patching a supporting file
         err = _validate_file_path(file_path)
         if err:
             return {"success": False, "error": err}
@@ -989,19 +1019,25 @@ def _patch_skill(
         }
 
     # Check size limit on the result
-    target_label = "SKILL.md" if not file_path else file_path
+    target_label = "SKILL.md" if is_skill_md else file_path
     err = _validate_content_size(new_content, label=target_label)
     if err:
         return {"success": False, "error": err}
 
     # If patching SKILL.md, validate frontmatter is still intact
-    if not file_path:
+    if is_skill_md:
         err = _validate_frontmatter(new_content)
         if err:
             return {
                 "success": False,
                 "error": f"Patch would break SKILL.md structure: {err}",
             }
+
+    size_guard = None
+    if is_skill_md:
+        size_guard = _evaluate_skill_md_size_guard(name, content, new_content)
+        if size_guard and size_guard.get("effective_mode") == "enforce":
+            return _blocked_by_skill_md_size_guard(size_guard)
 
     original_content = content  # for rollback
     _atomic_write_text(target, new_content)
@@ -1014,14 +1050,14 @@ def _patch_skill(
 
     result = {
         "success": True,
-        "message": f"Patched {'SKILL.md' if not file_path else file_path} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
+        "message": f"Patched {'SKILL.md' if is_skill_md else file_path} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
     }
     # Include change previews for verbose notifications
     result["_change"] = {
         "old": old_string[:200] + ("…" if len(old_string) > 200 else ""),
         "new": new_string[:200] + ("…" if len(new_string) > 200 else ""),
     }
-    return result
+    return _attach_skill_md_size_advisory(result, size_guard)
 
 
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
@@ -1130,10 +1166,11 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
 
 
 def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
-    """Add or overwrite a supporting file within any skill directory."""
+    """Add or overwrite a skill file; main-file writes retain SKILL.md checks."""
     err = _validate_file_path(file_path)
     if err:
         return {"success": False, "error": err}
+    is_skill_md = _is_skill_md_file_path(file_path)
 
     if not file_content and file_content != "":
         return {"success": False, "error": "file_content is required."}
@@ -1152,6 +1189,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     err = _validate_content_size(file_content, label=file_path)
     if err:
         return {"success": False, "error": err}
+    if is_skill_md:
+        err = _validate_frontmatter(file_content)
+        if err:
+            return {"success": False, "error": err}
 
     existing = _find_skill(name)
     if not existing:
@@ -1173,6 +1214,11 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     target.parent.mkdir(parents=True, exist_ok=True)
     # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
+    size_guard = None
+    if is_skill_md:
+        size_guard = _evaluate_skill_md_size_guard(name, original_content, file_content)
+        if size_guard and size_guard.get("effective_mode") == "enforce":
+            return _blocked_by_skill_md_size_guard(size_guard)
     _atomic_write_text(target, file_content)
 
     # Security scan — roll back on block
@@ -1184,11 +1230,12 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
             target.unlink(missing_ok=True)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"File '{file_path}' written to skill '{name}'.",
         "path": str(target),
     }
+    return _attach_skill_md_size_advisory(result, size_guard)
 
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
@@ -1196,6 +1243,14 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     err = _validate_file_path(file_path)
     if err:
         return {"success": False, "error": err}
+    if _is_skill_md_file_path(file_path):
+        return {
+            "success": False,
+            "error": (
+                "SKILL.md cannot be removed with remove_file. Use "
+                "action='delete' to remove the skill with its safety checks."
+            ),
+        }
 
     existing = _find_skill(name)
     if not existing:

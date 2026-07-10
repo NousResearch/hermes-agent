@@ -463,6 +463,12 @@ below lets you require human review before those changes land.
 The `patch` action is preferred for updates — it's more token-efficient than `edit` because only the changed text appears in the tool call.
 :::
 
+### Keeping SKILL.md lean
+
+`skill_manage` applies a configurable size ratchet to the main `SKILL.md` body while leaving `references/`, `templates/`, `scripts/`, and `assets/` available for rich support material. By default (`skills.skill_md_size_guard: auto`), foreground growth above 20,000 characters or a single edit above 5,000 added characters returns a warning; the same growth from autonomous background review is blocked. Shrinking edits always pass.
+
+Use `skills.skill_md_size_guard: enforce` to block triggering foreground writes too, `warn` to advise without blocking, or `off` for the historical 100,000-character hard ceiling only. Exact-name entries under `skills.skill_md_size_overrides` can make selected safety-critical skills stricter without forcing the same policy on every category. See [SKILL.md size ratchet](/user-guide/configuration#skillmd-size-ratchet) for all settings and exact behavior.
+
 ### Gating agent skill writes (`skills.write_approval`)
 
 By default the agent writes skills freely — including from the [background

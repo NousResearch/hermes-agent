@@ -490,6 +490,15 @@ class TestRemoveFile:
         assert result["success"] is True
         assert not (tmp_path / "my-skill" / "references" / "api.md").exists()
 
+    def test_remove_main_skill_file_is_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _remove_file("my-skill", "SKILL.md")
+
+        assert result["success"] is False
+        assert "action='delete'" in result["error"]
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
     def test_remove_nonexistent_file(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)

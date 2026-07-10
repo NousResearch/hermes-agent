@@ -776,7 +776,15 @@ def content_hash(skill_path: Path) -> str:
     """
     h = hashlib.sha256()
     if skill_path.is_dir():
-        for f in sorted(skill_path.rglob("*")):
+        # Sort by the same relative POSIX strings used by
+        # bundle_content_hash(). Sorting Path objects compares path components,
+        # which orders ``styles/child.md`` before sibling ``styles.md`` and
+        # produces a different digest for byte-identical bundles.
+        paths = sorted(
+            skill_path.rglob("*"),
+            key=lambda path: path.relative_to(skill_path).as_posix(),
+        )
+        for f in paths:
             if f.is_file():
                 try:
                     rel = f.relative_to(skill_path).as_posix()

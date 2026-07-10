@@ -419,6 +419,22 @@ def _isolate_hermes_home(_hermetic_environment):
 # approvals from one test's session into another's.
 
 
+@pytest.fixture(autouse=True)
+def _reset_skill_dedup_cache():
+    """Per-turn skill-view dedup global must not leak across tests in a file.
+
+    ``tools.skills_tool._loaded_skill_keys`` tracks (name, file_path) so
+    skill_view can short-circuit within a single turn. Within a test file
+    every test starts a fresh turn, so the cache must be empty.
+    """
+    try:
+        from tools.skills_tool import reset_skill_load_cache
+
+        reset_skill_load_cache()
+    except Exception:
+        pass
+
+
 @pytest.fixture()
 def tmp_dir(tmp_path):
     """Provide a temporary directory that is cleaned up automatically."""

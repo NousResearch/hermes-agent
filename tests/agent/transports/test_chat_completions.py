@@ -104,6 +104,24 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[2]["tool_name"] == "execute_code"
 
+    def test_convert_messages_strips_tool_output_risk_metadata(self, transport):
+        msgs = [{
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "result",
+            "_tool_output_risk": {
+                "risk": "high",
+                "findings": ["prompt_injection"],
+                "redacted": False,
+            },
+        }]
+
+        result = transport.convert_messages(msgs)
+
+        assert "_tool_output_risk" not in result[0]
+        assert result[0]["content"] == "result"
+        assert "_tool_output_risk" in msgs[0]
+
     def test_convert_messages_strips_timestamp(self, transport):
         """Internal per-message ``timestamp`` metadata (stamped by
         ``_apply_persist_user_message_override`` to preserve platform event

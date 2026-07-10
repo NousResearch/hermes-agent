@@ -236,16 +236,25 @@ _nb_install_bundled_node() {
 _nb_managed_tool_broken() {
     local tool="$1"
     local probe
+    local found=1
     for probe in \
         "$HERMES_HOME/node/bin/$tool" \
         "$HERMES_HOME/node/${tool}.exe" \
         "$HERMES_HOME/node/$tool"; do
         if [ -x "$probe" ] || [ -f "$probe" ]; then
+            found=0
             if ! "$probe" --version >/dev/null 2>&1; then
                 return 0
             fi
         fi
     done
+    # A managed Node tree with an entirely absent sibling (e.g. npm/npx
+    # missing while node is healthy) is also repair-worthy: redownloading
+    # the pinned tarball restores the missing tool. Only treat absence as
+    # broken when the managed tree exists, so this stays a no-op otherwise.
+    if [ "$found" -ne 0 ] && [ -d "$HERMES_HOME/node" ]; then
+        return 0
+    fi
     return 1
 }
 

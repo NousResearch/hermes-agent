@@ -129,7 +129,13 @@ class MemoryStore:
         self._hrr_available = hrr._HAS_NUMPY
 
         # Acquire (or open) the process-wide shared connection for this DB.
-        self._key = str(self.db_path)
+        # resolve() (not just expanduser) so symlinked/relative paths to the
+        # same file share ONE connection instead of silently reintroducing
+        # the multi-writer contention this registry exists to prevent.
+        try:
+            self._key = str(self.db_path.resolve())
+        except OSError:
+            self._key = str(self.db_path)
         with MemoryStore._shared_guard:
             entry = MemoryStore._shared.get(self._key)
             if entry is None:

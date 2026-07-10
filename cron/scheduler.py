@@ -58,6 +58,16 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
+    # _run_job_script emits this exact envelope for local subprocess
+    # timeouts. Classify it before broad provider-keyword checks so a script
+    # path containing "429" or "rate-limit" cannot shadow the real cause.
+    if re.match(r"^script timed out after \d+(?:\.\d+)?s:", lower):
+        return (
+            f"⚠️ Cron '{job_name}' failed: local script timeout. "
+            "The pre-run script exceeded its execution limit. "
+            "Full details saved in cron output."
+        )
+
     # Provider/API failures are the common noisy path. Keep these short.
     if "429" in text or "rate limit" in lower or "usage limit" in lower:
         reason = "rate limit"

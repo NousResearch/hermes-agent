@@ -195,6 +195,35 @@ class TestRunJobScript:
         assert success is False
         assert "timed out" in output.lower()
 
+    def test_script_timeout_delivery_summary_stays_local(self, cron_env, monkeypatch):
+        import subprocess
+
+        from cron import scheduler as sched_mod
+        from cron.scheduler import (
+            _run_job_script,
+            _summarize_cron_failure_for_delivery,
+        )
+
+        script = cron_env / "scripts" / "429-rate-limit-report.py"
+        script.write_text("print('never runs')\n")
+
+        def raise_timeout(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+        monkeypatch.setattr(sched_mod.subprocess, "run", raise_timeout)
+        success, error = _run_job_script(str(script))
+
+        assert success is False
+        assert error.startswith("Script timed out after ")
+        summary = _summarize_cron_failure_for_delivery(
+            {"name": "nightly-report"}, error
+        )
+        assert "local script timeout" in summary
+        assert "provider timeout" not in summary
+        assert "provider rate limit" not in summary
+        assert "Fallback chain" not in summary
+        assert str(script) not in summary
+
     def test_script_json_output(self, cron_env):
         """Scripts can output structured JSON for the LLM to parse."""
         from cron.scheduler import _run_job_script

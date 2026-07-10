@@ -3353,6 +3353,135 @@ class TestMatrixImageOnlyMediaNormalization:
         assert captured_event.text == "Please describe this chart"
 
     @pytest.mark.asyncio
+    async def test_msc2530_body_matching_declared_filename_is_cleared(self):
+        captured_event = None
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter.handle_message = capture
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$image3",
+            event_ts=0.0,
+            source_content={
+                "msgtype": "m.image",
+                "body": "IMG_1234.png",
+                "filename": "IMG_1234.png",
+                "url": "mxc://example/30.png",
+                "info": {"mimetype": "image/png"},
+            },
+            relates_to={},
+            msgtype="m.image",
+        )
+
+        assert captured_event is not None
+        assert captured_event.text == ""
+
+    @pytest.mark.asyncio
+    async def test_msc2530_filename_looking_caption_is_preserved(self):
+        captured_event = None
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter.handle_message = capture
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$image4",
+            event_ts=0.0,
+            source_content={
+                "msgtype": "m.image",
+                "body": "screenshot.png",
+                "filename": "IMG_1234.png",
+                "url": "mxc://example/30.png",
+                "info": {"mimetype": "image/png"},
+            },
+            relates_to={},
+            msgtype="m.image",
+        )
+
+        assert captured_event is not None
+        assert captured_event.text == "screenshot.png"
+
+    @pytest.mark.asyncio
+    async def test_msc2530_declared_filename_used_for_document_cache(self):
+        captured_event = None
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter.handle_message = capture
+        self.adapter._client.download_media = AsyncMock(return_value=b"pdf-bytes")
+
+        with patch(
+            "gateway.platforms.base.cache_document_from_bytes",
+            return_value="/cache/report.pdf",
+        ) as mock_cache:
+            await self.adapter._handle_media_message(
+                room_id="!room:example.org",
+                sender="@alice:example.org",
+                event_id="$file1",
+                event_ts=0.0,
+                source_content={
+                    "msgtype": "m.file",
+                    "body": "check this out!",
+                    "filename": "report.pdf",
+                    "url": "mxc://example/report.pdf",
+                    "info": {"mimetype": "application/pdf"},
+                },
+                relates_to={},
+                msgtype="m.file",
+            )
+
+        mock_cache.assert_called_once_with(b"pdf-bytes", "report.pdf")
+        assert captured_event is not None
+        assert captured_event.text == "check this out!"
+        assert captured_event.media_urls == ["/cache/report.pdf"]
+
+    @pytest.mark.asyncio
+    async def test_msc2530_declared_filename_used_for_audio_cache_extension(self):
+        captured_event = None
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter.handle_message = capture
+        self.adapter._client.download_media = AsyncMock(return_value=b"mp3-bytes")
+
+        with patch(
+            "gateway.platforms.base.cache_audio_from_bytes",
+            return_value="/cache/audio.mp3",
+        ) as mock_cache:
+            await self.adapter._handle_media_message(
+                room_id="!room:example.org",
+                sender="@alice:example.org",
+                event_id="$audio1",
+                event_ts=0.0,
+                source_content={
+                    "msgtype": "m.audio",
+                    "body": "great tune, give it a listen",
+                    "filename": "song.mp3",
+                    "url": "mxc://example/song.mp3",
+                    "info": {"mimetype": "audio/mpeg"},
+                },
+                relates_to={},
+                msgtype="m.audio",
+            )
+
+        mock_cache.assert_called_once_with(b"mp3-bytes", ext=".mp3")
+        assert captured_event is not None
+        assert captured_event.text == "great tune, give it a listen"
+
+    @pytest.mark.asyncio
     async def test_inbound_oversized_media_is_rejected(self):
         captured_event = None
 

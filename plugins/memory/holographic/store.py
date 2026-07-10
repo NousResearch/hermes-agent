@@ -6,6 +6,7 @@ Single-user Hermes memory store plugin.
 import re
 import sqlite3
 import threading
+import unicodedata
 from pathlib import Path
 
 try:
@@ -83,12 +84,82 @@ _TRUST_MAX       =  1.0
 
 # Entity extraction patterns
 _RE_CAPITALIZED  = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b')
-_RE_DOUBLE_QUOTE = re.compile(r'"([^"]+)"')
-_RE_SINGLE_QUOTE = re.compile(r"'([^']+)'")
-_RE_AKA          = re.compile(
-    r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)',
-    re.IGNORECASE,
+_RE_DOUBLE_QUOTE = re.compile(r'(?<!\w)"([^"\r\n]+)"(?!\w)')
+_RE_SINGLE_QUOTE = re.compile(r"(?<!\w)'([^'\r\n]+)'(?!\w)")
+_RE_CURLY_DOUBLE_QUOTE = re.compile(r'\u201c([^\u201d\r\n]+)\u201d')
+_RE_CURLY_SINGLE_QUOTE = re.compile(r'\u2018([^\u2019\r\n]+)\u2019')
+
+_ALIAS_NAME_PARTICLE = r'(?:van|von|de|del|der|da|di|la|le)'
+_ALIAS_TITLE_TERM = (
+    rf'[A-Z][A-Za-z0-9_.-]*'
+    rf'(?:\s+(?:{_ALIAS_NAME_PARTICLE}\s+)?[A-Z][A-Za-z0-9_.-]*){{0,5}}'
 )
+_ALIAS_BARE_TERM = r'[a-z][a-z0-9_.-]{2,}'
+_RE_AKA = re.compile(
+    rf'(?P<left>{_ALIAS_TITLE_TERM}|{_ALIAS_BARE_TERM})\s+'
+    rf'(?i:aka|also\s+known\s+as)\s+'
+    rf'(?P<right>{_ALIAS_TITLE_TERM}|{_ALIAS_BARE_TERM})'
+)
+
+_QUOTE_PATTERNS = (
+    _RE_DOUBLE_QUOTE,
+    _RE_SINGLE_QUOTE,
+    _RE_CURLY_DOUBLE_QUOTE,
+    _RE_CURLY_SINGLE_QUOTE,
+)
+
+# These words form headings/status fragments much more often than named
+# entities. The filter applies only to unquoted phrases at sentence start and
+# only when every word is generic, preserving names such as New York, Active
+# Directory, General Motors, and Project Gutenberg.
+_LOW_SIGNAL_ENTITY_WORDS = frozenset({
+    "active", "assistant", "concept", "configuration", "confirmed",
+    "current", "decision", "default", "detail", "details", "existing",
+    "fact", "general", "important", "information", "mapping", "memory",
+    "new", "note", "previous", "project", "recent", "session", "setting",
+    "status", "summary", "system", "task", "user", "workflow",
+})
+
+_MAX_ENTITY_CHARS = 80
+_MAX_ENTITY_WORDS = 8
+
+
+def _clean_entity_candidate(name: str) -> str | None:
+    """Normalize a candidate and reject structurally implausible entities."""
+    candidate = unicodedata.normalize("NFKC", name)
+    candidate = re.sub(r"\s+", " ", candidate).strip(" \t\r\n,;:!?()[]{}")
+    candidate = re.sub(r"(?:['\u2019]s)$", "", candidate, flags=re.IGNORECASE).strip()
+
+    if not candidate or len(candidate) > _MAX_ENTITY_CHARS:
+        return None
+    if len(candidate.split()) > _MAX_ENTITY_WORDS:
+        return None
+
+    alnum = [char for char in candidate if char.isalnum()]
+    if not alnum:
+        return None
+    if len(alnum) == 1 and alnum[0].isascii() and not alnum[0].isupper():
+        return None
+    return candidate
+
+
+def _entity_candidate_key(name: str) -> str:
+    """Return a conservative key for per-fact formatting deduplication."""
+    return re.sub(r"[-_\s]+", " ", name.casefold()).strip()
+
+
+def _is_sentence_start(text: str, start: int) -> bool:
+    prefix = text[:start]
+    return not prefix.strip() or bool(re.search(r"(?:[.!?]\s*|\n\s*)$", prefix))
+
+
+def _is_low_signal_implicit(name: str) -> bool:
+    words = re.findall(r"[A-Za-z0-9]+", name.casefold())
+    if not words:
+        return False
+    return words[0] in {"no", "not"} or all(
+        word in _LOW_SIGNAL_ENTITY_WORDS for word in words
+    )
 
 
 def _clamp_trust(value: float) -> float:
@@ -445,37 +516,55 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _extract_entities(self, text: str) -> list[str]:
-        """Extract entity candidates from text using simple regex rules.
+        """Extract precision-oriented entity candidates from text.
 
-        Rules applied (in order):
-        1. Capitalized multi-word phrases  e.g. "John Doe"
-        2. Double-quoted terms             e.g. "Python"
-        3. Single-quoted terms             e.g. 'pytest'
-        4. AKA patterns                    e.g. "Guido aka BDFL" -> two entities
+        Explicitly quoted and AKA terms take precedence over implicit
+        capitalized phrases. This prevents quote contents from being split into
+        smaller entities and avoids interpreting apostrophes in possessives as
+        quote delimiters.
 
         Returns a deduplicated list preserving first-seen order.
         """
         seen: set[str] = set()
         candidates: list[str] = []
+        events: list[tuple[int, int, str, str]] = []
+        quoted_spans: list[tuple[int, int]] = []
 
-        def _add(name: str) -> None:
-            stripped = name.strip()
-            if stripped and stripped.lower() not in seen:
-                seen.add(stripped.lower())
-                candidates.append(stripped)
+        # Lower priority values win when two extractors identify the same span.
+        for pattern in _QUOTE_PATTERNS:
+            for match in pattern.finditer(text):
+                quoted_spans.append((match.start(1), match.end(1)))
+                events.append((match.start(1), 0, "explicit", match.group(1)))
 
-        for m in _RE_CAPITALIZED.finditer(text):
-            _add(m.group(1))
+        for match in _RE_AKA.finditer(text):
+            for group in ("left", "right"):
+                events.append((match.start(group), 1, "alias", match.group(group)))
 
-        for m in _RE_DOUBLE_QUOTE.finditer(text):
-            _add(m.group(1))
+        for match in _RE_CAPITALIZED.finditer(text):
+            start, end = match.start(1), match.end(1)
+            if any(
+                span_start <= start and end <= span_end
+                for span_start, span_end in quoted_spans
+            ):
+                continue
+            events.append((start, 2, "implicit", match.group(1)))
 
-        for m in _RE_SINGLE_QUOTE.finditer(text):
-            _add(m.group(1))
+        for start, _priority, source, raw_name in sorted(events):
+            candidate = _clean_entity_candidate(raw_name)
+            if candidate is None:
+                continue
+            if (
+                source == "implicit"
+                and _is_sentence_start(text, start)
+                and _is_low_signal_implicit(candidate)
+            ):
+                continue
 
-        for m in _RE_AKA.finditer(text):
-            _add(m.group(1))
-            _add(m.group(2))
+            key = _entity_candidate_key(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
 
         return candidates
 

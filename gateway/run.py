@@ -44,7 +44,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Callable, Dict, Optional, Any, List, Union
+from typing import Callable, Dict, Optional, Any, List, Tuple, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -3888,7 +3888,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        pinned_model: Optional[str] = None,
+    ) -> dict:
         """Build the effective model/runtime config for a single turn.
 
         Always uses the session's primary model/provider.  If `/fast` is
@@ -3897,9 +3903,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
-        from hermes_cli.model_router import select_model_for_turn
+        from hermes_cli.model_router import select_model_for_session_turn
 
-        effective_model, router_tier = select_model_for_turn(user_message, model)
+        effective_model, router_tier = select_model_for_session_turn(
+            user_message, model, pinned_model=pinned_model
+        )
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
             "base_url": runtime_kwargs.get("base_url"),
@@ -3983,6 +3991,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             db.update_session_meta(session_id, json.dumps(config), model=model)
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
+
+    def _get_pinned_session_router_model(
+        self, session_id: Optional[str]
+    ) -> Tuple[Optional[str], Optional[int]]:
+        """Return a prior effective session model and its message count.
+
+        The first routed agent persists its effective model in SessionDB. Later
+        turns use that model as a pin, including after an agent-cache eviction
+        or gateway restart, so keyword classification cannot rebuild a live
+        conversation on a different model.
+        """
+        if self._session_db is None or not session_id:
+            return None, None
+        try:
+            session = self._session_db.get_session(session_id)
+            if not session:
+                return None, None
+            message_count = int(session.get("message_count") or 0)
+            model = session.get("model")
+            if message_count > 0 and isinstance(model, str) and model.strip():
+                return model.strip(), message_count
+            return None, message_count
+        except Exception:
+            return None, None
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
@@ -18082,7 +18114,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     log_message="interim_assistant_callback scheduling error",
                 )
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            # Session rows record the actual model selected for the first turn.
+            # Reuse it on later turns (including cache eviction/restart) instead
+            # of reclassifying follow-ups and rebuilding a new system prompt.
+            _pinned_router_model, _current_msg_count = (
+                self._get_pinned_session_router_model(session_id)
+            )
+
+            turn_route = self._resolve_turn_agent_config(
+                message,
+                model,
+                runtime_kwargs,
+                pinned_model=_pinned_router_model,
+            )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -18103,7 +18147,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Detect cross-process writes: when another process (e.g. hermes
             # dashboard) appends to the same session in the shared SessionDB,
-            # the cached agent's in-memory transcript becomes stale.  Compare
+            # the cached agent's in-memory transcript becomes stale. Compare
             # the session's current message_count against the count recorded
             # when the agent was cached; on mismatch, invalidate the cache
             # so a fresh agent re-reads from disk. (#45966)

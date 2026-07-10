@@ -180,9 +180,23 @@ class CLIAgentSetupMixin:
         API call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
-        from hermes_cli.model_router import select_model_for_turn
+        from hermes_cli.model_router import select_model_for_session_turn
 
-        effective_model, router_tier = select_model_for_turn(user_message, self.model)
+        pinned_model = None
+        active_signature = getattr(self, "_active_agent_route_signature", None)
+        if isinstance(active_signature, tuple) and active_signature:
+            pinned_model = active_signature[0]
+        elif getattr(self, "_session_db", None) is not None:
+            try:
+                session = self._session_db.get_session(self.session_id)
+                if session and int(session.get("message_count") or 0) > 0:
+                    pinned_model = session.get("model")
+            except Exception:
+                pass
+
+        effective_model, router_tier = select_model_for_session_turn(
+            user_message, self.model, pinned_model=pinned_model
+        )
         runtime = {
             "api_key": self.api_key,
             "base_url": self.base_url,

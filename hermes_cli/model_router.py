@@ -1,7 +1,8 @@
-"""Lightweight per-turn model routing for Hermes.
+"""Deterministic, session-stable model routing for Hermes.
 
 The router intentionally stays heuristic-only: it does not call an LLM to pick
-an LLM, so quick turns remain cheap and prompt-cache behaviour stays predictable.
+an LLM. It selects a model for a new session, then keeps that session pinned so
+prompt-cache and frozen-system-prompt invariants remain intact.
 """
 
 from __future__ import annotations
@@ -222,3 +223,39 @@ def select_model_for_turn(
     tier = classify_model_router_tier(user_message, router_cfg)
     model = _route_model(router_cfg, tier) or base_model
     return model, tier
+
+
+def select_model_for_session_turn(
+    user_message: Any,
+    base_model: str,
+    pinned_model: Optional[str] = None,
+    config: Optional[Mapping[str, Any]] = None,
+) -> Tuple[str, Optional[str]]:
+    """Select a model once, then preserve it for a session's later turns.
+
+    A previous effective session model wins while routing is enabled. Keeping a
+    model stable avoids rebuilding an agent (and its frozen system prompt/tool
+    schemas) merely because a follow-up message contains a different keyword.
+    ``pinned_model`` may be a configured route or an explicit session model;
+    in the latter case the tier is intentionally unknown (``None``).
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+
+    router_cfg = _router_config(config)
+    if not _truthy(router_cfg.get("enabled")):
+        return base_model, None
+
+    if isinstance(pinned_model, str) and pinned_model.strip():
+        pinned = pinned_model.strip()
+        for tier in ("quick", "standard", "complex"):
+            if _route_model(router_cfg, tier) == pinned:
+                return pinned, tier
+        return pinned, None
+
+    return select_model_for_turn(user_message, base_model, config)

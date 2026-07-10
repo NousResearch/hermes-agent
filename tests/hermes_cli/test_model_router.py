@@ -60,8 +60,8 @@ def test_cli_turn_route_uses_model_router(monkeypatch):
 
     monkeypatch.setattr(
         model_router,
-        "select_model_for_turn",
-        lambda message, base_model: ("gpt-5.6-sol", "complex"),
+        "select_model_for_session_turn",
+        lambda message, base_model, pinned_model=None: ("gpt-5.6-sol", "complex"),
     )
     stub = SimpleNamespace(
         model="gpt-5.6-terra",
@@ -89,8 +89,8 @@ def test_gateway_turn_route_uses_model_router(monkeypatch):
 
     monkeypatch.setattr(
         model_router,
-        "select_model_for_turn",
-        lambda message, base_model: ("gpt-5.6-luna", "quick"),
+        "select_model_for_session_turn",
+        lambda message, base_model, pinned_model=None: ("gpt-5.6-luna", "quick"),
     )
     runner = SimpleNamespace(_service_tier="")
     runtime_kwargs = {
@@ -114,3 +114,48 @@ def test_gateway_turn_route_uses_model_router(monkeypatch):
     assert route["router_tier"] == "quick"
     assert route["signature"][0] == "gpt-5.6-luna"
     assert route["runtime"]["provider"] == "openai-codex"
+
+
+def test_session_turn_pins_the_first_effective_model():
+    from hermes_cli.model_router import select_model_for_session_turn
+
+    assert select_model_for_session_turn(
+        "draft an architectural migration plan",
+        "gpt-5.6-terra",
+        pinned_model="gpt-5.6-luna",
+        config=ROUTER_CONFIG,
+    ) == ("gpt-5.6-luna", "quick")
+
+
+def test_gateway_router_pin_uses_persisted_session_model():
+    import gateway.run as gateway_run
+
+    runner = SimpleNamespace(
+        _session_db=SimpleNamespace(
+            get_session=lambda session_id: {
+                "id": session_id,
+                "model": "gpt-5.6-luna",
+                "message_count": 2,
+            }
+        )
+    )
+    assert gateway_run.GatewayRunner._get_pinned_session_router_model(
+        runner, "session-1"
+    ) == ("gpt-5.6-luna", 2)
+
+
+def test_gateway_router_does_not_pin_empty_session():
+    import gateway.run as gateway_run
+
+    runner = SimpleNamespace(
+        _session_db=SimpleNamespace(
+            get_session=lambda session_id: {
+                "id": session_id,
+                "model": "gpt-5.6-luna",
+                "message_count": 0,
+            }
+        )
+    )
+    assert gateway_run.GatewayRunner._get_pinned_session_router_model(
+        runner, "session-1"
+    ) == (None, 0)

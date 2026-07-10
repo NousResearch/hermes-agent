@@ -736,7 +736,6 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
-        self._verify_compaction_cleared_threshold = False
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self._last_summary_error = None
         self._last_compress_aborted = False
@@ -772,7 +771,6 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
-        self._verify_compaction_cleared_threshold = False
         self._summary_failure_cooldown_until = 0.0
         self._last_compress_aborted = False
         self._context_probed = False
@@ -946,7 +944,6 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._ineffective_compression_count = 0
-        self._verify_compaction_cleared_threshold = False
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
     # window, compacting at the percentage (50% → 32K of a 64K window) wastes
@@ -1134,9 +1131,6 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
-        # Set by compress(); consumed by should_compress() to check the next
-        # real reading against the threshold. See should_compress().
-        self._verify_compaction_cleared_threshold: bool = False
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -1185,42 +1179,6 @@ class ContextCompressor(ContextEngine):
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
-
-            # Anti-thrashing verdict, judged HERE because this is the only place
-            # that sees the provider's real prompt count for the just-compacted
-            # conversation. Effectiveness is "did the prompt get under the
-            # threshold?", not "did the message list shrink?": compaction can
-            # only shrink messages, while the system prompt and tool schemas are
-            # an incompressible floor (with 50+ tools, 20-30K tokens — see
-            # #14695). When that floor alone meets the threshold, every pass
-            # shrinks messages by a healthy margin yet leaves the prompt over the
-            # line, so the next turn compacts again, forever.
-            #
-            # It must NOT live in should_compress(): that runs twice per turn
-            # with two different measures (a rough preflight estimate and the
-            # real post-response count, #36718), and the rough one can dip below
-            # the threshold and reset the strike every turn, re-opening the loop.
-            # Keying on real usage compares like with like and fires exactly once
-            # per compaction.
-            if self._verify_compaction_cleared_threshold:
-                if self.last_prompt_tokens >= self.threshold_tokens:
-                    self._ineffective_compression_count += 1
-                    if not self.quiet_mode:
-                        logger.warning(
-                            "Compaction did not clear the threshold: %d real "
-                            "tokens still >= %d. The incompressible prompt "
-                            "(system prompt + tool schemas) may already exceed "
-                            "it, in which case shrinking messages cannot help. "
-                            "ineffective_compression_count=%d",
-                            self.last_prompt_tokens, self.threshold_tokens,
-                            self._ineffective_compression_count,
-                        )
-                else:
-                    self._ineffective_compression_count = 0
-        # Consume the pending-verification flag once real usage arrives, whether
-        # or not prompt_tokens was reported, so a usage-less response can't leave
-        # it armed for a later, unrelated reading.
-        self._verify_compaction_cleared_threshold = False
         self.awaiting_real_usage_after_compression = False
 
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
@@ -2854,12 +2812,6 @@ This compaction should PRIORITISE preserving all information related to the focu
                 running so a manual ``/compress`` can retry immediately after
                 an auto-compression abort.  Auto-compress callers pass False.
         """
-        # A compaction attempt is running: have should_compress() verify, against
-        # the next real reading, that it actually cleared the threshold. Set on
-        # every path (including the early no-op returns below) so a pass that
-        # changed nothing is still held to account.
-        self._verify_compaction_cleared_threshold = True
-
         # Reset per-call summary failure state — callers inspect these fields
         # after compress() returns to decide whether to surface a warning.
         self._last_summary_dropped_count = 0
@@ -2888,21 +2840,10 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
-            # Record the no-op, exactly as the sibling "no compressable window"
-            # branch below does (#40803). Returning without touching the
-            # anti-thrashing counter leaves should_compress() saying True on a
-            # transcript that can never shrink: when the prompt sits above the
-            # threshold because of the incompressible floor (system prompt +
-            # tool schemas), every subsequent turn re-fires a compaction that
-            # returns here unchanged, and the CLI appears frozen.
-            self._ineffective_compression_count += 1
-            self._last_compression_savings_pct = 0.0
             if not self.quiet_mode:
                 logger.warning(
-                    "Cannot compress: only %d messages (need > %d). "
-                    "ineffective_compression_count=%d",
+                    "Cannot compress: only %d messages (need > %d)",
                     n_messages, _min_for_compress,
-                    self._ineffective_compression_count,
                 )
             return messages
 
@@ -3198,26 +3139,15 @@ This compaction should PRIORITISE preserving all information related to the focu
         compressed = _strip_historical_media(compressed)
 
         new_estimate = estimate_messages_tokens_rough(compressed)
+        saved_estimate = display_tokens - new_estimate
 
-        # Anti-thrashing: measure effectiveness on a like-for-like basis.
-        #
-        # ``display_tokens`` is usually ``current_tokens`` — the provider's real
-        # prompt count, which includes the system prompt and tool schemas.
-        # ``new_estimate`` covers the messages ONLY. Comparing the two makes a
-        # compaction that freed almost nothing look like it saved ~96%, so the
-        # counter below resets every pass and the anti-thrashing guard is dead
-        # code. Compaction can only shrink messages, so score it against the
-        # messages it was given.
-        pre_estimate = estimate_messages_tokens_rough(messages)
-        saved_estimate = pre_estimate - new_estimate
-        savings_pct = (saved_estimate / pre_estimate * 100) if pre_estimate > 0 else 0
+        # Anti-thrashing: track compression effectiveness
+        savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
         self._last_compression_savings_pct = savings_pct
-
-        # Only ever INCREMENT here. The reset lives in should_compress(), which
-        # is the one place that sees the same measure the trigger uses; see
-        # ``_verify_compaction_cleared_threshold``.
         if savings_pct < 10:
             self._ineffective_compression_count += 1
+        else:
+            self._ineffective_compression_count = 0
 
         if not self.quiet_mode:
             logger.info(

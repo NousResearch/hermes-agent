@@ -35,7 +35,19 @@ def test_extract_media_keeps_real_looking_missing_path_for_warning():
 def test_placeholder_detector_covers_spanish_and_file_urls():
     assert BasePlatformAdapter._is_placeholder_media_path("/ruta/absoluta.png")
     assert BasePlatformAdapter._is_placeholder_media_path("file:///absolute/path.png")
+    assert not BasePlatformAdapter._is_placeholder_media_path("/absolute.json/path/does-not-exist")
+    assert not BasePlatformAdapter._is_placeholder_media_path("/ruta.md/absoluta/does-not-exist")
     assert not BasePlatformAdapter._is_placeholder_media_path("/tmp/real-output.png")
+
+
+def test_streaming_display_keeps_placeholder_examples_inside_protected_spans():
+    text = "```text\nMEDIA:/absolute/path/to/file\n```\n> MEDIA:/ruta/absoluta/file\n`MEDIA:/absolute/path/to/file`"
+    assert BasePlatformAdapter.strip_media_directives_for_display(text) == text
+
+
+def test_streaming_display_keeps_nonplaceholder_extensionless_paths_visible():
+    text = "MEDIA:/absolute.json/path/does-not-exist"
+    assert BasePlatformAdapter.strip_media_directives_for_display(text) == text
 
 
 def test_placeholder_media_inside_protected_spans_stays_visible_text():

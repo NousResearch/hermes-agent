@@ -696,6 +696,13 @@ class TestExtensionlessMediaDelivery:
         stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
         assert "MEDIA:" not in stripped
 
+    def test_strip_media_directives_for_display_strips_extensionless_placeholder(self):
+        text = "Before MEDIA:/absolute/path/to/file After"
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "MEDIA:" not in stripped
+        assert "/absolute/path" not in stripped
+        assert stripped == "Before After"
+
     def test_as_document_directive_stripped_without_media_tag(self):
         """[[as_document]] must be stripped even when no MEDIA: tag is present.
 

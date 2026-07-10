@@ -2530,6 +2530,18 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
 
+def _service_path_entry_key(entry: str) -> str:
+    """Return a stable comparison key for generated service PATH entries."""
+    normalized = entry.rstrip("/") or entry
+    if is_wsl() and normalized.startswith("/mnt/"):
+        return normalized.lower()
+    return normalized
+
+
+def _normalize_service_path_entry(entry: str) -> str:
+    return entry.rstrip("/") or entry
+
+
 def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
     """Return WSL Windows interop PATH entries for generated systemd units.
 
@@ -2562,11 +2574,13 @@ def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
             candidates.append(entry)
 
     result: list[str] = []
-    seen = set(path_entries)
+    seen = {_service_path_entry_key(entry) for entry in path_entries}
     for entry in candidates:
-        if entry and entry not in seen:
-            seen.add(entry)
-            result.append(entry)
+        normalized = _normalize_service_path_entry(entry)
+        key = _service_path_entry_key(normalized)
+        if normalized and key not in seen:
+            seen.add(key)
+            result.append(normalized)
     return result
 
 

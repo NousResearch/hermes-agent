@@ -774,6 +774,19 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         except Exception:
             pass
 
+    # Fallback for built-in (non-plugin) adapters whose class attribute isn't
+    # reachable via the plugin registry (e.g. BlueBubbles/iMessage ships as a
+    # built-in adapter, not a plugin). Without this, long text like the
+    # /model provider list silently truncates instead of chunking on these
+    # platforms. See: /model missing providers on Slack/iMessage.
+    if platform not in _MAX_LENGTHS:
+        try:
+            from gateway.platforms.bluebubbles import BlueBubblesAdapter
+            if platform == Platform.BLUEBUBBLES:
+                _MAX_LENGTHS[platform] = BlueBubblesAdapter.MAX_MESSAGE_LENGTH
+        except Exception:
+            pass
+
     # Smart-chunk the message to fit within platform limits.
     # For short messages or platforms without a known limit this is a no-op.
     # Telegram measures length in UTF-16 code units, not Unicode codepoints.

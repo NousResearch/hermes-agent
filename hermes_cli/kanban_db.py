@@ -7643,6 +7643,60 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+def _worker_github_cli_config_dir(env: dict[str, str]) -> Optional[str]:
+    """Return a GitHub CLI config dir workers should inherit, if one exists.
+
+    Profile-scoped workers often run with ``HOME={HERMES_HOME}/home``. That is
+    correct for Hermes state isolation, but it hides the host GitHub CLI login
+    stored under the real user's config directory. ``GH_CONFIG_DIR`` is the gh
+    CLI's supported path override and carries no token material itself, so pin
+    it when we can identify an existing host config dir.
+    """
+    explicit = str(env.get("GH_CONFIG_DIR") or "").strip()
+    if explicit:
+        return explicit
+
+    candidates: list[Path] = []
+
+    xdg_config_home = str(env.get("XDG_CONFIG_HOME") or "").strip()
+    if xdg_config_home:
+        candidates.append(Path(os.path.expanduser(xdg_config_home)) / "gh")
+
+    real_home = str(env.get("HERMES_REAL_HOME") or "").strip()
+    if real_home:
+        candidates.append(Path(os.path.expanduser(real_home)) / ".config" / "gh")
+
+    try:
+        import pwd
+
+        getuid = getattr(os, "getuid", None)
+        if getuid is not None:
+            pw_home = pwd.getpwuid(getuid()).pw_dir.strip()
+            if pw_home:
+                candidates.append(Path(pw_home) / ".config" / "gh")
+    except Exception:
+        pass
+
+    appdata = str(env.get("APPDATA") or "").strip()
+    if appdata:
+        candidates.append(Path(os.path.expanduser(appdata)) / "GitHub CLI")
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = str(candidate)
+            key = os.path.normcase(os.path.abspath(os.path.expanduser(resolved)))
+        except Exception:
+            resolved = str(candidate)
+            key = os.path.normcase(resolved)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if os.path.isdir(resolved):
+            return resolved
+    return None
+
+
 def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
     """Return the assigned profile's effective CLI toolsets for a worker.
 
@@ -7785,6 +7839,14 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+
+    # Keep host GitHub CLI auth visible to workers without copying token env
+    # vars. This matters when profile HOME isolation would otherwise make `gh`
+    # look under {HERMES_HOME}/home/.config/gh instead of the logged-in user's
+    # config dir.
+    github_cli_config_dir = _worker_github_cli_config_dir(env)
+    if github_cli_config_dir:
+        env["GH_CONFIG_DIR"] = github_cli_config_dir
 
     # A worker must NEVER boot the interactive TUI: an inherited HERMES_TUI=1
     # or a `display.interface: tui` in the profile's config would send the

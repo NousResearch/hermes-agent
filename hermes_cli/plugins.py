@@ -497,6 +497,50 @@ class PluginContext:
             cli._pending_input.put(msg)
         return True
 
+    def request_model_selection(
+        self,
+        callback: Callable,
+        *,
+        current_provider: str = "",
+        current_model: str = "",
+    ) -> bool:
+        """Open the CLI's native provider/model picker for a plugin-owned slot.
+
+        ``callback`` receives the resulting ``ModelSwitchResult`` and may
+        return text to print after selection. Hermes resolves credentials and
+        applies its normal model warnings, but does not switch the primary
+        agent or write ``model.*`` configuration for this path.
+
+        Returns ``False`` outside the interactive CLI or when no authenticated
+        providers are available.
+        """
+        cli = self._manager._cli_ref
+        if cli is None or not hasattr(cli, "_open_model_picker"):
+            return False
+
+        from hermes_cli.inventory import build_models_payload, load_picker_context
+
+        provider = current_provider or getattr(cli, "provider", "") or ""
+        model = current_model or getattr(cli, "model", "") or ""
+        context = load_picker_context().with_overrides(
+            current_provider=provider,
+            current_model=model,
+            current_base_url=getattr(cli, "base_url", "") or "",
+        )
+        providers = build_models_payload(context).get("providers") or []
+        if not providers:
+            return False
+
+        opened = cli._open_model_picker(
+            providers,
+            model or "unknown",
+            provider or "unknown",
+            user_provs=context.user_providers,
+            custom_provs=context.custom_providers,
+            on_selected=callback,
+        )
+        return opened is not False
+
     # -- CLI command registration --------------------------------------------
 
     def register_cli_command(

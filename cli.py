@@ -7662,20 +7662,42 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
         return lines
 
-    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
-        """Open prompt_toolkit-native /model picker modal."""
-        self._capture_modal_input_snapshot()
-        default_idx = next((i for i, p in enumerate(providers) if p.get("is_current")), 0)
-        self._model_picker_state = {
-            "stage": "provider",
-            "providers": providers,
-            "selected": default_idx,
-            "current_model": current_model,
-            "current_provider": current_provider,
-            "user_provs": user_provs,
-            "custom_provs": custom_provs,
-        }
-        self._invalidate(min_interval=0.0)
+    def _open_model_picker(
+        self,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        user_provs=None,
+        custom_provs=None,
+        on_selected=None,
+    ) -> bool:
+        """Open the prompt_toolkit-native model picker on the app loop."""
+        def _setup_picker() -> None:
+            self._capture_modal_input_snapshot()
+            default_idx = next(
+                (i for i, p in enumerate(providers) if p.get("is_current")), 0
+            )
+            self._model_picker_state = {
+                "stage": "provider",
+                "providers": providers,
+                "selected": default_idx,
+                "current_model": current_model,
+                "current_provider": current_provider,
+                "user_provs": user_provs,
+                "custom_provs": custom_provs,
+                "on_selected": on_selected,
+            }
+            self._invalidate(min_interval=0.0)
+
+        app = getattr(self, "_app", None)
+        if app is not None and threading.current_thread() is not threading.main_thread():
+            try:
+                app.loop.call_soon_threadsafe(_setup_picker)
+            except Exception:
+                return False
+        else:
+            _setup_picker()
+        return True
 
     def _confirm_expensive_model_switch(self, result) -> bool:
         """Ask for explicit confirmation before applying costly model switches."""
@@ -7715,6 +7737,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _cprint("  Model switch cancelled.")
                 return
             self._apply_model_switch_result(result, persist_global)
+        except Exception as exc:
+            _cprint(f"  ✗ Model selection failed: {exc}")
+
+    def _confirm_and_dispatch_model_selection(self, result, callback) -> None:
+        """Confirm a plugin-owned selection and dispatch it without switching."""
+        try:
+            if result.success and not self._confirm_expensive_model_switch(result):
+                _cprint("  Model selection cancelled.")
+                return
+            message = callback(result)
+            if message:
+                _cprint(str(message))
         except Exception as exc:
             _cprint(f"  ✗ Model selection failed: {exc}")
 
@@ -7930,7 +7964,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"),
                 )
+                on_selected = state.get("on_selected")
                 self._close_model_picker()
+                if on_selected is not None:
+                    if getattr(self, "_app", None):
+                        threading.Thread(
+                            target=self._confirm_and_dispatch_model_selection,
+                            args=(result, on_selected),
+                            daemon=True,
+                        ).start()
+                    else:
+                        self._confirm_and_dispatch_model_selection(result, on_selected)
+                    return
                 if getattr(self, "_app", None):
                     threading.Thread(
                         target=self._confirm_and_apply_model_switch_result,

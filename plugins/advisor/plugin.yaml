@@ -5,3 +5,4 @@ author: Ljubomir Josifovski (ljubomirj) — based on original by Petr Baudis (pa
 license: MIT
 hooks:
   - post_llm_call
+  - on_session_finalize

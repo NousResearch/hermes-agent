@@ -1,8 +1,8 @@
 """Advisor data models."""
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 
 
 class Severity(str, Enum):
@@ -29,6 +29,7 @@ class Advice:
 class TurnDelta:
     """Data about one agent turn."""
 
+    session_id: str
     turn_id: str
     user_message: str
     assistant_response: str
@@ -45,41 +46,12 @@ class AdvisorState:
     # Per-advisor model override — empty means inherit primary model
     model: str = ""
     provider: str = ""
-    # Keys deduped by note text normalized
-    _deduped: set[str] = field(default_factory=set)
 
     def dedupe_key(self, note: str) -> str:
-        return note.strip().replace(r"\s+", " ")
+        return re.sub(r"\s+", " ", note.strip()).casefold()
 
     def has_held(self) -> bool:
         return len(self.held_notes) > 0
-
-    def hold(self, note: str, severity: str):
-        """Hold a concern/blocker for reconfirmation."""
-        key = self.dedupe_key(note)
-        # Check if already held at equal or higher severity
-        existing = next((h for h in self.held_notes if self.dedupe_key(h["note"]) == key), None)
-        if existing:
-            old_rank = SEVERITY_RANK.get(Severity(existing.get("severity", "nit")), 0)
-            new_rank = SEVERITY_RANK.get(Severity(severity), 0)
-            if new_rank > old_rank:
-                existing["severity"] = severity  # escalate
-            return  # already noted
-        self.held_notes.append({"note": note, "severity": severity})
-
-    def take_held(self) -> list[dict]:
-        """Return and clear held notes."""
-        notes = list(self.held_notes)
-        self.held_notes.clear()
-        return notes
-
-    def prune_recanted(self, re_raised: set[str]):
-        """Remove held notes that the advisor didn't re-raise (they're resolved)."""
-        re_raised_keys = {self.dedupe_key(k) for k in re_raised}
-        self.held_notes = [
-            h for h in self.held_notes
-            if self.dedupe_key(h["note"]) in re_raised_keys
-        ]
 
     def format_reconfirm_preamble(self) -> str:
         """Build a reconfirmation preamble from held notes."""
@@ -100,18 +72,30 @@ class AdvisorState:
         )
 
     def parse_response(self, text: str) -> list[Advice]:
-        """Parse the advisor model's response into structured advice."""
+        """Parse a review and return only advice that should be delivered.
+
+        Nits are delivered immediately. A concern or blocker is held on first
+        sight and becomes deliverable only when a later review raises the same
+        normalized note again. Held notes omitted by the latest review are
+        considered resolved and removed.
+        """
+        previous_held = {
+            self.dedupe_key(item.get("note", "")): item
+            for item in self.held_notes
+            if item.get("note")
+        }
         if not text or not text.strip():
+            self.held_notes = []
             return []
 
         text = text.strip()
 
         # Check for silence signal
         if "nothing to flag" in text.lower():
+            self.held_notes = []
             return []
 
-        advice_list: list[Advice] = []
-        re_raised_set: set[str] = set()
+        parsed: list[Advice] = []
 
         for line in text.split("\n"):
             line = line.strip()
@@ -122,24 +106,39 @@ class AdvisorState:
                 if tag in line:
                     note = line.replace(tag, "").strip().strip(":").strip()
                     if note:
-                        advice_list.append(Advice(note=note, severity=sev))
-                        re_raised_set.add(note)
+                        parsed.append(Advice(note=note, severity=sev))
                     break
 
-        if not advice_list and "nothing to flag" not in text.lower():
+        if not parsed:
             # Unstructured response — treat as a concern if it has substance
             if len(text) > 20:
-                advice_list.append(Advice(note=text, severity=Severity.CONCERN))
+                parsed.append(Advice(note=text, severity=Severity.CONCERN))
 
-        # Update held notes
-        for a in advice_list:
-            if a.severity in (Severity.CONCERN, Severity.BLOCKER):
-                self.hold(a.note, a.severity.value)
+        deliverable: list[Advice] = []
+        next_held: dict[str, dict] = {}
+        for advice in parsed:
+            if advice.severity == Severity.NIT:
+                deliverable.append(advice)
+                continue
 
-        # Prune recanted held notes
-        self.prune_recanted(re_raised_set)
+            key = self.dedupe_key(advice.note)
+            if key in previous_held:
+                deliverable.append(advice)
 
-        return advice_list
+            current = next_held.get(key)
+            if current is None:
+                next_held[key] = {
+                    "note": advice.note,
+                    "severity": advice.severity.value,
+                }
+                continue
+
+            old_rank = SEVERITY_RANK[Severity(current["severity"])]
+            if SEVERITY_RANK[advice.severity] > old_rank:
+                current["severity"] = advice.severity.value
+
+        self.held_notes = list(next_held.values())
+        return deliverable
 
     def serialize(self) -> dict:
         return {

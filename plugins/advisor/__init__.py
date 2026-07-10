@@ -2,6 +2,7 @@
 
 Registers:
   - ``post_llm_call`` hook — fires at end of each turn, triggers review
+  - ``on_session_finalize`` hook — bounded background-review shutdown grace
   - ``/advisor`` slash command — on/off/status
 """
 
@@ -23,6 +24,7 @@ def register(ctx):
     # Kwargs include: turn_id, user_message, assistant_response,
     # conversation_history, model, session_id, task_id, platform.
     ctx.register_hook("post_llm_call", _on_post_llm_call)
+    ctx.register_hook("on_session_finalize", _on_session_finalize)
 
     # Register the /advisor slash command
     ctx.register_command(
@@ -41,6 +43,13 @@ def _on_post_llm_call(**kwargs):
     if runtime is None:
         return
     runtime.on_post_llm_call(**kwargs)
+
+
+def _on_session_finalize(**kwargs):
+    """Bound shutdown latency while allowing a fast review to finish."""
+    runtime = _get_runtime()
+    if runtime is not None:
+        runtime.on_session_finalize(**kwargs)
 
 
 def _handle_advisor(args: str) -> str:

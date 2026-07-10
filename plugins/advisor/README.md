@@ -42,15 +42,22 @@ change session state. It only reads the turn transcript and delivers text advice
 | Context model | Long-lived advisor agent with self-compaction | Stateless per-turn via `ctx.llm.complete()` |
 | Turn detection | Native `turn_end` event | `post_llm_call` hook (fires once per turn, carries full history) |
 | Advice delivery | `pi.sendMessage()` with steer + triggerTurn | `ctx.inject_message()` (CLI only) |
-| Catch-up block | Stalls primary with exponential backoff while advisor settles | **Not available** — Hermes hooks are fire-and-forget |
+| Catch-up block | Stalls primary with exponential backoff while advisor settles | **Not available** — the plugin schedules review work after Hermes invokes its synchronous hook |
 | Slash command | `/advisor on\|off\|status` | Same plus `/advisor model`, `/advisor provider`, `/advisor providers`, `/advisor models`, `/advisor test` |
 
-The biggest difference: Hermes plugin hooks are asynchronous callbacks. The
-plugin cannot stall the agent loop while the advisor reviews. Advice always
-arrives after the agent has moved to the next turn. The hold-and-reconfirm
-pattern mitigates this — concerns are never delivered on first emission, only
-on reconfirmation — but the catch-up block from the pi original is not
-reproducible in Hermes' current hook model.
+The biggest difference: Hermes invokes plugin hooks synchronously. The advisor's
+`post_llm_call` callback therefore does not call the second model directly. It
+copies the completed turn into a one-worker background queue and returns. One
+review may run and one newer turn may wait; if more completed turns arrive, the
+queued turn is replaced by the newest one. This bounds hook latency, worker
+count, memory use, and stale-review backlog.
+
+The model call still has a 90-second timeout, but that timeout applies to the
+background worker, not turn finalization. On process shutdown the plugin waits
+at most one second for a fast in-flight review; the daemon worker is then
+allowed to end with the process. Advice is injected when the review completes.
+The hold-and-reconfirm pattern means concerns are never delivered on first
+emission, only after a later review raises the same normalized note again.
 
 ## Installation
 
@@ -66,8 +73,9 @@ Or at runtime: `/advisor on`
 
 ### Prerequisites
 
-- Hermes Agent v0.16+ (the plugin uses `ctx.register_hook`, `ctx.llm.complete`,
-  and `ctx.register_command` — all stable since v0.16)
+- A Hermes build with `PluginContext.request_model_selection` (included with
+  the in-tree advisor plugin), plus `ctx.register_hook`, `ctx.llm.complete`, and
+  `ctx.register_command`
 - A Hermes profile with at least one LLM provider configured
 
 ## Configuration
@@ -126,9 +134,11 @@ curses-based provider+model picker that `hermes model` uses. Select a provider,
 then a model — the result is applied to the advisor's override while your primary
 model config stays untouched.
 
-The interactive selector runs `hermes model` in its own pseudo-terminal (PTY)
-so its curses UI doesn't conflict with Hermes' prompt_toolkit terminal state.
-This means it works reliably on iTerm2 and other terminal emulators.
+The interactive selector uses the same prompt_toolkit-native modal as `/model`.
+It does not spawn a subprocess, take over the terminal, or write and restore the
+primary `model.*` configuration. The selected provider/model pair is returned
+to the plugin callback and stored only in advisor state. This path is shared on
+macOS, Linux, and Windows.
 
 Model and provider are independently settable. Set only `model` to use a
 different model on the same provider. Set both to route to a completely
@@ -142,7 +152,10 @@ Check what's available:
 /advisor status              # show current config
 ```
 
-Model/provider settings persist in `state.json` in the plugin directory.
+Model/provider settings persist in `$HERMES_HOME/advisor/state.json`, scoped to
+the active profile. Held concerns and blockers are stored under
+`$HERMES_HOME/advisor/sessions/`, scoped to the conversation. Existing
+package-local settings are read once and migrated.
 
 **Real-world setup (author's daily driver):** the primary agent runs
 **DeepSeek-V4-Flash** with `thinking=high` and the advisor runs
@@ -184,11 +197,12 @@ rules, recurring pitfalls — without touching the main agent's prompt.
 ## Caveats
 
 - **`inject_message` is CLI only.** On Telegram, Discord, or other gateway
-  platforms, advice is logged and stored in the state file but not delivered
-  into the conversation. The user can check `/advisor status` to see held notes.
-- **No catch-up block.** The advisor cannot stall the agent loop. Advice arrives
-  after the agent has moved on. The hold-and-reconfirm pattern means concerns
-  are never delivered on first emission, reducing the impact of asynchronicity.
+  platforms, deliverable advice is logged but not injected into the
+  conversation. Held concerns remain visible through `/advisor status`.
+- **No catch-up block.** The hook schedules review work and immediately returns.
+  Advice is injected whenever the background review completes. If Hermes exits
+  while a review is still running after the one-second shutdown grace period,
+  that in-flight result is abandoned.
 - **`post_llm_call` fires once per turn at completion.** The advisor never sees
   intermediate thinking or mid-turn tool call results until the turn is fully
   done. For live mid-turn hints, `post_tool_call` would be needed (not implemented).
@@ -215,8 +229,8 @@ Do the the "IT Crowd" fixit:
 ```
 
 This clears all held notes and starts fresh. Concerns and blockers are stored in 
-`state.json` and survive agent restarts, so stale items can accumulate across 
-sessions. The toggle is the surest reset.
+`$HERMES_HOME/advisor/sessions/` and survive agent restarts, so stale items can
+accumulate across sessions. The toggle is the surest reset.
 
 ## License
 

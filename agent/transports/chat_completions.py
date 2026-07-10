@@ -400,6 +400,30 @@ class ChatCompletionsTransport(ProviderTransport):
                         _tokenhub_effort = _e
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
+        # NVIDIA NIM: GLM-5.2 等 thinking 模式。NVIDIA 端点用 thinking.type 参数
+        # (enabled/disabled/adaptive)，不走 reasoning_effort。
+        # adaptive = 模型自动决定简单/复杂问题是否思考，类似 HY3 的自动快慢融合。
+        # 注：thinking 参数放进 extra_body（非 OpenAI 标准参数，顶层传会 400）。
+        if is_nvidia_nim:
+            _nim_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _nim_thinking_off:
+                _nim_type = "adaptive"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e in {"none", "false", "disabled"}:
+                        _nim_type = "disabled"
+                    elif _e == "high" or _e == "xhigh" or _e == "max":
+                        _nim_type = "enabled"
+                _nvidia_nim_thinking = {"type": _nim_type}
+            else:
+                _nvidia_nim_thinking = None
+        else:
+            _nvidia_nim_thinking = None
+
         # LM Studio: top-level reasoning_effort. Only emit when the model
         # declares reasoning support via /api/v1/models capabilities (gated
         # upstream by params["supports_reasoning"]). resolve_lmstudio_effort
@@ -418,6 +442,10 @@ class ChatCompletionsTransport(ProviderTransport):
         is_openrouter = params.get("is_openrouter", False)
         is_nous = params.get("is_nous", False)
         is_github_models = params.get("is_github_models", False)
+
+        # NVIDIA NIM thinking: 放进 extra_body（非 OpenAI 标准参数）
+        if _nvidia_nim_thinking:
+            extra_body["thinking"] = _nvidia_nim_thinking
         provider_name = str(params.get("provider_name") or "").strip().lower()
         base_url = params.get("base_url")
 

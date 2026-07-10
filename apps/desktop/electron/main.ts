@@ -65,6 +65,7 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
+import { installStdioPipeErrorGuards } from './stdio-pipe-guards'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -127,6 +128,8 @@ import {
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+
+installStdioPipeErrorGuards()
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 

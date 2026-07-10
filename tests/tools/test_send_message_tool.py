@@ -1804,6 +1804,39 @@ class TestSendDiscordThreadId:
         assert "error" in result
         assert "403" in result["error"]
 
+    def test_disable_link_previews_sets_suppress_embeds_flag_on_standalone_send(self):
+        """Regression test: extra.disable_link_previews must reach the
+        standalone REST sender's plain-text payload the same way it reaches
+        the live gateway adapter's suppress_embeds kwarg (#60942/#60975 review)."""
+        mock_session, _ = self._build_mock(200)
+        pconfig = SimpleNamespace(token="tok", extra={"disable_link_previews": True})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            asyncio.run(_standalone_send(pconfig, "111222333", "hello world"))
+        call_kwargs = mock_session.post.call_args.kwargs
+        assert call_kwargs["json"]["flags"] == 1 << 2
+
+    def test_disable_link_previews_false_by_default_on_standalone_send(self):
+        """Without the config toggle, no flags key is sent -- unchanged
+        default behavior."""
+        mock_session, _ = self._build_mock(200)
+        pconfig = SimpleNamespace(token="tok", extra={})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            asyncio.run(_standalone_send(pconfig, "111222333", "hello world"))
+        call_kwargs = mock_session.post.call_args.kwargs
+        assert "flags" not in call_kwargs["json"]
+
+    def test_disable_link_previews_sets_suppress_embeds_flag_on_forum_thread_no_media(self):
+        """Regression test: the forum-thread-without-media JSON path also
+        honors disable_link_previews (the second gap the review flagged)."""
+        mock_session, _ = self._build_mock(200, response_data={"id": "thread1", "message": {"id": "msg1"}})
+        pconfig = SimpleNamespace(token="tok", extra={"disable_link_previews": True})
+        with patch("aiohttp.ClientSession", return_value=mock_session), patch(
+            "plugins.platforms.discord.adapter._probe_is_forum_cached", return_value=True
+        ):
+            asyncio.run(_standalone_send(pconfig, "444555666", "forum starter"))
+        call_kwargs = mock_session.post.call_args.kwargs
+        assert call_kwargs["json"]["message"]["flags"] == 1 << 2
+
     def test_success_response_json_read_is_bounded(self):
         """Standalone Discord sends parse success JSON through the bounded reader."""
         body = b'{"id":"bounded-json"}'

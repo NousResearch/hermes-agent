@@ -7932,6 +7932,16 @@ async def _standalone_send(
     if not token:
         return {"error": "Discord standalone send: DISCORD_BOT_TOKEN is not set"}
 
+    # Same setting as DiscordAdapter._disable_link_previews (extra.disable_link_previews,
+    # #60942) -- suppress client-side link-preview embed cards. The live gateway
+    # adapter uses discord.py's suppress_embeds=True kwarg; this standalone REST path
+    # (used by cron/out-of-process sends) has no discord.py client to call, so it sets
+    # the equivalent MESSAGE_FLAGS.SUPPRESS_EMBEDS bit (1 << 2) directly in the JSON body.
+    _disable_link_previews = bool(
+        (getattr(pconfig, "extra", None) or {}).get("disable_link_previews", False)
+    )
+    _SUPPRESS_EMBEDS_FLAG = 1 << 2
+
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
@@ -8006,6 +8016,8 @@ async def _standalone_send(
                             for idx, path in enumerate(valid_media)
                         ]
                         starter_message = {"content": message, "attachments": attachments_meta}
+                        if _disable_link_previews:
+                            starter_message["flags"] = _SUPPRESS_EMBEDS_FLAG
                         payload_json = json.dumps({"name": thread_name, "message": starter_message})
 
                         form = aiohttp.FormData()
@@ -8040,7 +8052,11 @@ async def _standalone_send(
                             headers=json_headers,
                             json={
                                 "name": thread_name,
-                                "message": {"content": message},
+                                "message": (
+                                    {"content": message, "flags": _SUPPRESS_EMBEDS_FLAG}
+                                    if _disable_link_previews
+                                    else {"content": message}
+                                ),
                             },
                             **_req_kw,
                         ) as resp:
@@ -8073,7 +8089,10 @@ async def _standalone_send(
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             # Send text message (skip if empty and media is present)
             if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
+                _text_payload: Dict[str, Any] = {"content": message}
+                if _disable_link_previews:
+                    _text_payload["flags"] = _SUPPRESS_EMBEDS_FLAG
+                async with session.post(url, headers=json_headers, json=_text_payload, **_req_kw) as resp:
                     if resp.status not in {200, 201}:
                         body = await _standalone_read_text_limited(
                             resp,

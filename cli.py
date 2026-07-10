@@ -12209,6 +12209,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     for w in _ctx_result.warnings:
                         _cprint(f"  {_DIM}⚠ {w}{_RST}")
                     if _ctx_result.blocked:
+                        self._restore_ephemeral_router_session_model(
+                            router_ephemeral=turn_route.get("router_ephemeral", False),
+                            restore_model=turn_route.get("router_restore_model"),
+                        )
                         return "\n".join(_ctx_result.warnings) or "Context injection refused."
                     message = _ctx_result.message
             except Exception as e:
@@ -16113,6 +16117,7 @@ def main(
                 # Quiet mode: suppress banner, spinner, tool previews.
                 # Only print the final response and parseable session info.
                 cli.tool_progress_mode = "off"
+                turn_route = None
                 if cli._ensure_runtime_credentials():
                     effective_query: Any = query
                     if single_query_images or single_query_image_urls:
@@ -16281,10 +16286,11 @@ def main(
                         sys.exit(_exit_code)
 
                 # Exit with error code if credentials or agent init fails.
-                cli._restore_ephemeral_router_session_model(
-                    router_ephemeral=turn_route.get("router_ephemeral", False),
-                    restore_model=turn_route.get("router_restore_model"),
-                )
+                if turn_route is not None:
+                    cli._restore_ephemeral_router_session_model(
+                        router_ephemeral=turn_route.get("router_ephemeral", False),
+                        restore_model=turn_route.get("router_restore_model"),
+                    )
                 sys.exit(1)
             else:
                 # Single-query mode (`hermes chat -q "…"`): skip the welcome

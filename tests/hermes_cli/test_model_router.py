@@ -258,6 +258,74 @@ def test_cli_ephemeral_route_preserves_compressed_child_session_id():
     ]
 
 
+def test_cli_blocked_context_route_restores_durable_agent(monkeypatch):
+    import cli as cli_mod
+    import agent.context_references as context_refs
+    import agent.model_metadata as model_metadata
+
+    calls = []
+    durable = SimpleNamespace(
+        session_id="session-1", _cached_system_prompt="Model: gpt-5.6-terra"
+    )
+    route = {
+        "signature": ("gpt-5.6-sol",),
+        "model": "gpt-5.6-sol",
+        "runtime": {},
+        "router_ephemeral": True,
+        "router_restore_model": "gpt-5.6-terra",
+    }
+    stub = SimpleNamespace(
+        session_id="session-1",
+        agent=durable,
+        _session_db=SimpleNamespace(
+            update_session_model=lambda session_id, model: calls.append(("model", session_id, model)),
+            update_system_prompt=lambda session_id, prompt: calls.append(("prompt", session_id, prompt)),
+        ),
+        model="gpt-5.6-terra",
+        base_url="",
+        api_key="",
+        _active_agent_route_signature=("gpt-5.6-terra",),
+        _secret_capture_callback=lambda *_args: None,
+        _ensure_runtime_credentials=lambda: True,
+        _resolve_turn_agent_config=lambda _message: route,
+        _init_agent=lambda **_kwargs: True,
+    )
+    stub._capture_ephemeral_router_state = (
+        lambda *, router_ephemeral: cli_mod.HermesCLI._capture_ephemeral_router_state(
+            stub, router_ephemeral=router_ephemeral
+        )
+    )
+    stub._restore_ephemeral_router_session_model = (
+        lambda *, router_ephemeral, restore_model: cli_mod.HermesCLI._restore_ephemeral_router_session_model(
+            stub, router_ephemeral=router_ephemeral, restore_model=restore_model
+        )
+    )
+    stub._release_agent_clients = lambda agent: cli_mod.HermesCLI._release_agent_clients(stub, agent)
+
+    monkeypatch.setattr(cli_mod, "set_secret_capture_callback", lambda _callback: None)
+    monkeypatch.setattr(model_metadata, "get_model_context_length", lambda *_args, **_kwargs: 1000)
+    monkeypatch.setattr(
+        context_refs,
+        "preprocess_context_references",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            expanded=False,
+            blocked=True,
+            references=["@file:private"],
+            injected_tokens=0,
+            warnings=["Context injection refused."],
+        ),
+    )
+
+    response = cli_mod.HermesCLI.chat(stub, "route:sol @file:private")
+
+    assert response == "Context injection refused."
+    assert stub.agent is durable
+    assert calls == [
+        ("model", "session-1", "gpt-5.6-terra"),
+        ("prompt", "session-1", "Model: gpt-5.6-terra"),
+    ]
+
+
 def test_cli_explicit_model_switch_replaces_router_pin():
     import cli as cli_mod
 

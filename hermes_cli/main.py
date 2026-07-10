@@ -1166,7 +1166,7 @@ def _probe_container(cmd: list, backend: str, via_sudo: bool = False):
     all other exceptions propagate naturally.
     """
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=15, errors="replace")
     except subprocess.TimeoutExpired:
         label = f"sudo {backend}" if via_sudo else backend
         print(
@@ -1680,8 +1680,7 @@ def _restore_tui_workspace(tui_dir: Path) -> bool:
             cwd=str(tui_dir.parent),
             capture_output=True,
             text=True,
-            check=False,
-        )
+            check=False, errors="replace")
     except OSError:
         return False
     return tui_dir.is_dir()
@@ -4463,8 +4462,7 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
             cwd=cwd,
             capture_output=True,
             text=True,
-            check=True,
-        )
+            check=True, errors="replace")
         return result.stdout.strip() or None
     except (subprocess.CalledProcessError, OSError):
         return None
@@ -4748,8 +4746,7 @@ def _nixos_build_env() -> dict[str, str] | None:
     try:
         result = subprocess.run(
             ["nix-shell", "-p", "python3", "--run", "which python3"],
-            capture_output=True, text=True, check=False, timeout=15,
-        )
+            capture_output=True, text=True, check=False, timeout=15, errors="replace")
         if result.returncode == 0:
             python3_path = result.stdout.strip()
             if python3_path and Path(python3_path).exists():
@@ -5881,8 +5878,7 @@ def _find_stale_dashboard_pids(
                 ["ps", "-A", "-o", "pid=,command="],
                 capture_output=True,
                 text=True,
-                timeout=10,
-            )
+                timeout=10, errors="replace")
             if result.returncode == 0:
                 for line in getattr(result, "stdout", "").split("\n"):
                     stripped = line.strip()
@@ -6091,8 +6087,7 @@ def _kill_stale_dashboard_processes(
                     ["taskkill", "/PID", str(pid), "/F"],
                     capture_output=True,
                     text=True,
-                    timeout=10,
-                )
+                    timeout=10, errors="replace")
                 if result.returncode == 0:
                     killed.append(pid)
                 else:
@@ -6399,8 +6394,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         cwd=cwd,
         capture_output=True,
         text=True,
-        check=True,
-    )
+        check=True, errors="replace")
     if not status.stdout.strip():
         return None
 
@@ -6412,8 +6406,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         git_cmd + ["ls-files", "--unmerged"],
         cwd=cwd,
         capture_output=True,
-        text=True,
-    )
+        text=True, errors="replace")
     if unmerged.stdout.strip():
         print("→ Clearing unmerged index entries from a previous conflict...")
         subprocess.run(git_cmd + ["reset"], cwd=cwd, capture_output=True)
@@ -6434,8 +6427,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         cwd=cwd,
         capture_output=True,
         text=True,
-        check=True,
-    ).stdout.strip()
+        check=True, errors="replace").stdout.strip()
     return stash_ref
 
 
@@ -6447,8 +6439,7 @@ def _resolve_stash_selector(
         cwd=cwd,
         capture_output=True,
         text=True,
-        check=True,
-    )
+        check=True, errors="replace")
     for line in stash_list.stdout.splitlines():
         selector, _, commit = line.partition(" ")
         if commit.strip() == stash_ref:
@@ -6501,16 +6492,14 @@ def _restore_stashed_changes(
         git_cmd + ["stash", "apply", stash_ref],
         cwd=cwd,
         capture_output=True,
-        text=True,
-    )
+        text=True, errors="replace")
 
     # Check for unmerged (conflicted) files — can happen even when returncode is 0
     unmerged = subprocess.run(
         git_cmd + ["diff", "--name-only", "--diff-filter=U"],
         cwd=cwd,
         capture_output=True,
-        text=True,
-    )
+        text=True, errors="replace")
     has_conflicts = bool(unmerged.stdout.strip())
 
     if restore.returncode != 0 or has_conflicts:
@@ -6559,8 +6548,7 @@ def _restore_stashed_changes(
             git_cmd + ["stash", "drop", stash_selector],
             cwd=cwd,
             capture_output=True,
-            text=True,
-        )
+            text=True, errors="replace")
         if drop.returncode != 0:
             print(
                 "⚠ Local changes were restored, but Hermes couldn't drop the saved stash entry."
@@ -6611,8 +6599,7 @@ def _discard_stashed_changes(
         git_cmd + ["stash", "drop", stash_selector],
         cwd=cwd,
         capture_output=True,
-        text=True,
-    )
+        text=True, errors="replace")
     if drop.returncode != 0:
         print(
             "⚠ Configured to discard local changes, but Hermes couldn't drop "
@@ -6648,8 +6635,7 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
             git_cmd + ["remote", "get-url", "origin"],
             cwd=cwd,
             capture_output=True,
-            text=True,
-        )
+            text=True, errors="replace")
         if result.returncode == 0:
             return result.stdout.strip()
     except Exception:
@@ -6681,8 +6667,7 @@ def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
             git_cmd + ["remote", "get-url", "upstream"],
             cwd=cwd,
             capture_output=True,
-            text=True,
-        )
+            text=True, errors="replace")
         return result.returncode == 0
     except Exception:
         return False
@@ -6695,8 +6680,7 @@ def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
             git_cmd + ["remote", "add", "upstream", OFFICIAL_REPO_URL],
             cwd=cwd,
             capture_output=True,
-            text=True,
-        )
+            text=True, errors="replace")
         return result.returncode == 0
     except Exception:
         return False
@@ -6709,8 +6693,7 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
             git_cmd + ["rev-list", "--count", f"{base}..{head}"],
             cwd=cwd,
             capture_output=True,
-            text=True,
-        )
+            text=True, errors="replace")
         if result.returncode == 0:
             return int(result.stdout.strip())
     except Exception:
@@ -6745,8 +6728,7 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
             git_cmd + ["push", "origin", "main", "--force-with-lease"],
             cwd=cwd,
             capture_output=True,
-            text=True,
-        )
+            text=True, errors="replace")
         return result.returncode == 0
     except Exception:
         return False
@@ -7878,8 +7860,7 @@ def _verify_core_dependencies_installed(
                 capture_output=True,
                 text=True,
                 check=False,
-                env=env,
-            )
+                env=env, errors="replace")
         except Exception as e:
             logger.debug("dep verification: subprocess failed: %s", e)
             return []
@@ -8430,8 +8411,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             git_cmd + ["rev-parse", "--is-shallow-repository"],
             cwd=PROJECT_ROOT,
             capture_output=True,
-            text=True,
-        ).stdout.strip()
+            text=True, errors="replace").stdout.strip()
         == "true"
     )
     depth_args = ["--depth", "1"] if is_shallow else []
@@ -8442,8 +8422,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             git_cmd + ["fetch"] + depth_args + ["upstream", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
-            text=True,
-        )
+            text=True, errors="replace")
         if fetch_result.returncode != 0:
             # Fallback to origin if upstream doesn't exist
             print("→ Fetching from origin...")
@@ -8451,8 +8430,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
                 git_cmd + ["fetch"] + depth_args + ["origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
-                text=True,
-            )
+                text=True, errors="replace")
             upstream_exists = False
             compare_branch = f"origin/{branch}"
         else:
@@ -8465,8 +8443,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             git_cmd + ["fetch"] + depth_args + ["origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
-            text=True,
-        )
+            text=True, errors="replace")
         upstream_exists = False
         compare_branch = f"origin/{branch}"
 
@@ -8490,8 +8467,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
         cwd=PROJECT_ROOT,
         capture_output=True,
-        text=True,
-    )
+        text=True, errors="replace")
     if verify_result.returncode != 0:
         print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
@@ -8501,12 +8477,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         # report presence-only (mirrors the banner's _check_via_local_git).
         head_sha = subprocess.run(
             git_cmd + ["rev-parse", "HEAD"],
-            cwd=PROJECT_ROOT, capture_output=True, text=True,
-        ).stdout.strip()
+            cwd=PROJECT_ROOT, capture_output=True, text=True, errors="replace").stdout.strip()
         target_sha = subprocess.run(
             git_cmd + ["rev-parse", compare_branch],
-            cwd=PROJECT_ROOT, capture_output=True, text=True,
-        ).stdout.strip()
+            cwd=PROJECT_ROOT, capture_output=True, text=True, errors="replace").stdout.strip()
         if head_sha and target_sha and head_sha == target_sha:
             print("✓ Already up to date.")
         else:
@@ -8521,8 +8495,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
-        check=True,
-    )
+        check=True, errors="replace")
     behind = int(rev_result.stdout.strip())
 
     if behind == 0:
@@ -8582,8 +8555,7 @@ def _ensure_fhs_path_guard() -> None:
             ],
             capture_output=True,
             text=True,
-            timeout=10,
-        )
+            timeout=10, errors="replace")
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return  # no bash or probe hung — don't block update on this
     if probe.returncode == 0:
@@ -8836,8 +8808,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=60,
-            cwd=PROJECT_ROOT,
-        )
+            cwd=PROJECT_ROOT, errors="replace")
     except Exception as exc:
         logger.debug("venv health probe failed to run: %s", exc)
         return True, ""
@@ -9223,8 +9194,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
             git_cmd + ["diff", "--name-only"],
             cwd=repo_root,
             capture_output=True,
-            text=True,
-        )
+            text=True, errors="replace")
         if diff.returncode != 0:
             return
         dirty_package_dirs = {
@@ -9245,8 +9215,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
             cwd=repo_root,
             capture_output=True,
             text=True,
-            check=False,
-        )
+            check=False, errors="replace")
         print(f"→ Discarded npm lockfile churn ({len(dirty)} file(s))")
     except Exception:
         # Never let lockfile cleanup block an update.
@@ -9538,8 +9507,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             git_cmd + ["fetch", "origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
-            text=True,
-        )
+            text=True, errors="replace")
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
             if "Could not resolve host" in stderr or "unable to access" in stderr:
@@ -9563,8 +9531,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
-            check=True,
-        )
+            check=True, errors="replace")
         current_branch = result.stdout.strip()
 
         # If user is on a different branch than the update target, switch
@@ -9585,8 +9552,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
-                text=True,
-            )
+                text=True, errors="replace")
             if checkout_result.returncode != 0:
                 # Local checkout doesn't have this branch yet. Try to set
                 # it up as a tracking branch of origin/<branch>. This is
@@ -9596,8 +9562,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
-                    text=True,
-                )
+                    text=True, errors="replace")
                 if track_result.returncode != 0:
                     # Restore the user's prior branch + stash before bailing
                     # so we don't leave them stranded in a weird state.
@@ -9628,8 +9593,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
-            check=True,
-        )
+            check=True, errors="replace")
         commit_count = int(result.stdout.strip())
 
         if commit_count == 0:
@@ -9654,8 +9618,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
-                    check=False,
-                )
+                    check=False, errors="replace")
 
             # A current checkout does NOT imply a healthy install: a previous
             # dependency sync may have failed partway (classic on Windows,
@@ -9742,8 +9705,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 git_cmd + ["pull", "--ff-only", "origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
-                text=True,
-            )
+                text=True, errors="replace")
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
                 # force-pushed or rebase).  Since local changes are already
@@ -9755,8 +9717,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     git_cmd + ["reset", "--hard", f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
-                    text=True,
-                )
+                    text=True, errors="replace")
                 if reset_result.returncode != 0:
                     print(f"✗ Failed to reset to origin/{branch}.")
                     if reset_result.stderr.strip():
@@ -9791,8 +9752,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         git_cmd + ["reset", "--hard", pre_pull_sha],
                         cwd=PROJECT_ROOT,
                         capture_output=True,
-                        text=True,
-                    )
+                        text=True, errors="replace")
                     if rollback_result.returncode == 0:
                         print("  ✓ Rollback complete — your install is unchanged.")
                         print("  Try ``hermes update`` again later once a fix lands.")
@@ -10342,8 +10302,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             scope_cmd_ + ["is-active", svc_name_],
                             capture_output=True,
                             text=True,
-                            timeout=5,
-                        )
+                            timeout=5, errors="replace")
                         if _verify.stdout.strip() == "active":
                             return True
                     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -10376,8 +10335,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         ],
                         capture_output=True,
                         text=True,
-                        timeout=5,
-                    )
+                        timeout=5, errors="replace")
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     return default
                 raw = (_show.stdout or "").strip()
@@ -10523,8 +10481,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             ],
                             capture_output=True,
                             text=True,
-                            timeout=10,
-                        )
+                            timeout=10, errors="replace")
                         for line in result.stdout.strip().splitlines():
                             parts = line.split()
                             if not parts:
@@ -10540,8 +10497,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 scope_cmd + ["is-active", svc_name],
                                 capture_output=True,
                                 text=True,
-                                timeout=5,
-                            )
+                                timeout=5, errors="replace")
                             if check.stdout.strip() != "active":
                                 continue
 
@@ -10573,8 +10529,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     ],
                                     capture_output=True,
                                     text=True,
-                                    timeout=5,
-                                )
+                                    timeout=5, errors="replace")
                                 _main_pid = int((_show.stdout or "").strip() or 0)
                             except (
                                 ValueError,
@@ -10626,14 +10581,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         _manage_cmd + ["reset-failed", svc_name],
                                         capture_output=True,
                                         text=True,
-                                        timeout=10,
-                                    )
+                                        timeout=10, errors="replace")
                                     subprocess.run(
                                         _manage_cmd + ["start", svc_name],
                                         capture_output=True,
                                         text=True,
-                                        timeout=15,
-                                    )
+                                        timeout=15, errors="replace")
                                     # Short poll: the gateway should be up
                                     # within a few seconds now that we
                                     # bypassed RestartSec.
@@ -10715,14 +10668,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 _manage_cmd + ["reset-failed", svc_name],
                                 capture_output=True,
                                 text=True,
-                                timeout=10,
-                            )
+                                timeout=10, errors="replace")
                             restart = subprocess.run(
                                 _manage_cmd + ["restart", svc_name],
                                 capture_output=True,
                                 text=True,
-                                timeout=15,
-                            )
+                                timeout=15, errors="replace")
                             if restart.returncode == 0:
                                 # Verify the service actually survived the
                                 # restart.  systemctl restart returns 0 even
@@ -10747,14 +10698,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         _manage_cmd + ["reset-failed", svc_name],
                                         capture_output=True,
                                         text=True,
-                                        timeout=10,
-                                    )
+                                        timeout=10, errors="replace")
                                     subprocess.run(
                                         _manage_cmd + ["restart", svc_name],
                                         capture_output=True,
                                         text=True,
-                                        timeout=15,
-                                    )
+                                        timeout=15, errors="replace")
                                     if _wait_for_service_active(
                                         scope_cmd,
                                         svc_name,
@@ -10803,8 +10752,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             ["launchctl", "list", get_launchd_label()],
                             capture_output=True,
                             text=True,
-                            timeout=5,
-                        )
+                            timeout=5, errors="replace")
                         if check.returncode == 0:
                             try:
                                 launchd_restart()
@@ -13356,8 +13304,7 @@ def main():
                     version = subprocess.run(
                         [path, "--version"],
                         capture_output=True, text=True, timeout=5,
-                        env=_cua_driver_env(),
-                    ).stdout.strip()
+                        env=_cua_driver_env(), errors="replace").stdout.strip()
                 except Exception:
                     pass
                 if version:

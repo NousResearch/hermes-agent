@@ -75,8 +75,7 @@ def _termux_api_app_installed() -> bool:
             text=True,
             timeout=5,
             check=False,
-            stdin=subprocess.DEVNULL,
-        )
+            stdin=subprocess.DEVNULL, errors="replace")
         return "package:com.termux.api" in (result.stdout or "")
     except Exception:
         return False
@@ -389,7 +388,7 @@ class TermuxAudioRecorder:
             "-c", str(CHANNELS),
         ]
         try:
-            subprocess.run(command, capture_output=True, text=True, timeout=15, check=True, stdin=subprocess.DEVNULL)
+            subprocess.run(command, capture_output=True, text=True, timeout=15, check=True, stdin=subprocess.DEVNULL, errors="replace")
         except subprocess.CalledProcessError as e:
             details = (e.stderr or e.stdout or str(e)).strip()
             raise RuntimeError(f"Termux microphone start failed: {details}") from e
@@ -406,7 +405,7 @@ class TermuxAudioRecorder:
         mic_cmd = _termux_microphone_command()
         if not mic_cmd:
             return
-        subprocess.run([mic_cmd, "-q"], capture_output=True, text=True, timeout=15, check=False, stdin=subprocess.DEVNULL)
+        subprocess.run([mic_cmd, "-q"], capture_output=True, text=True, timeout=15, check=False, stdin=subprocess.DEVNULL, errors="replace")
 
     def stop(self) -> Optional[str]:
         with self._lock:

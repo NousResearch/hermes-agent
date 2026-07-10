@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
+import { PetHeartField, useHeartPreviewHotkey } from '@/components/chat/vibe-hearts'
 import { persistString, storedString } from '@/lib/storage'
 import {
   $petAtRest,
@@ -119,6 +120,10 @@ export function FloatingPet() {
   const atRest = useStore($petAtRest)
   const roamDir = useStore($petRoamDir)
   const routeOverlayOpen = useRouteOverlayActive()
+
+  // DEV Shift+H heart preview lives here — FloatingPet is always mounted
+  // (app-shell), so one listener covers every route whether a pet is out or not.
+  useHeartPreviewHotkey()
 
   const [position, setPosition] = useState<Point>(loadPosition)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -447,6 +452,9 @@ export function FloatingPet() {
       >
         <PetSprite info={info} rowOverride={walk.row} />
       </div>
+      {/* Hearts puff off the pet; its celebrate ("yay"/jump) pose is driven by
+          burstVibeHearts's router. */}
+      <PetHeartField petH={petH} petW={petW} />
     </div>
   )
 }

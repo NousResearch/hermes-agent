@@ -9,7 +9,12 @@
   },
   "categories": ["Other"],
   "main": "./out/extension.js",
-  "activationEvents": ["onCommand:remoteUse.mediaWindow"],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:remoteUse.surfaces",
+    "onCommand:remoteUse.nvidia",
+    "onCommand:remoteUse.mediaWindow"
+  ],
   "contributes": {
     "commands": [
       {

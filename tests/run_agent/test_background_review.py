@@ -278,7 +278,7 @@ def test_background_review_summary_is_attributed_to_self_improvement_loop(monkey
             ]
 
         def run_conversation(self, **kwargs):
-            pass
+            return {"failed": False, "completed": True}
 
         def shutdown_memory_provider(self):
             pass
@@ -311,6 +311,195 @@ def test_background_review_summary_is_attributed_to_self_improvement_loop(monkey
     assert captured_bg_callback[0].startswith("💾 Self-improvement review:"), (
         captured_bg_callback[0]
     )
+
+
+def test_background_review_terminal_failure_reports_partial_actions_first(monkeypatch):
+    """Committed actions survive a later terminal failure in the review fork."""
+    import json
+
+    events: list[tuple[str, str]] = []
+    cleanup_events: list[str] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            self._session_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_before_overflow",
+                    "content": json.dumps(
+                        {"success": True, "message": "Entry added", "target": "memory"}
+                    ),
+                }
+            )
+            return {
+                "failed": True,
+                "compaction_disabled": True,
+                "error": (
+                    "Context overflow and auto-compaction is disabled "
+                    "(compression.enabled: false). Run /compress to compact manually."
+                ),
+            }
+
+        def shutdown_memory_provider(self):
+            cleanup_events.append("shutdown")
+
+        def close(self):
+            cleanup_events.append("close")
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._safe_print = lambda message: events.append(("summary", message))
+    agent.background_review_callback = lambda message: events.append(
+        ("callback", message)
+    )
+    agent._emit_auxiliary_failure = lambda task, exc: events.append(
+        ("failure", f"{task}: {exc}")
+    )
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_memory=True,
+    )
+
+    assert [kind for kind, _ in events] == ["summary", "callback", "failure"]
+    assert "Memory updated" in events[0][1]
+    assert "Memory updated" in events[1][1]
+    warning = events[2][1]
+    assert "may be incomplete" in warning
+    assert "/compress" not in warning
+    assert "compression.enabled" not in warning
+    assert cleanup_events == ["shutdown", "close"]
+
+
+def test_background_review_terminal_failure_without_actions_only_warns(monkeypatch):
+    """A failed review with no committed actions emits no success summary."""
+    events: list[tuple[str, str]] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            return {"failed": True, "error": "provider rejected the request"}
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._safe_print = lambda message: events.append(("summary", message))
+    agent._emit_auxiliary_failure = lambda task, exc: events.append(
+        ("failure", f"{task}: {exc}")
+    )
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_memory=True,
+    )
+
+    assert events == [
+        ("failure", "background review: provider rejected the request")
+    ]
+
+
+def test_background_review_terminal_failure_without_error_key_uses_final_response(
+    monkeypatch,
+):
+    """Failures that fall through finalize_turn() carry no ``error`` key.
+
+    ``finalize_turn()`` never sets ``error`` on its result dictionary, so a
+    conversation that breaks out of the tool loop with ``failed = True`` — the
+    Ollama runtime-context path is the reachable example — reaches the caller
+    with only ``final_response`` to describe it.
+    """
+    events: list[tuple[str, str]] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            return {
+                "failed": True,
+                "completed": False,
+                "final_response": "Ollama runtime context is too small for Hermes tool use",
+            }
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._safe_print = lambda message: events.append(("summary", message))
+    agent._emit_auxiliary_failure = lambda task, exc: events.append(
+        ("failure", f"{task}: {exc}")
+    )
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_memory=True,
+    )
+
+    assert events == [
+        (
+            "failure",
+            "background review: Ollama runtime context is too small for Hermes tool use",
+        )
+    ]
+
+
+def test_background_review_failure_emit_is_not_reported_twice(monkeypatch):
+    """A raising status callback must not turn one failure into two warnings."""
+    emitted: list[str] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            return {"failed": True, "error": "provider rejected the request"}
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    def _raising_emit(task, exc):
+        emitted.append(f"{task}: {exc}")
+        raise RuntimeError("status callback exploded")
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._emit_auxiliary_failure = _raising_emit
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_memory=True,
+    )
+
+    assert emitted == ["background review: provider rejected the request"]
 
 
 def test_background_review_fork_skips_external_memory_plugins(monkeypatch):

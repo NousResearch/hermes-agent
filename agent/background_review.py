@@ -637,6 +637,7 @@ def _run_review_in_thread(
 
     review_agent = None
     review_messages: List[Dict] = []
+    review_failure: Optional[RuntimeError] = None
     try:
         # Silence stdout/stderr for THIS worker thread only.  A process-global
         # ``contextlib.redirect_stdout(devnull)`` here would also blank
@@ -817,7 +818,7 @@ def _run_review_in_thread(
                     _digest_history(messages_snapshot) if _routed
                     else messages_snapshot
                 )
-                review_agent.run_conversation(
+                result = review_agent.run_conversation(
                     user_message=(
                         prompt
                         + "\n\nYou can only call memory and skill "
@@ -826,6 +827,20 @@ def _run_review_in_thread(
                     ),
                     conversation_history=_review_history,
                 )
+                if isinstance(result, dict) and result.get("failed"):
+                    if result.get("compaction_disabled"):
+                        detail = (
+                            "Background review exceeded the model context window. "
+                            "Review forks do not compact their own history by design, "
+                            "so the review may be incomplete."
+                        )
+                    else:
+                        detail = (
+                            result.get("error")
+                            or result.get("final_response")
+                            or "Background review did not complete."
+                        )
+                    review_failure = RuntimeError(str(detail))
             finally:
                 clear_thread_tool_whitelist()
 
@@ -891,6 +906,28 @@ def _run_review_in_thread(
                     )
                 except Exception:
                     pass
+
+        # A terminal review failure can happen after earlier memory/skill tool
+        # calls have already committed their writes. Surface those real actions
+        # above, then report that the overall review was incomplete. Raising at
+        # the run_conversation boundary would skip the action summary entirely.
+        #
+        # The emit is wrapped: _emit_auxiliary_failure reaches the user through
+        # _emit_warning -> status callback, which a host is free to raise from.
+        # Unwrapped, that raise lands in the outer ``except`` below, which calls
+        # _emit_auxiliary_failure a second time and logs the same review twice.
+        if review_failure is not None:
+            logger.warning(
+                "Background memory/skill review incomplete: %s",
+                review_failure,
+            )
+            try:
+                agent._emit_auxiliary_failure("background review", review_failure)
+            except Exception:
+                logger.warning(
+                    "Failed to surface background-review failure to the user",
+                    exc_info=True,
+                )
 
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)

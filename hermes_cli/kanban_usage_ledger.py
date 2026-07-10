@@ -11,9 +11,13 @@ Privacy constraints:
 """
 from __future__ import annotations
 
+import logging
+import os
 import re
 import sqlite3
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # Secret patterns to reject
 _SECRET_PATTERNS = [
@@ -132,8 +136,8 @@ def record_run_usage(
             aux_cache_read_tokens, aux_cache_write_tokens,
             parent_task_id, profile, token_source,
             cost_usd, cost_status, checker_result, repair_cycle,
-            accepted_result_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            accepted_result_tokens, api_calls
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(board, task_id, run_id, call_kind, api_call_index) DO UPDATE SET
             provider=excluded.provider,
             model=excluded.model,
@@ -154,7 +158,8 @@ def record_run_usage(
             cost_status=excluded.cost_status,
             checker_result=excluded.checker_result,
             repair_cycle=excluded.repair_cycle,
-            accepted_result_tokens=excluded.accepted_result_tokens
+            accepted_result_tokens=excluded.accepted_result_tokens,
+            api_calls=excluded.api_calls
         """,
         (
             board, task_id, run_id, call_kind, api_call_index,
@@ -165,7 +170,7 @@ def record_run_usage(
             aux_cache_read_tokens, aux_cache_write_tokens,
             parent_task_id, profile, token_source,
             cost_usd, cost_status, checker_result, repair_cycle,
-            accepted_result_tokens,
+            accepted_result_tokens, 0,
         )
     )
     # Accumulate every parent association for this event (multi-parent safe).
@@ -395,6 +400,19 @@ def safe_record_from_canonical_usage(
             accepted_result_tokens=accepted_result_tokens,
         )
     except Exception:
+        # Fail-safe: never break model execution, but leave a diagnosable trail.
+        logger.debug(
+            "Kanban usage ledger persist failed (board=%s task=%s run_id=%s "
+            "call_kind=%s api_call_index=%s provider=%s model=%s):",
+            board,
+            task_id,
+            run_id,
+            call_kind,
+            api_call_index,
+            provider,
+            model,
+            exc_info=True,
+        )
         return None
 
 
@@ -407,6 +425,7 @@ def aggregate_usage(
     profile: Optional[str] = None,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    call_kind: Optional[str] = None,
 ) -> dict[str, Any]:
     """Aggregate usage statistics with optional filters.
 
@@ -456,6 +475,9 @@ def aggregate_usage(
     if model is not None:
         where_clauses.append("model = ?")
         params.append(model)
+    if call_kind is not None:
+        where_clauses.append("call_kind = ?")
+        params.append(call_kind)
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
@@ -472,7 +494,7 @@ def aggregate_usage(
             COALESCE(SUM(aux_cache_write_tokens), 0) as total_aux_cache_write,
             SUM(cost_usd) as total_cost,
             COUNT(*) as record_count,
-            COUNT(DISTINCT api_call_index) as total_api_calls,
+            COUNT(DISTINCT board || '|' || task_id || '|' || run_id || '|' || call_kind || '|' || api_call_index) as total_api_calls,
             COALESCE(SUM(accepted_result_tokens), 0) as total_accepted_result_tokens
         FROM run_usage
         WHERE {where_sql}
@@ -505,6 +527,7 @@ def query_usage(
     profile: Optional[str] = None,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    call_kind: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Query individual usage records with optional filters.
 
@@ -555,16 +578,116 @@ def query_usage(
     if model is not None:
         where_clauses.append("model = ?")
         params.append(model)
+    if call_kind is not None:
+        where_clauses.append("call_kind = ?")
+        params.append(call_kind)
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
     query = f"""
-        SELECT *
-        FROM run_usage
-        WHERE {where_sql}
-        ORDER BY board, task_id, run_id, api_call_index
-    """
+            SELECT *
+            FROM run_usage
+            WHERE {where_sql}
+            ORDER BY board, task_id, run_id, api_call_index
+        """
 
     cursor = conn.execute(query, params)
     columns = [desc[0] for desc in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+# Per-run auxiliary call counter: keyed by (board, task_id, run_id),
+# auto-incremented so each auxiliary API call gets a distinct index.
+_aux_call_indices: dict[tuple[str, str, int], int] = {}
+
+
+def _record_kanban_usage_at_boundary(
+    conn: sqlite3.Connection,
+    *,
+    call_kind: str,
+    provider: str,
+    model: str,
+    canonical_usage: dict[str, int],
+    token_source: str,
+    elapsed_ms: int = 0,
+    api_call_index: Optional[int] = None,
+    aux_input_tokens: Optional[int] = None,
+    aux_output_tokens: Optional[int] = None,
+    aux_cache_read_tokens: Optional[int] = None,
+    aux_cache_write_tokens: Optional[int] = None,
+    parent_task_id: Optional[str] = None,
+    profile: Optional[str] = None,
+    cost_usd: Optional[float] = None,
+    cost_status: Optional[str] = None,
+    checker_result: Optional[str] = None,
+    repair_cycle: int = 0,
+    accepted_result_tokens: Optional[int] = None,
+) -> Optional[int]:
+    """Record Kanban usage at a production API call boundary.
+
+    This is the primary runtime hook for conversation loop, Codex, and
+    auxiliary call paths. It reads Kanban context from env vars and
+    delegates to :func:`safe_record_from_canonical_usage`.
+
+    Primary callers MUST pass a stable ``api_call_index`` (typically
+    ``session_api_calls - 1``) so each observable model call becomes its
+    own ledger event. Auxiliary callers may omit it to receive a
+    per-run auto-incremented index.
+
+    Returns:
+        Row ID on success, None on failure / when not in a Kanban worker.
+    """
+    _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+    if not _kanban_task:
+        return None
+
+    _board = os.environ.get("HERMES_KANBAN_BOARD", "default")
+    _run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+    try:
+        _run_id = int(_run_id_raw) if _run_id_raw else 0
+    except (TypeError, ValueError):
+        _run_id = 0
+    # Dispatcher sets HERMES_PROFILE; keep HERMES_KANBAN_PROFILE as a
+    # soft alias for older / test callers.
+    _profile = (
+        profile
+        or os.environ.get("HERMES_PROFILE")
+        or os.environ.get("HERMES_KANBAN_PROFILE")
+    )
+
+    resolved_index = api_call_index
+    if resolved_index is None:
+        if call_kind == "auxiliary":
+            key = (_board, _kanban_task, _run_id)
+            idx = _aux_call_indices.get(key, 0)
+            _aux_call_indices[key] = idx + 1
+            resolved_index = idx
+        else:
+            # Primary without an explicit index collapses every call onto
+            # row 0; prefer caller-supplied stable indices.
+            resolved_index = 0
+
+    return safe_record_from_canonical_usage(
+        conn,
+        board=_board,
+        task_id=_kanban_task,
+        run_id=_run_id,
+        call_kind=call_kind,
+        api_call_index=int(resolved_index),
+        provider=provider,
+        model=model,
+        canonical_usage=canonical_usage,
+        token_source=token_source,
+        elapsed_ms=elapsed_ms,
+        aux_input_tokens=aux_input_tokens,
+        aux_output_tokens=aux_output_tokens,
+        aux_cache_read_tokens=aux_cache_read_tokens,
+        aux_cache_write_tokens=aux_cache_write_tokens,
+        parent_task_id=parent_task_id,
+        profile=_profile,
+        cost_usd=cost_usd,
+        cost_status=cost_status,
+        checker_result=checker_result,
+        repair_cycle=repair_cycle,
+        accepted_result_tokens=accepted_result_tokens,
+    )

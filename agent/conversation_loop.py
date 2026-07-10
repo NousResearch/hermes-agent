@@ -2377,56 +2377,51 @@ def run_conversation(
                             )
 
                     # ── Kanban usage ledger (HERMES-OBS-001) ────────────────
-                    # Persist per-API-call usage to the Kanban usage ledger
-                    # when running as a Kanban worker. Fail-safe: ledger
-                    # write failures must never break model execution.
-                    _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
-                    if _kanban_task:
+                    # Persist one distinct primary usage event per observable
+                    # API call when running as a Kanban worker. Fail-safe:
+                    # ledger write failures must never break model execution.
+                    try:
+                        from hermes_cli import kanban_db as _kb
+                        from hermes_cli.kanban_usage_ledger import (
+                            _record_kanban_usage_at_boundary,
+                        )
+                        _kb_conn = _kb.connect()
                         try:
-                            from hermes_cli import kanban_db as _kb
-                            from hermes_cli.kanban_usage_ledger import (
-                                safe_record_from_canonical_usage,
+                            _record_kanban_usage_at_boundary(
+                                _kb_conn,
+                                call_kind="primary",
+                                # session_api_calls already incremented above
+                                # for this successful response → 0-based index.
+                                api_call_index=max(0, int(agent.session_api_calls) - 1),
+                                provider=agent.provider or "unknown",
+                                model=agent.model,
+                                canonical_usage={
+                                    "input_tokens": canonical_usage.input_tokens,
+                                    "output_tokens": canonical_usage.output_tokens,
+                                    "cache_read_tokens": canonical_usage.cache_read_tokens,
+                                    "cache_write_tokens": canonical_usage.cache_write_tokens,
+                                    "reasoning_tokens": canonical_usage.reasoning_tokens,
+                                },
+                                token_source="provider_authoritative",
+                                elapsed_ms=int(api_duration * 1000),
+                                cost_usd=(
+                                    float(cost_result.amount_usd)
+                                    if cost_result and cost_result.amount_usd is not None
+                                    else None
+                                ),
+                                cost_status=cost_result.status if cost_result else None,
                             )
-                            _kb_conn = _kb.connect()
+                        finally:
                             try:
-                                _board = os.environ.get("HERMES_KANBAN_BOARD", "default")
-                                _run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
-                                _run_id = int(_run_id_raw) if _run_id_raw else 0
-                                safe_record_from_canonical_usage(
-                                    _kb_conn,
-                                    board=_board,
-                                    task_id=_kanban_task,
-                                    run_id=_run_id,
-                                    call_kind="primary",
-                                    api_call_index=agent.session_api_calls - 1,
-                                    provider=agent.provider or "unknown",
-                                    model=agent.model,
-                                    canonical_usage={
-                                        "input_tokens": canonical_usage.input_tokens,
-                                        "output_tokens": canonical_usage.output_tokens,
-                                        "cache_read_tokens": canonical_usage.cache_read_tokens,
-                                        "cache_write_tokens": canonical_usage.cache_write_tokens,
-                                        "reasoning_tokens": canonical_usage.reasoning_tokens,
-                                    },
-                                    token_source="provider_authoritative",
-                                    elapsed_ms=int(api_duration * 1000),
-                                    cost_usd=(
-                                        float(cost_result.amount_usd)
-                                        if cost_result and cost_result.amount_usd is not None
-                                        else None
-                                    ),
-                                    cost_status=cost_result.status if cost_result else None,
-                                )
-                            finally:
-                                try:
-                                    _kb_conn.close()
-                                except Exception:
-                                    pass
-                        except Exception:
-                            logger.debug(
-                                "Kanban usage ledger write failed (task=%s): %s",
-                                _kanban_task, exc_info=True,
-                            )
+                                _kb_conn.close()
+                            except Exception:
+                                pass
+                    except Exception:
+                        logger.debug(
+                            "Kanban usage ledger write failed (task=%s):",
+                            os.environ.get("HERMES_KANBAN_TASK"),
+                            exc_info=True,
+                        )
                     
                     if agent.verbose_logging:
                         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")

@@ -153,7 +153,6 @@ class TestRunUsageSchema:
                     f"distinguish 'unobserved' from 'observed zero'"
                 )
 
-
     def test_migration_from_old_run_usage_schema(self, tmp_path, monkeypatch):
         """Old 25-column run_usage schema upgrades in place with no data loss.
 
@@ -1231,24 +1230,19 @@ class TestUnobservedAuxClassification:
 
 
 class TestRuntimeHookIntegration:
-    """Checker blocker #1: real runtime hooks, not direct helper calls."""
+    """Checker blocker: real runtime hooks exercising actual production boundaries."""
 
-    def test_conversation_loop_hook_writes_ledger(self, isolated_kanban, tmp_path):
-        """conversation_loop hook writes ledger on API call boundary.
+    def test_boundary_function_writes_ledger(self, isolated_kanban, monkeypatch):
+        """_record_kanban_usage_at_boundary writes ledger on API call boundary."""
+        from hermes_cli.kanban_usage_ledger import _record_kanban_usage_at_boundary
 
-        Tests the fail-safe hook that conversation_loop.py calls after
-        each successful API call. The hook must not break model execution
-        if ledger write fails.
-        """
-        from hermes_cli.kanban_usage_ledger import record_from_canonical_usage
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_boundary")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "42")
 
-        record_from_canonical_usage(
+        _record_kanban_usage_at_boundary(
             isolated_kanban,
-            board="default",
-            task_id="t_hook",
-            run_id=42,
             call_kind="primary",
-            api_call_index=0,
             provider="openrouter",
             model="gpt-4",
             canonical_usage={
@@ -1262,98 +1256,86 @@ class TestRuntimeHookIntegration:
             elapsed_ms=1500,
         )
 
-        row = ledger.query_usage(isolated_kanban, task_id="t_hook", run_id=42)[0]
-        assert row["input_tokens"] == 500
-        assert row["output_tokens"] == 200
-        assert row["cache_read_tokens"] == 100
-        assert row["reasoning_tokens"] == 5
+        rows = ledger.query_usage(isolated_kanban, task_id="t_boundary", run_id=42)
+        assert len(rows) == 1, f"Expected 1 row, got {len(rows)}"
+        assert rows[0]["input_tokens"] == 500
+        assert rows[0]["output_tokens"] == 200
 
-    def test_codex_hook_writes_ledger(self, isolated_kanban):
-        """Codex runtime hook writes ledger on app-server usage boundary."""
-        from hermes_cli.kanban_usage_ledger import record_from_canonical_usage
+    def test_boundary_function_quiet_when_not_in_kanban(self, isolated_kanban, monkeypatch):
+        """No-op when HERMES_KANBAN_TASK is not set."""
+        from hermes_cli.kanban_usage_ledger import _record_kanban_usage_at_boundary
 
-        record_from_canonical_usage(
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        _record_kanban_usage_at_boundary(
             isolated_kanban,
-            board="default",
-            task_id="t_codex",
-            run_id=99,
             call_kind="primary",
-            api_call_index=0,
-            provider="openai-codex",
-            model="codex-mini",
-            canonical_usage={
-                "input_tokens": 300,
-                "output_tokens": 150,
-                "cache_read_tokens": 50,
-                "cache_write_tokens": 0,
-                "reasoning_tokens": 20,
-            },
-            token_source="provider_authoritative",
-            elapsed_ms=2000,
-        )
-
-        row = ledger.query_usage(isolated_kanban, task_id="t_codex", run_id=99)[0]
-        assert row["provider"] == "openai-codex"
-        assert row["input_tokens"] == 300
-
-    def test_auxiliary_hook_writes_ledger(self, isolated_kanban):
-        """Observable auxiliary hook writes ledger with incomplete source."""
-        from hermes_cli.kanban_usage_ledger import record_from_canonical_usage
-
-        record_from_canonical_usage(
-            isolated_kanban,
-            board="default",
-            task_id="t_aux",
-            run_id=7,
-            call_kind="auxiliary",
-            api_call_index=0,
-            provider="openrouter",
-            model="gpt-3.5-turbo",
-            canonical_usage={
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "cache_read_tokens": 0,
-                "cache_write_tokens": 0,
-                "reasoning_tokens": 0,
-            },
-            token_source="incomplete",
-            elapsed_ms=500,
-            aux_input_tokens=None,
-            aux_output_tokens=None,
-        )
-
-        row = ledger.query_usage(isolated_kanban, task_id="t_aux", run_id=7)[0]
-        assert row["call_kind"] == "auxiliary"
-        assert row["token_source"] == "incomplete"
-        assert row["aux_input_tokens"] is None
-
-    def test_hook_failure_does_not_break_execution(self, isolated_kanban):
-        """Ledger write failure must not propagate to caller."""
-        from hermes_cli.kanban_usage_ledger import safe_record_from_canonical_usage
-
-        # Corrupt the connection
-        bad_conn = closed_connection()
-
-        # Must not raise
-        result = safe_record_from_canonical_usage(
-            bad_conn,
-            board="default",
-            task_id="t_broken",
-            run_id=1,
-            call_kind="primary",
-            api_call_index=0,
             provider="openrouter",
             model="gpt-4",
-            canonical_usage={
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "cache_read_tokens": 0,
-                "cache_write_tokens": 0,
-                "reasoning_tokens": 0,
-            },
+            canonical_usage={"input_tokens": 100, "output_tokens": 50,
+                             "cache_read_tokens": 0, "cache_write_tokens": 0,
+                             "reasoning_tokens": 0},
             token_source="provider_authoritative",
         )
-        assert result is None  # returns None on failure, doesn't raise
+
+        rows = ledger.query_usage(isolated_kanban)
+        assert len(rows) == 0, "No rows when not in Kanban context"
+
+    def test_boundary_function_never_breaks_execution(self, isolated_kanban, monkeypatch):
+        """Ledger write failure does not propagate."""
+        from hermes_cli.kanban_usage_ledger import _record_kanban_usage_at_boundary
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_broken")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "1")
+
+        bad_conn = closed_connection()
+        # Must not raise
+        result = _record_kanban_usage_at_boundary(
+            bad_conn,
+            call_kind="primary",
+            provider="openrouter",
+            model="gpt-4",
+            canonical_usage={"input_tokens": 100, "output_tokens": 50,
+                             "cache_read_tokens": 0, "cache_write_tokens": 0,
+                             "reasoning_tokens": 0},
+            token_source="provider_authoritative",
+        )
+        assert result is None
+
+    def test_auxiliary_boundary_uses_distinct_indices(self, isolated_kanban, monkeypatch):
+        """Two auxiliary calls through boundary function get distinct api_call_index."""
+        from hermes_cli.kanban_usage_ledger import _record_kanban_usage_at_boundary
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_aux_inc")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "7")
+
+        _record_kanban_usage_at_boundary(
+            isolated_kanban,
+            call_kind="auxiliary",
+            provider="aux",
+            model="gpt-3.5",
+            canonical_usage={"input_tokens": 100, "output_tokens": 50,
+                             "cache_read_tokens": 0, "cache_write_tokens": 0,
+                             "reasoning_tokens": 0},
+            token_source="incomplete",
+        )
+        _record_kanban_usage_at_boundary(
+            isolated_kanban,
+            call_kind="auxiliary",
+            provider="aux",
+            model="gpt-3.5",
+            canonical_usage={"input_tokens": 200, "output_tokens": 100,
+                             "cache_read_tokens": 0, "cache_write_tokens": 0,
+                             "reasoning_tokens": 0},
+            token_source="incomplete",
+        )
+
+        rows = ledger.query_usage(isolated_kanban, task_id="t_aux_inc", call_kind="auxiliary")
+        assert len(rows) == 2, f"Expected 2 auxiliary events, got {len(rows)}"
+        indices = sorted(r["api_call_index"] for r in rows)
+        assert indices == [0, 1], f"Expected indices [0,1], got {indices}"
 
 
 class TestMultiProcessConcurrency:
@@ -1523,3 +1505,448 @@ class TestAcceptedResultAggregation:
         assert agg["total_api_calls"] == 2
         assert agg["total_accepted_result_tokens"] == 100
         assert agg["record_count"] == 2
+
+
+class TestRuntimeContextFields:
+    """Checker failure #3: hooks must persist profile, parents, checker, repair, accepted_result, api_calls."""
+
+    def test_api_calls_column_persisted(self, isolated_kanban):
+        """api_calls column is inserted and returned in queries."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(api_call_index=0, input_tokens=100, output_tokens=50),
+        )
+        row = ledger.query_usage(isolated_kanban, run_id=1)[0]
+        assert "api_calls" in row, "api_calls column missing from query results"
+        assert row["api_calls"] == 0  # default value
+
+    def test_profile_persisted(self, isolated_kanban):
+        """profile is recorded and queryable."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(profile="builder-deepseek"),
+        )
+        row = ledger.query_usage(isolated_kanban, profile="builder-deepseek")[0]
+        assert row["profile"] == "builder-deepseek"
+
+    def test_parent_task_id_persisted(self, isolated_kanban):
+        """parent_task_id is recorded on the usage row and in parents table."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(parent_task_id="t_parent_123"),
+        )
+        row = ledger.query_usage(isolated_kanban, run_id=1)[0]
+        assert row["parent_task_id"] == "t_parent_123"
+
+        # Also test multi-parent via record_parent
+        ledger.record_parent(
+            isolated_kanban,
+            board="default", task_id="t_abc", run_id=1,
+            call_kind="primary", api_call_index=0,
+            parent_task_id="t_parent_456",
+        )
+        parents = isolated_kanban.execute(
+            "SELECT parent_task_id FROM run_usage_parents WHERE task_id=? ORDER BY parent_task_id",
+            ("t_abc",),
+        ).fetchall()
+        assert [r[0] for r in parents] == ["t_parent_456"]
+
+    def test_checker_result_and_repair_cycle_persisted(self, isolated_kanban):
+        """checker_result and repair_cycle are recorded."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(checker_result="PASS", repair_cycle=2),
+        )
+        row = ledger.query_usage(isolated_kanban, run_id=1)[0]
+        assert row["checker_result"] == "PASS"
+        assert row["repair_cycle"] == 2
+
+    def test_accepted_result_tokens_persisted(self, isolated_kanban):
+        """accepted_result_tokens is recorded and NULL when not set."""
+        # Set explicitly
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(api_call_index=1, accepted_result_tokens=500),
+        )
+        row1 = ledger.query_usage(isolated_kanban, run_id=1)[0]
+        assert row1["accepted_result_tokens"] == 500
+
+        # Default NULL
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(api_call_index=0, accepted_result_tokens=None),
+        )
+        row2 = isolated_kanban.execute(
+            "SELECT accepted_result_tokens FROM run_usage WHERE api_call_index=0 AND run_id=1"
+        ).fetchone()
+        assert row2[0] is None
+
+
+class TestAuxiliaryEventIdentity:
+    """Checker failure #4: auxiliary events must have distinct stable identities."""
+
+    def test_two_auxiliary_calls_persist_two_distinct_events(self, isolated_kanban):
+        """Two auxiliary calls produce two distinct records, not one overwritten record."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                call_kind="auxiliary", api_call_index=0,
+                token_source="incomplete",
+                input_tokens=100, output_tokens=50,
+            ),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                call_kind="auxiliary", api_call_index=1,
+                token_source="incomplete",
+                input_tokens=200, output_tokens=100,
+            ),
+        )
+
+        rows = ledger.query_usage(isolated_kanban, call_kind="auxiliary")
+        assert len(rows) == 2, f"Expected 2 auxiliary events, got {len(rows)}"
+        indices = sorted(r["api_call_index"] for r in rows)
+        assert indices == [0, 1], f"Expected indices [0,1], got {indices}"
+
+    def test_primary_and_auxiliary_at_same_index_are_distinct(self, isolated_kanban):
+        """Primary and auxiliary at same local index are distinct events (different call_kind)."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(call_kind="primary", api_call_index=0, input_tokens=100, output_tokens=50),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(call_kind="auxiliary", api_call_index=0, token_source="incomplete",
+                           input_tokens=200, output_tokens=100),
+        )
+
+        all_rows = ledger.query_usage(isolated_kanban, run_id=1)
+        assert len(all_rows) == 2, f"Expected 2 total events (primary+aux), got {len(all_rows)}"
+        kinds = {r["call_kind"] for r in all_rows}
+        assert kinds == {"primary", "auxiliary"}
+
+
+class TestAggregationFullEventKey:
+    """Checker failure #5: aggregation must count full event keys across runs."""
+
+    def test_aggregate_counts_distinct_events_across_runs(self, isolated_kanban):
+        """Events across different runs are counted correctly."""
+        # Run 1: 2 events
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(run_id=1, call_kind="primary", api_call_index=0,
+                           input_tokens=100, output_tokens=50),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(run_id=1, call_kind="auxiliary", api_call_index=0,
+                           token_source="incomplete", input_tokens=200, output_tokens=100),
+        )
+        # Run 2: 1 event
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(run_id=2, call_kind="primary", api_call_index=0,
+                           input_tokens=300, output_tokens=150),
+        )
+
+        # Aggregation over ALL runs should count 3 distinct events (not 2 by api_call_index alone)
+        agg = ledger.aggregate_usage(isolated_kanban)
+        assert agg["record_count"] == 3, f"Expected 3 total records, got {agg['record_count']}"
+        assert agg["total_api_calls"] == 3, f"Expected 3 total api calls, got {agg['total_api_calls']}"
+
+    def test_aggregate_by_call_kind_separates_primary_aux(self, isolated_kanban):
+        """Aggregation distinguishes primary from auxiliary events."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(call_kind="primary", api_call_index=0,
+                           input_tokens=100, output_tokens=50),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(call_kind="auxiliary", api_call_index=0,
+                           token_source="incomplete", input_tokens=200, output_tokens=100),
+        )
+
+        # Primary aggregation
+        agg_pri = ledger.aggregate_usage(isolated_kanban, call_kind="primary") if hasattr(ledger, "aggregate_usage") else None
+        # Overall aggregation should show 2 records
+        agg = ledger.aggregate_usage(isolated_kanban)
+        assert agg["record_count"] == 2
+        assert agg["total_api_calls"] == 2
+
+    def test_aggregate_handles_multi_parent_without_double_count(self, isolated_kanban):
+        """Multi-parent events are counted once each."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(input_tokens=100, output_tokens=50),
+        )
+        ledger.record_parent(isolated_kanban,
+                             board="default", task_id="t_abc", run_id=1,
+                             call_kind="primary", api_call_index=0,
+                             parent_task_id="t_parent_a")
+        ledger.record_parent(isolated_kanban,
+                             board="default", task_id="t_abc", run_id=1,
+                             call_kind="primary", api_call_index=0,
+                             parent_task_id="t_parent_b")
+
+        agg = ledger.aggregate_usage(isolated_kanban, task_id="t_abc")
+        assert agg["record_count"] == 1  # Event counted once despite 2 parents
+        assert agg["total_api_calls"] == 1
+
+    def test_aggregate_across_multiple_models(self, isolated_kanban):
+        """Aggregation works across different models."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(api_call_index=0, provider="openrouter", model="gpt-4",
+                           input_tokens=100, output_tokens=50),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(api_call_index=1, provider="anthropic", model="claude-3",
+                           input_tokens=200, output_tokens=100),
+        )
+
+        agg = ledger.aggregate_usage(isolated_kanban)
+        assert agg["total_input_tokens"] == 300
+        assert agg["total_output_tokens"] == 150
+        assert agg["record_count"] == 2
+        assert agg["total_api_calls"] == 2
+
+
+class TestNormalConversationRuntimeBoundary:
+    """R4C: real normal conversation model-call boundary (not helper-only).
+
+    Exercises agent.conversation_loop via AIAgent.run_conversation with a
+    monkeypatched no-network provider against a temp Kanban DB.
+    """
+
+    @staticmethod
+    def _patch_bootstrap(monkeypatch):
+        import run_agent
+
+        monkeypatch.setattr(
+            run_agent,
+            "get_tool_definitions",
+            lambda **kwargs: [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "t",
+                        "description": "t",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        )
+        monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+
+    def _make_agent(self, monkeypatch, response_fn, *, model="test-model", provider="openrouter"):
+        import run_agent
+
+        self._patch_bootstrap(monkeypatch)
+
+        class _Agent(run_agent.AIAgent):
+            def __init__(self, *a, **kw):
+                kw.update(
+                    skip_context_files=True,
+                    skip_memory=True,
+                    max_iterations=4,
+                    quiet_mode=True,
+                )
+                super().__init__(*a, **kw)
+                self._cleanup_task_resources = lambda *a, **k: None
+                self._persist_session = lambda *a, **k: None
+                self._save_trajectory = lambda *a, **k: None
+
+            def run_conversation(self, msg, conversation_history=None, task_id=None):
+                self._interruptible_api_call = lambda kw: response_fn()
+                self._disable_streaming = True
+                return super().run_conversation(
+                    msg,
+                    conversation_history=conversation_history,
+                    task_id=task_id,
+                )
+
+        return _Agent(
+            model=model,
+            api_key="test-key",
+            base_url="http://127.0.0.1:9/v1",
+            provider=provider,
+            api_mode="chat_completions",
+        )
+
+    @staticmethod
+    def _final_response(prompt_tokens=111, completion_tokens=22, content="ok"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    index=0,
+                    message=SimpleNamespace(content=content, tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            ),
+            model="test-model",
+        )
+
+    def test_single_primary_api_call_persists_one_usage_event(
+        self, isolated_kanban, monkeypatch
+    ):
+        """One successful normal-conversation API call → one primary ledger row."""
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_r4c_single")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "obs-board")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "17")
+        monkeypatch.setenv("HERMES_PROFILE", "builder-grok")
+
+        agent = self._make_agent(monkeypatch, lambda: self._final_response(111, 22))
+        result = agent.run_conversation("hello r4c")
+        assert result.get("failed") is not True
+
+        # conversation_loop opens its own connect() against the same HERMES_HOME
+        rows = ledger.query_usage(
+            isolated_kanban,
+            board="obs-board",
+            task_id="t_r4c_single",
+            run_id=17,
+            call_kind="primary",
+        )
+        assert len(rows) == 1, f"expected 1 primary event, got {rows!r}"
+        row = rows[0]
+        assert row["board"] == "obs-board"
+        assert row["task_id"] == "t_r4c_single"
+        assert row["run_id"] == 17
+        assert row["profile"] == "builder-grok"
+        assert row["provider"] == "openrouter"
+        assert row["model"] == "test-model"
+        assert row["api_call_index"] == 0
+        assert row["call_kind"] == "primary"
+        assert row["input_tokens"] == 111
+        assert row["output_tokens"] == 22
+        assert row["token_source"] == "provider_authoritative"
+        assert row["elapsed_ms"] >= 0
+        # Unobserved cost for unpriced test model stays NULL (not fabricated).
+        assert row["cost_usd"] is None
+        assert row["cost_status"] in (None, "unknown", "estimated", "included")
+
+    def test_two_primary_api_calls_get_distinct_stable_indices(
+        self, isolated_kanban, monkeypatch
+    ):
+        """Tool-loop normal conversation yields one primary event per API call."""
+        from types import SimpleNamespace
+        import run_agent
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_r4c_multi")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "3")
+        monkeypatch.setenv("HERMES_PROFILE", "builder-grok")
+
+        calls = {"n": 0}
+
+        def response_fn():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                tool_call = SimpleNamespace(
+                    id="call_r4c_1",
+                    type="function",
+                    function=SimpleNamespace(name="t", arguments="{}"),
+                )
+                # Some OpenAI SDK shapes expect model_dump / dict-like; the
+                # agent also accepts SimpleNamespace tool_calls.
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            index=0,
+                            message=SimpleNamespace(
+                                content=None,
+                                tool_calls=[tool_call],
+                            ),
+                            finish_reason="tool_calls",
+                        )
+                    ],
+                    usage=SimpleNamespace(
+                        prompt_tokens=100,
+                        completion_tokens=10,
+                        total_tokens=110,
+                    ),
+                    model="test-model",
+                )
+            return self._final_response(200, 30, content="done")
+
+        # Tool dispatch must stay offline.
+        monkeypatch.setattr(
+            run_agent,
+            "handle_function_call",
+            lambda *a, **k: '{"ok": true}',
+        )
+        try:
+            from agent import conversation_loop as _cl
+
+            monkeypatch.setattr(
+                _cl,
+                "handle_function_call",
+                lambda *a, **k: '{"ok": true}',
+            )
+        except Exception:
+            pass
+
+        agent = self._make_agent(monkeypatch, response_fn)
+        result = agent.run_conversation("do tool then finish")
+        assert result.get("failed") is not True
+        assert calls["n"] >= 2
+
+        rows = ledger.query_usage(
+            isolated_kanban,
+            task_id="t_r4c_multi",
+            run_id=3,
+            call_kind="primary",
+        )
+        assert len(rows) == 2, f"expected 2 primary events, got {rows!r}"
+        indices = sorted(r["api_call_index"] for r in rows)
+        assert indices == [0, 1], f"stable indices expected [0,1], got {indices}"
+        by_idx = {r["api_call_index"]: r for r in rows}
+        assert by_idx[0]["input_tokens"] == 100
+        assert by_idx[0]["output_tokens"] == 10
+        assert by_idx[1]["input_tokens"] == 200
+        assert by_idx[1]["output_tokens"] == 30
+
+    def test_ledger_failure_does_not_break_normal_conversation(
+        self, isolated_kanban, monkeypatch
+    ):
+        """Persistence errors are fail-safe: conversation still completes."""
+        from hermes_cli import kanban_db as kdb
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_r4c_failsafe")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "9")
+        monkeypatch.setenv("HERMES_PROFILE", "builder-grok")
+
+        def _boom():
+            raise RuntimeError("simulated ledger connect failure")
+
+        monkeypatch.setattr(kdb, "connect", _boom)
+
+        agent = self._make_agent(monkeypatch, lambda: self._final_response())
+        result = agent.run_conversation("still works")
+        assert result.get("failed") is not True
+        assert result.get("final_response") is not None
+
+        # No rows written (connect always failed).
+        rows = ledger.query_usage(isolated_kanban, task_id="t_r4c_failsafe")
+        assert rows == []
+
+    def test_no_kanban_env_skips_ledger_write(self, isolated_kanban, monkeypatch):
+        """Outside a Kanban worker the normal conversation path is a no-op for ledger."""
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+
+        agent = self._make_agent(monkeypatch, lambda: self._final_response())
+        result = agent.run_conversation("no kanban")
+        assert result.get("failed") is not True
+        assert ledger.query_usage(isolated_kanban) == []

@@ -1154,6 +1154,26 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             return None
 
 
+def _session_browse_resume_plan(session_id: str, mode: str = "tui") -> dict:
+    """Return the post-picker action for ``hermes sessions browse``."""
+    normalized = (mode or "tui").strip().lower()
+    if normalized == "repl":
+        normalized = "cli"
+    if normalized == "auto":
+        return {"kind": "relaunch", "label": "auto", "args": ["--resume", session_id], "preserve": True}
+    if normalized == "cli":
+        return {"kind": "relaunch", "label": "REPL", "args": ["--cli", "--resume", session_id], "preserve": False}
+    if normalized == "tui":
+        return {"kind": "relaunch", "label": "TUI", "args": ["--tui", "--resume", session_id], "preserve": False}
+    if normalized in {"telegram", "discord", "imessage"}:
+        return {
+            "kind": "gateway_hint",
+            "label": normalized,
+            "message": f"Open {normalized} and send: /resume {session_id}",
+        }
+    raise ValueError(f"Unknown session browse mode: {mode}")
+
+
 def _resolve_last_session(source: str = "cli") -> Optional[str]:
     """Look up the most recently-used session ID for a source."""
     db = None
@@ -1621,6 +1641,27 @@ def _ensure_tui_node() -> None:
     Idempotent no-op when node+npm are already discoverable. Set
     ``HERMES_SKIP_NODE_BOOTSTRAP=1`` to disable auto-install.
     """
+    # GUI-launched/login-shell-mismatched terminals on macOS can start Python
+    # with a sparse PATH. Seed the usual user, Homebrew, and system locations
+    # before deciding Node/npm are already discoverable.
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    for extra in (
+        Path.home() / ".local" / "bin",
+        Path.home() / ".pocket-server" / "bin",
+        Path("/opt/homebrew/bin"),
+        Path("/opt/homebrew/sbin"),
+        Path("/usr/local/bin"),
+        Path("/usr/local/sbin"),
+        Path("/usr/bin"),
+        Path("/bin"),
+        Path("/usr/sbin"),
+        Path("/sbin"),
+    ):
+        s = str(extra)
+        if extra.is_dir() and s not in parts:
+            parts.append(s)
+    os.environ["PATH"] = os.pathsep.join(parts)
+
     if shutil.which("node") and shutil.which("npm"):
         return
     if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
@@ -2161,6 +2202,9 @@ def _launch_tui(
         env["HERMES_TUI_RESUME"] = resume_session_id
 
     argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    # _make_tui_argv() may repair os.environ["PATH"] while finding node/npm.
+    # Pass that repaired PATH to the actual TUI subprocess.
+    env["PATH"] = os.environ.get("PATH", env.get("PATH", ""))
     code: Optional[int] = None
     try:
         try:
@@ -14032,6 +14076,12 @@ def main():
     sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
     )
+    sessions_browse.add_argument(
+        "--mode",
+        choices=["tui", "cli", "repl", "auto", "telegram", "discord", "imessage"],
+        default="tui",
+        help="How to resume the selected session (default: tui)",
+    )
 
     def _confirm_prompt(prompt: str) -> bool:
         """Prompt for y/N confirmation, safe against non-TTY environments."""
@@ -14695,11 +14745,27 @@ def main():
                 print("Cancelled.")
                 return
 
-            # Launch hermes --resume <id> by replacing the current process
-            print(f"Resuming session: {selected_id}")
+            plan = _session_browse_resume_plan(
+                selected_id, getattr(args, "mode", "tui")
+            )
+            if plan["kind"] == "gateway_hint":
+                print(plan["message"])
+                return
+
+            print(f"Resuming session in {plan['label']}: {selected_id}")
             from hermes_cli.relaunch import relaunch
 
-            relaunch(["--resume", selected_id])
+            if plan.get("preserve"):
+                relaunch(plan["args"], preserve_inherited=True)
+            else:
+                inherited_argv = [
+                    arg for arg in sys.argv[1:] if arg not in {"--tui", "--cli"}
+                ]
+                relaunch(
+                    plan["args"],
+                    preserve_inherited=True,
+                    original_argv=inherited_argv,
+                )
             return  # won't reach here after execvp
 
         elif action == "optimize":

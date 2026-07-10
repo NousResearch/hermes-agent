@@ -1,6 +1,6 @@
 """Trivial L1 identity capability.
 
-Per the architecture (memory-architecture.md §3), identity memory lives in:
+Per the architecture (docs/memory/memory-architecture.md §3), identity memory lives in:
   ~/.hermes/SOUL.md
   ~/.hermes/memories/IDENTITY.md
   ~/.hermes/memories/USER.md

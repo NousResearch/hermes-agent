@@ -2,7 +2,7 @@
 
 Prepared handoff for a dedicated session that will implement the two
 **architectural invariants** declared (but NOT implemented) in
-`docs/memory-architecture.md` §2. This session builds them from scratch. The
+`docs/memory/docs/memory/memory-architecture.md` §2. This session builds them from scratch. The
 current code is GREEN (550 memory tests pass); do not regress it.
 
 ---
@@ -107,7 +107,7 @@ fake available capability and asserts `context()` does NOT include it.
 1. Invariant A (self-registration) first — it's mechanical and de-risks B.
 2. Invariant B (declarative context) second — depends on the registry shape
    from A. Keep the explicit opt-in list reviewed and small.
-3. Update `docs/memory-architecture.md` §2.1 / §2.2 → "IMPLEMENTED", move the
+3. Update `docs/memory/docs/memory/memory-architecture.md` §2.1 / §2.2 → "IMPLEMENTED", move the
    guardrail description into the code/contract tests.
 
 ---

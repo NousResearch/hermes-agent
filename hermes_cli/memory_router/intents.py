@@ -36,7 +36,7 @@ class Intent(str, Enum):
 
 
 # Metadata describing where each intent is served and a human description.
-# ``phases_available`` records which phases (per memory-architecture.md) bring
+# ``phases_available`` records which phases (per docs/memory/memory-architecture.md) bring
 # the layer online. The Router only ever routes to *registered + available*
 # capabilities, so this table is documentation/audit aid, not routing logic.
 INTENT_METADATA: dict[Intent, dict] = {

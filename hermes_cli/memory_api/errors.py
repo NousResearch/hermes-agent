@@ -2,7 +2,7 @@
 
 Errors are explicit and typed. The API never reports a "successful" write that
 was not persisted: an unsupported or unavailable write raises rather than
-returning a silent no-op success (memory-architecture.md §16.4).
+returning a silent no-op success (docs/memory/memory-architecture.md §16.4).
 """
 
 from __future__ import annotations

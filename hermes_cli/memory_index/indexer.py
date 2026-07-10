@@ -1,6 +1,6 @@
 """Layer 5 indexer: deterministic SQLite + FTS5 over existing markdown.
 
-Design guarantees (per memory-architecture.md §7, §14):
+Design guarantees (per docs/memory/memory-architecture.md §7, §14):
 
 * **Markdown is truth; SQLite is a cache.** ``index.db`` is fully derivable
   from the markdown sources and is gitignored.
@@ -211,7 +211,7 @@ class MemoryIndex:
 
         Returns number of chunks indexed. Boring on purpose: no diffing, no
         partial updates, no migration. The raw file is READ ONLY — never
-        mutated (ownership rule in docs/memory-archive-contract.md §0).
+        mutated (ownership rule in docs/memory/ARCHIVE_CONTRACT.md §0).
         """
         abs_path = Path(source_file)
         if not abs_path.is_absolute():

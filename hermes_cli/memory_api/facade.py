@@ -17,7 +17,7 @@ keeping full provenance. The API performs NO LLM reasoning or ranking.
 
 Writes are never silent: an unsupported/unavailable write raises
 :class:`~hermes_cli.memory_api.errors.CapabilityError`. No "success" is ever
-reported for an unpersisted write (memory-architecture.md §16.4).
+reported for an unpersisted write (docs/memory/memory-architecture.md §16.4).
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ project path is hardcoded anywhere else in the codebase; every filesystem
 location derives from :meth:`ProjectProvider._project_dir` /
 :meth:`ProjectProvider._status_path`.
 
-Design (memory-architecture.md §18):
+Design (docs/memory/memory-architecture.md §18):
 - Markdown is the source of truth. Each project's state is one markdown
   file under ``<hermes_home>/memory/projects/<project-key>/STATUS.md``.
 - L2 describes the PRESENT, not the PAST. It links to history (ADRs /
@@ -25,7 +25,7 @@ Trust boundary (mirrors ADR §17.5 in spirit):
 No LLM extraction, no automatic STATUS generation, no embeddings, no
 Graphiti/Holographic.
 
-Statelessness invariant (memory-architecture.md §18.11): providers own storage
+Statelessness invariant (docs/memory/memory-architecture.md §18.11): providers own storage
 access but hold NO authoritative mutable in-memory state. All truth lives on
 disk (STATUS.md). Two reads of the same project must always agree; nothing is
 cached or mutated in memory across calls.

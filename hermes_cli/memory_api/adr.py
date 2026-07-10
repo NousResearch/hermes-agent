@@ -4,7 +4,7 @@ This module is the SOLE owner of ADR storage resolution. No ADR path is
 hardcoded anywhere else in the codebase; every filesystem location derives
 from :meth:`AdrProvider._project_dir` / :meth:`AdrProvider._adr_path`.
 
-Design (memory-architecture.md §17):
+Design (docs/memory/memory-architecture.md §17):
 - Markdown is the source of truth. Each ADR is one markdown file under
   ``<hermes_home>/memory/adr/<project-key>/NNN-title.md`` (global/system
   ADRs live under ``_system/``).

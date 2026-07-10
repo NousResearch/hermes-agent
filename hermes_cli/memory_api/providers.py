@@ -8,7 +8,7 @@ Layers 3 (archive) and 5 (broad index), plus L1/L5-notes recent activity.
 It is structurally compatible — it implements the Protocol methods; no
 inheritance. Write operations (``remember``) raise
 :class:`~hermes_cli.memory_api.errors.CapabilityError` because the SQLite index
-is a derived cache, not an authority (memory-architecture.md: markdown/raw are
+is a derived cache, not an authority (docs/memory/memory-architecture.md: markdown/raw are
 the source of truth). The API therefore never reports a fake successful write.
 """
 

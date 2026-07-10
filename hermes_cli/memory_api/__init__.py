@@ -13,7 +13,7 @@ skills, CLI) and the memory subsystem. It defines:
   implementations for write/structured ops.
 - Errors + result types that preserve provenance.
 
-Hard constraints (memory-architecture.md §16):
+Hard constraints (docs/memory/memory-architecture.md §16):
 - No behavior change to existing memory paths.
 - No new storage, no new backends, no Holographic/Mem0/Graphiti/embeddings.
 - Writes are NOT silent no-ops: an unsupported write raises
@@ -25,7 +25,7 @@ search/archive/recent capabilities + contract tests. NOT implemented: ADR
 storage, project memory, semantic search, new backends.
 
 (Phase 5 added AdrProvider / DecisionRecord; Phase 6 added ProjectProvider /
-ProjectState / NextAction — see memory-architecture.md §17, §18.)
+ProjectState / NextAction — see docs/memory/memory-architecture.md §17, §18.)
 """
 
 from __future__ import annotations

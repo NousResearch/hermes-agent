@@ -117,7 +117,7 @@ class NextAction:
 class ProjectState:
     """Current, curated project truth (Layer 2). Built in Phase 6.
 
-    L2 describes the PRESENT, not the PAST (memory-architecture.md §18.1).
+    L2 describes the PRESENT, not the PAST (docs/memory/memory-architecture.md §18.1).
     It holds status, owners, blockers, and next actions — and LINKS to
     history (ADRs / Archive / Search) by reference rather than copying it.
 

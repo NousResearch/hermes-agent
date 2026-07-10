@@ -18,7 +18,7 @@ Lifecycle, on purpose, is boring:
   sessions searchable. No daemon required.
 
 The memory subsystem only READS raw transcripts. It never mutates them
-(ownership rule in docs/memory-archive-contract.md §0).
+(ownership rule in docs/memory/ARCHIVE_CONTRACT.md §0).
 """
 
 from __future__ import annotations

@@ -6,7 +6,9 @@ network error, the adapter must self-reschedule the next reconnect attempt
 rather than silently leaving polling dead.
 """
 
+import ast
 import asyncio
+from pathlib import Path
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -674,6 +676,123 @@ async def test_heartbeat_loop_ignores_non_connectivity_errors():
 
     # No reconnect should have been triggered for a non-connectivity error.
     adapter._handle_polling_network_error.assert_not_awaited()
+
+
+async def _heartbeat_exception_case(exc, *, pending_probe=False):
+    adapter = _make_adapter()
+    reconnect_handler = AsyncMock()
+    adapter._handle_polling_network_error = reconnect_handler  # type: ignore[method-assign]
+    mock_app = MagicMock()
+    mock_app.updater.running = True
+    if pending_probe:
+        mock_app.bot.get_me = AsyncMock(return_value=MagicMock())
+        mock_app.bot.get_webhook_info = AsyncMock(side_effect=exc)
+    else:
+        mock_app.bot.get_me = AsyncMock(side_effect=exc)
+    adapter._app = mock_app
+
+    sleep_calls = 0
+
+    async def fast_sleep(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 2:
+            raise asyncio.CancelledError()
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        await adapter._polling_heartbeat_loop()
+    await asyncio.sleep(0)
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending_probe", [False, True])
+async def test_heartbeat_routes_ptb_transport_errors_to_reconnect(pending_probe):
+    from telegram.error import NetworkError, TimedOut
+
+    for exc in (NetworkError("network"), TimedOut("timeout")):
+        adapter = await _heartbeat_exception_case(exc, pending_probe=pending_probe)
+        reconnect_handler = adapter._handle_polling_network_error
+        assert isinstance(reconnect_handler, AsyncMock)
+        reconnect_handler.assert_awaited_once_with(exc)
+        assert adapter._polling_error_task is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending_probe", [False, True])
+async def test_heartbeat_ignores_ptb_semantic_errors(pending_probe):
+    from telegram.error import BadRequest, Forbidden, InvalidToken, RetryAfter
+
+    for exc in (
+        BadRequest("bad request"),
+        Forbidden("forbidden"),
+        InvalidToken("invalid token"),
+        RetryAfter(1),
+    ):
+        adapter = await _heartbeat_exception_case(exc, pending_probe=pending_probe)
+        reconnect_handler = adapter._handle_polling_network_error
+        assert isinstance(reconnect_handler, AsyncMock)
+        reconnect_handler.assert_not_awaited()
+        assert adapter._polling_error_task is None
+
+
+@pytest.mark.parametrize(
+    ("error_name", "expected"),
+    [
+        ("NetworkError", True),
+        ("TimedOut", True),
+        ("BadRequest", False),
+        ("Forbidden", False),
+        ("InvalidToken", False),
+        ("RetryAfter", False),
+    ],
+)
+def test_network_error_classifier_matches_ptb_semantics(error_name, expected):
+    import telegram.error as telegram_error
+
+    error_type = getattr(telegram_error, error_name)
+    error = error_type(1) if error_name == "RetryAfter" else error_type(error_name)
+    assert TelegramAdapter._looks_like_network_error(error) is expected
+
+
+def _calls_shared_network_classifier(node):
+    return any(
+        isinstance(child, ast.Call)
+        and isinstance(child.func, ast.Attribute)
+        and child.func.attr == "_looks_like_network_error"
+        for child in ast.walk(node)
+    )
+
+
+def test_polling_error_callback_uses_shared_network_classifier():
+    source = Path(TelegramAdapter.connect.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    callbacks = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_polling_error_callback"
+    ]
+    assert len(callbacks) == 1
+    assert _calls_shared_network_classifier(callbacks[0])
+
+
+def test_connect_initialize_retry_uses_shared_network_classifier():
+    source = Path(TelegramAdapter.connect.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    connect = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "connect"
+    )
+    exception_handlers = [
+        node
+        for node in ast.walk(connect)
+        if isinstance(node, ast.ExceptHandler)
+        and isinstance(node.type, ast.Name)
+        and node.type.id == "Exception"
+    ]
+    assert any(_calls_shared_network_classifier(handler) for handler in exception_handlers)
 
 
 @pytest.mark.asyncio

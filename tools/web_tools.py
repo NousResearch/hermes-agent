@@ -133,6 +133,21 @@ async def async_is_safe_url(url: str) -> bool:
     return await _bounded_async_is_safe_url(url)
 
 
+def _web_extract_url(value: Any) -> Optional[str]:
+    """Return a usable URL from a model-supplied extract item.
+
+    Models sometimes forward a complete web-search result instead of its URL.
+    Accept the two common URL keys, but reject missing/non-string values rather
+    than stringifying arbitrary objects into misleading fetch targets.
+    """
+    if isinstance(value, dict):
+        value = value.get("url") or value.get("href")
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
 def _env_value(name: str) -> str:
@@ -871,7 +886,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
 
 async def web_extract_tool(
-    urls: List[str],
+    urls: List[Any],
     format: str = None,
     char_limit: Optional[int] = None,
     use_llm_processing: Optional[bool] = None,
@@ -888,7 +903,8 @@ async def web_extract_tool(
     ``[IMAGE: alt]`` placeholders (real image URLs are preserved as links).
 
     Args:
-        urls (List[str]): List of URLs to extract content from
+        urls (List[Any]): URL strings or search-result objects containing a
+            string ``url`` or ``href`` field
         format (str): Desired output format ("markdown" or "html", optional)
         char_limit (Optional[int]): Per-page char budget sent to the model
             (default: web.extract_char_limit or 15000). Larger pages truncate.
@@ -910,7 +926,21 @@ async def web_extract_tool(
     from agent.redact import _PREFIX_RE
     from urllib.parse import unquote
     normalized_urls: List[str] = []
-    for _url in urls:
+    normalized_indices: List[int] = []
+    invalid_urls: Dict[int, Dict[str, Any]] = {}
+    for index, item in enumerate(urls):
+        _url = _web_extract_url(item)
+        if _url is None:
+            invalid_urls[index] = {
+                "url": "",
+                "title": "",
+                "content": "",
+                "error": (
+                    f"Invalid URL item at index {index}: expected a URL string "
+                    "or an object with a string 'url' or 'href' field"
+                ),
+            }
+            continue
         normalized_url = normalize_url_for_request(_url)
         if (
             _PREFIX_RE.search(_url)
@@ -935,6 +965,7 @@ async def web_extract_tool(
                 ),
             })
         normalized_urls.append(normalized_url)
+        normalized_indices.append(index)
 
     debug_call_data = {
         "parameters": {
@@ -957,15 +988,17 @@ async def web_extract_tool(
 
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
-        ssrf_blocked: List[Dict[str, Any]] = []
-        for url in normalized_urls:
+        safe_indices = []
+        ssrf_blocked: Dict[int, Dict[str, Any]] = {}
+        for index, url in zip(normalized_indices, normalized_urls):
             if not await async_is_safe_url(url):
-                ssrf_blocked.append({
+                ssrf_blocked[index] = {
                     "url": url, "title": "", "content": "",
                     "error": "Blocked: URL targets a private or internal network address",
-                })
+                }
             else:
                 safe_urls.append(url)
+                safe_indices.append(index)
 
         # Dispatch only safe URLs to the configured backend
         if not safe_urls:
@@ -1059,9 +1092,25 @@ async def web_extract_tool(
                     provider.extract, safe_urls, format=format
                 )
 
-        # Merge any SSRF-blocked results back in
-        if ssrf_blocked:
-            results = ssrf_blocked + results
+        # Reconstruct the original input order across invalid, blocked, and
+        # provider-processed entries. Providers are expected to preserve the
+        # order of the safe URL list they receive.
+        if invalid_urls or ssrf_blocked:
+            safe_results = {
+                index: (
+                    results[position]
+                    if position < len(results)
+                    else {
+                        "url": safe_urls[position],
+                        "title": "",
+                        "content": "",
+                        "error": "Extract backend returned no result for this URL",
+                    }
+                )
+                for position, index in enumerate(safe_indices)
+            }
+            by_index = {**safe_results, **ssrf_blocked, **invalid_urls}
+            results = [by_index[index] for index in range(len(urls))]
 
         response = {"results": results}
         

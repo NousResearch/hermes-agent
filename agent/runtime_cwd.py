@@ -57,6 +57,23 @@ def _session_cwd_override() -> str:
     return str(value).strip()
 
 
+def resolve_tool_cwd() -> str:
+    """Read the effective cwd for tool dispatch (terminal, file, code_exec).
+
+    Checks ``_SESSION_CWD`` ContextVar first (set per-job by the cron scheduler
+    and per-session by the gateway), then falls back to ``os.environ["TERMINAL_CWD"]``.
+
+    Unlike :func:`resolve_agent_cwd`, this does **not** check whether the path
+    is a real directory — the caller handles path validation (sentinel checks,
+    container path mapping, etc.).  This matters for container backends where
+    the configured cwd (e.g. ``/workspace``) may not exist on the host.
+    """
+    override = _session_cwd_override()
+    if override:
+        return override
+    return os.environ.get("TERMINAL_CWD", "").strip()
+
+
 def resolve_agent_cwd() -> Path:
     override = _session_cwd_override()
     if override:

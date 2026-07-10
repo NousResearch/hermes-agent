@@ -738,8 +738,12 @@ def _begin_tool_execution(
         try:
             command = function_args.get("command", "")
             if _is_destructive_command(command):
-                cwd = function_args.get("workdir") or os.getenv(
-                    "TERMINAL_CWD", os.getcwd()
+                from agent.runtime_cwd import resolve_tool_cwd
+
+                cwd = (
+                    function_args.get("workdir")
+                    or resolve_tool_cwd()
+                    or os.getcwd()
                 )
                 agent._checkpoint_mgr.ensure_checkpoint(
                     cwd, f"before terminal: {command[:60]}"
@@ -864,6 +868,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         parsed_calls.append(
             (tool_call, function_name, function_args, [], None, _ts_scope_block)
         )
+
 
     # ── Logging / callbacks ──────────────────────────────────────────
     tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)

@@ -414,6 +414,24 @@ def _run_agent_tool_execution_middleware(
     return result, observed_args
 
 
+def _warn_on_tool_submit_session_mismatch(agent) -> None:
+    """Log when a tool batch is about to snapshot the wrong gateway context."""
+    expected = getattr(agent, "_gateway_session_key", "") or ""
+    if not expected:
+        return
+    try:
+        from gateway.session_context import get_session_env
+        bound = get_session_env("HERMES_SESSION_KEY", "")
+    except Exception:
+        return
+    if bound != expected:
+        logger.warning(
+            "Tool executor context mismatch: bound session %r, executing agent %r",
+            bound,
+            expected,
+        )
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -784,6 +802,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         timeout_s = _resolve_concurrent_tool_timeout()
         deadline = time.monotonic() + timeout_s if timeout_s is not None else None
         if runnable_calls:
+            _warn_on_tool_submit_session_mismatch(agent)
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
             # Daemon workers: an interrupted/timed-out batch is abandoned with
             # shutdown(wait=False), but stdlib ThreadPoolExecutor workers are

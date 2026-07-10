@@ -166,8 +166,13 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         pass
 
 
-def _finalize_oneshot_session(result: dict) -> None:
-    """Best-effort close marker for sessions created by ``hermes -z``."""
+def _finalize_oneshot_session(result: dict, end_reason: str = "oneshot_complete") -> None:
+    """Best-effort close marker for sessions created by ``hermes -z``.
+
+    The function is intentionally silent: oneshot stdout/stderr are part of the
+    caller contract, and session-state cleanup must never mask the real run
+    result.
+    """
     try:
         session_id = result.get("session_id") if isinstance(result, dict) else None
         if not session_id:
@@ -178,7 +183,7 @@ def _finalize_oneshot_session(result: dict) -> None:
         hermes_state = importlib.import_module("hermes_state")
         get_session_db = getattr(hermes_state, "get_session_db", None)
         db = get_session_db() if callable(get_session_db) else hermes_state.SessionDB()
-        db.end_session(session_id, "oneshot_complete")
+        db.end_session(session_id, end_reason)
     except Exception:
         return
 
@@ -278,6 +283,7 @@ def run_oneshot(
             _write_usage_file(usage_file, result, failure=repr(failure))
             raise failure
         _write_usage_file(usage_file, result, failure=str(failure))
+        _finalize_oneshot_session(result, "oneshot_failed")
         real_stderr.write(f"hermes -z: agent failed: {failure}\n")
         real_stderr.flush()
         return 1
@@ -291,9 +297,11 @@ def run_oneshot(
         real_stdout.flush()
 
     if (result.get("failed") or result.get("partial")) and not (response or "").strip():
+        _finalize_oneshot_session(result, "oneshot_failed")
         return 2
 
     if not (response or "").strip():
+        _finalize_oneshot_session(result, "oneshot_failed")
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
         return 1

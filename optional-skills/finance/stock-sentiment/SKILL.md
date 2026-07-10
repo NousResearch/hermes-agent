@@ -13,7 +13,7 @@ metadata:
 required_environment_variables:
   - name: SENTISENSE_API_KEY
     prompt: SentiSense API key
-    help: "Free key from the Developer Console: https://app.sentisense.ai/settings/developer"
+    help: "Free key at https://app.sentisense.ai/get-api-key"
     required_for: sentiment, smart-money, and AI-insight data
 ---
 # Stock Sentiment Skill
@@ -40,7 +40,7 @@ Do not use it for order entry, portfolio management, or personalized advice. It 
 ## Prerequisites
 
 - Python 3.8+ using only the standard library (`urllib`, `json`); no third-party packages required. Any HTTP client or plain `curl` works too. On macOS python.org installs the client can raise `CERTIFICATE_VERIFY_FAILED` (missing CA certs): run the bundled `Install Certificates.command`, use the system `/usr/bin/python3`, or use `curl` (which uses the system trust store).
-- A free `SENTISENSE_API_KEY`. Generate one from the Developer Console at https://app.sentisense.ai/settings/developer. The key is required on every call; anonymous requests return `401 api_key_required`.
+- A free `SENTISENSE_API_KEY`. Get one at https://app.sentisense.ai/get-api-key. The key is required on every call; anonymous requests return `401 api_key_required`.
 - Network access to `https://app.sentisense.ai`.
 - Read-only scope. Every endpoint here is a GET. Nothing this skill does can place a trade, move money, or modify account state.
 
@@ -139,7 +139,7 @@ SMART MONEY  (wrapped in {isPreview, previewReason, data}; free key returns a pr
   GET /api/v1/politicians/activity?lookbackDays=N         Congressional trades; PURCHASE|SALE.
   GET /api/v1/politicians/filings/{T}?lookbackDays=N      Per-ticker congressional filings.
   GET /api/v1/politicians/member/{slug}                   Member profile (data.recentTrades[]).
-  GET /api/v1/institutional/quarters                      Call FIRST; bare array, [0].reportDate is latest.
+  GET /api/v1/institutional/quarters                      Call FIRST; bare array. Use reportDate of first entry whose pending is not true; skip pending:true (fall back to [0] only if all pending).
   GET /api/v1/institutional/holders/{T}?reportDate={Q}    Top 13F holders (data.holders[], largest first).
   GET /api/v1/analyst/{T}/consensus                       Price-target band; data IS the consensus object (data.consensusLabel).
   GET /api/v1/analyst/{T}/actions?lookbackDays=N          Recent rating changes for one ticker.
@@ -236,7 +236,7 @@ Frame the result as an observed divergence, not a signal to act: "Bullish diverg
 - **Wrap versus flat differs by endpoint.** Reading `.data` on a flat endpoint (or the reverse) yields nothing. Flat: `stocks/price`, `stocks/prices`, `stocks/chart`, `stocks/popular`, `stocks/{T}/profile`, `market-mood`, the `sentiment`, `sentisense`, `mentions`, and `social_dominance` series, and `institutional/quarters`. Wrapped under `.data`: `insider/*`, `politicians/*`, `institutional/holders`, `analyst/*`, `insights/*`, and `calendar/earnings`. When unsure, accept both.
 - **The sentiment scalar is nested.** The series is a bare array and the float lives at `series[i].metricValue.value.value`; `series[i].metricValue.value` is itself a dict, so there is no top-level `series[i].value` shortcut.
 - **Congress and insider use different verbs.** Insider rows carry `transactionType` BUY or SELL; congressional rows carry PURCHASE or SALE. Filter each with its own vocabulary.
-- **Always fetch quarters first.** Call `institutional/quarters` and pass `[0].reportDate` to `institutional/holders`; never hardcode a quarter.
+- **Always fetch quarters first.** Call `institutional/quarters` and pass the `reportDate` of the first quarter whose `pending` is not true to `institutional/holders`; skip any `pending:true` entry (within ~45 days of a quarter close the most-recent quarter is still filing and holds almost no holders), and fall back to `[0]` only if every entry is `pending:true`. Never hardcode a quarter.
 - **Documents carry no article title.** The document feed returns URLs, `source`, `published` (epoch seconds), and `averageSentiment`, not the publisher's headline. Pre-clustered story titles (`cluster.title`) are SentiSense-authored and safe to display verbatim; prefer stories when a readable title is needed.
 - **No invented endpoints.** There is no options flow, no dark pool, and no `/congress` (congressional data lives under `/politicians`). The earnings calendar is `/api/v1/calendar/earnings`.
 - **No advice.** When asked "should I buy," return data-grounded synthesis (sentiment, smart-money flow, analyst consensus, AI insight) framed as educational context, not a personal recommendation.

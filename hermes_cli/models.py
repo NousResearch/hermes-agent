@@ -444,7 +444,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-v4-flash",
         "deepseek-v4-flash-free",
         "qwen3.6-plus",
-        "qwen3.6-plus-free",
         "qwen3.5-plus",
         "grok-build-0.1",
         "big-pickle",

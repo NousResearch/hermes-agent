@@ -1196,12 +1196,23 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _looks_like_network_error(error: Exception) -> bool:
-        """Return True for transient network errors that warrant a reconnect attempt."""
+        """Return True for transient transport failures that warrant reconnect."""
         name = error.__class__.__name__.lower()
+        if name in {"badrequest", "invalidtoken", "forbidden", "retryafter"}:
+            return False
         if name in {"networkerror", "timedout", "connectionerror"}:
             return True
         try:
-            from telegram.error import NetworkError, TimedOut
+            from telegram.error import (
+                BadRequest,
+                Forbidden,
+                InvalidToken,
+                NetworkError,
+                RetryAfter,
+                TimedOut,
+            )
+            if isinstance(error, (BadRequest, InvalidToken, Forbidden, RetryAfter)):
+                return False
             if isinstance(error, (NetworkError, TimedOut)):
                 return True
         except ImportError:
@@ -2113,17 +2124,11 @@ class TelegramAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 return
             except (asyncio.TimeoutError, OSError) as probe_err:
-                logger.warning(
-                    "[%s] Polling heartbeat probe failed (%s); triggering reconnect",
-                    self.name, probe_err,
-                )
-                if self._polling_error_task and not self._polling_error_task.done():
-                    continue   # reconnect already in progress
-                loop = asyncio.get_running_loop()
-                self._polling_error_task = loop.create_task(
-                    self._handle_polling_network_error(probe_err)
-                )
-            except Exception:
+                self._schedule_polling_recovery(probe_err, reason="heartbeat probe")
+            except Exception as probe_err:
+                if self._looks_like_network_error(probe_err):
+                    self._schedule_polling_recovery(probe_err, reason="heartbeat probe")
+                    continue
                 # Non-connectivity errors (e.g. TelegramError 401) are not
                 # CLOSE-WAIT symptoms — let PTB's own handlers surface them.
                 pass
@@ -3101,10 +3106,6 @@ class TelegramAdapter(BasePlatformAdapter):
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
             # fallback-IP chain can't block startup indefinitely.
-            try:
-                from telegram.error import NetworkError, TimedOut
-            except ImportError:
-                NetworkError = TimedOut = OSError  # type: ignore[misc,assignment]
             _max_connect = 8
             _init_timeout = _env_float("HERMES_TELEGRAM_INIT_TIMEOUT", 30.0)
             for _attempt in range(_max_connect):
@@ -3139,7 +3140,19 @@ class TelegramAdapter(BasePlatformAdapter):
                             f"({_init_timeout:.0f}s each). Check network connectivity to api.telegram.org "
                             f"or set HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT to a lower value."
                         )
-                except (NetworkError, TimedOut, OSError) as init_err:
+                except OSError as init_err:
+                    if _attempt < _max_connect - 1:
+                        wait = min(2 ** _attempt, 15)
+                        logger.warning(
+                            "[%s] Connect attempt %d/%d failed: %s — retrying in %ds",
+                            self.name, _attempt + 1, _max_connect, init_err, wait,
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        raise
+                except Exception as init_err:
+                    if not self._looks_like_network_error(init_err):
+                        raise
                     if _attempt < _max_connect - 1:
                         wait = min(2 ** _attempt, 15)
                         logger.warning(

@@ -238,6 +238,21 @@ async function resolvePublicHttpTarget(parsed: URL, lookup: LookupAll = lookupHo
   return targets[0]
 }
 
+async function openOrRevealExternalFilePath(filePath, actions) {
+  if (shouldRevealExternalFilePath(filePath)) {
+    actions.reveal(filePath)
+    return { action: 'revealed', reason: 'unsafe-file-type' }
+  }
+
+  try {
+    await actions.open(filePath)
+    return { action: 'opened' }
+  } catch (openError) {
+    actions.reveal(filePath)
+    return { action: 'revealed', reason: 'open-failed', openError }
+  }
+}
+
 function ipcPathError(code: any, message: string): Error & { code: any } {
   const error = new Error(message) as Error & { code: any }
 
@@ -437,6 +452,7 @@ export {
   encryptDesktopSecret,
   EXTERNAL_FILE_REVEAL_EXTENSIONS,
   isPrivateNetworkAddress,
+  openOrRevealExternalFilePath,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
   resolvePublicHttpTarget,

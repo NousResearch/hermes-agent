@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url'
 import {
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
+  openOrRevealExternalFilePath,
   resolveDirectoryForIpc,
   resolvePublicHttpTarget,
   resolveReadableFileForIpc,
@@ -95,6 +96,47 @@ test('resolvePublicHttpTarget returns one validated address for connection pinni
   ])
 
   assert.deepEqual(target, { address: '93.184.216.34', family: 4 })
+})
+
+test('openOrRevealExternalFilePath reveals executable-like file URLs instead of launching them', async () => {
+  const filePath = 'C:\\Users\\me\\Downloads\\setup.EXE'
+  const opened: string[] = []
+  const revealed: string[] = []
+
+  assert.equal(shouldRevealExternalFilePath(filePath), true)
+
+  const outcome = await openOrRevealExternalFilePath(filePath, {
+    open: async target => {
+      opened.push(target)
+    },
+    reveal: target => {
+      revealed.push(target)
+    }
+  })
+
+  assert.deepEqual(opened, [])
+  assert.deepEqual(revealed, [filePath])
+  assert.deepEqual(outcome, { action: 'revealed', reason: 'unsafe-file-type' })
+})
+
+test('openOrRevealExternalFilePath handles a rejected openExternal by revealing the file', async () => {
+  const filePath = '/tmp/report.html'
+  const openError = new Error('browser unavailable')
+  const revealed: string[] = []
+
+  const outcome = await openOrRevealExternalFilePath(filePath, {
+    open: async () => {
+      throw openError
+    },
+    reveal: target => {
+      revealed.push(target)
+    }
+  })
+
+  assert.deepEqual(revealed, [filePath])
+  assert.equal(outcome.action, 'revealed')
+  assert.equal(outcome.reason, 'open-failed')
+  assert.equal(outcome.openError, openError)
 })
 
 test('path helpers reject blank non-string NUL and Windows device syntax', async () => {

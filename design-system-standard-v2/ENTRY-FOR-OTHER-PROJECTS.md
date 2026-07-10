@@ -12,7 +12,7 @@
 3. `spec/02-emotion-matrix.md` — ลูกโซ่ แบรนด์→Persona→แรงจูงใจ→อารมณ์ 6 แกน→token (มีสูตรตัวเลข)
 4. `spec/00-standard.md` + `spec/03-expressive-layer.md` + `spec/04-business-conversion.md` — ข้อกำหนดเต็ม
 5. `tokens/` — seed token จริง (DTCG · `node build-tokens.mjs` ได้ css+ts · 2 โปรไฟล์ front/admin)
-6. `tools/ds-check.py` + `tools/contrast-check.mjs` — ตัวตรวจบังคับก่อนปิดงานหน้าจอ
+6. `tools/ds-check.py` + `tools/contrast-check.mjs` (สแตติก) + `tools/contrast-audit-run.mjs` (contrast บนหน้าเรนเดอร์จริง · headless · `npm i playwright` ครั้งแรก) — ตัวตรวจบังคับก่อนปิดงานหน้าจอ
 7. `preview/onemanfleet-ds.html` — **ตัวอย่าง 1 เคส (สี/แบรนด์เป็นของ OneManFleet)** ให้เปิดดูว่าครบทุกชั้นหน้าตาเป็นยังไง · **ห้ามลอกไปใช้ตรง ๆ** — adopt แล้วต้องเปลี่ยนเป็นสี/แบรนด์ของโปรเจกต์เอง (ด่านสี Phase 3) · ตรวจด้วย `tools/brand-leak-check.sh`
 
 ## กติกาสำหรับโปรเจกต์ที่มาใช้

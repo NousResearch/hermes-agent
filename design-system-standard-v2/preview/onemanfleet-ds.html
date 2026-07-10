@@ -1,4 +1,5 @@
 <!-- ⚠ EXAMPLE ONLY / ตัวอย่างเท่านั้น: หน้านี้ใช้สี+แบรนด์ของ OneManFleet เป็น "ตัวอย่าง 1 เคส" ให้ดูว่า Design System ครบทุกชั้นหน้าตาเป็นยังไง · ห้ามลอกสี/ข้อความไปใช้กับโปรเจกต์อื่น · เวลา adopt ต้องเปลี่ยนเป็นสี/แบรนด์ของโปรเจกต์นั้นผ่านด่านสี Phase 3 แล้วรัน tools/brand-leak-check.sh ให้ผ่าน -->
+<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OneManFleet · Design System</title>
@@ -332,12 +333,12 @@
   .ovl.open { display:flex; }
   .modal { width:min(440px,90vw); background:var(--bg-surface); border:1px solid var(--hairline-strong);
     border-radius:16px; padding:26px; box-shadow:0 30px 80px rgba(0,0,0,.5); }
-  .modal h4 { margin:0 0 8px; font-size:17px; }
+  .modal h4 { margin:0 0 8px; font-size:17px; color:var(--text-default); }
   .modal p { margin:0 0 20px; color:var(--text-muted); font-size:16px; }
   .drawer { position:fixed; top:0; right:-420px; bottom:0; width:min(400px,88vw); background:var(--bg-surface);
     border-left:1px solid var(--hairline-strong); z-index:61; padding:26px; transition:right .3s var(--ease); box-shadow:-20px 0 60px rgba(0,0,0,.4); }
   .drawer.open { right:0; }
-  .drawer h4 { margin:0 0 14px; font-size:16px; }
+  .drawer h4 { margin:0 0 14px; font-size:16px; color:var(--text-default); }
   .toast-wrap { position:fixed; bottom:24px; right:24px; z-index:70; display:flex; flex-direction:column; gap:10px; }
   .toast { background:var(--bg-surface); border:1px solid var(--hairline-strong); border-left:3px solid var(--success);
     border-radius:10px; padding:12px 18px; font-size:14px; box-shadow:0 10px 30px rgba(0,0,0,.4);

@@ -24,8 +24,8 @@ function withTempRoot(run) {
 
 function writePayload(dir, { spawnHelper = false } = {}) {
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'pty.node'), '')
-  if (spawnHelper) writeFileSync(join(dir, 'spawn-helper'), '')
+  writeFileSync(join(dir, 'pty.node'), 'native binding')
+  if (spawnHelper) writeFileSync(join(dir, 'spawn-helper'), 'native helper')
 }
 
 function writePackageFixture(root) {
@@ -115,6 +115,26 @@ test('assertNodePtyNativePayload fails when pty.node is absent', () => {
       () => assertNodePtyNativePayload(root, { platform: 'linux', arch: 'x64' }),
       /no usable native payload/
     )
+  })
+})
+
+test('findNodePtyNativePayload rejects an empty pty.node', () => {
+  withTempRoot(root => {
+    const payload = join(root, 'prebuilds', 'linux-x64')
+    mkdirSync(payload, { recursive: true })
+    writeFileSync(join(payload, 'pty.node'), '')
+
+    assert.equal(findNodePtyNativePayload({ root, platform: 'linux', arch: 'x64' }), undefined)
+  })
+})
+
+test('findNodePtyNativePayload rejects an empty Darwin spawn-helper', () => {
+  withTempRoot(root => {
+    const payload = join(root, 'prebuilds', 'darwin-x64')
+    writePayload(payload)
+    writeFileSync(join(payload, 'spawn-helper'), '')
+
+    assert.equal(findNodePtyNativePayload({ root, platform: 'darwin', arch: 'x64' }), undefined)
   })
 })
 

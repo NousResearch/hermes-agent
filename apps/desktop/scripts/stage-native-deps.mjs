@@ -12,13 +12,7 @@
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  rmSync
-} from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { isMain } from './utils.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -44,7 +38,7 @@ function copyGlobByExt(srcDir, destDir, extensions) {
       copyGlobByExt(join(srcDir, entry.name), join(destDir, entry.name), extensions)
       continue
     }
-    if (extensions.some((ext) => entry.name.endsWith(ext))) {
+    if (extensions.some(ext => entry.name.endsWith(ext))) {
       mkdirSync(destDir, { recursive: true })
       cpSync(join(srcDir, entry.name), join(destDir, entry.name))
     }
@@ -81,11 +75,7 @@ export function nodeRuntimeArch(arch) {
   return arch === 'armv7l' ? 'arm' : arch
 }
 
-export function isHostTarget(
-  platform,
-  arch,
-  { hostPlatform = process.platform, hostArch = process.arch } = {}
-) {
+export function isHostTarget(platform, arch, { hostPlatform = process.platform, hostArch = process.arch } = {}) {
   return platform === hostPlatform && nodeRuntimeArch(arch) === nodeRuntimeArch(hostArch)
 }
 
@@ -96,10 +86,19 @@ function nativePayloadDir(root, platform, arch, { includeBuild = true } = {}) {
   const candidates = []
   if (includeBuild) candidates.push(join(root, 'build', 'Release'))
   candidates.push(join(root, 'prebuilds', `${platform}-${nodeRuntimeArch(arch)}`))
-  return candidates.find((candidate) => {
-    if (!existsSync(join(candidate, 'pty.node'))) return false
-    return platform !== 'darwin' || existsSync(join(candidate, 'spawn-helper'))
+  return candidates.find(candidate => {
+    if (!isNonEmptyRegularFile(join(candidate, 'pty.node'))) return false
+    return platform !== 'darwin' || isNonEmptyRegularFile(join(candidate, 'spawn-helper'))
   })
+}
+
+function isNonEmptyRegularFile(path) {
+  try {
+    const stats = statSync(path)
+    return stats.isFile() && stats.size > 0
+  } catch {
+    return false
+  }
 }
 
 export function findNodePtyNativePayload({
@@ -168,9 +167,7 @@ export function stageNodePty({
   }
 
   const payload = assertNodePtyNativePayload(destRoot, { platform, arch })
-  console.log(
-    `[stage-native-deps] staged node-pty (${platform}-${arch}, ${payload}) -> ${destRoot}`
-  )
+  console.log(`[stage-native-deps] staged node-pty (${platform}-${arch}, ${payload}) -> ${destRoot}`)
   return destRoot
 }
 

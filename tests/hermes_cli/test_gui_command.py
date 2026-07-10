@@ -36,6 +36,23 @@ def _make_desktop_tree(tmp_path: Path) -> Path:
     return root
 
 
+def _packaged_node_pty_payload(executable: Path, platform: str) -> Path:
+    if platform == "darwin":
+        resources_dir = executable.parent.parent / "Resources"
+    else:
+        resources_dir = executable.parent / "resources"
+    return (
+        resources_dir
+        / "app.asar.unpacked"
+        / "dist"
+        / "node_modules"
+        / "node-pty"
+        / "build"
+        / "Release"
+        / "pty.node"
+    )
+
+
 def _make_packaged_executable(root: Path, monkeypatch, platform: str = "darwin") -> Path:
     monkeypatch.setattr(cli_main.sys, "platform", platform)
     desktop_dir = root / "apps" / "desktop"
@@ -47,6 +64,11 @@ def _make_packaged_executable(root: Path, monkeypatch, platform: str = "darwin")
         exe = desktop_dir / "release" / "linux-unpacked" / "hermes"
     exe.parent.mkdir(parents=True)
     exe.write_text("", encoding="utf-8")
+    binding = _packaged_node_pty_payload(exe, platform)
+    binding.parent.mkdir(parents=True)
+    binding.write_bytes(b"native binding")
+    if platform == "darwin":
+        (binding.parent / "spawn-helper").write_bytes(b"native helper")
     return exe
 
 
@@ -179,6 +201,23 @@ def test_gui_skip_build_launches_existing_packaged_app_without_npm(tmp_path, mon
     mock_install.assert_not_called()
     mock_run.assert_called_once()
     assert mock_run.call_args.args[0] == [str(packaged_exe)]
+
+
+def test_gui_skip_build_rejects_incomplete_native_payload(tmp_path, monkeypatch, capsys):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    _packaged_node_pty_payload(packaged_exe, "linux").unlink()
+
+    with patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 1
+    mock_run.assert_not_called()
+    output = capsys.readouterr().out
+    assert "native payload is missing or empty" in output
+    assert "hermes desktop --force-build" in output
 
 
 def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):
@@ -372,6 +411,34 @@ def test_desktop_force_build_overrides_stamp(tmp_path, monkeypatch):
     assert mock_run.call_count == 2
 
 
+def test_gui_rejects_successful_pack_without_native_payload(tmp_path, monkeypatch, capsys):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    packaged_exe = desktop_dir / "release" / "linux-unpacked" / "hermes"
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+
+    def build_without_native_payload(*args, **kwargs):
+        packaged_exe.parent.mkdir(parents=True, exist_ok=True)
+        packaged_exe.write_text("", encoding="utf-8")
+        return pack_ok
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp") as mock_stamp, \
+         patch("hermes_cli.main.subprocess.run", side_effect=build_without_native_payload), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    assert exc.value.code == 1
+    mock_stamp.assert_not_called()
+    assert "without a usable node-pty native payload" in capsys.readouterr().out
+
+
 def test_compute_desktop_content_hash_stable(tmp_path, monkeypatch):
     """_compute_desktop_content_hash returns the same digest for identical trees."""
     root = _make_desktop_tree(tmp_path)
@@ -411,6 +478,26 @@ def test_desktop_build_needed_detects_missing_artifact(tmp_path, monkeypatch):
     # No packaged executable exists → build needed
     assert cli_main._desktop_build_needed(
         root / "apps" / "desktop", root, source_mode=False
+    ) is True
+
+
+@pytest.mark.parametrize("payload_bytes", [None, b""])
+def test_desktop_build_needed_detects_incomplete_native_payload(
+    tmp_path, monkeypatch, payload_bytes
+):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    binding = _packaged_node_pty_payload(packaged_exe, "linux")
+    if payload_bytes is None:
+        binding.unlink()
+    else:
+        binding.write_bytes(payload_bytes)
+    cli_main._write_desktop_build_stamp(root, source_mode=False)
+
+    assert cli_main._desktop_build_needed(
+        desktop_dir, root, source_mode=False
     ) is True
 
 
@@ -555,8 +642,7 @@ def test_gui_retries_pack_once_after_purging_build_cache(tmp_path, monkeypatch):
             return pack_fail
         if _calls["n"] == 2:
             # Successful retry materializes the packaged executable.
-            packaged_exe.parent.mkdir(parents=True, exist_ok=True)
-            packaged_exe.write_text("", encoding="utf-8")
+            _make_packaged_executable(root, monkeypatch, platform="linux")
             return pack_ok
         return launch_ok
 

@@ -62,6 +62,7 @@ except ModuleNotFoundError:
     pass
 
 import os
+import platform
 import sys
 
 
@@ -90,7 +91,6 @@ def _set_process_title() -> None:
 
     # Strategy 2/3: platform-specific ctypes fallback
     import ctypes
-    import platform
 
     try:
         system = platform.system()
@@ -4998,6 +4998,56 @@ def _desktop_dist_exists(desktop_dir: Path) -> bool:
     return (desktop_dir / "dist" / "index.html").exists()
 
 
+def _desktop_node_runtime_arch() -> str:
+    """Return Node's architecture label for this host."""
+    machine = platform.machine().lower()
+    return {
+        "aarch64": "arm64",
+        "amd64": "x64",
+        "arm64": "arm64",
+        "armv7": "arm",
+        "armv7l": "arm",
+        "i386": "ia32",
+        "i686": "ia32",
+        "x86": "ia32",
+        "x86_64": "x64",
+    }.get(machine, machine)
+
+
+def _desktop_packaged_runtime_complete(executable: Path) -> bool:
+    """Return True when the packaged app has the native payload node-pty loads."""
+    if sys.platform == "darwin":
+        resources_dir = executable.parent.parent / "Resources"
+    else:
+        resources_dir = executable.parent / "resources"
+
+    node_pty_root = (
+        resources_dir
+        / "app.asar.unpacked"
+        / "dist"
+        / "node_modules"
+        / "node-pty"
+    )
+    payload_dirs = [
+        node_pty_root / "build" / "Release",
+        node_pty_root / "prebuilds" / f"{sys.platform}-{_desktop_node_runtime_arch()}",
+    ]
+
+    try:
+        for payload_dir in payload_dirs:
+            binding = payload_dir / "pty.node"
+            if not binding.is_file() or binding.stat().st_size <= 0:
+                continue
+            if sys.platform == "darwin":
+                helper = payload_dir / "spawn-helper"
+                if not helper.is_file() or helper.stat().st_size <= 0:
+                    continue
+            return True
+    except OSError:
+        return False
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Desktop build stamp — content-hash based skip logic
 # ---------------------------------------------------------------------------
@@ -5097,7 +5147,10 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
         if not _desktop_dist_exists(desktop_dir):
             return True
     else:
-        if _desktop_packaged_executable(desktop_dir) is None:
+        packaged_executable = _desktop_packaged_executable(desktop_dir)
+        if packaged_executable is None:
+            return True
+        if not _desktop_packaged_runtime_complete(packaged_executable):
             return True
 
     stamp_file = _desktop_stamp_path()
@@ -5693,6 +5746,11 @@ def cmd_gui(args: argparse.Namespace):
             print("  Or drop --skip-build to package automatically.")
             sys.exit(1)
         else:
+            if not _desktop_packaged_runtime_complete(packaged_executable):
+                print("✗ --skip-build was passed but the packaged desktop app is incomplete:")
+                print("  node-pty's native payload is missing or empty.")
+                print("  Repair it with:  hermes desktop --force-build")
+                sys.exit(1)
             print(f"→ Skipping desktop package build (--skip-build); using {packaged_executable}")
     else:
         # Check the content-hash stamp before doing any build work.
@@ -5804,6 +5862,14 @@ def cmd_gui(args: argparse.Namespace):
                 print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
             packaged_executable = _desktop_packaged_executable(desktop_dir)
+            if (
+                not source_mode
+                and packaged_executable is not None
+                and not _desktop_packaged_runtime_complete(packaged_executable)
+            ):
+                print("✗ Desktop package build completed without a usable node-pty native payload.")
+                print("  Re-run with:  hermes desktop --force-build")
+                sys.exit(1)
             if not source_mode:
                 # Locally-built apps are ad-hoc signed; make them relaunchable after
                 # an in-place self-update (otherwise macOS reports "Hermes is

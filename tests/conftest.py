@@ -360,6 +360,30 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
 
+    # ``cron.jobs`` historically cached its storage paths at import time. A
+    # test module can import it during collection, before this autouse fixture
+    # redirects HERMES_HOME, which would otherwise make CRUD tests mutate the
+    # developer's live scheduler. Rebind every cached cron path when the module
+    # is already loaded; tests with their own storage fixture may override these
+    # afterward. This keeps collection-time imports hermetic too.
+    cron_jobs_mod = sys.modules.get("cron.jobs")
+    if cron_jobs_mod is not None:
+        fake_cron_dir = fake_hermes_home / "cron"
+        monkeypatch.setattr(cron_jobs_mod, "HERMES_DIR", fake_hermes_home)
+        monkeypatch.setattr(cron_jobs_mod, "CRON_DIR", fake_cron_dir)
+        monkeypatch.setattr(cron_jobs_mod, "JOBS_FILE", fake_cron_dir / "jobs.json")
+        monkeypatch.setattr(cron_jobs_mod, "OUTPUT_DIR", fake_cron_dir / "output")
+        monkeypatch.setattr(
+            cron_jobs_mod,
+            "TICKER_HEARTBEAT_FILE",
+            fake_cron_dir / "ticker_heartbeat",
+        )
+        monkeypatch.setattr(
+            cron_jobs_mod,
+            "TICKER_SUCCESS_FILE",
+            fake_cron_dir / "ticker_last_success",
+        )
+
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")

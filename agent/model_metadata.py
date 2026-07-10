@@ -1099,6 +1099,15 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     Cache key is ``model@base_url`` so the same model name served from
     different providers can have different limits.
     """
+    # Never persist non-positive values — a 0 or negative context length
+    # is always a bug and would poison the cache, causing downstream
+    # `get_model_context_length()` to return 0 (since `0 is not None`).
+    if length <= 0:
+        logger.warning(
+            "Refusing to cache non-positive context length %s -> %s tokens",
+            f"{model}@{base_url}", length,
+        )
+        return
     key = _context_cache_key(model, base_url)
     cache = _load_context_cache()
     if cache.get(key) == length:
@@ -2109,13 +2118,24 @@ def get_model_context_length(
     if base_url and not _skip_persistent_context_cache(base_url, provider):
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
+            # Reject non-positive cached values — a 0 or negative value
+            # is always a bug (corrupted cache, probe failure, or manual
+            # edit).  Without this guard, `0 is not None` short-circuits
+            # the resolution chain and the compressor gets context_length=0,
+            # breaking every status-bar and /usage display downstream.
+            if cached <= 0:
+                logger.warning(
+                    "Dropping non-positive cache entry %s@%s -> %s; re-resolving",
+                    model, base_url, cached,
+                )
+                _invalidate_cached_context_length(model, base_url)
             # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
             # resolved gpt-5.x to the direct-API value (e.g. 1.05M) via
             # models.dev and persisted it. Codex OAuth caps at 272K for every
             # slug, so any cached Codex entry at or above 400K is a leftover
             # from the old resolution path. Drop it and fall through to the
             # live /models probe in step 5 below.
-            if provider == "openai-codex" and cached >= 400_000:
+            elif provider == "openai-codex" and cached >= 400_000:
                 logger.info(
                     "Dropping stale Codex cache entry %s@%s -> %s (pre-fix value); "
                     "re-resolving via live /models probe",

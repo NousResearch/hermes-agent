@@ -725,6 +725,13 @@ def _deliver_to_webui_session(job: dict, session_id: str, content: str) -> Optio
     safely on every provider instead of landing assistant→assistant). The
     browser picks it up on next reload/poll; no live-push in this phase.
 
+    A target may name a compression parent — the session that existed before
+    context compression forked a continuation child (see
+    ``resolve_resume_session_id``). The WebUI reads through that redirect, so
+    appending to the parent would land the cron message somewhere the active
+    conversation never looks. Resolve the live continuation tip before
+    appending, same as the WebUI/gateway resume path does.
+
     Returns ``None`` on success, or an error string on failure — never
     raises, matching the other delivery paths in ``_deliver_result``.
     """
@@ -738,6 +745,8 @@ def _deliver_to_webui_session(job: dict, session_id: str, content: str) -> Optio
         try:
             resolve = getattr(db, "resolve_session_id", None)
             sid = (resolve(session_id) if callable(resolve) else None) or session_id
+            resolve_resume = getattr(db, "resolve_resume_session_id", None)
+            sid = (resolve_resume(sid) if callable(resolve_resume) else None) or sid
             if not db.get_session(sid):
                 return f"webui session '{session_id}' not found"
             label = job.get("name") or job.get("id") or "cron"

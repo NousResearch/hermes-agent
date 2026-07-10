@@ -4948,6 +4948,7 @@ class TestDeliverToWebuiSession:
 
         mock_db = MagicMock()
         mock_db.resolve_session_id.return_value = "sess-1"
+        mock_db.resolve_resume_session_id.return_value = "sess-1"
         mock_db.get_session.return_value = {"id": "sess-1"}
 
         with patch("hermes_state.SessionDB", return_value=mock_db):
@@ -4986,3 +4987,76 @@ class TestDeliverToWebuiSession:
 
         assert result is None
         mock_db_cls.assert_not_called()
+
+    def test_compression_parent_target_delivers_to_continuation_child(self, tmp_path):
+        """Regression: targeting a compression parent must land the cron
+        message on the live continuation child, not the frozen parent.
+
+        ``resolve_session_id()`` only resolves an exact/unique-prefix match —
+        it has no notion of compression continuations, so a target naming a
+        parent id resolves right back to that same parent. WebUI reads
+        instead advance through ``resolve_resume_session_id()``, which walks
+        the parent -> child chain forged by auto-compression. Without doing
+        the same redirect here, the delivery would sit on a session the
+        WebUI never re-reads (#60923 review).
+        """
+        import time
+
+        from hermes_state import SessionDB
+        from cron.scheduler import _deliver_to_webui_session
+
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path)
+        base = int(time.time()) - 10_000
+        try:
+            db.create_session("parent-session", source="webui")
+            db.append_message("parent-session", role="user", content="pre-compression turn")
+            db.end_session("parent-session", "compression")
+
+            db.create_session("child-session", source="webui", parent_session_id="parent-session")
+            db.append_message("child-session", role="assistant", content="post-compression reply")
+
+            conn = db._conn
+            conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'parent-session'",
+                (base, base + 50),
+            )
+            conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = 'child-session'",
+                (base + 100,),
+            )
+            conn.commit()
+
+            # Confirm this is a genuine compression lineage per the same
+            # helpers the WebUI/gateway resume path relies on — not just an
+            # assumption this test bakes in.
+            assert db.get_compression_tip("parent-session") == "child-session"
+            assert db.resolve_resume_session_id("parent-session") == "child-session"
+
+            with patch("hermes_state.SessionDB", return_value=db):
+                job = {"id": "job-1", "name": "daily-report"}
+                result = _deliver_to_webui_session(
+                    job, "parent-session", "Here is the report."
+                )
+        finally:
+            # _deliver_to_webui_session already closed the connection via its
+            # own finally block; guard against double-close if it raised
+            # before reaching that point.
+            if db._conn is not None:
+                db.close()
+
+        assert result is None
+
+        verify_db = SessionDB(db_path)
+        try:
+            parent_messages = verify_db.get_messages("parent-session")
+            child_messages = verify_db.get_messages("child-session")
+        finally:
+            verify_db.close()
+
+        assert [m["content"] for m in parent_messages] == ["pre-compression turn"]
+        child_contents = [m["content"] for m in child_messages]
+        assert child_contents == [
+            "post-compression reply",
+            "[Cron delivery: daily-report]\nHere is the report.",
+        ]

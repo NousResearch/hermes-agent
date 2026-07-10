@@ -1590,3 +1590,43 @@
 .hermes-kanban-trash-label {
   font-weight: 500;
 }
+
+/* ---- Blocked-task inline banner ---- */
+
+.hermes-kanban-blocked-banner {
+  margin: 0.5rem 0;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(217, 160, 40, 0.45);
+  background: rgba(217, 160, 40, 0.08);
+}
+.hermes-kanban-blocked-banner-header {
+  font-weight: 600;
+  font-size: 0.88rem;
+  margin-bottom: 0.3rem;
+  color: #b8860b;
+}
+.hermes-kanban-blocked-banner-reason {
+  font-size: 0.84rem;
+  line-height: 1.4;
+  margin-bottom: 0.5rem;
+  white-space: pre-wrap;
+  color: var(--color-foreground);
+  opacity: 0.9;
+}
+.hermes-kanban-blocked-banner-input {
+  width: 100%;
+  margin-bottom: 0.4rem;
+}
+.hermes-kanban-blocked-banner-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+.hermes-kanban-blocked-banner-primary {
+  background: rgba(217, 160, 40, 0.85) !important;
+  color: #1a1a1a !important;
+  border-color: rgba(217, 160, 40, 0.9) !important;
+}
+.hermes-kanban-blocked-banner-primary:hover {
+  background: rgba(217, 160, 40, 1) !important;
+}

@@ -2265,3 +2265,88 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+# ---------------------------------------------------------------------------
+# block_reason in get_task and board responses (#43216)
+# ---------------------------------------------------------------------------
+
+
+def test_get_task_includes_block_reason_when_blocked(client):
+    """GET /tasks/:id must return block_reason for blocked tasks."""
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "blocked task"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "blocked", "block_reason": "need API key from admin"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "blocked"
+
+    r = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["task"]["block_reason"] == "need API key from admin"
+
+
+def test_get_task_no_block_reason_when_not_blocked(client):
+    """GET /tasks/:id must NOT include block_reason for non-blocked tasks."""
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "ready task"}).json()["task"]
+    r = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
+    assert r.status_code == 200
+    assert "block_reason" not in r.json()["task"]
+
+
+def test_board_includes_block_reason_for_blocked_tasks(client):
+    """GET /board must include block_reason on blocked task cards."""
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "blocked card"}).json()["task"]
+    client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "blocked", "block_reason": "waiting for deploy"},
+    )
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    blocked_col = next(c for c in r.json()["columns"] if c["name"] == "blocked")
+    assert len(blocked_col["tasks"]) == 1
+    assert blocked_col["tasks"][0]["block_reason"] == "waiting for deploy"
+
+
+def test_board_no_block_reason_for_unblocked_tasks(client):
+    """GET /board must NOT include block_reason on non-blocked task cards."""
+    client.post("/api/plugins/kanban/tasks", json={"title": "ready card"})
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    ready_col = next(c for c in r.json()["columns"] if c["name"] == "ready")
+    for task in ready_col["tasks"]:
+        assert "block_reason" not in task
+
+
+def test_block_reason_latest_wins(client):
+    """When a task is blocked multiple times, the latest reason is returned."""
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "multi-block"}).json()["task"]
+    client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "blocked", "block_reason": "first reason"},
+    )
+    client.patch(f"/api/plugins/kanban/tasks/{t['id']}", json={"status": "ready"})
+    client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "blocked", "block_reason": "second reason"},
+    )
+
+    r = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
+    assert r.json()["task"]["block_reason"] == "second reason"
+
+
+def test_blocked_banner_component_and_css_exist():
+    """BlockedBanner component and its CSS classes must be present."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert "function BlockedBanner" in js
+    assert "hermes-kanban-blocked-banner" in js
+    assert "hermes-kanban-blocked-banner" in css
+    assert "Reply & unblock" in js or "replyAndUnblock" in js
+    assert "Reply only" in js or "replyOnly" in js
+    assert "onReplyAndUnblock" in js

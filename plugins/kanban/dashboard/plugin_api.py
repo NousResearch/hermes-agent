@@ -234,6 +234,50 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
     }
 
 
+def _latest_block_reason(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return the reason from the most recent ``blocked`` event, or *None*."""
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'blocked' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return None
+    try:
+        return json.loads(row["payload"]).get("reason")
+    except Exception:
+        return None
+
+
+def _batch_block_reasons(
+    conn: sqlite3.Connection, task_ids: list[str]
+) -> dict[str, str]:
+    """Return ``{task_id: reason}`` for the latest blocked event per task."""
+    if not task_ids:
+        return {}
+    placeholders = ",".join("?" for _ in task_ids)
+    rows = conn.execute(
+        f"SELECT task_id, payload FROM task_events "
+        f"WHERE task_id IN ({placeholders}) AND kind = 'blocked' "
+        f"ORDER BY created_at DESC, id DESC",
+        task_ids,
+    ).fetchall()
+    out: dict[str, str] = {}
+    for r in rows:
+        tid = r["task_id"]
+        if tid in out:
+            continue
+        if r["payload"]:
+            try:
+                reason = json.loads(r["payload"]).get("reason")
+                if reason:
+                    out[tid] = reason
+            except Exception:
+                pass
+    return out
+
+
 # Hallucination-warning event kinds — see complete_task() in kanban_db.py.
 # completion_blocked_hallucination: kernel rejected created_cards with
 #   phantom ids; task stays in prior state.
@@ -459,6 +503,10 @@ def get_board(
         # preview here — the full text is available via /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
 
+        # Batch-fetch block reasons for blocked tasks.
+        blocked_ids = [t.id for t in tasks if t.status == "blocked"]
+        block_reason_map = _batch_block_reasons(conn, blocked_ids)
+
         for t in tasks:
             full = summary_map.get(t.id)
             preview = (
@@ -475,6 +523,9 @@ def get_board(
                 # needs the summary.
                 d["diagnostics"] = diags
                 d["warnings"] = _warnings_summary_from_diagnostics(diags)
+            reason = block_reason_map.get(t.id)
+            if reason:
+                d["block_reason"] = reason
             col = t.status if t.status in columns else "todo"
             columns[col].append(d)
 
@@ -553,6 +604,12 @@ def get_task(
         if diag_list:
             task_d["diagnostics"] = diag_list
             task_d["warnings"] = _warnings_summary_from_diagnostics(diag_list)
+        # Surface the block reason so the drawer can render a
+        # "Reply & unblock" banner without scanning the events array.
+        if task.status == "blocked":
+            reason = _latest_block_reason(conn, task_id)
+            if reason:
+                task_d["block_reason"] = reason
         return {
             "task": task_d,
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],

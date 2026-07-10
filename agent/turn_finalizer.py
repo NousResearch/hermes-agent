@@ -55,13 +55,20 @@ def finalize_turn(
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
     )
+    budget_fallback_eligible = (
+        budget_exhausted
+        and not interrupted
+        and not failed
+        and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
+    )
     continuation_budget_exhausted = (
         final_response is None
         and bool(_pending_verification_response)
-        and budget_exhausted
+        and budget_fallback_eligible
     )
 
     iteration_limit_fallback = False
+    preserved_verification_fallback = False
     if continuation_budget_exhausted:
         # A verification/continuation gate deliberately withheld a composed
         # answer, then consumed the remaining budget before producing a newer
@@ -71,7 +78,8 @@ def finalize_turn(
         final_response = _pending_verification_response
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         iteration_limit_fallback = True
-    elif final_response is None and budget_exhausted:
+        preserved_verification_fallback = True
+    elif final_response is None and budget_fallback_eligible:
         # Budget exhausted — ask the model for a summary via one extra
         # API call with tools stripped.  _handle_max_iterations injects a
         # user message and makes a single toolless request.
@@ -320,7 +328,7 @@ def finalize_turn(
                 # truncated partial (the "The" case from #34452).
                 _is_partial_fragment = (
                     not _is_empty_terminal
-                    and not iteration_limit_fallback
+                    and not preserved_verification_fallback
                     and not str(_turn_exit_reason).startswith("text_response")
                     and len(_stripped) <= 24
                     and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}

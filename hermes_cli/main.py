@@ -12384,7 +12384,7 @@ def _plugin_cli_discovery_needed() -> bool:
     return True
 
 
-_AGENT_COMMANDS = {None, "chat", "acp", "rl"}
+_AGENT_COMMANDS = {None, "chat", "acp", "rl", "serve"}
 _AGENT_SUBCOMMANDS = {
     "cron": ("cron_command", {"run", "tick"}),
     "gateway": ("gateway_command", {"run"}),

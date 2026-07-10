@@ -3748,8 +3748,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         return True
 
-    _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
-
     def _should_send_telegram_lobby_reminder(self, source: SessionSource) -> bool:
         """Rate-limit root-DM lobby reminders to one message per cooldown window.
 
@@ -19981,6 +19979,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         all_msgs,
                         **maybe_auto_title_kwargs,
                     )
+                    # Periodic re-title — fires only after the conversation
+                    # has accumulated enough turns. Reuses the same callback
+                    # so Discord threads (and Telegram topics) get renamed
+                    # whenever the topic genuinely drifts.
+                    try:
+                        from agent.title_generator import maybe_retitle_session
+                        maybe_retitle_session(
+                            self._session_db,
+                            effective_session_id,
+                            message,
+                            final_response,
+                            all_msgs,
+                            **maybe_auto_title_kwargs,
+                        )
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 

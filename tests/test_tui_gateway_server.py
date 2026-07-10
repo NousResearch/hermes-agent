@@ -424,6 +424,43 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert "result_text" not in events[1][2]
 
 
+def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "risk-test",
+        {"tool_progress_mode": "all"},
+    )
+
+    server._on_tool_progress(
+        "risk-test",
+        "tool.output_risk",
+        "web_extract",
+        tool_call_id="tool-1",
+        risk_metadata={
+            "risk": "high",
+            "findings": ["prompt_injection"],
+            "redacted": False,
+        },
+    )
+
+    assert events == [(
+        "tool.output_risk",
+        "risk-test",
+        {
+            "tool_id": "tool-1",
+            "name": "web_extract",
+            "risk": "high",
+            "findings": ["prompt_injection"],
+            "redacted": False,
+        },
+    )]
+    assert "result" not in events[0][2]
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 

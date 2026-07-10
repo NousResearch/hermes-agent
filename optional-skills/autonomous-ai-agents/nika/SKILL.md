@@ -1,7 +1,7 @@
 ---
 name: nika
 description: "Delegate repeatable work to Nika — a deterministic workflow runner with pre-flight checks, cost caps, and verifiable receipts."
-version: 1.0.4
+version: 1.0.5
 author: SuperNovae Studio (github.com/supernovae-st)
 license: MIT
 platforms: [linux, macos]
@@ -146,12 +146,12 @@ a declared output. That file is what gets checked, run, diffed and reused.
 
 ## Cost Honesty
 
-- When the workflow file's own `model:` prices above the budget,
-  `--max-cost-usd` refuses to start (exit 2, zero tokens) — the strongest
-  guarantee, so prefer setting the model in the file for budgeted runs
-- Today (0.98.x) a `--model` OVERRIDE is not priced by that pre-start gate:
-  the run starts and the budget binds mid-run — the crossing call completes,
-  nothing new starts, the run fails `NIKA-1704` (exit 1) with spent-vs-budget
+- When the workflow prices above the budget, `--max-cost-usd` refuses to
+  start (exit 2, zero tokens) — and since 0.99 the pre-start floor prices
+  the EFFECTIVE model, `--model` override included
+- Mid-run, the ledger stops the workflow the moment real spend crosses the
+  budget: the crossing call completes, nothing new starts, the run fails
+  `NIKA-1704` (exit 1) with spent-vs-budget
 - Estimates use LIST RATES from the vendored public catalog; local · mock ·
   unpriced work is never blocked
 - A model absent from the catalog meters as $0 — a paid *uncataloged* model

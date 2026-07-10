@@ -1,0 +1,70 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: unstructured
+description: Turn any document (PDF, email, image, scanned file — 60+ formats) into structured, AI-ready data with Unstructured Transform — partition, enrich, chunk, and embed on demand.
+source: https://docs.unstructured.io/transform/overview
+
+# Unstructured Transform is a hosted service that converts documents into
+# structured, AI-ready data on demand: it partitions, enriches, chunks, and
+# embeds files across 60+ formats (PDFs, emails, images, scanned docs, …).
+# Nothing runs locally — Hermes's MCP client connects straight to the remote
+# Streamable HTTP endpoint, and the mcp_oauth_manager handles OAuth 2.1
+# discovery, dynamic client registration (RFC 7591), PKCE, token exchange, and
+# refresh. Same shape as the `linear` entry (case 1: native MCP OAuth, no
+# third-party provider).
+#
+# Note: Unstructured's docs show `npx -y mcp-remote https://mcp.transform...`
+# for clients that DON'T speak remote MCP + OAuth natively. Hermes does (this
+# is the same path the `linear` entry uses), so we connect to the URL directly
+# and skip the mcp-remote stdio bridge entirely.
+#
+# Why this belongs in the catalog: it drops document parsing/extraction into
+# any Hermes workflow without a bespoke ETL pipeline — read a spec PDF while
+# coding, extract structure from scanned contracts, chunk + embed a policy doc
+# for grounding, turn an email thread into structured records. You describe the
+# processing in plain language; Transform handles extraction and parsing.
+transport:
+  type: http
+  url: https://mcp.transform.unstructured.io
+
+auth:
+  type: oauth
+  # No `provider:` — this is native MCP OAuth (case 1), not a third-party
+  # provider like Google. The MCP client triggers the browser flow on the
+  # first probe / first connect. Transform's server returns 401 on an
+  # unauthenticated request (it does NOT serve tools without auth), so the
+  # SDK's reactive OAuth trigger fires correctly here — unlike the
+  # DCR-less / auth-optional servers called out in the MCP docs.
+
+# Tool selection at install time:
+# The exact tool names aren't pinned in a stable public doc, so we leave
+# `default_enabled` unset: the install-time checklist starts from whatever the
+# live server probes (all pre-checked) and users prune from there. Same choice
+# the `linear` entry made. Once the tool surface is documented, a follow-up PR
+# can encode a curated `tools.default_enabled` subset.
+
+post_install: |
+  On first connection, Hermes opens a browser to authenticate with Unstructured
+  (OAuth 2.1) — sign in with your Unstructured account. Transform includes a
+  free tier (15,000 pages/month), so no special approval is needed to start.
+  Tokens are cached under ~/.hermes/mcp-tokens/ and refreshed automatically.
+
+  Two things to know because auth happens on first connect:
+    - The install-time tool probe often runs BEFORE you've completed OAuth, so
+      it may not list tools yet — that's expected. Complete the browser sign-in,
+      then run:  hermes mcp configure unstructured  to load and prune the tool
+      list.
+    - If you add/enable this from inside a running Hermes session, finish auth
+      from a fresh terminal with:  hermes mcp login unstructured
+      (the in-session config reload only waits ~30s — not long enough for an
+      interactive OAuth flow).
+
+  Headless / remote host? Complete the browser flow with paste-back or an SSH
+  port-forward — see the "OAuth over SSH / Remote Hosts" guide.
+
+  Restart your Hermes session after authenticating so the Transform tools load.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure unstructured

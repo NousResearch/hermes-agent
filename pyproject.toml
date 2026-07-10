@@ -334,6 +334,7 @@ locales = ["locales/*.yaml"]
 # entry; tests/test_packaging_metadata.py enforces an entry per optional-mcps/<name>.
 "optional-mcps/linear" = ["optional-mcps/linear/manifest.yaml"]
 "optional-mcps/n8n" = ["optional-mcps/n8n/manifest.yaml"]
+"optional-mcps/unstructured" = ["optional-mcps/unstructured/manifest.yaml"]
 
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]

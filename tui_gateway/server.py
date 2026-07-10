@@ -14188,9 +14188,7 @@ def _(rid, params: dict) -> dict:
         from hermes_cli._subprocess_compat import windows_hide_flags
 
         r = subprocess.run(
-            [
-                sys.executable, "-m", "hermes_cli.main", *argv
-            ],
+            [sys.executable, "-m", "hermes_cli.main", *argv],
             capture_output=True,
             text=True,
             # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash

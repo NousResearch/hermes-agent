@@ -14442,13 +14442,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         reply_to_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
-        return self._thread_metadata_for_target(
+        metadata = self._thread_metadata_for_target(
             getattr(source, "platform", None),
             getattr(source, "chat_id", None),
             getattr(source, "thread_id", None),
             chat_type=getattr(source, "chat_type", None),
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
         )
+        if metadata is None:
+            return None
+        if getattr(source, "platform", None) == Platform.FEISHU:
+            user_id = getattr(source, "feishu_topic_starter_user_id", None)
+            if user_id:
+                metadata["feishu_at_user_id"] = str(user_id)
+                user_name = getattr(source, "feishu_topic_starter_user_name", None)
+                if user_name:
+                    metadata["feishu_at_user_name"] = str(user_name)
+        return metadata
 
     def _thread_metadata_for_target(
         self,
@@ -18105,21 +18115,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # sent via the reply API with reply_in_thread=true. Status/interim,
             # approval, and stream-consumer paths usually only receive metadata,
             # so carry the triggering message id as a Feishu-specific fallback.
-            _status_thread_metadata: Optional[Dict[str, Any]] = {
-                "thread_id": _progress_thread_id,
-                "reply_to_message_id": event_message_id,
-            }
-            if getattr(source, "feishu_topic_starter_user_id", None):
-                _status_thread_metadata["feishu_at_user_id"] = str(
-                    getattr(source, "feishu_topic_starter_user_id")
-                )
-                _feishu_starter_name = getattr(
-                    source, "feishu_topic_starter_user_name", None
-                )
-                if _feishu_starter_name:
-                    _status_thread_metadata["feishu_at_user_name"] = str(
-                        _feishu_starter_name
-                    )
+            _status_thread_metadata = self._thread_metadata_for_source(
+                source, event_message_id
+            ) or {"thread_id": _progress_thread_id}
+            _status_thread_metadata["reply_to_message_id"] = event_message_id
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
 

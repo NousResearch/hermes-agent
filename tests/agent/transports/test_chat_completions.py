@@ -438,7 +438,10 @@ class TestChatCompletionsBuildKwargs:
             "includeThoughts": True,
         }
 
-    def test_gemini_openai_compat_pro_reasoning_clamps_to_supported_levels(self, transport):
+    def test_gemini_openai_compat_3_1_pro_reasoning_medium_maps_to_medium(self, transport):
+        # Gemini 3.1 Pro added a `medium` thinkingLevel over the 3.0 Pro
+        # low/high contract (Google model card + OpenRouter listing).
+        # Forward `medium` through instead of the old low-clamp.
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="google/gemini-3.1-pro-preview",
@@ -449,7 +452,69 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
             "include_thoughts": True,
+            "thinking_level": "medium",
+        }
+
+    def test_gemini_openai_compat_3_1_pro_reasoning_high_maps_to_high(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="google/gemini-3.1-pro-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_level": "high",
+        }
+
+    def test_gemini_openai_compat_3_1_pro_reasoning_minimal_clamps_to_low(self, transport):
+        # `minimal` and `xhigh` are Hermes-specific effort levels that Gemini
+        # 3.1 Pro doesn't accept verbatim; they clamp to low/high respectively.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="google/gemini-3.1-pro-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": True, "effort": "minimal"},
+        )
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
             "thinking_level": "low",
+        }
+
+    def test_gemini_openai_compat_3_0_pro_reasoning_medium_still_clamps_to_low(self, transport):
+        # Gemini 3.0 Pro (`gemini-3-pro-*`) predates the 3.1 medium addition
+        # and only accepts low/high — keep the legacy strict clamp so we
+        # never forward an unsupported level to the older launch model.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="google/gemini-3-pro-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_level": "low",
+        }
+
+    def test_gemini_native_3_1_pro_reasoning_medium_maps_to_top_level(self, transport):
+        # Native (non-OpenAI-compat) Gemini path uses camelCase field names.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3.1-pro-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+            "thinkingLevel": "medium",
         }
 
     def test_gemini_native_disabled_reasoning_hides_thoughts(self, transport):

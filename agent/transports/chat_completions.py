@@ -55,21 +55,31 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
         effort = "medium"
 
-    # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
-    # is stricter (low/high). Clamp Hermes' wider effort set to what each
-    # family accepts so we never forward an undocumented level verbatim.
-    if normalized_model.startswith(("gemini-3", "gemini-3.1")):
-        if "flash" in normalized_model:
+    # Gemini 3 Flash documents low/medium/high thinking levels. Gemini 3.0
+    # Pro was launched with a stricter low/high contract, but Gemini 3.1 Pro
+    # added a `medium` thinkingLevel — see Google's model card
+    # (docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-1-pro)
+    # and the OpenRouter listing at openrouter.ai/google/gemini-3.1-pro-preview
+    # ("introduces a new medium thinking level"). Route 3.0 Pro through the
+    # legacy strict clamp and every other Gemini 3.x variant (Flash, Flash
+    # Lite, 3.1+ Pro) through the permissive low/medium/high clamp so
+    # future 3.x Pro releases inherit the wider surface automatically.
+    if normalized_model.startswith("gemini-3"):
+        strict_3_0_pro = (
+            normalized_model.startswith("gemini-3-pro")
+            and "flash" not in normalized_model
+        )
+        if strict_3_0_pro:
+            thinking_config["thinkingLevel"] = (
+                "high" if effort in {"high", "xhigh"} else "low"
+            )
+        elif "flash" in normalized_model or "pro" in normalized_model:
             if effort in {"minimal", "low"}:
                 thinking_config["thinkingLevel"] = "low"
             elif effort in {"high", "xhigh"}:
                 thinking_config["thinkingLevel"] = "high"
             else:
                 thinking_config["thinkingLevel"] = "medium"
-        elif "pro" in normalized_model:
-            thinking_config["thinkingLevel"] = (
-                "high" if effort in {"high", "xhigh"} else "low"
-            )
 
     return thinking_config
 

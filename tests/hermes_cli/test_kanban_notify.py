@@ -1,4 +1,5 @@
 import asyncio
+import time
 import pytest
 
 from pathlib import Path
@@ -490,7 +491,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
 
 
 @pytest.mark.asyncio
-async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, monkeypatch):
+async def test_notifier_uploads_artifacts_on_completion(kanban_home, monkeypatch):
     """When a completed event carries ``artifacts`` in its payload, the
     notifier uploads each file to the subscribed chat as a native
     attachment. Images batch through send_multiple_images; documents
@@ -502,22 +503,24 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
     from gateway.config import Platform
     from tools import kanban_tools as kt
 
-    # ``_deliver_kanban_artifacts`` routes candidates through
-    # ``BasePlatformAdapter.filter_local_delivery_paths``, which only accepts
-    # paths under ``MEDIA_DELIVERY_SAFE_ROOTS`` or roots explicitly allowlisted
-    # via ``HERMES_MEDIA_ALLOW_DIRS``. Test fixtures live under ``tmp_path``,
-    # so allowlist it for the duration of the test.
-    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
-
-    # Materialize real files so os.path.isfile passes inside the helper.
-    chart_path = tmp_path / "q3-revenue.png"
-    chart_path.write_bytes(b"PNG-fake-bytes")
-    report_path = tmp_path / "report.pdf"
-    report_path.write_bytes(b"%PDF-fake")
+    # Exercise the strict path with recency trust disabled. Durable Kanban
+    # attachments must remain deliverable even when notification is delayed.
+    monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+    monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+    monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(kanban_home))
 
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="render q3 chart", assignee="worker1")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, workspace)
+        chart_path = workspace / "q3-revenue.png"
+        chart_path.write_bytes(b"PNG-fake-bytes")
+        report_path = workspace / "report.pdf"
+        report_path.write_bytes(b"%PDF-fake")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
     finally:
         conn.close()
@@ -535,6 +538,24 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
         os.environ.pop("HERMES_KANBAN_TASK", None)
     import json as _json
     assert _json.loads(out)["ok"] is True
+
+    conn = kb.connect()
+    try:
+        completed = [event for event in kb.list_events(conn, tid) if event.kind == "completed"]
+        payload = completed[-1].payload
+        assert payload is not None
+        durable_paths = [Path(path) for path in payload["artifacts"]]
+    finally:
+        conn.close()
+    assert not workspace.exists(), "scratch workspace should be removed after completion"
+    assert all(path.is_file() for path in durable_paths)
+    assert all(
+        path.resolve().is_relative_to(kb.task_attachments_dir(tid).resolve())
+        for path in durable_paths
+    )
+    stale_mtime = time.time() - 7200
+    for path in durable_paths:
+        os.utime(path, (stale_mtime, stale_mtime))
 
     runner = object.__new__(GatewayRunner)
     runner._running = True

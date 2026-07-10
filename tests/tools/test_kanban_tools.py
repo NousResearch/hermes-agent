@@ -484,6 +484,41 @@ def test_complete_rejects_non_list_artifacts(worker_env):
     assert "artifacts must be a list" in err
 
 
+def test_complete_artifact_preservation_error_is_retryable(
+    worker_env,
+    monkeypatch,
+):
+    """A failed durable copy keeps the task and scratch output retryable."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, worker_env, workspace)
+        artifact = workspace / "report.md"
+        artifact.write_text("finished report", encoding="utf-8")
+
+    def fail_copy(*args, **kwargs):
+        raise kb.ArtifactPreservationError("simulated storage failure")
+
+    monkeypatch.setattr(kb, "_copy_artifact_exclusive", fail_copy)
+    out = kt._handle_complete({
+        "summary": "rendered report",
+        "artifacts": [str(artifact)],
+    })
+    error = json.loads(out).get("error", "")
+
+    assert "simulated storage failure" in error
+    assert "still in-flight" in error
+    assert "retry kanban_complete" in error
+    with kb.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+    assert task is not None and task.status == "running"
+    assert artifact.read_text(encoding="utf-8") == "finished report"
+
+
 def test_complete_rejects_no_handoff(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({})

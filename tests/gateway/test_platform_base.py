@@ -786,6 +786,44 @@ class TestMediaDeliveryPathValidation:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
 
+    def test_allows_stale_kanban_attachment_roots_but_not_neighboring_workspace(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Strict mode trusts durable attachments, not the whole board tree."""
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "hermes"))
+
+        board_root = tmp_path / "hermes" / "kanban" / "boards" / "research"
+        attachment = board_root / "attachments" / "t_12345678" / "report.pdf"
+        scratch_file = board_root / "workspaces" / "t_12345678" / "notes.txt"
+        board_root.mkdir(parents=True)
+        (board_root / "kanban.db").touch()
+        attachment.parent.mkdir(parents=True)
+        scratch_file.parent.mkdir(parents=True)
+        attachment.write_bytes(b"%PDF-1.4")
+        scratch_file.write_text("private working notes", encoding="utf-8")
+        stale_mtime = time.time() - 7200
+        os.utime(attachment, (stale_mtime, stale_mtime))
+        os.utime(scratch_file, (stale_mtime, stale_mtime))
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            str(attachment)
+        ) == str(attachment.resolve())
+        assert BasePlatformAdapter.validate_media_delivery_path(str(scratch_file)) is None
+
+        custom_root = tmp_path / "custom-kanban-attachments"
+        custom_attachment = custom_root / "t_87654321" / "report.pdf"
+        custom_attachment.parent.mkdir(parents=True)
+        custom_attachment.write_bytes(b"%PDF-1.4")
+        os.utime(custom_attachment, (stale_mtime, stale_mtime))
+        monkeypatch.setenv("HERMES_KANBAN_ATTACHMENTS_ROOT", str(custom_root))
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            str(custom_attachment)
+        ) == str(custom_attachment.resolve())
+
     def test_recency_trust_allows_freshly_produced_file(self, tmp_path, monkeypatch):
         """A PDF the agent just wrote to /tmp should be deliverable.
 

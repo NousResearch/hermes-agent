@@ -2350,17 +2350,364 @@ def test_dispatch_worktree_task_rerun_reuses_existing_linked_worktree_and_branch
 # Scratch cleanup containment (#28818)
 # ---------------------------------------------------------------------------
 
+
+def _materialize_scratch_task(conn, *, title="scratch task", board=None):
+    task_id = kb.create_task(conn, title=title)
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    workspace = kb.resolve_workspace(task, board=board)
+    kb.set_workspace_path(conn, task_id, workspace)
+    return task_id, workspace
+
+
 def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
     """A scratch workspace under the kanban workspaces root is removed."""
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="scratchy")
-        task = kb.get_task(conn, t)
-        assert task is not None
-        ws = kb.resolve_workspace(task)
-        kb.set_workspace_path(conn, t, ws)
+        t, ws = _materialize_scratch_task(conn, title="scratchy")
         assert ws.is_dir()
         kb.complete_task(conn, t, result="ok")
     assert not ws.exists(), "Hermes-managed scratch dir should be cleaned up"
+
+
+def test_complete_preserves_declared_artifact_before_scratch_cleanup(kanban_home):
+    """Declared deliverables must outlive their ephemeral scratch workspace."""
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn, title="render report")
+
+        artifact = workspace / "report.md"
+        artifact.write_text("finished report\n", encoding="utf-8")
+        assert kb.complete_task(
+            conn,
+            task_id,
+            summary="rendered report",
+            metadata={"artifacts": [str(artifact)]},
+        )
+
+        run = kb.latest_run(conn, task_id)
+        assert run is not None
+        assert run.metadata is not None
+        durable_path = Path(run.metadata["artifacts"][0])
+        attachments = kb.list_attachments(conn, task_id)
+        completed = [event for event in kb.list_events(conn, task_id) if event.kind == "completed"]
+
+    assert not workspace.exists(), "scratch workspace should still be cleaned up"
+    assert durable_path.is_file(), "declared artifact must survive task completion"
+    assert durable_path.read_text(encoding="utf-8") == "finished report\n"
+    assert durable_path.resolve().is_relative_to(
+        kb.task_attachments_dir(task_id).resolve()
+    )
+    assert [(item.filename, item.stored_path) for item in attachments] == [
+        ("report.md", str(durable_path.resolve()))
+    ]
+    completed_payload = completed[-1].payload
+    assert completed_payload is not None
+    assert completed_payload["artifacts"] == [str(durable_path.resolve())]
+
+
+def test_complete_preserves_colliding_names_and_leaves_external_artifact(
+    kanban_home,
+    tmp_path,
+):
+    """Only scratch-owned files move; same-name deliverables remain distinct."""
+    external = tmp_path / "external.pdf"
+    external.write_bytes(b"external")
+
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn)
+        first = workspace / "one" / "report.md"
+        second = workspace / "two" / "report.md"
+        first.parent.mkdir()
+        second.parent.mkdir()
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+
+        assert kb.complete_task(
+            conn,
+            task_id,
+            summary="two reports",
+            metadata={"artifacts": [str(first), str(second), str(external)]},
+        )
+        run = kb.latest_run(conn, task_id)
+        assert run is not None
+        assert run.metadata is not None
+        paths = [Path(path) for path in run.metadata["artifacts"]]
+        attachments = kb.list_attachments(conn, task_id)
+
+    assert [path.name for path in paths[:2]] == ["report.md", "report (1).md"]
+    assert [path.read_text(encoding="utf-8") for path in paths[:2]] == [
+        "first",
+        "second",
+    ]
+    assert paths[2] == external
+    assert external.read_bytes() == b"external"
+    assert [attachment.filename for attachment in attachments] == [
+        "report.md",
+        "report (1).md",
+    ]
+
+
+def test_complete_stale_run_discards_uncommitted_artifact_copy(kanban_home):
+    """A failed completion CAS must not leave an orphan attachment copy."""
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn)
+        artifact = workspace / "report.md"
+        artifact.write_text("keep original", encoding="utf-8")
+        assert kb.claim_task(conn, task_id) is not None
+
+        assert not kb.complete_task(
+            conn,
+            task_id,
+            summary="stale completion",
+            metadata={"artifacts": [str(artifact)]},
+            expected_run_id=999999,
+        )
+        task = kb.get_task(conn, task_id)
+        attachments = kb.list_attachments(conn, task_id)
+
+    assert task is not None and task.status == "running"
+    assert artifact.read_text(encoding="utf-8") == "keep original"
+    assert attachments == []
+    assert not kb.task_attachments_dir(task_id).exists()
+
+
+def test_complete_copy_failure_rolls_back_staged_files(
+    kanban_home,
+    monkeypatch,
+):
+    """A later copy failure removes earlier copies and leaves the task runnable."""
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn)
+        first = workspace / "first.md"
+        second = workspace / "second.md"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+
+        real_copy = kb._copy_artifact_exclusive
+        calls = 0
+
+        def fail_second_copy(source, destination_dir, filename):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise kb.ArtifactPreservationError("simulated copy failure")
+            return real_copy(source, destination_dir, filename)
+
+        monkeypatch.setattr(kb, "_copy_artifact_exclusive", fail_second_copy)
+        with pytest.raises(kb.ArtifactPreservationError, match="simulated"):
+            kb.complete_task(
+                conn,
+                task_id,
+                summary="two files",
+                metadata={"artifacts": [str(first), str(second)]},
+            )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None and task.status == "ready"
+    assert first.is_file() and second.is_file()
+    assert not kb.task_attachments_dir(task_id).exists()
+
+
+def test_complete_transaction_failure_discards_uncommitted_artifact_copy(
+    kanban_home,
+    monkeypatch,
+):
+    """A DB rollback after staging must not leave an orphan attachment."""
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn)
+        artifact = workspace / "report.md"
+        artifact.write_text("keep original", encoding="utf-8")
+
+        def fail_attachment_insert(*args, **kwargs):
+            raise sqlite3.OperationalError("simulated insert failure")
+
+        monkeypatch.setattr(kb, "_insert_attachment", fail_attachment_insert)
+        with pytest.raises(sqlite3.OperationalError, match="simulated"):
+            kb.complete_task(
+                conn,
+                task_id,
+                summary="report",
+                metadata={"artifacts": [str(artifact)]},
+            )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None and task.status == "ready"
+    assert artifact.read_text(encoding="utf-8") == "keep original"
+    assert not kb.task_attachments_dir(task_id).exists()
+
+
+@pytest.mark.parametrize("artifact_kind", ["missing", "directory"])
+def test_complete_rejects_unusable_declared_scratch_artifact(
+    kanban_home,
+    artifact_kind,
+):
+    """An unusable declared deliverable must not produce a false success."""
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn)
+        artifact = workspace / "report"
+        if artifact_kind == "directory":
+            artifact.mkdir()
+
+        with pytest.raises(kb.ArtifactPreservationError, match="scratch artifact"):
+            kb.complete_task(
+                conn,
+                task_id,
+                summary="report",
+                metadata={"artifacts": [str(artifact)]},
+            )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None and task.status == "ready"
+    assert workspace.is_dir()
+    assert not kb.task_attachments_dir(task_id).exists()
+
+
+def test_complete_post_commit_failure_keeps_recorded_artifact(
+    kanban_home,
+    monkeypatch,
+):
+    """A post-COMMIT check error must not delete an already-recorded copy."""
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn)
+        artifact = workspace / "report.md"
+        artifact.write_text("durable output", encoding="utf-8")
+
+        def fail_post_commit_check(_conn):
+            raise sqlite3.DatabaseError("simulated post-commit failure")
+
+        monkeypatch.setattr(kb, "_check_file_length_invariant", fail_post_commit_check)
+        with pytest.raises(sqlite3.DatabaseError, match="simulated"):
+            kb.complete_task(
+                conn,
+                task_id,
+                summary="report",
+                metadata={"artifacts": [str(artifact)]},
+            )
+        task = kb.get_task(conn, task_id)
+        attachments = kb.list_attachments(conn, task_id)
+
+    assert task is not None and task.status == "done"
+    assert len(attachments) == 1
+    assert Path(attachments[0].stored_path).read_text(encoding="utf-8") == "durable output"
+
+
+def test_complete_source_read_failure_does_not_delete_existing_attachment(
+    kanban_home,
+    monkeypatch,
+):
+    """A source read error must never unlink a pre-existing same-name file."""
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn)
+        artifact = workspace / "report.md"
+        artifact.write_text("new output", encoding="utf-8")
+        existing = kb.task_attachments_dir(task_id) / "report.md"
+        existing.parent.mkdir(parents=True)
+        existing.write_text("existing attachment", encoding="utf-8")
+
+        real_open = Path.open
+
+        def fail_source_read(path, *args, **kwargs):
+            if path == artifact and args and args[0] == "rb":
+                raise PermissionError("simulated source read failure")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", fail_source_read)
+        with pytest.raises(kb.ArtifactPreservationError, match="simulated"):
+            kb.complete_task(
+                conn,
+                task_id,
+                summary="report",
+                metadata={"artifacts": [str(artifact)]},
+            )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None and task.status == "ready"
+    assert existing.read_text(encoding="utf-8") == "existing attachment"
+
+
+def test_complete_rejects_scratch_symlink_escape(kanban_home, tmp_path):
+    """Preservation must not turn an escaping symlink into a trusted attachment."""
+    external = tmp_path / "private.txt"
+    external.write_text("do not copy", encoding="utf-8")
+
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn)
+        link = workspace / "report.txt"
+        try:
+            link.symlink_to(external)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+
+        with pytest.raises(kb.ArtifactPreservationError, match="escapes scratch workspace"):
+            kb.complete_task(
+                conn,
+                task_id,
+                summary="unsafe link",
+                metadata={"artifacts": [str(link)]},
+            )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None and task.status == "ready"
+    assert link.is_symlink()
+    assert external.read_text(encoding="utf-8") == "do not copy"
+    assert not kb.task_attachments_dir(task_id).exists()
+
+
+def test_complete_uses_connection_board_for_preserved_artifact(kanban_home):
+    """An explicit board connection must not stage into the ambient board."""
+    kb.create_board("artifact-board")
+    with kb.connect(board="artifact-board") as conn:
+        task_id, workspace = _materialize_scratch_task(
+            conn,
+            board="artifact-board",
+        )
+        artifact = workspace / "report.md"
+        artifact.write_text("named board", encoding="utf-8")
+        assert kb.complete_task(
+            conn,
+            task_id,
+            summary="named-board report",
+            metadata={"artifacts": [str(artifact)]},
+        )
+        run = kb.latest_run(conn, task_id)
+        assert run is not None
+        assert run.metadata is not None
+        durable_path = Path(run.metadata["artifacts"][0])
+
+    assert durable_path.is_relative_to(
+        kb.task_attachments_dir(task_id, board="artifact-board")
+    )
+    assert not durable_path.is_relative_to(kb.task_attachments_dir(task_id))
+    assert durable_path.read_text(encoding="utf-8") == "named board"
+
+
+def test_complete_rejects_attachment_root_inside_scratch(
+    kanban_home,
+    monkeypatch,
+):
+    """A misconfigured destination inside scratch cannot masquerade as durable."""
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn)
+        artifact = workspace / "report.md"
+        artifact.write_text("still here", encoding="utf-8")
+        monkeypatch.setenv(
+            "HERMES_KANBAN_ATTACHMENTS_ROOT",
+            str(workspace / "attachments"),
+        )
+
+        with pytest.raises(
+            kb.ArtifactPreservationError,
+            match="must be outside the scratch workspace",
+        ):
+            kb.complete_task(
+                conn,
+                task_id,
+                summary="bad destination",
+                metadata={"artifacts": [str(artifact)]},
+            )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None and task.status == "ready"
+    assert artifact.read_text(encoding="utf-8") == "still here"
 
 
 def test_cleanup_workspace_refuses_path_outside_scratch_root(kanban_home, tmp_path):

@@ -1078,6 +1078,19 @@ class Attachment:
     created_at: int
 
 
+@dataclass(frozen=True)
+class _StagedArtifact:
+    """A scratch deliverable copied to durable task attachment storage."""
+
+    filename: str
+    stored_path: str
+    size: int
+
+
+class ArtifactPreservationError(RuntimeError):
+    """Raised when a declared scratch artifact cannot be preserved safely."""
+
+
 @dataclass
 class Event:
     id: int
@@ -2962,6 +2975,282 @@ def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
 # Attachments
 # ---------------------------------------------------------------------------
 
+def _attachments_root_for_connection(conn: sqlite3.Connection) -> Path:
+    """Resolve attachment storage from the connection's board, not global state."""
+    override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
+
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        db_path = Path(row[2]).resolve() if row is not None and row[2] else None
+    except (OSError, sqlite3.Error, TypeError):
+        db_path = None
+
+    try:
+        root = kanban_home().resolve()
+    except OSError:
+        root = None
+
+    if db_path is not None and root is not None:
+        if db_path == root / "kanban.db":
+            return root / "kanban" / "attachments"
+        try:
+            relative = db_path.relative_to(boards_root().resolve())
+        except (OSError, ValueError):
+            relative = None
+        if (
+            relative is not None
+            and len(relative.parts) == 2
+            and relative.parts[1] == "kanban.db"
+        ):
+            return db_path.parent / "attachments"
+
+    return attachments_root()
+
+
+def _remove_staged_artifact(path: Path) -> None:
+    """Best-effort cleanup for a copy that was not committed to the board."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        _log.warning("Could not remove uncommitted artifact %s: %s", path, exc)
+
+
+def _copy_artifact_exclusive(source: Path, destination_dir: Path, filename: str) -> Path:
+    """Copy one artifact without overwriting an existing attachment."""
+    try:
+        destination_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ArtifactPreservationError(
+            f"could not create artifact storage {destination_dir}: {exc}"
+        ) from exc
+    stem, dot, extension = filename.partition(".")
+    candidate = filename
+    suffix = 1
+
+    while True:
+        destination = destination_dir / candidate
+        destination_created = False
+        try:
+            with source.open("rb") as source_file, destination.open("xb") as destination_file:
+                destination_created = True
+                shutil.copyfileobj(source_file, destination_file, length=1024 * 1024)
+            return destination.resolve()
+        except FileExistsError:
+            candidate = f"{stem} ({suffix}){dot}{extension}"
+            suffix += 1
+        except OSError as exc:
+            if destination_created:
+                _remove_staged_artifact(destination)
+            raise ArtifactPreservationError(
+                f"could not preserve declared artifact {source}: {exc}"
+            ) from exc
+
+
+def _discard_staged_artifacts(staged: list[_StagedArtifact]) -> None:
+    """Remove uncommitted copies created before the completion transaction."""
+    parent_dirs: set[Path] = set()
+    for artifact in staged:
+        path = Path(artifact.stored_path)
+        parent_dirs.add(path.parent)
+        _remove_staged_artifact(path)
+    for parent in parent_dirs:
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
+
+
+def _stage_declared_scratch_artifacts(
+    conn: sqlite3.Connection,
+    task: Task,
+    metadata: Optional[dict],
+) -> tuple[Optional[dict], list[_StagedArtifact]]:
+    """Copy declared scratch files before completion removes their workspace."""
+    if (
+        task.workspace_kind != "scratch"
+        or not task.workspace_path
+        or not isinstance(metadata, dict)
+        or not isinstance(metadata.get("artifacts"), (list, tuple))
+    ):
+        return metadata, []
+
+    workspace_path = Path(task.workspace_path).expanduser()
+    workspace_lexical = Path(os.path.abspath(workspace_path))
+    scratch_sources: dict[int, Path] = {}
+    for index, raw_path in enumerate(metadata["artifacts"]):
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        source_path = Path(raw_path.strip()).expanduser()
+        if not source_path.is_absolute():
+            continue
+        lexical_path = Path(os.path.abspath(source_path))
+        try:
+            lexical_path.relative_to(workspace_lexical)
+        except ValueError:
+            continue
+        scratch_sources[index] = source_path
+
+    if not scratch_sources or not _is_managed_scratch_path(workspace_path):
+        return metadata, []
+    try:
+        workspace_resolved = workspace_path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ArtifactPreservationError(
+            f"scratch workspace is unavailable: {workspace_path}: {exc}"
+        ) from exc
+
+    destination_dir = _attachments_root_for_connection(conn) / task.id
+    try:
+        destination_resolved = destination_dir.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise ArtifactPreservationError(
+            f"could not resolve artifact storage {destination_dir}: {exc}"
+        ) from exc
+    try:
+        destination_resolved.relative_to(workspace_resolved)
+    except ValueError:
+        pass
+    else:
+        raise ArtifactPreservationError(
+            "kanban attachment storage must be outside the scratch workspace"
+        )
+    rewritten: list[Any] = []
+    staged: list[_StagedArtifact] = []
+    preserved_by_source: dict[Path, str] = {}
+
+    try:
+        for index, raw_path in enumerate(metadata["artifacts"]):
+            source_path = scratch_sources.get(index)
+            if source_path is None:
+                rewritten.append(raw_path)
+                continue
+
+            try:
+                resolved_source = source_path.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise ArtifactPreservationError(
+                    f"declared scratch artifact is unavailable: {raw_path}: {exc}"
+                ) from exc
+            try:
+                resolved_source.relative_to(workspace_resolved)
+            except ValueError as exc:
+                raise ArtifactPreservationError(
+                    f"declared artifact escapes scratch workspace: {raw_path}"
+                ) from exc
+            if not resolved_source.is_file():
+                raise ArtifactPreservationError(
+                    f"declared scratch artifact is not a regular file: {raw_path}"
+                )
+
+            stored_path = preserved_by_source.get(resolved_source)
+            if stored_path is None:
+                copied = _copy_artifact_exclusive(
+                    resolved_source,
+                    destination_dir,
+                    source_path.name,
+                )
+                try:
+                    artifact = _StagedArtifact(
+                        filename=copied.name,
+                        stored_path=str(copied),
+                        size=copied.stat().st_size,
+                    )
+                except OSError as exc:
+                    _remove_staged_artifact(copied)
+                    raise ArtifactPreservationError(
+                        f"could not inspect preserved artifact {copied}: {exc}"
+                    ) from exc
+                staged.append(artifact)
+                stored_path = artifact.stored_path
+                preserved_by_source[resolved_source] = stored_path
+            rewritten.append(stored_path)
+    except Exception:
+        _discard_staged_artifacts(staged)
+        try:
+            destination_dir.rmdir()
+        except OSError:
+            pass
+        raise
+
+    updated_metadata = dict(metadata)
+    updated_metadata["artifacts"] = rewritten
+    return updated_metadata, staged
+
+
+def _staged_artifacts_committed(
+    conn: sqlite3.Connection,
+    task_id: str,
+    staged: list[_StagedArtifact],
+) -> bool:
+    """Return whether every staged copy has a durable attachment row."""
+    staged_paths = {artifact.stored_path for artifact in staged}
+    if not staged_paths:
+        return True
+    rows = conn.execute(
+        "SELECT stored_path FROM task_attachments WHERE task_id = ?",
+        (task_id,),
+    ).fetchall()
+    recorded_paths = {str(row["stored_path"]) for row in rows}
+    return staged_paths <= recorded_paths
+
+
+@contextlib.contextmanager
+def _artifact_staging_guard(
+    conn: sqlite3.Connection,
+    task_id: str,
+    staged: list[_StagedArtifact],
+):
+    """Discard staged copies unless their attachment rows reached COMMIT."""
+    try:
+        yield
+    finally:
+        try:
+            committed = _staged_artifacts_committed(conn, task_id, staged)
+        except sqlite3.Error:
+            # The DB cannot tell us whether COMMIT landed. Preserve user output
+            # rather than risk deleting the only durable copy.
+            committed = True
+        if not committed:
+            _discard_staged_artifacts(staged)
+
+
+def _insert_attachment(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    filename: str,
+    stored_path: str,
+    content_type: Optional[str],
+    size: int,
+    uploaded_by: Optional[str],
+    created_at: int,
+) -> int:
+    """Insert one attachment row inside an existing write transaction."""
+    cur = conn.execute(
+        "INSERT INTO task_attachments "
+        "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            task_id,
+            filename.strip(),
+            stored_path,
+            content_type,
+            int(size),
+            uploaded_by,
+            created_at,
+        ),
+    )
+    _append_event(
+        conn,
+        task_id,
+        "attached",
+        {"filename": filename.strip(), "size": int(size), "by": uploaded_by},
+    )
+    return int(cur.lastrowid or 0)
+
+
 def add_attachment(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2988,27 +3277,16 @@ def add_attachment(
             "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
         ).fetchone():
             raise ValueError(f"unknown task {task_id}")
-        cur = conn.execute(
-            "INSERT INTO task_attachments "
-            "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                task_id,
-                filename.strip(),
-                stored_path,
-                content_type,
-                int(size),
-                uploaded_by,
-                now,
-            ),
-        )
-        _append_event(
+        return _insert_attachment(
             conn,
             task_id,
-            "attached",
-            {"filename": filename.strip(), "size": int(size), "by": uploaded_by},
+            filename=filename,
+            stored_path=stored_path,
+            content_type=content_type,
+            size=size,
+            uploaded_by=uploaded_by,
+            created_at=now,
         )
-        return int(cur.lastrowid or 0)
 
 
 def list_attachments(conn: sqlite3.Connection, task_id: str) -> list[Attachment]:
@@ -3996,7 +4274,10 @@ def complete_task(
     When ``summary`` is omitted we fall back to ``result`` so single-run
     callers do not have to pass both. ``metadata`` is a free-form dict
     (e.g. ``{"changed_files": [...], "tests_run": [...]}``) — workers
-    are encouraged to use it for structured handoff facts.
+    are encouraged to use it for structured handoff facts. Existing files
+    declared in ``metadata["artifacts"]`` are copied out of a managed scratch
+    workspace before that workspace is removed; run metadata and the completion
+    event point at the durable copies.
 
     ``created_cards`` is an optional list of task ids the completing
     worker claims to have created. Each id is verified against
@@ -4042,7 +4323,16 @@ def complete_task(
     else:
         verified_cards = []
 
-    with write_txn(conn):
+    task = get_task(conn, task_id)
+    if task is None or task.status not in {"running", "ready", "blocked"}:
+        return False
+    completion_metadata, staged_artifacts = _stage_declared_scratch_artifacts(
+        conn,
+        task,
+        metadata,
+    )
+
+    with _artifact_staging_guard(conn, task_id, staged_artifacts), write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -4080,22 +4370,33 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
+        for artifact in staged_artifacts:
+            _insert_attachment(
+                conn,
+                task_id,
+                filename=artifact.filename,
+                stored_path=artifact.stored_path,
+                content_type=None,
+                size=artifact.size,
+                uploaded_by="kanban_complete",
+                created_at=now,
+            )
         run_id = _end_run(
             conn, task_id,
             outcome="completed", status="done",
             summary=summary if summary is not None else result,
-            metadata=metadata,
+            metadata=completion_metadata,
         )
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
         # attempt history instead of silently lost.
-        if run_id is None and (summary or metadata or result):
+        if run_id is None and (summary or completion_metadata or result):
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="completed",
                 summary=summary if summary is not None else result,
-                metadata=metadata,
+                metadata=completion_metadata,
             )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
@@ -4109,17 +4410,16 @@ def complete_task(
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
-        # Carry artifact paths in the event payload so the gateway
-        # notifier can upload them as native attachments alongside the
-        # completion message. Workers pass these via
-        # ``kanban_complete(artifacts=[...])`` which stashes the list in
-        # ``metadata["artifacts"]`` — we promote it onto the event so
-        # consumers don't have to fetch the run row to find it.
-        if isinstance(metadata, dict):
-            md_artifacts = metadata.get("artifacts")
+        # Promote artifact paths onto the event so the notifier does
+        # not need a second query. Scratch paths have already been
+        # replaced with their durable attachment copies.
+        if isinstance(completion_metadata, dict):
+            md_artifacts = completion_metadata.get("artifacts")
             if isinstance(md_artifacts, (list, tuple)):
                 cleaned_artifacts = [
-                    str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()
+                    str(path).strip()
+                    for path in md_artifacts
+                    if isinstance(path, str) and str(path).strip()
                 ]
                 if cleaned_artifacts:
                     completed_payload["artifacts"] = cleaned_artifacts
@@ -4128,6 +4428,7 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the

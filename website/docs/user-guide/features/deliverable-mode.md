@@ -94,7 +94,13 @@ subscribed to the task in Slack/Telegram/etc., it also uploads each artifact
 as a native attachment to that chat. The human gets the deliverable and the
 summary in one place.
 
-Files that don't exist on disk when the notifier runs are silently skipped.
+Paths inside the task's managed scratch workspace must reference existing
+regular files when `kanban_complete` runs. Hermes copies them to durable task
+attachment storage before deleting that workspace and rewrites the completion
+metadata to the stored paths. A missing, unreadable, or non-file scratch
+artifact rejects completion and keeps the workspace so the worker can correct
+the path and retry. External paths remain unchanged and are silently skipped if
+they are unavailable when the notifier runs.
 
 ## Connecting more services with MCP
 

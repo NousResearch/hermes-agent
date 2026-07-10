@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import builtins
 import json
+from http import HTTPStatus
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -134,7 +136,9 @@ def test_light_dashboard_sessions_use_compact_read_only_db(monkeypatch):
         def close(self):
             captured["closed"] = True
 
-    monkeypatch.setattr(light, "_open_session_db_read_only", lambda: FakeDB())
+    monkeypatch.setattr(
+        light, "_open_session_db_read_only", lambda profile=None: FakeDB()
+    )
 
     payload = light.build_sessions_payload(limit=5, offset=7, order="recent")
 
@@ -149,3 +153,114 @@ def test_light_dashboard_sessions_use_compact_read_only_db(monkeypatch):
     assert payload["sessions"][0]["archived"] is False
     assert "system_prompt" not in payload["sessions"][0]
     assert "model_config" not in payload["sessions"][0]
+
+
+def test_light_dashboard_resolves_named_profile_data(monkeypatch, tmp_path):
+    from hermes_cli import light_dashboard_server as light
+
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    (profile_home / "state.db").touch()
+    captured = {}
+
+    class FakeDB:
+        def __init__(self, *, db_path, read_only):
+            captured["db_path"] = db_path
+            captured["read_only"] = read_only
+
+        def list_sessions_rich(self, **kwargs):
+            return []
+
+        def session_count(self, **kwargs):
+            return 0
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: name == "worker")
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: profile_home)
+    monkeypatch.setattr("hermes_state.SessionDB", FakeDB)
+
+    light.build_sessions_payload(profile="Worker")
+
+    assert captured == {"db_path": profile_home / "state.db", "read_only": True}
+
+
+def test_light_dashboard_status_uses_named_profile_runtime(monkeypatch, tmp_path):
+    from hermes_cli import light_dashboard_server as light
+
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    captured = {}
+    runtime = {"gateway_state": "running", "active_agents": 2}
+
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: True)
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: profile_home)
+    monkeypatch.setattr(
+        "gateway.status.read_runtime_status",
+        lambda path: captured.setdefault("runtime_path", path) and runtime,
+    )
+    monkeypatch.setattr(
+        "gateway.status.get_running_pid_cached",
+        lambda path, **kwargs: captured.update(pid_path=path, pid_kwargs=kwargs),
+    )
+
+    def runtime_pid(payload, **kwargs):
+        captured["runtime_pid"] = (payload, kwargs)
+        return 42
+
+    monkeypatch.setattr("gateway.status.get_runtime_status_running_pid", runtime_pid)
+    monkeypatch.setattr(light, "_active_session_count", lambda profile=None: 0)
+
+    payload = light.build_status_payload("Worker")
+
+    assert captured == {
+        "runtime_path": profile_home / "gateway_state.json",
+        "pid_path": profile_home / "gateway.pid",
+        "pid_kwargs": {"cleanup_stale": False},
+        "runtime_pid": (runtime, {"expected_home": profile_home}),
+    }
+    assert payload["gateway_pid"] == 42
+    assert payload["gateway_running"] is True
+
+
+def test_light_dashboard_forwards_page_profile_to_status_and_sessions():
+    from hermes_cli import light_dashboard_server as light
+
+    html = light._dashboard_html().decode("utf-8")
+
+    assert 'new URLSearchParams(window.location.search).get("profile")' in html
+    assert 'statusParams.set("profile", profile)' in html
+    assert 'sessionParams.set("profile", profile)' in html
+
+    captured = {}
+    handler = object.__new__(light._LightDashboardHandler)
+    handler.path = "/api/status?profile=Worker"
+    handler.headers = {"Host": "127.0.0.1:9119"}
+    handler.server = SimpleNamespace(allowed_host_headers={"127.0.0.1"})
+    handler._send_json = lambda status, payload: captured.update(
+        status=status, payload=payload
+    )
+
+    with patch.object(
+        light,
+        "build_status_payload",
+        side_effect=lambda profile: {"profile": profile},
+    ):
+        handler.do_GET()
+
+    assert captured == {
+        "status": HTTPStatus.OK,
+        "payload": {"profile": "Worker"},
+    }
+
+
+def test_light_dashboard_rejects_invalid_or_missing_profiles(monkeypatch):
+    from hermes_cli import light_dashboard_server as light
+
+    with pytest.raises(ValueError, match="Invalid profile name"):
+        light._resolve_profile_home("../worker")
+
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: False)
+    with pytest.raises(ValueError, match="does not exist"):
+        light._resolve_profile_home("worker")

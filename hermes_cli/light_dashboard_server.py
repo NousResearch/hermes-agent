@@ -31,6 +31,10 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _HEAVY_SESSION_FIELDS = ("system_prompt", "model_config")
 
 
+class ProfileNotFoundError(ValueError):
+    pass
+
+
 def _is_loopback_bind(host: str) -> bool:
     return (host or "127.0.0.1").strip().lower() in _LOOPBACK_HOSTS
 
@@ -47,12 +51,24 @@ def _coerce_int(value: str | None, *, default: int, minimum: int, maximum: int) 
     return min(max(parsed, minimum), maximum)
 
 
-def _open_session_db_read_only():
-    from hermes_state import DEFAULT_DB_PATH, SessionDB
+def _resolve_profile_home(profile: str | None) -> Path:
+    from hermes_cli import profiles
 
-    if not Path(DEFAULT_DB_PATH).exists():
+    raw = (profile or "default").strip() or "default"
+    canon = profiles.normalize_profile_name(raw)
+    profiles.validate_profile_name(canon)
+    if not profiles.profile_exists(canon):
+        raise ProfileNotFoundError(f"Profile {canon!r} does not exist")
+    return profiles.get_profile_dir(canon)
+
+
+def _open_session_db_read_only(profile: str | None = None):
+    from hermes_state import SessionDB
+
+    db_path = _resolve_profile_home(profile) / "state.db"
+    if not db_path.exists():
         return None
-    return SessionDB(read_only=True)
+    return SessionDB(db_path=db_path, read_only=True)
 
 
 def _strip_session_list_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -62,8 +78,8 @@ def _strip_session_list_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
     return rows
 
 
-def _active_session_count() -> int:
-    db = _open_session_db_read_only()
+def _active_session_count(profile: str | None = None) -> int:
+    db = _open_session_db_read_only(profile)
     if db is None:
         return 0
     try:
@@ -82,18 +98,26 @@ def _active_session_count() -> int:
         db.close()
 
 
-def build_status_payload() -> dict[str, Any]:
+def build_status_payload(profile: str | None = None) -> dict[str, Any]:
     """Return the lightweight status payload without importing the full server."""
     from gateway.status import (
         derive_gateway_busy,
         derive_gateway_drainable,
+        get_runtime_status_running_pid,
         get_running_pid_cached,
         parse_active_agents,
         read_runtime_status,
     )
 
-    runtime = read_runtime_status() or {}
-    gateway_pid = get_running_pid_cached()
+    profile_home = _resolve_profile_home(profile)
+    runtime = read_runtime_status(profile_home / "gateway_state.json") or {}
+    gateway_pid = get_running_pid_cached(
+        profile_home / "gateway.pid", cleanup_stale=False
+    )
+    if gateway_pid is None:
+        gateway_pid = get_runtime_status_running_pid(
+            runtime, expected_home=profile_home
+        )
     gateway_running = gateway_pid is not None
     gateway_state = runtime.get("gateway_state")
     if not gateway_running:
@@ -120,20 +144,24 @@ def build_status_payload() -> dict[str, Any]:
             gateway_running=gateway_running,
             gateway_state=gateway_state,
         ),
-        "active_sessions": _active_session_count(),
+        "active_sessions": _active_session_count(profile),
         "auth_required": False,
         "auth_providers": [],
     }
 
 
 def build_sessions_payload(
-    *, limit: int = 20, offset: int = 0, order: str = "recent"
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    order: str = "recent",
+    profile: str | None = None,
 ) -> dict[str, Any]:
     """Return recent session metadata using compact read-only SQLite queries."""
     if order not in {"created", "recent"}:
         raise ValueError("order must be one of: created, recent")
 
-    db = _open_session_db_read_only()
+    db = _open_session_db_read_only(profile)
     if db is None:
         return {"sessions": [], "total": 0, "limit": limit, "offset": offset}
 
@@ -223,9 +251,16 @@ def _dashboard_html() -> bytes:
     const setText = (id, value) => { document.getElementById(id).textContent = value; };
     async function refresh() {
       try {
+        const profile = new URLSearchParams(window.location.search).get("profile");
+        const statusParams = new URLSearchParams();
+        const sessionParams = new URLSearchParams({limit: "20", order: "recent"});
+        if (profile) {
+          statusParams.set("profile", profile);
+          sessionParams.set("profile", profile);
+        }
         const [statusRes, sessionsRes] = await Promise.all([
-          fetch("/api/status"),
-          fetch("/api/sessions?limit=20&order=recent"),
+          fetch(`/api/status?${statusParams}`),
+          fetch(`/api/sessions?${sessionParams}`),
         ]);
         if (!statusRes.ok || !sessionsRes.ok) throw new Error("request failed");
         const status = await statusRes.json();
@@ -269,8 +304,8 @@ def _dashboard_html() -> bytes:
 class _LightDashboardHandler(BaseHTTPRequestHandler):
     server_version = "HermesLightDashboard/1.0"
 
-    def log_message(self, fmt: str, *args: Any) -> None:
-        _log.debug("light dashboard request: " + fmt, *args)
+    def log_message(self, format: str, *args: Any) -> None:
+        _log.debug("light dashboard request: " + format, *args)
 
     def _send(self, status: HTTPStatus, body: bytes, content_type: str) -> None:
         self.send_response(status.value)
@@ -291,24 +326,32 @@ class _LightDashboardHandler(BaseHTTPRequestHandler):
             return
 
         parsed = urlsplit(self.path)
+        params = parse_qs(parsed.query)
+        profile = (params.get("profile") or [None])[0]
         try:
             if parsed.path in ("", "/"):
                 self._send(HTTPStatus.OK, _dashboard_html(), "text/html; charset=utf-8")
                 return
             if parsed.path == "/api/status":
-                self._send_json(HTTPStatus.OK, build_status_payload())
+                self._send_json(HTTPStatus.OK, build_status_payload(profile))
                 return
             if parsed.path == "/api/sessions":
-                params = parse_qs(parsed.query)
                 order = (params.get("order") or ["recent"])[0]
                 limit = _coerce_int((params.get("limit") or [None])[0], default=20, minimum=1, maximum=100)
                 offset = _coerce_int((params.get("offset") or [None])[0], default=0, minimum=0, maximum=100000)
                 self._send_json(
                     HTTPStatus.OK,
-                    build_sessions_payload(limit=limit, offset=offset, order=order),
+                    build_sessions_payload(
+                        limit=limit,
+                        offset=offset,
+                        order=order,
+                        profile=profile,
+                    ),
                 )
                 return
             self._send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
+        except ProfileNotFoundError as exc:
+            self._send_json(HTTPStatus.NOT_FOUND, {"detail": str(exc)})
         except ValueError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"detail": str(exc)})
         except Exception:

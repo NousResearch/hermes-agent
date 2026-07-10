@@ -226,3 +226,6 @@ apps/desktop/demo/
 # PR body is the archive. See the hermes-agent-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
+
+# Go memory-graph static server binary (built by scripts/windows/build-memory-graph-server.ps1)
+bin/memory-graph-server.exe

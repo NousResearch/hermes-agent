@@ -1376,8 +1376,7 @@ them into invariants before re-requesting review.
 - Respond in Japanese for this workspace unless the user switches language; use なんJ tone in `_docs/` implementation logs.
 - Run Python with `py -3`; chain PowerShell commands with `;`, not `&`.
 - Write implementation logs under `_docs/` as `yyyy-mm-dd_{feature}_{worktreename}.md`.
-- Commit and push to `origin/main` only when the user explicitly requests it.
-- Do not create git commits unless the user explicitly requests it.
+- Do not commit or push to `origin/main` unless the user explicitly requests it.
 - For `NousResearch/hermes-agent` PRs: exclude `_docs`, fork-only plugins, and unrelated fork customizations; keep scope to the upstream-worthy fix only.
 - Build upstream PR branches from `upstream/main` via cherry-pick; never open a PR from fork `main` when it would pull hundreds of fork commits.
 - Run ESLint on changed files before opening upstream PRs.
@@ -1385,18 +1384,20 @@ them into invariants before re-requesting review.
 - Personal single-user gateway deployments use `GATEWAY_ALLOW_ALL_USERS=true` in `~/.hermes/.env`.
 - When asked to enable plugins, skills, or config, run `hermes … setup` / `~/.hermes` edits directly; do not stop at instructions-only.
 - VRChat OSC/audio sends require explicit user ACK before `dry_run=false` on `vrchat-autonomy` move/speak paths.
+- When restarting Hermes on Windows, exclude llama-server on `:8080` unless explicitly requested; use `scripts/windows/restart-hermes-stack.ps1` without `-StartLlama`.
 
 ## Learned Workspace Facts
 
-- Fork upstream sync uses `scripts/merge_tools/`; preserves harness/vrchat/voicevox toolsets; default web search/extract backend is CloakBrowser (`plugins/web/cloakbrowser/`).
+- Fork layout docs live in `fork/` (`fork/AGENTS.md`, `fork/README.md`); upstream sync uses `scripts/merge_tools/`; preserves harness/vrchat/voicevox toolsets; default web search/extract backend is CloakBrowser (`plugins/web/cloakbrowser/`).
 - FreeLLMAPI local proxy: `plugins/model-providers/freellmapi/` at `http://127.0.0.1:3001/v1` with `FREELLMAPI_API_KEY`; remote access may require Tailscale.
 - HF hub cache on this PC: `H:\elt_data\hf-cache\`.
 - `lm-twitterer`: cron jobs need `script_timeout_seconds: 900`; status via `lm_twitterer_status` tool.
 - `openclaw-vendor`, `book-to-skill`, `freebuff`, `worldmonitor-osint`, and `aituber-kit`: enable in `plugins.enabled`; install via `hermes … install` / `hermes … setup`.
 - AI-Scientist vendor sync: `py -3 scripts/sync_ai_scientist_vendor.py --execute` (preserves `nc_kan` / `hermes_self_evolve` templates).
 - Self-improver profile lives at `~/.hermes/profiles/self-improver/` (curator / weekly review workflows).
-- Gateway on Windows can lock `agent.log`; rollover tolerates `PermissionError`.
-- Desktop session transcript bleed fixes: `use-message-stream.ts`, `use-session-state-cache.ts`, `use-session-actions.ts`.
+- Windows ops: gateway can lock `agent.log` (rollover tolerates `PermissionError`); stack restart via `scripts/windows/restart-hermes-stack.ps1` (llama skipped unless `-StartLlama`); ports `:8787` gateway, `:9119` `hermes serve`, `:9120` dashboard.
+- Desktop: session transcript bleed fixes in `use-message-stream.ts`, `use-session-state-cache.ts`, `use-session-actions.ts`; backend `HERMES_WEB_DIST` must be `hermes_cli/web_dist` via `resolveDashboardWebDist()` in `apps/desktop/electron/main.ts`.
+- Memory tooling: `sync_memory.py` (gateway sessions → Ebbinghaus → Obsidian); `scripts/obsidian_memory_graph.py` → `output/obsidian-memory-graph.html` (multi-vault wikilink/`#tag` 3D graph; WebXR needs HTTP). Static serve: Go `tools/memory-graph-server` → `bin/memory-graph-server.exe` on `:8765` via `scripts/windows/start-obsidian-memory-graph-server.ps1`.
 - Plugin tool handlers must accept `task_id` (or `**kwargs`).
 - QuestFrame: `questframe-fh6vr` in `plugins.enabled` and `questframe` in CLI toolsets.
 

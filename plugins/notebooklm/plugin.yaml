@@ -1,6 +1,6 @@
 name: notebooklm
-version: 0.1.0
-description: "Collect Hermes logs and draft X post ideas for NotebookLM."
+version: 0.2.0
+description: "Hermes logs to NotebookLM via Enterprise API or notebooklm-mcp-cli."
 author: "Hermes local plugin"
 kind: standalone
 platforms:
@@ -14,6 +14,12 @@ requires_env:
   - name: NOTEBOOKLM_ENTERPRISE_ACCESS_TOKEN
     description: "Optional Google Cloud OAuth access token; otherwise gcloud auth is used."
     secret: true
+  - name: NOTEBOOKLM_MCP_NOTEBOOK_ID
+    description: "Default consumer NotebookLM notebook ID for nlm source sync."
+    secret: false
+  - name: NOTEBOOKLM_MCP_CLI_REF
+    description: "Git ref or uv install spec for zapabob/notebooklm-mcp-cli (default b9cf0e2)."
+    secret: false
 provides_tools:
   - notebooklm_status
   - notebooklm_collect

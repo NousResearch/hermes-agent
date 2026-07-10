@@ -7,10 +7,11 @@ called from the terminal toolset; they don't appear in `always_load`.
 
 ## Hermes skills relevant to video production
 
-### Visual / rendering skills (`hermes-agent/skills/creative/`)
+### Visual / rendering skills (`hermes-agent/skills/creative/` + `optional-skills/creative/`)
 
 | Skill | What it does | Best fit for |
 |-------|--------------|--------------|
+| `hyperframes` | **Default HTML-to-video** — GSAP motion graphics, captions, promos, site capture | **First choice** for most video: narrated explainers, product tours, social overlays, website-to-video, captioned talking-head |
 | `ascii-video` | Production pipeline for ASCII art video — generative, audio-reactive, video-to-ASCII | Renderer for ASCII / terminal / retro pixel content; cinematographer for ASCII projects |
 | `ascii-art` | Static ASCII art generation | Concept artist for ASCII style frames; secondary tool for ASCII renderer |
 | `manim-video` | Manim CE animations — math, algorithms, 3Blue1Brown-style explainers | Renderer for math, algorithm walkthroughs, technical concept explainers |

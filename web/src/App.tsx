@@ -35,6 +35,7 @@ import {
   KeyRound,
   Menu,
   MessageSquare,
+  Orbit,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
@@ -74,6 +75,7 @@ import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 import ConfigPage from "@/pages/ConfigPage";
 import DocsPage from "@/pages/DocsPage";
+import MemoryGraphPage from "@/pages/MemoryGraphPage";
 import EnvPage from "@/pages/EnvPage";
 import FilesPage from "@/pages/FilesPage";
 import SessionsPage from "@/pages/SessionsPage";
@@ -150,6 +152,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
+  "/memory-graph": MemoryGraphPage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -168,6 +171,11 @@ const BUILTIN_NAV_REST: NavItem[] = [
     icon: MessageSquare,
   },
   { path: "/files", label: "Files", icon: FolderOpen },
+  {
+    path: "/memory-graph",
+    label: "Memory Graph",
+    icon: Orbit,
+  },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -215,6 +223,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Sparkles,
   Terminal,
   Globe,
+  Orbit,
   Database,
   Shield,
   Users,

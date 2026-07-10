@@ -15,9 +15,11 @@ if (-not (Test-Path -LiteralPath $PythonExe)) {
 $HermesHome = Join-Path $env:USERPROFILE ".hermes"
 $DesiredModel = "yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M"
 $TailscaleScript = Join-Path $env:LOCALAPPDATA "HermesWebUI\Update-HermesTailscaleServe.ps1"
+$RepoTailscaleScript = Join-Path $PSScriptRoot "Update-HermesTailscaleServe.ps1"
 $LlamaNgrokScript = Join-Path $env:LOCALAPPDATA "HermesWebUI\Start-HermesLlamaNgrok.ps1"
 $LineNgrokScript = Join-Path $env:LOCALAPPDATA "HermesWebUI\Start-HermesLineNgrok.ps1"
 $WebUiScript = Join-Path $env:LOCALAPPDATA "HermesWebUI\Start-HermesWebUI.ps1"
+$MemoryGraphScript = Join-Path $PSScriptRoot "start-obsidian-memory-graph-server.ps1"
 
 function Write-Step([string]$Message) {
     Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $Message)
@@ -80,11 +82,23 @@ if ($StartLlama) {
 }
 
 if (-not $SkipTunnels) {
-    if ($StartLlama -and (Test-Path -LiteralPath $TailscaleScript)) {
-        Write-Step "Updating Tailscale serve (/ /line /v1)"
-        & $TailscaleScript -LlamaPort 8080
-        & tailscale serve status
-    } elseif ($StartLlama) {
+    if (Test-Path -LiteralPath $MemoryGraphScript) {
+        Write-Step "Ensuring Obsidian memory-graph server (:8765)"
+        & $MemoryGraphScript -NoWatchdog
+    }
+
+    if (Test-Path -LiteralPath $RepoTailscaleScript) {
+        Copy-Item -LiteralPath $RepoTailscaleScript -Destination $TailscaleScript -Force
+    }
+
+    if (Test-Path -LiteralPath $TailscaleScript) {
+        Write-Step "Updating Tailscale serve (/ /line /v1 /memory-graph)"
+        if ($StartLlama) {
+            & $TailscaleScript -LlamaPort 8080
+        } else {
+            & $TailscaleScript
+        }
+    } else {
         Write-Warning "Missing Tailscale script: $TailscaleScript"
     }
 

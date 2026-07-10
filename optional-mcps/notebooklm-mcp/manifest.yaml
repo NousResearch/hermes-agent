@@ -1,0 +1,43 @@
+# Zapabob fork of notebooklm-mcp-cli — consumer Google NotebookLM via MCP.
+manifest_version: 1
+
+name: notebooklm-mcp
+description: Google NotebookLM via notebooklm-mcp-cli (nlm / notebooklm-mcp).
+source: https://github.com/zapabob/notebooklm-mcp-cli
+
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - --from
+    - git+https://github.com/zapabob/notebooklm-mcp-cli@b9cf0e2
+    - notebooklm-mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - notebook_list
+    - notebook_create
+    - notebook_get
+    - notebook_query
+    - source_add
+    - source_list
+    - source_get_content
+    - studio_create
+    - download_artifact
+    - research_start
+
+post_install: |
+  Consumer NotebookLM uses browser cookie auth — not Enterprise API keys.
+
+  1. Run `hermes notebooklm setup-mcp` (installs CLI, registers this MCP, installs skill)
+  2. Run `hermes notebooklm login` then `nlm login` if auth is missing
+  3. Collect Hermes sources: `hermes notebooklm collect`
+  4. Push to NotebookLM: `hermes notebooklm sync --consumer [--create-notebook]`
+
+  This MCP exposes ~39 tools. Disable it when not using NotebookLM to save context.
+  Pin override: set NOTEBOOKLM_MCP_CLI_REF in ~/.hermes/.env (git ref or PyPI spec).
+
+  Start a new Hermes session to load MCP tools.

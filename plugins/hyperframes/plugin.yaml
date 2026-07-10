@@ -1,0 +1,21 @@
+name: hyperframes
+version: 0.1.0
+description: "Hermes bridge for heygen-com/hyperframes — HTML-to-video setup, project scaffold, lint/render, TTS, and capture."
+author: "Hermes local plugin"
+kind: standalone
+platforms:
+  - windows
+  - linux
+  - macos
+provides_tools:
+  - hyperframes_status
+  - hyperframes_setup
+  - hyperframes_install
+  - hyperframes_init
+  - hyperframes_validate
+  - hyperframes_render
+  - hyperframes_preview
+  - hyperframes_capture
+  - hyperframes_audio
+provides_cli:
+  - hyperframes

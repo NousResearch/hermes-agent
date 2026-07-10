@@ -16,6 +16,8 @@ from typing import Any, Callable, Iterable
 
 from hermes_constants import get_hermes_home
 
+from . import bridge, mcp_stack
+
 try:
     from hermes_cli.config import get_env_value, save_env_value
 except Exception:  # pragma: no cover - import safety during early plugin load
@@ -103,7 +105,7 @@ BRAINSTORM_SCHEMA = {
 
 SYNC_SCHEMA = {
     "name": "notebooklm_sync",
-    "description": "Upload a collected Markdown source to NotebookLM Enterprise as raw text.",
+    "description": "Upload a collected Markdown source to NotebookLM (Enterprise API or consumer nlm CLI).",
     "parameters": {
         "type": "object",
         "properties": {
@@ -113,7 +115,7 @@ SYNC_SCHEMA = {
             },
             "notebook_id": {
                 "type": "string",
-                "description": "NotebookLM Enterprise notebook ID. Defaults to NOTEBOOKLM_ENTERPRISE_NOTEBOOK_ID.",
+                "description": "Notebook ID. Enterprise: NOTEBOOKLM_ENTERPRISE_NOTEBOOK_ID. Consumer MCP: NOTEBOOKLM_MCP_NOTEBOOK_ID.",
             },
             "create_notebook": {
                 "type": "boolean",
@@ -122,6 +124,15 @@ SYNC_SCHEMA = {
             "save_notebook_id": {
                 "type": "boolean",
                 "description": "Save a newly created notebook ID to the Hermes .env file.",
+            },
+            "mode": {
+                "type": "string",
+                "description": "Sync backend: auto (enterprise then consumer CLI), enterprise, or consumer.",
+                "enum": ["auto", "enterprise", "consumer"],
+            },
+            "wait": {
+                "type": "boolean",
+                "description": "When using consumer CLI sync, wait for NotebookLM source processing.",
             },
         },
     },
@@ -184,6 +195,9 @@ class Settings:
     idea_count: int
     provider: str
     model: str
+    mcp_notebook_id: str
+    nlm_profile: str
+    cli_ref: str
 
 
 def bind_llm_factory(factory: Callable[[], Any]) -> None:
@@ -270,6 +284,9 @@ def settings() -> Settings:
         idea_count=_int_env("NOTEBOOKLM_IDEA_COUNT", 8, minimum=1, maximum=30),
         provider=_env("NOTEBOOKLM_PROVIDER", "").strip(),
         model=_env("NOTEBOOKLM_MODEL", "").strip(),
+        mcp_notebook_id=bridge.mcp_notebook_id(),
+        nlm_profile=bridge.nlm_profile(),
+        cli_ref=bridge.cli_ref(),
     )
 
 
@@ -670,15 +687,110 @@ def _enterprise_missing(cfg: Settings, *, require_notebook: bool) -> list[str]:
     return missing
 
 
+def _enterprise_ready(cfg: Settings) -> bool:
+    missing = _enterprise_missing(cfg, require_notebook=False)
+    if missing:
+        return False
+    if cfg.access_token:
+        return True
+    return bool(cfg.use_gcloud_auth and _access_token(cfg))
+
+
+def sync_source_consumer(
+    *,
+    source_path: str | Path,
+    notebook_id: str | None = None,
+    create_if_missing: bool = False,
+    save_notebook_id: bool = False,
+    wait: bool = False,
+    cfg: Settings | None = None,
+) -> dict[str, Any]:
+    """Upload a collected Markdown source via notebooklm-mcp-cli (``nlm``)."""
+    cfg = cfg or settings()
+    if not bridge.cli_available():
+        return {
+            "ok": False,
+            "error": "notebooklm-mcp-cli is not available.",
+            "missing": ["nlm or uvx"],
+            "hint": "Run `hermes notebooklm setup-mcp` first.",
+        }
+
+    auth = bridge.auth_status(profile=cfg.nlm_profile or None)
+    if not auth.get("authenticated"):
+        return {
+            "ok": False,
+            "error": "NotebookLM consumer auth is not ready.",
+            "auth": auth,
+            "hint": "Run `hermes notebooklm login` or `nlm login`.",
+        }
+
+    src_path = Path(source_path).expanduser()
+    if not src_path.is_file():
+        return {"ok": False, "error": f"source file not found: {src_path}"}
+
+    effective_notebook_id = (notebook_id or cfg.mcp_notebook_id).strip()
+    created: dict[str, Any] | None = None
+    if not effective_notebook_id and create_if_missing:
+        created = bridge.create_notebook(cfg.notebook_title, profile=cfg.nlm_profile or None)
+        if not created.get("ok"):
+            return {
+                "ok": False,
+                "error": "Failed to create NotebookLM notebook via nlm.",
+                "create": created,
+            }
+        data = created.get("data")
+        if isinstance(data, dict):
+            effective_notebook_id = str(
+                data.get("id") or data.get("notebook_id") or data.get("notebookId") or ""
+            ).strip()
+        if not effective_notebook_id:
+            stdout = str(created.get("stdout") or "")
+            for token in stdout.split():
+                if len(token) >= 8 and token.isalnum():
+                    effective_notebook_id = token
+                    break
+        if save_notebook_id and save_env_value is not None and effective_notebook_id:
+            save_env_value("NOTEBOOKLM_MCP_NOTEBOOK_ID", effective_notebook_id)
+
+    if not effective_notebook_id:
+        return {
+            "ok": False,
+            "missing": ["NOTEBOOKLM_MCP_NOTEBOOK_ID"],
+            "error": "Set a consumer notebook ID or pass create_notebook=true.",
+            "source_path": str(src_path),
+        }
+
+    push = bridge.add_file_source(
+        effective_notebook_id,
+        src_path,
+        title=src_path.stem,
+        wait=wait,
+        profile=cfg.nlm_profile or None,
+    )
+    return {
+        "ok": bool(push.get("ok")),
+        "backend": "consumer",
+        "source_path": str(src_path),
+        "notebook_id": effective_notebook_id,
+        "created_notebook": created,
+        "push": push,
+    }
+
+
 def sync_source(
     *,
     source_path: str | Path | None = None,
     notebook_id: str | None = None,
     create_if_missing: bool = False,
     save_notebook_id: bool = False,
+    mode: str = "auto",
+    wait: bool = False,
     cfg: Settings | None = None,
 ) -> dict[str, Any]:
     cfg = cfg or settings()
+    sync_mode = (mode or "auto").strip().lower()
+    if sync_mode not in {"auto", "enterprise", "consumer"}:
+        sync_mode = "auto"
     collection: dict[str, Any] | None = None
     if source_path:
         src_path = Path(source_path).expanduser()
@@ -687,6 +799,18 @@ def sync_source(
         src_path = Path(str(collection["source_path"]))
     if not src_path.exists():
         return {"ok": False, "error": f"source file not found: {src_path}"}
+
+    if sync_mode == "consumer" or (
+        sync_mode == "auto" and not _enterprise_ready(cfg)
+    ):
+        return sync_source_consumer(
+            source_path=src_path,
+            notebook_id=notebook_id,
+            create_if_missing=create_if_missing,
+            save_notebook_id=save_notebook_id,
+            wait=wait,
+            cfg=cfg,
+        )
 
     effective_notebook_id = (notebook_id or cfg.notebook_id).strip()
     created: dict[str, Any] | None = None
@@ -738,6 +862,7 @@ def sync_source(
     data = _http_json("POST", url, token=token, payload=payload, timeout=120)
     return {
         "ok": True,
+        "backend": "enterprise",
         "source_path": str(src_path),
         "notebook_id": effective_notebook_id,
         "created_notebook": created,
@@ -806,6 +931,11 @@ def status() -> dict[str, Any]:
             and cfg.location
             and (cfg.access_token or (cfg.use_gcloud_auth and token_available))
         ),
+        "consumer_cli": bridge.bridge_status(),
+        "consumer_auth_ready": bridge.cli_available(),
+        "mcp_server": mcp_stack.mcp_server_status(),
+        "mcp_cli_ref": cfg.cli_ref,
+        "mcp_notebook_id_set": bool(cfg.mcp_notebook_id),
         "llm_bound": _llm_factory is not None,
         "provider_override_set": bool(cfg.provider),
         "model_override_set": bool(cfg.model),
@@ -887,6 +1017,8 @@ def handle_sync(args: dict[str, Any] | None = None, **_: Any) -> str:
             notebook_id=str(args.get("notebook_id") or "") or None,
             create_if_missing=bool(args.get("create_notebook", False)),
             save_notebook_id=bool(args.get("save_notebook_id", False)),
+            mode=str(args.get("mode") or "auto"),
+            wait=bool(args.get("wait", False)),
         )
     )
 
@@ -908,7 +1040,9 @@ HELP = """notebooklm commands:
   /notebooklm status
   /notebooklm collect
   /notebooklm brainstorm [source_path]
-  /notebooklm sync [source_path]
+  /notebooklm sync [source_path] [--consumer]
+  /notebooklm setup-mcp
+  /notebooklm login
   /notebooklm run [--sync]
 """
 
@@ -926,10 +1060,24 @@ def handle_slash(raw_args: str) -> str:
         source = argv[1] if len(argv) >= 2 else None
         return _json(brainstorm_posts(source_path=source))
     if command == "sync":
-        source = argv[1] if len(argv) >= 2 else None
+        source = argv[1] if len(argv) >= 2 and not argv[1].startswith("-") else None
+        mode = "consumer" if "--consumer" in argv else "auto"
         return _json(
-            sync_source(source_path=source, create_if_missing="--create" in argv)
+            sync_source(
+                source_path=source,
+                create_if_missing="--create" in argv,
+                mode=mode,
+                wait="--wait" in argv,
+            )
         )
+    if command == "setup-mcp":
+        return _json(mcp_stack.setup_mcp_stack())
+    if command == "login":
+        return _json(bridge.auth_status())
+    if command == "doctor":
+        return _json({"doctor": bridge.doctor(), "status": status()})
+    if command == "notebooks":
+        return _json(bridge.list_notebooks())
     if command == "run":
         return _json(
             run_pipeline(do_sync="--sync" in argv, create_if_missing="--create" in argv)

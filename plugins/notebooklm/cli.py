@@ -6,6 +6,8 @@ import argparse
 import json
 
 from . import core
+from . import mcp_stack
+from . import bridge
 
 
 def register_cli(subparser: argparse.ArgumentParser) -> None:
@@ -22,6 +24,20 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     setup.add_argument("--notebook-id", default="")
     setup.add_argument("--notebook-title", default="")
     setup.add_argument("--access-token", default="")
+    setup.add_argument("--mcp-notebook-id", default="")
+
+    setup_mcp = subs.add_parser(
+        "setup-mcp",
+        help="Install notebooklm-mcp-cli, register MCP server, and install Hermes skill",
+    )
+    setup_mcp.add_argument("--skip-cli-install", action="store_true")
+    setup_mcp.add_argument("--skip-mcp-register", action="store_true")
+    setup_mcp.add_argument("--skip-skill", action="store_true")
+    setup_mcp.add_argument("--dry-run", action="store_true")
+
+    subs.add_parser("login", help="Check NotebookLM consumer auth via nlm login --check")
+    subs.add_parser("doctor", help="Run nlm doctor and show plugin status")
+    subs.add_parser("notebooks", help="List NotebookLM notebooks via nlm")
 
     collect = subs.add_parser(
         "collect", help="Collect implementation logs and X activity into Markdown"
@@ -46,6 +62,12 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     sync.add_argument("--notebook-id", default="")
     sync.add_argument("--create-notebook", action="store_true")
     sync.add_argument("--save-notebook-id", action="store_true")
+    sync.add_argument(
+        "--consumer",
+        action="store_true",
+        help="Force consumer NotebookLM sync via notebooklm-mcp-cli",
+    )
+    sync.add_argument("--wait", action="store_true")
 
     run = subs.add_parser("run", help="Collect, brainstorm, and optionally sync")
     run.add_argument("--sync", action="store_true")
@@ -60,12 +82,30 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def notebooklm_command(args: argparse.Namespace) -> int:
     command = getattr(args, "notebooklm_command", None)
     if not command:
-        print("usage: hermes notebooklm {status,setup,collect,brainstorm,sync,run}")
+        print(
+            "usage: hermes notebooklm "
+            "{status,setup,setup-mcp,login,doctor,notebooks,collect,brainstorm,sync,run}"
+        )
         return 2
     if command == "status":
         return _print(core.status())
     if command == "setup":
         return _print(_setup_values(args))
+    if command == "setup-mcp":
+        return _print(
+            mcp_stack.setup_mcp_stack(
+                install_cli=not getattr(args, "skip_cli_install", False),
+                register_mcp=not getattr(args, "skip_mcp_register", False),
+                install_skill=not getattr(args, "skip_skill", False),
+                dry_run=bool(getattr(args, "dry_run", False)),
+            )
+        )
+    if command == "login":
+        return _print(bridge.auth_status())
+    if command == "doctor":
+        return _print({"doctor": bridge.doctor(), "status": core.status()})
+    if command == "notebooks":
+        return _print(bridge.list_notebooks())
     if command == "collect":
         return _print(
             core.collect_source(
@@ -85,12 +125,15 @@ def notebooklm_command(args: argparse.Namespace) -> int:
             )
         )
     if command == "sync":
+        mode = "consumer" if getattr(args, "consumer", False) else "auto"
         return _print(
             core.sync_source(
                 source_path=getattr(args, "source_path", "") or None,
                 notebook_id=getattr(args, "notebook_id", "") or None,
                 create_if_missing=bool(getattr(args, "create_notebook", False)),
                 save_notebook_id=bool(getattr(args, "save_notebook_id", False)),
+                mode=mode,
+                wait=bool(getattr(args, "wait", False)),
             )
         )
     if command == "run":
@@ -117,6 +160,7 @@ def _setup_values(args: argparse.Namespace) -> dict:
         "NOTEBOOKLM_ENTERPRISE_NOTEBOOK_ID": getattr(args, "notebook_id", ""),
         "NOTEBOOKLM_ENTERPRISE_NOTEBOOK_TITLE": getattr(args, "notebook_title", ""),
         "NOTEBOOKLM_ENTERPRISE_ACCESS_TOKEN": getattr(args, "access_token", ""),
+        "NOTEBOOKLM_MCP_NOTEBOOK_ID": getattr(args, "mcp_notebook_id", ""),
     }
     result = core.save_setup_values(values)
     result["status"] = core.status()

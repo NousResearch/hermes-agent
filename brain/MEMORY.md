@@ -21,3 +21,10 @@
 - 原因（Why）
 - 対応（Fix）
 - 再発防止（Prevention）
+
+## Video routing (2026-07)
+
+- **What:** 動画作成の第一選択は `hyperframes`（heygen-com/hyperframes, HTML→MP4）。`plugins/hyperframes` + `~/.hermes/skills/hyperframes`。
+- **Why:** モーショングラフィックス・字幕・サイトキャプチャ・プロモが主用途。`manim-video` は純数学/幾何のみ。
+- **Fix:** `hermes hyperframes install`（UACで Node/FFmpeg/npm CLI）。ツールセット `hyperframes` + `terminal` を有効化。
+- **OAuth:** HyperFrames 本体に Google OAuth は不要。任意で `GEMINI_API_KEY` はレンダ後 `video_analyze` QA 用のみ（`.env` に API キー、OAuth ではない）。

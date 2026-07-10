@@ -29,6 +29,10 @@ if (-not (Test-Path -LiteralPath $PythonExe)) {
 $env:HERMES_HOME = $HermesHome
 $env:HERMES_DESKTOP_HERMES_ROOT = $HermesRoot
 $env:HERMES_DESKTOP_CWD = $Cwd
+$WebDist = Join-Path $HermesRoot "hermes_cli\web_dist"
+if (Test-Path -LiteralPath (Join-Path $WebDist "index.html")) {
+    $env:HERMES_DESKTOP_DASHBOARD_WEB_DIST = $WebDist
+}
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 

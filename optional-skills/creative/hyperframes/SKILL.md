@@ -1,6 +1,6 @@
 ---
 name: hyperframes
-description: Create HTML-based video compositions, animated title cards, social overlays, captioned talking-head videos, audio-reactive visuals, and shader transitions using HyperFrames. HTML is the source of truth for video. Use when the user wants a rendered MP4/WebM from an HTML composition, wants to animate text/logos/charts over media, needs captions synced to audio, wants TTS narration, or wants to convert a website into a video.
+description: Default HTML-to-video skill. Motion graphics, captions, promos, site-to-video.
 version: 1.0.0
 author: heygen-com
 license: Apache-2.0
@@ -17,9 +17,9 @@ metadata:
 
 # HyperFrames
 
-HTML is the source of truth for video. A composition is an HTML file with `data-*` attributes for timing, a GSAP timeline for animation, and CSS for appearance. The HyperFrames engine captures the page frame-by-frame and encodes to MP4/WebM with FFmpeg.
+**Default first choice for video in this Hermes profile.** HTML is the source of truth for video. A composition is an HTML file with `data-*` attributes for timing, a GSAP timeline for animation, and CSS for appearance. The HyperFrames engine captures the page frame-by-frame and encodes to MP4/WebM with FFmpeg.
 
-**Complement to `manim-video`:** Use `manim-video` for mathematical/geometric explainers (equations, 3B1B-style). Use `hyperframes` for motion-graphics, talking-head with captions, product tours, social overlays, shader transitions, and anything driven by real video/audio media.
+**Complement to `manim-video`:** Use `hyperframes` first for motion-graphics, talking-head with captions, product tours, social overlays, shader transitions, and anything driven by real video/audio media. Use `manim-video` only for pure math/equation animation (equations, 3B1B-style).
 
 ## When to Use
 

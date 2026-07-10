@@ -82,15 +82,23 @@ try {
     $GatewayScript = Join-Path $ScriptDir "start-hermes-gateway.ps1"
     $DesktopScript = Join-Path $ScriptDir "start-hermes-desktop.ps1"
     $DashboardScript = Join-Path $ScriptDir "start-hermes-dashboard.ps1"
+    $MemoryGraphScript = Join-Path $ScriptDir "start-obsidian-memory-graph-server.ps1"
+    $RepoTailscaleScript = Join-Path $ScriptDir "Update-HermesTailscaleServe.ps1"
     $LineNgrokScript = "C:\Users\downl\AppData\Local\HermesWebUI\Start-HermesLineNgrok.ps1"
     $WebUiScript = "C:\Users\downl\AppData\Local\HermesWebUI\Start-HermesWebUI.ps1"
     $TailscaleScript = "C:\Users\downl\AppData\Local\HermesWebUI\Update-HermesTailscaleServe.ps1"
 
-    foreach ($path in @($GatewayScript, $DesktopScript, $DashboardScript, $LineNgrokScript, $WebUiScript, $TailscaleScript)) {
+    foreach ($path in @($GatewayScript, $DesktopScript, $DashboardScript, $MemoryGraphScript, $LineNgrokScript, $WebUiScript)) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Required script not found: $path"
         }
     }
+    if (-not (Test-Path -LiteralPath $RepoTailscaleScript)) {
+        throw "Required script not found: $RepoTailscaleScript"
+    }
+    $hermesWebUiDir = Split-Path -Parent $TailscaleScript
+    New-Item -ItemType Directory -Force -Path $hermesWebUiDir | Out-Null
+    Copy-Item -LiteralPath $RepoTailscaleScript -Destination $TailscaleScript -Force
 
     function New-HermesTaskSettings {
         New-ScheduledTaskSettingsSet `
@@ -209,6 +217,13 @@ try {
         -DelaySeconds 50
 
     Register-HermesBootTask `
+        -TaskName "HermesMemoryGraphBootAutoStart" `
+        -Description "Boot auto-start Obsidian memory-graph Go HTTP server (:8765)" `
+        -PowerShellCommand "$envPrefix& '$MemoryGraphScript' -NoWatchdog" `
+        -WorkingDirectory $RepoRoot `
+        -DelaySeconds 55
+
+    Register-HermesBootTask `
         -TaskName "HermesWebUIBootAutoStart" `
         -Description "Boot auto-start Hermes WebUI from restored checkout" `
         -PowerShellCommand "$envPrefix& '$WebUiScript'" `
@@ -242,6 +257,13 @@ try {
         -PowerShellCommand "$envPrefix& '$DashboardScript' -HermesRoot '$RepoRoot' -HermesHome '$HermesHome' -HostName '127.0.0.1' -Port 9120" `
         -WorkingDirectory $RepoRoot `
         -DelaySeconds 75
+
+    Register-HermesLogonTask `
+        -TaskName "HermesMemoryGraphAutoStart" `
+        -Description "Logon auto-start Obsidian memory-graph Go HTTP server (:8765)" `
+        -PowerShellCommand "$envPrefix& '$MemoryGraphScript' -NoWatchdog" `
+        -WorkingDirectory $RepoRoot `
+        -DelaySeconds 78
 
     Write-Step "Stopping current Hermes gateway..."
     try {
@@ -296,6 +318,7 @@ try {
     Start-HermesTask -TaskName "HermesGatewayAutoStart" -WaitSeconds 12
     Start-HermesTask -TaskName "HermesHypuraHarnessAutoStart" -WaitSeconds 6
     Start-HermesTask -TaskName "HermesLineNgrokAutoStart" -WaitSeconds 4
+    Start-HermesTask -TaskName "HermesMemoryGraphAutoStart" -WaitSeconds 3
     Start-HermesTask -TaskName "HermesWebUINativeAutoStart" -WaitSeconds 12
     Start-HermesTask -TaskName "HermesDashboardAutoStart" -WaitSeconds 8
     Start-HermesTask -TaskName "HermesDesktopAutoStart" -WaitSeconds 8
@@ -323,6 +346,14 @@ try {
         Write-Warning "Dashboard health check failed: $($_.Exception.Message)"
     }
 
+    Write-Step "Verification: memory-graph health"
+    try {
+        $mg = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 8
+        "Memory graph: build=$($mg.build) ok=$($mg.ok)"
+    } catch {
+        Write-Warning "Memory graph health check failed: $($_.Exception.Message)"
+    }
+
     Write-Step "Verification: gateway runtime state"
     $statePath = Join-Path $HermesHome "gateway_state.json"
     if (Test-Path -LiteralPath $statePath) {
@@ -334,10 +365,12 @@ try {
         "HermesGatewayBootAutoStart",
         "HermesHypuraHarnessBootAutoStart",
         "HermesLineNgrokBootAutoStart",
+        "HermesMemoryGraphBootAutoStart",
         "HermesWebUIBootAutoStart",
         "HermesDashboardBootAutoStart",
         "HermesTailscaleServeBootUpdate",
         "HermesDashboardAutoStart",
+        "HermesMemoryGraphAutoStart",
         "HermesDesktopAutoStart"
     )) {
         $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop

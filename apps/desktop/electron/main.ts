@@ -3212,6 +3212,26 @@ function resolveWebDist() {
   return fallback
 }
 
+// Python dashboard/serve backend reads HERMES_WEB_DIST → hermes_cli/web_dist
+// (the Vite-built web/ SPA). Do NOT pass the Electron renderer dist here.
+function resolveDashboardWebDist(hermesRoot?: string | null) {
+  const dashboardOverride = process.env.HERMES_DESKTOP_DASHBOARD_WEB_DIST
+
+  if (dashboardOverride && directoryExists(path.resolve(dashboardOverride))) {
+    return path.resolve(dashboardOverride)
+  }
+
+  if (hermesRoot) {
+    const cliDist = path.join(hermesRoot, 'hermes_cli', 'web_dist')
+
+    if (fileExists(path.join(cliDist, 'index.html'))) {
+      return cliDist
+    }
+  }
+
+  return resolveWebDist()
+}
+
 function resolveRendererIndex() {
   const candidates = [path.join(APP_ROOT, 'dist', 'index.html'), path.join(resolveWebDist(), 'index.html')]
   const found = candidates.find(fileExists)
@@ -6696,7 +6716,7 @@ async function spawnPoolBackend(profile, entry) {
   // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
   backend.args = getBackendArgsForRuntime(backend)
   const hermesCwd = resolveHermesCwd()
-  const webDist = resolveWebDist()
+  const webDist = resolveDashboardWebDist(backend.root)
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
@@ -6948,7 +6968,7 @@ async function startHermes() {
     // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
     backend.args = getBackendArgsForRuntime(backend)
     const hermesCwd = resolveHermesCwd()
-    const webDist = resolveWebDist()
+    const webDist = resolveDashboardWebDist(backend.root)
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)

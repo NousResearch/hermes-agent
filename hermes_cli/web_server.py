@@ -16142,6 +16142,39 @@ def _normalise_prefix(raw: Optional[str]) -> str:
     return normalise_prefix(raw)
 
 
+def _memory_graph_output_dir() -> Path | None:
+    """Directory containing obsidian-memory-graph.html for dashboard embed."""
+    override = os.environ.get("HERMES_MEMORY_GRAPH_DIR")
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.is_dir():
+            return candidate.resolve()
+    repo_out = Path(__file__).resolve().parent.parent / "output"
+    if (repo_out / "obsidian-memory-graph.html").is_file():
+        return repo_out.resolve()
+    try:
+        from hermes_constants import get_hermes_home
+
+        home_out = get_hermes_home() / "output"
+        if (home_out / "obsidian-memory-graph.html").is_file():
+            return home_out.resolve()
+    except Exception:
+        pass
+    return None
+
+
+def mount_memory_graph(application: FastAPI) -> None:
+    """Serve the generated Obsidian 3D graph for dashboard iframe + Quest LAN."""
+    out_dir = _memory_graph_output_dir()
+    if out_dir is None:
+        return
+    application.mount(
+        "/memory-graph",
+        StaticFiles(directory=out_dir, html=True),
+        name="memory-graph",
+    )
+
+
 def mount_spa(application: FastAPI):
     """Mount the built SPA. Falls back to index.html for client-side routing.
 
@@ -17473,6 +17506,7 @@ from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  #
 
 app.include_router(_dashboard_auth_router)
 
+mount_memory_graph(app)
 mount_spa(app)
 
 

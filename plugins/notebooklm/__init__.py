@@ -43,7 +43,7 @@ def register(ctx) -> None:
         "notebooklm",
         handler=core.handle_slash,
         description="Collect Hermes logs, brainstorm X posts, and sync NotebookLM sources.",
-        args_hint="[status|collect|brainstorm|sync|run]",
+        args_hint="[status|collect|brainstorm|sync|setup-mcp|login|run]",
     )
     ctx.register_cli_command(
         name="notebooklm",
@@ -53,6 +53,6 @@ def register(ctx) -> None:
         description=(
             "Collect implementation logs and LM-twitterer activity into "
             "NotebookLM-ready sources, generate X post brainstorms, and "
-            "optionally sync sources to NotebookLM Enterprise."
+            "sync via Enterprise API or notebooklm-mcp-cli (consumer)."
         ),
     )

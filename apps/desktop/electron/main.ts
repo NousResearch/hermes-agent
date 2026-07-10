@@ -95,7 +95,7 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
-import { readTextFileBytes } from './read-file-text'
+import { readCompleteTextFileBytes, readTextFileBytes } from './read-file-text'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -8009,16 +8009,25 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath, options: { comple
   const handle = await fs.promises.open(resolvedPath, 'r')
 
   try {
-    const buffer = await readTextFileBytes(handle, stat.size, TEXT_PREVIEW_MAX_BYTES, Boolean(options?.complete))
+    const complete = Boolean(options?.complete)
+
+    const result = complete
+      ? await readCompleteTextFileBytes(handle, TEXT_PREVIEW_SOURCE_MAX_BYTES)
+      : {
+          buffer: await readTextFileBytes(handle, stat.size, TEXT_PREVIEW_MAX_BYTES, false),
+          byteSize: stat.size
+        }
+
+    const { buffer, byteSize } = result
 
     return {
       binary: looksBinary(buffer.subarray(0, Math.min(buffer.length, 4096))),
-      byteSize: stat.size,
+      byteSize,
       language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
       mimeType: mimeTypeForPath(resolvedPath),
       path: resolvedPath,
       text: buffer.toString('utf8'),
-      truncated: !options?.complete && stat.size > TEXT_PREVIEW_MAX_BYTES
+      truncated: !complete && byteSize > TEXT_PREVIEW_MAX_BYTES
     }
   } finally {
     await handle.close()

@@ -2130,27 +2130,46 @@ async def fs_list(path: str):
         return {"entries": [], "error": getattr(exc, "strerror", None) or "read-error"}
 
 
+def _fs_text_read_changed(before: os.stat_result, after: os.stat_result, bytes_read: int) -> bool:
+    return (
+        bytes_read != before.st_size
+        or after.st_size != before.st_size
+        or after.st_mtime_ns != before.st_mtime_ns
+        or after.st_ctime_ns != before.st_ctime_ns
+    )
+
+
 @app.get("/api/fs/read-text")
 async def fs_read_text(path: str, complete: bool = False):
     target, st = _fs_regular_file(_fs_path(path))
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    bytes_to_read = st.st_size if complete else min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES)
     try:
         with target.open("rb") as handle:
+            opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode):
+                raise HTTPException(status_code=400, detail="Only regular files can be read")
+            if opened.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
+                raise HTTPException(status_code=413, detail="File too large")
+
+            bytes_to_read = opened.st_size + 1 if complete else min(opened.st_size, _FS_TEXT_PREVIEW_MAX_BYTES)
             data = handle.read(bytes_to_read)
+            after = os.fstat(handle.fileno())
+
+            if complete and _fs_text_read_changed(opened, after, len(data)):
+                raise HTTPException(status_code=409, detail="File changed while reading")
     except PermissionError:
         raise HTTPException(status_code=403, detail="File is not readable")
     except OSError as exc:
         raise HTTPException(status_code=400, detail=str(exc) or "File read failed")
     return {
         "binary": _fs_looks_binary(data[:4096]),
-        "byteSize": st.st_size,
+        "byteSize": opened.st_size,
         "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(target.suffix.lower(), "text"),
         "mimeType": _fs_mime_type(target),
         "path": str(target),
         "text": data.decode("utf-8", errors="replace"),
-        "truncated": not complete and st.st_size > _FS_TEXT_PREVIEW_MAX_BYTES,
+        "truncated": not complete and opened.st_size > _FS_TEXT_PREVIEW_MAX_BYTES,
     }
 
 

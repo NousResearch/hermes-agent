@@ -10,21 +10,28 @@ describe('normalizeOrLocalPreviewTarget', () => {
     vi.unstubAllGlobals()
   })
 
-  it('preserves Windows drive-letter and UNC artifact paths and file URLs instead of joining them to the remote cwd', () => {
+  it('preserves local Windows drive paths while rejecting network and remote-host file paths', () => {
     const drivePath = String.raw`C:\Users\Rohit\brief.md`
     const uncPath = String.raw`\\server\share\brief.md`
     const cwd = String.raw`C:\work`
 
     expect(localPreviewTarget(drivePath, cwd)).toMatchObject({ path: drivePath, url: 'file:///C:/Users/Rohit/brief.md' })
-    expect(localPreviewTarget(uncPath, cwd)).toMatchObject({ path: uncPath, url: 'file://server/share/brief.md' })
+    expect(localPreviewTarget(uncPath, cwd)).toBeNull()
     expect(localPreviewTarget('file:///C:/Users/Rohit/brief.md', cwd)).toMatchObject({
       path: 'C:/Users/Rohit/brief.md',
       url: 'file:///C:/Users/Rohit/brief.md'
     })
-    expect(localPreviewTarget('file://server/share/brief.md', cwd)).toMatchObject({
-      path: String.raw`\\server\share\brief.md`,
-      url: 'file://server/share/brief.md'
+    expect(localPreviewTarget('file://localhost/C:/Users/Rohit/brief.md', cwd)).toMatchObject({
+      path: 'C:/Users/Rohit/brief.md',
+      url: 'file:///C:/Users/Rohit/brief.md'
     })
+    expect(localPreviewTarget('file://server/share/brief.md', cwd)).toBeNull()
+    expect(localPreviewTarget('file:////server/share/brief.md', cwd)).toBeNull()
+    expect(localPreviewTarget('file://localhost//server/share/brief.md', cwd)).toBeNull()
+    expect(localPreviewTarget('file:///%2F%2Fserver/share/brief.md', cwd)).toBeNull()
+    expect(localPreviewTarget(String.raw`file:\\server\share\brief.md`, cwd)).toBeNull()
+    expect(localPreviewTarget(String.raw`/\\server/share/brief.md`, cwd)).toBeNull()
+    expect(localPreviewTarget('file://localhost/%5Cserver/share/brief.md', cwd)).toBeNull()
   })
 
   it('keeps gateway paths remote instead of resolving them on the desktop machine', async () => {

@@ -65,17 +65,15 @@ function encodePathSegments(path: string) {
     .join('/')
 }
 
+function isNetworkPath(path: string) {
+  return path.replaceAll('\\', '/').startsWith('//')
+}
+
 function pathToFileUrl(path: string) {
   const drivePath = /^([a-z]:)[\\/](.*)$/i.exec(path)
 
   if (drivePath) {
     return `file:///${drivePath[1]}/${encodePathSegments(drivePath[2] || '')}`
-  }
-
-  const uncPath = /^\\\\([^\\/]+)[\\/](.*)$/.exec(path)
-
-  if (uncPath) {
-    return `file://${uncPath[1]}/${encodePathSegments(uncPath[2] || '')}`
   }
 
   const encoded = path
@@ -91,7 +89,11 @@ function fileUrlToPath(raw: string) {
   const pathname = decodeURIComponent(url.pathname)
 
   if (url.hostname && url.hostname.toLowerCase() !== 'localhost') {
-    return `\\\\${url.hostname}${pathname.replaceAll('/', '\\')}`
+    throw new Error('Remote file URL hosts are not supported')
+  }
+
+  if (isNetworkPath(pathname)) {
+    throw new Error('Network file URL paths are not supported')
   }
 
   return /^\/[a-z]:[\\/]/i.test(pathname) ? pathname.slice(1) : pathname
@@ -104,21 +106,25 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
     return null
   }
 
+  if (isNetworkPath(raw)) {
+    return null
+  }
+
   if (/^https?:\/\//i.test(raw)) {
     return { kind: 'url', label: basename(raw), source: raw, url: raw }
   }
 
   let path = raw
 
-  if (/^file:\/\//i.test(raw)) {
+  if (/^file:/i.test(raw)) {
     try {
       path = fileUrlToPath(raw)
     } catch {
-      path = raw.replace(/^file:\/\//i, '')
+      return null
     }
   } else if (
     !raw.startsWith('/') &&
-    !raw.startsWith('\\\\') &&
+    !isNetworkPath(raw) &&
     !/^[a-z]:[\\/]/i.test(raw) &&
     !raw.startsWith('~/') &&
     !raw.startsWith('~\\') &&
@@ -153,6 +159,10 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
   try {
     const result = await readDesktopFileText(target.path || target.source)
     const resolvedPath = result.path || target.path
+
+    if (!resolvedPath || isNetworkPath(resolvedPath)) {
+      return null
+    }
 
     return {
       ...target,

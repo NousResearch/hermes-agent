@@ -40,16 +40,37 @@ export function previewTargetFromMarkdownHref(href?: string): string | null {
   }
 }
 
+function isNetworkPath(value: string) {
+  return value.replaceAll('\\', '/').startsWith('//')
+}
+
 export function markdownArtifactTargetFromHref(href?: string): string | null {
   const target = href?.trim()
 
-  const windowsPath = /^[a-z]:[\\/]/i.test(target || '')
-  const scheme = /^[a-z][a-z0-9+.-]*:/i.exec(target || '')?.[0].toLowerCase()
+  if (!target) {
+    return null
+  }
+
+  const windowsPath = /^[a-z]:[\\/]/i.test(target)
+  const scheme = /^[a-z][a-z0-9+.-]*:/i.exec(target)?.[0].toLowerCase()
+  let unsafeFileUrl = false
+
+  if (scheme === 'file:') {
+    try {
+      const url = new URL(target)
+      const hostname = url.hostname.toLowerCase()
+      const pathname = decodeURIComponent(url.pathname)
+
+      unsafeFileUrl = Boolean((hostname && hostname !== 'localhost') || isNetworkPath(pathname))
+    } catch {
+      return null
+    }
+  }
 
   if (
-    !target ||
     target.startsWith('#') ||
-    target.startsWith('//') ||
+    isNetworkPath(target) ||
+    unsafeFileUrl ||
     (!windowsPath && scheme && scheme !== 'file:')
   ) {
     return null

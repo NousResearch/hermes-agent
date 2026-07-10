@@ -97,6 +97,29 @@ test('path helpers reject blank non-string NUL and Windows device syntax', async
   await rejectsWithCode(resolveReadableFileForIpc('file:///%E0%A4%A', { purpose: 'File preview' }), 'invalid-path')
 })
 
+test('path helpers reject network paths before filesystem access', async () => {
+  const networkPaths = [
+    String.raw`\\server\share\brief.md`,
+    String.raw`/\server/share/brief.md`,
+    'file://server/share/brief.md',
+    'file:////server/share/brief.md',
+    'file://localhost/%5Cserver/share/brief.md',
+    String.raw`file:\\server\share\brief.md`
+  ]
+
+  for (const networkPath of networkPaths) {
+    assert.throws(
+      () => resolveRequestedPathForIpc(networkPath, { purpose: 'File preview' }),
+      (error: any) => {
+        assert.equal(error?.code, 'network-path')
+
+        return true
+      }
+    )
+    await rejectsWithCode(resolveReadableFileForIpc(networkPath, { purpose: 'File preview' }), 'network-path')
+  }
+})
+
 test('resolveRequestedPathForIpc resolves relative paths from the trimmed base directory', () => {
   const baseDir = path.join(os.tmpdir(), 'hermes-desktop-base')
 

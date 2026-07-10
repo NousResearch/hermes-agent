@@ -30,6 +30,17 @@ describe('preview target detection', () => {
 
     expect(markdownArtifactTargetFromHref('https://example.com/brief.md')).toBeNull()
     expect(markdownArtifactTargetFromHref('//example.com/brief.md')).toBeNull()
+    expect(markdownArtifactTargetFromHref('\\\\example.com\\share\\brief.md')).toBeNull()
+    expect(markdownArtifactTargetFromHref('file://example.com/share/brief.md')).toBeNull()
+    expect(markdownArtifactTargetFromHref('file:////example.com/share/brief.md')).toBeNull()
+    expect(markdownArtifactTargetFromHref('file://localhost//example.com/share/brief.md')).toBeNull()
+    expect(markdownArtifactTargetFromHref('file:///%2F%2Fexample.com/share/brief.md')).toBeNull()
+    expect(markdownArtifactTargetFromHref(String.raw`file:\\example.com\share\brief.md`)).toBeNull()
+    expect(markdownArtifactTargetFromHref(String.raw`/\\example.com/share/brief.md`)).toBeNull()
+    expect(markdownArtifactTargetFromHref('file://localhost/%5Cexample.com/share/brief.md')).toBeNull()
+    expect(markdownArtifactTargetFromHref('file://localhost/C:/work/brief.md')).toBe(
+      'file://localhost/C:/work/brief.md'
+    )
     expect(markdownArtifactTargetFromHref('javascript:alert(1).md')).toBeNull()
     expect(markdownArtifactTargetFromHref('data:text/plain,brief.md')).toBeNull()
     expect(markdownArtifactTargetFromHref('mailto:brief.md')).toBeNull()

@@ -25,7 +25,7 @@ function assertMarkdownArtifact(target: PreviewTarget): string {
 }
 
 function isAbsoluteArtifactPath(path: string): boolean {
-  return path.startsWith('/') || path.startsWith('\\\\') || /^[a-z]:[\\/]/i.test(path)
+  return path.startsWith('/') || /^[a-z]:[\\/]/i.test(path)
 }
 
 async function validateLocalArtifactTarget(target: PreviewTarget): Promise<PreviewTarget> {

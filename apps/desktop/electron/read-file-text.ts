@@ -2,6 +2,22 @@ export interface FileReadHandle {
   read: (buffer: Buffer, offset: number, length: number, position: number) => Promise<{ bytesRead: number }>
 }
 
+export interface FileReadSnapshot {
+  ctimeMs: number
+  isFile: () => boolean
+  mtimeMs: number
+  size: number
+}
+
+export interface StableFileReadHandle extends FileReadHandle {
+  stat: () => Promise<FileReadSnapshot>
+}
+
+export interface CompleteTextFileRead {
+  buffer: Buffer
+  byteSize: number
+}
+
 export async function readTextFileBytes(
   handle: FileReadHandle,
   fileSize: number,
@@ -23,4 +39,34 @@ export async function readTextFileBytes(
   }
 
   return buffer.subarray(0, bytesRead)
+}
+
+export async function readCompleteTextFileBytes(
+  handle: StableFileReadHandle,
+  sourceMaxBytes: number
+): Promise<CompleteTextFileRead> {
+  const before = await handle.stat()
+
+  if (!before.isFile()) {
+    throw new Error('Only regular files can be read')
+  }
+
+  if (!Number.isSafeInteger(before.size) || before.size < 0 || before.size > sourceMaxBytes) {
+    throw new Error('File too large')
+  }
+
+  const buffer = await readTextFileBytes(handle, before.size, before.size, true)
+  const after = await handle.stat()
+
+  const changed =
+    buffer.length !== before.size ||
+    after.size !== before.size ||
+    after.mtimeMs !== before.mtimeMs ||
+    after.ctimeMs !== before.ctimeMs
+
+  if (changed) {
+    throw new Error('File changed while reading')
+  }
+
+  return { buffer, byteSize: before.size }
 }

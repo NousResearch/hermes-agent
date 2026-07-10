@@ -1,6 +1,7 @@
 """Tests for provider-aware `/model` validation in hermes_cli.models."""
 
 import json
+import logging
 import urllib.error
 from unittest.mock import MagicMock, patch
 
@@ -971,6 +972,99 @@ class TestEnsureLmStudioModelLoaded:
 
         assert result == 16000
         assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models"]
+
+    def test_adopting_context_beyond_trained_max_logs_warning(self, caplog):
+        calls = []
+        initial = [
+            {
+                "key": "qwen/qwen3.6-35b-a3b",
+                "type": "llm",
+                "max_context_length": 32768,
+                "loaded_instances": [
+                    {"id": "qwen/qwen3.6-35b-a3b", "config": {"context_length": 64000}}
+                ],
+            }
+        ]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], [], calls),
+        ):
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.models"):
+                result = ensure_lmstudio_model_loaded(
+                    "qwen/qwen3.6-35b-a3b",
+                    "http://localhost:1234/v1",
+                    api_key=None,
+                    target_context_length=64000,
+                )
+
+        assert result == 64000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models"]
+        assert any(
+            "32768" in record.message and "64000" in record.message
+            for record in caplog.records
+        )
+
+    def test_loading_saved_context_beyond_trained_max_logs_warning(self, caplog):
+        calls = []
+        initial = [
+            {
+                "key": "qwen/qwen3.6-35b-a3b",
+                "type": "llm",
+                "max_context_length": 32768,
+            }
+        ]
+        load_responses = [{"load_config": {"context_length": 64000}}]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], load_responses, calls),
+        ):
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.models"):
+                result = ensure_lmstudio_model_loaded(
+                    "qwen/qwen3.6-35b-a3b",
+                    "http://localhost:1234/v1",
+                    api_key=None,
+                    target_context_length=64000,
+                )
+
+        assert result == 64000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models", "load"]
+        assert any(
+            "32768" in record.message and "64000" in record.message
+            for record in caplog.records
+        )
+
+    def test_no_warning_when_context_within_trained_max(self, caplog):
+        calls = []
+        initial = [
+            {
+                "key": "qwen/qwen3.6-35b-a3b",
+                "type": "llm",
+                "max_context_length": 262144,
+                "loaded_instances": [
+                    {
+                        "id": "qwen/qwen3.6-35b-a3b",
+                        "config": {"context_length": 128000},
+                    }
+                ],
+            }
+        ]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], [], calls),
+        ):
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.models"):
+                result = ensure_lmstudio_model_loaded(
+                    "qwen/qwen3.6-35b-a3b",
+                    "http://localhost:1234/v1",
+                    api_key=None,
+                    target_context_length=64000,
+                )
+
+        assert result == 128000
+        assert not caplog.records
 
     def test_previous_model_qwen_alias_does_not_match_unrelated_suffix(self):
         calls = []

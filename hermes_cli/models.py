@@ -3350,13 +3350,35 @@ def ensure_lmstudio_model_loaded(
 
     target_model_id = model_key(target_entry) or model
 
-    # Never request more context than the model supports: over-asking makes
-    # LM Studio reject the load, and (worse) the retry path below would first
-    # unload a perfectly working instance. A model whose max is below Hermes'
-    # minimum stays usable at its own max — matching pre-PR behavior.
+    # Never request more context than the model supports. Depending on the
+    # LM Studio version, an over-ask is either rejected (and the retry path
+    # below would first unload a perfectly working instance) or accepted —
+    # loading the model beyond its trained window, where output silently
+    # degrades. A model whose max is below Hermes' minimum stays usable at
+    # its own max — matching pre-PR behavior.
     max_ctx = target_entry.get("max_context_length")
-    if isinstance(max_ctx, int) and max_ctx > 0:
-        target_context_length = min(target_context_length, max_ctx)
+    trained_max = max_ctx if isinstance(max_ctx, int) and max_ctx > 0 else None
+    if trained_max:
+        target_context_length = min(target_context_length, trained_max)
+
+    def note_overtrained_context(ctx: Optional[int]) -> Optional[int]:
+        # Someone (saved per-model settings, another client, or the user via
+        # the LM Studio UI) configured this model beyond its reported trained
+        # max. Hermes respects the resident window — it may be a deliberate
+        # RoPE-scaled setup — but the degradation risk should be visible.
+        if trained_max and isinstance(ctx, int) and ctx > trained_max:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "LM Studio has %s loaded with a %d-token context, beyond the "
+                "model's reported max of %d; output past the trained window "
+                "may degrade unless the model is context-extended (e.g. RoPE "
+                "scaling).",
+                target_model_id,
+                ctx,
+                trained_max,
+            )
+        return ctx
 
     unload_policy = normalize_lmstudio_unload_policy(unload_policy)
     unloaded_previous_model = False
@@ -3444,6 +3466,7 @@ def ensure_lmstudio_model_loaded(
             drop_owned_instance(entry_key)
 
     contexts = loaded_contexts(target_entry)
+    note_overtrained_context(max(contexts) if contexts else None)
     if contexts and max(contexts) >= target_context_length:
         return max(contexts)
 
@@ -3464,7 +3487,7 @@ def ensure_lmstudio_model_loaded(
             return previous_target_ctx
         drop_owned_instance(target_model_id)
 
-    loaded_ctx = load_model(target_model_id, None)
+    loaded_ctx = note_overtrained_context(load_model(target_model_id, None))
     if loaded_ctx is None and target_loaded_ids:
         # The fresh load failed after we unloaded the resident instance — try
         # to put it back at its previous context so a transient failure doesn't
@@ -3500,7 +3523,7 @@ def ensure_lmstudio_model_loaded(
             # Forced reload failed (e.g. not enough VRAM at the larger
             # context). Reload at saved settings so the model isn't left
             # unloaded, and put the evicted previous model back.
-            recovered_ctx = load_model(target_model_id, None)
+            recovered_ctx = note_overtrained_context(load_model(target_model_id, None))
             if unloaded_previous_model:
                 restore_previous_loaded_model(restore_candidates)
             return recovered_ctx

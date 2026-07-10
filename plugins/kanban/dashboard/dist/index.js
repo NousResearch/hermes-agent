@@ -558,6 +558,9 @@
             if (c.default_tenant) setTenantFilter(c.default_tenant);
             if (typeof c.lane_by_profile === "boolean") setLaneByProfile(c.lane_by_profile);
             if (typeof c.include_archived_by_default === "boolean") setIncludeArchived(c.include_archived_by_default);
+            if (c.use_system_fonts && typeof document !== "undefined") {
+              document.body.classList.add("use-system-fonts");
+            }
             setConfigApplied(true);
           }
         })

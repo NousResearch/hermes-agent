@@ -1179,6 +1179,7 @@ def test_config_returns_defaults_when_section_missing(client):
     assert data["lane_by_profile"] is True
     assert data["include_archived_by_default"] is False
     assert data["render_markdown"] is True
+    assert data["use_system_fonts"] is False
 
 
 def test_config_reads_dashboard_kanban_section(tmp_path, monkeypatch, client):
@@ -1198,6 +1199,22 @@ def test_config_reads_dashboard_kanban_section(tmp_path, monkeypatch, client):
     assert data["lane_by_profile"] is False
     assert data["include_archived_by_default"] is True
     assert data["render_markdown"] is False
+
+
+def test_config_use_system_fonts_from_dashboard_section(tmp_path, monkeypatch, client):
+    """use_system_fonts lives under dashboard (not dashboard.kanban)."""
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "dashboard:\n"
+        "  use_system_fonts: true\n"
+    )
+    r = client.get("/api/plugins/kanban/config")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["use_system_fonts"] is True
+    # Other defaults unchanged
+    assert data["default_tenant"] == ""
+    assert data["render_markdown"] is True
 
 
 # ---------------------------------------------------------------------------

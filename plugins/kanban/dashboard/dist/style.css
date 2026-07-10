@@ -1590,3 +1590,21 @@
 .hermes-kanban-trash-label {
   font-weight: 500;
 }
+
+/* ------------------------------------------------------------------
+ * System-font override (dashboard.use_system_fonts: true)
+ * Replaces stylised/compressed display fonts with clean system fonts
+ * for readability on dashboard surfaces. Applied via body class toggle.
+ * ------------------------------------------------------------------ */
+.use-system-fonts,
+.use-system-fonts .hermes-kanban,
+.use-system-fonts .hermes-kanban * {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+}
+
+.use-system-fonts code,
+.use-system-fonts pre,
+.use-system-fonts .hermes-kanban code,
+.use-system-fonts .hermes-kanban pre {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace !important;
+}

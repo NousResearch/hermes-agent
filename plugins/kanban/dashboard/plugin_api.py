@@ -1708,6 +1708,7 @@ def get_config():
         "lane_by_profile": bool(k_cfg.get("lane_by_profile", True)),
         "include_archived_by_default": bool(k_cfg.get("include_archived_by_default", False)),
         "render_markdown": bool(k_cfg.get("render_markdown", True)),
+        "use_system_fonts": bool(dash_cfg.get("use_system_fonts", False)),
     }
 
 

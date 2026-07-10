@@ -1,6 +1,6 @@
 """
 Text-to-Speech Provider ABC
-============================
+----------------------------
 
 Defines the pluggable-backend interface for text-to-speech synthesis.
 Providers register instances via

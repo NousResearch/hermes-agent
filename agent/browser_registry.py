@@ -1,6 +1,6 @@
 """
 Browser Provider Registry
-=========================
+-------------------------
 
 Central map of registered cloud browser providers. Populated by plugins at
 import-time via :meth:`PluginContext.register_browser_provider`; consumed by

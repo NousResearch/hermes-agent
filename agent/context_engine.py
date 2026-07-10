@@ -326,12 +326,17 @@ class ContextEngine(ABC):
 
         Default returns the standard fields run_agent.py expects.
         """
+        # Clamp the -1 "compression just ran, awaiting real usage" sentinel
+        # (set by conversation_compression) to 0 so status readers don't see a
+        # raw -1 or a negative usage_percent on the transitional turn. Mirrors
+        # the CLI/gateway status-bar paths (cli.py, tui_gateway/server.py).
+        last_prompt = self.last_prompt_tokens if self.last_prompt_tokens > 0 else 0
         return {
-            "last_prompt_tokens": self.last_prompt_tokens,
+            "last_prompt_tokens": last_prompt,
             "threshold_tokens": self.threshold_tokens,
             "context_length": self.context_length,
             "usage_percent": (
-                min(100, self.last_prompt_tokens / self.context_length * 100)
+                min(100, last_prompt / self.context_length * 100)
                 if self.context_length else 0
             ),
             "compression_count": self.compression_count,

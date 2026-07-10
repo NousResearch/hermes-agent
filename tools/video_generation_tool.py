@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Video Generation Tool
-=====================
+---------------------
 
 Single ``video_generate`` tool that dispatches to a plugin-registered
 video generation provider. Mirrors the ``image_generate`` design:

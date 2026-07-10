@@ -228,16 +228,20 @@ class TestExtractCacheBustingConfig:
                 "compression": {
                     "enabled": False,
                     "threshold": 0.6,
+                    "codex_gpt55_autoraise": False,
                     "target_ratio": 0.3,
                     "protect_last_n": 25,
+                    "codex_app_server_auto": "hermes",
                     "some_other_key": "ignored",
                 }
             }
         )
         assert out["compression.enabled"] is False
         assert out["compression.threshold"] == 0.6
+        assert out["compression.codex_gpt55_autoraise"] is False
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
+        assert out["compression.codex_app_server_auto"] == "hermes"
 
     def test_missing_keys_yield_none(self):
         """Absent config keys must produce None values (still contribute to signature)."""
@@ -675,6 +679,89 @@ class TestAgentCacheBoundedGrowth:
         # Hard-cleanup path must NOT have fired — that's for session expiry only.
         assert cleanup_calls == []
 
+    def test_cap_commits_memory_before_evicting_finalizable(self, monkeypatch):
+        """LRU-cap eviction of a finalizable, not-yet-expired agent commits
+        on_session_end extraction before releasing.
+
+        The agent would otherwise vanish from _agent_cache before the expiry
+        watcher runs, so the watcher would never fire on_session_end() and
+        memory providers would miss the transcript (#11205, LRU-cap variant).
+        We hold the live agent at eviction time, so commit its memory then.
+        """
+        from gateway import run as gw_run
+
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 1)
+        runner = self._bounded_runner()
+
+        commit_calls: list = []
+        release_calls: list = []
+        runner._release_evicted_agent_soft = lambda agent: release_calls.append(agent)
+
+        # Finalizable (finite policy), not yet expired.
+        runner.session_store = MagicMock()
+        runner.session_store._entries = {"old": MagicMock(), "new": MagicMock()}
+        runner.session_store.is_session_finalizable.return_value = True
+        runner.session_store._is_session_expired.return_value = False
+
+        old_agent = self._fake_agent()
+        old_agent._memory_manager = MagicMock()  # has an external provider
+        old_agent._session_messages = [{"role": "user", "content": "hi"}]
+        old_agent.commit_memory_session = lambda msgs=None: commit_calls.append(msgs)
+        new_agent = self._fake_agent()
+
+        with runner._agent_cache_lock:
+            runner._agent_cache["old"] = (old_agent, "sig_old")
+            runner._agent_cache["new"] = (new_agent, "sig_new")
+            runner._enforce_agent_cache_cap()
+
+        import time as _t
+        deadline = _t.time() + 2.0
+        while _t.time() < deadline and not release_calls:
+            _t.sleep(0.02)
+        # Memory committed with the live transcript, THEN client released.
+        assert commit_calls == [[{"role": "user", "content": "hi"}]]
+        assert old_agent in release_calls
+
+    def test_cap_skips_memory_commit_for_non_finalizable(self, monkeypatch):
+        """LRU-cap eviction of a mode='none' agent does NOT commit memory.
+
+        The expiry watcher never finalizes a mode='none' session, so there is
+        no missed on_session_end boundary to compensate for. Committing here
+        would fire premature/repeat extraction for a session that simply keeps
+        living. The agent is released without a commit.
+        """
+        from gateway import run as gw_run
+
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 1)
+        runner = self._bounded_runner()
+
+        commit_calls: list = []
+        release_calls: list = []
+        runner._release_evicted_agent_soft = lambda agent: release_calls.append(agent)
+
+        runner.session_store = MagicMock()
+        runner.session_store._entries = {"old": MagicMock(), "new": MagicMock()}
+        runner.session_store.is_session_finalizable.return_value = False  # mode='none'
+        runner.session_store._is_session_expired.return_value = False
+
+        old_agent = self._fake_agent()
+        old_agent._memory_manager = MagicMock()
+        old_agent._session_messages = [{"role": "user", "content": "hi"}]
+        old_agent.commit_memory_session = lambda msgs=None: commit_calls.append(msgs)
+        new_agent = self._fake_agent()
+
+        with runner._agent_cache_lock:
+            runner._agent_cache["old"] = (old_agent, "sig_old")
+            runner._agent_cache["new"] = (new_agent, "sig_new")
+            runner._enforce_agent_cache_cap()
+
+        import time as _t
+        deadline = _t.time() + 2.0
+        while _t.time() < deadline and not release_calls:
+            _t.sleep(0.02)
+        assert commit_calls == []       # no premature extraction
+        assert old_agent in release_calls  # still released
+
     def test_idle_ttl_sweep_evicts_stale_agents(self, monkeypatch):
         """_sweep_idle_cached_agents removes agents idle past the TTL."""
         from gateway import run as gw_run
@@ -707,6 +794,138 @@ class TestAgentCacheBoundedGrowth:
 
         assert runner._sweep_idle_cached_agents() == 0
         assert "s" in runner._agent_cache
+
+    def test_idle_sweep_keeps_agent_when_session_not_expired(self, monkeypatch):
+        """Agents past idle TTL are kept if the session hasn't expired yet.
+
+        In daily-reset mode the reset can fire hours after the last
+        user message — evicting the agent early means the
+        session-expiry watcher has nothing to call on_session_end()
+        with, and memory providers miss the live transcript.
+        """
+        from gateway import run as gw_run
+
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
+        runner = self._bounded_runner()
+        runner._cleanup_agent_resources = MagicMock()
+
+        import time as _t
+        stale = self._fake_agent(last_activity=_t.time() - 10.0)
+
+        # Session store says the session is still alive AND is finalizable
+        # (finite reset policy) — so deferring eviction is correct: the expiry
+        # watcher will find this agent later and fire on_session_end().
+        session_entry = MagicMock()
+        runner.session_store = MagicMock()
+        runner.session_store._entries = {"stale-session": session_entry}
+        runner.session_store.is_session_finalizable.return_value = True
+        runner.session_store._is_session_expired.return_value = False
+
+        runner._agent_cache["stale-session"] = (stale, "sig")
+
+        evicted = runner._sweep_idle_cached_agents()
+        assert evicted == 0
+        assert "stale-session" in runner._agent_cache
+
+    def test_idle_sweep_evicts_when_session_is_expired(self, monkeypatch):
+        """Agent IS evicted when past idle TTL AND session store says expired."""
+        from gateway import run as gw_run
+
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
+        runner = self._bounded_runner()
+        runner._cleanup_agent_resources = MagicMock()
+
+        import time as _t
+        stale = self._fake_agent(last_activity=_t.time() - 10.0)
+
+        # Session store says the session has expired.
+        session_entry = MagicMock()
+        runner.session_store = MagicMock()
+        runner.session_store._entries = {"stale-session": session_entry}
+        runner.session_store.is_session_finalizable.return_value = True
+        runner.session_store._is_session_expired.return_value = True
+
+        runner._agent_cache["stale-session"] = (stale, "sig")
+
+        evicted = runner._sweep_idle_cached_agents()
+        assert evicted == 1
+        assert "stale-session" not in runner._agent_cache
+
+    def test_idle_sweep_evicts_non_finalizable_session(self, monkeypatch):
+        """A mode='none' session's idle agent IS still evicted.
+
+        is_session_finalizable() is False for reset-policy 'none': the expiry
+        watcher never finalizes such a session, so deferring eviction would
+        pin the cached agent for the gateway's whole lifetime — the exact
+        leak the idle sweep exists to relieve. The sweep must reap it even
+        though _is_session_expired() is (and stays) False.
+        """
+        from gateway import run as gw_run
+
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
+        runner = self._bounded_runner()
+        runner._cleanup_agent_resources = MagicMock()
+
+        import time as _t
+        stale = self._fake_agent(last_activity=_t.time() - 10.0)
+
+        session_entry = MagicMock()
+        runner.session_store = MagicMock()
+        runner.session_store._entries = {"never-session": session_entry}
+        # mode='none' → never finalizable, never expired.
+        runner.session_store.is_session_finalizable.return_value = False
+        runner.session_store._is_session_expired.return_value = False
+
+        runner._agent_cache["never-session"] = (stale, "sig")
+
+        evicted = runner._sweep_idle_cached_agents()
+        assert evicted == 1
+        assert "never-session" not in runner._agent_cache
+
+    def test_is_session_finalizable_real_predicate(self, tmp_path):
+        """is_session_finalizable() reflects the real reset policy.
+
+        Uses a real SessionStore + GatewayConfig (no mocks) so the predicate
+        is exercised against actual get_reset_policy() output: True for finite
+        policies (idle/daily/both), False only for mode='none'.
+        """
+        from datetime import datetime
+        from unittest.mock import patch as _patch
+
+        from gateway.config import GatewayConfig, Platform, SessionResetPolicy
+        from gateway.session import (
+            SessionEntry, SessionSource, SessionStore, build_session_key,
+        )
+
+        def _entry_for(platform: Platform) -> SessionEntry:
+            src = SessionSource(
+                platform=platform, user_id="u1", chat_id="c1",
+                user_name="t", chat_type="dm",
+            )
+            return SessionEntry(
+                session_key=build_session_key(src),
+                session_id="s1",
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+                origin=src,
+                platform=src.platform,
+                chat_type=src.chat_type,
+            )
+
+        config = GatewayConfig()
+        # Give Telegram a 'none' policy via the per-platform override; leave the
+        # default policy finite ('both') for the Discord case.
+        config.default_reset_policy = SessionResetPolicy(mode="both")
+        config.reset_by_platform[Platform.TELEGRAM] = SessionResetPolicy(mode="none")
+
+        with _patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+
+        # mode='none' → never finalized by the watcher.
+        assert store.is_session_finalizable(_entry_for(Platform.TELEGRAM)) is False
+        # default 'both' → finite, will eventually expire.
+        assert store.is_session_finalizable(_entry_for(Platform.DISCORD)) is True
 
     def test_plain_dict_cache_is_tolerated(self):
         """Test fixtures using plain {} don't crash _enforce_agent_cache_cap."""
@@ -1715,6 +1934,80 @@ class TestAgentCacheMessageCountRebaseline:
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][2] == 5
 
+    @pytest.mark.asyncio
+    async def test_in_band_followup_reuses_cached_agent(self, tmp_path):
+        """Behavioral regression for the in-band queued (/queue) follow-up.
+
+        #46237 re-baselines the snapshot only on the EXTERNAL-turn boundary
+        (in ``_handle_message_with_agent``, after the whole ``_run_agent``
+        chain unwinds).  The recursive in-band follow-up re-enters the cache
+        guard MID-CHAIN — while the cache still holds the build-time snapshot
+        and the first turn has already flushed its own rows — so without a
+        re-baseline at the follow-up boundary the guard sees the grown count
+        and rebuilds the agent on THIS process's own writes, re-introducing
+        the every-turn rebuild #46237 set out to fix, on the follow-up path.
+
+        Pins both halves at that boundary: WITHOUT the re-baseline the in-band
+        follow-up would rebuild; WITH it the follow-up REUSES the warm agent.
+        The guard's reuse decision (``_guard_would_reuse``) mirrors the real
+        cache-hit guard, which reads ``get_session(session_id)`` with the same
+        ``session_id`` the recursive ``_run_agent`` call is given.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        runner = self._runner_with_db(db)
+        agent = object()
+
+        # First turn: cache miss -> build. Snapshot is the pre-turn count.
+        _row = db.get_session("s1")
+        build_count = _row.get("message_count", 0) if _row else 0
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (agent, "sig", build_count)
+
+        # First turn flushes its own user + assistant rows.
+        db.append_message("s1", role="user", content="u")
+        db.append_message("s1", role="assistant", content="a")
+
+        # Bug reproduction: re-entering the guard at the in-band follow-up
+        # boundary WITHOUT the re-baseline sees the grown count and rebuilds.
+        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
+
+        # The fix: re-baseline at the follow-up boundary.
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+
+        # The in-band follow-up now REUSES the cached, warm-prefix agent.
+        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["telegram:s1"][0] is agent
+
+    def test_in_band_followup_rebaseline_precedes_recursion(self):
+        """Pin the FIX PLACEMENT in the production source.
+
+        The behavioral test above proves the re-baseline makes the in-band
+        follow-up reuse the cached agent, but it calls the helper directly —
+        it would still pass if the production call were deleted.  This guards
+        the actual call site: the queued (/queue) follow-up recurses via
+        ``followup_result = await self._run_agent(...)`` inside
+        ``_run_agent_inner`` and the re-baseline MUST run BEFORE that
+        recursion (running it only after, like the external-turn site, is too
+        late for the in-band path — the follow-up would already have rebuilt).
+        """
+        import inspect
+        from gateway.run import GatewayRunner
+
+        # The recursion + pre-recursion re-baseline live in the extracted
+        # ``_run_agent_inner`` (older trees had them inline in ``_run_agent``).
+        src = inspect.getsource(GatewayRunner._run_agent_inner)
+        marker = "followup_result = await self._run_agent("
+        assert marker in src, "in-band queued follow-up recursion not found in _run_agent_inner"
+        before_recursion = src[: src.index(marker)]
+        assert "_refresh_agent_cache_message_count" in before_recursion, (
+            "the in-band queued follow-up recursion must be preceded by a "
+            "_refresh_agent_cache_message_count re-baseline, else the follow-up "
+            "rebuilds the agent on this process's own first-turn writes"
+        )
 
 class TestCrossProcessInvalidationDefersCleanup:
     """#52197: cross-process cache invalidation must NOT run agent cleanup
@@ -1827,4 +2120,3 @@ class TestCrossProcessInvalidationDefersCleanup:
 
         assert release_calls == [old_agent]
         runner._cleanup_agent_resources.assert_not_called()
-

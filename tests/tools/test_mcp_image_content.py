@@ -1,7 +1,7 @@
 """Regression tests for MCP ImageContent block handling.
 
 Background
-==========
+----------
 MCP tool results may include ``ImageContent`` blocks (screenshots from
 Playwright / Blockbench / Puppeteer / any server that returns renders).
 The tool result handler in ``tools/mcp_tool.py`` used to iterate content

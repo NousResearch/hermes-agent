@@ -10649,16 +10649,16 @@ image_file = 'your_image.jpg'
 output_path = 'your/output/dir'
 res = model.infer(tokenizer, prompt=prompt, image_file=image_file, output_path = output_path, base_size = 1024, image_size = 640, crop_mode=True, save_results = True, test_compress = False)
 
-============================================================
+------------------------------------------------------------
 Baseline Model Performance
-============================================================
+------------------------------------------------------------
 Number of samples: 200
 Mean CER: 149.07%
 Median CER: 80.00%
 Std Dev: 310.39%
 Min CER: 0.00%
 Max CER: 3500.00%
-============================================================
+------------------------------------------------------------
 
 Best Predictions (Lowest CER):
 
@@ -10695,14 +10695,14 @@ With 60 steps, we reduced CER from 149.07% to 60.43% (89% CER improvement)
 
 <pre><code><strong>============================================================
 </strong>Fine-tuned Model Performance
-============================================================
+------------------------------------------------------------
 Number of samples: 200
 Mean CER: 60.43%
 Median CER: 50.00%
 Std Dev: 80.63%
 Min CER: 0.00%
 Max CER: 916.67%
-============================================================
+------------------------------------------------------------
 
 Best Predictions (Lowest CER):
 

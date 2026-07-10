@@ -19,7 +19,13 @@ import { ErrorState } from '@/components/ui/error-state'
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { quickModelOptions, sessionTitle, toRuntimeMessage } from '@/lib/chat-runtime'
+import {
+  coalesceToolOnlyAssistants,
+  createToolMergeCache,
+  quickModelOptions,
+  sessionTitle,
+  toRuntimeMessage
+} from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
@@ -201,6 +207,7 @@ function ChatRuntimeBoundary({
   const storeMessages = useStore($messages)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
   const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
+  const toolMergeCacheRef = useRef(createToolMergeCache())
 
   const runtimeMessageRepository = useMemo(() => {
     const items: { message: ThreadMessage; parentId: string | null }[] = []
@@ -208,7 +215,7 @@ function ChatRuntimeBoundary({
     let visibleParentId: string | null = null
     let headId: string | null = null
 
-    for (const message of messages) {
+    for (const message of coalesceToolOnlyAssistants(messages, toolMergeCacheRef.current)) {
       let parentId = visibleParentId
 
       if (message.role === 'assistant' && message.branchGroupId) {
@@ -358,7 +365,10 @@ export function ChatView({
         throw new Error('Hermes gateway unavailable')
       }
 
-      return gateway.request<ModelOptionsResponse>('model.options', { session_id: activeSessionId })
+      return gateway.request<ModelOptionsResponse>('model.options', {
+        session_id: activeSessionId,
+        explicit_only: true
+      })
     },
     enabled: gatewayOpen
   })

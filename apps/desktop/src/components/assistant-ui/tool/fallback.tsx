@@ -2,7 +2,19 @@
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { createContext, type FC, type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo } from 'react'
+import {
+  Children,
+  createContext,
+  type FC,
+  type PropsWithChildren,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
@@ -22,6 +34,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
+import { normalize } from '@/lib/text'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
@@ -324,7 +337,7 @@ function ToolEntry({ part }: ToolEntryProps) {
       .filter(Boolean)
 
     const [summary = '', ...rest] = chunks
-    const subtitleNorm = view.subtitle.trim().toLowerCase()
+    const subtitleNorm = normalize(view.subtitle)
     const summaryDuplicatesSubtitle = summary && summary.toLowerCase() === subtitleNorm
 
     if (summaryDuplicatesSubtitle) {
@@ -428,6 +441,7 @@ function ToolEntry({ part }: ToolEntryProps) {
       )}
       data-file-edit={isFileEdit && open ? '' : undefined}
       data-slot="tool-block"
+      data-tool-open={open ? '' : undefined}
       data-tool-row=""
       ref={enterRef}
     >
@@ -472,10 +486,11 @@ function ToolEntry({ part }: ToolEntryProps) {
           {copyAction.text && (
             <CopyButton
               appearance="inline"
-              className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-5 transition-opacity group-hover/tool-block:opacity-100 hover:opacity-100 focus-visible:opacity-100"
+              className="absolute right-4 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-5 transition-opacity group-hover/tool-block:opacity-100 hover:opacity-100 focus-visible:opacity-100"
               iconClassName="size-3"
               label={copyAction.label}
               showLabel={false}
+              side="left"
               stopPropagation
               text={copyAction.text}
             />
@@ -592,6 +607,59 @@ function ToolEntry({ part }: ToolEntryProps) {
   )
 }
 
+// A back-to-back run of this many tool calls collapses into the bounded,
+// auto-scrolling window; fewer than this stays a plain inline stack.
+const TOOL_GROUP_SCROLL_THRESHOLD = 3
+
+// Pin-to-bottom + top-fade for the bounded tool window. Pins the newest row on
+// growth (a call lands or a row expands) unless the user scrolled up, and fades
+// the top edge once anything sits above it. Mirrors ThinkingDisclosure's live
+// preview. `enabled` is false for short runs, leaving the plain flat stack.
+function useToolWindow(enabled: boolean) {
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const stickRef = useRef(true)
+  const [faded, setFaded] = useState(false)
+
+  const syncFade = useCallback(() => setFaded((scrollRef.current?.scrollTop ?? 0) > 4), [])
+
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      return
+    }
+
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 8
+    syncFade()
+  }, [syncFade])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    const content = contentRef.current
+
+    if (!enabled || !el || !content) {
+      return
+    }
+
+    const pin = () => {
+      if (stickRef.current) {
+        el.scrollTop = el.scrollHeight
+      }
+
+      syncFade()
+    }
+
+    pin()
+    const observer = new ResizeObserver(pin)
+    observer.observe(content)
+
+    return () => observer.disconnect()
+  }, [enabled, syncFade])
+
+  return { contentRef, faded, onScroll, scrollRef }
+}
+
 /**
  * Flat, Cursor-style tool list. assistant-ui hands us a *range* of
  * consecutive tool-call parts, but how that range is sliced is unstable: a
@@ -600,12 +668,13 @@ function ToolEntry({ part }: ToolEntryProps) {
  * (one big range). Rendering a "Tool actions · N steps" group off that range
  * therefore reshuffled the whole turn the instant it settled.
  *
- * So we never group: each tool is a standalone row, and the wrapper just lays
- * its children out on the tight `--tool-row-gap` rhythm. One range or ten,
- * fragmented or consecutive, the result is pixel-identical — a tight, stable
- * stack. The wrapper stays a single `<div>` of stable identity so children
- * never remount as the range grows mid-stream. `ToolEmbedContext` is false so
- * every row owns its own chrome (timer / preview / copy / inline approval).
+ * So we still never *label* the group: each tool is a standalone row on the
+ * tight `--tool-row-gap` rhythm. Once a run reaches `TOOL_GROUP_SCROLL_THRESHOLD`
+ * rows it collapses into a fixed-height, auto-scrolling window so a long run
+ * doesn't shove the reply off screen; shorter runs are byte-identical to before.
+ * The DOM shape is the same either way — only classes flip — so a run that
+ * crosses the threshold mid-stream never remounts a row. `ToolEmbedContext` is
+ * false so every row owns its own chrome (timer / preview / copy / approval).
  */
 export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
   children,
@@ -615,15 +684,24 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   const messageRunning = useAuiState(selectMessageRunning)
   const enterRef = useEnterAnimation(messageRunning, `tool-group:${messageId}:${startIndex}`)
 
+  const bounded = Children.count(children) >= TOOL_GROUP_SCROLL_THRESHOLD
+  const { contentRef, faded, onScroll, scrollRef } = useToolWindow(bounded)
+
   return (
     <ToolEmbedContext.Provider value={false}>
-      <div
-        className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden"
-        data-slot="tool-block"
-        data-tool-group=""
-        ref={enterRef}
-      >
-        {children}
+      <div className="min-w-0 max-w-full overflow-hidden" data-slot="tool-block" data-tool-group="" ref={enterRef}>
+        <div
+          className={cn(
+            bounded && 'tool-group-scroll max-h-(--tool-group-scroll-max-h) overflow-y-auto',
+            bounded && faded && 'tool-group-scroll--faded'
+          )}
+          onScroll={bounded ? onScroll : undefined}
+          ref={scrollRef}
+        >
+          <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)" ref={contentRef}>
+            {children}
+          </div>
+        </div>
       </div>
     </ToolEmbedContext.Provider>
   )

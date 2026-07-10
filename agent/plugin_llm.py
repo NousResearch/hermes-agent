@@ -1,6 +1,6 @@
 """
 Plugin LLM facade — host-owned LLM access for trusted plugins.
-==============================================================
+--------------------------------------------------------------
 
 Plugins built on Hermes Agent often need to make their own LLM calls
 out-of-band — a hook that rewrites a tool error before the user sees

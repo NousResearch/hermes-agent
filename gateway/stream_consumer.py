@@ -394,12 +394,17 @@ class GatewayStreamConsumer:
         self._think_buffer = ""
 
         while buf:
+            # Case-insensitive matching: models emit mixed-case tag
+            # variants (<Think>, <THINKING>, …). Match against a
+            # lowercased view of the buffer with lowercased tag names so
+            # every case variant is caught with a single canonical form.
+            lower_buf = buf.lower()
             if self._in_think_block:
                 # Look for the earliest closing tag
                 best_idx = -1
                 best_len = 0
                 for tag in self._CLOSE_THINK_TAGS:
-                    idx = buf.find(tag)
+                    idx = lower_buf.find(tag.lower())
                     if idx != -1 and (best_idx == -1 or idx < best_idx):
                         best_idx = idx
                         best_len = len(tag)
@@ -422,9 +427,10 @@ class GatewayStreamConsumer:
                 best_idx = -1
                 best_len = 0
                 for tag in self._OPEN_THINK_TAGS:
+                    tag_lower = tag.lower()
                     search_start = 0
                     while True:
-                        idx = buf.find(tag, search_start)
+                        idx = lower_buf.find(tag_lower, search_start)
                         if idx == -1:
                             break
                         # Block-boundary check (mirrors cli.py logic)
@@ -460,15 +466,55 @@ class GatewayStreamConsumer:
                     # No opening tag — check for a partial tag at the tail
                     held_back = 0
                     for tag in self._OPEN_THINK_TAGS:
+                        tag_lower = tag.lower()
                         for i in range(1, len(tag)):
-                            if buf.endswith(tag[:i]) and i > held_back:
+                            if lower_buf.endswith(tag_lower[:i]) and i > held_back:
                                 held_back = i
                     if held_back:
                         self._accumulated += buf[:-held_back]
                         self._think_buffer = buf[-held_back:]
                     else:
-                        self._accumulated += buf
+                        # No (partial) open tag — but the model may have
+                        # emitted an orphan close tag like </think> on its
+                        # own (e.g. when a thinking-mode toggle drops the
+                        # matched open, or when upstream stripping is
+                        # incomplete). Strip those before accumulating so
+                        # they never reach the user.
+                        self._accumulated += self._strip_orphan_close_tags(buf)
                     return
+
+    @classmethod
+    def _strip_orphan_close_tags(cls, text: str) -> str:
+        """Remove any close tags from *text* that have no matching open.
+
+        Mirrors ``agent/think_scrubber.py::StreamingThinkScrubber.
+        _strip_orphan_close_tags`` so the progressive-display filter
+        behaves the same as the post-stream final-response scrubber.
+        An orphan close tag is always noise — stripped along with any
+        trailing whitespace so surrounding prose flows naturally.
+        """
+        if "</" not in text:
+            return text
+        text_lower = text.lower()
+        out: list[str] = []
+        i = 0
+        while i < len(text):
+            matched = False
+            if text_lower[i:i + 2] == "</":
+                for tag in cls._CLOSE_THINK_TAGS:
+                    tag_lower = tag.lower()
+                    tag_len = len(tag_lower)
+                    if text_lower[i:i + tag_len] == tag_lower:
+                        j = i + tag_len
+                        while j < len(text) and text[j] in " \t\n\r":
+                            j += 1
+                        i = j
+                        matched = True
+                        break
+            if not matched:
+                out.append(text[i])
+                i += 1
+        return "".join(out)
 
     def _flush_think_buffer(self) -> None:
         """Flush any held-back partial-tag buffer into accumulated text.
@@ -477,7 +523,9 @@ class GatewayStreamConsumer:
         was held back waiting for a possible opening tag is not lost.
         """
         if self._think_buffer and not self._in_think_block:
-            self._accumulated += self._think_buffer
+            # Strip any orphan close tags that may have been held back —
+            # see _filter_and_accumulate for context.
+            self._accumulated += self._strip_orphan_close_tags(self._think_buffer)
             self._think_buffer = ""
 
     async def run(self) -> None:

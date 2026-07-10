@@ -1,6 +1,6 @@
 """
 Image Generation Provider Registry
-==================================
+----------------------------------
 
 Central map of registered providers. Populated by plugins at import-time via
 ``PluginContext.register_image_gen_provider()``; consumed by the

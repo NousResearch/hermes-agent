@@ -1,7 +1,7 @@
 """Regression tests for TOCTOU-safe credential file writers in ``hermes_cli.auth``.
 
 Background
-==========
+----------
 The three writers below used to create a temp file via ``Path.write_text`` /
 ``Path.open('w')`` and only ``chmod``'d it to ``0o600`` afterward. Between
 create and chmod the file existed at the process umask (typically ``0o644``),

@@ -53,7 +53,7 @@ export interface OAuthProvider {
   disconnect_hint?: null | string
   disconnectable?: boolean
   docs_url: string
-  flow: 'device_code' | 'external' | 'loopback' | 'pkce'
+  flow: 'device_code' | 'external' | 'pkce'
   id: string
   name: string
   status: OAuthProviderStatus
@@ -77,12 +77,6 @@ export type OAuthStartResponse =
       session_id: string
       user_code: string
       verification_url: string
-    }
-  | {
-      auth_url: string
-      expires_in: number
-      flow: 'loopback'
-      session_id: string
     }
 
 export interface OAuthSubmitResponse {
@@ -406,6 +400,7 @@ export interface SessionRuntimeInfo {
   cwd?: string
   desktop_contract?: number
   fast?: boolean
+  install_warning?: string
   model?: string
   personality?: string
   pinned?: boolean
@@ -517,7 +512,15 @@ export interface AnalyticsResponse {
     summary: AnalyticsSkillsSummary
     top_skills: AnalyticsSkillEntry[]
   }
+  /** Per-tool-name call counts. Absent on older backends. */
+  tools?: AnalyticsToolEntry[]
   totals: AnalyticsTotals
+}
+
+export interface AnalyticsToolEntry {
+  count: number
+  percentage: number
+  tool: string
 }
 
 export interface AnalyticsSkillEntry {
@@ -648,6 +651,10 @@ export interface SkillInfo {
   description: string
   enabled: boolean
   name: string
+  /** Total observed activity (use + view + patch). Absent on older backends. */
+  usage?: number
+  /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed. */
+  provenance?: 'agent' | 'bundled' | 'hub'
 }
 
 export interface ToolsetInfo {
@@ -685,6 +692,26 @@ export interface ToolsetConfig {
   providers: ToolProvider[]
   /** Name of the currently active provider, or null if none is configured. */
   active_provider: string | null
+}
+
+/** One model row from a toolset backend's catalog (image/video gen). */
+export interface ToolsetModel {
+  id: string
+  display: string
+  speed: string
+  strengths: string
+  price: string
+}
+
+/** Shape of `GET /api/tools/toolsets/{name}/models`. */
+export interface ToolsetModelsResponse {
+  name: string
+  has_models: boolean
+  provider?: string | null
+  plugin?: string | null
+  models: ToolsetModel[]
+  current: string | null
+  default: string | null
 }
 
 /** Shape of `GET /api/tools/computer-use/status`.
@@ -873,6 +900,154 @@ export interface StaleAuxAssignment {
   task: string
   provider: string
   model: string
+}
+
+/** One skill-hub source (official index, GitHub, skills.sh, …) as reported by
+ *  `GET /api/skills/hub/sources`. */
+export interface SkillHubSource {
+  id: string
+  label: string
+  available?: boolean
+  rate_limited?: boolean
+  // False when the centralized index already covers this source, so the UI's
+  // per-source search fan-out skips it (avoids redundant external API calls).
+  searchable?: boolean
+}
+
+/** A searchable/installable hub skill from `GET /api/skills/hub/search`. */
+export interface SkillHubResult {
+  name: string
+  description: string
+  source: string
+  identifier: string
+  trust_level: string
+  repo: string | null
+  tags: string[]
+}
+
+export interface SkillHubInstalledEntry {
+  name: string | null
+  trust_level: string | null
+  scan_verdict: string | null
+}
+
+export interface SkillHubSourcesResponse {
+  sources: SkillHubSource[]
+  index_available: boolean
+  featured: SkillHubResult[]
+  installed: Record<string, SkillHubInstalledEntry>
+}
+
+export interface SkillHubSearchResponse {
+  results: SkillHubResult[]
+  source_counts: Record<string, number>
+  timed_out: string[]
+  installed: Record<string, SkillHubInstalledEntry>
+}
+
+/** `GET /api/skills/hub/preview` — SKILL.md + manifest without installing. */
+export interface SkillHubPreview {
+  name: string
+  description: string
+  source: string
+  identifier: string
+  trust_level: string
+  repo: string | null
+  tags: string[]
+  skill_md: string
+  files: string[]
+}
+
+export interface SkillHubScanFinding {
+  severity: string
+  category: string
+  file: string
+  line: number | null
+  description: string
+}
+
+/** `GET /api/skills/hub/scan` — install-time security scan verdict. */
+export interface SkillHubScanResult {
+  name: string
+  identifier: string
+  source: string
+  trust_level: string
+  verdict: string
+  summary: string
+  policy: 'allow' | 'ask' | 'block'
+  policy_reason: string | null
+  findings: SkillHubScanFinding[]
+  severity_counts: Record<string, number>
+}
+
+/** One configured MCP server row from `GET /api/mcp/servers`. */
+export interface McpServerSummary {
+  name: string
+  transport: string
+  command: string | null
+  args: string[]
+  url: string | null
+  enabled: boolean
+  tools: string[] | null
+}
+
+export interface McpServerTestResponse {
+  ok: boolean
+  error?: string
+  tools: { name: string; description: string }[]
+}
+
+/** One Nous-approved MCP catalog entry from `GET /api/mcp/catalog`. */
+export interface McpCatalogEntry {
+  name: string
+  description: string
+  source: string
+  transport: string
+  auth_type: string
+  required_env: { name: string; prompt: string; required: boolean }[]
+  command: string | null
+  args: string[]
+  url: string | null
+  install_url: string | null
+  install_ref: string | null
+  bootstrap: string[]
+  default_enabled: string[] | null
+  post_install: string
+  needs_install: boolean
+  installed: boolean
+  enabled: boolean
+}
+
+export interface McpCatalogResponse {
+  entries: McpCatalogEntry[]
+  diagnostics: { name: string; kind: string; message: string }[]
+}
+
+/** `GET /api/memory` — active provider + built-in memory file sizes. */
+export interface MemoryStatusResponse {
+  active: string
+  providers: { name: string; description: string; configured: boolean }[]
+  builtin_files: { memory: number; user: number }
+}
+
+/** `GET /api/curator` — background skill-curator status. */
+export interface CuratorStatusResponse {
+  enabled: boolean
+  paused: boolean
+  interval_hours: number | null
+  last_run_at: string | null
+  min_idle_hours: number | null
+  stale_after_days: number | null
+  archive_after_days: number | null
+}
+
+/** `POST /api/ops/debug-share` — shareable diagnostics upload result. */
+export interface DebugShareResponse {
+  ok: boolean
+  urls: Record<string, string>
+  failures: Record<string, string>
+  redacted: boolean
+  auto_delete_seconds: number | null
 }
 
 export interface ModelAssignmentResponse {

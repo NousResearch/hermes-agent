@@ -154,7 +154,7 @@ do_go(){
 
   cat <<EOF
 
-================ PRD-8 RESET COMPLETE ($TS) ================
+---------------- PRD-8 RESET COMPLETE () ----------------
 LABEL=$LABEL  PLIST=$PLIST  KEEPALIVE=$KEEPALIVE
 backup (verified): $DB.backup-$TS  (integrity ok, count=$auth_count)
 polluted (kept):   $DB.polluted-$TS (+ -wal/-shm)
@@ -163,7 +163,7 @@ probe row:         $PROBE (benign, outside sentinel namespace)
 ROLLBACK:          $0 --rollback $TS
 CLEANUP (after PASS + accept):
   rm -f "$DB.backup-$TS"* "$DB.polluted-$TS"*
-============================================================
+------------------------------------------------------------
 EOF
   release_lock
 }

@@ -1,6 +1,6 @@
 """
 Video Generation Provider Registry
-==================================
+----------------------------------
 
 Central map of registered providers. Populated by plugins at import-time via
 ``PluginContext.register_video_gen_provider()``; consumed by the

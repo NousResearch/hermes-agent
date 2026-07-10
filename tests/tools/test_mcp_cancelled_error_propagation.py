@@ -1,7 +1,7 @@
 """Regression tests for ``MCPServerTask.run`` + ``asyncio.CancelledError``.
 
 Background
-==========
+----------
 On Python 3.11+, ``asyncio.CancelledError`` inherits from ``BaseException``
 rather than ``Exception``, so a bare ``except Exception`` does NOT catch it.
 ``MCPServerTask.run`` had a broad ``except Exception`` around the transport

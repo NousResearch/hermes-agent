@@ -6760,9 +6760,13 @@ def call_llm(
                     resolved_provider=auth_refresh_provider,
                     resolved_model=resolved_model or final_model,
                     resolved_base_url=resolved_base_url,
-                    resolved_api_key=resolved_api_key,
+                    # Refresh succeeded, so any request-scoped key or main
+                    # runtime snapshot is stale by definition. Re-resolve the
+                    # credential from the refreshed auth store instead of
+                    # replaying the token that just received a 401.
+                    resolved_api_key=None,
                     resolved_api_mode=resolved_api_mode,
-                    main_runtime=main_runtime,
+                    main_runtime=None,
                     final_model=final_model,
                     messages=messages,
                     temperature=temperature,
@@ -7308,7 +7312,9 @@ async def async_call_llm(
                     resolved_provider=auth_refresh_provider,
                     resolved_model=resolved_model or final_model,
                     resolved_base_url=resolved_base_url,
-                    resolved_api_key=resolved_api_key,
+                    # Do not replay the credential that just failed. The
+                    # refresh helper has already updated the provider store.
+                    resolved_api_key=None,
                     resolved_api_mode=resolved_api_mode,
                     final_model=final_model,
                     messages=messages,

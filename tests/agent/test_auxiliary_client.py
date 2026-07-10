@@ -3539,9 +3539,9 @@ class TestAuxiliaryAuthRefreshRetry:
         assert fresh_client.chat.completions.create.call_count == 1
 
     def test_call_llm_refreshes_codex_when_auto_routes_to_codex_on_401(self):
-        # Preflight compression's exact failure (#23670): provider auto →
-        # Codex OAuth backend 401s → before the fix, no refresh was attempted
-        # because resolved_provider stayed "auto".
+        # Follow-up to #23670: refresh can succeed but the same 401 recurs if
+        # the retry inherits either request-scoped credentials or the main
+        # agent's stale startup-time runtime snapshot.
         stale_client = MagicMock()
         stale_client.base_url = "https://chatgpt.com/backend-api/codex"
         stale_client.chat.completions.create.side_effect = _AuxAuth401("User not found.")
@@ -3551,7 +3551,10 @@ class TestAuxiliaryAuthRefreshRetry:
         fresh_client.chat.completions.create.return_value = _DummyResponse("fresh-auto-codex")
 
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("auto", None, None, None, None)),
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", None, None, "stale-resolved-token", None),
+            ),
             patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.5"), (fresh_client, "gpt-5.5")]) as mock_get_client,
             patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
             patch("agent.auxiliary_client._evict_cached_clients") as mock_evict,
@@ -3559,15 +3562,69 @@ class TestAuxiliaryAuthRefreshRetry:
             resp = call_llm(
                 task="compression",
                 messages=[{"role": "user", "content": "summarize"}],
-                main_runtime={"provider": "openai-codex", "model": "gpt-5.5"},
+                main_runtime={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.5",
+                    "api_key": "stale-session-token",
+                },
             )
 
         assert resp.choices[0].message.content == "fresh-auto-codex"
         mock_refresh.assert_called_once_with("openai-codex")
         mock_evict.assert_called_once_with("auto")
         assert mock_get_client.call_args_list[1].args[0] == "openai-codex"
+        retry_kwargs = mock_get_client.call_args_list[1].kwargs
+        assert retry_kwargs["api_key"] is None
+        assert retry_kwargs["main_runtime"] is None
         assert stale_client.chat.completions.create.call_count == 1
         assert fresh_client.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_refreshes_codex_when_auto_routes_to_codex_on_401(self):
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create = AsyncMock(
+            side_effect=_AuxAuth401("User not found.")
+        )
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("fresh-async-auto-codex")
+        )
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", None, None, "stale-resolved-token", None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                side_effect=[
+                    (stale_client, "gpt-5.5"),
+                    (fresh_client, "gpt-5.5"),
+                ],
+            ) as mock_get_client,
+            patch(
+                "agent.auxiliary_client._refresh_provider_credentials",
+                return_value=True,
+            ) as mock_refresh,
+            patch(
+                "agent.auxiliary_client._evict_cached_clients"
+            ) as mock_evict,
+        ):
+            resp = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert resp.choices[0].message.content == "fresh-async-auto-codex"
+        mock_refresh.assert_called_once_with("openai-codex")
+        mock_evict.assert_called_once_with("auto")
+        assert mock_get_client.call_args_list[1].args[0] == "openai-codex"
+        assert mock_get_client.call_args_list[1].kwargs["api_key"] is None
+        assert stale_client.chat.completions.create.await_count == 1
+        assert fresh_client.chat.completions.create.await_count == 1
 
     def test_call_llm_refreshes_anthropic_on_401_for_non_vision(self):
         stale_client = MagicMock()
@@ -3663,8 +3720,17 @@ class TestAuxiliaryAuthRefreshRetry:
         fresh_client.chat.completions.create = AsyncMock(return_value=_DummyResponse("fresh-async-anthropic"))
 
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("anthropic", "claude-haiku-4-5-20251001", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "claude-haiku-4-5-20251001"), (fresh_client, "claude-haiku-4-5-20251001")]),
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=(
+                    "anthropic",
+                    "claude-haiku-4-5-20251001",
+                    None,
+                    "stale-resolved-token",
+                    None,
+                ),
+            ),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "claude-haiku-4-5-20251001"), (fresh_client, "claude-haiku-4-5-20251001")]) as mock_get_client,
             patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
         ):
             resp = await async_call_llm(
@@ -3676,6 +3742,7 @@ class TestAuxiliaryAuthRefreshRetry:
 
         assert resp.choices[0].message.content == "fresh-async-anthropic"
         mock_refresh.assert_called_once_with("anthropic")
+        assert mock_get_client.call_args_list[1].kwargs["api_key"] is None
         assert stale_client.chat.completions.create.await_count == 1
         assert fresh_client.chat.completions.create.await_count == 1
 

@@ -1057,6 +1057,8 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
         return store.replace(target, old_text, content)
     if action == "remove":
         return store.remove(target, old_text)
+    if action == "compact":
+        return store.compact(target)
     return {"success": False, "error": f"Unknown staged action '{action}'."}
 # OpenAI Function-Calling Schema
 # =============================================================================
@@ -1086,11 +1088,12 @@ MEMORY_SCHEMA = {
         "procedures belong in a skill, not memory."
     ),
     "parameters": {
+
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "compact"],
                 "description": "The action to perform (single-op shape). Omit when using 'operations'."
             },
             "target": {
@@ -1116,7 +1119,7 @@ MEMORY_SCHEMA = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["add", "replace", "remove"]},
+                        "action": {"type": "string", "enum": ["add", "replace", "remove", "compact"]},
                         "content": {"type": "string", "description": "Entry content for add/replace."},
                         "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
                     },

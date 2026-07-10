@@ -8864,7 +8864,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _stale_agent and hasattr(_stale_agent, "get_activity_summary"):
                 try:
                     _sa = _stale_agent.get_activity_summary()
-                    _stale_idle = _sa.get("seconds_since_activity", float("inf"))
+                    # seconds_since_progress, not seconds_since_activity: a
+                    # handler wedged inside a hung API call (the exact case
+                    # this eviction exists for) keeps seconds_since_activity
+                    # fresh via its own "still waiting" heartbeat, so it
+                    # would never look idle enough to evict (#62151).
+                    _stale_idle = _sa.get(
+                        "seconds_since_progress",
+                        _sa.get("seconds_since_activity", float("inf")),
+                    )
                     _stale_detail = (
                         f" | last_activity={_sa.get('last_activity_desc', 'unknown')} "
                         f"({_stale_idle:.0f}s ago) "
@@ -18740,12 +18748,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         response = _executor_task.result()
                         break
                     # Agent still running — check inactivity.
+                    #
+                    # seconds_since_progress, not seconds_since_activity: the
+                    # API-call heartbeats in chat_completion_helpers.py
+                    # refresh seconds_since_activity every ~30s purely
+                    # because they're still polling, including for a call
+                    # wedged before the socket even opens. Reading that field
+                    # here would make this timeout unable to fire for
+                    # exactly the hang it exists to catch (#62151).
                     _agent_ref = agent_holder[0]
                     _idle_secs = 0.0
                     if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                         try:
                             _act = _agent_ref.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
+                            _idle_secs = _act.get(
+                                "seconds_since_progress",
+                                _act.get("seconds_since_activity", 0.0),
+                            )
                         except Exception:
                             pass
                     # Staged warning: fire once before escalating to full timeout.

@@ -2875,11 +2875,26 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                         result = _cron_future.result()
                         break
                     # Agent still running — check inactivity.
+                    #
+                    # Uses seconds_since_progress, NOT seconds_since_activity:
+                    # interruptible_api_call's own "still waiting" heartbeat
+                    # (chat_completion_helpers.py) refreshes
+                    # seconds_since_activity every ~30s purely because it is
+                    # still polling — including for a call wedged before the
+                    # socket even opens (e.g. a hung DNS lookup), which never
+                    # produces a byte of real progress. Reading that field
+                    # here made this timeout structurally unable to fire for
+                    # exactly the case it exists to catch (#62151). Falls
+                    # back to seconds_since_activity for older/mocked agents
+                    # that don't report the newer field.
                     _idle_secs = 0.0
                     if hasattr(agent, "get_activity_summary"):
                         try:
                             _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
+                            _idle_secs = _act.get(
+                                "seconds_since_progress",
+                                _act.get("seconds_since_activity", 0.0),
+                            )
                         except Exception:
                             pass
                     if _idle_secs >= _cron_inactivity_limit:

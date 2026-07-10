@@ -3033,8 +3033,24 @@ class AIAgent:
         from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
         return apply_pending_steer_to_tool_results(self, messages, num_tool_msgs)
 
-    def _touch_activity(self, desc: str) -> None:
+    def _touch_activity(self, desc: str, *, progress: bool = True) -> None:
         """Update the last-activity timestamp and description (thread-safe).
+
+        ``progress`` distinguishes genuine forward movement (a new API call
+        attempt starting, a tool finishing, a stream delta arriving) from a
+        poll loop merely re-announcing "still waiting" while blocked on the
+        same still-pending operation. Callers waiting on a thread that may
+        be permanently wedged (e.g. ``interruptible_api_call``'s "waiting
+        for non-streaming response (Ns elapsed)" heartbeat) MUST pass
+        ``progress=False`` — that heartbeat's only job is to stop
+        legitimately-slow-but-alive calls from tripping gateway/cron
+        inactivity timeouts, but if it also refreshes ``_last_progress_ts``
+        it hides a call that is genuinely dead (no bytes ever received) from
+        the cron watchdog, which reads ``seconds_since_progress`` for that
+        reason. Without this split, a call wedged before the socket even
+        opens (e.g. a hung DNS lookup) resets the only signal cron's
+        inactivity monitor has, so the 600s ceiling can never fire — see
+        #62151. Default True: most call sites report real progress.
 
         Also bridges to the kanban board's heartbeat fields when this
         process is a dispatcher-spawned worker (HERMES_KANBAN_TASK set),
@@ -3044,6 +3060,8 @@ class AIAgent:
         """
         self._last_activity_ts = time.time()
         self._last_activity_desc = desc
+        if progress:
+            self._last_progress_ts = self._last_activity_ts
         if os.environ.get("HERMES_KANBAN_TASK"):
             try:
                 from tools.kanban_tools import heartbeat_current_worker_from_env
@@ -3256,12 +3274,20 @@ class AIAgent:
 
         Called by the gateway timeout handler to report what the agent was doing
         when it was killed, and by the periodic "still working" notifications.
+
+        ``seconds_since_activity`` includes "still waiting" heartbeats and is
+        meant for human-facing status ("what is it doing right now"). Watchdogs
+        deciding whether to KILL a run must use ``seconds_since_progress``
+        instead — see ``_touch_activity`` for why the two diverge for a wedged
+        call (#62151).
         """
         elapsed = time.time() - self._last_activity_ts
+        last_progress_ts = getattr(self, "_last_progress_ts", self._last_activity_ts)
         return {
             "last_activity_ts": self._last_activity_ts,
             "last_activity_desc": self._last_activity_desc,
             "seconds_since_activity": round(elapsed, 1),
+            "seconds_since_progress": round(time.time() - last_progress_ts, 1),
             "current_tool": self._current_tool,
             "api_call_count": self._api_call_count,
             "max_iterations": self.max_iterations,

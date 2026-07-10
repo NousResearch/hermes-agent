@@ -415,10 +415,16 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
         # Touch activity every ~30s so the gateway's inactivity
         # monitor knows we're alive while waiting for the response.
+        # progress=False: this is a "still waiting" re-announcement, not
+        # evidence anything happened — it must not reset
+        # seconds_since_progress, or a call wedged before the socket even
+        # opens (e.g. a hung DNS lookup) becomes invisible to cron's
+        # inactivity watchdog (#62151).
         if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
             _elapsed = time.time() - _call_start
             agent._touch_activity(
-                f"waiting for non-streaming response ({int(_elapsed)}s elapsed)"
+                f"waiting for non-streaming response ({int(_elapsed)}s elapsed)",
+                progress=False,
             )
 
         _elapsed = time.time() - _call_start
@@ -2827,8 +2833,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if _hb_now - _last_heartbeat >= _HEARTBEAT_INTERVAL:
             _last_heartbeat = _hb_now
             _waiting_secs = int(_hb_now - last_chunk_time["t"])
+            # progress=False: "no chunks yet" is not evidence of progress —
+            # see the non-streaming heartbeat above and #62151. The
+            # stale-stream detector below is what actually recovers a dead
+            # connection; this touch must not mask that from cron's watchdog.
             agent._touch_activity(
-                f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
+                f"waiting for stream response ({_waiting_secs}s, no chunks yet)",
+                progress=False,
             )
 
         # Detect stale streams: connections kept alive by SSE pings

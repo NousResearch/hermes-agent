@@ -324,21 +324,43 @@ def direct_api_call(agent, api_kwargs: dict):
     _check_stale_giveup(agent)
     agent._touch_activity("waiting for non-streaming API response")
     request_client_holder = {"client": None}
+    request_client_lock = threading.Lock()
+
+    def _abort_active_request(reason: str) -> None:
+        """Abort the inline request from cron's watchdog/interrupt thread."""
+        with request_client_lock:
+            request_client = request_client_holder["client"]
+        if request_client is not None:
+            agent._abort_request_openai_client(request_client, reason=reason)
 
     def _make_client(reason: str):
         client = agent._create_request_openai_client(reason=reason, api_kwargs=api_kwargs)
-        request_client_holder["client"] = client
+        with request_client_lock:
+            request_client_holder["client"] = client
+        agent._active_request_abort = _abort_active_request
         return client
 
     try:
-        return _dispatch_nonstreaming_api_request(
+        response = _dispatch_nonstreaming_api_request(
             agent, api_kwargs, make_client=_make_client
         )
+    except Exception:
+        if getattr(agent, "_interrupt_requested", False):
+            raise InterruptedError("Agent interrupted during API call") from None
+        raise
+    else:
+        if getattr(agent, "_interrupt_requested", False):
+            raise InterruptedError("Agent interrupted during API call")
+        _reset_stale_streak(agent)
+        return response
     finally:
-        if request_client_holder["client"] is not None:
-            agent._close_request_openai_client(
-                request_client_holder["client"], reason="request_complete"
-            )
+        if getattr(agent, "_active_request_abort", None) is _abort_active_request:
+            agent._active_request_abort = None
+        with request_client_lock:
+            request_client = request_client_holder["client"]
+            request_client_holder["client"] = None
+        if request_client is not None:
+            agent._close_request_openai_client(request_client, reason="request_complete")
 
 
 def interruptible_api_call(agent, api_kwargs: dict):

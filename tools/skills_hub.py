@@ -2724,6 +2724,14 @@ class LobeHubSource(SkillSource):
     def trust_level_for(self, identifier: str) -> str:
         return "community"
 
+    @staticmethod
+    def _agent_id(identifier: str) -> str:
+        """Strip a LobeHub source prefix without making it case-sensitive."""
+        prefix, separator, agent_id = identifier.partition("/")
+        if separator and prefix.lower() == "lobehub":
+            return agent_id
+        return identifier
+
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
         index = self._fetch_index()
         if not index:
@@ -2738,13 +2746,14 @@ class LobeHubSource(SkillSource):
 
         for agent in agents:
             meta = agent.get("meta", agent)
-            title = meta.get("title", agent.get("identifier", ""))
+            identifier = agent.get("identifier", "")
+            title = meta.get("title", identifier)
             desc = meta.get("description", "")
             tags = meta.get("tags", [])
 
-            searchable = f"{title} {desc} {' '.join(tags) if isinstance(tags, list) else ''}".lower()
+            searchable = f"{identifier} {title} {desc} {' '.join(tags) if isinstance(tags, list) else ''}".lower()
             if query_lower in searchable:
-                identifier = agent.get("identifier", title.lower().replace(" ", "-"))
+                identifier = identifier or title.lower().replace(" ", "-")
                 results.append(SkillMeta(
                     name=identifier,
                     description=desc[:200],
@@ -2760,8 +2769,8 @@ class LobeHubSource(SkillSource):
         return results
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
-        # Strip "lobehub/" prefix if present
-        agent_id = identifier.split("/", 1)[-1] if identifier.startswith("lobehub/") else identifier
+        # Strip the optional "lobehub/" prefix case-insensitively.
+        agent_id = self._agent_id(identifier)
 
         agent_data = self._fetch_agent(agent_id)
         if not agent_data:
@@ -2777,7 +2786,7 @@ class LobeHubSource(SkillSource):
         )
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        agent_id = identifier.split("/", 1)[-1] if identifier.startswith("lobehub/") else identifier
+        agent_id = self._agent_id(identifier)
         index = self._fetch_index()
         if not index:
             return None

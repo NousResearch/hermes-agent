@@ -1458,6 +1458,65 @@ class TestTapsManager:
 
 
 # ---------------------------------------------------------------------------
+# LobeHubSource identifier resolution
+# ---------------------------------------------------------------------------
+
+
+class TestLobeHubIdentifierResolution:
+    @pytest.fixture
+    def source(self, monkeypatch):
+        source = LobeHubSource()
+        monkeypatch.setattr(
+            source,
+            "_fetch_index",
+            lambda: {
+                "agents": [
+                    {
+                        "identifier": "api-docs-writer",
+                        "meta": {
+                            "title": "API Documentation Optimization Expert",
+                            "description": "Improves API documentation.",
+                            "tags": ["documentation"],
+                        },
+                    }
+                ]
+            },
+        )
+        return source
+
+    def test_search_matches_agent_identifier(self, source):
+        results = source.search("api-docs-writer")
+
+        assert [result.identifier for result in results] == [
+            "lobehub/api-docs-writer"
+        ]
+
+    def test_fetch_accepts_case_insensitive_source_prefix(self, source, monkeypatch):
+        fetched = []
+
+        def fetch_agent(agent_id):
+            fetched.append(agent_id)
+            return {
+                "identifier": agent_id,
+                "meta": {"title": "Code Companion", "description": "Helps with code."},
+            }
+
+        monkeypatch.setattr(source, "_fetch_agent", fetch_agent)
+
+        bundle = source.fetch("LobeHub/code-companion")
+
+        assert bundle is not None
+        assert bundle.identifier == "lobehub/code-companion"
+        assert fetched == ["code-companion"]
+
+    def test_inspect_accepts_case_insensitive_source_prefix(self, source):
+        result = source.inspect("LobeHub/api-docs-writer")
+
+        assert result is not None
+        assert result.identifier == "lobehub/api-docs-writer"
+
+
+# ---------------------------------------------------------------------------
 # LobeHubSource._convert_to_skill_md
 # ---------------------------------------------------------------------------
 

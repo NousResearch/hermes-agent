@@ -651,6 +651,20 @@ Hermes can search and convert agent entries from LobeHub's public catalog into i
 - Backing repo: [lobehub/lobe-chat-agents](https://github.com/lobehub/lobe-chat-agents)
 - Hermes source id: `lobehub`
 
+Use the full `lobehub/<agent-id>` identifier shown by search results when you
+install or inspect an entry:
+
+```bash
+hermes skills search "api documentation" --source lobehub
+hermes skills inspect lobehub/api-docs-writer
+hermes skills install lobehub/api-docs-writer
+```
+
+Source prefixes are case-insensitive. A bare agent id such as
+`api-docs-writer` also resolves when it matches exactly one skill across the
+configured sources, but the full identifier is unambiguous and recommended in
+scripts and documentation.
+
 #### 8. browse.sh (`browse-sh`)
 
 Hermes integrates with [browse.sh](https://browse.sh), Browserbase's catalog of 200+ site-specific browser-automation SKILL.md files (Airbnb, Amazon, arXiv, 12306.cn, Etsy, Xero, and many more). Each skill describes how to drive one website end-to-end and is suitable for use with Hermes' browser tools and any browser-automation skills you already have installed.

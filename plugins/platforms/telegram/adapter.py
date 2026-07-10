@@ -10,6 +10,7 @@ Uses python-telegram-bot library for:
 import asyncio
 import dataclasses
 import inspect
+import io
 import json
 import logging
 import os
@@ -6175,6 +6176,83 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
+    @staticmethod
+    async def _probe_video_metadata(path: str) -> Optional[Dict[str, Any]]:
+        """Extract width, height, and duration from a local video via ffprobe.
+
+        Returns a dict with ``width``, ``height``, and ``duration`` (seconds, int)
+        keys, or ``None`` when ffprobe is missing / fails / finds no video stream.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,duration",
+                "-show_entries", "format=duration",
+                "-of", "json",
+                path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            if proc.returncode != 0 or not stdout:
+                return None
+            data = json.loads(stdout.decode())
+            result: Dict[str, Any] = {}
+            streams = data.get("streams") or []
+            if streams:
+                s = streams[0]
+                if s.get("width"):
+                    result["width"] = int(s["width"])
+                if s.get("height"):
+                    result["height"] = int(s["height"])
+                # Prefer per-stream duration, fall back to format-level
+                dur = s.get("duration") or (data.get("format") or {}).get("duration")
+                if dur:
+                    result["duration"] = int(float(dur))
+            return result or None
+        except Exception:
+            return None
+
+    @staticmethod
+    async def _generate_video_thumbnail(path: str) -> Optional[io.BytesIO]:
+        """Extract a single JPEG frame from a video for use as a thumbnail.
+
+        Enforces Telegram thumbnail limits: JPEG format, max 320px per side,
+        under 200 kB.  Returns ``None`` when ffmpeg is unavailable, the
+        source cannot be decoded, or the generated frame exceeds any limit
+        — the upload proceeds without a thumbnail.
+        """
+        _THUMBNAIL_MAX_BYTES = 200 * 1024
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-y",
+                "-i", path,
+                "-vframes", "1",
+                "-ss", "0.5",
+                "-vf", "scale='min(320,iw)':'min(320,ih)':force_original_aspect_ratio=decrease",
+                "-f", "image2pipe",
+                "-vcodec", "mjpeg",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+            if proc.returncode != 0 or not stdout:
+                return None
+            if len(stdout) > _THUMBNAIL_MAX_BYTES:
+                logger.debug(
+                    "Generated video thumbnail %d bytes exceeds %d kB limit — omitting",
+                    len(stdout), _THUMBNAIL_MAX_BYTES // 1024,
+                )
+                return None
+            buf = io.BytesIO(stdout)
+            buf.seek(0)
+            return buf
+        except Exception:
+            return None
+
     async def send_video(
         self,
         chat_id: str,
@@ -6184,7 +6262,14 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a video natively as a Telegram video message."""
+        """Send a video natively as a Telegram video message.
+
+        For local MP4 files, extracts width/height/duration via ``ffprobe``
+        and generates a JPEG thumbnail via ``ffmpeg`` so Telegram can render
+        a correct aspect-ratio preview without server-side probing.  When
+        either tool is unavailable or fails, the video is sent without
+        metadata — the upload always succeeds.
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
@@ -6201,21 +6286,41 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
+
+            video_meta = await self._probe_video_metadata(video_path)
+            thumb_buffer = await self._generate_video_thumbnail(video_path)
+
             with open(video_path, "rb") as f:
+                send_kwargs: Dict[str, Any] = {
+                    "chat_id": normalize_telegram_chat_id(chat_id),
+                    "video": f,
+                    "caption": caption[:1024] if caption else None,
+                    "reply_to_message_id": reply_to_id,
+                    **thread_kwargs,
+                    **self._notification_kwargs(metadata),
+                }
+                if video_meta:
+                    if "width" in video_meta:
+                        send_kwargs["width"] = video_meta["width"]
+                    if "height" in video_meta:
+                        send_kwargs["height"] = video_meta["height"]
+                    if "duration" in video_meta:
+                        send_kwargs["duration"] = video_meta["duration"]
+                if thumb_buffer is not None:
+                    send_kwargs["thumbnail"] = thumb_buffer
+
+                def _reset_media():
+                    f.seek(0)
+                    if thumb_buffer is not None:
+                        thumb_buffer.seek(0)
+
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_video,
-                    {
-                        "chat_id": normalize_telegram_chat_id(chat_id),
-                        "video": f,
-                        "caption": caption[:1024] if caption else None,
-                        "reply_to_message_id": reply_to_id,
-                        **thread_kwargs,
-                        **self._notification_kwargs(metadata),
-                    },
+                    send_kwargs,
                     metadata,
                     reply_to_id,
                     "video",
-                    reset_media=lambda: f.seek(0),
+                    reset_media=_reset_media,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:

@@ -4,6 +4,7 @@ import textwrap
 
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
+    get_provider_streaming_enabled,
     get_provider_stale_timeout,
 )
 
@@ -128,6 +129,81 @@ def test_invalid_stale_timeout_values_return_none(monkeypatch, tmp_path):
 
     assert get_provider_stale_timeout("openai-codex", "gpt-5.4") is None
     assert get_provider_stale_timeout("openai-codex", "gpt-5.5") is None
+
+
+def test_provider_streaming_override_used_when_no_model_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          litellm:
+            streaming: false
+        """,
+    )
+
+    assert get_provider_streaming_enabled("litellm", "gpt-5.5") is False
+
+
+def test_model_streaming_override_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          litellm:
+            streaming: true
+            models:
+              gpt-5.5:
+                streaming: false
+        """,
+    )
+
+    assert get_provider_streaming_enabled("litellm", "gpt-5.5") is False
+    assert get_provider_streaming_enabled("litellm", "gpt-4.1") is True
+
+
+def test_custom_provider_streaming_resolves_by_base_url(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          corporate-litellm:
+            base_url: https://litellm.example.com/v1
+            streaming: true
+            models:
+              gpt-5.5:
+                streaming: false
+        """,
+    )
+
+    assert (
+        get_provider_streaming_enabled(
+            "custom", "gpt-5.5", "https://litellm.example.com/v1/"
+        )
+        is False
+    )
+    assert (
+        get_provider_streaming_enabled(
+            "custom", "gpt-4.1", "https://litellm.example.com/v1/"
+        )
+        is True
+    )
+
+
+def test_invalid_streaming_override_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          litellm:
+            streaming: sometimes
+        """,
+    )
+
+    assert get_provider_streaming_enabled("litellm", "gpt-5.5") is None
 
 
 def test_anthropic_adapter_honors_timeout_kwarg():

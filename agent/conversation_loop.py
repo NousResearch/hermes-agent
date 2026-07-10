@@ -47,6 +47,7 @@ from agent.message_sanitization import (
     _strip_images_from_messages,
     _strip_non_ascii,
 )
+from hermes_cli.timeouts import get_provider_streaming_enabled
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     estimate_messages_tokens_rough,
@@ -1282,7 +1283,14 @@ def run_conversation(
                 # Provider signaled "stream not supported" on a previous
                 # attempt — switch to non-streaming for the rest of this
                 # session instead of re-failing every retry.
+                _streaming_override = None
+                if not getattr(agent, "_disable_streaming", False):
+                    _streaming_override = get_provider_streaming_enabled(
+                        agent.provider, agent.model, agent.base_url
+                    )
                 if getattr(agent, "_disable_streaming", False):
+                    _use_streaming = False
+                elif _streaming_override is False:
                     _use_streaming = False
                 # CopilotACPClient communicates via subprocess stdio and
                 # returns a plain SimpleNamespace — not an iterable

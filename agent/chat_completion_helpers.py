@@ -2835,6 +2835,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "stream" in _err_lower
                             and "not supported" in _err_lower
                         )
+                        # Some LiteLLM proxy/model combinations accept
+                        # stream=True, but route the request to a non-streaming
+                        # upstream and then crash while iterating the completed
+                        # ModelResponse: "'async for' requires an object with
+                        # __aiter__ method, got ModelResponse". Treat that as a
+                        # permanent streaming-unsupported signal for the current
+                        # session so the outer retry uses non-streaming instead
+                        # of replaying the same proxy 500.
+                        _is_litellm_modelresponse_stream_bug = (
+                            "async for" in _err_lower
+                            and "__aiter__" in _err_lower
+                            and "modelresponse" in _err_lower
+                        )
                         # AWS Bedrock (AnthropicBedrock SDK path): IAM policies
                         # with bedrock:InvokeModel but not
                         # InvokeModelWithResponseStream reject messages.stream()
@@ -2856,7 +2869,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             _is_bedrock_stream_denied = (
                                 is_streaming_access_denied_error(e)
                             )
-                        if _is_stream_unsupported or _is_bedrock_stream_denied:
+                        if (
+                            _is_stream_unsupported
+                            or _is_litellm_modelresponse_stream_bug
+                            or _is_bedrock_stream_denied
+                        ):
                             agent._disable_streaming = True
                             agent._safe_print(
                                 "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. "

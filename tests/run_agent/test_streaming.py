@@ -600,6 +600,38 @@ class TestStreamingFallback:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_litellm_modelresponse_stream_500_sets_flag_and_raises(
+        self, mock_close, mock_create
+    ):
+        """LiteLLM's ModelResponse stream bug means the model route is non-streaming."""
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = Exception(
+            "HTTP 500: 'async for' requires an object with __aiter__ method, "
+            "got ModelResponse"
+        )
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://litellm.example.com/v1",
+            provider="custom",
+            model="gpt-5.5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        with pytest.raises(Exception, match="ModelResponse"):
+            agent._interruptible_streaming_api_call({})
+
+        assert agent._disable_streaming is True
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_non_transport_error_propagates(self, mock_close, mock_create):
         """Non-transport streaming errors propagate to the main retry loop."""
         from run_agent import AIAgent
@@ -1641,6 +1673,66 @@ def _valid_acp_response():
         usage=SimpleNamespace(prompt_tokens=5, completion_tokens=3),
         model="claude-opus-4.7",
     )
+
+
+class TestProviderStreamingConfig:
+    """Provider config can force the conversation loop to use non-streaming."""
+
+    def test_model_streaming_false_routes_to_non_streaming(self):
+        from run_agent import AIAgent
+        from agent.conversation_loop import run_conversation
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://litellm.example.com/v1",
+            provider="custom",
+            model="gpt-5.5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent.messages = []
+        agent.tools = []
+        agent.max_iterations = 1
+
+        final_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="non-streaming ok",
+                        tool_calls=None,
+                        role="assistant",
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+            model="gpt-5.5",
+        )
+
+        with (
+            patch(
+                "agent.conversation_loop.get_provider_streaming_enabled",
+                return_value=False,
+            ) as mock_streaming_enabled,
+            patch.object(
+                agent,
+                "_interruptible_api_call",
+                return_value=final_response,
+            ) as mock_non_stream,
+            patch.object(agent, "_interruptible_streaming_api_call") as mock_stream,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = run_conversation(agent, "hello")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "non-streaming ok"
+        mock_streaming_enabled.assert_called()
+        mock_non_stream.assert_called_once()
+        mock_stream.assert_not_called()
 
 
 def _make_acp_agent(provider="copilot-acp", base_url="acp://copilot"):

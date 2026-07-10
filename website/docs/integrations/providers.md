@@ -1116,6 +1116,19 @@ model:
   api_key: your-together-key
 ```
 
+For named custom endpoints, provider-specific runtime knobs live under `providers.<id>`. Set `streaming: false` when a proxy or model route accepts normal Chat Completions but fails `stream=True`:
+
+```yaml
+providers:
+  corporate-litellm:
+    base_url: https://litellm.example.com/v1
+    api_key: ${LITELLM_API_KEY}
+    streaming: true
+    models:
+      gpt-5.5:
+        streaming: false
+```
+
 ---
 
 ### Context Length Detection

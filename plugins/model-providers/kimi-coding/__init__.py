@@ -9,6 +9,7 @@ This module covers the chat_completions path (/v1 endpoint).
 
 from typing import Any
 
+from hermes_constants import project_reasoning_effort
 from providers import register_provider
 from providers.base import OMIT_TEMPERATURE, ProviderProfile
 
@@ -46,8 +47,12 @@ class KimiProfile(ProviderProfile):
         # Enabled: prefer an explicit effort; only fall back to extra_body
         # thinking when no recognized effort is requested.
         effort = (reasoning_config.get("effort") or "").strip().lower()
-        if effort in {"low", "medium", "high"}:
-            top_level["reasoning_effort"] = effort
+        projected_effort = project_reasoning_effort(
+            effort,
+            ("low", "medium", "high"),
+        )
+        if projected_effort is not None:
+            top_level["reasoning_effort"] = projected_effort
         else:
             extra_body["thinking"] = {"type": "enabled"}
 

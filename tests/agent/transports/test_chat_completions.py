@@ -476,6 +476,36 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_level"] == "high"
 
+    @pytest.mark.parametrize("model", ["gemini-3-pro-preview", "gemini-3-flash-preview"])
+    @pytest.mark.parametrize("client_effort", ["max", "ultra"])
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://generativelanguage.googleapis.com/v1beta",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        ],
+    )
+    def test_gemini_3_high_end_efforts_project_to_high(
+        self,
+        transport,
+        model,
+        client_effort,
+        base_url,
+    ):
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_name="gemini",
+            base_url=base_url,
+            reasoning_config={"enabled": True, "effort": client_effort},
+        )
+
+        if base_url.endswith("/openai"):
+            thinking_config = kw["extra_body"]["extra_body"]["google"]["thinking_config"]
+            assert thinking_config["thinking_level"] == "high"
+        else:
+            assert kw["extra_body"]["thinking_config"]["thinkingLevel"] == "high"
+
     def test_gemini_flash_minimal_clamps_to_low(self, transport):
         # Gemini 3 Flash documents low/medium/high; "minimal" isn't accepted,
         # so clamp it down to "low" rather than forwarding it verbatim.
@@ -726,14 +756,9 @@ class TestChatCompletionsKimi:
 
 
 class TestChatCompletionsLmStudioReasoning:
-    """LM Studio publishes per-model reasoning ``allowed_options``. When the
-    user requests an effort the model can't honor (e.g. ``high`` on a
-    toggle-style ``["off","on"]`` model), the transport omits
-    ``reasoning_effort`` so LM Studio falls back to the model's default —
-    silently downgrading "high" to "low" would mislead the user.
-    """
+    """LM Studio efforts project onto each model's ``allowed_options``."""
 
-    def test_omits_effort_when_high_not_allowed_toggle(self, transport):
+    def test_projects_high_to_toggle_models_enabled_level(self, transport):
         kw = transport.build_kwargs(
             model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
             is_lmstudio=True,
@@ -741,9 +766,9 @@ class TestChatCompletionsLmStudioReasoning:
             reasoning_config={"effort": "high"},
             lmstudio_reasoning_options=["off", "on"],
         )
-        assert "reasoning_effort" not in kw
+        assert kw["reasoning_effort"] == "medium"
 
-    def test_omits_effort_when_high_not_allowed_minimal_low(self, transport):
+    def test_projects_high_to_strongest_advertised_lower_level(self, transport):
         kw = transport.build_kwargs(
             model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
             is_lmstudio=True,
@@ -751,7 +776,41 @@ class TestChatCompletionsLmStudioReasoning:
             reasoning_config={"effort": "high"},
             lmstudio_reasoning_options=["off", "minimal", "low"],
         )
-        assert "reasoning_effort" not in kw
+        assert kw["reasoning_effort"] == "low"
+
+    @pytest.mark.parametrize("client_effort", ["max", "ultra"])
+    def test_high_end_effort_projects_to_high_without_max_advertised(
+        self,
+        transport,
+        client_effort,
+    ):
+        kw = transport.build_kwargs(
+            model="gpt-oss",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": client_effort},
+            lmstudio_reasoning_options=["off", "low", "medium", "high"],
+        )
+
+        assert kw["reasoning_effort"] == "high"
+
+    @pytest.mark.parametrize("client_effort", ["max", "ultra"])
+    def test_high_end_effort_uses_max_when_advertised(
+        self,
+        transport,
+        client_effort,
+    ):
+        kw = transport.build_kwargs(
+            model="gpt-oss",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": client_effort},
+            lmstudio_reasoning_options=["off", "low", "medium", "high", "max"],
+        )
+
+        assert kw["reasoning_effort"] == "max"
 
     def test_passes_through_when_effort_allowed(self, transport):
         kw = transport.build_kwargs(
@@ -797,6 +856,23 @@ class TestChatCompletionsLmStudioReasoning:
             lmstudio_reasoning_options=None,
         )
         assert kw["reasoning_effort"] == "high"
+
+    @pytest.mark.parametrize("client_effort", ["max", "ultra"])
+    def test_high_end_effort_without_catalog_uses_normalized_request(
+        self,
+        transport,
+        client_effort,
+    ):
+        kw = transport.build_kwargs(
+            model="gpt-oss",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": client_effort},
+            lmstudio_reasoning_options=None,
+        )
+
+        assert kw["reasoning_effort"] == "max"
 
 
 class TestChatCompletionsValidate:

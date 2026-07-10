@@ -12,6 +12,7 @@ Key quirks for the chat_completions subset:
 
 from typing import Any
 
+from hermes_constants import project_reasoning_effort
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -33,15 +34,21 @@ class CopilotProfile(ProviderProfile):
                 from hermes_cli.models import github_model_reasoning_efforts
 
                 supported_efforts = github_model_reasoning_efforts(model)
-                if supported_efforts and reasoning_config:
-                    effort = reasoning_config.get("effort", "medium")
-                    # Normalize non-standard effort levels to the nearest supported
-                    if effort == "xhigh":
-                        effort = "high"
-                    if effort in supported_efforts:
-                        extra_body["reasoning"] = {"effort": effort}
-                elif supported_efforts:
-                    extra_body["reasoning"] = {"effort": "medium"}
+                if not supported_efforts:
+                    return extra_body, {}
+                if reasoning_config and reasoning_config.get("enabled") is False:
+                    return extra_body, {}
+
+                effort = (
+                    reasoning_config.get("effort", "medium")
+                    if reasoning_config
+                    else "medium"
+                )
+                if effort == "minimal" and "low" in supported_efforts:
+                    effort = "low"
+                projected = project_reasoning_effort(effort, supported_efforts)
+                if projected is not None:
+                    extra_body["reasoning"] = {"effort": projected}
             except Exception:
                 pass
         return extra_body, {}

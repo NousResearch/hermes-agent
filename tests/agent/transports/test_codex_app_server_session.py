@@ -87,6 +87,20 @@ class FakeClient:
                             "none", "low", "medium", "high"
                         ),
                     },
+                    {
+                        "id": "gpt-future-codex",
+                        "model": "gpt-future-codex",
+                        "defaultReasoningEffort": "medium",
+                        "supportedReasoningEfforts": _efforts(
+                            "low", "medium", "high", "max", "ultra"
+                        ),
+                    },
+                    {
+                        "id": "gpt-no-reasoning-efforts",
+                        "model": "gpt-no-reasoning-efforts",
+                        "defaultReasoningEffort": "low",
+                        "supportedReasoningEfforts": _efforts(),
+                    },
                 ],
                 "nextCursor": None,
             }
@@ -300,7 +314,93 @@ class TestRunTurn:
         )
         assert turn_params["effort"] == "high"
 
-    def test_ultra_falls_back_to_max_when_model_list_is_unavailable(self):
+    def test_future_model_uses_live_catalog_instead_of_static_family_ceiling(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn(
+            "use future capabilities",
+            model="gpt-future-codex",
+            effort="ultra",
+            turn_timeout=2.0,
+        )
+
+        assert result.error is None
+        turn_params = next(
+            params for method, params in client.requests if method == "turn/start"
+        )
+        assert turn_params["effort"] == "ultra"
+
+    def test_synthetic_pro_alias_uses_base_model_catalog_capabilities(self):
+        client = FakeClient()
+
+        def handle_request(method, params):
+            if method == "thread/start":
+                return {"thread": {"id": "thread-fake-001"}}
+            if method == "model/list":
+                return {
+                    "data": [
+                        {
+                            "id": "gpt-5.6-sol",
+                            "model": "gpt-5.6-sol",
+                            "supportedReasoningEfforts": [
+                                {"reasoningEffort": "high"}
+                            ],
+                        }
+                    ],
+                    "nextCursor": None,
+                }
+            if method == "turn/start":
+                return {"turn": {"id": "turn-fake-001"}}
+            return {}
+
+        client._request_handler = handle_request
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn(
+            "use alias capabilities",
+            model="gpt-5.6-sol-pro",
+            effort="ultra",
+            turn_timeout=2.0,
+        )
+
+        assert result.error is None
+        turn_params = next(
+            params for method, params in client.requests if method == "turn/start"
+        )
+        assert turn_params["model"] == "gpt-5.6-sol-pro"
+        assert turn_params["effort"] == "high"
+
+    def test_catalog_row_without_supported_lower_effort_omits_effort(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn(
+            "use model default",
+            model="gpt-no-reasoning-efforts",
+            effort="max",
+            turn_timeout=2.0,
+        )
+
+        assert result.error is None
+        turn_params = next(
+            params for method, params in client.requests if method == "turn/start"
+        )
+        assert "effort" not in turn_params
+
+    def test_catalog_unavailable_uses_static_family_ceiling(self):
         class LegacyClient(FakeClient):
             def request(self, method, params=None, timeout=30):
                 if method == "model/list":
@@ -328,7 +428,7 @@ class TestRunTurn:
         turn_params = next(
             params for method, params in client.requests if method == "turn/start"
         )
-        assert turn_params["effort"] == "xhigh"
+        assert turn_params["effort"] == "ultra"
 
     def test_turn_start_omits_unset_reasoning_effort(self):
         client = FakeClient()
@@ -354,14 +454,15 @@ class TestRunTurn:
             "model": "gpt-5.6-sol",
         }
 
-    def test_explicit_disable_fails_when_model_does_not_support_none(self):
+    def test_ultra_then_none_clears_override_and_starts_next_turn(self):
         client = FakeClient()
         session = make_session(client)
-        client.queue_notification(
-            "turn/completed",
-            threadId="thread-fake-001",
-            turn={"id": "turn-fake-001", "status": "completed", "error": None},
-        )
+        for turn_id in ("turn-ultra", "turn-reset"):
+            client.queue_notification(
+                "turn/completed",
+                threadId="thread-fake-001",
+                turn={"id": turn_id, "status": "completed", "error": None},
+            )
         assert session.run_turn(
             "use ultra",
             model="gpt-5.6-sol",
@@ -370,58 +471,24 @@ class TestRunTurn:
         ).error is None
 
         result = session.run_turn(
-            "disable reasoning",
-            model="gpt-5.6-luna",
+            "return to the model default",
+            model="gpt-5.6-sol",
             effort=None,
             reset_reasoning_effort=True,
             turn_timeout=2.0,
         )
 
-        assert "does not support disabling reasoning" in result.error
+        assert result.error is None
         assert result.thread_id == "thread-fake-001"
         turn_requests = [
             params for method, params in client.requests if method == "turn/start"
         ]
-        assert [params["effort"] for params in turn_requests] == ["ultra"]
-        assert turn_requests[0]["threadId"] == "thread-fake-001"
-        model_list_params = next(
-            params for method, params in client.requests if method == "model/list"
-        )
-        assert model_list_params == {"includeHidden": True, "limit": 100}
-
-    def test_explicit_disable_uses_none_when_model_advertises_it(self):
-        client = FakeClient()
-        client.queue_notification(
-            "turn/completed",
-            threadId="thread-fake-001",
-            turn={"id": "turn-fake-001", "status": "completed", "error": None},
-        )
-
-        result = make_session(client).run_turn(
-            "disable reasoning",
-            model="gpt-supports-none",
-            reset_reasoning_effort=True,
-            turn_timeout=2.0,
-        )
-
-        assert result.error is None
-        turn_params = next(
-            params for method, params in client.requests if method == "turn/start"
-        )
-        assert turn_params["effort"] == "none"
-
-    def test_explicit_disable_missing_model_fails_before_turn_start(self):
-        client = FakeClient()
-
-        result = make_session(client).run_turn(
-            "disable reasoning",
-            model="gpt-not-in-catalog",
-            reset_reasoning_effort=True,
-            turn_timeout=2.0,
-        )
-
-        assert "absent from model/list" in result.error
-        assert not any(method == "turn/start" for method, _ in client.requests)
+        assert [params.get("effort", "missing") for params in turn_requests] == [
+            "ultra",
+            None,
+        ]
+        assert all(params["threadId"] == "thread-fake-001" for params in turn_requests)
+        assert sum(method == "model/list" for method, _ in client.requests) == 1
 
     def test_token_usage_notification_is_captured(self):
         client = FakeClient()

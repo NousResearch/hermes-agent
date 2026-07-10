@@ -401,31 +401,28 @@ class CodexAppServerSession:
         self._model_reasoning_catalog = catalog
         return catalog
 
-    def _resolve_reasoning_reset_effort(self, model: str) -> str:
-        """Return an advertised off value that overwrites a prior override."""
+    @staticmethod
+    def _catalog_reasoning_efforts(
+        catalog: dict[str, frozenset[str]],
+        model: str,
+    ) -> Optional[frozenset[str]]:
+        """Return live efforts, including Hermes' synthetic ``-pro`` aliases."""
         model_id = str(model or "").strip().lower()
-        if not model_id:
-            raise CodexAppServerError(
-                code=-32602,
-                message="cannot reset reasoning effort without a selected model",
-            )
+        bare_model_id = model_id.rsplit("/", 1)[-1]
+        candidates = [model_id, bare_model_id]
+        if bare_model_id.endswith("-pro"):
+            base_model_id = bare_model_id.removesuffix("-pro")
+            candidates.extend((base_model_id, f"openai/{base_model_id}"))
+        for candidate in candidates:
+            if candidate in catalog:
+                return catalog[candidate]
+        return None
 
-        catalog = self._load_model_reasoning_catalog()
-        entry = catalog.get(model_id) or catalog.get(model_id.rsplit("/", 1)[-1])
-        if entry is None:
-            raise CodexAppServerError(
-                code=-32602,
-                message=f"selected model {model!r} is absent from model/list",
-            )
-
-        if "none" in entry:
-            return "none"
-        raise CodexAppServerError(
-            code=-32602,
-            message=f"selected model {model!r} does not support disabling reasoning",
-        )
-
-    def _resolve_requested_reasoning_effort(self, model: str, effort: str) -> str:
+    def _resolve_requested_reasoning_effort(
+        self,
+        model: str,
+        effort: str,
+    ) -> Optional[str]:
         """Keep extended efforts only when this app-server advertises them."""
         if effort not in {"max", "ultra"}:
             return effort
@@ -436,19 +433,27 @@ class CodexAppServerSession:
         except CodexAppServerError as exc:
             if exc.code != -32601:
                 raise
-            # Older compatible app-servers may not expose model/list. Their
-            # turn/start schema accepts efforts only through xhigh.
+            # Older compatible app-servers may not expose model/list. Use the
+            # static family ceiling only when live capability evidence is absent.
             self._model_reasoning_catalog = {}
-            return "xhigh"
+            catalog = {}
 
-        entry = catalog.get(model_id) or catalog.get(model_id.rsplit("/", 1)[-1])
-        if entry:
-            effort_order = ("low", "medium", "high", "xhigh", "max", "ultra")
-            requested_rank = effort_order.index(effort)
-            for candidate in reversed(effort_order[: requested_rank + 1]):
-                if candidate in entry:
-                    return candidate
-        return "xhigh"
+        entry = self._catalog_reasoning_efforts(catalog, model_id)
+        if entry is not None:
+            from hermes_constants import project_reasoning_effort
+
+            projected = project_reasoning_effort(effort, entry)
+            return projected
+
+        from agent.model_metadata import resolve_codex_reasoning_effort
+
+        fallback = resolve_codex_reasoning_effort(model, effort, app_server=True)
+        if fallback is not None:
+            return fallback
+        raise CodexAppServerError(
+            code=-32602,
+            message=f"invalid reasoning effort {effort!r}",
+        )
 
     # ---------- per-turn ----------
 
@@ -473,9 +478,10 @@ class CodexAppServerSession:
         Mirrors openclaw beta.8's post-tool completion watchdog (#81697)
         so a wedged codex doesn't burn the full turn deadline.
 
-        reset_reasoning_effort: Hermes explicitly disabled reasoning. Codex
-        persists turn-level effort overrides, so send an advertised disabled
-        value rather than omitting the field or silently using a default.
+        reset_reasoning_effort: Hermes received ``/reasoning none``. Codex
+        persists turn-level overrides, so send JSON ``null`` to clear the
+        override and resume the model default. This does not disable the
+        model's default reasoning.
         """
         # Pre-create the result so startup failures (codex subprocess can't
         # spawn, initialize handshake rejects, thread/start blows up) surface
@@ -513,21 +519,7 @@ class CodexAppServerSession:
         }
         normalized_model = str(model or "").strip()
         normalized_effort = str(effort or "").strip().lower()
-        if reset_reasoning_effort:
-            try:
-                normalized_effort = self._resolve_reasoning_reset_effort(
-                    normalized_model
-                )
-            except (CodexAppServerError, TimeoutError) as exc:
-                result.error = self._format_error_with_stderr(
-                    "could not reset the Codex reasoning effort",
-                    exc,
-                )
-                if isinstance(exc, TimeoutError):
-                    result.should_retire = True
-                return result
-
-        elif normalized_effort:
+        if normalized_effort and not reset_reasoning_effort:
             try:
                 normalized_effort = self._resolve_requested_reasoning_effort(
                     normalized_model,
@@ -544,7 +536,9 @@ class CodexAppServerSession:
 
         if normalized_model:
             turn_params["model"] = normalized_model
-        if normalized_effort:
+        if reset_reasoning_effort:
+            turn_params["effort"] = None
+        elif normalized_effort:
             turn_params["effort"] = normalized_effort
         try:
             ts = self._client.request(

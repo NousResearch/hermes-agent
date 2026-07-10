@@ -1918,6 +1918,33 @@ class TestBuildApiKwargs:
         )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
 
+    @pytest.mark.parametrize("client_effort", ["max", "ultra"])
+    @pytest.mark.parametrize("profile_name", ["copilot", "github-models"])
+    def test_github_profiles_project_high_end_effort_to_advertised_high(
+        self,
+        agent,
+        monkeypatch,
+        client_effort,
+        profile_name,
+    ):
+        from agent.transports import get_transport
+        from providers import get_provider_profile
+
+        monkeypatch.setattr(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            lambda _model: ["low", "medium", "high"],
+        )
+        kwargs = get_transport("chat_completions").build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": client_effort},
+            provider_profile=get_provider_profile(profile_name),
+        )
+
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
     def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
         agent.base_url = "https://api.githubcopilot.com"
         agent.model = "gpt-4.1"

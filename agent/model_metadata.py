@@ -19,7 +19,7 @@ import yaml
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_constants import OPENROUTER_MODELS_URL, project_reasoning_effort
 
 logger = logging.getLogger(__name__)
 
@@ -413,8 +413,11 @@ def resolve_grok_reasoning_effort(model: str, effort: Any) -> Optional[str]:
         if any(model_id.startswith(prefix) for prefix in _GROK_XHIGH_EFFORT_PREFIXES)
         else "high"
     )
-    order = ("low", "medium", "high", "xhigh", "max", "ultra")
-    return order[min(order.index(requested), order.index(ceiling))]
+    ceiling_rank = _CODEX_REASONING_EFFORT_ORDER.index(ceiling)
+    return project_reasoning_effort(
+        requested,
+        _CODEX_REASONING_EFFORT_ORDER[: ceiling_rank + 1],
+    )
 
 
 _CODEX_REASONING_EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max", "ultra")
@@ -448,9 +451,10 @@ def resolve_codex_reasoning_effort(
 ) -> Optional[str]:
     """Project a client effort onto the selected Codex model's wire ceiling.
 
-    Direct Responses requests cap the GPT-5.6 family at ``max``. Codex
-    app-server turns preserve ``ultra`` only for Sol/Terra, where it enables
-    native proactive delegation. Known GPT-5.2+ Codex models cap at ``xhigh``;
+    Direct Responses requests cap the GPT-5.6 family at ``max``. When live
+    catalog evidence is unavailable, Codex app-server uses this static policy
+    and preserves ``ultra`` only for Sol/Terra, where it enables native
+    proactive delegation. Known GPT-5.2+ Codex models cap at ``xhigh``;
     GPT-5/5.1 and unknown models use the conservative ``high`` ceiling.
     """
     requested = str(effort or "").strip().lower()
@@ -482,9 +486,11 @@ def resolve_codex_reasoning_effort(
     else:
         ceiling = "high"
 
-    requested_rank = _CODEX_REASONING_EFFORT_ORDER.index(requested)
     ceiling_rank = _CODEX_REASONING_EFFORT_ORDER.index(ceiling)
-    return _CODEX_REASONING_EFFORT_ORDER[min(requested_rank, ceiling_rank)]
+    return project_reasoning_effort(
+        requested,
+        _CODEX_REASONING_EFFORT_ORDER[: ceiling_rank + 1],
+    )
 
 
 _CONTEXT_LENGTH_KEYS = (

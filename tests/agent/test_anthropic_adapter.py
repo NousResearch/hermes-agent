@@ -1402,6 +1402,19 @@ class TestBuildAnthropicKwargs:
         assert kwargs["max_tokens"] >= 16000 + 4096
         assert "output_config" not in kwargs
 
+    @pytest.mark.parametrize("client_effort", ["max", "ultra"])
+    def test_manual_thinking_high_end_efforts_keep_xhigh_budget(self, client_effort):
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "think hardest"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": client_effort},
+        )
+
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 32000}
+        assert kwargs["max_tokens"] >= 32000 + 4096
+
     def test_reasoning_config_maps_to_adaptive_thinking_for_4_6_models(self):
         kwargs = build_anthropic_kwargs(
             model="claude-opus-4-6",

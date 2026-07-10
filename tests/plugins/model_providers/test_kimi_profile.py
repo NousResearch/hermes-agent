@@ -60,15 +60,23 @@ class TestKimiReasoningWireShape:
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
 
-    @pytest.mark.parametrize("effort", ["", "garbage", "xhigh", "max"])
+    @pytest.mark.parametrize("effort", ["", "garbage"])
     def test_unrecognized_effort_falls_back_to_thinking(self, kimi_profile, effort):
-        """Unknown/strong efforts aren't in Moonshot's low|medium|high set, so
-        we drop to the thinking toggle rather than sending an invalid effort."""
+        """Unknown efforts use the binary thinking toggle."""
         extra_body, top_level = kimi_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort}
         )
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
+
+    @pytest.mark.parametrize("effort", ["xhigh", "max", "ultra"])
+    def test_strong_effort_projects_to_high(self, kimi_profile, effort):
+        extra_body, top_level = kimi_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort}
+        )
+
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "high"}
 
     def test_disabled_sends_thinking_disabled_only(self, kimi_profile):
         extra_body, top_level = kimi_profile.build_api_kwargs_extras(
@@ -121,6 +129,12 @@ class TestKimiFullKwargsIntegration:
 
     def test_explicit_effort_omits_thinking(self, kimi_profile):
         kwargs = self._build(kimi_profile, {"enabled": True, "effort": "high"})
+        assert kwargs["reasoning_effort"] == "high"
+        assert "thinking" not in kwargs.get("extra_body", {})
+
+    def test_high_end_effort_projects_without_thinking(self, kimi_profile):
+        kwargs = self._build(kimi_profile, {"enabled": True, "effort": "ultra"})
+
         assert kwargs["reasoning_effort"] == "high"
         assert "thinking" not in kwargs.get("extra_body", {})
 

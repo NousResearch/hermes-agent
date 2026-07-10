@@ -98,9 +98,9 @@ class TestRunConversationCodexPath:
             pytest.param(
                 "gpt-5.6-luna",
                 {"enabled": True, "effort": "ultra"},
-                "max",
+                "ultra",
                 False,
-                id="luna-clamps-ultra-to-max",
+                id="luna-defers-ultra-projection-to-live-catalog",
             ),
             pytest.param(
                 "gpt-5.6-sol",
@@ -119,9 +119,9 @@ class TestRunConversationCodexPath:
             pytest.param(
                 "gpt-9.9-unknown",
                 {"enabled": True, "effort": "ultra"},
-                "high",
+                "ultra",
                 False,
-                id="unknown-clamps-ultra-to-high",
+                id="unknown-defers-ultra-projection-to-session",
             ),
         ],
     )

@@ -574,13 +574,13 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
 
 
 @pytest.mark.parametrize("client_effort", ["max", "ultra"])
-def test_copilot_reasoning_projection_receives_normalized_client_effort(
+def test_copilot_reasoning_projection_uses_highest_advertised_lower_effort(
     monkeypatch,
     client_effort,
 ):
     monkeypatch.setattr(
         "hermes_cli.models.github_model_reasoning_efforts",
-        lambda _model: ["low", "medium", "high", "xhigh", "max"],
+        lambda _model: ["low", "medium", "high"],
     )
     agent = _build_copilot_agent(
         monkeypatch,
@@ -589,7 +589,7 @@ def test_copilot_reasoning_projection_receives_normalized_client_effort(
 
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
 
-    assert kwargs["reasoning"] == {"effort": "max"}
+    assert kwargs["reasoning"] == {"effort": "high"}
 
 
 # ---------------------------------------------------------------------------

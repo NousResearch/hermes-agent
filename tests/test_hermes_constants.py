@@ -22,6 +22,7 @@ from hermes_constants import (
     is_container,
     node_tool_runnable,
     parse_reasoning_effort,
+    project_reasoning_effort,
     secure_parent_dir,
     with_hermes_node_path,
 )
@@ -422,6 +423,37 @@ class TestIsContainer:
         # Even if we make os.path.exists return False, cached value wins
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         assert is_container() is True
+
+
+class TestProjectReasoningEffort:
+    def test_selects_exact_strongest_supported_lower_or_equal_level(self):
+        supported = {"minimal", "medium", "xhigh", "ultra"}
+
+        for requested in VALID_REASONING_EFFORTS:
+            requested_rank = VALID_REASONING_EFFORTS.index(requested)
+            eligible = [
+                effort
+                for effort in VALID_REASONING_EFFORTS[: requested_rank + 1]
+                if effort in supported
+            ]
+            assert project_reasoning_effort(requested, supported) == (
+                eligible[-1] if eligible else None
+            )
+
+    def test_stronger_requests_never_drop_below_a_supported_lower_level(self):
+        supported = ("low", "high", "xhigh")
+        resolved = [
+            project_reasoning_effort(requested, supported)
+            for requested in VALID_REASONING_EFFORTS
+        ]
+        resolved_ranks = [
+            VALID_REASONING_EFFORTS.index(effort)
+            for effort in resolved
+            if effort is not None
+        ]
+
+        assert resolved_ranks == sorted(resolved_ranks)
+        assert resolved[-2:] == ["xhigh", "xhigh"]
 
 
 class TestParseReasoningEffort:

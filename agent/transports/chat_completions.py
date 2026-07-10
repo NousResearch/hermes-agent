@@ -16,6 +16,7 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from hermes_constants import project_reasoning_effort
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -52,7 +53,9 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if normalized_model.startswith("gemini-2.5-"):
         return thinking_config
 
-    if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
+    if effort == "minimal":
+        effort = "low"
+    elif effort not in {"low", "medium", "high", "xhigh", "max", "ultra"}:
         effort = "medium"
 
     # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
@@ -60,16 +63,15 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     # family accepts so we never forward an undocumented level verbatim.
     if normalized_model.startswith(("gemini-3", "gemini-3.1")):
         if "flash" in normalized_model:
-            if effort in {"minimal", "low"}:
-                thinking_config["thinkingLevel"] = "low"
-            elif effort in {"high", "xhigh"}:
-                thinking_config["thinkingLevel"] = "high"
-            else:
-                thinking_config["thinkingLevel"] = "medium"
+            thinking_config["thinkingLevel"] = project_reasoning_effort(
+                effort,
+                ("low", "medium", "high"),
+            ) or "medium"
         elif "pro" in normalized_model:
-            thinking_config["thinkingLevel"] = (
-                "high" if effort in {"high", "xhigh"} else "low"
-            )
+            thinking_config["thinkingLevel"] = project_reasoning_effort(
+                effort,
+                ("low", "high"),
+            ) or "low"
 
     return thinking_config
 
@@ -381,8 +383,10 @@ class ChatCompletionsTransport(ProviderTransport):
                 _kimi_effort = "medium"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
-                        _kimi_effort = _e
+                    _kimi_effort = project_reasoning_effort(
+                        _e,
+                        ("low", "medium", "high"),
+                    ) or _kimi_effort
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
         # Tencent TokenHub: top-level reasoning_effort (unless thinking disabled)

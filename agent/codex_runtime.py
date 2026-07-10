@@ -300,17 +300,18 @@ def _record_codex_app_server_compaction(
 
 def _codex_app_server_effort(
     reasoning_config: Any,
-    model: Optional[str],
 ) -> Optional[str]:
-    """Return a model-safe client effort for Codex ``turn/start``."""
+    """Return the client effort for live app-server capability projection."""
     if not isinstance(reasoning_config, dict):
         return None
     if reasoning_config.get("enabled") is False:
         return None
     effort = str(reasoning_config.get("effort") or "").strip().lower()
-    from agent.model_metadata import resolve_codex_reasoning_effort
+    if effort == "minimal":
+        return "low"
+    from hermes_constants import VALID_REASONING_EFFORTS
 
-    return resolve_codex_reasoning_effort(model or "", effort, app_server=True)
+    return effort if effort in VALID_REASONING_EFFORTS else None
 
 
 def _codex_app_server_reasoning_disabled(reasoning_config: Any) -> bool:
@@ -417,10 +418,7 @@ def run_codex_app_server_turn(
         turn = agent._codex_session.run_turn(
             user_input=user_message,
             model=selected_model,
-            effort=_codex_app_server_effort(
-                reasoning_config,
-                selected_model,
-            ),
+            effort=_codex_app_server_effort(reasoning_config),
             reset_reasoning_effort=_codex_app_server_reasoning_disabled(
                 reasoning_config
             ),

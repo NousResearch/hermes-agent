@@ -9,6 +9,7 @@ import shutil
 import stat
 import sys
 import sysconfig
+from collections.abc import Iterable
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -800,6 +801,26 @@ VALID_REASONING_EFFORTS = (
     "max",
     "ultra",
 )
+
+
+def project_reasoning_effort(
+    effort: object,
+    supported_efforts: Iterable[object] | None,
+) -> str | None:
+    """Project an effort onto the strongest supported level at or below it."""
+    requested = str(effort or "").strip().lower()
+    if requested not in VALID_REASONING_EFFORTS:
+        return None
+
+    supported = {
+        str(candidate or "").strip().lower()
+        for candidate in (supported_efforts or ())
+    }
+    requested_rank = VALID_REASONING_EFFORTS.index(requested)
+    for candidate in reversed(VALID_REASONING_EFFORTS[: requested_rank + 1]):
+        if candidate in supported:
+            return candidate
+    return None
 
 
 def parse_reasoning_effort(effort) -> dict | None:

@@ -12,9 +12,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-# LM Studio accepts these top-level reasoning_effort values via its
-# OpenAI-compatible chat.completions endpoint.
-_LM_VALID_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+from hermes_constants import VALID_REASONING_EFFORTS, project_reasoning_effort
 
 # Toggle-style models publish allowed_options as ["off","on"] in /api/v1/models.
 # Map them onto the OpenAI-compatible request vocabulary.
@@ -27,10 +25,9 @@ def resolve_lmstudio_effort(
 ) -> Optional[str]:
     """Return the ``reasoning_effort`` string to send to LM Studio, or ``None``.
 
-    ``None`` means "omit the field": the user picked a level the model can't
-    honor, so let LM Studio fall back to the model's declared default rather
-    than silently substituting a different effort. When ``allowed_options`` is
-    falsy (probe failed), skip clamping and send the resolved effort anyway.
+    ``None`` means "omit the field": no advertised non-empty effort exists at
+    or below the request. When ``allowed_options`` is falsy (probe failed), skip
+    projection and send the resolved effort anyway.
     """
     effort = "medium"
     if reasoning_config and isinstance(reasoning_config, dict):
@@ -39,10 +36,17 @@ def resolve_lmstudio_effort(
         else:
             raw = (reasoning_config.get("effort") or "").strip().lower()
             raw = _LM_EFFORT_ALIASES.get(raw, raw)
-            if raw in _LM_VALID_EFFORTS:
+            if raw == "ultra":
+                raw = "max"
+            if raw in VALID_REASONING_EFFORTS:
                 effort = raw
     if allowed_options:
-        allowed = {_LM_EFFORT_ALIASES.get(opt, opt) for opt in allowed_options}
-        if effort not in allowed:
-            return None
+        allowed = {
+            _LM_EFFORT_ALIASES.get(normalized, normalized)
+            for option in allowed_options
+            if (normalized := str(option or "").strip().lower())
+        }
+        if effort == "none":
+            return effort if effort in allowed else None
+        return project_reasoning_effort(effort, allowed)
     return effort

@@ -3,7 +3,8 @@
 // here so they can be unit-tested with node --test (mirroring how the rest of
 // electron/*.ts splits testable logic out of the main.ts monolith).
 
-import { pathToFileURL } from 'node:url'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 // Secondary windows open at the minimum usable size — a compact side panel for
 // subagent watch / cmd-click session pop-out, not a second full desktop.
@@ -55,8 +56,12 @@ function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath
   return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
 }
 
-function isAllowedChatNavigation(rawUrl, { devServer, rendererIndexPath } = {}) {
+function isAllowedChatNavigation(
+  rawUrl,
+  { devServer, rendererIndexPath }: { devServer?: string; rendererIndexPath?: string } = {}
+) {
   let parsed
+
   try {
     parsed = new URL(String(rawUrl || ''))
   } catch {
@@ -65,6 +70,7 @@ function isAllowedChatNavigation(rawUrl, { devServer, rendererIndexPath } = {}) 
 
   if (devServer) {
     let dev
+
     try {
       dev = new URL(devServer)
     } catch {

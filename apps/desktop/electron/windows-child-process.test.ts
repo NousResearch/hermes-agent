@@ -101,7 +101,7 @@ test('desktop backend teardown tree-kills Windows backend descendants', () => {
   assert.match(helperSnippet, /forceKillProcessTree\(child\.pid\)/)
   assert.match(helperSnippet, /child\.kill\('SIGTERM'\)/)
 
-  const resetIndex = source.indexOf('function resetHermesConnection()')
+  const resetIndex = source.search(/function resetHermesConnection\([^)]*\)/)
   assert.notEqual(resetIndex, -1, 'missing resetHermesConnection')
   const resetSnippet = source.slice(resetIndex, resetIndex + 300)
   assert.match(resetSnippet, /stopBackendChild\(hermesProcess\)/)
@@ -120,7 +120,10 @@ test('intentional or interactive desktop child processes stay documented', () =>
   assert.match(source, /'--repair', '--branch'/)
   assert.match(source, /'--update', '--branch'/)
   assert.match(source, /nodePty\.spawn\(command, args/)
-  assert.match(source, /spawn\('powershell\.exe', \['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath \$args\[0\]'/)
+  assert.match(
+    source,
+    /spawn\(\s*'powershell\.exe',\s*\['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath \$args\[0\]'/
+  )
 })
 
 test('bootstrap PowerShell runner hides Windows console children', () => {

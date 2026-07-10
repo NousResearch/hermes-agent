@@ -65,7 +65,6 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
-import { installStdioPipeErrorGuards } from './stdio-pipe-guards'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -89,9 +88,11 @@ import {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret as encryptDesktopSecretStrict,
+  resolvePublicHttpTarget,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
+  shouldRevealExternalFilePath,
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
@@ -100,9 +101,11 @@ import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
+  isAllowedChatNavigation,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import { installStdioPipeErrorGuards } from './stdio-pipe-guards'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
@@ -148,6 +151,9 @@ const IS_WSL = isWslEnvironment()
 // build SDK, so gate Tahoe workarounds on Darwin instead.
 const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
 const APP_ROOT = app.getAppPath()
+const IMAGE_URL_MAX_BYTES = DATA_URL_READ_MAX_BYTES
+const IMAGE_URL_MAX_REDIRECTS = 3
+const IMAGE_MIME_RE = /^image\/(?:avif|bmp|gif|jpeg|jpg|png|svg\+xml|webp)$/i
 
 // Preload must be plain JS — Electron's sandbox can't run .ts, and tsx's
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
@@ -298,10 +304,18 @@ if (INSTALL_STAMP) {
 // HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
 // touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
 function isRepoLocalHermesHome(homePath) {
-  if (path.basename(homePath) !== '.hermes') return false
+  if (path.basename(homePath) !== '.hermes') {
+    return false
+  }
+
   const parent = path.dirname(homePath)
-  if (fileExists(path.join(parent, '.git'))) return true
+
+  if (fileExists(path.join(parent, '.git'))) {
+    return true
+  }
+
   const devRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
+
   return Boolean(devRoot && path.resolve(parent) === devRoot)
 }
 
@@ -1079,11 +1093,15 @@ function openExternalUrl(rawUrl) {
   if (IS_WSL) {
     rememberLog(`[link] opening via WSL→Windows: ${url}`)
 
-    const proc = spawn('cmd.exe', ['/c', 'start', '""', url], {
+    const proc = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $args[0]', url],
+      {
       detached: true,
       stdio: 'ignore',
       windowsHide: true
-    })
+      }
+    )
 
     proc.on('error', error => {
       rememberLog(`[link] PowerShell Start-Process failed: ${error.message}; falling back to xdg-open`)
@@ -2601,17 +2619,20 @@ async function applyUpdates(opts = {}) {
 
     // Detached so the updater outlives this process — it needs us GONE before
     // `hermes update` will run (the venv shim is locked while we live).
-    const child = spawn(updater, updaterArgs, {
-      cwd: HERMES_HOME,
-      env: {
-        ...process.env,
-        HERMES_HOME,
-        PATH: pathWithHermesManagedNode(venvBin)
-      },
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: false
-    })
+    const child = spawn(
+      updater,
+      updaterArgs,
+      hiddenWindowsChildOptions({
+        cwd: HERMES_HOME,
+        env: {
+          ...process.env,
+          HERMES_HOME,
+          PATH: pathWithHermesManagedNode(venvBin)
+        },
+        detached: true,
+        stdio: 'ignore'
+      })
+    )
 
     child.unref()
 
@@ -2678,17 +2699,20 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   await releaseBackendLockForUpdate(updateRoot)
 
-  const child = spawn(updater, updaterArgs, {
-    cwd: HERMES_HOME,
-    env: {
-      ...process.env,
-      HERMES_HOME,
-      PATH: pathWithHermesManagedNode(venvBin)
-    },
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: false
-  })
+  const child = spawn(
+    updater,
+    updaterArgs,
+    hiddenWindowsChildOptions({
+      cwd: HERMES_HOME,
+      env: {
+        ...process.env,
+        HERMES_HOME,
+        PATH: pathWithHermesManagedNode(venvBin)
+      },
+      detached: true,
+      stdio: 'ignore'
+    })
+  )
 
   child.unref()
 
@@ -4194,7 +4218,13 @@ function fetchLinkTitle(rawUrl) {
   return pending
 }
 
-async function resourceBufferFromUrl(rawUrl) {
+function assertImageBufferLimit(buffer) {
+  if (buffer.length > IMAGE_URL_MAX_BYTES) {
+    throw new Error('Image exceeds the size limit')
+  }
+}
+
+async function resourceBufferFromUrl(rawUrl, redirectsLeft = IMAGE_URL_MAX_REDIRECTS) {
   if (!rawUrl) {
     throw new Error('Missing URL')
   }
@@ -4205,11 +4235,22 @@ async function resourceBufferFromUrl(rawUrl) {
     if (!match) {
       throw new Error('Invalid data URL')
     }
+
     const mimeType = match[1] || 'application/octet-stream'
-    if (!IMAGE_MIME_RE.test(mimeType)) throw new Error('Only image data URLs are supported')
+
+    if (!IMAGE_MIME_RE.test(mimeType)) {
+      throw new Error('Only image data URLs are supported')
+    }
+
     const encoded = match[3] || ''
-    if (encoded.length > IMAGE_URL_MAX_BYTES * 2) throw new Error('Image exceeds the size limit')
+
+    if (encoded.length > IMAGE_URL_MAX_BYTES * 2) {
+      throw new Error('Image exceeds the size limit')
+    }
+
     const buffer = match[2] ? Buffer.from(encoded, 'base64') : Buffer.from(decodeURIComponent(encoded), 'utf8')
+
+    assertImageBufferLimit(buffer)
 
     return { buffer, mimeType }
   }
@@ -4219,43 +4260,73 @@ async function resourceBufferFromUrl(rawUrl) {
       maxBytes: IMAGE_URL_MAX_BYTES,
       purpose: 'Image file'
     })
+
     const buffer = await fs.promises.readFile(resolvedPath)
 
-    return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
+    assertImageBufferLimit(buffer)
+
+    const mimeType = mimeTypeForPath(resolvedPath)
+
+    if (!IMAGE_MIME_RE.test(mimeType)) {
+      throw new Error('Only image files are supported')
+    }
+
+    return { buffer, mimeType }
   }
 
   const parsed = new URL(rawUrl)
+
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error('Only http, https, file, and data image URLs are supported')
   }
-  await assertPublicHttpTarget(parsed)
+
+  const target = await resolvePublicHttpTarget(parsed)
   const client = parsed.protocol === 'https:' ? https : http
+
+  const pinnedLookup = (_hostname, _options, callback) => {
+    callback(null, target.address, target.family)
+  }
 
   return new Promise((resolve, reject) => {
     let settled = false
+
     const fail = error => {
-      if (settled) return
+      if (settled) {
+        return
+      }
+
       settled = true
       reject(error)
     }
-    const req = client.get(parsed, res => {
+
+    const req = client.get(parsed, { lookup: pinnedLookup }, res => {
       const location = res.headers.location
+
       if ((res.statusCode || 0) >= 300 && (res.statusCode || 0) < 400 && location) {
         res.resume()
+
         if (redirectsLeft <= 0) {
           fail(new Error('Too many image URL redirects'))
+
           return
         }
+
         const nextUrl = new URL(location, parsed).toString()
+
         resourceBufferFromUrl(nextUrl, redirectsLeft - 1).then(resolve, fail)
+
         return
       }
+
       if ((res.statusCode || 500) >= 400) {
         fail(new Error(`Failed to fetch ${rawUrl}: ${res.statusCode}`))
         res.resume()
+
         return
       }
+
       const mimeType = String(res.headers['content-type'] || 'application/octet-stream').split(';')[0].trim()
+
       if (!IMAGE_MIME_RE.test(mimeType)) {
         fail(new Error('Remote URL did not return an image'))
         res.resume()
@@ -4265,17 +4336,24 @@ async function resourceBufferFromUrl(rawUrl) {
 
       const chunks = []
       let total = 0
+
       res.on('error', fail)
       res.on('data', chunk => {
         total += chunk.length
+
         if (total > IMAGE_URL_MAX_BYTES) {
           req.destroy(new Error('Image exceeds the size limit'))
+
           return
         }
+
         chunks.push(chunk)
       })
       res.on('end', () => {
-        if (settled) return
+        if (settled) {
+          return
+        }
+
         settled = true
         resolve({
           buffer: Buffer.concat(chunks),
@@ -4284,7 +4362,10 @@ async function resourceBufferFromUrl(rawUrl) {
       })
     })
 
-    req.on('error', reject)
+    req.setTimeout(resolveTimeoutMs(undefined, DEFAULT_FETCH_TIMEOUT_MS), () => {
+      req.destroy(new Error('Image fetch timed out'))
+    })
+    req.on('error', fail)
   })
 }
 

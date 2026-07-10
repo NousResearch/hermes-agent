@@ -9,11 +9,12 @@ import {
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
   resolveDirectoryForIpc,
+  resolvePublicHttpTarget,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
-  shouldRevealExternalFilePath,
-  sensitiveFileBlockReason
+  sensitiveFileBlockReason,
+  shouldRevealExternalFilePath
 } from './hardening'
 
 async function rejectsWithCode(promise, code: string) {
@@ -69,6 +70,31 @@ test('shouldRevealExternalFilePath flags executable file links', () => {
   assert.equal(shouldRevealExternalFilePath('C:\\Users\\me\\Downloads\\install.msi'), true)
   assert.equal(shouldRevealExternalFilePath('/Applications/Hermes.app'), true)
   assert.equal(shouldRevealExternalFilePath('/tmp/script.sh'), true)
+})
+
+test('resolvePublicHttpTarget rejects credentials and private DNS answers', async () => {
+  await assert.rejects(
+    resolvePublicHttpTarget(new URL('https://user:secret@example.com/image.png'), async () => [
+      { address: '93.184.216.34', family: 4 }
+    ]),
+    /credentials/
+  )
+
+  await assert.rejects(
+    resolvePublicHttpTarget(new URL('https://example.com/image.png'), async () => [
+      { address: '127.0.0.1', family: 4 }
+    ]),
+    /Private network/
+  )
+})
+
+test('resolvePublicHttpTarget returns one validated address for connection pinning', async () => {
+  const target = await resolvePublicHttpTarget(new URL('https://example.com/image.png'), async () => [
+    { address: '93.184.216.34', family: 4 },
+    { address: '2606:2800:220:1:248:1893:25c8:1946', family: 6 }
+  ])
+
+  assert.deepEqual(target, { address: '93.184.216.34', family: 4 })
 })
 
 test('path helpers reject blank non-string NUL and Windows device syntax', async () => {

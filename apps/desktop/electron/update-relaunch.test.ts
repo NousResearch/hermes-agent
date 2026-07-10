@@ -19,8 +19,6 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
@@ -207,15 +205,7 @@ test('buildRelaunchScript embeds pid/exec/args/env/cwd and is valid bash', () =>
   assert.match(script, /cd '\/home\/u\/work dir'/)
   assert.match(script, /exec '.*\/linux-unpacked\/Hermes' 'hermes:\/\/open\/agent\/42' '--note=it'\\''s fine'/)
 
-  // It must be syntactically valid bash (`bash -n`). Write to a temp file and lint.
-  const tmp = path.join(os.tmpdir(), `hermes-relaunch-test-${Date.now()}.sh`)
-  fs.writeFileSync(tmp, script)
-
-  try {
-    execFileSync('bash', ['-n', tmp], { stdio: 'pipe' })
-  } finally {
-    fs.rmSync(tmp, { force: true })
-  }
+  execFileSync('bash', ['-n'], { input: script, stdio: ['pipe', 'pipe', 'pipe'] })
 })
 
 test('buildRelaunchScript with no args/env still lints clean', () => {
@@ -227,14 +217,7 @@ test('buildRelaunchScript with no args/env still lints clean', () => {
     cwd: ''
   })
 
-  const tmp = path.join(os.tmpdir(), `hermes-relaunch-test2-${Date.now()}.sh`)
-  fs.writeFileSync(tmp, script)
-
-  try {
-    execFileSync('bash', ['-n', tmp], { stdio: 'pipe' })
-  } finally {
-    fs.rmSync(tmp, { force: true })
-  }
+  execFileSync('bash', ['-n'], { input: script, stdio: ['pipe', 'pipe', 'pipe'] })
 
   // exec line has no trailing args.
   assert.match(script, /exec '\/opt\/Hermes\/Hermes'\n/)

@@ -1,4 +1,6 @@
+import { lookup as lookupHost } from 'node:dns/promises'
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,6 +11,9 @@ const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
+type HostAddress = { address: string; family: number }
+type LookupAll = (hostname: string, options: { all: true; verbatim: true }) => Promise<HostAddress[]>
+
 const EXTERNAL_FILE_REVEAL_EXTENSIONS = new Set([
   '.app',
   '.appimage',
@@ -141,8 +146,101 @@ function sensitiveFileBlockReason(filePath) {
   return null
 }
 
+function shouldRevealExternalFilePath(filePath) {
+  const basename = path.basename(String(filePath || '')).toLowerCase()
+
+  if (!basename) {
+    return false
+  }
+
+  return EXTERNAL_FILE_REVEAL_EXTENSIONS.has(path.extname(basename))
+}
+
+function isPrivateNetworkAddress(address) {
+  const normalized = String(address || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .split('%', 1)[0]
+
+  const family = net.isIP(normalized)
+
+  if (family === 4) {
+    const [a, b, c] = normalized.split('.').map(part => Number(part))
+
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+      (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
+      (a === 203 && b === 0 && c === 113) ||
+      a >= 224
+    )
+  }
+
+  if (family === 6) {
+    if (normalized.startsWith('::ffff:') && normalized.slice('::ffff:'.length).includes('.')) {
+      return isPrivateNetworkAddress(normalized.slice('::ffff:'.length))
+    }
+
+    return (
+      normalized === '::' ||
+      normalized === '::1' ||
+      normalized.startsWith('fc') ||
+      normalized.startsWith('fd') ||
+      /^fe[89ab]/.test(normalized) ||
+      normalized.startsWith('ff') ||
+      normalized.startsWith('2001:db8:')
+    )
+  }
+
+  return true
+}
+
+async function resolvePublicHttpTarget(parsed: URL, lookup: LookupAll = lookupHost as LookupAll) {
+  if (!(parsed instanceof URL) || !['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('Only http and https image URLs are supported')
+  }
+
+  if (parsed.username || parsed.password) {
+    throw new Error('Image URL credentials are not allowed')
+  }
+
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '')
+  const literalFamily = net.isIP(hostname)
+
+  const records = literalFamily
+    ? [{ address: hostname, family: literalFamily }]
+    : await lookup(hostname, { all: true, verbatim: true })
+
+  if (!Array.isArray(records) || records.length === 0) {
+    throw new Error('Image URL hostname did not resolve')
+  }
+
+  const targets = records.map(record => ({
+    address: String(record?.address || ''),
+    family: Number(record?.family)
+  }))
+
+  if (
+    targets.some(
+      target => (target.family !== 4 && target.family !== 6) || isPrivateNetworkAddress(target.address)
+    )
+  ) {
+    throw new Error('Private network image URLs are not allowed')
+  }
+
+  return targets[0]
+}
+
 function ipcPathError(code: any, message: string): Error & { code: any } {
   const error = new Error(message) as Error & { code: any }
+
   ;(error as any).code = code
 
   return error
@@ -337,11 +435,15 @@ export {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
+  EXTERNAL_FILE_REVEAL_EXTENSIONS,
+  isPrivateNetworkAddress,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
+  resolvePublicHttpTarget,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   sensitiveFileBlockReason,
+  shouldRevealExternalFilePath,
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 }

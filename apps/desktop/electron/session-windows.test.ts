@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
+import { pathToFileURL } from 'node:url'
 
-import { buildSessionWindowUrl, chatWindowWebPreferences, createSessionWindowRegistry } from './session-windows'
+import {
+  buildSessionWindowUrl,
+  chatWindowWebPreferences,
+  createSessionWindowRegistry,
+  isAllowedChatNavigation
+} from './session-windows'
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
 // test fire the 'closed' event, mirroring the slice of the Electron API the

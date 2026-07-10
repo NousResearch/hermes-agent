@@ -148,6 +148,11 @@ apps/desktop/build/
 apps/desktop/dist/
 apps/desktop/release/
 apps/desktop/*.tsbuildinfo
+# `tsc -b` emits workspace JavaScript beside TypeScript sources before Vite
+# and esbuild create the packaged output. These files are reproducible build
+# artifacts; the source trees contain no tracked JavaScript.
+apps/desktop/src/**/*.js
+apps/shared/src/**/*.js
 
 # Web UI assets — synced from @nous-research/ui at build time via
 # `npm run sync-assets` (see web/package.json).

@@ -60,3 +60,50 @@ class TestScopedConfigContextLength:
         value, mismatch = scoped_config_context_length(cfg, "m")
         assert value == "256K"
         assert mismatch is None
+
+
+class TestNormalizedComparison:
+    """`agent.model` is normalized before this runs; the config value is not.
+
+    Without normalizing both sides, a valid config that names its model with a
+    provider prefix looks like a mismatch and silently loses its override.
+    """
+
+    @staticmethod
+    def _strip_prefix(name: str) -> str:
+        return name.split("/", 1)[1] if "/" in name else name
+
+    def test_prefixed_config_model_matches_normalized_active_model(self):
+        cfg = {"model": "zai/glm-4.6", "context_length": 40960}
+        value, mismatch = scoped_config_context_length(
+            cfg, "glm-4.6", normalize=self._strip_prefix,
+        )
+        assert value == 40960, "a prefixed config naming the running model must apply"
+        assert mismatch is None
+
+    def test_genuine_mismatch_still_detected_after_normalizing(self):
+        cfg = {"model": "zai/glm-4.6", "context_length": 40960}
+        value, mismatch = scoped_config_context_length(
+            cfg, "glm-5.2", normalize=self._strip_prefix,
+        )
+        assert value is None
+        assert mismatch == ("zai/glm-4.6", "glm-5.2", 40960)
+
+    def test_mismatch_reports_the_original_config_string(self):
+        """The warning should echo what the user wrote, not the normalized form."""
+        cfg = {"model": "anthropic/claude-sonnet-5", "context_length": 1000}
+        _, mismatch = scoped_config_context_length(
+            cfg, "other", normalize=self._strip_prefix,
+        )
+        assert mismatch[0] == "anthropic/claude-sonnet-5"
+
+    def test_no_normalizer_compares_raw(self):
+        cfg = {"model": "zai/glm-4.6", "context_length": 40960}
+        assert scoped_config_context_length(cfg, "glm-4.6")[0] is None
+
+    def test_normalizer_failure_falls_back_to_raw_comparison(self):
+        def boom(_name):
+            raise RuntimeError("normalizer unavailable")
+
+        cfg = {"model": "m", "context_length": 7}
+        assert scoped_config_context_length(cfg, "m", normalize=boom)[0] == 7

@@ -37,7 +37,7 @@ _DOH_PROVIDERS: list[dict] = [
         "headers": {"Accept": "application/dns-json"},
     },
     {
-        "url": "https://dns.quad9.net:5053/dns-query",
+        "url": "https://dns.quad9.net/dns-query",
         "params": {"name": _TELEGRAM_API_HOST, "type": "A"},
         "headers": {"Accept": "application/dns-json"},
     },
@@ -272,10 +272,4 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
-    return isinstance(exc, (
-        httpx.ConnectTimeout,
-        httpx.ConnectError,
-        httpx.ReadTimeout,
-        httpx.ReadError,
-        httpx.RemoteProtocolError,
-    ))
+    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))

@@ -181,54 +181,18 @@ class TestFallbackTransport:
         assert transport._sticky_ip == "149.154.167.220"
 
     @pytest.mark.asyncio
-    async def test_does_not_fallback_on_non_connect_error(self, monkeypatch):
-        """Non-retryable errors like HTTPStatusError should not trigger fallback."""
-        calls = []
-        behavior = {"api.telegram.org": httpx.HTTPStatusError("server error", request=None, response=None), "149.154.167.220": "ok"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
-
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-
-        with pytest.raises(httpx.HTTPStatusError):
-            await transport.handle_async_request(_telegram_request())
-
-        assert [c["url_host"] for c in calls] == ["api.telegram.org"]
-
-    @pytest.mark.asyncio
-    async def test_falls_back_on_read_timeout(self, monkeypatch):
-        """ReadTimeout is retryable — should trigger fallback to next IP."""
+    async def test_does_not_fallback_on_read_timeout(self, monkeypatch):
+        """Errors like ReadTimeout are not connection issues — don't retry."""
         calls = []
         behavior = {"api.telegram.org": httpx.ReadTimeout("read timeout"), "149.154.167.220": "ok"}
         monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-        await transport.handle_async_request(_telegram_request())
 
-        assert [c["url_host"] for c in calls] == ["api.telegram.org", "149.154.167.220"]
+        with pytest.raises(httpx.ReadTimeout):
+            await transport.handle_async_request(_telegram_request())
 
-    @pytest.mark.asyncio
-    async def test_falls_back_on_read_error(self, monkeypatch):
-        """ReadError is retryable — should trigger fallback to next IP."""
-        calls = []
-        behavior = {"api.telegram.org": httpx.ReadError("read error"), "149.154.167.220": "ok"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
-
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-        await transport.handle_async_request(_telegram_request())
-
-        assert [c["url_host"] for c in calls] == ["api.telegram.org", "149.154.167.220"]
-
-    @pytest.mark.asyncio
-    async def test_falls_back_on_remote_protocol_error(self, monkeypatch):
-        """RemoteProtocolError is retryable — should trigger fallback to next IP."""
-        calls = []
-        behavior = {"api.telegram.org": httpx.RemoteProtocolError("protocol error"), "149.154.167.220": "ok"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
-
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-        await transport.handle_async_request(_telegram_request())
-
-        assert [c["url_host"] for c in calls] == ["api.telegram.org", "149.154.167.220"]
+        assert [c["url_host"] for c in calls] == ["api.telegram.org"]
 
     @pytest.mark.asyncio
     async def test_all_ips_fail_raises_last_error(self, monkeypatch):
@@ -659,7 +623,7 @@ class TestDiscoverFallbackIps:
         self._patch_doh(monkeypatch, {
             "https://dns.google": (200, {"Status": 0}),  # no Answer key
             "https://cloudflare-dns.com": (200, {"garbage": True}),
-            "https://dns.quad9.net": (200, {"garbage": True}),
+            "https://dns.quad9.net": (200, {"Status": 0}),
         }, system_dns_ips=["149.154.166.110"])
 
         ips = await tnet.discover_fallback_ips()
@@ -726,6 +690,36 @@ class TestDiscoverFallbackIps:
         q9_reqs = [r for r in client.requests_made if "quad9" in r["url"]]
         assert q9_reqs
         assert q9_reqs[0]["headers"]["Accept"] == "application/dns-json"
+
+    @pytest.mark.asyncio
+    async def test_quad9_documented_url_used(self, monkeypatch):
+        """Quad9 must use the documented https://dns.quad9.net/dns-query endpoint."""
+        client = self._patch_doh(monkeypatch, {
+            "https://dns.google": (200, _doh_answer("149.154.167.220")),
+            "https://cloudflare-dns.com": (200, _doh_answer("149.154.167.221")),
+            "https://dns.quad9.net": (200, _doh_answer("149.154.167.222")),
+        }, system_dns_ips=["149.154.166.110"])
+
+        await tnet.discover_fallback_ips()
+
+        q9_reqs = [r for r in client.requests_made if "quad9" in r["url"]]
+        assert q9_reqs
+        assert q9_reqs[0]["url"] == "https://dns.quad9.net/dns-query"
+        assert q9_reqs[0]["headers"]["Accept"] == "application/dns-json"
+
+    @pytest.mark.asyncio
+    async def test_quad9_contributing_to_ip_pool(self, monkeypatch):
+        """Quad9 results should be collected alongside Google and Cloudflare."""
+        self._patch_doh(monkeypatch, {
+            "https://dns.google": (200, _doh_answer("149.154.167.220")),
+            "https://cloudflare-dns.com": (200, _doh_answer("149.154.167.221")),
+            "https://dns.quad9.net": (200, _doh_answer("149.154.167.222")),
+        }, system_dns_ips=["149.154.166.110"])
+
+        ips = await tnet.discover_fallback_ips()
+        assert "149.154.167.220" in ips
+        assert "149.154.167.221" in ips
+        assert "149.154.167.222" in ips
 
     @pytest.mark.asyncio
     async def test_non_a_records_ignored(self, monkeypatch):

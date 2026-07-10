@@ -598,3 +598,44 @@ class TestRestoreBoard:
         res = _cli(["boards", "restore", "cli-restore"], env_extra=env)
         assert res.returncode == 0, res.stderr
         assert kb.board_exists("cli-restore")
+
+    def test_restore_race_live_dir_after_check_is_valueerror(self, fresh_home, monkeypatch):
+        """If a live board appears after the pre-rename checks, refuse as ValueError
+
+        (not a raw filesystem OSError). Models concurrent create_board().
+        """
+        kb.create_board("race-proj", name="Race")
+        with kb.connect_closing(board="race-proj") as conn:
+            kb.create_task(conn, title="keep", triage=True)
+        kb.remove_board("race-proj", archive=True)
+        assert not kb.board_exists("race-proj")
+
+        live = kb.board_dir("race-proj")
+        orig_rename = Path.rename
+
+        def race_rename(self, target):
+            # After empty-shell sweep / pre-checks, inject a live collision.
+            if Path(target) == live:
+                live.mkdir(parents=True, exist_ok=True)
+                (live / "board.json").write_text(
+                    '{"slug": "race-proj", "name": "Fabricated"}\n',
+                    encoding="utf-8",
+                )
+            return orig_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", race_rename)
+        with pytest.raises(ValueError, match="already exists"):
+            kb.restore_board("race-proj")
+
+    def test_restore_from_rejects_path_outside_archive_root(self, fresh_home, tmp_path):
+        kb.create_board("ext-proj")
+        kb.remove_board("ext-proj", archive=True)
+        # A directory outside boards/_archived/ that only matches the basename prefix.
+        outsider = tmp_path / "ext-proj-9999999999"
+        outsider.mkdir()
+        (outsider / "board.json").write_text(
+            '{"slug": "ext-proj", "name": "Outsider"}\n', encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match="must be under"):
+            kb.restore_board("ext-proj", archive_path=str(outsider))
+        assert not kb.board_exists("ext-proj")

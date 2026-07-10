@@ -576,6 +576,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `boards show` / `boards current` | Print the currently-active board's name, DB path, and task counts. |
 | `boards rename <slug> "<name>"` | Change a board's display name. Slug is immutable. |
 | `boards rm <slug>` | Archive (default) or hard-delete a board. `--delete` skips the archive step. Archived boards move to `boards/_archived/<slug>-<ts>/`. Refused for `default`. |
+| `boards restore <slug>` / `boards unarchive` | Restore a board previously archived by `boards rm`. Default: newest matching `boards/_archived/<slug>-*` entry. Optional `--from <path>` confines the source under `boards/_archived/` (external paths are rejected). Refuses if a live board already exists at `boards/<slug>/`. |
 | `create "<title>"` | Create a new task on the active board. Flags: `--body`, `--assignee`, `--parent` (repeatable), `--workspace scratch\|worktree\|dir:<path>`, `--tenant`, `--priority`, `--triage`, `--idempotency-key`, `--max-runtime`, `--max-retries`, `--skill` (repeatable). |
 | `list` / `ls` | List tasks on the active board. Filter with `--mine`, `--assignee`, `--status`, `--tenant`, `--archived`, `--json`. |
 | `show <id>` | Show a task with comments and events. `--json` for machine output. |
@@ -610,6 +611,10 @@ hermes kanban list                  # shows atm10-server tasks
 # Archive a board (recoverable) or hard-delete it.
 hermes kanban boards rm atm10-server
 hermes kanban boards rm atm10-server --delete
+
+# Restore an archived board (newest archive by default).
+hermes kanban boards restore atm10-server
+# hermes kanban boards restore atm10-server --from ~/.hermes/kanban/boards/_archived/atm10-server-1710000000
 ```
 
 Board resolution order (highest precedence first): `--board <slug>` flag → `HERMES_KANBAN_BOARD` env var → `~/.hermes/kanban/current` file → `default`.

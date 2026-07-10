@@ -888,14 +888,31 @@ def restore_board(slug: str, *, archive_path: str | Path | None = None) -> dict:
             f"Remove or rename it before restoring an archive."
         )
 
+    archive_root = (boards_root() / "_archived").resolve()
     if archive_path is not None:
-        src = Path(archive_path).expanduser()
+        # Confine --from to boards/_archived/ so operators cannot point
+        # restore at an arbitrary local directory that only shares a basename.
+        try:
+            src = Path(archive_path).expanduser().resolve(strict=False)
+        except OSError as exc:
+            raise ValueError(f"invalid archive path: {archive_path}") from exc
+        try:
+            src.relative_to(archive_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"archive path must be under {archive_root}; got {src}"
+            ) from exc
         if not src.is_dir():
             raise ValueError(f"archive path does not exist: {src}")
         if not src.name.startswith(f"{normed}-"):
             raise ValueError(
                 f"archive path {src.name!r} does not match slug {normed!r} "
                 f"(expected a directory named '{normed}-<timestamp>')"
+            )
+        if not ((src / "kanban.db").exists() or (src / "board.json").exists()):
+            raise ValueError(
+                f"archive path {src} does not look like a board "
+                f"(missing kanban.db / board.json)"
             )
     else:
         candidates = list_archived_board_dirs(normed)
@@ -925,7 +942,21 @@ def restore_board(slug: str, *, archive_path: str | Path | None = None) -> dict:
         )
 
     live.parent.mkdir(parents=True, exist_ok=True)
-    src.rename(live)
+    # Final rename can still race with a concurrent create_board() that
+    # recreated boards/<slug>/ after the empty-shell sweep above. Convert
+    # the filesystem collision into the advertised user-facing refusal
+    # (ValueError) so the CLI path surfaces a collision instead of OSError.
+    try:
+        src.rename(live)
+    except OSError as exc:
+        if live.exists():
+            raise ValueError(
+                f"board {normed!r} already exists at {live}. "
+                f"Remove or rename it before restoring an archive."
+            ) from exc
+        raise ValueError(
+            f"failed to restore board {normed!r} from {src} to {live}: {exc}"
+        ) from exc
     return {
         "slug": normed,
         "action": "restored",

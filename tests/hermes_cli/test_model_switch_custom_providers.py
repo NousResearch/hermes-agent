@@ -22,6 +22,7 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     """No-args /model menus should include saved custom_providers entries."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
 
     providers = list_authenticated_providers(
         current_provider="openai-codex",
@@ -313,6 +314,7 @@ def test_list_deduplicates_same_model_in_group(monkeypatch):
     duplicate entries in the models list."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
 
     providers = list_authenticated_providers(
         current_provider="openrouter",
@@ -474,6 +476,70 @@ def test_custom_provider_current_only_probe_respects_explicit_catalog(monkeypatc
     assert rows["Active"]["models"] == ["live-a", "live-b"]
     assert rows["Offline"]["models"] == ["offline-seed"]
     assert rows["Static"]["models"] == ["only"]
+
+
+def test_custom_provider_current_explicit_catalog_skips_probe(monkeypatch):
+    """Current-only GUI probing must still honor an explicit catalog."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    calls = []
+
+    def fetch(*args, **kwargs):
+        calls.append((args, kwargs))
+        return ["unexpected-live-model"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="custom:static",
+        current_base_url="http://static.local/v1",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Static",
+                "base_url": "http://static.local/v1",
+                "model": "only",
+                "models": ["only"],
+            }
+        ],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+    )
+
+    assert calls == []
+    row = next(p for p in providers if p["name"] == "Static")
+    assert row["is_current"] is True
+    assert row["models"] == ["only"]
+
+
+def test_custom_provider_empty_explicit_list_allows_probe(monkeypatch):
+    """An empty ``models:`` declaration is not an explicit catalog."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    calls = []
+
+    def fetch(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["live-a", "live-b"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="custom:local",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local",
+                "base_url": "http://local.test/v1",
+                "model": "seed",
+                "models": [],
+            }
+        ],
+    )
+
+    assert calls == [("", "http://local.test/v1", {"headers": None})]
+    row = next(p for p in providers if p["name"] == "Local")
+    assert row["models"] == ["live-a", "live-b"]
 
 
 def test_list_enumerates_dict_format_models_alongside_default(monkeypatch):

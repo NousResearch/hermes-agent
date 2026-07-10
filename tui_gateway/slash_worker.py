@@ -65,6 +65,27 @@ def _is_orphaned(original_ppid, parent_create_time, getppid=os.getppid) -> bool:
         return True
 
 
+def _prepare_slash_worker_runtime() -> None:
+    """Start bounded MCP discovery before HermesCLI snapshots tools.
+
+    Each slash_worker child is its own process — the parent ``hermes serve``
+    discovery thread does not populate this registry (issue #61891).
+    """
+    import logging
+
+    from hermes_cli.mcp_startup import (
+        start_background_mcp_discovery,
+        wait_for_mcp_discovery,
+    )
+
+    logger = logging.getLogger(__name__)
+    start_background_mcp_discovery(
+        logger=logger,
+        thread_name="slash-worker-mcp-discovery",
+    )
+    wait_for_mcp_discovery()
+
+
 def _start_parent_death_watchdog(original_ppid, parent_create_time) -> None:
     def _loop():
         while not _is_orphaned(original_ppid, parent_create_time):
@@ -129,6 +150,7 @@ def main():
     except psutil.Error:
         parent_create_time = 0.0
     _start_parent_death_watchdog(orig_ppid, parent_create_time)
+    _prepare_slash_worker_runtime()
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)

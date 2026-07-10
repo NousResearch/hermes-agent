@@ -3,6 +3,7 @@
 import asyncio
 import os
 import signal
+import threading
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -82,6 +83,42 @@ class TestMCPLoopExceptionHandler:
                 mcp_mod._servers.clear()
                 mcp_mod._server_connecting.clear()
             mcp_mod._stop_mcp_loop()
+
+    def test_shutdown_finalizes_async_generators_before_closing_loop(self):
+        """Stopping the MCP loop drains async generators on its owner thread."""
+        import tools.mcp_tool as mcp_mod
+
+        finalized = threading.Event()
+
+        async def _stream():
+            try:
+                yield "ready"
+            finally:
+                finalized.set()
+
+        with mcp_mod._lock:
+            mcp_mod._servers.clear()
+            mcp_mod._server_connecting.clear()
+
+        mcp_mod._ensure_mcp_loop()
+        with mcp_mod._lock:
+            loop = mcp_mod._mcp_loop
+
+        streams = []
+
+        async def _start_stream():
+            # Construct and first-iterate the generator on the MCP loop so it
+            # is registered with that loop's async-generator hooks.
+            stream = _stream()
+            streams.append(stream)
+            return await stream.__anext__()
+
+        first_item = asyncio.run_coroutine_threadsafe(_start_stream(), loop)
+        assert first_item.result(timeout=2) == "ready"
+
+        assert mcp_mod._stop_mcp_loop() is True
+        assert finalized.wait(timeout=2)
+        assert loop.is_closed()
 
 
 # ---------------------------------------------------------------------------

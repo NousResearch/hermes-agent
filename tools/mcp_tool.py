@@ -3564,6 +3564,28 @@ def _mcp_loop_exception_handler(loop, context):
     loop.default_exception_handler(context)
 
 
+def _run_mcp_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Own the MCP loop for its full lifecycle in the background thread.
+
+    Async generators must be finalized before the loop is closed. Closing the
+    loop from the caller thread immediately after ``run_forever`` stops leaves
+    transports such as httpx/httpcore's ``PoolByteStream`` pending and emits
+    ``RuntimeWarning: async generator ... was never awaited`` at process exit.
+    Keeping shutdown and close on the loop's owner thread also avoids a race
+    where the caller closes a loop whose thread has not quite exited yet.
+    """
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_forever()
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            logger.warning("Failed to finalize MCP async generators", exc_info=True)
+        finally:
+            loop.close()
+
+
 def _ensure_mcp_loop():
     """Start the background event loop thread if not already running."""
     global _mcp_loop, _mcp_thread
@@ -3573,7 +3595,8 @@ def _ensure_mcp_loop():
         _mcp_loop = asyncio.new_event_loop()
         _mcp_loop.set_exception_handler(_mcp_loop_exception_handler)
         _mcp_thread = threading.Thread(
-            target=_mcp_loop.run_forever,
+            target=_run_mcp_loop,
+            args=(_mcp_loop,),
             name="mcp-event-loop",
             daemon=True,
         )
@@ -5614,12 +5637,22 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
         _mcp_thread = None
     if loop is not None:
         loop.call_soon_threadsafe(loop.stop)
-        if thread is not None:
+        if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=5)
-        try:
-            loop.close()
-        except Exception:
-            pass
+        if (
+            thread is not None
+            and thread is not threading.current_thread()
+            and thread.is_alive()
+        ):
+            logger.warning("MCP event loop thread did not stop within 5 seconds")
+        elif thread is None and not loop.is_closed():
+            # Defensive fallback for partially initialized test/runtime state.
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                logger.warning("Failed to finalize MCP async generators", exc_info=True)
+            finally:
+                loop.close()
         # After closing the loop, any stdio subprocesses that survived the
         # graceful shutdown are now orphaned — include active PIDs too
         # since the loop is gone and no session can still be in flight.

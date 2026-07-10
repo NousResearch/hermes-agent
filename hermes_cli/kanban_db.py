@@ -1329,6 +1329,20 @@ def _cross_process_init_lock(path: Path):
     lock keeps header validation, integrity probing, WAL activation, and
     additive migrations single-file/single-writer across the whole host while
     leaving normal post-init DB usage concurrent under SQLite WAL.
+
+    First-init only: :func:`connect` reaches this lock exclusively on the
+    first-init path — paths already initialized by this process skip it via
+    the ``_INITIALIZED_PATHS`` fast path, which is what keeps a stalled or
+    slow holder from ever blocking a steady-state connect such as the gateway
+    dispatcher's next tick (#36644, ``84ba83b09``).
+
+    On that first-init path the acquire deliberately **blocks**. The previous
+    bounded acquire (non-blocking retries up to a deadline, then "proceed
+    anyway") timed out spuriously under fresh-board bursts of ~20 processes,
+    and the losers fell through the lock against a half-initialized database.
+    Losers of the first-init race must wait for the owner to finish, however
+    long that takes; correctness here beats latency because this cost is paid
+    once per process per path.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".init.lock")
@@ -1663,6 +1677,38 @@ def connect(
     else:
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Fast path: once THIS process has initialized this path, the expensive
+    # first-open work (header validation, integrity probe, schema + additive
+    # migrations) is already done and cached in _INITIALIZED_PATHS. The
+    # cross-process init lock below is deliberately BLOCKING (losers of a
+    # fresh-board race must wait for the owner rather than proceed against a
+    # half-initialized database), so acquiring it on every connect would let
+    # a single stalled holder (e.g. an external `hermes kanban list`
+    # mid-integrity-probe) block the long-lived gateway dispatcher's
+    # next-tick connect() forever — the #36644 dispatcher stall, fixed by
+    # 84ba83b09. On the steady-state path there is nothing for the
+    # cross-process lock to protect (no schema/migration writes run), so skip
+    # it entirely and just open the connection with WAL/pragmas under the
+    # cheap in-process _INIT_LOCK.
+    resolved = str(path.resolve())
+    if resolved in _INITIALIZED_PATHS:
+        conn = _sqlite_connect(path)
+        try:
+            conn.row_factory = sqlite3.Row
+            with _INIT_LOCK:
+                from hermes_state import apply_wal_with_fallback
+                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                conn.execute("PRAGMA synchronous=FULL")
+                conn.execute("PRAGMA wal_autocheckpoint=100")
+                conn.execute("PRAGMA foreign_keys=ON")
+                conn.execute("PRAGMA secure_delete=ON")
+                conn.execute("PRAGMA cell_size_check=ON")
+        except Exception:
+            conn.close()
+            raise
+        return conn
+
     with _cross_process_init_lock(path):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
         # and other invalid-header cases without opening a sqlite connection.

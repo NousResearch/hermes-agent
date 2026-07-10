@@ -79,15 +79,18 @@ def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
 
 
 def test_cross_process_init_lock_uses_windows_byte_range_lock(tmp_path, monkeypatch):
-    """Windows must use a real (non-blocking) process lock, not a no-op open.
+    """Windows must use a real (blocking) process lock, not a no-op open.
 
-    The init lock acquires with LK_NBLCK in a bounded retry loop (#36644) so a
-    wedged holder can never block connect() forever; a clean acquire takes the
-    lock once and releases it once.
+    The init lock acquires with LK_LOCK — a blocking byte-range lock — so a
+    loser of a fresh-board first-init race waits for the owner instead of
+    proceeding against a half-initialized database. Steady-state connects
+    never reach this lock (the _INITIALIZED_PATHS fast path skips it), which
+    is what keeps a wedged holder from stalling the dispatcher (#36644). A
+    clean acquire takes the lock once and releases it once.
     """
     calls: list[tuple[int, int, int]] = []
     fake_msvcrt = types.SimpleNamespace(
-        LK_NBLCK=3,
+        LK_LOCK=1,
         LK_UNLCK=2,
         locking=lambda fd, mode, nbytes: calls.append((fd, mode, nbytes)),
     )
@@ -96,12 +99,12 @@ def test_cross_process_init_lock_uses_windows_byte_range_lock(tmp_path, monkeypa
 
     db_path = tmp_path / "kanban.db"
     with kb._cross_process_init_lock(db_path):
-        # Acquired exactly once via the non-blocking byte-range lock.
-        assert [call[1:] for call in calls] == [(fake_msvcrt.LK_NBLCK, 1)]
+        # Acquired exactly once via the blocking byte-range lock.
+        assert [call[1:] for call in calls] == [(fake_msvcrt.LK_LOCK, 1)]
 
     # Released once on exit.
     assert [call[1:] for call in calls] == [
-        (fake_msvcrt.LK_NBLCK, 1),
+        (fake_msvcrt.LK_LOCK, 1),
         (fake_msvcrt.LK_UNLCK, 1),
     ]
 

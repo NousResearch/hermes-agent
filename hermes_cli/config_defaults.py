@@ -751,6 +751,8 @@ DEFAULT_CONFIG = {
                                       #              tokens after compaction; costs a few
                                       #              extra summarizer calls at the
                                       #              compaction boundary.
+        "max_tail_message_floor": 0,  # cap for the tail floor (0 = default 8; set higher to keep more
+                                      # recent messages verbatim)
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "min_tail_user_messages": 1,  # REAL (actionable) user messages guaranteed to
                                       # survive in the uncompressed tail. 1 = existing

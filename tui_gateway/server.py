@@ -9023,10 +9023,22 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             def _stream(delta):
                 with session["history_lock"]:
                     _append_inflight_delta(session, delta)
-                payload = {"text": delta}
-                if streamer and (r := streamer.feed(delta)) is not None:
-                    payload["rendered"] = r
-                _emit("message.delta", sid, payload)
+                # Fix for #62142: when the agent has edited files this turn,
+                # provisional text streamed via message.delta may be rejected
+                # by verification-stop and discarded from the durable transcript.
+                # Suppress delta output after mutations so the UI only sees the
+                # authoritative answer via message.complete.
+                mutation_paths = getattr(agent, "_turn_file_mutation_paths", None)
+                if mutation_paths and mutation_paths:
+                    # Tool/progress events still go through as delta (they
+                    # don't contain user-facing prose that would be discarded),
+                    # but text deltas are held back until message.complete.
+                    pass
+                else:
+                    payload = {"text": delta}
+                    if streamer and (r := streamer.feed(delta)) is not None:
+                        payload["rendered"] = r
+                    _emit("message.delta", sid, payload)
 
             run_kwargs = {
                 "conversation_history": list(history),

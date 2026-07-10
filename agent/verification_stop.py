@@ -305,8 +305,10 @@ def build_verify_on_stop_nudge(
         f"Verification status: {_status_detail(status)}\n\n"
         f"Changed paths:\n{_format_changed_paths(paths)}\n\n"
         f"{command_instruction} If verification is not possible, explain the "
-        "concrete blocker instead of claiming the work is fully verified."
-        f"{addendum}]"
+        "concrete blocker instead of claiming the work is fully verified.\n\n"
+        "Return the complete user-facing answer to the original request, "
+        "including any report or artifact you already composed — do not "
+        "return only a brief \"verification passed\" receipt.]"
     )
 
 

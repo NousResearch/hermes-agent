@@ -743,6 +743,9 @@ export interface SessionSearchResult {
   session_started: number | null
   snippet: string
   source: string | null
+  /** Session title when the hit came from the title-match lane (human-assigned
+   *  intent — ranked above content hits in the sidebar merge). */
+  title?: string | null
 }
 
 export interface SessionSearchResponse {

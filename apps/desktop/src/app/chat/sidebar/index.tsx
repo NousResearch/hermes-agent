@@ -23,7 +23,7 @@ import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/he
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
-import { sessionMatchesSearch } from '@/lib/session-search'
+import { rankTitleMatchesFirst, sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $cronJobs } from '@/store/cron'
@@ -194,7 +194,7 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     preview: result.snippet?.trim() || null,
     source: result.source ?? null,
     started_at: ts,
-    title: null,
+    title: result.title?.trim() || null,
     tool_call_count: 0
   }
 }
@@ -443,7 +443,7 @@ export function ChatSidebar({
       out.set(match.session_id, loaded ?? searchResultToSession(match))
     }
 
-    return [...out.values()]
+    return rankTitleMatchesFirst([...out.values()], trimmedQuery)
   }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
 
   const unpinnedAgentSessions = useMemo(

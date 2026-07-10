@@ -2500,6 +2500,81 @@ class TestAuxiliaryFallbackLayering:
 
         assert main_client.chat.completions.create.called
 
+    def test_explicit_compression_uses_builtin_chain_when_chain_and_main_exhausted(self, monkeypatch):
+        """Giant-session compression must not die on a fragile explicit aux route.
+
+        If auxiliary.compression pins Codex (or any explicit provider) and that
+        route is quota-limited/timed out, an empty fallback_chain plus identical
+        main model used to re-raise immediately. Compression now gets one final
+        built-in provider-chain escape hatch so the oversized session can still
+        compact.
+        """
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        builtin_client = MagicMock()
+        builtin_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from builtin provider chain"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openai-codex", "gpt-5.5", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")) as mock_main, \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(builtin_client, "nous-safe-model", "nous")) as mock_builtin:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert result.choices[0].message.content == "from builtin provider chain"
+        mock_chain.assert_called_once_with(
+            "compression", "openai-codex", reason="payment error")
+        mock_main.assert_called_once_with(
+            "openai-codex", "compression", reason="payment error")
+        mock_builtin.assert_called_once_with(
+            "openai-codex", "compression", reason="payment error")
+        assert builtin_client.chat.completions.create.called
+
+    @pytest.mark.asyncio
+    async def test_async_explicit_compression_uses_builtin_chain_when_chain_and_main_exhausted(self, monkeypatch):
+        """Async compression fallback has parity with the sync path."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(side_effect=self._make_payment_err())
+
+        sync_builtin = MagicMock()
+        async_builtin = MagicMock()
+        async_builtin.chat.completions.create = AsyncMock(return_value=MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from async builtin chain"))
+        ]))
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openai-codex", "gpt-5.5", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(sync_builtin, "nous-safe-model", "nous")) as mock_builtin, \
+             patch("agent.auxiliary_client._to_async_client",
+                   return_value=(async_builtin, "nous-safe-model")):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert result.choices[0].message.content == "from async builtin chain"
+        mock_builtin.assert_called_once_with(
+            "openai-codex", "compression", reason="payment error")
+        assert async_builtin.chat.completions.create.await_count == 1
+
     def test_explicit_provider_rate_limit_triggers_fallback(self, monkeypatch):
         """429 rate-limit on an explicit provider must trigger fallback (not be ignored).
 
@@ -5202,6 +5277,48 @@ class TestCompressionFallbackContextFilter:
             "screening by context window.")
         assert model == "huge-1m"
         assert "big-provider" in label
+
+    def test_configured_chain_skips_unhealthy_candidate(self, monkeypatch):
+        """A configured fallback_chain must not re-enter a provider already
+        quarantined for quota/payment failure."""
+        from agent.auxiliary_client import (
+            _mark_provider_unhealthy,
+            _reset_aux_unhealthy_cache,
+            _try_configured_fallback_chain,
+        )
+
+        unhealthy_client = MagicMock(name="unhealthy")
+        healthy_client = MagicMock(name="healthy")
+        entries = [
+            self._make_chain_entry("openrouter", "fragile-model"),
+            self._make_chain_entry("nous", "stable-model"),
+        ]
+
+        def fake_resolve(entry):
+            if entry is entries[0]:
+                return unhealthy_client, "fragile-model"
+            return healthy_client, "stable-model"
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        _reset_aux_unhealthy_cache()
+        try:
+            _mark_provider_unhealthy("openrouter", ttl=60)
+            with patch("agent.auxiliary_client._resolve_fallback_entry",
+                       side_effect=fake_resolve), \
+                 patch("agent.auxiliary_client.get_model_context_length",
+                       return_value=256_000):
+                client, model, label = _try_configured_fallback_chain(
+                    task="compression", failed_provider="openai-codex")
+        finally:
+            _reset_aux_unhealthy_cache()
+
+        assert client is healthy_client
+        assert model == "stable-model"
+        assert "nous" in label
 
     def test_configured_chain_continues_after_skipping_too_small(self, monkeypatch):
         """When all small candidates are skipped and only the last is large enough,

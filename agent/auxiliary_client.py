@@ -3909,6 +3909,7 @@ def _try_configured_fallback_chain(
         return None, None, ""
 
     skip = failed_provider.lower().strip()
+    skip_label = _normalize_chain_label(skip)
     tried = []
     min_ctx = _task_minimum_context_length(task)
 
@@ -3916,11 +3917,15 @@ def _try_configured_fallback_chain(
         if not isinstance(entry, dict):
             continue
         fb_provider = str(entry.get("provider", "")).strip()
-        if not fb_provider or fb_provider.lower() == skip:
+        fb_label_norm = _normalize_chain_label(fb_provider)
+        label = f"fallback_chain[{i}]({fb_provider})"
+        if not fb_provider or fb_provider.lower() == skip or fb_label_norm == skip_label:
+            continue
+        if fb_label_norm and _is_provider_unhealthy(fb_label_norm):
+            _log_skip_unhealthy(fb_label_norm, task)
+            tried.append(f"{label} (unhealthy)")
             continue
         fb_model = str(entry.get("model", "")).strip() or None
-
-        label = f"fallback_chain[{i}]({fb_provider})"
 
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
@@ -6910,6 +6915,8 @@ def call_llm(
             #   2. For auto: top-level main fallback_providers/fallback_model
             #   3. For auto: built-in auxiliary discovery chain
             #   4. For explicit aux providers: main agent model safety net
+            #   5. For explicit compression: built-in auxiliary discovery chain
+            #      as the final fail-closed escape hatch for giant sessions
             fb_client, fb_model, fb_label = (None, None, "")
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
@@ -6925,6 +6932,9 @@ def call_llm(
                     task, resolved_provider or "auto", reason=reason)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
+                        resolved_provider, task, reason=reason)
+                if fb_client is None and task == "compression":
+                    fb_client, fb_model, fb_label = _try_payment_fallback(
                         resolved_provider, task, reason=reason)
 
             if fb_client is not None:
@@ -6955,7 +6965,8 @@ def call_llm(
             # (#26882) The error itself is re-raised below.
             logger.warning(
                 "Auxiliary %s: %s on %s and all fallbacks exhausted "
-                "(fallback_chain + main agent model). Raising original error.",
+                "(fallback_chain + main agent model + built-in provider chain where eligible). "
+                "Raising original error.",
                 task or "call", reason, resolved_provider,
             )
         # Connection/timeout errors leave the cached client poisoned (closed
@@ -7415,6 +7426,8 @@ async def async_call_llm(
             #   2. For auto: top-level main fallback_providers/fallback_model
             #   3. For auto: built-in auxiliary discovery chain
             #   4. For explicit aux providers: main agent model safety net
+            #   5. For explicit compression: built-in auxiliary discovery chain
+            #      as the final fail-closed escape hatch for giant sessions
             fb_client, fb_model, fb_label = (None, None, "")
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
@@ -7430,6 +7443,9 @@ async def async_call_llm(
                     task, resolved_provider or "auto", reason=reason)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
+                        resolved_provider, task, reason=reason)
+                if fb_client is None and task == "compression":
+                    fb_client, fb_model, fb_label = _try_payment_fallback(
                         resolved_provider, task, reason=reason)
 
             if fb_client is not None:
@@ -7464,7 +7480,8 @@ async def async_call_llm(
             # All fallback layers exhausted — warn before re-raising. (#26882)
             logger.warning(
                 "Auxiliary %s (async): %s on %s and all fallbacks exhausted "
-                "(fallback_chain + main agent model). Raising original error.",
+                "(fallback_chain + main agent model + built-in provider chain where eligible). "
+                "Raising original error.",
                 task or "call", reason, resolved_provider,
             )
         # Mirror the sync path: drop poisoned clients on connection/timeout

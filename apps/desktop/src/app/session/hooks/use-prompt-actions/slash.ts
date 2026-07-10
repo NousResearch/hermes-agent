@@ -251,7 +251,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             sessionId
           })
 
-          const result = await requestGateway<unknown>(surface.rpc, params)
+          // Forward the surface's declared timeout when present; default the
+          // requestGateway layer keeps (30s) is too tight for RPCs that do
+          // real work (e.g. session.compress which makes an LLM summarise
+          // call while holding the history lock — easily 60-120s).
+          const result = await requestGateway<unknown>(surface.rpc, params, surface.timeoutMs)
           const body = renderRpcResult(result, ctx.name)
 
           renderSlashOutput(body || `/${ctx.name}: no output`)

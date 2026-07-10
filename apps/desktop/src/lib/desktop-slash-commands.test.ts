@@ -274,6 +274,37 @@ describe('desktop slash command curation', () => {
     // background processes regardless of session (see tui_gateway L11405).
   })
 
+  it('gives /compress a long RPC timeout to cover the LLM summarise call', () => {
+    // session.compress calls `_compress_context` while holding the history
+    // lock, which makes an LLM round-trip. The default 30s gateway RPC
+    // timeout surfaces a false "request timed out" toast during that window.
+    const surface = resolveDesktopCommand('/compress')?.surface
+
+    expect(surface?.kind).toBe('rpc')
+    if (surface?.kind !== 'rpc') return
+    expect(surface.timeoutMs).toBe(180_000)
+  })
+
+  it('leaves other rpc commands with no explicit timeout (default applies)', () => {
+    // Only /compress needs the wide window today. The others are near-instant
+    // RPCs (process.stop kills background, session.usage reads cached counters,
+    // agents.list walks the registry). If a future RPC needs more room, add
+    // a per-command entry here.
+    const timedNames = new Set(['/compress'])
+    const allRpcNames = ['/agents', '/compress', '/save', '/status', '/steer', '/stop', '/usage'] as const
+
+    for (const name of allRpcNames) {
+      const surface = resolveDesktopCommand(name)?.surface
+      expect(surface?.kind).toBe('rpc')
+      if (surface?.kind !== 'rpc') continue
+      if (timedNames.has(name)) {
+        expect(surface.timeoutMs).toBeGreaterThan(30_000)
+      } else {
+        expect(surface.timeoutMs).toBeUndefined()
+      }
+    }
+  })
+
   it('still routes commands without dedicated RPCs through exec()', () => {
     // These DO NOT have first-class @method handlers in tui_gateway/server.py;
     // they must keep flowing through slash.exec / command.dispatch because

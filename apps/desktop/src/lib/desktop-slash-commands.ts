@@ -71,7 +71,7 @@ export type DesktopUnavailableReason = 'advanced' | 'messaging' | 'settings' | '
 export type DesktopCommandSurface =
   | { kind: 'action'; action: DesktopActionId }
   | { kind: 'picker'; picker: DesktopPickerId }
-  | { kind: 'rpc'; rpc: string; buildParams: (ctx: SlashCommandBuildCtx) => Record<string, unknown> }
+  | { kind: 'rpc'; rpc: string; timeoutMs?: number; buildParams: (ctx: SlashCommandBuildCtx) => Record<string, unknown> }
   | { kind: 'exec' }
   | { kind: 'unavailable'; reason: DesktopUnavailableReason }
 
@@ -124,8 +124,9 @@ const unavailable = (reason: DesktopUnavailableReason): DesktopCommandSurface =>
  */
 const rpc = (
   rpcName: string,
-  buildParams: (ctx: SlashCommandBuildCtx) => Record<string, unknown>
-): DesktopCommandSurface => ({ kind: 'rpc', rpc: rpcName, buildParams })
+  buildParams: (ctx: SlashCommandBuildCtx) => Record<string, unknown>,
+  timeoutMs?: number
+): DesktopCommandSurface => ({ kind: 'rpc', rpc: rpcName, timeoutMs, buildParams })
 
 /**
  * THE source of truth for desktop slash commands. Everything below — execution
@@ -187,7 +188,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // it through `exec()` (slash.exec → command.dispatch) used to fall through
   // to `not a quick/plugin/skill command: compress` because command.dispatch
   // has no inline branch for `compress`. Bypass that path entirely.
-  { name: '/compress', description: 'Compress this conversation context', surface: rpc('session.compress', ctx => ({ session_id: ctx.sessionId, focus_topic: ctx.arg.trim() })) },
+  //
+  // The RPC itself runs `_compress_context` which makes an LLM summarise call
+  // while holding `session["history_lock"]`. That can easily exceed the
+  // 30s default gateway RPC timeout — give it 3min to cover slow models and
+  // very long sessions without surfacing a false "request timed out".
+  { name: '/compress', description: 'Compress this conversation context', surface: rpc('session.compress', ctx => ({ session_id: ctx.sessionId, focus_topic: ctx.arg.trim() }), 180_000) },
   { name: '/debug', description: 'Create a debug report', surface: exec() },
   { name: '/goal', description: 'Manage the standing goal for this session', surface: exec() },
   { name: '/personality', description: 'Switch personality for this session', surface: exec(), args: true },

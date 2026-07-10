@@ -1131,9 +1131,59 @@ def test_create_rejects_no_title(worker_env):
     assert json.loads(kt._handle_create({"title": "   ", "assignee": "x"})).get("error")
 
 
-def test_create_rejects_no_assignee(worker_env):
+def _created_assignee(create_out: str) -> str:
+    d = json.loads(create_out)
+    assert d["ok"] is True
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        return kb.get_task(conn, d["task_id"]).assignee
+    finally:
+        conn.close()
+
+
+def test_create_missing_assignee_defaults(worker_env):
+    """Omitted/blank assignee no longer errors: the task falls back through
+    the operator chain (kanban.default_assignee → active profile →
+    'default') instead of forcing agents to guess a profile name."""
     from tools import kanban_tools as kt
-    assert json.loads(kt._handle_create({"title": "t"})).get("error")
+    # No config, bare HERMES_HOME → active profile resolves to 'default'.
+    assert _created_assignee(kt._handle_create({"title": "no assignee"})) == "default"
+    assert _created_assignee(
+        kt._handle_create({"title": "blank assignee", "assignee": "   "})
+    ) == "default"
+
+
+def test_create_missing_assignee_honors_operator_default(worker_env, tmp_path):
+    """kanban.default_assignee (naming an installed profile) is the first
+    link in the omitted-assignee fallback — the tool must reuse the
+    operator-selected default, not bypass it with a hardcoded name."""
+    from tools import kanban_tools as kt
+    home = tmp_path / ".hermes"
+    (home / "profiles" / "specialist").mkdir(parents=True)
+    (home / "config.yaml").write_text("kanban:\n  default_assignee: specialist\n")
+    assert _created_assignee(kt._handle_create({"title": "routed"})) == "specialist"
+
+
+def test_create_preserves_installed_profile_assignee(worker_env, tmp_path):
+    """An explicit assignee naming an installed profile is used as-is."""
+    from tools import kanban_tools as kt
+    (tmp_path / ".hermes" / "profiles" / "researcher").mkdir(parents=True)
+    assert _created_assignee(
+        kt._handle_create({"title": "profiled", "assignee": "researcher"})
+    ) == "researcher"
+
+
+def test_create_preserves_external_lane_assignee(worker_env):
+    """An explicit assignee that is NOT an installed profile is preserved
+    VERBATIM. Non-profile assignees are deliberate terminal/control-plane
+    lanes — never auto-spawned, claimed directly via claim_task by external
+    sessions — so rewriting them to 'default' would reroute that work to
+    the default Hermes profile and break the lane contract."""
+    from tools import kanban_tools as kt
+    assert _created_assignee(
+        kt._handle_create({"title": "lane task", "assignee": "orion-cc"})
+    ) == "orion-cc"
 
 
 def test_create_rejects_non_list_parents(worker_env):

@@ -2105,6 +2105,25 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "Cloud reasoning stream — read timeout raised to %.0fs to "
                     "match stale-stream detector", _stream_read_timeout,
                 )
+        # Reasoning-model floor: known reasoning models (Nemotron 3 Ultra,
+        # OpenAI o1/o3, Anthropic Opus 4.x thinking, DeepSeek R1/V4, Qwen
+        # QwQ, xAI Grok reasoning) routinely need 180–600s for their
+        # thinking phase before the first content token.  The stale-stream
+        # detector further down applies this floor to its own threshold,
+        # but the httpx socket read timeout is built here, *before* the
+        # stale-detector threshold is resolved.  Without this floor, a
+        # DeepSeek V4 reasoning stream that takes 65–77s for its first
+        # content token gets killed at 120s (the socket read default) even
+        # when the stale detector would have tolerated it.  Apply the floor
+        # here as well so the socket read timeout and the stale detector
+        # agree.  Only raises — never lowers an explicit user/provider
+        # config.
+        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+        _reasoning_floor = get_reasoning_stale_timeout_floor(
+            api_kwargs.get("model")
+        )
+        if _reasoning_floor is not None:
+            _stream_read_timeout = max(_stream_read_timeout, _reasoning_floor)
         # Cap connect/pool at 60s even when provider timeout is higher.
         # connect/pool cover TCP handshake, not model inference.
         _conn_cap = min(_base_timeout, 60.0) if _provider_timeout_cfg is not None else 30.0

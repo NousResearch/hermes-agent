@@ -884,6 +884,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
+        self._stopping_run_ids: set[str] = set()
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
         # Active approval session key for each run_id.  The approval core
@@ -4372,10 +4373,21 @@ class APIServerAdapter(BasePlatformAdapter):
                     return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+                if run_id in self._stopping_run_ids:
+                    q.put_nowait({
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
+                    self._set_run_status(
+                        run_id,
+                        "cancelled",
+                        last_event="run.cancelled",
+                    )
                 # Check for structured failure (non-retryable client errors like
                 # 401/400 return failed=True instead of raising, so the except
                 # block below never fires — issue #15561).
-                if isinstance(result, dict) and result.get("failed"):
+                elif isinstance(result, dict) and result.get("failed"):
                     error_msg = _redact_api_error_text(result.get("error") or "agent run failed")
                     q.put_nowait({
                         "event": "run.failed",
@@ -4457,6 +4469,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                self._stopping_run_ids.discard(run_id)
 
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
@@ -4643,28 +4656,12 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
         self._set_run_status(run_id, "stopping", last_event="run.stopping")
+        self._stopping_run_ids.add(run_id)
 
         if agent is not None:
             try:
                 agent.interrupt("Stop requested via API")
             except Exception:
-                pass
-
-        if task is not None and not task.done():
-            task.cancel()
-            # Bounded wait: run_conversation() executes in the default
-            # executor thread which task.cancel() cannot preempt — we rely on
-            # agent.interrupt() above to break the loop. Cap the wait so a
-            # slow/unresponsive interrupt can't hang this handler.
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "[api_server] stop for run %s timed out after 5s; "
-                    "agent may still be finishing the current step",
-                    run_id,
-                )
-            except (asyncio.CancelledError, Exception):
                 pass
 
         return web.json_response({"run_id": run_id, "status": "stopping"})
@@ -4694,6 +4691,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                self._stopping_run_ids.discard(run_id)
 
             stale_statuses = [
                 run_id

@@ -449,6 +449,56 @@ class TestRunEvents:
 
 class TestStopRun:
     @pytest.mark.asyncio
+    async def test_stop_does_not_detach_still_running_executor_agent(self, adapter):
+        """Stopping a run must not hide an executor thread that continues work."""
+        app = _create_runs_app(adapter)
+        run_can_finish = threading.Event()
+        run_finished = threading.Event()
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+
+                started = threading.Event()
+
+                def _run_conversation(*_args, **_kwargs):
+                    started.set()
+                    run_can_finish.wait(timeout=5)
+                    run_finished.set()
+                    return {"final_response": "late side effect"}
+
+                mock_agent.run_conversation.side_effect = _run_conversation
+                mock_agent.interrupt = MagicMock()
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                assert started.wait(timeout=3)
+
+                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop_resp.status == 200
+
+                await asyncio.sleep(0.2)
+                assert not run_finished.is_set()
+                assert run_id in adapter._active_run_agents
+                assert run_id in adapter._active_run_tasks
+
+                run_can_finish.set()
+                for _ in range(20):
+                    if run_id not in adapter._active_run_agents:
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert run_id not in adapter._active_run_agents
+                assert run_id not in adapter._active_run_tasks
+                assert adapter._run_statuses[run_id]["status"] == "cancelled"
+
+    @pytest.mark.asyncio
     async def test_stop_running_agent(self, adapter):
         """Stop should interrupt the agent and cancel the task."""
         app = _create_runs_app(adapter)

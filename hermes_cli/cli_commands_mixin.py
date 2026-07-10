@@ -2471,7 +2471,9 @@ class CLICommandsMixin:
 
         Usage:
             /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
+            /reasoning <level>      Set reasoning effort for this session
+            /reasoning <level> --global
+                                    Persist reasoning effort to config.yaml
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
             /reasoning full         Show complete thinking (no 10-line clamp)
@@ -2496,7 +2498,9 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide|full|clamp>{_RST}")
             return
 
-        arg = parts[1].strip().lower()
+        arg_tokens = parts[1].strip().lower().split()
+        persist_globally = "--global" in arg_tokens
+        arg = " ".join(token for token in arg_tokens if token != "--global").strip()
 
         # Display toggle
         if arg in {"show", "on"}:
@@ -2541,8 +2545,11 @@ class CLICommandsMixin:
         self.reasoning_config = parsed
         self.agent = None  # Force agent re-init with new reasoning config
 
-        if save_config_value("agent.reasoning_effort", arg):
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
+        if persist_globally:
+            if save_config_value("agent.reasoning_effort", arg):
+                _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
+            else:
+                _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
 

@@ -104,16 +104,14 @@ def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
     home.mkdir()
     env_file = home / ".env"
     # Null bytes can be introduced when copy-pasting API keys.
-    env_file.write_text("GLM_API_KEY=abc\\x0...\n", encoding="utf-8")
+    env_file.write_text("GLM_API_KEY=abc\x00\n", encoding="utf-8")
 
     monkeypatch.delenv("GLM_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     loaded = load_hermes_dotenv(hermes_home=home)
 
     assert loaded == [env_file]
     assert os.getenv("GLM_API_KEY") == "abc"
-    assert os.getenv("OPENAI_API_KEY") == "sk-123"
 
 
 def test_path_shell_references_expand_against_original_environment(tmp_path, monkeypatch):

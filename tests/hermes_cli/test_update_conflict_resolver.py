@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_cli import main as hermes_main
 from hermes_cli.update_conflict_resolver import (
     UpdateConflictResolverConfig,
@@ -139,7 +141,7 @@ def test_run_conflict_resolver_uses_temp_worktree_pushes_and_fast_forwards(monke
     assert ["git", "merge", "--ff-only", "origin/patched-main"] in commands
 
 
-def test_sync_patched_main_invokes_auto_resolver_after_merge_conflict(monkeypatch, tmp_path):
+def test_sync_patched_main_writes_guided_handoff_after_merge_conflict(monkeypatch, tmp_path):
     calls = []
 
     def fake_run(cmd, **kwargs):
@@ -158,17 +160,19 @@ def test_sync_patched_main_invokes_auto_resolver_after_merge_conflict(monkeypatc
             return SimpleNamespace(stdout="", stderr="CONFLICT\n", returncode=1)
         raise AssertionError(f"unexpected command: {cmd}")
 
-    resolver_calls = []
-
-    def fake_resolver(git_cmd, cwd, *, merge_stderr="", config=None, stream=None):
-        resolver_calls.append((git_cmd, cwd, merge_stderr))
-        return True
-
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    handoff = tmp_path / "handoff.md"
+    handoff.write_text("guided handoff", encoding="utf-8")
+    handoff_calls = []
     monkeypatch.setattr(
-        "hermes_cli.update_conflict_resolver.run_patched_main_conflict_resolver",
-        fake_resolver,
+        hermes_main,
+        "_write_patched_main_conflict_handoff",
+        lambda git_cmd, cwd, merge_stderr="": handoff_calls.append(
+            (git_cmd, cwd, merge_stderr)
+        ) or handoff,
     )
 
-    assert hermes_main._sync_patched_main_with_upstream(["git"], tmp_path) is True
-    assert resolver_calls == [(["git"], tmp_path, "CONFLICT\n")]
+    with pytest.raises(SystemExit) as exc:
+        hermes_main._sync_patched_main_with_upstream(["git"], tmp_path)
+    assert exc.value.code == 1
+    assert handoff_calls == [(["git"], tmp_path, "CONFLICT\n")]

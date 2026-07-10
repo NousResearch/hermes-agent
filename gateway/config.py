@@ -802,6 +802,10 @@ class GatewayConfig:
     # tooling and downgrade safety; set gateway.write_sessions_json: false in
     # config.yaml to stop producing the file.
     write_sessions_json: bool = True
+
+    # Bound best-effort synchronous cleanup after messaging adapters are down.
+    # Zero preserves the legacy inline, unbounded behavior.
+    shutdown_cleanup_timeout: float = 5.0
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
@@ -951,6 +955,7 @@ class GatewayConfig:
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             "write_sessions_json": self.write_sessions_json,
+            "shutdown_cleanup_timeout": self.shutdown_cleanup_timeout,
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
@@ -1057,6 +1062,16 @@ class GatewayConfig:
             max_concurrent_raw,
             max_concurrent_key,
         )
+        if "shutdown_cleanup_timeout" in data:
+            shutdown_cleanup_timeout_raw = data.get("shutdown_cleanup_timeout")
+        else:
+            shutdown_cleanup_timeout_raw = nested_gateway.get(
+                "shutdown_cleanup_timeout"
+            )
+        shutdown_cleanup_timeout = max(
+            0.0,
+            _coerce_float(shutdown_cleanup_timeout_raw, 5.0),
+        )
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
             data.get("unauthorized_dm_behavior"),
             "pair",
@@ -1081,6 +1096,7 @@ class GatewayConfig:
             quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
+            shutdown_cleanup_timeout=shutdown_cleanup_timeout,
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
             filter_silence_narration=_coerce_bool(
                 data.get("filter_silence_narration"), True
@@ -1229,6 +1245,10 @@ def load_gateway_config() -> GatewayConfig:
                 if "systemd_watchdog_seconds" in gateway_section:
                     gw_data["systemd_watchdog_seconds"] = gateway_section[
                         "systemd_watchdog_seconds"
+                    ]
+                if "shutdown_cleanup_timeout" in gateway_section:
+                    gw_data["shutdown_cleanup_timeout"] = gateway_section[
+                        "shutdown_cleanup_timeout"
                     ]
 
             if "max_concurrent_sessions" in yaml_cfg:

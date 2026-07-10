@@ -404,6 +404,22 @@ class TestGatewayConfigRoundtrip:
 
         assert config.max_concurrent_sessions == 2
 
+    def test_shutdown_cleanup_timeout_roundtrips_and_accepts_nested_config(self):
+        config = GatewayConfig.from_dict({
+            "gateway": {"shutdown_cleanup_timeout": "0.25"}
+        })
+
+        assert config.shutdown_cleanup_timeout == 0.25
+        assert GatewayConfig.from_dict(config.to_dict()).shutdown_cleanup_timeout == 0.25
+
+    def test_shutdown_cleanup_timeout_defaults_and_clamps_negative_values(self):
+        assert GatewayConfig.from_dict({}).shutdown_cleanup_timeout == 5.0
+        assert (
+            GatewayConfig.from_dict({"shutdown_cleanup_timeout": -1})
+            .shutdown_cleanup_timeout
+            == 0.0
+        )
+
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
         config = GatewayConfig(
             unauthorized_dm_behavior="ignore",
@@ -707,6 +723,24 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.max_concurrent_sessions == 3
+
+    def test_loads_nested_shutdown_cleanup_timeout_from_config_yaml(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  shutdown_cleanup_timeout: 0.25\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.shutdown_cleanup_timeout == 0.25
 
     def test_top_level_max_concurrent_sessions_overrides_nested_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

@@ -362,6 +362,7 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
     "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
+    "real_windows_gateway_respawn: opt out of the autouse stub that no-ops the update flow's Windows gateway pause/resume",
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"

@@ -5,8 +5,9 @@ from gateway.run import GatewayRunner
 
 
 class _FakeAdapter:
-    def __init__(self, token=None):
+    def __init__(self, token=None, config=None):
         self.token = token
+        self.config = config
 
 
 class TestCredentialFingerprint:
@@ -31,6 +32,17 @@ class TestCredentialFingerprint:
             def __init__(self):
                 self.bot_token = "alt-token"
         assert GatewayRunner._adapter_credential_fingerprint(_AltAdapter()) is not None
+
+    def test_reads_platform_config_token(self):
+        class _Config:
+            token = "config-token"
+
+        fp = GatewayRunner._adapter_credential_fingerprint(
+            _FakeAdapter(token=None, config=_Config())
+        )
+
+        assert fp is not None
+        assert "config-token" not in fp
 
 
 class TestProfileMessageHandler:
@@ -126,6 +138,54 @@ class TestPortBindingHardError:
 
         connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
         assert connected == 0  # nothing connected, but no MultiplexConfigError
+
+    @pytest.mark.asyncio
+    async def test_secondary_same_config_token_is_refused(self, monkeypatch):
+        """Adapters that keep their token on config still trip the mux guard."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        class _ConfigTokenAdapter:
+            def __init__(self, token):
+                self.config = PlatformConfig(enabled=True, token=token)
+                self.disconnected = False
+
+            async def connect(self):
+                raise AssertionError("duplicate adapter must not connect")
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="same-token"),
+        }
+        duplicate = _ConfigTokenAdapter("same-token")
+        claimed = {
+            (
+                Platform.TELEGRAM,
+                GatewayRunner._adapter_credential_fingerprint(
+                    _ConfigTokenAdapter("same-token")
+                ),
+            ): "default"
+        }
+
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: reviewer_cfg
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: duplicate)
+        monkeypatch.setattr(runner, "_adapter_disconnect_timeout_secs", lambda: 0)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/x", claimed
+        )
+
+        assert connected == 0
+        assert duplicate.disconnected is True
+        assert runner._profile_adapters["reviewer"] == {}
 
     def test_port_binding_set_covers_known_listeners(self):
         from gateway.run import _PORT_BINDING_PLATFORM_VALUES

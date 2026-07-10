@@ -28,22 +28,18 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
-_SENSITIVE_CDP_METHODS = frozenset({
-    "Browser.grantPermissions",
-    "Browser.resetPermissions",
-    "Browser.setPermission",
-    "Network.clearBrowserCache",
-    "Network.clearBrowserCookies",
-    "Network.deleteCookies",
-    "Network.getAllCookies",
-    "Network.getCookies",
-    "Network.setCookie",
-    "Network.setCookies",
-    "Storage.clearCookies",
-    "Storage.clearDataForOrigin",
-    "Storage.getCookies",
-    "Storage.setCookies",
-})
+_CDP_PRIVATE_PAGE_ALLOWED_METHODS = {
+    # Browser/target inspection does not read the current page body, cookies,
+    # DOM, storage, or screenshots. Keep these working so the model can list
+    # tabs or navigate away from a blocked page.
+    "Browser.getVersion",
+    "Target.getTargets",
+    "Target.attachToTarget",
+    "Target.detachFromTarget",
+    "Page.navigate",
+    "Page.reload",
+    "Page.stopLoading",
+}
 
 
 def _redact_cdp_output(value: Any) -> Any:
@@ -116,42 +112,70 @@ def _resolve_cdp_endpoint() -> str:
         return ""
 
 
-def _cdp_sensitive_methods_allowed() -> bool:
-    """Return whether raw CDP methods with credential or JS authority are allowed."""
-    try:
-        from hermes_cli.config import read_raw_config
-
-        cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
-        raw = browser_cfg.get("allow_sensitive_cdp_methods", False)
-    except Exception as exc:  # pragma: no cover - config read should not crash tool calls
-        logger.debug("browser_cdp: failed to read sensitive-method policy: %s", exc)
-        raw = False
-
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, (int, float)):
-        return bool(raw)
-    return str(raw).strip().lower() in {"1", "true", "yes", "on", "allow", "allowed"}
-
-
-def _is_sensitive_cdp_method(method: str) -> bool:
-    return method in _SENSITIVE_CDP_METHODS
-
-
-def _sensitive_cdp_error(method: str) -> str:
+def _private_page_guard_error(blocked_url: str, method: str) -> str:
     return tool_error(
-        (
-            f"CDP method {method!r} is blocked by default because it can read "
-            "browser credentials, mutate storage, or change permissions. "
-            "Dedicated browser tools should be used for ordinary page work. "
-            "If this raw CDP access is intentionally trusted, set "
-            "browser.allow_sensitive_cdp_methods: true in config.yaml."
-        ),
+        "Blocked: page URL targets a private or internal address "
+        f"({blocked_url}). Raw CDP method {method!r} could expose private "
+        "page content or state.",
         method=method,
         cdp_docs=CDP_DOCS_URL,
-        sensitive_method=True,
     )
+
+
+def _browser_cdp_private_guard(
+    *,
+    task_id: str,
+    method: str,
+    params: Dict[str, Any],
+) -> Optional[str]:
+    """Apply the browser SSRF/private-page guard to raw CDP calls.
+
+    ``browser_cdp`` is intentionally an escape hatch, but it still shares the
+    same cloud/private-network boundary as ``browser_snapshot``,
+    ``browser_console`` and ``browser_eval``.  If a cloud browser has landed on
+    a private/internal URL (for example via a prior eval navigation), raw CDP
+    calls like ``Runtime.evaluate`` or ``DOM.getDocument`` must not become the
+    sibling bypass for the guarded browser tools.
+    """
+    try:
+        from tools import browser_tool as bt  # type: ignore[import-not-found]
+
+        if not bt._eval_ssrf_guard_active(task_id):  # type: ignore[attr-defined]
+            return None
+
+        if method == "Page.navigate":
+            target_url = str((params or {}).get("url") or "").strip()
+            if target_url and (
+                bt._is_always_blocked_url(target_url)  # type: ignore[attr-defined]
+                or not bt._is_safe_url(target_url)  # type: ignore[attr-defined]
+            ):
+                return tool_error(
+                    "Blocked: CDP Page.navigate target is a private or "
+                    f"internal address ({target_url}).",
+                    method=method,
+                    cdp_docs=CDP_DOCS_URL,
+                )
+
+        if method == "Runtime.evaluate":
+            expression = str((params or {}).get("expression") or "")
+            blocked_literal = bt._expression_targets_private_url(expression)  # type: ignore[attr-defined]
+            if blocked_literal:
+                return tool_error(
+                    "Blocked: CDP Runtime.evaluate expression targets a "
+                    f"private or internal address ({blocked_literal}).",
+                    method=method,
+                    cdp_docs=CDP_DOCS_URL,
+                )
+
+        if method not in _CDP_PRIVATE_PAGE_ALLOWED_METHODS:
+            blocked_url = bt._current_page_private_url(task_id)  # type: ignore[attr-defined]
+            if blocked_url:
+                return _private_page_guard_error(blocked_url, method)
+    except Exception as exc:  # noqa: BLE001
+        # Match the existing browser guards' posture: guard probes are
+        # best-effort and should not break local/custom CDP workflows.
+        logger.debug("browser_cdp: private-page guard probe failed: %s", exc)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -396,25 +420,26 @@ def browser_cdp(
         JSON string ``{"success": True, "method": ..., "result": {...}}`` on
         success, or ``{"error": "..."}`` on failure.
     """
-    if not method or not isinstance(method, str):
-        return tool_error(
-            "'method' is required (e.g. 'Target.getTargets')",
-            cdp_docs=CDP_DOCS_URL,
-        )
-
-    if _is_sensitive_cdp_method(method) and not _cdp_sensitive_methods_allowed():
-        return _sensitive_cdp_error(method)
+    effective_task_id = task_id or "default"
 
     # --- Route iframe-scoped calls through the supervisor ---------------
     if frame_id:
+        # Same private-page/SSRF boundary as the stateless path below —
+        # frame_id routing must not become the sibling bypass for it.
+        blocked = _browser_cdp_private_guard(
+            task_id=effective_task_id,
+            method=method,
+            params=params or {},
+        )
+        if blocked:
+            return blocked
         return _browser_cdp_via_supervisor(
-            task_id=task_id or "default",
+            task_id=effective_task_id,
             frame_id=frame_id,
             method=method,
             params=params,
             timeout=timeout,
         )
-    del task_id  # stateless path below
 
     if not _WS_AVAILABLE:
         return tool_error(
@@ -445,6 +470,14 @@ def browser_cdp(
         return tool_error(
             f"'params' must be an object/dict, got {type(call_params).__name__}"
         )
+
+    blocked = _browser_cdp_private_guard(
+        task_id=effective_task_id,
+        method=method,
+        params=call_params,
+    )
+    if blocked:
+        return blocked
 
     try:
         safe_timeout = float(timeout) if timeout else 30.0

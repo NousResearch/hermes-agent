@@ -809,3 +809,59 @@ async def test_schedule_polling_recovery_tracks_background_task():
     assert adapter._polling_error_task in adapter._background_tasks
     await adapter._polling_error_task
     adapter._handle_polling_network_error.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_polling_network_error_updater_stop_timeout():
+    """updater.stop() hanging (CLOSE-WAIT) must not block the reconnect ladder.
+
+    When the underlying TCP connection is in CLOSE-WAIT, PTB's polling task is
+    blocked on epoll on the dead socket.  updater.stop() awaits that task and
+    therefore hangs indefinitely.  The fix wraps stop() in asyncio.wait_for()
+    with a 15-second timeout so the reconnect always advances.
+
+    This test simulates the hang by making stop() sleep forever and verifies
+    that _drain_polling_connections() and start_polling() are still called
+    after the timeout fires.
+    Refs: NousResearch/hermes-agent#58270
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 0
+
+    # Build a fake app whose updater.stop() hangs forever.
+    app = MagicMock()
+    app.updater = MagicMock()
+    app.updater.running = True
+
+    async def _hanging_stop():
+        await asyncio.sleep(9999)  # simulate CLOSE-WAIT block
+
+    app.updater.stop = _hanging_stop
+    app.updater.start_polling = AsyncMock()
+    adapter._app = app
+
+    drain_called = []
+
+    async def _fake_drain():
+        drain_called.append(True)
+
+    adapter._drain_polling_connections = _fake_drain
+
+    start_polling_called = []
+
+    async def _fake_start_polling(**kwargs):
+        start_polling_called.append(True)
+
+    app.updater.start_polling = AsyncMock(side_effect=_fake_start_polling)
+
+    # Shrink the stop() watchdog bound so the test completes fast instead of
+    # waiting the full _UPDATER_STOP_TIMEOUT. Patching the named constant is
+    # cleaner than monkeypatching asyncio.wait_for process-wide.
+    import plugins.platforms.telegram.adapter as _mod
+
+    with patch.object(_mod, "_UPDATER_STOP_TIMEOUT", 0.05):
+        await adapter._handle_polling_network_error(OSError("CLOSE-WAIT test"))
+
+    # The reconnect ladder must have advanced past the hung stop().
+    assert drain_called, "_drain_polling_connections was not called after stop() timeout"
+    assert start_polling_called, "start_polling was not called after stop() timeout"

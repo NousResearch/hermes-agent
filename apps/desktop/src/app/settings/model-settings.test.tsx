@@ -13,8 +13,10 @@ beforeAll(() => {
 const getGlobalModelInfo = vi.fn()
 const getGlobalModelOptions = vi.fn()
 const getAuxiliaryModels = vi.fn()
+const getMoaModels = vi.fn()
 const setModelAssignment = vi.fn()
 const getRecommendedDefaultModel = vi.fn()
+const saveMoaModels = vi.fn()
 const setEnvVar = vi.fn()
 const getHermesConfigRecord = vi.fn()
 const saveHermesConfig = vi.fn()
@@ -24,8 +26,10 @@ vi.mock('@/hermes', () => ({
   getGlobalModelInfo: () => getGlobalModelInfo(),
   getGlobalModelOptions: () => getGlobalModelOptions(),
   getAuxiliaryModels: () => getAuxiliaryModels(),
+  getMoaModels: () => getMoaModels(),
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
+  saveMoaModels: (body: unknown) => saveMoaModels(body),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   getHermesConfigRecord: () => getHermesConfigRecord(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config)
@@ -45,15 +49,6 @@ beforeEach(() => {
         models: ['hermes-4', 'hermes-4-mini'],
         authenticated: true,
         capabilities: { 'hermes-4': { reasoning: true, fast: true } }
-      },
-      // An unconfigured api_key provider — surfaced by the full-universe payload.
-      {
-        name: 'DeepSeek',
-        slug: 'deepseek',
-        models: [],
-        authenticated: false,
-        auth_type: 'api_key',
-        key_env: 'DEEPSEEK_API_KEY'
       }
     ]
   })
@@ -61,8 +56,9 @@ beforeEach(() => {
     main: { provider: 'nous', model: 'hermes-4' },
     tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
   })
+  getMoaModels.mockResolvedValue(null)
   setModelAssignment.mockResolvedValue({ provider: 'nous', model: 'hermes-4', gateway_tools: [] })
-  getRecommendedDefaultModel.mockResolvedValue({ provider: 'deepseek', model: 'deepseek-chat', free_tier: null })
+  getRecommendedDefaultModel.mockResolvedValue({ provider: 'nous', model: 'hermes-4', free_tier: null })
   setEnvVar.mockResolvedValue({ ok: true })
   getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'normal' } })
   saveHermesConfig.mockResolvedValue({ ok: true })
@@ -80,16 +76,21 @@ async function renderModelSettings() {
 }
 
 describe('ModelSettings', () => {
-  it('loads the current main model and lists the full provider universe', async () => {
+  it('loads the current main model and lists configured providers only', async () => {
     await renderModelSettings()
 
     await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
     expect(screen.getByText('Nous')).toBeTruthy()
     expect(screen.getByText('hermes-4')).toBeTruthy()
 
-    fireEvent.keyDown(screen.getAllByRole('combobox')[0], { key: 'Enter' })
-    expect(await screen.findByRole('option', { name: 'DeepSeek' })).toBeTruthy()
-  }, 10_000)
+    // Open the provider Select — only configured providers should be listed.
+    const triggers = await screen.findAllByRole('combobox')
+    fireEvent.click(triggers[0])
+
+    // "Nous" shows in both the trigger and the open list.
+    expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/DeepSeek/)).toBeNull()
+  })
 
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {
     await renderModelSettings()

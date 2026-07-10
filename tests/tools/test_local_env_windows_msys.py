@@ -27,10 +27,13 @@ from tools.environments import local as local_mod
 from tools.environments.local import (
     LocalEnvironment,
     _find_bash,
+    _make_run_env,
     _msys_to_windows_path,
     _resolve_safe_cwd,
+    _sanitize_subprocess_env,
     _windows_to_bash_path,
     _windows_to_msys_path,
+    hermes_subprocess_env,
 )
 
 
@@ -73,6 +76,15 @@ class TestMsysToWindowsPath:
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         assert _msys_to_windows_path("/tmp/foo") == "/tmp/foo"
         assert _msys_to_windows_path("/home/x") == "/home/x"
+        # /mnt/<name>/... only translates when <name> is a single drive letter.
+        assert _msys_to_windows_path("/mnt/home/x") == "/mnt/home/x"
+
+    def test_translates_cygdrive_and_wsl_mnt_forms(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _msys_to_windows_path("/cygdrive/c/Users/NVIDIA") == r"C:\Users\NVIDIA"
+        assert _msys_to_windows_path("/mnt/d/Projects/foo") == r"D:\Projects\foo"
+        assert _msys_to_windows_path("/cygdrive/c") == "C:\\"
+        assert _msys_to_windows_path("/mnt/c/") == "C:\\"
 
     def test_empty_string(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
@@ -346,6 +358,53 @@ class TestExtractCwdFromOutputWindowsMsys:
             env._extract_cwd_from_output(result)
 
         assert env.cwd == str(new_dir)
+
+
+# ---------------------------------------------------------------------------
+# MSYS_NO_PATHCONV — native Windows command flags (#56700)
+# ---------------------------------------------------------------------------
+
+class TestWindowsMsysPathconvDefaults:
+    def test_make_run_env_sets_msys_no_pathconv_on_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        run_env = _make_run_env({})
+        assert run_env.get("MSYS_NO_PATHCONV") == "1"
+
+    def test_sanitize_subprocess_env_sets_msys_no_pathconv_on_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        env = _sanitize_subprocess_env({})
+        assert env.get("MSYS_NO_PATHCONV") == "1"
+
+    def test_hermes_subprocess_env_sets_msys_no_pathconv_on_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        env = hermes_subprocess_env()
+        assert env.get("MSYS_NO_PATHCONV") == "1"
+
+    def test_no_pathconv_not_set_on_posix(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert "MSYS_NO_PATHCONV" not in _make_run_env({})
+
+    def test_respects_user_override(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        run_env = _make_run_env({"MSYS_NO_PATHCONV": "0"})
+        assert run_env.get("MSYS_NO_PATHCONV") == "0"
+
+    def test_msys2_arg_conv_excl_set_on_windows(self, monkeypatch):
+        # MSYS2-proper / Cygwin bash ignore MSYS_NO_PATHCONV; they honor
+        # MSYS2_ARG_CONV_EXCL. Both must be set on every env builder.
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _make_run_env({}).get("MSYS2_ARG_CONV_EXCL") == "*"
+        assert _sanitize_subprocess_env({}).get("MSYS2_ARG_CONV_EXCL") == "*"
+        assert hermes_subprocess_env().get("MSYS2_ARG_CONV_EXCL") == "*"
+
+    def test_msys2_arg_conv_excl_not_set_on_posix(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert "MSYS2_ARG_CONV_EXCL" not in _make_run_env({})
+
+    def test_msys2_arg_conv_excl_respects_user_override(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        run_env = _make_run_env({"MSYS2_ARG_CONV_EXCL": "/custom"})
+        assert run_env.get("MSYS2_ARG_CONV_EXCL") == "/custom"
 
 
 # ---------------------------------------------------------------------------

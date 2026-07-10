@@ -9,11 +9,7 @@ __pycache__/
 .vscode/
 .cursor/
 .env
-.env.*
-*.env
-*.env.*
-!.env.example
-!**/.env.example
+.op.env
 .env.local
 .env.development.local
 .env.test.local

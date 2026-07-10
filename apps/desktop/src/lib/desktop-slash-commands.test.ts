@@ -80,6 +80,18 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/browser')?.args).toBe(true)
   })
 
+  it('routes /journey (and aliases) to the memory graph overlay action', () => {
+    expect(resolveDesktopCommand('/journey')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(resolveDesktopCommand('/memory-graph')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(resolveDesktopCommand('/learning')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(isDesktopSlashCommand('/journey')).toBe(true)
+    expect(isDesktopSlashCommand('/memory-graph')).toBe(true)
+    expect(isDesktopSlashSuggestion('/journey')).toBe(true)
+    // Aliases execute but stay out of the popover.
+    expect(isDesktopSlashSuggestion('/memory-graph')).toBe(false)
+    expect(desktopSlashUnavailableMessage('/journey')).toBeNull()
+  })
+
   it('allows aliases to execute without cluttering the popover', () => {
     expect(isDesktopSlashSuggestion('/reset')).toBe(false)
     expect(isDesktopSlashCommand('/reset')).toBe(true)

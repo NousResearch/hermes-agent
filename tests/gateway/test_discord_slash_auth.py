@@ -178,6 +178,18 @@ def _make_interaction(
     )
 
 
+def _stub_pairing_store(monkeypatch, approved_ids):
+    approved = {str(uid) for uid in approved_ids}
+
+    class _FakePairingStore:
+        def is_approved(self, platform, user_id):
+            return platform == "discord" and str(user_id) in approved
+
+    import gateway.pairing as pairing
+
+    monkeypatch.setattr(pairing, "PairingStore", _FakePairingStore)
+
+
 # ---------------------------------------------------------------------------
 # Backwards-compat: empty allowlist → everything passes (matches on_message)
 # ---------------------------------------------------------------------------
@@ -241,6 +253,27 @@ async def test_disallowed_user_rejected_with_ephemeral(adapter, caplog):
     assert "not authorized" in (args[0] if args else kwargs.get("content", "")).lower()
     assert any("Unauthorized slash attempt" in r.message for r in caplog.records)
     assert any("DISCORD_ALLOWED_USERS" in r.message for r in caplog.records)
+
+
+def test_pairing_approved_user_passes_message_gate_without_allowlist(adapter, monkeypatch):
+    """Pairing grants must be honored before on_message drops guild mentions."""
+    _stub_pairing_store(monkeypatch, {"100200300"})
+    assert adapter._is_allowed_user(
+        "100200300",
+        author=SimpleNamespace(id=100200300),
+        guild=SimpleNamespace(id=42, get_member=lambda _uid: None),
+        is_dm=False,
+        channel_ids={"12345"},
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_pairing_approved_user_passes_slash_gate_without_allowlist(adapter, monkeypatch):
+    """Slash and normal text auth share the pairing-aware user gate."""
+    _stub_pairing_store(monkeypatch, {"100200300"})
+    interaction = _make_interaction("100200300")
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+    interaction.response.send_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

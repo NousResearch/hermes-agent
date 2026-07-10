@@ -1077,7 +1077,7 @@ def refresh_anthropic_oauth_pure(
             data=data,
             headers={
                 "Content-Type": content_type,
-                "User-Agent": f"claude-code/{_get_claude_code_version()} (external, cli)",
+                "User-Agent": _OAUTH_TOKEN_USER_AGENT,
             },
             method="POST",
         )
@@ -1416,9 +1416,20 @@ _OAUTH_TOKEN_URLS = [
     "https://console.anthropic.com/v1/oauth/token",
 ]
 _OAUTH_TOKEN_URL = _OAUTH_TOKEN_URLS[0]
+# User-Agent sent on the OAuth *token endpoint* (login exchange + refresh).
+# Anthropic rate-limits (HTTP 429) any token-endpoint request whose UA starts
+# with ``claude-code/`` — verified empirically against platform.claude.com:
+# ``claude-code/2.1.200`` and ``Mozilla/5.0`` -> 429; ``axios/*``, ``node``,
+# and SDK-style UAs -> 400 (reached code validation). The real Claude Code CLI
+# exchanges the auth code with a bare axios client (``axios/<ver>``), NOT its
+# ``claude-code/`` inference UA. We mirror that here. NOTE: the *inference* path
+# (build_anthropic_kwargs) still uses the ``claude-code/`` UA + ``x-app: cli`` —
+# that fingerprint is required there and is NOT throttled on the messages API.
+_OAUTH_TOKEN_USER_AGENT = "axios/1.7.9"
 _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
-_HERMES_OAUTH_FILE = get_hermes_home() / ".anthropic_oauth.json"
+def _get_hermes_oauth_file() -> Path:
+    return get_hermes_home() / ".anthropic_oauth.json"
 
 
 def _generate_pkce() -> tuple:
@@ -1519,8 +1530,9 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
         # Anthropic migrated the OAuth token endpoint to platform.claude.com;
         # console.anthropic.com now 404s. Try the new host first, then fall
         # back to console for older deployments (mirrors the refresh path).
-        # Use the claude-code/ UA prefix: Anthropic blocks claude-cli/ on the
-        # OAuth token endpoint (returns 404 for all versions).
+        # UA is _OAUTH_TOKEN_USER_AGENT (a non-claude-code UA) — see the
+        # constant's definition for why the token endpoint must not send
+        # claude-code/ (429 UA-prefix block).
         result = None
         last_error = None
         for endpoint in _OAUTH_TOKEN_URLS:
@@ -1529,7 +1541,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
                 data=exchange_data,
                 headers={
                     "Content-Type": "application/json",
-                    "User-Agent": f"claude-code/{_get_claude_code_version()} (external, cli)",
+                    "User-Agent": _OAUTH_TOKEN_USER_AGENT,
                 },
                 method="POST",
             )
@@ -1568,9 +1580,10 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
 
 def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
     """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
-    if _HERMES_OAUTH_FILE.exists():
+    oauth_file = _get_hermes_oauth_file()
+    if oauth_file.exists():
         try:
-            data = json.loads(_HERMES_OAUTH_FILE.read_text(encoding="utf-8"))
+            data = json.loads(oauth_file.read_text(encoding="utf-8"))
             if data.get("accessToken"):
                 return data
         except (json.JSONDecodeError, OSError, IOError) as e:
@@ -2141,7 +2154,7 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
     if isinstance(content, list):
         converted_blocks = _convert_content_to_anthropic(content)
         if not converted_blocks or all(
-            b.get("text", "").strip() == ""
+            (b.get("text") or "").strip() == ""
             for b in converted_blocks
             if isinstance(b, dict) and b.get("type") == "text"
         ):

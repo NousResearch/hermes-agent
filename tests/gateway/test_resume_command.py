@@ -230,6 +230,35 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_clears_last_resolved_model(self, tmp_path):
+        """Resume must also clear the resumed chat's cached last-resolved
+        model, so the restored conversation re-resolves from current config
+        instead of a value cached before the switch (mirrors /new and the
+        compression-exhausted auto-reset, #58403), while leaving other
+        chats' cache entries intact."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session_abc", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("old_session_abc", "My Project")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+
+        event = _make_event(text="/resume My Project")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        key = _session_key_for_event(event)
+        runner._last_resolved_model = {
+            key: "gpt-5",
+            "agent:main:telegram:dm:other": "keep-me",
+        }
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        assert key not in runner._last_resolved_model
+        assert runner._last_resolved_model["agent:main:telegram:dm:other"] == "keep-me"
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_nonexistent_name(self, tmp_path):
         """Returns error for unknown session name."""
         from hermes_state import SessionDB
@@ -490,6 +519,60 @@ class TestHandleSessionsCommand:
         assert "Telegram Work" in result
         assert "discord_unnamed" not in result
         assert "Discord" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_finds_older_titled_session(self, tmp_path):
+        """`/sessions search <query>` matches titles beyond the recent-10 list
+        and orders by activity, keeping the caller's own scope."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        # Bury the target under newer sessions so a plain listing misses it.
+        db.create_session("target_an94", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("target_an94", "AN-94 Prestige Barrel Build #2")
+        for i in range(12):
+            sid = f"filler_{i}"
+            db.create_session(sid, "telegram", user_id="12345", chat_id="67890")
+            db.set_session_title(sid, f"Filler {i}")
+
+        event = _make_event(text="/sessions search an94")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_sessions_command(event)
+
+        assert "AN-94 Prestige Barrel Build #2" in result
+        assert "target_an94" in result
+        assert "Filler" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_missing_query_shows_usage(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/sessions search")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_sessions_command(event)
+        assert "Usage" in result
+        assert "/sessions search" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_search_does_not_leak_other_users_sessions(self, tmp_path):
+        """Search results honor the same owner-scoping guard as listing —
+        a matching title owned by a different user/chat must not surface."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("mine", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("mine", "AN-94 mine")
+        db.create_session("theirs", "telegram", user_id="99999", chat_id="55555")
+        db.set_session_title("theirs", "AN-94 someone else's secret")
+
+        event = _make_event(text="/sessions search an94")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_sessions_command(event)
+
+        assert "AN-94 mine" in result
+        assert "theirs" not in result
+        assert "secret" not in result
         db.close()
 
     @pytest.mark.asyncio

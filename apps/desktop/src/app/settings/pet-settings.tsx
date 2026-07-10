@@ -143,7 +143,7 @@ export function PetSettings() {
                     {copy.unreachable}
                   </p>
                 ) : shown.length === 0 ? (
-                  <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  <p className="wrap-anywhere text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                     {copy.noMatch(query)}
                   </p>
                 ) : (

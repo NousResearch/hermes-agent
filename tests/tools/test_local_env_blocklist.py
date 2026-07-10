@@ -81,7 +81,6 @@ class TestProviderEnvBlocklist:
         must also be blocked — not just the hand-written extras."""
         registry_vars = {
             "ANTHROPIC_TOKEN": "ant-tok",
-            "CLAUDE_CODE_OAUTH_TOKEN": "cc-tok",
             "ZAI_API_KEY": "zai-key",
             "Z_AI_API_KEY": "z-ai-key",
             "GLM_API_KEY": "glm-key",
@@ -105,6 +104,29 @@ class TestProviderEnvBlocklist:
         assert "AWS_BEARER_TOKEN_BEDROCK" not in result_env, (
             "AWS_BEARER_TOKEN_BEDROCK leaked into subprocess env (see #32314)"
         )
+
+    def test_vertex_credentials_path_is_stripped(self):
+        """The Vertex AI service-account JSON path must not leak into
+        subprocesses, even though it is filesystem path metadata rather
+        than a bare API key.
+
+        Regression: ``vertex`` authenticates via OAuth2 (service-account
+        JSON / ADC), not PROVIDER_REGISTRY, and OPTIONAL_ENV_VARS marks
+        VERTEX_CREDENTIALS_PATH as ``password=False`` (it's a path, not a
+        secret string) with ``category="provider"`` — a category the
+        registry-derived loop above never checks — so it fell through both
+        blocklist sources. GOOGLE_APPLICATION_CREDENTIALS (the ADC fallback
+        the adapter also reads) had the same gap. A leaked path discloses
+        the on-disk location of a GCP service-account key to every spawned
+        subprocess (terminal, codex/copilot app-server, browser workers).
+        """
+        result_env = _run_with_env(extra_os_env={
+            "VERTEX_CREDENTIALS_PATH": "/home/user/.config/gcloud/sa-key.json",
+            "GOOGLE_APPLICATION_CREDENTIALS": "/home/user/.config/gcloud/adc.json",
+        })
+
+        assert "VERTEX_CREDENTIALS_PATH" not in result_env
+        assert "GOOGLE_APPLICATION_CREDENTIALS" not in result_env
 
     def test_general_aws_credential_chain_is_preserved(self):
         """User-owned AWS CLI/SDK credentials should remain inheritable."""
@@ -294,11 +316,18 @@ class TestBlocklistCoverage:
 
     def test_registry_vars_are_in_blocklist(self):
         """Every api_key_env_var and base_url_env_var from PROVIDER_REGISTRY
-        must appear in the blocklist — ensures no drift."""
+        must appear in the blocklist — ensures no drift.
+
+        CLAUDE_CODE_OAUTH_TOKEN is the one deliberate exemption: it is owned
+        by the user's Claude Code install, not Hermes (#55878).
+        """
         from hermes_cli.auth import PROVIDER_REGISTRY
 
+        exempt = {"CLAUDE_CODE_OAUTH_TOKEN"}
         for pconfig in PROVIDER_REGISTRY.values():
             for var in pconfig.api_key_env_vars:
+                if var in exempt:
+                    continue
                 assert var in _HERMES_PROVIDER_ENV_BLOCKLIST, (
                     f"Registry var {var} (provider={pconfig.id}) missing from blocklist"
                 )
@@ -333,10 +362,18 @@ class TestBlocklistCoverage:
         )
 
     def test_extra_auth_vars_covered(self):
-        """Non-registry auth vars (ANTHROPIC_TOKEN, CLAUDE_CODE_OAUTH_TOKEN)
-        must also be in the blocklist."""
-        extras = {"ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+        """Non-registry auth vars (ANTHROPIC_TOKEN) must also be in the
+        blocklist."""
+        extras = {"ANTHROPIC_TOKEN"}
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
+
+    def test_claude_code_oauth_token_is_inheritable(self):
+        """CLAUDE_CODE_OAUTH_TOKEN is owned by the user's Claude Code install
+        (subscription OAuth), not a Hermes inference credential. Stripping it
+        made agent-spawned ``claude`` fall through to the shared Keychain /
+        ~/.claude credential store and clobber the user's interactive login
+        on auth failure (#55878). It must stay inheritable."""
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in _HERMES_PROVIDER_ENV_BLOCKLIST
 
     def test_non_registry_provider_vars_are_in_blocklist(self):
         extras = {

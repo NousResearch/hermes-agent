@@ -598,7 +598,7 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     if target is None:
         return (
             False,
-            f"no matching backup found"
+            "no matching backup found"
             + (f" for id '{backup_id}'" if backup_id else "")
             + " (use `hermes curator rollback --list` to see available snapshots)",
             None,

@@ -88,6 +88,7 @@ gateway:
     not_enough:            "圧縮するための会話が不十分です (少なくとも 4 件のメッセージが必要)。"
     no_provider:           "プロバイダーが構成されていません — 圧縮できません。"
     nothing_to_do:         "まだ圧縮するものがありません (トランスクリプトはすべて保護されたコンテキストのままです)。"
+    aggressive_unsupported: "--aggressive はサポートされていません。'/compress here [N]' で直近のやり取りだけを残すか、/undo でターンを削除してください。"
     focus_line:            "フォーカス: \"{topic}\""
     summary_failed:        "⚠️ 要約の生成に失敗しました ({error})。{count} 件の履歴メッセージが削除され、プレースホルダーに置き換えられました。以前のコンテキストは復元できません。auxiliary.compression モデルの設定を確認してください。"
     aborted:               "⚠️ 圧縮が中止されました ({error})。メッセージは削除されていません — 会話はそのままです。再試行するには /compress、新しいセッションを開始するには /reset を実行するか、auxiliary.compression モデル設定を確認してください。"
@@ -106,6 +107,8 @@ gateway:
     no_pending:            "拒否待ちのコマンドはありません。"
     denied_singular:       "❌ コマンドを拒否しました。"
     denied_plural:         "❌ コマンドを拒否しました ({count} 件)。"
+    denied_reason_singular: "❌ コマンドを拒否しました。 理由をエージェントに伝達しました: \"{reason}\""
+    denied_reason_plural:  "❌ コマンドを拒否しました ({count} 件)。 理由をエージェントに伝達しました: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast は Priority Processing をサポートする OpenAI モデルでのみ利用できます。"
@@ -367,6 +370,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_new:              "⚙️ ツール進捗: **NEW** — ツールが変わったときに表示 (プレビュー長: `display.tool_preview_length`、デフォルト 40)。"
     mode_all:              "⚙️ ツール進捗: **ALL** — すべてのツール呼び出しを表示 (プレビュー長: `display.tool_preview_length`、デフォルト 40)。"
     mode_verbose:          "⚙️ ツール進捗: **VERBOSE** — すべてのツール呼び出しを完全な引数とともに表示。"
+    mode_log:              "⚙️ ツール進捗: **LOG** — チャットには表示せず、ツール呼び出しを ~/.hermes/logs/tool_calls.log に記録します。"
     saved_suffix:          "_(**{platform}** に保存しました — 次のメッセージから有効)_"
     save_failed:           "_(設定に保存できませんでした: {error})_"
 

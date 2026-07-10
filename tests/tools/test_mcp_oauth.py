@@ -267,6 +267,7 @@ class TestRedirectHandlerSshHint:
     def test_ssh_hint_shown_on_ssh_session(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
         monkeypatch.setattr(mco, "_oauth_port", 49200)
+        monkeypatch.setattr(mco, "_is_interactive", lambda: True)
         monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
@@ -281,6 +282,7 @@ class TestRedirectHandlerSshHint:
     def test_ssh_hint_shown_via_ssh_tty(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
         monkeypatch.setattr(mco, "_oauth_port", 49201)
+        monkeypatch.setattr(mco, "_is_interactive", lambda: True)
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.setenv("SSH_TTY", "/dev/pts/1")
         monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
@@ -294,6 +296,7 @@ class TestRedirectHandlerSshHint:
     def test_no_ssh_hint_on_local_session(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
         monkeypatch.setattr(mco, "_oauth_port", 49202)
+        monkeypatch.setattr(mco, "_is_interactive", lambda: True)
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.setattr(mco, "_can_open_browser", lambda: True)
@@ -307,6 +310,7 @@ class TestRedirectHandlerSshHint:
     def test_no_ssh_hint_when_port_not_set(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
         monkeypatch.setattr(mco, "_oauth_port", None)
+        monkeypatch.setattr(mco, "_is_interactive", lambda: True)
         monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
         monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
 
@@ -532,12 +536,19 @@ class TestIsInteractive:
 class TestWaitForCallbackNoBlocking:
     """_wait_for_callback() must never call input() — it raises instead."""
 
-    def test_raises_on_timeout_instead_of_input(self):
-        """When no auth code arrives, raises OAuthNonInteractiveError."""
+    def test_raises_on_timeout_instead_of_input(self, monkeypatch):
+        """Interactive session: when no auth code arrives, raises on timeout.
+
+        Marked interactive so the fail-fast non-interactive guard (#57836)
+        does not short-circuit — this test exercises the timeout path.
+        """
         import tools.mcp_oauth as mod
         import asyncio
 
         mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        # EOF on the paste reader so only the HTTP-listener timeout drives it.
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: ""))
 
         async def instant_sleep(_seconds):
             pass
@@ -586,6 +597,116 @@ class TestBuildOAuthAuthNonInteractive:
 
         assert auth is not None
         assert "no cached tokens found" not in caplog.text.lower()
+
+
+class TestNonInteractiveFailFastAtCallbackBoundary:
+    """#57836: a cached-but-unusable token (expired/revoked, refresh rejected)
+    makes the MCP SDK fall through to the authorization-code flow even though
+    build_oauth_auth's token-file guard passed. In a non-interactive context
+    (systemd gateway, cron, background discovery) that flow must fail fast at
+    the redirect/callback boundary — never launch a browser flow or bind a
+    callback listener, and never block for the full timeout — so gateway
+    startup is not gated on an unusable optional MCP server, and retries do not
+    collide on the callback port ('Address already in use').
+    """
+
+    def test_wait_for_callback_rejects_before_binding_when_noninteractive(self, monkeypatch):
+        """No listener bound and no poll loop entered when non-interactive."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+
+        # Binding the callback listener or entering the poll loop is the bug.
+        fake_server = MagicMock(side_effect=AssertionError("must not bind callback listener"))
+        monkeypatch.setattr(mod, "HTTPServer", fake_server)
+
+        async def no_sleep(_seconds):
+            raise AssertionError("must not wait for the callback timeout")
+        monkeypatch.setattr(mod.asyncio, "sleep", no_sleep)
+
+        with pytest.raises(OAuthNonInteractiveError, match="interactive session"):
+            asyncio.run(mod._wait_for_callback())
+        fake_server.assert_not_called()
+
+    def test_wait_for_callback_fail_fast_holds_even_with_cached_token_file(self, tmp_path, monkeypatch):
+        """Guard does not depend on token-file existence.
+
+        A stale token file on disk passes build_oauth_auth's guard, so the
+        callback boundary is the only place that can reject the flow.
+        """
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        (d / "example.json").write_text(
+            json.dumps({"access_token": "stale", "token_type": "Bearer"})
+        )
+
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        monkeypatch.setattr(
+            mod, "HTTPServer", MagicMock(side_effect=AssertionError("must not bind"))
+        )
+
+        with pytest.raises(OAuthNonInteractiveError):
+            asyncio.run(mod._wait_for_callback())
+
+    def test_redirect_handler_rejects_and_does_not_open_browser(self, monkeypatch, capsys):
+        """Non-interactive redirect must not print an auth URL or open a browser."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        monkeypatch.setattr(
+            "webbrowser.open", MagicMock(side_effect=AssertionError("must not open browser"))
+        )
+
+        with pytest.raises(OAuthNonInteractiveError, match="browser authorization"):
+            asyncio.run(mod._redirect_handler("https://idp.example.com/authorize?x=1"))
+
+        err = capsys.readouterr().err
+        assert "https://idp.example.com/authorize" not in err
+
+    def test_boundary_errors_point_at_hermes_mcp_login(self, monkeypatch):
+        """Both boundaries emit an actionable next step."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        with pytest.raises(OAuthNonInteractiveError, match="hermes mcp login"):
+            asyncio.run(mod._redirect_handler("https://idp.example.com/authorize"))
+
+        mod._oauth_port = _find_free_port()
+        with pytest.raises(OAuthNonInteractiveError, match="hermes mcp login"):
+            asyncio.run(mod._wait_for_callback())
+
+    def test_guard_does_not_fire_on_interactive_redirect(self, monkeypatch, capsys):
+        """Positive control: the fail-fast guard is scoped to the auth-code path.
+
+        #57836 regression coverage asks that valid/refreshable OAuth keeps
+        working non-interactively — a good token never reaches these handlers,
+        so the guard must be inert once a real flow is in progress. Assert the
+        interactive path still prints the URL and does not raise, proving the
+        guard does not over-fire and swallow legitimate authorization.
+        """
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        # Local (non-SSH) interactive session with no browser available, so the
+        # handler falls through to the manual-URL print without opening a tab.
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mod, "_can_open_browser", lambda: False)
+
+        asyncio.run(mod._redirect_handler("https://idp.example.com/authorize?x=9"))
+
+        err = capsys.readouterr().err
+        assert "https://idp.example.com/authorize?x=9" in err
 
 
 # ---------------------------------------------------------------------------

@@ -42,7 +42,9 @@ import {
   setYoloActive
 } from '@/store/session'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
+import { reportInstallMethodWarning } from '@/store/updates'
 import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -227,6 +229,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           requestDesktopOnboarding(payload.credential_warning)
         }
 
+        if (apply) {
+          reportInstallMethodWarning(payload?.install_warning)
+        }
+
         void refreshHermesConfig()
 
         if (modelChanged || providerChanged) {
@@ -320,6 +326,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
         clearClarifyRequest(undefined, sessionId)
+        // Turn ended without a final `todo` update — drop a still-unfinished
+        // list so "Tasks N/M" doesn't stay pinned above the composer with the
+        // last item stuck pending/in_progress. Finished lists keep their linger.
+        clearActiveSessionTodos(sessionId)
         setSessionCompacting(sessionId, false)
 
         flushQueuedDeltas(sessionId)
@@ -600,6 +610,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (sessionId) {
           clearAllPrompts(sessionId)
           clearClarifyRequest(undefined, sessionId)
+          clearActiveSessionTodos(sessionId)
           setSessionCompacting(sessionId, false)
           compactedTurnRef.current.delete(sessionId)
         }

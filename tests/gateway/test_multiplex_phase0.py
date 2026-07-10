@@ -9,8 +9,11 @@ Covers the three Phase 0 deliverables:
      on.
 """
 import pytest
+from datetime import datetime
 from unittest.mock import patch
+import yaml
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore, build_session_key
 
@@ -127,6 +130,43 @@ class TestMultiplexConfigFlag:
         cfg = GatewayConfig.from_dict(GatewayConfig(multiplex_profiles=True).to_dict())
         assert cfg.multiplex_profiles is True
 
+    def test_gateway_config_loader_honors_profile_runtime_scope(self, tmp_path, monkeypatch):
+        """Multiplexed turns must resolve display settings from the routed profile."""
+        import gateway.run as gateway_run
+
+        root_home = tmp_path / "root"
+        profile_home = tmp_path / "profiles" / "quiet"
+        root_home.mkdir(parents=True)
+        profile_home.mkdir(parents=True)
+
+        (root_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"display": {"tool_progress": "all", "interim_assistant_messages": True}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        (profile_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"display": {"tool_progress": False, "interim_assistant_messages": False}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", root_home)
+
+        assert gateway_run._load_gateway_config()["display"]["tool_progress"] == "all"
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            scoped_config = gateway_run._load_gateway_config()
+        finally:
+            reset_hermes_home_override(token)
+
+        assert scoped_config["display"]["tool_progress"] is False
+        assert scoped_config["display"]["interim_assistant_messages"] is False
+
 
 class TestSessionStoreProfileResolution:
     """SessionStore._generate_session_key honors the flag: legacy namespace
@@ -161,3 +201,67 @@ class TestSessionStoreProfileResolution:
         s = _src(chat_id="99", chat_type="dm")
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
             assert store._generate_session_key(s) == "agent:main:telegram:dm:99"
+
+
+class _RecoveringDB:
+    def __init__(self, row):
+        self.row = row
+        self.reopened = []
+
+    def find_latest_gateway_session_for_peer(self, **_kwargs):
+        return self.row
+
+    def reopen_session(self, session_id):
+        self.reopened.append(session_id)
+
+
+class TestSessionStoreUnmultiplexedRecovery:
+    """Turning multiplexing off must not recover another profile's session."""
+
+    def _store_with_row(self, tmp_path, row, **cfg_kw):
+        config = GatewayConfig(**cfg_kw)
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = _RecoveringDB(row)
+        store._loaded = True
+        return store
+
+    def test_flag_off_rejects_other_profile_peer_fallback(self, tmp_path):
+        row = {
+            "id": "sess-coder",
+            "started_at": 1700000000,
+            "session_key": "agent:coder:telegram:dm:99",
+        }
+        store = self._store_with_row(tmp_path, row)
+        source = _src(chat_id="99", chat_type="dm")
+
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+            recovered = store._recover_session_from_db(
+                session_key="agent:main:telegram:dm:99",
+                source=source,
+                now=datetime.fromtimestamp(1700000001),
+            )
+
+        assert recovered is None
+        assert store._db.reopened == []
+
+    def test_flag_off_allows_active_profile_peer_fallback(self, tmp_path):
+        row = {
+            "id": "sess-coder",
+            "started_at": 1700000000,
+            "session_key": "agent:coder:telegram:dm:99",
+        }
+        store = self._store_with_row(tmp_path, row)
+        source = _src(chat_id="99", chat_type="dm")
+
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
+            recovered = store._recover_session_from_db(
+                session_key="agent:main:telegram:dm:99",
+                source=source,
+                now=datetime.fromtimestamp(1700000001),
+            )
+
+        assert recovered is not None
+        assert recovered.session_id == "sess-coder"
+        assert recovered.session_key == "agent:main:telegram:dm:99"
+        assert store._db.reopened == ["sess-coder"]

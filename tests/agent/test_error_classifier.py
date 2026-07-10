@@ -55,6 +55,7 @@ class TestFailoverReason:
             "auth", "auth_permanent", "billing", "rate_limit",
             "upstream_rate_limit",
             "overloaded", "server_error", "timeout",
+            "ssl_cert_verification",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
             "invalid_encrypted_content",
@@ -374,6 +375,26 @@ class TestClassifyApiError:
         e = MockAPIError("Overloaded", status_code=529)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
+
+    def test_408_request_timeout_is_retryable_timeout(self):
+        """HTTP 408 Request Timeout is a transient timing failure the server
+        itself flags as safe to retry (RFC 9110 §15.5.9) — commonly emitted by
+        reverse proxies in front of self-hosted backends (llama.cpp / Ollama /
+        vLLM) when a long generation outruns the proxy's request-read window.
+        It must NOT fall into the generic 4xx bucket as a non-retryable
+        format_error, which would abort the turn on a retry-safe error."""
+        e = MockAPIError("Request Timeout", status_code=408)
+        result = classify_api_error(e, provider="vllm")
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
+    def test_400_bad_request_still_non_retryable_format_error(self):
+        """Guard the boundary: a genuine 400 Bad Request must remain a
+        non-retryable format_error and must not be swept up by the 408 branch."""
+        e = MockAPIError("Bad Request", status_code=400)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
 
     def test_message_only_overloaded_without_status_is_overloaded(self):
         """Some Anthropic-compatible proxies surface 'overloaded' in the
@@ -1686,6 +1707,77 @@ class TestSSLTransientPatterns:
         assert result.reason == FailoverReason.timeout
         assert result.retryable is True
 
+
+# ── Test: SSL certificate verification failures (fail fast) ────────────
+
+class TestSSLCertVerificationFailFast:
+    """Certificate verification failures are deterministic for the host —
+    a TLS-inspecting proxy, missing custom CA, expired or self-signed cert
+    fails identically on every retry. They must classify as non-retryable
+    ``ssl_cert_verification`` so the user sees the fix hint immediately,
+    instead of matching the transient "[ssl:" pattern and retrying forever.
+
+    Inspired by Claude Code v2.1.199 (July 2026).
+    """
+
+    def test_python_cert_verify_failed_is_non_retryable(self):
+        import ssl
+        e = ssl.SSLCertVerificationError(
+            1,
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+            "unable to get local issuer certificate (_ssl.c:1006)",
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_cert_verification
+        assert result.retryable is False
+        assert result.should_compress is False
+
+    def test_wrapped_cert_verify_message_is_non_retryable(self):
+        """SDKs often re-raise without chaining — match on message alone."""
+        e = Exception(
+            "Connection error: [SSL: CERTIFICATE_VERIFY_FAILED] certificate "
+            "verify failed: self-signed certificate in certificate chain"
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_cert_verification
+        assert result.retryable is False
+
+    def test_expired_certificate_is_non_retryable(self):
+        e = Exception("certificate verify failed: certificate has expired")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_cert_verification
+        assert result.retryable is False
+
+    def test_node_undici_phrasing_is_non_retryable(self):
+        """MCP bridges surface Node's phrasing."""
+        e = Exception("fetch failed: unable to verify the first certificate")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_cert_verification
+        assert result.retryable is False
+
+    def test_cert_verify_wins_over_transient_ssl_prefix(self):
+        """The '[SSL:' prefix also appears in cert-verify messages; the
+        cert check must run first so this doesn't retry as timeout."""
+        e = Exception("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.ssl_cert_verification
+        assert result.retryable is False
+
+    def test_transient_ssl_alert_still_retries(self):
+        """Regression guard: genuine transient alerts keep retrying."""
+        e = Exception("[SSL: BAD_RECORD_MAC] sslv3 alert bad record mac")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
+    def test_cert_verify_on_large_session_does_not_compress(self):
+        e = Exception("certificate verify failed: unable to get local issuer certificate")
+        result = classify_api_error(
+            e, approx_tokens=180000, context_length=200000, num_messages=300,
+        )
+        assert result.reason == FailoverReason.ssl_cert_verification
+        assert result.should_compress is False
+
 # ── Test: RateLimitError without status_code (Copilot/GitHub Models) ──────────
 
 class TestRateLimitErrorWithoutStatusCode:
@@ -1888,3 +1980,76 @@ class TestOpenRouterUpstreamRateLimit:
         # Overload disambiguation runs first; the outer message is the overload
         # phrase, so this is an overload, not an upstream rate-limit.
         assert result.reason == FailoverReason.overloaded
+
+
+# ── HTTP 408 request timeout ────────────────────────────────────────────
+
+class Test408RequestTimeout:
+    """HTTP 408 must never fall through to the non-retryable 'other 4xx'
+    bucket (that abort persists an empty assistant turn — the "disappeared
+    conversation" / blank-bubble symptom). ALL 408s are classified as a transient
+    ``timeout``: retryable, and explicitly NOT should_compress.
+
+    Design decision (field 2026-07-02): even the GitHub Copilot
+    ``user_request_timeout`` / "Timed out reading request body ... use a
+    smaller request size" case is a plain retry, NOT auto-compression. Real
+    data showed the 408 is probabilistic jitter well below the hard prompt
+    ceiling — the same ~785k-token request that 408'd once succeeded on the
+    next attempt at ~786k — so retrying the same body usually works, and
+    auto-compaction would silently delete conversation history for a merely
+    transient timeout. Genuine over-window prompts surface as 413 /
+    context_overflow (their own compression path); users compact 408-prone
+    long sessions deliberately via ``/compress``.
+    """
+
+    def test_copilot_oversized_body_408_retries_as_timeout_not_compress(self):
+        # The exact shape GitHub Copilot returns on a long session. It must
+        # retry (timeout), and must NOT auto-compress.
+        e = MockAPIError(
+            "Error code: 408 - {'error': {'message': 'Timed out reading "
+            "request body. Try again, or use a smaller request size.', "
+            "'code': 'user_request_timeout'}}",
+            status_code=408,
+            body={"error": {"message": "Timed out reading request body. "
+                            "Try again, or use a smaller request size.",
+                            "code": "user_request_timeout"}},
+        )
+        result = classify_api_error(e, provider="copilot", model="claude-opus-4.8")
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_408_never_auto_compresses(self):
+        # Hard guard on the user's explicit preference: a 408 must NEVER
+        # trigger auto-compaction (which would delete history unprompted).
+        # This must FAIL if anyone re-routes 408 to payload_too_large.
+        for msg, body in [
+            ("Timed out reading request body. Use a smaller request size.", {}),
+            ("Request timed out.", {"error": {"code": "user_request_timeout"}}),
+            ("Request Timeout", {}),
+        ]:
+            e = MockAPIError(msg, status_code=408, body=body)
+            result = classify_api_error(e, provider="copilot", model="claude-opus-4.8")
+            assert result.should_compress is False, msg
+            assert result.reason != FailoverReason.payload_too_large, msg
+
+    def test_oversized_body_408_is_not_non_retryable_format_error(self):
+        # Falsification guard: if the 408 branch is removed, this 408 would
+        # be classified as a non-retryable format_error and the turn would
+        # abort into a blank bubble. This assertion must FAIL on buggy code.
+        e = MockAPIError(
+            "Timed out reading request body. Try again, or use a smaller "
+            "request size.",
+            status_code=408,
+        )
+        result = classify_api_error(e, provider="copilot", model="claude-opus-4.8")
+        assert result.retryable is True
+        assert result.reason != FailoverReason.format_error
+
+    def test_plain_408_is_transient_timeout(self):
+        # A generic gateway/request timeout must retry as a transport timeout.
+        e = MockAPIError("Request Timeout", status_code=408)
+        result = classify_api_error(e, provider="openai", model="gpt-5.5")
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+        assert result.should_compress is False

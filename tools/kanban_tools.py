@@ -175,6 +175,10 @@ def _connect(board: Optional[str] = None):
     → ``default``). Per-tool ``board`` lets a Telegram-side agent override
     the env-pinned active board without restarting Hermes.
     """
+    from hermes_cli.kanban_remote import configured_coordinator_url
+    if configured_coordinator_url():
+        from hermes_cli.kanban_remote import connect_from_config
+        return connect_from_config()
     from hermes_cli import kanban_db as kb
     return kb, kb.connect(board=board)
 

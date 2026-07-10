@@ -66,6 +66,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "status": t.status,
         "priority": t.priority,
         "tenant": t.tenant,
+        "target_machine": t.target_machine,
         "workspace_kind": t.workspace_kind,
         "workspace_path": t.workspace_path,
         "branch_name": t.branch_name,
@@ -308,6 +309,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("title", help="Task title")
     p_create.add_argument("--body", default=None, help="Optional opening post")
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
+    p_create.add_argument(
+        "--target-machine",
+        default=None,
+        help="Optional machine UUID pin (otherwise any eligible machine)",
+    )
+    p_create.add_argument(
+        "--require",
+        action="append",
+        default=[],
+        dest="required_capabilities",
+        help="Required machine capability (repeatable, e.g. --require macos --require xcode)",
+    )
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
     p_create.add_argument("--workspace", default="scratch",
@@ -669,6 +682,39 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_daemon.add_argument("--force", action="store_true",
                           help=argparse.SUPPRESS)
 
+    # --- distributed coordinator / remote worker ---
+    p_coordinator = sub.add_parser(
+        "coordinator",
+        help="Run the authenticated coordinator for a shared Kanban board",
+    )
+    p_coordinator.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="Board SQLite path (defaults to the current board)",
+    )
+    p_coordinator.add_argument("--host", default="127.0.0.1")
+    p_coordinator.add_argument("--port", default=8788, type=int)
+    p_coordinator.add_argument(
+        "--token-env", default="HERMES_KANBAN_COORDINATOR_TOKEN",
+        help="Environment variable containing the coordinator bearer token",
+    )
+
+    p_remote_worker = sub.add_parser(
+        "remote-worker",
+        help="Run a worker that polls a private Kanban coordinator",
+    )
+    p_remote_worker.add_argument(
+        "--url",
+        default=None,
+        help="Coordinator URL (defaults to kanban.coordinator_url)",
+    )
+    p_remote_worker.add_argument("--token-env", default="HERMES_KANBAN_COORDINATOR_TOKEN")
+    p_remote_worker.add_argument("--profile", required=True)
+    p_remote_worker.add_argument("--capability", action="append", default=[])
+    p_remote_worker.add_argument("--poll-seconds", type=float, default=10.0)
+    p_remote_worker.add_argument("--max-retry-seconds", type=float, default=60.0)
+
     # --- watch ---
     p_watch = sub.add_parser(
         "watch",
@@ -894,6 +940,14 @@ def kanban_command(args: argparse.Namespace) -> int:
     if action == "boards":
         return _dispatch_boards(args)
 
+    # These commands own their runtime loop and do not need a local board
+    # connection before starting. In particular, a remote worker may run on a
+    # machine that has never hosted a local board database.
+    if action == "coordinator":
+        return _cmd_coordinator(args)
+    if action == "remote-worker":
+        return _cmd_remote_worker(args)
+
     # `--board <slug>` applies to every subcommand below by way of an
     # env-var pin for the duration of this call. Using HERMES_KANBAN_BOARD
     # (rather than threading `board=` through 50+ kb.connect() sites)
@@ -961,6 +1015,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "tail":     _cmd_tail,
             "dispatch": _cmd_dispatch,
             "daemon":   _cmd_daemon,
+            "coordinator": _cmd_coordinator,
+            "remote-worker": _cmd_remote_worker,
             "watch":    _cmd_watch,
             "stats":    _cmd_stats,
             "log":      _cmd_log,
@@ -1001,6 +1057,38 @@ def _profile_author() -> str:
         return get_active_profile_name() or "user"
     except Exception:
         return "user"
+
+
+def _cmd_coordinator(args: argparse.Namespace) -> int:
+    """Start the shared-board coordinator from the supported CLI surface."""
+    from hermes_cli.kanban_coordinator import run
+
+    return run(
+        db_path=getattr(args, "db", None) or kb.kanban_db_path(),
+        host=args.host,
+        port=args.port,
+        token_env=args.token_env,
+    )
+
+
+def _cmd_remote_worker(args: argparse.Namespace) -> int:
+    """Start a remote worker, defaulting its endpoint to config.yaml."""
+    from hermes_cli.kanban_remote import configured_coordinator_url
+    from hermes_cli.kanban_remote_worker import run
+
+    url = (args.url or configured_coordinator_url()).strip()
+    if not url:
+        raise RuntimeError(
+            "set kanban.coordinator_url or pass remote-worker --url"
+        )
+    return run(
+        url=url,
+        token_env=args.token_env,
+        profile=args.profile,
+        capabilities=args.capability,
+        poll_seconds=args.poll_seconds,
+        max_retry_seconds=args.max_retry_seconds,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1347,6 +1435,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            target_machine=getattr(args, "target_machine", None),
+            required_capabilities=(
+                getattr(args, "required_capabilities", None) or None
+            ),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

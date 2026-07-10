@@ -900,6 +900,11 @@ class ManagedFileUpload(BaseModel):
     overwrite: bool = True
 
 
+class ChatImageUpload(BaseModel):
+    data_url: str
+    filename: Optional[str] = None
+
+
 class ManagedDirectoryCreate(BaseModel):
     path: str
 
@@ -1764,6 +1769,91 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
     if len(data) > _MANAGED_FILE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File is too large")
     return data, mime_type
+
+
+_CHAT_IMAGE_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+_CHAT_IMAGE_ALLOWED_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+_CHAT_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+    (b"BM", ".bmp"),
+)
+
+
+def _sanitize_chat_image_filename(filename: str | None) -> str:
+    candidate = Path(str(filename or "").strip()).name
+    candidate = re.sub(r"[\x00-\x1f]+", "_", candidate)
+    candidate = candidate.strip().strip(".")
+    return candidate or "pasted-image"
+
+
+def _chat_image_extension(data: bytes) -> str | None:
+    head = data[:16]
+    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return ".webp"
+    for sig, ext in _CHAT_IMAGE_MAGIC:
+        if head.startswith(sig):
+            return ext
+    return None
+
+
+def _decode_chat_image_upload(payload: ChatImageUpload) -> tuple[bytes, str, str]:
+    data, mime_type = _decode_data_url(payload.data_url)
+    if not mime_type.lower().startswith("image/"):
+        raise HTTPException(status_code=400, detail="Upload payload must be an image")
+    if len(data) > _CHAT_IMAGE_UPLOAD_MAX_BYTES:
+        mb = _CHAT_IMAGE_UPLOAD_MAX_BYTES // (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"Image is too large; cap is {mb} MB")
+
+    ext = _chat_image_extension(data)
+    if ext not in _CHAT_IMAGE_ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported image type")
+    return data, mime_type, ext
+
+
+@app.post("/api/chat/image-upload")
+async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = None):
+    """Persist a browser-provided chat image where the embedded TUI can read it.
+
+    The dashboard /chat page runs Hermes inside an xterm.js PTY. Browser
+    clipboard image bytes are not visible to the server-side clipboard, so the
+    page uploads them here, then drives the TUI's ``/image <path>`` command
+    with the returned gateway-visible path. Files land under
+    ``HERMES_HOME/images/`` — the same directory ``clipboard.paste`` /
+    ``image.attach`` already use.
+    """
+    data, mime_type, ext = _decode_chat_image_upload(payload)
+    with _profile_scope(profile) as scoped_home:
+        home = scoped_home or get_hermes_home()
+        img_dir = Path(home) / "images"
+        try:
+            img_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Image directory is not writable")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not create image directory: {exc}")
+
+        stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
+        stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
+
+        try:
+            target.write_bytes(data)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Image directory is not writable")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not write image: {exc}")
+
+    return {
+        "ok": True,
+        "path": str(target),
+        "name": target.name,
+        "bytes": len(data),
+        "mime_type": mime_type,
+    }
 
 
 @app.get("/api/files")

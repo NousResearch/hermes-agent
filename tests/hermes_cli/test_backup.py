@@ -547,6 +547,24 @@ class TestImport:
         assert (hermes_home / "config.yaml").read_text() == "model: test\n"
         assert (hermes_home / "skills" / "a" / "SKILL.md").read_text() == "# A\n"
 
+    def test_mixed_wrapped_and_root_entries_do_not_collide(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "hermes/config.yaml": "wrapped\n",
+            "config.yaml": "root\n",
+        })
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert (hermes_home / "config.yaml").read_text() == "root\n"
+        assert (hermes_home / "hermes" / "config.yaml").read_text() == "wrapped\n"
+
     def test_rejects_empty_zip(self, tmp_path, monkeypatch):
         """Import rejects an empty zip."""
         hermes_home = tmp_path / ".hermes"
@@ -943,6 +961,18 @@ class TestValidation:
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("config.yaml", "test")
             zf.writestr("skills/a/SKILL.md", "skill")
+        buf.seek(0)
+        with zipfile.ZipFile(buf, "r") as zf:
+            assert _detect_prefix(zf) == ""
+
+    def test_detect_prefix_none_with_mixed_root_and_wrapper_entries(self):
+        import io
+        from hermes_cli.backup import _detect_prefix
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("hermes/config.yaml", "wrapped")
+            zf.writestr("config.yaml", "root")
         buf.seek(0)
         with zipfile.ZipFile(buf, "r") as zf:
             assert _detect_prefix(zf) == ""

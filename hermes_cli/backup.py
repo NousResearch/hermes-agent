@@ -507,9 +507,11 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
 
     # Find common prefix
     parts_list = [Path(n).parts for n in names]
+    if any(len(parts) < 2 for parts in parts_list):
+        return ""
 
     # Check if all entries share a common first directory
-    first_parts = {p[0] for p in parts_list if len(p) > 1}
+    first_parts = {p[0] for p in parts_list}
     if len(first_parts) == 1:
         prefix = first_parts.pop()
         # Only strip if it looks like a hermes dir name

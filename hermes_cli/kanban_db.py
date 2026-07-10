@@ -6617,19 +6617,23 @@ def _record_task_failure(
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
-                    "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status IN ('running', 'ready')",
-                    (failures, error[:500], task_id),
+                    "consecutive_failures = ?, last_failure_error = ?, "
+                    "max_retries = ?",
+                    (failures, error[:500], task_id, failures),
                 )
             else:
                 # Timeout/crash path: task is already at ``ready``
                 # with claim cleared; just flip to blocked + update
-                # counter fields.
+                # counter fields.  Also set ``max_retries`` so that
+                # ``recompute_ready``'s ``effective_limit`` resolution
+                # (line ~3346) picks up the tripped limit and prevents
+                # auto-promotion on the same dispatch tick.
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', "
-                    "consecutive_failures = ?, last_failure_error = ? "
+                    "consecutive_failures = ?, last_failure_error = ?, "
+                    "max_retries = ? "
                     "WHERE id = ? AND status IN ('ready', 'running')",
-                    (failures, error[:500], task_id),
+                    (failures, error[:500], failures, task_id),
                 )
             run_id = None
             if end_run:
@@ -7086,6 +7090,28 @@ def _dispatch_once_locked(
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+
+    # P0 Guardrail Issue #2: Never spawn ready tasks that are blocked for
+    # 'needs_input' or 'capability'. Those block kinds mean the worker
+    # explicitly stated "I need a human decision / I lack the capability" —
+    # re-spawning is guaranteed to hit the same wall and loop. The task stays
+    # in 'blocked' until a human explicitly unblocks it.
+    # (The dispatcher was previously re-spawning these after an unblock-cron
+    # or manual unblock, creating infinite loops like the INC-2026-003-P1-005
+    # incident where xiaojian's needs_input task was re-dispatched 7 times.)
+    blocked_kinds = set()
+    for _br in ready_rows:
+        _task = conn.execute(
+            "SELECT block_kind FROM tasks WHERE id = ?", (_br["id"],)
+        ).fetchone()
+        _bk = (_task["block_kind"] if "block_kind" in _task.keys() else None) or ""
+        if _bk in {"needs_input", "capability"}:
+            blocked_kinds.add(_br["id"])
+
+    # Filter out tasks that are needs_input / capability blocked
+    ready_rows = [
+        r for r in ready_rows if r["id"] not in blocked_kinds
+    ]
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks

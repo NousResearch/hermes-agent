@@ -16232,6 +16232,56 @@ def main(
                                     _exit_code = _RL_CODE
                                 except Exception:
                                     _exit_code = 1
+                            # P0 Guardrail Issue #1: Provider-all-failed safety call.
+                            # When a kanban worker fails due to provider errors
+                            # (connection_error, timeout, overloaded, etc.) that are
+                            # NOT rate_limit or billing, the worker should call
+                            # kanban_block(kind="transient") BEFORE exiting so the
+                            # dispatcher doesn't classify it as a crash and re-dispatch
+                            # (which would loop on the same provider failure).
+                            # This is the "safety call" — even when the AI fails,
+                            # the protocol call goes through.
+                            elif os.environ.get("HERMES_KANBAN_TASK"):
+                                _kb_task_id = os.environ["HERMES_KANBAN_TASK"]
+                                _fail_reason = result.get("failure_reason", "unknown")
+                                _fail_error = result.get("error", "") or ""
+                                # Only block for provider errors, NOT for task-internal
+                                # failures where the agent actually ran but the task
+                                # itself failed. Provider errors are: connection errors,
+                                # timeouts, overloaded, upstream errors, etc.
+                                # These are the actual FailoverReason enum values
+                                # from error_classifier.py.
+                                _provider_error_kinds = {
+                                    "timeout", "overloaded", "server_error",
+                                    "ssl_cert_verification", "auth_permanent",
+                                    "provider_policy_blocked",
+                                    "content_policy_blocked",
+                                    "model_not_found",
+                                    "unknown",
+                                }
+                                _is_provider_error = _fail_reason.lower() in _provider_error_kinds
+                                if _is_provider_error:
+                                    try:
+                                        from hermes_cli import kanban_db as _kb
+                                        _conn = _kb.connect()
+                                        try:
+                                            _kb.block_task(
+                                                _conn,
+                                                _kb_task_id,
+                                                reason=(
+                                                    f"Provider all-failed — "
+                                                    f"{_fail_reason}: {_fail_error[:200]} "
+                                                    f"(safety call by worker, not a task error)"
+                                                ),
+                                                kind="transient",
+                                            )
+                                            _conn.commit()
+                                        finally:
+                                            _conn.close()
+                                    except Exception:
+                                        pass  # Safety call is best-effort; the block_task
+                                        # should succeed, but if kanban DB is unavailable,
+                                        # fall through to the original exit behavior.
                         sys.exit(_exit_code)
 
                 # Exit with error code if credentials or agent init fails

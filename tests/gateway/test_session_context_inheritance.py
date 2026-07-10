@@ -26,11 +26,17 @@ strips safe instead of leaking the sibling's. The handler then binds its own
 session a few steps later.
 """
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+from types import SimpleNamespace
+from typing import Any, Dict, cast
 
 import pytest
 
 import gateway.session_context as sc
+from gateway.config import Platform
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource
 from gateway.session_context import (
     _SESSION_ASYNC_DELIVERY,
     _UNSET,
@@ -43,7 +49,7 @@ from tools.environments.local import _make_run_env
 
 SESSION_VARS = list(_VAR_MAP.keys())
 
-MINE = dict(
+MINE: Dict[str, Any] = dict(
     session_key="agent:main:discord:thread:MINE:MINE",
     platform="discord",
     chat_id="MINE_CHAT",
@@ -52,7 +58,7 @@ MINE = dict(
     chat_name="mine",
     message_id="MINE_MSG",
 )
-FOREIGN = dict(
+FOREIGN: Dict[str, Any] = dict(
     session_key="agent:main:discord:thread:FOREIGN:FOREIGN",
     platform="discord",
     chat_id="FOREIGN_CHAT",
@@ -97,7 +103,278 @@ def _spawn_view():
         "HERMES_SESSION_CHAT_ID": env.get("HERMES_SESSION_CHAT_ID"),
         "HERMES_SESSION_THREAD_ID": env.get("HERMES_SESSION_THREAD_ID"),
         "HERMES_SESSION_KEY": env.get("HERMES_SESSION_KEY"),
+        "HERMES_SESSION_ID": env.get("HERMES_SESSION_ID"),
+        "HERMES_SESSION_MESSAGE_ID": env.get("HERMES_SESSION_MESSAGE_ID"),
     }
+
+
+def _discord_thread_source(label: str, *, message_id: str) -> SessionSource:
+    return SessionSource(
+        platform=Platform.DISCORD,
+        chat_id=label,
+        chat_type="thread",
+        user_id="owner",
+        thread_id=label,
+        message_id=message_id,
+    )
+
+
+def _runner_with_inner(inner):
+    runner = cast(Any, GatewayRunner.__new__(GatewayRunner))
+    runner.config = SimpleNamespace(multiplex_profiles=False)
+    runner.adapters = {
+        Platform.DISCORD: SimpleNamespace(supports_async_delivery=True),
+    }
+    runner._executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="test-session-context",
+    )
+    runner._run_agent_inner = inner
+    return runner
+
+
+async def _worker_spawn_view(runner):
+    """Read the tool/subprocess environment from the gateway worker thread."""
+    return await GatewayRunner._run_in_executor_with_context(runner, _spawn_view)
+
+
+def _shutdown_test_executor(runner) -> None:
+    executor = getattr(runner, "_executor", None)
+    if executor is not None:
+        executor.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_rebinds_full_turn_context_before_inner_dispatch():
+    """The _run_agent choke point must not trust its caller's current context."""
+    set_session_vars(**FOREIGN, session_id="FOREIGN_SID")
+    source = _discord_thread_source("MINE_THREAD", message_id="SOURCE_MSG")
+    observed = {}
+    runner = _runner_with_inner(None)
+
+    async def inner(*args, **kwargs):
+        observed.update(await _worker_spawn_view(runner))
+        return {"final_response": "ok"}
+
+    runner._run_agent_inner = inner
+    try:
+        await GatewayRunner._run_agent(
+            runner,
+            message="mine",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="MINE_SID",
+            session_key=MINE["session_key"],
+            event_message_id="MINE_MSG",
+        )
+    finally:
+        _shutdown_test_executor(runner)
+
+    assert observed == {
+        "HERMES_SESSION_CHAT_ID": "MINE_THREAD",
+        "HERMES_SESSION_THREAD_ID": "MINE_THREAD",
+        "HERMES_SESSION_KEY": MINE["session_key"],
+        "HERMES_SESSION_ID": "MINE_SID",
+        "HERMES_SESSION_MESSAGE_ID": "MINE_MSG",
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_composes_session_binding_with_profile_scope(tmp_path):
+    """The worker must inherit both the turn identity and multiplex profile."""
+    from hermes_constants import get_hermes_home
+
+    set_session_vars(**FOREIGN, session_id="FOREIGN_SID")
+    source = _discord_thread_source("MINE_THREAD", message_id="SOURCE_MSG")
+    source.profile = "coder"
+    runner = _runner_with_inner(None)
+    runner.config.multiplex_profiles = True
+    runner._resolve_profile_home_for_source = lambda _source: tmp_path
+    observed = {}
+
+    def worker_view():
+        return {"session": _spawn_view(), "home": str(get_hermes_home())}
+
+    async def inner(*args, **kwargs):
+        observed.update(
+            await GatewayRunner._run_in_executor_with_context(runner, worker_view)
+        )
+        return {"final_response": "ok"}
+
+    runner._run_agent_inner = inner
+    try:
+        await GatewayRunner._run_agent(
+            runner,
+            message="mine",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="MINE_SID",
+            session_key=MINE["session_key"],
+            event_message_id="MINE_MSG",
+        )
+    finally:
+        _shutdown_test_executor(runner)
+
+    assert observed["session"]["HERMES_SESSION_KEY"] == MINE["session_key"]
+    assert observed["home"] == str(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_inner_warns_before_dispatch_on_context_mismatch(caplog):
+    """The runtime net reports a turn whose bound key disagrees with its call."""
+    set_session_vars(**FOREIGN, session_id="FOREIGN_SID")
+    source = _discord_thread_source("MINE_THREAD", message_id="MINE_MSG")
+    expected_key = "agent:main:discord:thread:MINE_THREAD:MINE_THREAD"
+    runner = _runner_with_inner(None)
+    runner._get_proxy_url = lambda: "http://proxy.invalid"
+
+    async def proxy_call(**kwargs):
+        return {"final_response": "ok"}
+
+    runner._run_agent_via_proxy = proxy_call
+    try:
+        with caplog.at_level("WARNING", logger="gateway.run"):
+            await GatewayRunner._run_agent_inner(
+                runner,
+                message="mine",
+                context_prompt="",
+                history=[],
+                source=source,
+                session_id="MINE_SID",
+                session_key=expected_key,
+                event_message_id="MINE_MSG",
+            )
+    finally:
+        _shutdown_test_executor(runner)
+
+    assert "Agent executor context mismatch" in caplog.text
+    assert FOREIGN["session_key"] in caplog.text
+    assert expected_key in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_recursive_run_agent_rebinds_queued_cross_session_followup():
+    """A queued B turn recursing from A must execute with B's full identity."""
+    source_a = _discord_thread_source("THREAD_A", message_id="SOURCE_A_MSG")
+    source_b = _discord_thread_source("THREAD_B", message_id="SOURCE_B_MSG")
+    key_a = "agent:main:discord:thread:THREAD_A:THREAD_A"
+    key_b = "agent:main:discord:thread:THREAD_B:THREAD_B"
+    set_session_vars(
+        platform="discord",
+        chat_id="THREAD_A",
+        thread_id="THREAD_A",
+        session_key=key_a,
+        session_id="SID_A",
+        message_id="MSG_A",
+    )
+    observed = {}
+    runner = _runner_with_inner(None)
+
+    async def inner(message, context_prompt, history, source, session_id, **kwargs):
+        if message == "turn-a":
+            observed["a_before"] = await _worker_spawn_view(runner)
+            result = await GatewayRunner._run_agent(
+                runner,
+                message="queued-turn-b",
+                context_prompt=context_prompt,
+                history=history,
+                source=source_b,
+                session_id="SID_B",
+                session_key=key_b,
+                event_message_id="MSG_B",
+                _interrupt_depth=1,
+            )
+            observed["a_after"] = await _worker_spawn_view(runner)
+            return result
+        observed["b"] = await _worker_spawn_view(runner)
+        return {"final_response": "ok"}
+
+    runner._run_agent_inner = inner
+    try:
+        await GatewayRunner._run_agent(
+            runner,
+            message="turn-a",
+            context_prompt="",
+            history=[],
+            source=source_a,
+            session_id="SID_A",
+            session_key=key_a,
+            event_message_id="MSG_A",
+        )
+    finally:
+        _shutdown_test_executor(runner)
+
+    expected_a = {
+        "HERMES_SESSION_CHAT_ID": "THREAD_A",
+        "HERMES_SESSION_THREAD_ID": "THREAD_A",
+        "HERMES_SESSION_KEY": key_a,
+        "HERMES_SESSION_ID": "SID_A",
+        "HERMES_SESSION_MESSAGE_ID": "MSG_A",
+    }
+    expected_b = {
+        "HERMES_SESSION_CHAT_ID": "THREAD_B",
+        "HERMES_SESSION_THREAD_ID": "THREAD_B",
+        "HERMES_SESSION_KEY": key_b,
+        "HERMES_SESSION_ID": "SID_B",
+        "HERMES_SESSION_MESSAGE_ID": "MSG_B",
+    }
+    assert observed == {
+        "a_before": expected_a,
+        "b": expected_b,
+        "a_after": expected_a,
+    }
+
+
+@pytest.mark.asyncio
+async def test_recursive_run_agent_rebinds_steer_fallback_message_anchor():
+    """A same-session /steer fallback must replace the outer turn's message id."""
+    source = _discord_thread_source("THREAD_A", message_id="SOURCE_A_MSG")
+    key = "agent:main:discord:thread:THREAD_A:THREAD_A"
+    set_session_vars(
+        platform="discord",
+        chat_id="THREAD_A",
+        thread_id="THREAD_A",
+        session_key=key,
+        session_id="SID_A",
+        message_id="OUTER_MSG",
+    )
+    observed = {}
+    runner = _runner_with_inner(None)
+
+    async def inner(message, context_prompt, history, source, session_id, **kwargs):
+        if message == "outer-turn":
+            return await GatewayRunner._run_agent(
+                runner,
+                message="steer-fallback-turn",
+                context_prompt=context_prompt,
+                history=history,
+                source=source,
+                session_id=session_id,
+                session_key=key,
+                event_message_id="STEER_MSG",
+                _interrupt_depth=1,
+            )
+        observed.update(await _worker_spawn_view(runner))
+        return {"final_response": "ok"}
+
+    runner._run_agent_inner = inner
+    try:
+        await GatewayRunner._run_agent(
+            runner,
+            message="outer-turn",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="SID_A",
+            session_key=key,
+            event_message_id="OUTER_MSG",
+        )
+    finally:
+        _shutdown_test_executor(runner)
+
+    assert observed["HERMES_SESSION_MESSAGE_ID"] == "STEER_MSG"
 
 
 async def _child_turn(reset_first: bool):

@@ -196,10 +196,9 @@ def set_session_vars(
     """Set all session context variables and return reset tokens.
 
     Call ``clear_session_vars(tokens)`` in a ``finally`` block when the handler
-    exits. Note ``clear_session_vars`` resets every var to ``""`` (to suppress
-    the ``os.environ`` fallback) rather than restoring prior values — these
-    helpers are not nestable/stack-safe, and the returned tokens are accepted
-    only for API compatibility.
+    exits and needs the explicit-empty state that suppresses ``os.environ``
+    fallback. Nested scopes must instead call ``restore_session_vars(tokens)``
+    so the outer binding survives.
 
     ``cwd`` pins the logical working directory for this context.
 
@@ -231,10 +230,16 @@ def set_session_vars(
     try:
         from agent.runtime_cwd import set_session_cwd
 
-        set_session_cwd(cwd)
+        tokens.append(set_session_cwd(cwd))
     except Exception:
         pass
     return tokens
+
+
+def restore_session_vars(tokens: list) -> None:
+    """Restore a nested session binding from ContextVar reset tokens."""
+    for token in reversed(tokens or []):
+        token.var.reset(token)
 
 
 def clear_session_vars(tokens: list) -> None:
@@ -276,7 +281,7 @@ def clear_session_vars(tokens: list) -> None:
         pass
 
 
-def reset_session_vars() -> None:
+def reset_session_vars() -> list:
     """Reset every session context variable to ``_UNSET`` for THIS context.
 
     Distinct from :func:`clear_session_vars`, which sets the vars to ``""``
@@ -310,18 +315,18 @@ def reset_session_vars() -> None:
     ``async_delivery_supported`` wrongly reports the new turn's channel as
     unable to route a background completion until ``set_session_vars`` runs.
     """
-    for var in _VAR_MAP.values():
-        var.set(_UNSET)
+    tokens = [var.set(_UNSET) for var in _VAR_MAP.values()]
     # Reset the async-delivery capability to "never bound here" (_UNSET) for the
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
     # which resets this var on the handler-exit path for the symmetric concern.
-    _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    tokens.append(_SESSION_ASYNC_DELIVERY.set(_UNSET))
     try:
-        from agent.runtime_cwd import clear_session_cwd
+        from agent.runtime_cwd import reset_session_cwd
 
-        clear_session_cwd()
+        tokens.append(reset_session_cwd())
     except Exception:
         pass
+    return tokens
 
 
 def get_session_env(name: str, default: str = "") -> str:

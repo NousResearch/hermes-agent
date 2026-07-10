@@ -352,15 +352,17 @@ ALIASES: Dict[str, str] = {
     "fireworks-ai": "fireworks",
     "fw": "fireworks",
 
-    # Local server aliases → virtual "local" concept (resolved via user config)
+    # Local OpenAI-compatible server aliases → the generic "custom" provider
+    # (resolved via user config / base_url). Must match hermes_cli.auth's
+    # resolve_provider aliases so every layer agrees these route to custom.
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
-    "vllm": "local",
-    "llamacpp": "local",
-    "llama.cpp": "local",
-    "llama-cpp": "local",
+    "vllm": "custom",
+    "llamacpp": "custom",
+    "llama.cpp": "custom",
+    "llama-cpp": "custom",
 }
 
 

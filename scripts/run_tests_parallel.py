@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -51,6 +52,19 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 FailureRecord = Tuple[Path, int, str, Dict[str, int]]
+_ActiveProc = Tuple["subprocess.Popen", int | None]
+
+
+class _RunnerTermination(BaseException):
+    """Raised from the main-thread signal handler after child cleanup starts."""
+
+    def __init__(self, signum: int):
+        self.signum = signum
+        super().__init__(f"runner interrupted by signal {signum}")
+
+
+_ACTIVE_PROCS: Dict[int, _ActiveProc] = {}
+_ACTIVE_PROCS_LOCK = threading.Lock()
 
 # Default test discovery roots.
 _DEFAULT_ROOTS = ["tests"]
@@ -220,6 +234,48 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
         pass
 
 
+def _register_active_proc(proc: "subprocess.Popen", pgid: int | None) -> None:
+    with _ACTIVE_PROCS_LOCK:
+        _ACTIVE_PROCS[proc.pid] = (proc, pgid)
+
+
+def _unregister_active_proc(proc: "subprocess.Popen") -> None:
+    with _ACTIVE_PROCS_LOCK:
+        _ACTIVE_PROCS.pop(proc.pid, None)
+
+
+def _kill_active_processes() -> None:
+    with _ACTIVE_PROCS_LOCK:
+        active = list(_ACTIVE_PROCS.values())
+    for proc, pgid in active:
+        _kill_tree(proc, pgid=pgid)
+
+
+def _install_runner_signal_handlers() -> dict[int, object]:
+    """Convert supervisor SIGTERM/SIGINT into cleanup + final reporting."""
+    previous: dict[int, object] = {}
+
+    def _handle(signum: int, _frame: object) -> None:
+        _kill_active_processes()
+        raise _RunnerTermination(signum)
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, _handle)
+        except (AttributeError, ValueError, OSError):
+            pass
+    return previous
+
+
+def _restore_runner_signal_handlers(previous: dict[int, object]) -> None:
+    for signum, handler in previous.items():
+        try:
+            signal.signal(signum, handler)
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def _run_one_file(
     file: Path,
     pytest_args: List[str],
@@ -280,32 +336,36 @@ def _run_one_file(
             pgid = os.getpgid(proc.pid)
         except (ProcessLookupError, PermissionError):
             pgid = None
+    _register_active_proc(proc, pgid)
 
     try:
-        output, _ = proc.communicate(timeout=file_timeout)
-        rc = proc.returncode
-    except subprocess.TimeoutExpired:
-        _kill_tree(proc, pgid=pgid)
         try:
-            output, _ = proc.communicate(timeout=10)
+            output, _ = proc.communicate(timeout=file_timeout)
+            rc = proc.returncode
         except subprocess.TimeoutExpired:
-            output = "(file timeout exceeded; output unavailable)"
-        rc = 124  # de facto convention for "killed by timeout".
-        output = (
-            f"({file_timeout:.0f}s exceeded; "
-            f"process tree SIGKILL'd)\n{output}"
-        )
-    except BaseException:
-        # KeyboardInterrupt / runner crash — make sure no zombie
-        # grandchildren outlive us.
-        _kill_tree(proc, pgid=pgid)
-        raise
-    else:
-        # Happy path: pytest exited on its own. Kill the group anyway in
-        # case it left grandchildren behind; already-dead is a no-op.
-        _kill_tree(proc, pgid=pgid)
+            _kill_tree(proc, pgid=pgid)
+            try:
+                output, _ = proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                output = "(file timeout exceeded; output unavailable)"
+            rc = 124  # de facto convention for "killed by timeout".
+            output = (
+                f"({file_timeout:.0f}s exceeded; "
+                f"process tree SIGKILL'd)\n{output}"
+            )
+        except BaseException:
+            # KeyboardInterrupt / runner crash — make sure no zombie
+            # grandchildren outlive us.
+            _kill_tree(proc, pgid=pgid)
+            raise
+        else:
+            # Happy path: pytest exited on its own. Kill the group anyway in
+            # case it left grandchildren behind; already-dead is a no-op.
+            _kill_tree(proc, pgid=pgid)
 
-        output +=  "\n"
+            output +=  "\n"
+    finally:
+        _unregister_active_proc(proc)
 
     if rc == 5:
         # No tests collected — every test in the file was filtered out.
@@ -907,8 +967,11 @@ def main() -> int:
             if rc != 0:
                 _print_inline_failure(fpath, output, repo_root, pytest_passthrough)
 
-    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures: List[Future] = []
+    interrupted_signal: int | None = None
+    previous_signal_handlers = _install_runner_signal_handlers()
+    futures: List[Future] = []
+    pool = ThreadPoolExecutor(max_workers=args.jobs)
+    try:
         for file in files:
             t0 = time.monotonic()
             fut = pool.submit(
@@ -921,11 +984,25 @@ def main() -> int:
         # control flow obvious.
         for fut in futures:
             fut.result() if fut.exception() is None else None
+    except _RunnerTermination as exc:
+        interrupted_signal = exc.signum
+        for fut in futures:
+            fut.cancel()
+        _kill_active_processes()
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+        _restore_runner_signal_handlers(previous_signal_handlers)
 
     elapsed = time.monotonic() - started
     print()
     pct = min(100, (tests_done / approx_total_tests * 100)) if approx_total_tests else 0
     print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
+    if interrupted_signal is not None:
+        print(
+            "=== Runner interrupted "
+            f"({_describe_nonzero_exit(128 + interrupted_signal)}); "
+            f"drained {files_done}/{len(files)} files before exit ==="
+        )
 
     # Save durations for future --slice runs. Each slice writes its own
     # partial test_durations.json; a CI merge step joins them later.
@@ -1001,7 +1078,12 @@ def main() -> int:
             print(f"=== {len(infrastructure_failures)} file{'s' if len(infrastructure_failures) != 1 else ''} with no completed pytest summary (collection/import error, timeout, interruption, or runner infrastructure failure) ===")
             for file, rc in infrastructure_failures:
                 print(f"  {_format_file(file, repo_root)}  ({_describe_nonzero_exit(rc)})")
+        if interrupted_signal is not None:
+            return 128 + interrupted_signal
         return 1
+
+    if interrupted_signal is not None:
+        return 128 + interrupted_signal
 
     return 0
 

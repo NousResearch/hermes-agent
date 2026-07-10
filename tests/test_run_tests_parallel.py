@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import importlib.util
 import os
+import signal
 import subprocess
 import sys
 import textwrap
@@ -268,6 +269,70 @@ def test_failure_buckets_keep_completed_summary_out_of_infrastructure() -> None:
     assert test_failures == [(file, 143, summary)]
     assert completed_nonzero == []
     assert infrastructure == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal lifecycle probe")
+def test_runner_sigterm_drains_children_and_prints_summary(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    probe_dir = tmp_path / "sigterm-probe"
+    probe_dir.mkdir()
+    started = tmp_path / "probe-started.txt"
+    probe = probe_dir / "test_sigterm_probe.py"
+    probe.write_text(textwrap.dedent(f"""
+        import os
+        import time
+        from pathlib import Path
+
+        STARTED = Path({str(started)!r})
+
+        def test_waits_for_runner_signal():
+            STARTED.write_text(str(os.getpid()))
+            time.sleep(600)
+    """).strip() + "\n")
+
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            str(runner),
+            "--paths",
+            str(probe_dir),
+            "-j",
+            "1",
+            "--file-timeout",
+            "300",
+        ],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+
+    try:
+        deadline = time.monotonic() + 10.0
+        while not started.exists():
+            if proc.poll() is not None:
+                output = proc.stdout.read() if proc.stdout is not None else ""
+                pytest.fail(
+                    f"runner exited before probe started ({proc.returncode}):\n{output}"
+                )
+            if time.monotonic() > deadline:
+                output = proc.stdout.read() if proc.stdout is not None else ""
+                pytest.fail(f"probe did not start before timeout:\n{output}")
+            time.sleep(0.05)
+
+        os.kill(proc.pid, signal.SIGTERM)
+        output, _ = proc.communicate(timeout=20)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+    assert proc.returncode == 143, output
+    assert "Runner interrupted (signal 15 (rc=143))" in output
+    assert "=== Summary:" in output
+    assert "Traceback" not in output
 
 
 def test_bare_q_flag_passes_through(tmp_path: Path) -> None:

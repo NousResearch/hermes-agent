@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-09T17:15:00Z",
+  "updated_at": "2026-07-09T18:38:59Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -37,11 +37,23 @@
           "description": ""
         },
         {
+          "id": "openai/gpt-5.6-sol-pro",
+          "description": ""
+        },
+        {
           "id": "openai/gpt-5.6-terra",
           "description": ""
         },
         {
+          "id": "openai/gpt-5.6-terra-pro",
+          "description": ""
+        },
+        {
           "id": "openai/gpt-5.6-luna",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.6-luna-pro",
           "description": ""
         },
         {
@@ -184,10 +196,19 @@
           "id": "openai/gpt-5.6-sol"
         },
         {
+          "id": "openai/gpt-5.6-sol-pro"
+        },
+        {
           "id": "openai/gpt-5.6-terra"
         },
         {
+          "id": "openai/gpt-5.6-terra-pro"
+        },
+        {
           "id": "openai/gpt-5.6-luna"
+        },
+        {
+          "id": "openai/gpt-5.6-luna-pro"
         },
         {
           "id": "openai/gpt-5.5"

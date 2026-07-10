@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -237,7 +238,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -2213,7 +2214,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # Inject output from referenced cron jobs as context.
     context_from = job.get("context_from")
     if context_from:
-        from cron.jobs import OUTPUT_DIR
+        from cron.jobs import get_cron_output_dir
+        output_dir = get_cron_output_dir()
         if isinstance(context_from, str):
             context_from = [context_from]
         for source_job_id in context_from:
@@ -2228,7 +2230,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 )
                 continue
             try:
-                job_output_dir = OUTPUT_DIR / source_job_id
+                job_output_dir = output_dir / source_job_id
                 if not job_output_dir.exists():
                     continue  # silent skip — no output yet
                 output_files = sorted(
@@ -3096,6 +3098,35 @@ def run_job(
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
+        # Keep the one-shot run_claim fresh while the run is alive (#62002):
+        # the claim TTL is a dead-owner detector, but without a heartbeat a
+        # run that legitimately outlives it (stream stall, laptop asleep
+        # mid-run) is indistinguishable from a dead tick — another process
+        # re-dispatches it and get_due_jobs stale-removes the job record out
+        # from under the live run. Refreshing the claim from this monitor
+        # keeps "expired claim" meaning "owner died".
+        _job_schedule = job.get("schedule")
+        _is_oneshot = (
+            isinstance(_job_schedule, dict) and _job_schedule.get("kind") == "once"
+        )
+        _CLAIM_HEARTBEAT_SECONDS = 60.0
+        _last_claim_heartbeat = time.monotonic()
+
+        def _heartbeat_run_claim_if_due():
+            nonlocal _last_claim_heartbeat
+            if not _is_oneshot:
+                return
+            _mono = time.monotonic()
+            if _mono - _last_claim_heartbeat < _CLAIM_HEARTBEAT_SECONDS:
+                return
+            _last_claim_heartbeat = _mono
+            try:
+                heartbeat_run_claim(job_id)
+            except Exception:
+                logger.debug(
+                    "Job '%s': run_claim heartbeat failed", job_name, exc_info=True
+                )
+
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
         # env passthrough registrations) when the cron run hops into the worker
@@ -3105,8 +3136,20 @@ def run_job(
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
-                # Unlimited — just wait for the result.
-                result = _cron_future.result()
+                # Unlimited — no inactivity watchdog, but a one-shot still
+                # needs its run_claim heartbeat, so poll instead of blocking.
+                if _is_oneshot:
+                    result = None
+                    while True:
+                        done, _ = concurrent.futures.wait(
+                            {_cron_future}, timeout=_POLL_INTERVAL,
+                        )
+                        if done:
+                            result = _cron_future.result()
+                            break
+                        _heartbeat_run_claim_if_due()
+                else:
+                    result = _cron_future.result()
             else:
                 result = None
                 while True:
@@ -3116,6 +3159,7 @@ def run_job(
                     if done:
                         result = _cron_future.result()
                         break
+                    _heartbeat_run_claim_if_due()
                     # Agent still running — check inactivity.
                     _idle_secs = 0.0
                     if hasattr(agent, "get_activity_summary"):

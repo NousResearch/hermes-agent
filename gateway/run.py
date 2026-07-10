@@ -10902,6 +10902,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             reason_text = "previous session was stopped or interrupted"
                         elif reset_reason == "daily":
                             reason_text = f"daily schedule at {policy.at_hour}:00"
+                        elif reset_reason == "resume_pending_expired":
+                            reason_text = "previous session expired after gateway resume timeout"
                         else:
                             hours = policy.idle_minutes // 60
                             mins = policy.idle_minutes % 60

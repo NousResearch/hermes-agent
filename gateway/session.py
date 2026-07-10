@@ -1786,10 +1786,20 @@ class SessionStore:
                         # session as a zombie and fall through to auto-reset.
                         reset_reason = self._should_reset(entry, source)
                         if not reset_reason:
-                            _fw = auto_continue_freshness_window()
-                            _ref_time = entry.last_resume_marked_at or entry.updated_at
-                            if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
-                                reset_reason = "resume_pending_expired"
+                            # Freshness gate (#46934): only apply if resets are enabled
+                            policy = self.config.get_reset_policy(
+                                platform=source.platform,
+                                session_type=source.chat_type
+                            )
+                            if policy.mode != "none":
+                                _fw = auto_continue_freshness_window()
+                                _ref_time = entry.last_resume_marked_at or entry.updated_at
+                                if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
+                                    reset_reason = "resume_pending_expired"
+                                else:
+                                    entry.updated_at = now
+                                    self._save()
+                                    return entry
                             else:
                                 entry.updated_at = now
                                 self._save()

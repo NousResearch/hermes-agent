@@ -364,7 +364,6 @@ class TestCodexOAuthContextLength:
     def setup_method(self):
         import agent.model_metadata as mm
         mm._codex_oauth_context_cache = {}
-        mm._codex_oauth_context_cache_time = 0.0
 
     def test_fallback_table_used_without_token(self):
         """With no access token, the hardcoded Codex fallback table wins
@@ -428,6 +427,55 @@ class TestCodexOAuthContextLength:
             )
         assert ctx_55 == 300_000
         assert ctx_54 == 400_000
+
+    def test_live_catalogue_cache_is_scoped_to_access_token(self):
+        """Different OAuth tokens must not share entitlement-specific metadata."""
+        from agent import model_metadata as mm
+        from agent.model_metadata import get_model_context_length
+
+        first_response = MagicMock()
+        first_response.status_code = 200
+        first_response.json.return_value = {
+            "models": [{"slug": "gpt-5.6-terra", "context_window": 272_000}]
+        }
+        second_response = MagicMock()
+        second_response.status_code = 200
+        second_response.json.return_value = {
+            "models": [{"slug": "gpt-5.6-terra", "context_window": 372_000}]
+        }
+
+        with patch(
+            "agent.model_metadata.requests.get",
+            side_effect=[first_response, second_response],
+        ) as mock_get, patch("agent.model_metadata.save_context_length") as mock_save:
+            first = get_model_context_length(
+                "gpt-5.6-terra",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="token-account-a",
+                provider="openai-codex",
+            )
+            first_again = get_model_context_length(
+                "gpt-5.6-terra",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="token-account-a",
+                provider="openai-codex",
+            )
+            second = get_model_context_length(
+                "gpt-5.6-terra",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="token-account-b",
+                provider="openai-codex",
+            )
+
+        assert (first, first_again, second) == (272_000, 272_000, 372_000)
+        assert mock_get.call_count == 2
+        assert mock_get.call_args_list[0].kwargs["headers"]["Authorization"] == "Bearer token-account-a"
+        assert mock_get.call_args_list[1].kwargs["headers"]["Authorization"] == "Bearer token-account-b"
+        assert mock_save.call_count == 2
+        assert all(
+            "token-account" not in key
+            for key in mm._codex_oauth_context_cache
+        )
 
     def test_probe_failure_falls_back_to_hardcoded(self):
         """If the probe fails (non-200 / network error), we still return

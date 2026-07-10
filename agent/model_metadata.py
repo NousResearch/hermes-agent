@@ -4,6 +4,7 @@ Pure utility functions with no AIAgent dependency. Used by ContextCompressor
 and run_agent.py for pre-flight context checks.
 """
 
+import hashlib
 import ipaddress
 import json
 import logging
@@ -1858,27 +1859,34 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
 }
 
 
-_codex_oauth_context_cache: Dict[str, int] = {}
-_codex_oauth_context_cache_time: float = 0.0
+_codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
 
-def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
-    """Probe the ChatGPT Codex /models endpoint for per-slug context windows.
+def _codex_oauth_token_fingerprint(access_token: str) -> str:
+    """Return a non-secret cache key for a Codex OAuth access token."""
+    return hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16]
 
-    Codex OAuth imposes its own context limits that differ from the direct
-    OpenAI API (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex). The
-    `context_window` field in each model entry is the authoritative source.
 
-    Returns a ``{slug: context_window}`` dict. Empty on failure.
+def _fetch_codex_oauth_context_lengths_with_source(
+    access_token: str,
+) -> Tuple[Dict[str, int], bool]:
+    """Fetch Codex catalogue data and report whether it came from HTTP.
+
+    The in-process cache is scoped by token fingerprint because Codex model
+    availability and context windows can vary by account entitlement. The raw
+    token is never retained in the cache key. The boolean is false for a
+    same-token in-process hit, which must not be treated as a fresh provider
+    confirmation when deciding whether to update persistent state.
     """
-    global _codex_oauth_context_cache, _codex_oauth_context_cache_time
+    global _codex_oauth_context_cache
     now = time.time()
-    if (
-        _codex_oauth_context_cache
-        and now - _codex_oauth_context_cache_time < _CODEX_OAUTH_CONTEXT_CACHE_TTL
-    ):
-        return _codex_oauth_context_cache
+    cache_key = _codex_oauth_token_fingerprint(access_token)
+    cached = _codex_oauth_context_cache.get(cache_key)
+    if cached is not None:
+        cached_models, cached_at = cached
+        if now - cached_at < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
+            return cached_models, False
 
     try:
         resp = requests.get(
@@ -1892,11 +1900,11 @@ def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
                 "Codex /models probe returned HTTP %s; falling back to hardcoded defaults",
                 resp.status_code,
             )
-            return {}
+            return {}, False
         data = resp.json()
     except Exception as exc:
         logger.debug("Codex /models probe failed: %s", exc)
-        return {}
+        return {}, False
 
     entries = data.get("models", []) if isinstance(data, dict) else []
     result: Dict[str, int] = {}
@@ -1909,8 +1917,20 @@ def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
             result[slug.strip()] = ctx
 
     if result:
-        _codex_oauth_context_cache = result
-        _codex_oauth_context_cache_time = now
+        _codex_oauth_context_cache[cache_key] = (result, now)
+    return result, True
+
+
+def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
+    """Probe the ChatGPT Codex /models endpoint for per-slug context windows.
+
+    Codex OAuth imposes its own context limits that differ from the direct
+    OpenAI API (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex). The
+    `context_window` field in each model entry is the authoritative source.
+
+    Returns a ``{slug: context_window}`` dict. Empty on failure.
+    """
+    result, _fresh = _fetch_codex_oauth_context_lengths_with_source(access_token)
     return result
 
 
@@ -1923,22 +1943,24 @@ def _resolve_codex_oauth_context_length_with_source(
     have a bearer token), then falls back to ``_CODEX_OAUTH_CONTEXT_FALLBACK``.
 
     Returns ``(context_length, source)`` where source is ``"live"`` for a
-    value returned by the authenticated endpoint or ``"fallback"`` for the
-    static conservative table. Callers must not persist the latter.
+    value returned by a fresh authenticated endpoint probe, ``"memory"`` for
+    a same-token in-process catalogue hit, or ``"fallback"`` for the static
+    conservative table. Only ``"live"`` is eligible for persistent writes.
     """
     model_bare = _strip_provider_prefix(model).strip()
     if not model_bare:
         return None, ""
 
     if access_token:
-        live = _fetch_codex_oauth_context_lengths(access_token)
+        live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
+        live_source = "live" if fresh_probe else "memory"
         if model_bare in live:
-            return live[model_bare], "live"
+            return live[model_bare], live_source
         # Case-insensitive match in case casing drifts
         model_lower = model_bare.lower()
         for slug, ctx in live.items():
             if slug.lower() == model_lower:
-                return ctx, "live"
+                return ctx, live_source
 
     # Fallback: longest-key-first substring match over hardcoded defaults.
     model_lower = model_bare.lower()

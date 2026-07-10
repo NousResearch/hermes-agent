@@ -150,7 +150,7 @@ export function ChatBar({
     sessionIdRef,
     setComposerText,
     stashAt
-  } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
+  } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, queueSessionKey, sessionId })
 
   // "Add URL" dialog — open/value state, autofocus, and submit (host onAddUrl or
   // an @url: directive into the draft).

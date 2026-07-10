@@ -99,6 +99,41 @@ export function takeSessionDraft(scope: string | null | undefined): SessionDraft
 
 export const clearSessionDraft = (scope: string | null | undefined) => stashSessionDraft(scope, '', [])
 
+/**
+ * Move a stashed draft from a dead scope onto a live one (e.g. `__new__` → the
+ * first runtime session id minted on send, or an old runtime id after resume).
+ * No-op unless the source has content and the target is empty — never clobber.
+ */
+export function migrateSessionDraft(
+  fromKey: string | null | undefined,
+  toKey: string | null | undefined
+): boolean {
+  const from = draftKey(fromKey)
+  const to = draftKey(toKey)
+
+  if (from === to) {
+    return false
+  }
+
+  const source = draftsBySession.get(from)
+
+  if (!source || (!source.text.trim() && source.attachments.length === 0)) {
+    return false
+  }
+
+  const target = draftsBySession.get(to) ?? EMPTY_SESSION_DRAFT
+
+  if (target.text.trim() || target.attachments.length > 0) {
+    return false
+  }
+
+  draftsBySession.delete(from)
+  draftsBySession.set(to, cloneDraft(source))
+  persistDraftTexts()
+
+  return true
+}
+
 export function setComposerDraft(value: string) {
   $composerDraft.set(value)
 }

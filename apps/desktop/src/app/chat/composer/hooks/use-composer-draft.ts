@@ -2,7 +2,13 @@ import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
-import { $composerAttachments, type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import {
+  $composerAttachments,
+  type ComposerAttachment,
+  migrateSessionDraft,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { isBrowsingHistory } from '@/store/composer-input-history'
 
 import { cloneAttachments, DRAFT_PERSIST_DEBOUNCE_MS, type QueueEditState } from '../composer-utils'
@@ -23,6 +29,7 @@ interface UseComposerDraftArgs {
   focusKey: ChatBarProps['focusKey']
   inputDisabled: boolean
   queueEditRef: RefObject<QueueEditState | null>
+  queueSessionKey: ChatBarProps['queueSessionKey']
   sessionId: string | null | undefined
 }
 
@@ -41,6 +48,7 @@ export function useComposerDraft({
   focusKey,
   inputDisabled,
   queueEditRef,
+  queueSessionKey,
   sessionId
 }: UseComposerDraftArgs) {
   const aui = useAui()
@@ -75,8 +83,20 @@ export function useComposerDraft({
   const draftRef = useRef('')
   const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
   const draftPersistTimerRef = useRef<number | undefined>(undefined)
+  // Draft persistence must track the scope the swap effect owns, NOT the render-
+  // time queue key. activeQueueSessionKey updates on render while the editor still
+  // shows the previous session's text until the swap effect runs — debounced stashes
+  // keyed off the render ref mis-file drafts under the next session (#54527).
+  const draftScopeRef = useRef<string | null>(activeQueueSessionKey)
+  const prevDraftScopeRef = useRef<string | null>(activeQueueSessionKey)
   const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
   activeQueueSessionKeyRef.current = activeQueueSessionKey
+
+  const cancelPendingDraftPersist = () => {
+    window.clearTimeout(draftPersistTimerRef.current)
+    draftPersistTimerRef.current = undefined
+    pendingDraftPersistRef.current = null
+  }
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
   const queueEditStateRef = useRef<QueueEditState | null>(queueEditRef.current)
@@ -222,12 +242,18 @@ export function useComposerDraft({
         return
       }
 
-      const scope = activeQueueSessionKeyRef.current
+      const scope = draftScopeRef.current
       pendingDraftPersistRef.current = { scope, text }
       window.clearTimeout(draftPersistTimerRef.current)
       draftPersistTimerRef.current = window.setTimeout(() => {
+        const pending = pendingDraftPersistRef.current
+
+        if (!pending || pending.scope !== draftScopeRef.current) {
+          return
+        }
+
         pendingDraftPersistRef.current = null
-        stashAt(scope, text)
+        stashAt(pending.scope, pending.text)
       }, DRAFT_PERSIST_DEBOUNCE_MS)
     }
 
@@ -235,7 +261,7 @@ export function useComposerDraft({
 
     return () => {
       unsubscribe()
-      window.clearTimeout(draftPersistTimerRef.current)
+      cancelPendingDraftPersist()
     }
   }, [composerRuntime, queueEditRef])
 
@@ -285,17 +311,33 @@ export function useComposerDraft({
   // never clears composer state; this effect alone stashes on leave, restores
   // on enter. Keyed writes are idempotent, so no skip-sentinel.
   useEffect(() => {
+    cancelPendingDraftPersist()
+
+    const prev = prevDraftScopeRef.current
+    prevDraftScopeRef.current = activeQueueSessionKey
+
+    // Re-key when a fresh chat mints its first runtime id (or a resume bounce
+    // replaces a dead runtime id). Stable stored ids never churn — same rule as
+    // the queued-prompt migrator.
+    if (!queueSessionKey && prev && activeQueueSessionKey && prev !== activeQueueSessionKey) {
+      migrateSessionDraft(prev, activeQueueSessionKey)
+    }
+
+    draftScopeRef.current = activeQueueSessionKey
+
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
     loadIntoComposer(text, attachments)
 
     return () => {
+      cancelPendingDraftPersist()
       const latestText = syncDraftFromEditor()
       const editing = queueEditStateRef.current
+      const scope = draftScopeRef.current
 
-      if (editing?.sessionKey === activeQueueSessionKey) {
-        stashAt(activeQueueSessionKey, editing.draft, editing.attachments)
+      if (editing?.sessionKey === scope) {
+        stashAt(scope, editing.draft, editing.attachments)
       } else if (!isBrowsingHistory(sessionId)) {
-        stashAt(activeQueueSessionKey, latestText)
+        stashAt(scope, latestText)
       }
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -304,7 +346,7 @@ export function useComposerDraft({
   // inside the debounce/rAF window would drop trailing keystrokes without this.
   useEffect(() => {
     const flushPendingDraftPersist = () => {
-      const scope = activeQueueSessionKeyRef.current
+      const scope = draftScopeRef.current
       const editing = queueEditStateRef.current
 
       if (editing?.sessionKey === scope || isBrowsingHistory(sessionIdRef.current)) {

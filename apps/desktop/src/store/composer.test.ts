@@ -5,6 +5,7 @@ import {
   addComposerAttachment,
   clearSessionDraft,
   type ComposerAttachment,
+  migrateSessionDraft,
   removeComposerAttachment,
   SESSION_DRAFTS_STORAGE_KEY,
   stashSessionDraft,
@@ -105,5 +106,39 @@ describe('session drafts', () => {
     taken.attachments[0]!.label = 'mutated'
 
     expect(takeSessionDraft('session-a').attachments[0]?.label).toBe('doc.pdf')
+  })
+})
+
+describe('migrateSessionDraft', () => {
+  afterEach(() => {
+    for (const scope of ['session-a', 'session-b', null, 'rt-new']) {
+      clearSessionDraft(scope)
+    }
+
+    window.localStorage.clear()
+  })
+
+  it('moves a draft from the unsaved new-session key onto a runtime id', () => {
+    stashSessionDraft(null, 'fresh chat draft', [])
+
+    expect(migrateSessionDraft(null, 'rt-new')).toBe(true)
+    expect(takeSessionDraft(null).text).toBe('')
+    expect(takeSessionDraft('rt-new').text).toBe('fresh chat draft')
+  })
+
+  it('does not clobber an existing target draft', () => {
+    stashSessionDraft('rt-old', 'old runtime draft', [])
+    stashSessionDraft('rt-new', 'already here', [])
+
+    expect(migrateSessionDraft('rt-old', 'rt-new')).toBe(false)
+    expect(takeSessionDraft('rt-old').text).toBe('old runtime draft')
+    expect(takeSessionDraft('rt-new').text).toBe('already here')
+  })
+
+  it('no-ops when source and target resolve to the same key', () => {
+    stashSessionDraft('session-a', 'draft', [])
+
+    expect(migrateSessionDraft('session-a', 'session-a')).toBe(false)
+    expect(takeSessionDraft('session-a').text).toBe('draft')
   })
 })

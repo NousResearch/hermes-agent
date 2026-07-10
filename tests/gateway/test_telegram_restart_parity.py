@@ -230,6 +230,66 @@ def _start_polling_calls_in_adapter():
         fn = enclosing.get(id(node))
         fn_name = fn.name if fn is not None else "<module>"
         results.append((node.lineno, fn_name, dpu))
+
+    # Dataflow resolution for thin polling wrappers (upstream extracted a
+    # ``_start_polling_resilient`` helper that adds a bootstrap watchdog around
+    # the raw ``updater.start_polling`` and simply FORWARDS its own
+    # ``drop_pending_updates`` parameter). A bare forwarded param can't be
+    # judged at the raw call site, so resolve it to (a) the value(s) its
+    # callers pass and (b) the caller's enclosing function — i.e. treat the
+    # wrapper's start_polling as if it lived at each call site. This keeps the
+    # guard's teeth (the real recovery ladders at their own raw start_polling
+    # sites are unaffected) while not false-flagging an audited wrapper.
+    wrapper_names = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}
+        if "drop_pending_updates" not in params:
+            continue
+        for c in ast.walk(fn):
+            if (
+                isinstance(c, ast.Call)
+                and isinstance(c.func, ast.Attribute)
+                and c.func.attr == "start_polling"
+                and any(
+                    kw.arg == "drop_pending_updates"
+                    and isinstance(kw.value, ast.Name)
+                    and kw.value.id == "drop_pending_updates"
+                    for kw in c.keywords
+                )
+            ):
+                wrapper_names.add(fn.name)
+                break
+    if wrapper_names:
+        # Gather every call to a wrapper: (caller_fn_name, dpu_expr_passed_in).
+        wrapper_calls = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.attr if isinstance(func, ast.Attribute)
+                else func.id if isinstance(func, ast.Name) else None
+            )
+            if name in wrapper_names:
+                caller = enclosing.get(id(node))
+                caller_name = caller.name if caller is not None else "<module>"
+                dpu = "<MISSING>"
+                for kw in node.keywords:
+                    if kw.arg == "drop_pending_updates":
+                        dpu = ast.unparse(kw.value)
+                wrapper_calls.append((node.lineno, caller_name, dpu))
+        # Replace each wrapper's own forwarded-param row with the resolved
+        # rows from its call sites.
+        resolved = []
+        for lineno, fn_name, dpu in results:
+            if fn_name in wrapper_names and dpu == "drop_pending_updates":
+                resolved.extend(wrapper_calls)
+            else:
+                resolved.append((lineno, fn_name, dpu))
+        results = resolved
+
     return results
 
 

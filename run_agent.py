@@ -1850,6 +1850,7 @@ class AIAgent:
         _ov_idx = getattr(self, "_persist_user_message_idx", None)
         _ov_content = getattr(self, "_persist_user_message_override", None)
         _ov_timestamp = getattr(self, "_persist_user_message_timestamp", None)
+        _ov_platform_id = getattr(self, "_persist_user_message_platform_id", None)
         try:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
@@ -1967,6 +1968,7 @@ class AIAgent:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 _row_timestamp = msg.get("timestamp")
+                _row_platform_id = msg.get("platform_message_id")
                 # Apply the persist override to THIS row's written values only
                 # (never to the live dict). Match the original guard: text-only
                 # content is replaced; multimodal (list) content is left intact
@@ -1976,6 +1978,13 @@ class AIAgent:
                         content = _ov_content
                     if _ov_timestamp is not None:
                         _row_timestamp = _ov_timestamp
+                    # The interrupted-turn platform id (#48677 backfill dedupe):
+                    # stamp it on the WRITTEN row so a later
+                    # backfill-on-reconnect's has_platform_message_id sees the
+                    # turn is already persisted and skips re-processing it. The
+                    # live dict is never mutated (parity with content/timestamp).
+                    if _ov_platform_id is not None and not _row_platform_id:
+                        _row_platform_id = _ov_platform_id
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
@@ -2012,7 +2021,7 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=_row_timestamp,
-                    platform_message_id=msg.get("platform_message_id"),
+                    platform_message_id=_row_platform_id,
                 )
                 flushed_ids.add(msg_id)
                 if isinstance(_row_id, int):

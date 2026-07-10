@@ -2045,9 +2045,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if self.has_fatal_error:
             return
 
-        MAX_NETWORK_RETRIES = self._network_retry_max
-        BASE_DELAY = self._network_retry_base_delay
-        MAX_DELAY = self._network_retry_max_delay
+        MAX_NETWORK_RETRIES = getattr(self, "_network_retry_max", 20)
+        BASE_DELAY = getattr(self, "_network_retry_base_delay", 5)
+        MAX_DELAY = getattr(self, "_network_retry_max_delay", 120)
 
         self._polling_network_error_count += 1
         self._send_path_degraded = True

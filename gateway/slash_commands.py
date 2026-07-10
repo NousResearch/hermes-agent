@@ -5428,12 +5428,6 @@ class GatewaySlashCommandsMixin:
             }
             ctx = agent.context_compressor
             _comp_count = _as_int(getattr(ctx, "compression_count", 0))
-            _lpt = ctx.last_prompt_tokens if ctx.last_prompt_tokens > 0 else 0
-            if _lpt:
-                pct = min(100, _lpt / ctx.context_length * 100) if ctx.context_length else 0
-                lines.append(t("gateway.usage.label_context", used=f"{_lpt:,}", total=f"{ctx.context_length:,}", pct=f"{pct:.0f}"))
-            if ctx.compression_count:
-                lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
 
             # Per-category context breakdown (estimated — chars/4 heuristic) goes
             # FIRST (Ace 2026-06-30): "where is my CURRENT context budget going"

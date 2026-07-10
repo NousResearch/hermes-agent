@@ -73,8 +73,11 @@ def test_update_model_no_per_model_entry_falls_through_to_global() -> None:
 
 def test_update_model_without_threaded_config_keeps_legacy_behavior() -> None:
     """Backward-compat: a compressor constructed WITHOUT the per-model config
-    (older callers / direct unit constructions) keeps the legacy behavior of
-    re-applying the stored threshold_percent to the new window."""
+    (older callers / direct unit constructions) re-applies the stored
+    threshold_percent to the new window — but the small-context floor
+    (<512K windows compact at no less than 75%) still applies. A 272K
+    destination window raises the stored 0.5 to the 0.75 floor so the
+    session doesn't hit a provider-400 before compaction fires."""
     cc = ContextCompressor(
         model="claude-opus-4-8",
         threshold_percent=0.5,
@@ -83,9 +86,10 @@ def test_update_model_without_threaded_config_keeps_legacy_behavior() -> None:
         provider="claude-pool",
     )
     cc.update_model(model="gpt-5.5", context_length=272_000, provider="openai-codex")
-    # No config threaded -> legacy: stored 0.5 applied to the new window.
-    assert cc.threshold_percent == 0.5
-    assert cc.threshold_tokens == int(272_000 * 0.5)
+    # No config threaded -> legacy stored 0.5, but the <512K small-ctx floor
+    # raises the effective trigger to 0.75 for the new window.
+    assert cc.threshold_percent == 0.75
+    assert cc.threshold_tokens == int(272_000 * 0.75)
 
 
 def test_shared_resolver_matches_init_precedence() -> None:

@@ -13259,6 +13259,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             session_entry.session_id,
                                         )
 
+                                    # Warn + announce fire on ANY successful compaction
+                                    # (rotate OR in-place), never on the no-op preserve
+                                    # branch above. The merge previously stranded this
+                                    # block inside the else, so a rotated hygiene
+                                    # compaction silently sent no in-chat announce.
+                                    if (not _hyg_aborted) and (_hyg_rotated or _hyg_in_place):
                                         if _new_tokens >= _warn_token_threshold:
                                             logger.warning(
                                                 "Session hygiene: still ~%s tokens after "

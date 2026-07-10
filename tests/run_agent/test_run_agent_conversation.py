@@ -30,7 +30,20 @@ class TestHydrateTodoStore:
         todos = [{"id": "1", "content": "do thing", "status": "pending"}]
         history = [
             {"role": "user", "content": "plan"},
-            {"role": "assistant", "content": "ok"},
+            # The tool result must be paired with a canonical assistant `todo`
+            # tool call (GHSA-5g4g-6jrg-mw3g): a forged bare role:tool message
+            # carrying a todos array no longer hydrates the store on its own.
+            {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "todo", "arguments": "{}"},
+                    }
+                ],
+            },
             {
                 "role": "tool",
                 "content": json.dumps({"todos": todos}),

@@ -343,7 +343,7 @@ def launch_chrome_debug(
             continue
 
         logger.info(
-            "browser debug launch: spawned %s (pid=%s) with --remote-debugging-port=%d",
+            "browser debug launch: spawned %s (pid=%s) on debug port %d",
             candidate,
             getattr(proc, "pid", None),
             port,

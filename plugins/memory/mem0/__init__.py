@@ -1751,7 +1751,41 @@ class Mem0MemoryProvider(MemoryProvider):
             except Exception:
                 return None
         try:
-            return capture_router.build_router_from_config(self._config or {})
+            router_cfg = ((self._config or {}).get("mem0_capture_router") or {})
+
+            def _existing_fact_lookup(query: str):
+                """Best-effort existing-fact recall for RC1 contradiction correction detection.
+                Any failure degrades to [] so false negatives fall back to the normal salience gate."""
+                out = []
+                try:
+                    top_k = int(router_cfg.get("contradiction_lookup_k", self._dedup_candidate_k()))
+                except Exception:
+                    top_k = 5
+                try:
+                    resp = self._get_client().search(
+                        query=query,
+                        filters=self._read_filters(),
+                        top_k=top_k,
+                        keyword_search=self._keyword_search,
+                    )
+                    for row in self._drop_forgotten(self._unwrap_results(resp)):
+                        mem = row.get("memory") or row.get("text") or row.get("content")
+                        if mem:
+                            out.append(str(mem))
+                except Exception as e:
+                    logger.debug("mem0 capture-router contradiction mem0 lookup degraded: %s", e)
+                try:
+                    if self._gbrain_search_enabled:
+                        for hit in self._gbrain_pointers(query, limit=top_k, deadline_s=1.5):
+                            text = " ".join(str(hit.get(k) or "") for k in ("file", "title"))
+                            if text.strip():
+                                out.append(text.strip())
+                except Exception as e:
+                    logger.debug("mem0 capture-router contradiction gbrain lookup degraded: %s", e)
+                return out
+
+            return capture_router.build_router_from_config(
+                self._config or {}, existing_fact_lookup_fn=_existing_fact_lookup)
         except Exception as e:
             logger.warning("mem0 capture-router build failed (router disabled): %s", e)
             return None

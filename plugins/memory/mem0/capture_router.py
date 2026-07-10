@@ -3,22 +3,20 @@
 FLAG-GATED, default OFF (`mem0_capture_router.enabled` in mem0.json). When OFF the drain worker's
 behavior is byte-identical to today — this module is never invoked.
 
-When ON, the router runs ADDITIVELY on top of the unchanged mem0 write path:
+When ON, the router runs ADDITIVELY on top of the mem0 write path:
 
   drain_once():
-    self._add(messages, kwargs)          <- UNCHANGED: mem0 server-side extraction + gate writes the
-                                            preference/ops_state facts to the store, exactly as today
-                                            (certified gate, exactly-once reconcile, post-write scrub
-                                            all preserved). This IS "the existing mem0 write path".
-    router.route_turn(...)               <- NEW, best-effort, never breaks the turn: two DEDICATED
+    router.route_turn(stage=False)       <- best-effort preflight, never breaks the turn: two DEDICATED
                                             extraction passes run CONCURRENTLY (armB-prefs + armB-world),
-                                            codex-bridge PRIMARY, gemini-bridge FALLBACK on error/timeout;
-                                            then the deterministic class router:
-                                              preference / ops_state -> "mem0" destination (already
-                                                  written by _add above; the router does NOT re-write them)
-                                              world_entity / event   -> DEDUPED against the prefs-pass
-                                                  output (the benchmark's leak fix), then written as
-                                                  STAGED markdown to the staging dir with frontmatter.
+                                            then deterministic correction signals are computed.
+    self._add(messages, kwargs)          <- mem0 server-side extraction writes preference/ops_state facts.
+                                            Normal turns still use the certified salience gate. Correction
+                                            turns (marker OR contradiction signal) omit that prompt so a
+                                            below-threshold correction is degraded-not-lost.
+    router.stage_route_result(...)       <- after mem0 write+scrub is proven clean, world_entity/event facts
+                                            are DEDUPED against the prefs-pass output (the benchmark's leak
+                                            fix), then written as STAGED markdown to the staging dir with
+                                            frontmatter. The router does NOT write to mem0.
 
 STAGING (the Phase 2.5 gate): while `staging_mode` is true (default), world/event facts are written to
 ~/.hermes/state/capture-router-staged/<date>/<turn_id>.md — NOT to mem0, NOT to the brain repo/inbox.
@@ -50,6 +48,20 @@ logger = logging.getLogger(__name__)
 PREFS_CLASSES = ("preference", "ops_state")
 WORLD_CLASSES = ("world_entity", "event")
 ALL_CLASSES = PREFS_CLASSES + WORLD_CLASSES + ("none",)
+
+# RC1 correction-bypass markers are DATA, not hidden control flow. Operators can override this
+# whole list via mem0_capture_router.correction_markers in mem0.json; no env vars are introduced.
+# Patterns are intentionally deterministic and local: marker false-negatives degrade to the normal
+# salience gate (not lost), while positive matches bypass that gate in the drain worker.
+DEFAULT_CORRECTION_MARKERS = (
+    r"\bno\s*[,!:;-]",
+    r"\bactually\b",
+    r"\bwrong\b",
+    r"\bi\s+corrected\b",
+    r"\b(?:correction|correcting)\b",
+    r"\b(?:it\s+is|it'?s|that\s+is|that's)\s+.+?\s+not\s+.+",
+    r"\bexplicit\s+fact\s+edit\b",
+)
 
 _DEFAULT_STAGING_DIR = "~/.hermes/state/capture-router-staged"
 _DEFAULT_BRAIN_INBOX = "~/gbrain/brain/inbox"
@@ -99,10 +111,100 @@ def parse_candidates(text: str) -> Optional[List[Dict[str, Any]]]:
 # ---------------------------------------------------------------------------
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_COMPOUND_RE = re.compile(r"\b[a-z0-9]+(?:[._-][a-z0-9]+)+\b", re.IGNORECASE)
+_PORT_RE = re.compile(r"\b(?:port|tcp|udp)\s*[:#-]?\s*(\d{2,5})\b", re.IGNORECASE)
+_BOOL_RE = re.compile(r"\b(?:enabled|disabled|true|false)\b", re.IGNORECASE)
+_FACT_STOPWORDS = {
+    "about", "after", "again", "also", "and", "are", "but", "for", "from", "has", "have",
+    "into", "its", "not", "now", "off", "the", "then", "this", "that", "their", "there",
+    "user", "uses", "using", "was", "were", "with", "without", "runs", "run", "is", "at",
+    "to", "of", "in", "on", "ip", "address",
+}
 
 
 def _tokens(text: str) -> set:
     return set(_WORD_RE.findall((text or "").lower()))
+
+
+def _normalise_correction_markers(markers: Optional[Any]) -> List[str]:
+    """Return the configured regex marker list. None means defaults; [] intentionally disables
+    marker matches for tests/operators who want contradiction-only correction detection."""
+    if markers is None:
+        return list(DEFAULT_CORRECTION_MARKERS)
+    if isinstance(markers, str):
+        return [markers] if markers.strip() else []
+    if isinstance(markers, (list, tuple)):
+        return [str(m) for m in markers if str(m).strip()]
+    return list(DEFAULT_CORRECTION_MARKERS)
+
+
+def correction_marker_match(user: str, assistant: str = "",
+                            markers: Optional[Any] = None) -> Optional[str]:
+    """Return the matched correction marker regex, or None. Bad operator-supplied regexes degrade
+    to literal substring checks instead of disabling capture routing."""
+    text = f"{user or ''}\n{assistant or ''}"
+    text_l = text.lower()
+    for marker in _normalise_correction_markers(markers):
+        try:
+            if re.search(marker, text, re.IGNORECASE | re.DOTALL):
+                return marker
+        except re.error:
+            if marker.lower() in text_l:
+                return marker
+    return None
+
+
+def _anchor_tokens(text: str) -> set:
+    """Meaningful tokens used only to decide whether two facts talk about the same subject."""
+    lowered = _IPV4_RE.sub(" ", (text or "").lower())
+    compounds = set(_COMPOUND_RE.findall(lowered))
+    words = {
+        w for w in _WORD_RE.findall(lowered)
+        if len(w) > 2 and not w.isdigit() and w not in _FACT_STOPWORDS
+    }
+    return compounds | words
+
+
+def _fact_value_sets(text: str) -> Dict[str, set]:
+    lowered = text or ""
+    return {
+        "ipv4": set(_IPV4_RE.findall(lowered)),
+        "port": set(_PORT_RE.findall(lowered)),
+        "bool": {m.group(0).lower() for m in _BOOL_RE.finditer(lowered)},
+    }
+
+
+def facts_contradict(new_fact: str, existing_fact: str) -> bool:
+    """Deterministic, conservative contradiction detector for router dedup.
+
+    It only fires when facts share a subject anchor AND carry conflicting exact values (IP/port/boolean).
+    Misses degrade to the normal salience gate; this avoids pretending to solve open-ended semantics.
+    """
+    shared = _anchor_tokens(new_fact) & _anchor_tokens(existing_fact)
+    shared_compound = any(("-" in t or "." in t or "_" in t) for t in shared)
+    if not shared_compound and len(shared) < 2:
+        return False
+    new_values = _fact_value_sets(new_fact)
+    old_values = _fact_value_sets(existing_fact)
+    for key in ("ipv4", "port", "bool"):
+        if new_values[key] and old_values[key] and new_values[key].isdisjoint(old_values[key]):
+            return True
+    return False
+
+
+def _existing_fact_texts(rows: Any) -> List[str]:
+    out: List[str] = []
+    if not isinstance(rows, list):
+        return out
+    for row in rows:
+        if isinstance(row, str) and row.strip():
+            out.append(row)
+        elif isinstance(row, dict):
+            text = row.get("memory") or row.get("content") or row.get("text") or row.get("title") or row.get("file")
+            if text:
+                out.append(str(text))
+    return out
 
 
 def dedup_world_against_prefs(
@@ -319,6 +421,8 @@ class CaptureRouter:
         confidence_floor: float = 0.0,
         now_fn: Optional[Callable[[], datetime]] = None,
         write_fn: Optional[Callable[[str, str], None]] = None,
+        correction_markers: Optional[Any] = None,
+        existing_fact_lookup_fn: Optional[Callable[[str], Any]] = None,
     ):
         self._extractor = extractor or BridgeExtractor()
         self._prefs_prompt = prefs_prompt if prefs_prompt is not None else _load_prompt(_PREFS_PROMPT_FILE)
@@ -329,8 +433,14 @@ class CaptureRouter:
         self._confidence_floor = float(confidence_floor)
         self._now = now_fn or (lambda: datetime.now(timezone.utc))
         self._write = write_fn or self._default_write
+        self._correction_markers = _normalise_correction_markers(correction_markers)
+        self._existing_fact_lookup = existing_fact_lookup_fn
         self.stats = {"turns_routed": 0, "world_staged": 0, "world_deduped": 0,
-                      "prefs_seen": 0, "extract_errors": 0, "fallback_passes": 0}
+                      "prefs_seen": 0, "extract_errors": 0, "fallback_passes": 0,
+                      "corrections_detected": 0}
+
+    def correction_marker(self, user: str, assistant: str = "") -> Optional[str]:
+        return correction_marker_match(user, assistant, self._correction_markers)
 
     # -- extraction ---------------------------------------------------------
     def two_pass_extract(self, user: str, assistant: str) -> Dict[str, Any]:
@@ -359,8 +469,36 @@ class CaptureRouter:
             out.append(c)
         return out
 
+    def _contradiction_signals(self, world_facts: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """Detect world facts that contradict retrieved existing facts during the dedup phase.
+
+        The lookup is optional and degraded-safe: if it is absent or fails, the router returns no
+        contradiction signal and the drain worker keeps the normal salience path.
+        """
+        if not self._existing_fact_lookup:
+            return []
+        signals: List[Dict[str, str]] = []
+        for fact in world_facts:
+            content = str(fact.get("content") or "")
+            if not content:
+                continue
+            try:
+                existing_rows = self._existing_fact_lookup(content)
+            except Exception as e:
+                logger.debug("capture-router: existing-fact lookup degraded for contradiction check: %s", e)
+                continue
+            for existing in _existing_fact_texts(existing_rows):
+                if facts_contradict(content, existing):
+                    signals.append({
+                        "type": "contradiction",
+                        "fact": content[:240],
+                        "existing": existing[:240],
+                    })
+                    break
+        return signals
+
     def route_turn(self, user: str, assistant: str, *, turn_id: str, session: str,
-                   ts: Optional[str] = None) -> Dict[str, Any]:
+                   ts: Optional[str] = None, stage: bool = True) -> Dict[str, Any]:
         """Full router pass for ONE turn. Runs the two concurrent extractions, applies the
         deterministic class router + dedup, and STAGES world/event facts. Returns a structured
         result for observability/replay. Never raises (fail-soft)."""
@@ -369,7 +507,17 @@ class CaptureRouter:
             "prefs_facts": [], "world_facts": [], "world_dropped": [],
             "destination": None, "usage": {}, "latency": 0.0,
             "providers": {}, "error": None,
+            "correction_detected": False, "correction_signals": [],
         }
+        signals: List[Dict[str, str]] = []
+        correction_counted = False
+        marker = self.correction_marker(user, assistant)
+        if marker:
+            signals.append({"type": "marker", "marker": marker})
+            result["correction_detected"] = True
+            result["correction_signals"] = signals
+            self.stats["corrections_detected"] += 1
+            correction_counted = True
         try:
             passes = self.two_pass_extract(user, assistant)
         except Exception as e:  # ThreadPool/executor level failure — should be rare (extract is soft)
@@ -395,8 +543,15 @@ class CaptureRouter:
 
         prefs_cands = self._classify(prefs_res.get("candidates") or [], PREFS_CLASSES)
         world_raw = self._classify(world_res.get("candidates") or [], WORLD_CLASSES)
-        # DEDUP world against prefs (the leak fix).
+        # DEDUP world against prefs (the leak fix). RC1 also checks the kept world facts against
+        # retrieved existing facts here: a same-subject conflicting exact value is a correction signal.
         world_kept, world_dropped = dedup_world_against_prefs(world_raw, prefs_cands)
+        signals.extend(self._contradiction_signals(world_kept))
+        if signals:
+            result["correction_detected"] = True
+            result["correction_signals"] = signals
+            if not correction_counted:
+                self.stats["corrections_detected"] += 1
 
         self.stats["prefs_seen"] += len(prefs_cands)
         self.stats["world_deduped"] += len(world_dropped)
@@ -406,13 +561,9 @@ class CaptureRouter:
         result["world_dropped"] = world_dropped
 
         # Deterministic destination for world/event facts.
-        dest_dir = self._staging_dir if self._staging_mode else self._brain_inbox
         result["destination"] = "staging" if self._staging_mode else "brain-inbox"
-        if world_kept:
-            path = self._stage_world_facts(world_kept, dest_dir, turn_id=turn_id,
-                                           session=session, ts=ts)
-            result["staged_path"] = path
-            self.stats["world_staged"] += len(world_kept)
+        if stage:
+            self.stage_route_result(result)
 
         self.stats["turns_routed"] += 1
         return result
@@ -423,6 +574,26 @@ class CaptureRouter:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(content)
+
+    def stage_route_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Write a previously computed route result. Used by the drain worker to compute correction
+        signals before add(), then stage world facts only after the mem0 write+scrub boundary is clean."""
+        if result.get("staged_path"):
+            return result
+        world_facts = result.get("world_facts") or []
+        if not world_facts:
+            return result
+        dest_dir = self._staging_dir if self._staging_mode else self._brain_inbox
+        result["destination"] = "staging" if self._staging_mode else "brain-inbox"
+        path = self._stage_world_facts(
+            world_facts, dest_dir,
+            turn_id=str(result.get("turn_id") or "unknown"),
+            session=str(result.get("session") or "default"),
+            ts=result.get("ts"),
+        )
+        result["staged_path"] = path
+        self.stats["world_staged"] += len(world_facts)
+        return result
 
     def _stage_world_facts(self, facts: List[Dict[str, Any]], dest_dir: str, *,
                            turn_id: str, session: str, ts: Optional[str]) -> str:
@@ -458,7 +629,9 @@ class CaptureRouter:
         return path
 
 
-def build_router_from_config(cfg: Dict[str, Any]) -> Optional[CaptureRouter]:
+def build_router_from_config(cfg: Dict[str, Any],
+                             existing_fact_lookup_fn: Optional[Callable[[str], Any]] = None
+                             ) -> Optional[CaptureRouter]:
     """Construct a CaptureRouter from the `mem0_capture_router` sub-block of mem0.json, or None if
     the flag is absent/off. Degrade-safe: any construction error -> None (router disabled, drain
     worker keeps its unchanged behavior)."""
@@ -485,6 +658,11 @@ def build_router_from_config(cfg: Dict[str, Any]) -> Optional[CaptureRouter]:
             brain_inbox_dir=str(router_cfg.get("brain_inbox_dir", _DEFAULT_BRAIN_INBOX)),
             staging_mode=bool(router_cfg.get("staging_mode", True)),
             confidence_floor=float(router_cfg.get("confidence_floor", 0.0)),
+            correction_markers=router_cfg.get("correction_markers"),
+            existing_fact_lookup_fn=(
+                existing_fact_lookup_fn
+                if bool(router_cfg.get("contradiction_lookup_enabled", True)) else None
+            ),
         )
     except Exception as e:
         logger.warning("capture-router: build failed (router disabled): %s", e)

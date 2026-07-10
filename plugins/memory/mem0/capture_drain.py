@@ -4,7 +4,9 @@ Runs PLUGIN-SIDE (in the Hermes gateway process, alongside the mem0 plugin — t
 store over HTTP, so the queue + worker live here, not in the mem0 container). A single background
 loop that pulls queued turns and does the slow/failable work off the critical path:
 
-    lease a due row  ->  client.add(messages, prompt=GATE, model=MODEL)   [server-side extraction+gate]
+    lease a due row  ->  router preflight (optional correction detector; no staging yet)
+                     ->  client.add(messages, prompt=GATE, model=MODEL)   [server-side extraction+gate]
+                         (correction signals omit prompt=GATE so below-threshold corrections capture)
                      ->  record model_verdict (D-10)
                      ->  reconcile by capture_idem: if rows already exist, mark done (exactly-once, D-8)
                      ->  else scrub the just-written facts (INV-4 defense-in-depth) — A-lite has no
@@ -126,9 +128,9 @@ class CaptureDrainWorker:
         self._breaker_open = breaker_open_fn or (lambda: False)
         self._alert = alert_fn or (lambda m: logger.error("mem0 capture alert: %s", m))
         # Arm-B two-pass capture router (Phase 2.5), flag-gated: None => today's behavior EXACTLY
-        # (byte-identical). When injected, it runs ADDITIVELY after the unchanged mem0 add() path:
-        # two dedicated extraction passes -> deterministic class router -> world/event facts staged
-        # to disk. It NEVER touches mem0 and is fully fail-soft (a router error never fails a turn).
+        # (byte-identical). When injected, it runs ADDITIVELY: preflight computes correction signals
+        # before add() so corrections can bypass the salience prompt; world/event facts are staged
+        # only after the mem0 write+scrub boundary is clean. It NEVER touches mem0 and is fail-soft.
         self._router = router
         # Scrub failures never dead-letter (a secret must not be abandoned): requeue indefinitely
         # with a capped backoff, and escalate once at this attempt threshold.
@@ -234,12 +236,21 @@ class CaptureDrainWorker:
                 logger.warning("capture idem pre-check failed; requeued (fail-closed, no re-add): %s", e)
             return True
 
+        # Router preflight (flag ON only): compute deterministic correction signals before add() so
+        # correction turns can bypass the salience prompt. World/event staging is deferred until the
+        # mem0 write+scrub boundary below is proven clean.
+        route_result = self._precompute_route(key, payload)
+        correction_signal = self._correction_signal_from_route(route_result)
+
         # SERVER-SIDE extraction + gate. Stamp capture_idem so the reconcile can find the rows.
         kwargs = dict(self._write_filters)
         md = dict(kwargs.get("metadata") or {})
         md["capture_idem"] = key
+        if correction_signal:
+            md["capture_correction"] = True
+            md["capture_correction_signal"] = str(correction_signal.get("type") or "unknown")[:80]
         kwargs["metadata"] = md
-        if self._gate:
+        if self._gate and not correction_signal:
             kwargs["prompt"] = self._gate
         if self._model:
             kwargs["model"] = self._model
@@ -304,18 +315,45 @@ class CaptureDrainWorker:
         if self._scrub_written_or_requeue(key, row, require_rows=bool(added_count)):
             return True
 
-        # ARM-B ROUTER (Phase 2.5), flag-gated + ADDITIVE + fail-soft. The mem0 add() above already
-        # handled the preference/ops_state facts (unchanged path). Here — only when a router is wired
-        # (flag ON) — the two dedicated passes extract world/event facts and stage them to disk. This
-        # runs AFTER the row's mem0 write+scrub is proven clean and BEFORE mark_done, but a router
-        # failure must NEVER requeue or fail the turn: the mem0 write is already durable and complete.
-        self._maybe_route(key, payload, messages)
+        # ARM-B ROUTER (Phase 2.5), flag-gated + ADDITIVE + fail-soft. The preflight above already
+        # computed world/event facts and correction signals. Here — only after the mem0 write+scrub
+        # boundary is clean — we stage world/event facts before mark_done. Router staging failure must
+        # NEVER requeue or fail the turn: the mem0 write is already durable and complete.
+        self._maybe_route(key, payload, messages, route_result=route_result)
 
         self._q.mark_done(key)
         self.stats["drained"] += 1
         return True
 
-    def _maybe_route(self, key, payload, messages) -> None:
+    def _precompute_route(self, key, payload):
+        """Run the capture router without staging so correction signals are known before add().
+        Fully fail-soft: failures return an error-shaped result and do not affect the mem0 path."""
+        if self._router is None:
+            return None
+        try:
+            session = payload.get("session_id") or "default"
+            return self._router.route_turn(
+                payload.get("user", ""), payload.get("assistant", ""),
+                turn_id=key[:16], session=session, ts=payload.get("ts"), stage=False)
+        except Exception as e:
+            logger.warning("capture-router: preflight failed for turn %s (mem0 write unaffected): %s",
+                           key[:16], e)
+            return {"error": str(e), "world_facts": [], "prefs_facts": [], "correction_signals": []}
+
+    @staticmethod
+    def _correction_signal_from_route(route_result):
+        if not isinstance(route_result, dict) or not route_result.get("correction_detected"):
+            return None
+        signals = route_result.get("correction_signals") or []
+        for sig in signals:
+            if isinstance(sig, dict) and sig.get("type") == "marker":
+                return sig
+        for sig in signals:
+            if isinstance(sig, dict):
+                return sig
+        return {"type": "unknown"}
+
+    def _maybe_route(self, key, payload, messages, *, route_result=None) -> None:
         """Invoke the Arm-B router for this turn if one is wired (flag ON). Fully fail-soft: any
         error is swallowed (the mem0 write path is already complete and durable). No-op when the
         router is None -> byte-identical to today."""
@@ -323,9 +361,16 @@ class CaptureDrainWorker:
             return
         try:
             session = payload.get("session_id") or "default"
-            res = self._router.route_turn(
-                payload.get("user", ""), payload.get("assistant", ""),
-                turn_id=key[:16], session=session, ts=payload.get("ts"))
+            if isinstance(route_result, dict):
+                res = route_result
+                if hasattr(self._router, "stage_route_result"):
+                    res = self._router.stage_route_result(res)
+            else:
+                res = self._router.route_turn(
+                    payload.get("user", ""), payload.get("assistant", ""),
+                    turn_id=key[:16], session=session, ts=payload.get("ts"), stage=False)
+                if hasattr(self._router, "stage_route_result"):
+                    res = self._router.stage_route_result(res)
             if res.get("error"):
                 logger.warning("capture-router: turn %s routed with extract error: %s",
                                key[:16], res["error"])

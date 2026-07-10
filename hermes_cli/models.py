@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -362,15 +363,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "anthropic": [
         "claude-fable-5",
-        "claude-opus-4-8",
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-sonnet-4-6",
-        "claude-opus-4-5-20251101",
-        "claude-sonnet-4-5-20250929",
+        "claude-opus-4.8",
+        "claude-opus-4.7",
+        "claude-opus-4.6",
+        "claude-sonnet-4.6",
+        "claude-opus-4.5-20251101",
+        "claude-sonnet-4.5-20250929",
         "claude-opus-4-20250514",
         "claude-sonnet-4-20250514",
-        "claude-haiku-4-5-20251001",
+        "claude-haiku-4.5-20251001",
     ],
     "deepseek": [
         "deepseek-v4-pro",
@@ -1812,16 +1813,22 @@ def _provider_keys(provider: str) -> set[str]:
     return {k for k in (key, normalized) if k}
 
 
+def _model_lookup_key(model_id: str) -> str:
+    """Normalize model IDs for catalog comparisons."""
+    return _anthropic_display_model_id(model_id).lower()
+
+
 def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
+    lookup_key = _model_lookup_key(name_lower)
     return any(
-        name_lower == model.lower()
+        lookup_key == _model_lookup_key(model)
         for provider in providers
         for model in _PROVIDER_MODELS.get(provider, [])
     )
 
 
 _AGGREGATOR_PROVIDERS = frozenset(
-    {"nous", "openrouter", "copilot", "kilocode"}
+    {"nous", "openrouter", "copilot", "kilocode", "opencode-go", "opencode-zen"}
 )
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
@@ -1951,6 +1958,7 @@ def detect_static_provider_for_model(
         current_provider == "custom"
         or current_provider.startswith("custom:")
     )
+    lookup_key = _model_lookup_key(name_lower)
     for pid, models in _PROVIDER_MODELS.items():
         if (
             pid in current_keys
@@ -1960,8 +1968,20 @@ def detect_static_provider_for_model(
             continue
         if _is_custom_current:
             continue
-        if any(name_lower == m.lower() for m in models):
-            return (pid, name)
+        for model in models:
+            model_lower = model.lower()
+            if lookup_key != _model_lookup_key(model_lower):
+                continue
+            if (
+                pid == "anthropic"
+                and "/" not in name_lower
+                and "." in name_lower
+                and name_lower == model_lower
+            ):
+                # Bare display-form Claude IDs also appear on OpenRouter. Let the
+                # OpenRouter lookup below expand them to a full provider slug.
+                continue
+            return (pid, model if name_lower != model_lower else name)
 
     # Borrow-list providers (re-expose other vendors' models) only after every
     # native-vendor catalog, and only when one is the current provider.
@@ -2024,17 +2044,18 @@ def _find_openrouter_slug(model_name: str) -> Optional[str]:
     name_lower = model_name.strip().lower()
     if not name_lower:
         return None
+    lookup_key = _model_lookup_key(name_lower)
 
     # Exact match (already has provider/ prefix)
     for mid in model_ids():
-        if name_lower == mid.lower():
+        if lookup_key == _model_lookup_key(mid):
             return mid
 
     # Try matching just the model part (after the /)
     for mid in model_ids():
         if "/" in mid:
             _, model_part = mid.split("/", 1)
-            if name_lower == model_part.lower():
+            if lookup_key == _model_lookup_key(model_part):
                 return mid
 
     return None
@@ -2106,6 +2127,32 @@ def _strip_vendor_prefix(model_id: str) -> str:
     if "/" in raw:
         raw = raw.split("/", 1)[1]
     return raw
+
+
+_CLAUDE_FAMILY_DECIMAL_RE = re.compile(
+    r"(?P<prefix>(?:^|/)claude-[a-z][a-z0-9]*-)(?P<major>\d+)-(?P<minor>\d{1,2})(?=(?:[-:]|$))",
+    re.IGNORECASE,
+)
+_CLAUDE_LEGACY_DECIMAL_RE = re.compile(
+    r"(?P<prefix>(?:^|/)claude-)(?P<major>\d+)-(?P<minor>\d{1,2})(?=-)",
+    re.IGNORECASE,
+)
+
+
+def _anthropic_display_model_id(model_id: str) -> str:
+    """Use dot-versioned Claude IDs in picker/catalog output.
+
+    Anthropic's wire IDs use hyphens (``claude-sonnet-4-6``), but Hermes
+    displays Claude version numbers with decimals everywhere else. The
+    Anthropic adapter converts dots back to hyphens before API calls.
+    """
+    value = str(model_id or "").strip()
+
+    def _dot_version(match: re.Match[str]) -> str:
+        return f"{match.group('prefix')}{match.group('major')}.{match.group('minor')}"
+
+    value = _CLAUDE_FAMILY_DECIMAL_RE.sub(_dot_version, value)
+    return _CLAUDE_LEGACY_DECIMAL_RE.sub(_dot_version, value)
 
 
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
@@ -2360,23 +2407,28 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             base_url=cfg_base_url or None,
             api_key=cfg_api_key or None,
         )
+        curated = [
+            _anthropic_display_model_id(model)
+            for model in _PROVIDER_MODELS.get("anthropic", [])
+        ]
         if live:
             if cfg_base_url:
-                return live
+                return [_anthropic_display_model_id(model) for model in live]
             # The live /v1/models dump lags newly-routed curated aliases
             # (e.g. claude-fable-5, which is reachable on Anthropic before it
             # is enumerated by the models endpoint). Surface curated entries
             # first, then append any live-only models, so a fresh curated
             # model never disappears just because the API hasn't listed it yet.
-            curated = list(_PROVIDER_MODELS.get("anthropic", []))
             merged = list(curated)
             merged_lower = {m.lower() for m in curated}
             for m in live:
-                if m.lower() not in merged_lower:
-                    merged.append(m)
-                    merged_lower.add(m.lower())
+                display = _anthropic_display_model_id(m)
+                key = display.lower()
+                if key not in merged_lower:
+                    merged.append(display)
+                    merged_lower.add(key)
             return merged
-        return list(_PROVIDER_MODELS.get("anthropic", []))
+        return curated
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:

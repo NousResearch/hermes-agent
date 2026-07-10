@@ -232,3 +232,40 @@ def windows_detach_popen_kwargs() -> dict:
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
     return {"start_new_session": True}
+
+
+
+def _windows_subprocess_kwargs() -> dict:
+    """Build kwargs for subprocess.run/Popen that are safe on Windows.
+
+    On Windows, a child process that emits text in a non-UTF-8 codepage
+    (e.g. GBK/CP936 on zh-CN systems) will crash the reader thread with
+    UnicodeDecodeError if ``text=True`` is set without ``errors=``. This
+    helper returns the kwargs (``text=True`` + ``errors="replace"``) that
+    every text-mode subprocess call should use.
+
+    No-op on non-Windows — the only effect is that an unreadable byte gets
+    replaced with U+FFFD instead of raising, which is the desired behavior
+    everywhere.
+    """
+    return {"text": True, "errors": "replace"}
+
+
+def safe_subprocess_run(*args, **kwargs):
+    """Wrapper around subprocess.run that adds safe defaults for Windows.
+
+    If the caller already passed ``text=`` and/or ``errors=``, those win
+    (we don't override explicit choices). Otherwise we apply the safe
+    defaults: ``text=True`` + ``errors="replace"``.
+    """
+    import subprocess
+    if "text" not in kwargs:
+        kwargs.setdefault("encoding", None)
+    if "errors" not in kwargs:
+        kwargs["errors"] = "replace"
+    if "text" not in kwargs:
+        # When the caller didn't specify text, we add it together with
+        # errors="replace" so the reader thread never crashes on
+        # non-UTF-8 output (issue #61595).
+        kwargs["text"] = True
+    return subprocess.run(*args, **kwargs)

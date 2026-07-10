@@ -408,8 +408,7 @@ def _op_version(binary: Path) -> str:
             [str(binary), "--version"],
             capture_output=True,
             text=True,
-            timeout=5,
-        )
+            timeout=5, errors="replace")
         if res.returncode == 0:
             return (res.stdout or res.stderr).strip().splitlines()[0]
     except (OSError, subprocess.TimeoutExpired):
@@ -423,7 +422,7 @@ def _op_whoami(binary: Path, account: str) -> Optional[str]:
     if account:
         cmd += ["--account", account]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10, errors="replace")
     except (OSError, subprocess.TimeoutExpired):
         return None
     if res.returncode != 0:

@@ -64,6 +64,50 @@ def test_call_cron_for_profile_routes_storage_without_mutating_globals(isolated_
     assert cron_jobs.OUTPUT_DIR == old_output_dir
 
 
+def test_fire_cron_job_scopes_store_and_runtime_home_together(
+    isolated_profiles,
+    monkeypatch,
+):
+    """A profile fire must execute and persist under the same profile home."""
+    from cron import jobs as cron_jobs
+    from cron import scheduler
+    from hermes_cli import web_server
+
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    default_home = isolated_profiles["default"]
+    worker_home = isolated_profiles["worker_alpha"]
+    monkeypatch.setattr(scheduler, "_hermes_home", None)
+    captured = {}
+
+    class RecordingProvider:
+        def fire_due(self, job_id, *, adapters=None, loop=None):
+            captured["job_id"] = job_id
+            captured["runtime_home"] = scheduler._get_hermes_home()
+            captured["jobs_file"] = cron_jobs._current_cron_store().jobs_file
+            return True
+
+    monkeypatch.setattr(
+        "cron.scheduler_provider.resolve_cron_scheduler",
+        lambda: RecordingProvider(),
+    )
+
+    outer_token = set_hermes_home_override(default_home)
+    try:
+        assert web_server._fire_cron_job_for_profile("worker_alpha", "worker-job") is True
+        assert captured == {
+            "job_id": "worker-job",
+            "runtime_home": worker_home,
+            "jobs_file": worker_home / "cron" / "jobs.json",
+        }
+        assert scheduler._get_hermes_home() == default_home
+    finally:
+        reset_hermes_home_override(outer_token)
+
+
 def test_profile_call_cannot_retarget_ticker_store_mid_write(
     isolated_profiles,
     monkeypatch,

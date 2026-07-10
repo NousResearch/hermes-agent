@@ -149,6 +149,8 @@ apps/desktop/build/
 apps/desktop/dist/
 apps/desktop/release/
 apps/desktop/*.tsbuildinfo
+# One-off Electron bundle emitted when esbuild is run from the repository root.
+/main.cjs
 # `tsc -b` emits workspace JavaScript beside TypeScript sources before Vite
 # and esbuild create the packaged output. These files are reproducible build
 # artifacts; the source trees contain no tracked JavaScript.

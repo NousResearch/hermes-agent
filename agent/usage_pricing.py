@@ -137,6 +137,32 @@ def _normalize_gemini_bridge_model(model: str) -> str:
     name = (model or "").split("/")[-1].lower().strip()
     return _GEMINI_BRIDGE_MODEL_ALIASES.get(name, name)
 
+# Notional pricing for the xAI Grok OAuth provider (xai-oauth). Marginal cash
+# cost is $0 (covered by a flat SuperGrok / X Premium+ subscription), but for
+# fleet cost *visibility* we price its turns at xAI's official API rates and
+# label the result "estimated" — mirroring the notional-Anthropic relays above.
+# xAI is SINGLE-vendor (the OAuth provider fronts only Grok models), so a turn
+# routes to a fixed "xai" vendor (unlike the poly-vendor gemini-bridge). The
+# metered direct-API provider ("xai", api.x.ai key) prices from the SAME snapshot
+# entries below — it just bills real dollars instead of notional ones, so it is
+# routed to the "xai" vendor there too (see resolve_billing_route()).
+NOTIONAL_XAI_PROVIDERS = frozenset({
+    "xai-oauth",
+})
+
+
+def is_notional_xai_provider(provider_name: Optional[str]) -> bool:
+    """True if a provider key is the subscription-fronting xAI Grok OAuth relay.
+
+    The xai-oauth provider fronts Grok models on a flat SuperGrok / X Premium+
+    subscription (marginal cash $0); we price its turns at xAI's official API
+    rates for cost visibility and label them "estimated". Single-vendor: every
+    model behind it is an xAI Grok model, so it routes to the fixed "xai" vendor.
+    """
+    p = (provider_name or "").strip().lower()
+    return bool(p) and p in NOTIONAL_XAI_PROVIDERS
+
+
 # Notional pricing for ChatGPT-subscription Codex providers (openai-codex).
 # Marginal cash cost is $0 (covered by a flat ChatGPT subscription), but for
 # fleet cost *visibility* we price these at OpenRouter's live catalog rates for
@@ -238,6 +264,68 @@ _UTC_NOW = lambda: datetime.now(timezone.utc)
 # Official docs snapshot entries. Models whose published pricing and cache
 # semantics are stable enough to encode exactly.
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
+    # ── xAI Grok ─────────────────────────────────────────────────────────
+    # Priced from OpenRouter's live catalog snapshot (per-1M in/out; cache
+    # read = input_cache_read; xAI publishes no cache-write rate → None).
+    # Keyed on the "xai" vendor: both the notional SuperGrok/Premium+ OAuth
+    # relay (xai-oauth, is_notional_xai_provider → status "estimated", $0
+    # real cash) AND the metered direct api.x.ai key (provider "xai") route
+    # here. Source: https://openrouter.ai/x-ai
+    (
+        "xai",
+        "grok-build-0.1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("2.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/x-ai/grok-build-0.1",
+        pricing_version="xai-pricing-2026-07",
+    ),
+    (
+        "xai",
+        "grok-4.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("6.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/x-ai/grok-4.5",
+        pricing_version="xai-pricing-2026-07",
+    ),
+    (
+        "xai",
+        "grok-4.3",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.25"),
+        output_cost_per_million=Decimal("2.50"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/x-ai/grok-4.3",
+        pricing_version="xai-pricing-2026-07",
+    ),
+    (
+        "xai",
+        "grok-4.20",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.25"),
+        output_cost_per_million=Decimal("2.50"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/x-ai/grok-4.20",
+        pricing_version="xai-pricing-2026-07",
+    ),
+    (
+        "xai",
+        "grok-4.20-multi-agent",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.25"),
+        output_cost_per_million=Decimal("2.50"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/x-ai/grok-4.20-multi-agent",
+        pricing_version="xai-pricing-2026-07",
+    ),
     # ── OpenAI GPT-5.6 series (Sol/Terra/Luna) ───────────────────────────
     # Announced in limited preview 2026-06-26; GA 2026-07-09 at the same
     # rates (Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per 1M in/out). Cache
@@ -871,6 +959,20 @@ def resolve_billing_route(
             billing_mode="official_docs_snapshot",
         )
 
+    # Notional pricing for the xAI Grok OAuth provider (xai-oauth). Marginal cash
+    # cost is $0 (flat SuperGrok / X Premium+ sub), but for cost *visibility* we
+    # price its Grok turns at xAI's official API rates (status "estimated").
+    # Single-vendor: everything behind it is an xAI Grok model, so route to the
+    # fixed "xai" vendor. The metered direct-API provider ("xai", api.x.ai) hits
+    # the SAME snapshot entries just below and bills real dollars.
+    if is_notional_xai_provider(provider_name):
+        return BillingRoute(
+            provider="xai",
+            model=model.split("/")[-1],
+            base_url=base_url or "",
+            billing_mode="official_docs_snapshot",
+        )
+
     # Notional pricing for the poly-vendor Google AI Ultra bridge (gemini-bridge).
     # Marginal cash cost is $0 (flat Ultra sub), but for cost *visibility* we
     # normalize its alias (gemini-flash/claude-opus/gpt-oss/…) to the canonical
@@ -945,6 +1047,10 @@ def resolve_billing_route(
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    # Metered direct xAI API (api.x.ai, XAI_API_KEY). Bills real dollars; prices
+    # from the same official-docs Grok snapshot as the notional xai-oauth relay.
+    if provider_name in {"xai", "xai-api", "x-ai"} or base_url_host_matches(base_url or "", "api.x.ai"):
+        return BillingRoute(provider="xai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     # Vertex AI hosts the same Gemini models as Google AI Studio; price them
     # off the gemini official-docs snapshot. Strip the "google/" vendor prefix
     # the OpenAI-compat endpoint requires so the pricing key matches.
@@ -1032,6 +1138,8 @@ def _infer_vendor_from_model(model: str) -> Optional[str]:
         return "openai"
     if name.startswith("gemini-"):
         return "google"
+    if name.startswith("grok-"):
+        return "xai"
     return None
 
 

@@ -15190,6 +15190,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 _drain_sk = get_current_session_key(default="")
                                 for _evt, _synth in process_registry.drain_notifications(session_key=_drain_sk):
                                     self._pending_input.put(_synth)
+                                    if _evt.get("type") == "async_delegation":
+                                        from tools.async_delegation import mark_completion_delivered
+                                        mark_completion_delivered(str(_evt.get("delegation_id") or ""))
                             except Exception:
                                 pass
                         continue
@@ -15352,6 +15355,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             from tools.process_registry import process_registry
                             for _evt, _synth in process_registry.drain_notifications():
                                 self._pending_input.put(_synth)
+                                if _evt.get("type") == "async_delegation":
+                                    from tools.async_delegation import mark_completion_delivered
+                                    mark_completion_delivered(str(_evt.get("delegation_id") or ""))
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 

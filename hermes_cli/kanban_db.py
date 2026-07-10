@@ -2680,6 +2680,13 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if initial_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": None, "kind": None, "source": "initial_status"},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

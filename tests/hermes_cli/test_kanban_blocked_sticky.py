@@ -99,6 +99,38 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
         assert kb.get_task(conn, child).status == "blocked"
 
 
+def test_initial_blocked_child_with_done_parent_is_sticky_from_creation(
+    kanban_home: Path,
+) -> None:
+    """An operator-staged child created directly in ``blocked`` must
+    be sticky from the same creation transaction, even when all parents
+    are already done."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="already done parent")
+        kb.complete_task(conn, parent, result="parent ok")
+
+        child = kb.create_task(
+            conn,
+            title="operator staged child",
+            initial_status="blocked",
+            parents=[parent],
+        )
+        assert kb.get_task(conn, child).status == "blocked"
+
+        for _ in range(3):
+            promoted = kb.recompute_ready(conn)
+            assert promoted == 0
+            assert kb.get_task(conn, child).status == "blocked"
+
+        lifecycle = conn.execute(
+            "SELECT kind FROM task_events "
+            "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+            "ORDER BY id ASC",
+            (child,),
+        ).fetchall()
+        assert [row["kind"] for row in lifecycle] == ["blocked"]
+
+
 # ---------------------------------------------------------------------------
 # Circuit-breaker blocks still auto-recover (preserve #40c1decb3 intent)
 # ---------------------------------------------------------------------------

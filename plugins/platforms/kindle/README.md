@@ -27,7 +27,8 @@ The bridge supports:
 - Artifact/image/HTML annotation workspaces.
 - Passwordless trusted-LAN operation or explicit browser authentication.
 - Away-from-LAN access through Tailscale Funnel with a permanent, high-entropy
-  bookmark key that does not depend on Kindle cookies or local storage.
+  `/remote/<key>` bookmark path that does not depend on Kindle cookies, query
+  parameters, or local storage.
 
 ## Gateway configuration
 

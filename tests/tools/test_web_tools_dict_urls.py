@@ -85,6 +85,12 @@ async def test_web_extract_reports_invalid_items_without_dispatching_them(extrac
     ]))
 
     assert extract_provider.received_urls == ["https://example.com/good"]
+    assert [entry["url"] for entry in result["results"]] == [
+        "https://example.com/good",
+        "",
+        "",
+        "",
+    ]
     errors = [entry["error"] for entry in result["results"] if entry["error"]]
     assert errors == [
         "Invalid URL item at index 1: expected a URL string or an object "

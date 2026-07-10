@@ -42,7 +42,7 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
-    _pending_continuation_response=None,
+    _pending_verification_response=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -57,7 +57,7 @@ def finalize_turn(
     )
     continuation_budget_exhausted = (
         final_response is None
-        and bool(_pending_continuation_response)
+        and bool(_pending_verification_response)
         and budget_exhausted
     )
 
@@ -68,7 +68,7 @@ def finalize_turn(
         # one. Preserve that exact answer instead of replacing it with another
         # fallible model call. The explicit pending value is the provenance
         # guard: unrelated error/recovery exits can never enter this branch.
-        final_response = _pending_continuation_response
+        final_response = _pending_verification_response
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         iteration_limit_fallback = True
     elif final_response is None and budget_exhausted:

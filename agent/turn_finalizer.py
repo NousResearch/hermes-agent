@@ -42,6 +42,7 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    _pending_continuation_response=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -50,10 +51,27 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
-    if final_response is None and (
+    budget_exhausted = (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
-    ):
+    )
+    continuation_budget_exhausted = (
+        final_response is None
+        and bool(_pending_continuation_response)
+        and budget_exhausted
+    )
+
+    iteration_limit_fallback = False
+    if continuation_budget_exhausted:
+        # A verification/continuation gate deliberately withheld a composed
+        # answer, then consumed the remaining budget before producing a newer
+        # one. Preserve that exact answer instead of replacing it with another
+        # fallible model call. The explicit pending value is the provenance
+        # guard: unrelated error/recovery exits can never enter this branch.
+        final_response = _pending_continuation_response
+        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+        iteration_limit_fallback = True
+    elif final_response is None and budget_exhausted:
         # Budget exhausted — ask the model for a summary via one extra
         # API call with tools stripped.  _handle_max_iterations injects a
         # user message and makes a single toolless request.
@@ -68,20 +86,18 @@ def finalize_turn(
                 "— requesting summary..."
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
+        iteration_limit_fallback = True
 
+    if iteration_limit_fallback:
         # If running as a kanban worker, signal the dispatcher that the
         # worker could not complete (rather than treating it as a
-        # protocol violation).  The agent loop strips tools before calling
-        # _handle_max_iterations, so the model cannot call kanban_block
-        # itself — we must do it on its behalf.
+        # protocol violation). This applies whether the user-facing fallback
+        # came from the summary call or an explicitly pending continuation;
+        # both exhausted the task budget and must advance the failure circuit.
         #
         # We route through ``_record_task_failure(outcome="timed_out")``
-        # rather than ``kanban_block`` so this counts toward the
-        # ``consecutive_failures`` counter and the dispatcher's
-        # ``failure_limit`` circuit breaker (#29747 gap 2).  Without this,
-        # a task whose worker keeps exhausting its budget would block
-        # silently each run, get auto-promoted by the operator (or never
-        # surface), and re-block in an endless loop with no signal.
+        # rather than ``kanban_block`` so this counts toward the dispatcher's
+        # consecutive-failure circuit breaker (#29747 gap 2).
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
@@ -120,24 +136,6 @@ def finalize_turn(
                     _kanban_task,
                     exc_info=True,
                 )
-
-    elif (
-        final_response is not None
-        and (
-            api_call_count >= agent.max_iterations
-            or agent.iteration_budget.remaining <= 0
-        )
-        and not str(_turn_exit_reason).startswith("text_response(")
-        and not str(_turn_exit_reason).startswith("max_iterations_reached(")
-    ):
-        # verify-on-stop can assign ``final_response`` then ``continue`` the
-        # loop until the iteration budget is gone, leaving a composed answer
-        # with a non-success exit reason (``unknown``, ``budget_exhausted``).
-        # Normalize so cron's graceful-delivery exemption can match.
-        # (#61631)
-        _turn_exit_reason = (
-            f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
-        )
 
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")
@@ -322,6 +320,7 @@ def finalize_turn(
                 # truncated partial (the "The" case from #34452).
                 _is_partial_fragment = (
                     not _is_empty_terminal
+                    and not continuation_budget_exhausted
                     and not str(_turn_exit_reason).startswith("text_response")
                     and len(_stripped) <= 24
                     and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}

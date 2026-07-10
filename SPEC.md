@@ -1,22 +1,23 @@
 # Hermes Operator Grammar — Specification
 
-**Version:** 1.0.0  
-**Status:** Stable  
-**Scope:** Conductor dispatch, viewport computer, private client runtime
+**Version:** 1.1.0
+**Status:** Stable
+**Scope:** Conductor dispatch, viewport computer, private client runtime, omniverse surface mesh
 
 ## Abstract
 
 This specification defines the operator URI grammar and scheme dispatcher used by
 the Hermes conductor. It is designed to be transport-agnostic, provider-neutral,
-and UI-surface-agnostic.
+UI-surface-agnostic, and omniverse-deployable via mesh addressing.
 
 ## 1. Terminology
 
 - **private client:** bounded, sovereign, local-first autonomous execution surface
-- **viewport computer:** global HTML shell runtime for Hermes agents
 - **conductor:** intent router / scheme dispatcher above all surfaces
+- **viewport computer:** global HTML shell runtime for Hermes agents
 - **bridge:** backend daemon exposing private client capabilities over HTTP
 - **governance layer:** issue/route intent tokens across agents
+- **omniverse mesh:** QR-addressable `/conductor` surfaces across local-first viewports
 
 ## 2. URI Grammar
 
@@ -35,7 +36,7 @@ path       = ...
 | `pc://`               | private client                   | primary             |
 | `pc://run <name>`     | private client run               | primary             |
 | `mcp://`              | MCP tools surface                | primary             |
-| `vscode://`           | control plane                    | primary             |
+| `vscode://`           | viewport host (VS Code = runtime surface for the local HTML/CSS/WASM viewport) | primary             |
 | `reachy://`           | robot/operator surface           | primary             |
 | `NOUS://`             | provider/runtime                 | primary             |
 | `llc://`              | business surface                 | primary             |

@@ -537,12 +537,13 @@ def _vscode_dispatch(raw: str) -> dict:
     return {
         "ok": True,
         "rc": 0,
-        "stdout": "vscode://VS Code control plane + remote compute surface\n",
+        "stdout": "vscode://viewport host — VS Code as the runtime surface for the local HTML/CSS/WASM viewport\n",
         "stderr": "",
         "surface": {
-            "kind": "control_plane",
+            "kind": "viewport_host",
             "address": raw,
-            "compute": "remote",
+            "v": "viewport",
+            "compute": "local",
         },
     }
 
@@ -893,15 +894,37 @@ def _ffmpeg_dispatch(raw: str) -> dict:
 
 
 def _vscode_dispatch(raw: str) -> dict:
+    # VS Code is the HOST for the viewport (v = viewport, the mandate), not the
+    # mandate itself. The viewport (HTML/CSS/Rust-WASM surface) runs inside it.
     return {
         "ok": True,
         "rc": 0,
-        "stdout": "vscode://VS Code control plane + remote compute surface\n",
+        "stdout": "vscode://viewport host — VS Code as the runtime surface for the local HTML/CSS/WASM viewport\n",
         "stderr": "",
         "surface": {
-            "kind": "control_plane",
+            "kind": "viewport_host",
             "address": raw,
-            "compute": "remote",
+            "v": "viewport",
+            "compute": "local",
+        },
+    }
+
+
+def _viewport_dispatch(raw: str) -> dict:
+    """viewport:// — the mandate: the local HTML/CSS/Rust-WASM surface is the
+    control plane. The v in vscode stands for viewport, not Visual Studio."""
+    node = raw.split("viewport://", 1)[1].strip() or "home://"
+    return {
+        "ok": True,
+        "rc": 0,
+        "stdout": f"viewport://{node} -> local HTML/CSS/WASM viewport (the mandate)\n",
+        "stderr": "",
+        "surface": {
+            "kind": "viewport",
+            "address": f"viewport://{node}",
+            "v": "viewport",
+            "node": node,
+            "runtime": "hermes-viewport",
         },
     }
 
@@ -938,6 +961,7 @@ _DISPATCHER.register("vlc://", _vlc_dispatch)
 _DISPATCHER.register("ffmpeg://", _ffmpeg_dispatch)
 _DISPATCHER.register("vscode://open ", _vscode_open_dispatch)
 _DISPATCHER.register("vscode://", _vscode_dispatch)
+_DISPATCHER.register("viewport://", _viewport_dispatch)
 
 
 def _gauntlet_status() -> dict:

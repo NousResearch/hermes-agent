@@ -127,7 +127,7 @@ def test_policy_surface_keys_present_for_builtins() -> None:
         "pc://run beta": ("private_client_run", "beta"),
         "c://cc +æ://ops": ("cctx",),
         "NOUS://": ("provider",),
-        "vscode://": ("control_plane",),
+        "vscode://": ("viewport_host",),
         "reachy://": ("robot",),
         "mcp://tools": ("mcp",),
         "daollc://": ("dao",),
@@ -186,3 +186,16 @@ def test_glocal_agent_short_form_defaults_to_home() -> None:
     assert result["ok"] is True
     assert result["scheme_detail"] == "æ://glocal-agent"
     assert result["surface"]["node"] == "home://"
+
+
+def test_viewport_scheme_is_the_mandate() -> None:
+    """viewport:// is the mandate: the local HTML/CSS/WASM surface is the control
+    plane. vscode:// is its host. The v in vscode = viewport, not Visual Studio."""
+    vp = _dispatch("viewport://home://")
+    assert vp["ok"] is True
+    assert vp["surface"]["kind"] == "viewport"
+    assert vp["surface"]["v"] == "viewport"
+    vs = _dispatch("vscode://")
+    assert vs["ok"] is True
+    assert vs["surface"]["kind"] == "viewport_host"
+    assert vs["surface"]["v"] == "viewport"

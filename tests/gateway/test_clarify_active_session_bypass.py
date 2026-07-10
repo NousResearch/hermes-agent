@@ -1,7 +1,7 @@
 """Regression tests for clarify replies while a gateway session is busy."""
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -85,3 +85,37 @@ async def test_active_session_routes_typed_choice_clarify_reply_to_runner_not_bu
     adapter._message_handler.assert_awaited_once_with(event)
     adapter._busy_session_handler.assert_not_awaited()
     assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_gateway_clarify_reply_resumes_typing_before_returning_empty_ack():
+    """A clarify answer must re-enable the active run's typing indicator.
+
+    Clarify pauses typing while waiting so Slack's Assistant API does not
+    disable the compose box. The typed answer is intercepted by the gateway
+    and returns an empty acknowledgment instead of starting a second run; that
+    interception path must therefore resume the original run's indicator.
+    """
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    adapter = _ClarifyBypassAdapter()
+    adapter.pause_typing_for_chat("12345")
+    event = _event("the missing details")
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._startup_restore_in_progress = False
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._is_user_authorized = lambda source: True
+    runner._session_key_for_source = lambda source: "clarify-session"
+    runner._adapter_for_source = lambda source: adapter
+    runner._update_prompt_pending = {}
+
+    cm.register("clarify-2", "clarify-session", "What is missing?", None)
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        result = await runner._handle_message(event)
+
+    assert result == ""
+    assert "12345" not in adapter._typing_paused

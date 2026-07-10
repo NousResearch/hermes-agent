@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_responses_adapter import (
+    _chat_messages_to_responses_input,
     _format_responses_error,
     _normalize_codex_response,
     _preflight_codex_api_kwargs,
@@ -137,6 +138,67 @@ def test_normalize_codex_response_in_progress_message_still_incomplete():
     _assistant_message, finish_reason = _normalize_codex_response(response)
 
     assert finish_reason == "incomplete"
+
+
+# ---------------------------------------------------------------------------
+# Copilot (api.githubcopilot.com/responses) binds replayed
+# codex_message_items ids to a backend "connection" that does not survive
+# credential-pool rotation, a gateway restart, or routine load-balancer
+# churn — replaying a stale id gets HTTP 401 "input item ID does not
+# belong to this connection", even for short ids (#32716, distinct from
+# the #27038 length cap). is_github_responses drops id unconditionally.
+# ---------------------------------------------------------------------------
+
+_GITHUB_ITEM_ID = "msg_short_but_connection_scoped"
+
+
+def test_chat_messages_to_responses_input_drops_message_id_for_github_responses():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "pong",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _GITHUB_ITEM_ID,
+                    "phase": "final_answer",
+                }
+            ],
+        }
+    ]
+
+    items = _chat_messages_to_responses_input(messages, is_github_responses=True)
+
+    message_item = next(item for item in items if item.get("type") == "message")
+    assert "id" not in message_item
+    assert message_item["phase"] == "final_answer"
+    assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
+
+
+def test_chat_messages_to_responses_input_keeps_message_id_when_not_github_responses():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "pong",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _GITHUB_ITEM_ID,
+                }
+            ],
+        }
+    ]
+
+    items = _chat_messages_to_responses_input(messages, is_github_responses=False)
+
+    message_item = next(item for item in items if item.get("type") == "message")
+    assert message_item["id"] == _GITHUB_ITEM_ID
 
 
 # ---------------------------------------------------------------------------

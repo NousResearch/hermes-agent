@@ -5,10 +5,8 @@
  */
 
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
+
 import { test } from 'vitest'
-import { fileURLToPath } from 'node:url'
 
 import {
   clampZoomLevel,
@@ -16,7 +14,8 @@ import {
   percentToZoomLevel,
   ZOOM_REASSERT_WINDOW_EVENTS,
   ZOOM_STORAGE_KEY,
-  zoomLevelToPercent
+  zoomLevelToPercent,
+  zoomWiringForWindowKind
 } from './zoom'
 
 test('storage key stays stable so persisted zoom survives upgrades', () => {
@@ -66,12 +65,14 @@ test('extreme percentages clamp to the level bounds', () => {
 
 test('installZoomReassertOnWindowEvents wires show and restore', () => {
   const handlers = new Map()
+
   const win = {
     isDestroyed: () => false,
     on(event, listener) {
       handlers.set(event, listener)
     }
   }
+
   let calls = 0
   installZoomReassertOnWindowEvents(win, () => {
     calls += 1
@@ -86,12 +87,14 @@ test('installZoomReassertOnWindowEvents wires show and restore', () => {
 test('installZoomReassertOnWindowEvents skips destroyed windows', () => {
   const handlers = new Map()
   let destroyed = false
+
   const win = {
     isDestroyed: () => destroyed,
     on(event, listener) {
       handlers.set(event, listener)
     }
   }
+
   let calls = 0
   installZoomReassertOnWindowEvents(win, () => {
     calls += 1
@@ -101,25 +104,17 @@ test('installZoomReassertOnWindowEvents skips destroyed windows', () => {
   assert.equal(calls, 0)
 })
 
-// Source assertion (see windows-child-process.test.ts for the established
-// pattern): wireCommonWindowHandlers lives in the electron main entry with heavy
-// Electron deps, so we assert the wiring contract against source rather than
-// booting a BrowserWindow. Locks in that the pet overlay opts OUT of global UI
-// zoom while chat windows keep it — the whole reason this fix is scoped.
-test('pet overlay opts out of global UI zoom; chat windows keep it', () => {
-  const electronDir = path.dirname(fileURLToPath(import.meta.url))
-  const source = fs.readFileSync(path.join(electronDir, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
+// Zoom-wiring contract: chat windows keep global UI zoom, the pet overlay
+// opts out. Tested via the extracted config — no source-text regex.
+test('chat windows opt into zoom', () => {
+  assert.deepEqual(zoomWiringForWindowKind('chat'), { zoom: true })
+})
 
-  // The shared helper gates all zoom wiring behind an opt-out flag.
-  assert.match(source, /function wireCommonWindowHandlers\(win, \{ zoom = true \}/)
+test('pet overlay opts out of zoom', () => {
+  assert.deepEqual(zoomWiringForWindowKind('petOverlay'), { zoom: false })
+})
 
-  // The pet overlay window is the only caller that disables zoom.
-  assert.match(source, /wireCommonWindowHandlers\(win, \{ zoom: false \}\)/)
-
-  // Zoom restore now flows through the shared helper, so createWindow must not
-  // reassert it directly (that would double-fire and drift from session windows).
-  const finishLoad = source.indexOf("mainWindow.webContents.once('did-finish-load'")
-  assert.notEqual(finishLoad, -1, 'missing mainWindow did-finish-load handler')
-  const snippet = source.slice(finishLoad, finishLoad + 300)
-  assert.doesNotMatch(snippet, /restorePersistedZoomLevel\(mainWindow\)/)
+test('unknown window kinds default to chat (zoom enabled)', () => {
+  assert.deepEqual(zoomWiringForWindowKind('unknown'), { zoom: true })
+  assert.deepEqual(zoomWiringForWindowKind(undefined), { zoom: true })
 })

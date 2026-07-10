@@ -261,6 +261,41 @@ rm -f "$HOME/Library/Caches/electron"/electron-*.zip   # macOS
 rm -f "$HOME/.cache/electron"/electron-*.zip            # Linux
 ```
 
+### Keep macOS privacy permissions across local rebuilds
+
+Hermes normally ad-hoc signs a locally rebuilt desktop app. That is enough to
+launch it, but the signature's Designated Requirement changes whenever the app
+changes. macOS may therefore ask you to grant Full Disk Access, Accessibility,
+or other TCC permissions again after an update.
+
+To keep those grants stable, create a persistent **Code Signing** identity in
+your login keychain (Keychain Access → Certificate Assistant → Create a
+Certificate), then opt Hermes into that identity:
+
+```bash
+# Copy the 40-character fingerprint from this command:
+security find-identity -v -p codesigning
+hermes config set desktop.macos_signing_identity FC28EA62B943BB9653345007C2219287DCB912AC
+hermes desktop --force-build
+```
+
+Use the certificate fingerprint rather than its display name so another
+certificate with the same name cannot be selected accidentally. Hermes
+preserves electron-builder's entitlements and runtime flags while re-signing
+each local rebuild with that certificate. You should then grant the rebuilt
+Hermes app the desired privacy permissions one final time.
+
+Keep the certificate and its private key in the keychain: deleting or replacing
+them changes the app's identity and invalidates existing grants. Anyone who can
+use that private key can also sign a `com.nousresearch.hermes` build that macOS
+may recognize as the same Full Disk Access identity. Use a dedicated local
+certificate, do not export or share its private key, and keep this feature
+opt-in.
+
+Official release builds configured with `CSC_LINK` or
+`APPLE_SIGNING_IDENTITY` retain publisher signing and ignore this local
+setting.
+
 ## Building from source
 
 If you want to hack on the app itself, install workspace deps from the repo root once, then run the dev server from `apps/desktop`:

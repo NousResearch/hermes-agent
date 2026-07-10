@@ -2913,16 +2913,26 @@ install_desktop() {
         fi
     fi
 
-    # macOS: make the locally-built (ad-hoc) app relaunchable after an in-place
-    # self-update. An ad-hoc bundle has no stable Designated Requirement, so a
-    # later in-place rebuild (new cdhash) plus the inherited quarantine flag
-    # trips Gatekeeper's tamper check ("Hermes is damaged and can't be opened").
-    # Strip quarantine + re-apply a clean deep ad-hoc signature (no
-    # hardened-runtime flag, which an ad-hoc build can't satisfy). Skipped when a
-    # real signing identity is configured so a signed build isn't clobbered.
+    # macOS: use the same config-aware signing fixup as `hermes desktop` so
+    # install/repair and self-update cannot disagree about the app's identity.
+    # Fall back to the historical ad-hoc repair only if the venv is unavailable.
     if [ "$OS" = "macos" ] && [ -z "${CSC_LINK:-}" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && command -v codesign >/dev/null 2>&1; then
-        xattr -cr "$app" 2>/dev/null || true
-        codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+        local config_python="$INSTALL_DIR/venv/bin/python"
+        if [ -x "$config_python" ]; then
+            if ! HERMES_HOME="$HERMES_HOME" "$config_python" -c '
+import sys
+from pathlib import Path
+from hermes_cli.main import _desktop_macos_relaunchable_fixup
+_desktop_macos_relaunchable_fixup(Path(sys.argv[1]))
+' "$desktop_dir"; then
+                log_warn "Config-aware macOS signing fixup failed; applying the historical ad-hoc fallback."
+                xattr -cr "$app" 2>/dev/null || true
+                codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+            fi
+        else
+            xattr -cr "$app" 2>/dev/null || true
+            codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+        fi
     fi
 
     # `npm install` + `npm run pack` rewrite lockfiles; restore them so the

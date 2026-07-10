@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import plistlib
 import subprocess
 import sys
 from pathlib import Path
@@ -1006,6 +1008,202 @@ def test_force_adhoc_signing_respects_explicit_caller_flag(monkeypatch):
     env = {"CSC_IDENTITY_AUTO_DISCOVERY": "true"}
     assert cli_main._force_adhoc_macos_signing(env, source_mode=False) is False
     assert env["CSC_IDENTITY_AUTO_DISCOVERY"] == "true"
+
+
+def test_desktop_macos_local_signing_identity_reads_config(monkeypatch):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    config = {"desktop": {"macos_signing_identity": "  Hermes Local  "}}
+    with patch("hermes_cli.config.load_config", return_value=config):
+        assert cli_main._desktop_macos_local_signing_identity() == "Hermes Local"
+
+
+@pytest.mark.parametrize(
+    "platform,config",
+    [
+        ("linux", {"desktop": {"macos_signing_identity": "Hermes Local"}}),
+        ("darwin", {}),
+        ("darwin", {"desktop": {"macos_signing_identity": "  "}}),
+        ("darwin", {"desktop": {"macos_signing_identity": True}}),
+    ],
+)
+def test_desktop_macos_local_signing_identity_ignores_unusable_values(
+    monkeypatch, platform, config
+):
+    monkeypatch.setattr(cli_main.sys, "platform", platform)
+    with patch("hermes_cli.config.load_config", return_value=config):
+        assert cli_main._desktop_macos_local_signing_identity() is None
+
+
+def test_desktop_macos_fixup_uses_configured_stable_identity(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    app = tmp_path / "Hermes.app"
+    executable = app / "Contents" / "MacOS" / "Hermes"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    completed = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main._desktop_packaged_executable", return_value=executable), \
+         patch("hermes_cli.main._desktop_macos_local_signing_identity", return_value="Hermes Local"), \
+         patch("hermes_cli.main.shutil.which", return_value="/usr/bin/codesign"), \
+         patch("hermes_cli.main.subprocess.run", return_value=completed) as mock_run:
+        cli_main._desktop_macos_relaunchable_fixup(tmp_path)
+
+    assert mock_run.call_args_list[1].args[0] == [
+        "/usr/bin/codesign",
+        "--force",
+        "--deep",
+        "--sign",
+        "Hermes Local",
+        "--timestamp=none",
+        "--preserve-metadata=entitlements,flags,runtime",
+        str(app),
+    ]
+
+
+def test_desktop_macos_fixup_defaults_to_adhoc_signature(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    app = tmp_path / "Hermes.app"
+    executable = app / "Contents" / "MacOS" / "Hermes"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    completed = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main._desktop_packaged_executable", return_value=executable), \
+         patch("hermes_cli.main._desktop_macos_local_signing_identity", return_value=None), \
+         patch("hermes_cli.main.shutil.which", return_value="/usr/bin/codesign"), \
+         patch("hermes_cli.main.subprocess.run", return_value=completed) as mock_run:
+        cli_main._desktop_macos_relaunchable_fixup(tmp_path)
+
+    assert mock_run.call_args_list[1].args[0] == [
+        "/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)
+    ]
+
+
+def test_desktop_macos_signing_config_error_is_visible(monkeypatch, capsys):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    with patch("hermes_cli.config.load_config", side_effect=OSError("unreadable")):
+        assert cli_main._desktop_macos_local_signing_identity() is None
+    output = capsys.readouterr().out
+    assert "could not load desktop.macos_signing_identity" in output
+    assert "unreadable" in output
+
+
+@pytest.mark.parametrize("key", ["CSC_LINK", "APPLE_SIGNING_IDENTITY"])
+def test_desktop_macos_fixup_never_clobbers_publisher_signing(
+    monkeypatch, tmp_path, key
+):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setenv(key, "publisher-signing-configured")
+    with patch("hermes_cli.main._desktop_packaged_executable") as mock_executable, \
+         patch("hermes_cli.main.subprocess.run") as mock_run:
+        cli_main._desktop_macos_relaunchable_fixup(tmp_path)
+    mock_executable.assert_not_called()
+    mock_run.assert_not_called()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS codesign")
+def test_desktop_macos_stable_signing_real_config_and_codesign(monkeypatch, tmp_path):
+    identity = os.environ.get("HERMES_TEST_CODESIGN_IDENTITY")
+    if not identity:
+        pytest.skip("set HERMES_TEST_CODESIGN_IDENTITY to run the real signing test")
+    assert identity is not None
+
+    hermes_home = tmp_path / "hermes-home"
+    desktop_dir = tmp_path / "desktop"
+    app = desktop_dir / "release" / "mac-arm64" / "Hermes.app"
+    executable = app / "Contents" / "MacOS" / "Hermes"
+    executable.parent.mkdir(parents=True)
+    source = tmp_path / "main.c"
+    clang = Path("/usr/bin/clang")
+    if not clang.exists():
+        pytest.skip("requires clang to build a disposable Mach-O executable")
+    with (app / "Contents" / "Info.plist").open("wb") as handle:
+        plistlib.dump(
+            {
+                "CFBundleIdentifier": "com.nousresearch.hermes.integration-test",
+                "CFBundleExecutable": "Hermes",
+            },
+            handle,
+        )
+    entitlements = tmp_path / "entitlements.plist"
+    with entitlements.open("wb") as handle:
+        plistlib.dump({"com.apple.security.cs.allow-jit": True}, handle)
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    repo_root = Path(__file__).resolve().parents[2]
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.main",
+            "config",
+            "set",
+            "desktop.macos_signing_identity",
+            identity,
+        ],
+        cwd=repo_root,
+        env={**os.environ, "HERMES_HOME": str(hermes_home)},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    requirements = []
+    for return_code in (0, 1):
+        source.write_text(f"int main(void) {{ return {return_code}; }}\n")
+        subprocess.run(
+            [str(clang), str(source), "-o", str(executable)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            [
+                "/usr/bin/codesign",
+                "--force",
+                "--sign",
+                "-",
+                "--options",
+                "runtime",
+                "--entitlements",
+                str(entitlements),
+                str(app),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+        subprocess.run(
+            ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        requirement_result = subprocess.run(
+            ["/usr/bin/codesign", "-dr", "-", str(app)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        requirement = requirement_result.stdout + requirement_result.stderr
+        entitlements_result = subprocess.run(
+            ["/usr/bin/codesign", "-d", "--entitlements", ":-", str(app)],
+            check=True,
+            capture_output=True,
+        )
+        entitlements_output = entitlements_result.stdout + entitlements_result.stderr
+        assert b"com.apple.security.cs.allow-jit" in entitlements_output
+        requirements.append(requirement)
+
+    assert requirements[0] == requirements[1]
+    assert "certificate root" in requirements[0]
 
 
 # --- desktop.* launch options (config.yaml) -------------------------------

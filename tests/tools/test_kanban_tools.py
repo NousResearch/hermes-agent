@@ -146,6 +146,79 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
 # Handler happy paths
 # ---------------------------------------------------------------------------
 
+def test_explicit_board_routes_all_handlers_away_from_conflicting_env_db(
+    monkeypatch, tmp_path,
+):
+    """Explicit tool calls never leak into the worker's env-pinned board."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    env_db = tmp_path / "env-board" / "kanban.db"
+    explicit_db = home / "kanban" / "boards" / "target" / "kanban.db"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(env_db))
+    monkeypatch.setenv("HERMES_PROFILE", "project-manager")
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb._INITIALIZED_PATHS.clear()
+
+    implicit = json.loads(kt._handle_create({
+        "title": "env-only", "assignee": "reviewer",
+    }))
+    assert implicit["ok"] is True
+
+    parent = json.loads(kt._handle_create({
+        "title": "explicit-parent", "assignee": "reviewer", "board": "target",
+    }))
+    child = json.loads(kt._handle_create({
+        "title": "explicit-child", "assignee": "reviewer", "board": "target",
+    }))
+    assert parent["ok"] is True
+    assert child["ok"] is True
+
+    shown = json.loads(kt._handle_show({
+        "task_id": parent["task_id"], "board": "target",
+    }))
+    assert shown["task"]["title"] == "explicit-parent"
+    assert "error" in json.loads(kt._handle_show({"task_id": parent["task_id"]}))
+
+    commented = json.loads(kt._handle_comment({
+        "task_id": parent["task_id"], "body": "target-only", "board": "target",
+    }))
+    linked = json.loads(kt._handle_link({
+        "parent_id": parent["task_id"],
+        "child_id": child["task_id"],
+        "board": "target",
+    }))
+    completed = json.loads(kt._handle_complete({
+        "task_id": parent["task_id"],
+        "summary": "completed on target",
+        "board": "target",
+    }))
+    assert commented["ok"] is True
+    assert linked["ok"] is True
+    assert completed.get("ok") is True, completed
+
+    with kb.connect() as conn:
+        assert [task.title for task in kb.list_tasks(conn)] == ["env-only"]
+    with kb.connect(board="target") as conn:
+        tasks = {task.title: task for task in kb.list_tasks(conn)}
+        assert set(tasks) == {"explicit-parent", "explicit-child"}
+        assert tasks["explicit-parent"].status == "done"
+        assert tasks["explicit-child"].status == "ready"
+        assert kb.child_ids(conn, parent["task_id"]) == [child["task_id"]]
+        assert [comment.body for comment in kb.list_comments(conn, parent["task_id"])] == [
+            "target-only"
+        ]
+
+    assert env_db.exists()
+    assert explicit_db.exists()
+    assert env_db.resolve() != explicit_db.resolve()
+
+
 @pytest.fixture
 def worker_env(monkeypatch, tmp_path):
     """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set

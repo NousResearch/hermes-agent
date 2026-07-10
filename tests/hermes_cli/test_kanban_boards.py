@@ -126,12 +126,26 @@ class TestPathResolution:
             fresh_home / "kanban" / "boards" / "other" / "logs"
         )
 
-    def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
-        """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
+    def test_explicit_board_overrides_env_var_db(self, fresh_home, tmp_path, monkeypatch):
+        """An explicit ``board=`` overrides the worker's env-pinned DB."""
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
-        assert kb.kanban_db_path(board="ignored") == forced
+        assert kb.kanban_db_path(board="target") == (
+            fresh_home / "kanban" / "boards" / "target" / "kanban.db"
+        )
+
+    def test_scoped_board_overrides_env_var_db(self, fresh_home, tmp_path, monkeypatch):
+        """CLI/dashboard per-call board scopes have the same precedence."""
+        forced = tmp_path / "custom.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+
+        with kb.scoped_current_board("target"):
+            assert kb.kanban_db_path() == (
+                fresh_home / "kanban" / "boards" / "target" / "kanban.db"
+            )
+
+        assert kb.kanban_db_path() == forced
 
     def test_env_var_workspaces_override(self, fresh_home, tmp_path, monkeypatch):
         forced = tmp_path / "ws"
@@ -315,6 +329,30 @@ class TestBoardCRUD:
 # ---------------------------------------------------------------------------
 
 class TestConnectionIsolation:
+    def test_explicit_board_beats_conflicting_env_db_without_task_leakage(
+        self, fresh_home, tmp_path, monkeypatch,
+    ):
+        """Explicit and omitted connects stay isolated under a worker DB pin."""
+        explicit_db = fresh_home / "kanban" / "boards" / "target" / "kanban.db"
+        env_db = tmp_path / "env-board" / "kanban.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(env_db))
+
+        with kb.connect(board="target") as conn:
+            kb.create_task(conn, title="explicit-only", assignee="dev")
+
+        with kb.connect() as conn:
+            assert kb.list_tasks(conn) == []
+            kb.create_task(conn, title="env-only", assignee="dev")
+
+        with kb.connect(board="target") as conn:
+            assert [task.title for task in kb.list_tasks(conn)] == ["explicit-only"]
+        with kb.connect() as conn:
+            assert [task.title for task in kb.list_tasks(conn)] == ["env-only"]
+
+        assert explicit_db.exists()
+        assert env_db.exists()
+        assert explicit_db.resolve() != env_db.resolve()
+
     def test_tasks_do_not_leak_across_boards(self, fresh_home):
         kb.create_board("alpha")
         kb.create_board("beta")

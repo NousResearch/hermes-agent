@@ -2549,7 +2549,12 @@ class TestSilentDelivery:
             save_mock.return_value = "/tmp/out.md"
             from cron.scheduler import tick
             tick(verbose=False)
-        save_mock.assert_called_once_with("monitor-job", "# full output")
+        save_mock.assert_called_once()
+        saved_output = save_mock.call_args.args[1]
+        assert "**Scheduled At:** unknown" in saved_output
+        assert "**Dispatch Started At:**" in saved_output
+        assert "**Dispatch Lag Seconds:** unknown" in saved_output
+        assert saved_output.endswith("# full output")
         deliver_mock.assert_not_called()
 
     def test_whitespace_only_response_is_marked_failed_not_delivered(self):

@@ -272,3 +272,48 @@ class TestSequentialPool:
 
         sched._shutdown_parallel_pool()
         assert sched._sequential_pool is None
+
+    def test_no_agent_workdir_job_uses_parallel_pool(self, tmp_path, monkeypatch):
+        """A script-only cwd is subprocess-local and must not queue behind agents."""
+        import concurrent.futures
+        import cron.scheduler as sched
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        sched._running_job_ids.clear()
+
+        class ImmediatePool:
+            def __init__(self):
+                self.submissions = 0
+
+            def submit(self, fn):
+                self.submissions += 1
+                future = concurrent.futures.Future()
+                try:
+                    future.set_result(fn())
+                except Exception as exc:  # pragma: no cover - assertion aid
+                    future.set_exception(exc)
+                return future
+
+        sequential = ImmediatePool()
+        parallel = ImmediatePool()
+        job = {
+            "id": "parallel-script-workdir",
+            "name": "parallel-script-workdir",
+            "schedule": "every 5m",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+            "no_agent": True,
+            "script": "watchdog.py",
+            "workdir": str(tmp_path),
+        }
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "_get_sequential_pool", lambda: sequential)
+        monkeypatch.setattr(sched, "_get_parallel_pool", lambda _workers: parallel)
+        monkeypatch.setattr(sched, "run_one_job", lambda *_a, **_kw: True)
+
+        assert sched.tick(verbose=False, sync=True) == 1
+        assert sequential.submissions == 0
+        assert parallel.submissions == 1

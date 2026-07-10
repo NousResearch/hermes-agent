@@ -10,6 +10,8 @@ The first test characterizes the sequence as driven through `tick()` (proving
 the extraction didn't change `tick`'s behavior); the rest unit-test the
 extracted helper directly.
 """
+from datetime import datetime, timezone
+
 import cron.scheduler as s
 
 
@@ -64,6 +66,39 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert ok is True
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
     assert calls[-1] == ("mark", "j2", True)
+
+
+def test_run_one_job_records_dispatch_lag_in_saved_output(monkeypatch):
+    """Saved artifacts expose the scheduled time, dispatch time, and queue lag."""
+    fixed_now = datetime(2026, 7, 9, 12, 5, tzinfo=timezone.utc)
+    saved = {}
+
+    monkeypatch.setattr(s, "_hermes_now", lambda: fixed_now)
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_k: (True, "# Cron Job: test\n\nbody", "final", None),
+    )
+    monkeypatch.setattr(
+        s,
+        "save_job_output",
+        lambda _job_id, output: saved.setdefault("output", output) or "/tmp/out",
+    )
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_k: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_k: None)
+
+    assert s.run_one_job(
+        {
+            "id": "lag-job",
+            "name": "lag-job",
+            "scheduled_at": "2026-07-09T12:00:00+00:00",
+        }
+    ) is True
+
+    assert "**Scheduled At:** 2026-07-09T12:00:00+00:00" in saved["output"]
+    assert "**Dispatch Started At:** 2026-07-09T12:05:00+00:00" in saved["output"]
+    assert "**Dispatch Lag Seconds:** 300.0" in saved["output"]
 
 
 def test_run_one_job_silent_skips_delivery(monkeypatch):

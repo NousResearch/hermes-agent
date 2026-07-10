@@ -1177,13 +1177,20 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
 
 # Configuration from environment variables
 
-def _parse_env_var(name: str, default: str, converter: Any = int, type_label: str = "integer"):
+def _parse_env_var(
+    name: str,
+    default: str,
+    converter: Any = int,
+    type_label: str = "integer",
+    env: Optional[Dict[str, str]] = None,
+):
     """Parse an environment variable with *converter*, raising a clear error on bad values.
 
     Without this wrapper, a single malformed env var (e.g. TERMINAL_TIMEOUT=5m)
     causes an unhandled ValueError that kills every terminal command.
     """
-    raw = os.getenv(name, default)
+    source = os.environ if env is None else env
+    raw = source.get(name, default)
     try:
         return converter(raw)
     except (ValueError, json.JSONDecodeError):
@@ -1332,19 +1339,19 @@ def _get_env_config() -> Dict[str, Any]:
     # until a backend that can consume them is selected; a stale or invalid
     # Docker value should not make local terminal/execute_code unusable.
     if container_backend:
-        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number")
-        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120")
-        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200")
+        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number", env=terminal_env)
+        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120", env=terminal_env)
+        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200", env=terminal_env)
     else:
         container_cpu = 1.0
         container_memory = 5120
         container_disk = 51200
 
     if docker_backend:
-        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
-        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
-        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
-        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
+        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON", env=terminal_env)
+        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON", env=terminal_env)
+        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON", env=terminal_env)
+        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON", env=terminal_env)
     else:
         docker_forward_env = []
         docker_volumes = []
@@ -1397,12 +1404,12 @@ def _get_env_config() -> Dict[str, Any]:
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
-        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
-        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
+        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180", env=terminal_env),
+        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300", env=terminal_env),
         # SSH-specific config
         "ssh_host": terminal_env.get("TERMINAL_SSH_HOST", ""),
         "ssh_user": terminal_env.get("TERMINAL_SSH_USER", ""),
-        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
+        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22", env=terminal_env),
         "ssh_key": terminal_env.get("TERMINAL_SSH_KEY", ""),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.

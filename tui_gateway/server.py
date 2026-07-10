@@ -11754,9 +11754,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"blocked": True, "hint": hint, "code": -1, "output": ""})
     try:
         r = subprocess.run(
-            [
-                sys.executable, "-m", "hermes_cli.main", *argv
-            ],
+            [sys.executable, "-m", "hermes_cli.main", *argv],
             capture_output=True,
             text=True,
             # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash

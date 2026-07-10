@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-08T18:59:16Z",
+  "updated_at": "2026-07-09T18:38:59Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -33,6 +33,30 @@
           "description": ""
         },
         {
+          "id": "openai/gpt-5.6-sol",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.6-sol-pro",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.6-terra",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.6-terra-pro",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.6-luna",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.6-luna-pro",
+          "description": ""
+        },
+        {
           "id": "openai/gpt-5.5",
           "description": ""
         },
@@ -58,10 +82,6 @@
         },
         {
           "id": "x-ai/grok-4.5",
-          "description": ""
-        },
-        {
-          "id": "x-ai/grok-4.3",
           "description": ""
         },
         {
@@ -173,6 +193,24 @@
           "id": "anthropic/claude-haiku-4.5"
         },
         {
+          "id": "openai/gpt-5.6-sol"
+        },
+        {
+          "id": "openai/gpt-5.6-sol-pro"
+        },
+        {
+          "id": "openai/gpt-5.6-terra"
+        },
+        {
+          "id": "openai/gpt-5.6-terra-pro"
+        },
+        {
+          "id": "openai/gpt-5.6-luna"
+        },
+        {
+          "id": "openai/gpt-5.6-luna-pro"
+        },
+        {
           "id": "openai/gpt-5.5"
         },
         {
@@ -192,9 +230,6 @@
         },
         {
           "id": "x-ai/grok-4.5"
-        },
-        {
-          "id": "x-ai/grok-4.3"
         },
         {
           "id": "deepseek/deepseek-v4-pro"

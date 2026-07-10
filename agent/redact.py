@@ -808,6 +808,21 @@ def _has_http_method_substring(text: str) -> bool:
 # to file-path log sinks.
 _LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 
+# ``hermes logs`` (``hermes_cli.logs._TS_RE``) treats any physical line that
+# starts with a timestamp as the beginning of a new record. The exception
+# traceback appended by the base formatter is legitimately multi-line and its
+# text includes the exception message, which can be attacker-controlled (e.g. a
+# sandboxed tool call failing with a crafted message logged via ``exc_info``).
+# A continuation line that starts with a timestamp is therefore a forged
+# record, not diagnostics; real traceback lines never start with one.
+_TS_LINE_START = re.compile(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}")
+
+# ``_LOG_UNSAFE_CHARS`` minus ``\n``: applied to the full formatted output so a
+# traceback keeps its real line structure while a bare ``\r`` (translated to a
+# line break by universal newlines when ``hermes logs`` reads the file) or the
+# other break characters recognized by ``str.splitlines`` cannot smuggle one in.
+_EXC_UNSAFE_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f\x85  ]")
+
 
 class RedactingFormatter(logging.Formatter):
     """Log formatter that redacts secrets from all log messages."""
@@ -829,4 +844,19 @@ class RedactingFormatter(logging.Formatter):
             original = super().format(record)
         finally:
             record.msg, record.args = saved_msg, saved_args
-        return redact_sensitive_text(original)
+        return self._defang_continuation_lines(redact_sensitive_text(original))
+
+    @staticmethod
+    def _defang_continuation_lines(formatted: str) -> str:
+        # Indent any continuation line (traceback/stack text) that starts with a
+        # timestamp so ``hermes logs`` cannot parse it as a new record. The
+        # formatted output string is transformed rather than ``record.exc_text``
+        # because the cached exc_text is shared across every handler.
+        first, sep, rest = formatted.partition("\n")
+        if not sep:
+            return formatted
+        lines = [
+            " " + line if _TS_LINE_START.match(line) else line
+            for line in _EXC_UNSAFE_CHARS.sub(" ", rest).split("\n")
+        ]
+        return first + sep + "\n".join(lines)

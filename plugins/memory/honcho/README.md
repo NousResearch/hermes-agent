@@ -52,9 +52,25 @@ Multi-pass `.chat()` reasoning about the user, appended after base context.
 
 Both layers are joined, then truncated to fit `contextTokens` budget via `_truncate_to_budget` (tokens × 4 chars, word-boundary safe).
 
+### Latest-Message Query Rewrite
+
+On live user turns, dialectic pass 0 first uses the `honcho_query_rewrite`
+auxiliary task to turn the latest message into one concise memory-retrieval
+question. Only that rewritten question is sent to Honcho, so prompt instructions
+and the raw user message do not pollute Honcho's semantic prefetch. If rewriting
+times out or returns an invalid result, the plugin falls back to the existing
+cold/warm prompt below. Base context still prewarms at session start, but the
+generic dialectic prewarm is skipped so it cannot shadow the first user message.
+
+The rewrite adds one auxiliary-model call per dialectic cycle, not per dialectic
+pass. Select a fast, inexpensive model under `hermes model` -> auxiliary models
+-> **Honcho query rewrite**. `dialecticCadence` still controls how often the
+cycle runs.
+
 ### Cold Start vs Warm Session Prompts
 
-Dialectic pass 0 automatically selects its prompt based on session state:
+When latest-message rewriting is unavailable, dialectic pass 0 automatically
+selects its fallback prompt based on session state:
 
 - **Cold** (no base context cached): "Who is this person? What are their preferences, goals, and working style? Focus on facts that would help an AI assistant be immediately useful."
 - **Warm** (base context exists): "Given what's been discussed in this session so far, what context about this user is most relevant to the current conversation? Prioritize active context over biographical facts."

@@ -1293,11 +1293,17 @@ EOF
         fi
     else
         # Try SSH first (for private repo access), fall back to HTTPS
-        # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
-        # so SSH fails fast instead of hanging when no key is configured.
+        # GitHub has no anonymous SSH and a keyless machine will fail the clone
+        # - so we just attempt it and then verify the result. If a real git repo
+        # with a checked-out commit landed in INSTALL_DIR we're done; otherwise
+        # we clean up and fall back to HTTPS, which clones the public repo with
+        # no GitHub account and no key. GIT_SSH_COMMAND disables interactive
+        # prompts and sets a short timeout so a missing key fails fast instead
+        # of hanging.
         log_info "Trying SSH clone..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+            git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null && \
+           [ -d "$INSTALL_DIR/.git" ] && git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null; then
             log_success "Cloned via SSH"
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone

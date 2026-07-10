@@ -11,7 +11,13 @@
 #
 services:
   gateway:
-    image: nousresearch/hermes-agent:latest
+    # Built locally from the repo Dockerfile (no published registry image
+    # for this fork). `docker compose -f docker-compose.windows.yml build`
+    # produces the local ht-ai-agent image used by both services.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ht-ai-agent
     container_name: hermes
     restart: unless-stopped
     volumes:
@@ -22,7 +28,8 @@ services:
     command: ["gateway", "run"]
 
   dashboard:
-    image: nousresearch/hermes-agent:latest
+    # Reuses the local ht-ai-agent image built by the gateway service.
+    image: ht-ai-agent
     container_name: hermes-dashboard
     restart: unless-stopped
     depends_on:

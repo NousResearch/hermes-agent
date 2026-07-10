@@ -151,7 +151,7 @@ let
   '';
 in
 stdenv.mkDerivation (finalAttrs: {
-  pname = "hermes-agent";
+  pname = "ht-ai-agent";
   version = (fromTOML (builtins.readFile ../pyproject.toml)).project.version;
 
   dontUnpack = true;
@@ -185,6 +185,7 @@ stdenv.mkDerivation (finalAttrs: {
           ${lib.optionalString (extraPythonPackages != [ ]) ''--suffix PYTHONPATH : "${pythonPath}"''}
       '')
       [
+        "ht"
         "hermes"
         "hermes-agent"
         "hermes-acp"
@@ -232,9 +233,9 @@ stdenv.mkDerivation (finalAttrs: {
     };
 
   meta = with lib; {
-    description = "AI agent with advanced tool-calling capabilities";
-    homepage = "https://github.com/NousResearch/hermes-agent";
-    mainProgram = "hermes";
+    description = "HT AI Agent — AI agent with advanced tool-calling capabilities";
+    homepage = "https://github.com/uaixo/awesome-hermes-agent";
+    mainProgram = "ht";
     license = licenses.mit;
     platforms = platforms.unix;
   };

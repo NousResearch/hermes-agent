@@ -36,7 +36,7 @@ NAS_BASE = os.environ.get(
 _REQUEST_TIMEOUT = 30
 _UPLOAD_TIMEOUT = 120
 
-_USER_AGENT = "hermes-agent/debug-share"
+_USER_AGENT = "ht-ai-agent/debug-share"
 
 
 def request_upload_url(

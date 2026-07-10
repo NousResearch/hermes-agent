@@ -17,7 +17,7 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_parser = subparsers.add_parser(
         "config",
         help="View and edit configuration",
-        description="Manage Hermes Agent configuration",
+        description="Manage HT AI Agent configuration",
     )
     config_subparsers = config_parser.add_subparsers(dest="config_command")
 

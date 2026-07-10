@@ -57,7 +57,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 
     join_p = subs.add_parser("join", help="Join a Meet URL")
     join_p.add_argument("url", help="https://meet.google.com/...")
-    join_p.add_argument("--guest-name", default="Hermes Agent")
+    join_p.add_argument("--guest-name", default="HT AI Agent")
     join_p.add_argument("--duration", default=None, help="e.g. 30m, 2h, 90s")
     join_p.add_argument("--headed", action="store_true", help="show browser")
     join_p.add_argument(

@@ -193,7 +193,7 @@ def copilot_device_code_login(
         headers={
             "Accept": "application/json",
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "HermesAgent/1.0",
+            "User-Agent": "HTAIAgent/1.0",
         },
     )
 
@@ -239,7 +239,7 @@ def copilot_device_code_login(
             headers={
                 "Accept": "application/json",
                 "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "HermesAgent/1.0",
+                "User-Agent": "HTAIAgent/1.0",
             },
         )
 
@@ -447,7 +447,7 @@ def copilot_request_headers(
     """
     headers: dict[str, str] = {
         "Editor-Version": "vscode/1.104.1",
-        "User-Agent": "HermesAgent/1.0",
+        "User-Agent": "HTAIAgent/1.0",
         "Copilot-Integration-Id": "vscode-chat",
         "Openai-Intent": "conversation-edits",
         "x-initiator": "agent" if is_agent_turn else "user",

@@ -3,15 +3,15 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'Hermes Agent',
+  title: 'HT AI Agent',
   tagline: 'The self-improving AI agent',
   favicon: 'img/favicon.ico',
 
-  url: 'https://hermes-agent.nousresearch.com',
-  baseUrl: '/docs/',
+  url: 'https://uaixo.github.io',
+  baseUrl: '/awesome-hermes-agent/',
 
-  organizationName: 'NousResearch',
-  projectName: 'hermes-agent',
+  organizationName: 'uaixo',
+  projectName: 'awesome-hermes-agent',
 
   onBrokenLinks: 'warn',
 
@@ -24,14 +24,10 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'zh-Hans'],
+    locales: ['en'],
     localeConfigs: {
       en: {
         label: 'English',
-      },
-      'zh-Hans': {
-        label: '简体中文',
-        htmlLang: 'zh-Hans',
       },
     },
   },
@@ -43,7 +39,7 @@ const config: Config = {
       /** @type {import("@easyops-cn/docusaurus-search-local").PluginOptions} */
       ({
         hashed: true,
-        language: ['en', 'zh'],
+        language: ['en'],
         indexBlog: false,
         docsRouteBasePath: '/',
         // Disabled: appends ?_highlight=... to URLs (before the #anchor),
@@ -56,8 +52,9 @@ const config: Config = {
         // reference/optional-skills-catalog) remain indexed.
         //
         // Note: ignoreFiles matches `route` (baseUrl stripped, no leading
-        // slash). With baseUrl '/docs/', `/docs/user-guide/skills/bundled/x`
-        // becomes 'user-guide/skills/bundled/x'.
+        // slash). With baseUrl '/awesome-hermes-agent/',
+        // `/awesome-hermes-agent/user-guide/skills/bundled/x` becomes
+        // 'user-guide/skills/bundled/x'.
         ignoreFiles: [
           /^user-guide\/skills\/bundled\//,
           /^user-guide\/skills\/optional\//,
@@ -96,7 +93,7 @@ const config: Config = {
         docs: {
           routeBasePath: '/',  // Docs at the root of /docs/
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/NousResearch/hermes-agent/edit/main/website/',
+          editUrl: 'https://github.com/uaixo/awesome-hermes-agent/edit/main/website/',
         },
         blog: false,
         theme: {
@@ -107,6 +104,8 @@ const config: Config = {
   ],
 
   themeConfig: {
+    // TODO(rebrand): replace static/img/hermes-agent-banner.png, logo.png,
+    // and nous-logo.png with HT AI Agent artwork.
     image: 'img/hermes-agent-banner.png',
     colorMode: {
       defaultMode: 'dark',
@@ -119,9 +118,10 @@ const config: Config = {
       },
     },
     navbar: {
-      title: 'Hermes Agent',
+      title: 'HT AI Agent',
       logo: {
-        alt: 'Hermes Agent',
+        alt: 'HT AI Agent',
+        // TODO(rebrand): replace with HT AI Agent logo asset.
         src: 'img/logo.png',
       },
       items: [
@@ -137,27 +137,8 @@ const config: Config = {
           position: 'left',
         },
         {
-          href: 'https://hermes-agent.nousresearch.com/',
-          label: 'Download',
-          position: 'left',
-        },
-        {
-          type: 'localeDropdown',
-          position: 'right',
-        },
-        {
-          href: 'https://hermes-agent.nousresearch.com',
-          label: 'Home',
-          position: 'right',
-        },
-        {
-          href: 'https://github.com/NousResearch/hermes-agent',
+          href: 'https://github.com/uaixo/awesome-hermes-agent',
           label: 'GitHub',
-          position: 'right',
-        },
-        {
-          href: 'https://discord.gg/NousResearch',
-          label: 'Discord',
           position: 'right',
         },
       ],
@@ -177,21 +158,18 @@ const config: Config = {
         {
           title: 'Community',
           items: [
-            { label: 'Discord', href: 'https://discord.gg/NousResearch' },
-            { label: 'GitHub Issues', href: 'https://github.com/NousResearch/hermes-agent/issues' },
+            { label: 'GitHub Issues', href: 'https://github.com/uaixo/awesome-hermes-agent/issues' },
             { label: 'Skills Hub', href: 'https://agentskills.io' },
           ],
         },
         {
           title: 'More',
           items: [
-            { label: 'Desktop Download', href: 'https://hermes-agent.nousresearch.com/' },
-            { label: 'GitHub', href: 'https://github.com/NousResearch/hermes-agent' },
-            { label: 'Nous Research', href: 'https://nousresearch.com' },
+            { label: 'GitHub', href: 'https://github.com/uaixo/awesome-hermes-agent' },
           ],
         },
       ],
-      copyright: `Built by <a href="https://nousresearch.com">Nous Research</a> · MIT License · ${new Date().getFullYear()}`,
+      copyright: `Built on <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> by <a href="https://nousresearch.com">Nous Research</a> · MIT License`,
     },
     prism: {
       theme: prismThemes.github,

@@ -32,7 +32,7 @@ class TestExitSummaryResumeHint:
             cli_obj._print_exit_summary()
         out = capsys.readouterr().out
         # No `-p` for the default profile.
-        assert "hermes --resume 20260524_000001_abc123" in out
+        assert "ht --resume 20260524_000001_abc123" in out
         assert " -p " not in out
 
     def test_resume_hint_no_profile_flag_on_custom(self, capsys):
@@ -41,7 +41,7 @@ class TestExitSummaryResumeHint:
             cli_obj._print_exit_summary()
         out = capsys.readouterr().out
         # "custom" is the standard HERMES_HOME indicator — no -p needed.
-        assert "hermes --resume 20260524_000001_abc123" in out
+        assert "ht --resume 20260524_000001_abc123" in out
         assert " -p " not in out
 
     def test_resume_hint_includes_profile_flag_for_named_profile(self, capsys):
@@ -49,7 +49,7 @@ class TestExitSummaryResumeHint:
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="dev"):
             cli_obj._print_exit_summary()
         out = capsys.readouterr().out
-        assert "hermes --resume 20260524_000001_abc123 -p dev" in out
+        assert "ht --resume 20260524_000001_abc123 -p dev" in out
 
     def test_resume_hint_includes_profile_flag_on_title_hint_too(self, capsys, tmp_path):
         """When a session title is available, the `hermes -c "title"` hint
@@ -63,8 +63,8 @@ class TestExitSummaryResumeHint:
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="dev"):
             cli_obj._print_exit_summary()
         out = capsys.readouterr().out
-        assert 'hermes -c "My Cool Session" -p dev' in out
-        assert "hermes --resume 20260524_000001_abc123 -p dev" in out
+        assert 'ht -c "My Cool Session" -p dev' in out
+        assert "ht --resume 20260524_000001_abc123 -p dev" in out
 
     def test_resume_hint_falls_back_when_profile_lookup_fails(self, capsys):
         """If `get_active_profile_name` raises (e.g. profiles module
@@ -79,5 +79,5 @@ class TestExitSummaryResumeHint:
             cli_obj._print_exit_summary()
         out = capsys.readouterr().out
         # Resume hint still printed without -p.
-        assert "hermes --resume 20260524_000001_abc123" in out
+        assert "ht --resume 20260524_000001_abc123" in out
         assert " -p " not in out

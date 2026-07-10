@@ -207,7 +207,7 @@ def test_format_venv_holders_message_flags_desktop_backend(tmp_path):
     assert "101" in msg
     assert "desktop app" in msg.lower()
     assert "gateway" in msg
-    assert "hermes update" in msg
+    assert "ht update" in msg
     assert "--force-venv" in msg
 
 

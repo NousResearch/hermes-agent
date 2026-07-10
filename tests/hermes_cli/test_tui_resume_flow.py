@@ -407,7 +407,7 @@ def test_termux_ultrafast_version_runs_before_heavy_startup(
     assert main_mod._try_termux_ultrafast_version() is True
 
     out = capsys.readouterr().out
-    assert "Hermes Agent v" in out
+    assert "HT AI Agent v" in out
     assert "Install directory:" in out
     assert "Python:" in out
     assert "OpenAI SDK:" in out
@@ -1081,8 +1081,8 @@ def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, ca
     out = capsys.readouterr().out
 
     assert "Resume this session with:" in out
-    assert "hermes --tui --resume 20260409_000001_abc123" in out
-    assert 'hermes --tui -c "demo title"' in out
+    assert "ht --tui --resume 20260409_000001_abc123" in out
+    assert 'ht --tui -c "demo title"' in out
     assert "Tokens:         21 (in 10, out 6, cache 4, reasoning 1)" in out
 
 
@@ -1121,5 +1121,5 @@ def test_print_tui_exit_summary_prefers_actual_active_session_file(
     out = capsys.readouterr().out
 
     assert seen == ["actual_session"]
-    assert "hermes --tui --resume actual_session" in out
+    assert "ht --tui --resume actual_session" in out
     assert "startup_resume" not in out

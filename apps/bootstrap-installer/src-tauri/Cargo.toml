@@ -1,8 +1,8 @@
 [package]
 name = "hermes-bootstrap"
 version = "0.0.1"
-description = "Hermes Setup — signed installer that drives scripts/install.ps1"
-authors = ["Nous Research <info@nousresearch.com>"]
+description = "HT AI Agent Setup — signed installer that drives scripts/install.ps1"
+authors = ["HT AI <noreply@example.com>"]
 edition = "2021"
 rust-version = "1.77"
 

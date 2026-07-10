@@ -99,8 +99,8 @@ gateway:
     upload_failed:         "✗ No se pudo subir el informe de depuración: {error}"
     header:                "**Informe de depuración subido:**"
     auto_delete:           "⏱ Los pastes se eliminarán automáticamente en 6 horas."
-    full_logs_hint:        "Para subir registros completos, usa `hermes debug share` desde la CLI."
-    share_hint:            "Comparte estos enlaces con el equipo de Hermes para obtener soporte."
+    full_logs_hint:        "Para subir registros completos, usa `ht debug share` desde la CLI."
+    share_hint:            "Comparte estos enlaces con los mantenedores de HT AI Agent para obtener soporte."
 
   deny:
     stale:                 "❌ Comando denegado (la aprobación había caducado)."
@@ -139,7 +139,7 @@ gateway:
     set:                   "⊙ Objetivo establecido (presupuesto de {budget} turnos): {goal}\nSeguiré trabajando hasta que el objetivo se complete, lo pauses/elimines o se agote el presupuesto.\nControles: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
-    header:                "📖 **Comandos de Hermes**\n"
+    header:                "📖 **Comandos de HT AI Agent**\n"
     skill_header:          "\n⚡ **Comandos de skill** ({count} activos):"
     more_use_commands:     "\n... y {count} más. Usa `/commands` para la lista paginada completa."
 
@@ -150,7 +150,7 @@ gateway:
   kanban:
     error_prefix:          "⚠ error de kanban: {error}"
     subscribed_suffix:     "(suscrito — recibirás una notificación cuando {task_id} termine o se bloquee)"
-    truncated_suffix:      "… (truncado; usa `hermes kanban …` en tu terminal para la salida completa)"
+    truncated_suffix:      "… (truncado; usa `ht kanban …` en tu terminal para la salida completa)"
     no_output:             "(sin salida)"
     wake:
       completed:           "completed"
@@ -227,13 +227,13 @@ gateway:
 
   restart:
     in_progress:           "⏳ El reinicio del gateway ya está en curso..."
-    restarting:            "♻ Reiniciando el gateway. Si no recibes notificación en 60 segundos, reinicia desde la consola con `hermes gateway restart`."
+    restarting:            "♻ Reiniciando el gateway. Si no recibes notificación en 60 segundos, reinicia desde la consola con `ht gateway restart`."
 
   resume:
     db_unavailable:        "Base de datos de sesiones no disponible."
     parse_error:           "⚠️ No se pudo analizar los argumentos de `/resume`: {error}.\nUsa comillas alrededor de títulos con espacios, por ejemplo: `/resume \"Proyecto A Plan\"`."
     matrix_no_named_sessions: "No se encontraron sesiones con nombre para esta sala de Matrix.\nUsa `/title Mi Sesión` para nombrar la sesión de la sala actual, `/resume --all` para listar todas las sesiones de Matrix, o `/resume --cross-room <nombre de sesión>` para cruzar límites de sala explícitamente."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume bloqueado: esta sesión con nombre no tiene sala de origen registrada, por lo que Hermes no la reanudará dentro de la sala actual por defecto. Usa `/resume --cross-room {name}` si quieres cruzar los límites de sala intencionadamente."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume bloqueado: esta sesión con nombre no tiene sala de origen registrada, por lo que HT AI Agent no la reanudará dentro de la sala actual por defecto. Usa `/resume --cross-room {name}` si quieres cruzar los límites de sala intencionadamente."
     matrix_blocked_other_room: "⚠️ Matrix /resume bloqueado: esa sesión pertenece a una sala de Matrix diferente ({room}). Usa `/resume --cross-room {name}` si quieres reanudarla aquí intencionadamente."
     matrix_cross_room_success: "⚠️ Reanudación entre salas: **{title}** reanudada dentro de la sala de Matrix **{room}**.\nLos próximos mensajes en esta sala usarán esa transcripción hasta `/reset` u otro `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
@@ -268,7 +268,7 @@ gateway:
     success:               "✅ Canal principal establecido en **{name}** (ID: {chat_id}).\nLas tareas cron y los mensajes entre plataformas se entregarán aquí."
 
   status:
-    header:                "📊 **Estado de Hermes Gateway**"
+    header:                "📊 **Estado de HT AI Agent Gateway**"
     matrix_scope_header:   "**Matrix scope:**"
     matrix_scope_room:     "  room: {room}"
     matrix_scope_room_id:  "  room_id: {room_id}"
@@ -313,7 +313,7 @@ gateway:
     topics_user_disallowed:  "Los topics de Telegram están habilitados, pero los usuarios no pueden crearlos.\n\nAbre @BotFather → elige tu bot → Bot Settings → Threads Settings, luego desactiva 'Disallow users to create new threads'.\n\nLuego envía /topic de nuevo."
     enable_failed:           "No se pudo habilitar el modo topic de Telegram: {error}"
     bound_status:            "Este topic está vinculado a:\nSesión: {label}\nID: {session_id}\n\nUsa /new para reemplazar este topic con una sesión nueva.\nPara trabajo paralelo, abre All Messages y envía un mensaje allí para crear otro topic."
-    thread_ready:            "Los topics multisesión de Telegram están habilitados.\n\nEste topic se usará como una sesión independiente de Hermes. Usa /new para reemplazar la sesión actual de este topic. Para trabajo paralelo, abre All Messages y envía un mensaje allí para crear otro topic."
+    thread_ready:            "Los topics multisesión de Telegram están habilitados.\n\nEste topic se usará como una sesión independiente de HT AI Agent. Usa /new para reemplazar la sesión actual de este topic. Para trabajo paralelo, abre All Messages y envía un mensaje allí para crear otro topic."
     untitled_session:        "Sesión sin título"
 
   undo:
@@ -322,11 +322,11 @@ gateway:
     invalid_count:         "Cantidad no válida \"{arg}\" — usa /undo o /undo N."
 
   update:
-    platform_not_messaging:  "✗ /update solo está disponible en plataformas de mensajería. Ejecuta `hermes update` desde la terminal."
+    platform_not_messaging:  "✗ /update solo está disponible en plataformas de mensajería. Ejecuta `ht update` desde la terminal."
     not_git_repo:            "✗ No es un repositorio git — no se puede actualizar."
-    hermes_cmd_not_found:    "✗ No se pudo localizar el comando `hermes`. Hermes está en ejecución, pero el comando de actualización no encontró el ejecutable en PATH ni a través del intérprete de Python actual. Intenta ejecutar `hermes update` manualmente en tu terminal."
+    hermes_cmd_not_found:    "✗ No se pudo localizar el comando `hermes`. HT AI Agent está en ejecución, pero el comando de actualización no encontró el ejecutable en PATH ni a través del intérprete de Python actual. Intenta ejecutar `ht update` manualmente en tu terminal."
     start_failed:            "✗ No se pudo iniciar la actualización: {error}"
-    starting:                "⚕ Iniciando la actualización de Hermes… Transmitiré el progreso aquí."
+    starting:                "⚕ Iniciando la actualización de HT AI Agent… Transmitiré el progreso aquí."
 
   usage:
     rate_limits:              "⏱️ **Límites de tasa:** {state}"

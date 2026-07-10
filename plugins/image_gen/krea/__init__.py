@@ -429,7 +429,7 @@ class KreaImageGenProvider(ImageGenProvider):
         headers = {
             "Authorization": f"Bearer {auth_token}",
             "Content-Type": "application/json",
-            "User-Agent": "Hermes-Agent/1.0 (krea-image-gen)",
+            "User-Agent": "HT-AI-Agent/1.0 (krea-image-gen)",
         }
         if managed is not None:
             # The gateway derives the per-generation billing idempotency
@@ -543,7 +543,7 @@ class KreaImageGenProvider(ImageGenProvider):
         job_url = f"{base_url}/jobs/{job_id}"
         poll_headers = {
             "Authorization": f"Bearer {auth_token}",
-            "User-Agent": "Hermes-Agent/1.0 (krea-image-gen)",
+            "User-Agent": "HT-AI-Agent/1.0 (krea-image-gen)",
         }
         interval = _POLL_INITIAL_INTERVAL
         deadline = time.monotonic() + _POLL_TIMEOUT_SECONDS

@@ -38,6 +38,23 @@ const DEFAULT_LAYOUT: ThemeLayout = {
 // Themes
 // ---------------------------------------------------------------------------
 
+/** HT AI Agent — deep indigo and violet, the HT brand look. */
+export const htTheme: DashboardTheme = {
+  name: "ht",
+  label: "HT Indigo",
+  description: "Deep indigo and violet — the HT AI Agent look",
+  palette: {
+    background: { hex: "#0c0a1e", alpha: 1 },
+    midground: { hex: "#d9d2ff", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(142, 124, 255, 0.32)",
+    noiseOpacity: 0.9,
+  },
+  typography: DEFAULT_TYPOGRAPHY,
+  layout: DEFAULT_LAYOUT,
+  terminalBackground: "#000000",
+};
+
 export const defaultTheme: DashboardTheme = {
   name: "default",
   label: "Hermes Teal",
@@ -229,6 +246,7 @@ export const defaultLargeTheme: DashboardTheme = {
 };
 
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
+  ht: htTheme,
   default: defaultTheme,
   "default-large": defaultLargeTheme,
   "nous-blue": nousBlueTheme,

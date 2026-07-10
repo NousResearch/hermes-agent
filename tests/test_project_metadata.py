@@ -11,6 +11,14 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
+def _project_name():
+    """The distribution name, read from pyproject so self-reference checks
+    below track the real package name rather than a hardcoded brand."""
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        return tomllib.load(handle)["project"]["name"]
+
+
 def _load_package_data():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
@@ -31,7 +39,7 @@ def test_matrix_extra_not_in_all():
     """
     optional_dependencies = _load_optional_dependencies()
 
-    assert "matrix" in optional_dependencies, "[matrix] extra must still exist for explicit `pip install hermes-agent[matrix]`"
+    assert "matrix" in optional_dependencies, f"[matrix] extra must still exist for explicit `pip install {_project_name()}[matrix]`"
     # Must NOT appear in [all] in any form — neither unconditional nor
     # platform-gated. Lazy-install handles it.
     matrix_in_all = [
@@ -77,10 +85,11 @@ def test_lazy_installable_extras_excluded_from_all():
         "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
     }
     all_extra_specs = optional_dependencies["all"]
+    name = _project_name()
     for extra in lazy_covered_extras:
         offending = [
             spec for spec in all_extra_specs
-            if f"hermes-agent[{extra}]" in spec
+            if f"{name}[{extra}]" in spec
         ]
         assert not offending, (
             f"[{extra}] is in [all] but also in LAZY_DEPS. "
@@ -192,7 +201,7 @@ def test_dev_extra_excluded_from_all():
 
     assert "dev" in optional_dependencies
     assert not any(
-        spec == "hermes-agent[dev]"
+        spec == f"{_project_name()}[dev]"
         for spec in optional_dependencies["all"]
     )
 
@@ -227,7 +236,7 @@ def test_nemo_relay_extra_uses_official_0_3_distribution():
 
     assert optional_dependencies["nemo-relay"] == ["nemo-relay==0.3"]
     assert not any(
-        spec == "hermes-agent[nemo-relay]"
+        spec == f"{_project_name()}[nemo-relay]"
         for spec in optional_dependencies["all"]
     )
 

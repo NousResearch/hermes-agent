@@ -17,12 +17,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: nousresearch/hermes-agent
+  # Placeholder registry name for the fork — update if/when a Docker Hub
+  # (or GHCR) repository is created for HT AI Agent images.
+  IMAGE_NAME: uaixo/ht-ai-agent
 
 jobs:
   # Build, test, and optionally push the image for each architecture.
   build:
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: github.repository == 'uaixo/awesome-hermes-agent'
     strategy:
       fail-fast: false
       matrix:
@@ -155,7 +157,7 @@ jobs:
   # On releases: tags :<release_tag_name>.
   # ---------------------------------------------------------------------------
   merge:
-    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+    if: github.repository == 'uaixo/awesome-hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
     runs-on: ubuntu-latest
     needs: [build]
     timeout-minutes: 10

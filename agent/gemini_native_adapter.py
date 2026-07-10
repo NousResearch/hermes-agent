@@ -901,7 +901,7 @@ class GeminiNativeClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
             "x-goog-api-key": self.api_key,
-            "User-Agent": "hermes-agent (gemini-native)",
+            "User-Agent": "ht-ai-agent (gemini-native)",
         }
         headers.update(self._default_headers)
         return headers

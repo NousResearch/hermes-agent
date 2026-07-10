@@ -47,8 +47,8 @@ one-offs; if elevation needs to change, change the token.
 | `--chrome-action-hover` | hover fill for quiet controls |
 | `--theme-primary`, `--ui-accent` | brand/accent |
 
-Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The white tile in
-`BrandMark` is the one sanctioned literal (the mark needs a fixed backdrop).
+Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The neutral tile
+in `BrandMark` is the one sanctioned literal (the mark needs a fixed backdrop).
 
 ## Buttons — one component
 
@@ -112,8 +112,9 @@ Notes:
 ## Iconography & brand
 
 - **`Codicon`** is the icon set. No mixing icon libraries inline.
-- **`BrandMark`** (`src/components/brand-mark.tsx`) is the brand glyph — the
-  `nous-girl` mark on a white tile, softly rounded, identical in light/dark.
+- **`BrandMark`** (`src/components/brand-mark.tsx`) is the brand glyph — a
+  "◆" glyph badge on a neutral tile, softly rounded, identical in light/dark
+  (placeholder until the final HT AI Agent logo asset lands).
   It replaced scattered Sparkles glyphs in updates / onboarding / about. Use it
   for hero/brand moments; don't reintroduce decorative star/sparkle icons.
 

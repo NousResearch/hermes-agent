@@ -298,12 +298,14 @@ class TestSlackNativeSlashes:
             assert isinstance(desc, str)
             assert isinstance(hint, str)
 
-    def test_hermes_catchall_is_first(self):
-        """``/hermes`` must be reserved as the first slot so the legacy
-        ``/hermes <subcommand>`` form keeps working after we add new
-        commands and hit the 50-slash cap."""
+    def test_ht_catchall_is_first(self):
+        """``/ht`` must be reserved as the first slot so the catch-all
+        ``/ht <subcommand>`` form keeps working after we add new
+        commands and hit the 50-slash cap. ``/hermes`` is routed by the
+        Slack adapter for legacy manifests but not emitted (no slot)."""
         slashes = slack_native_slashes()
-        assert slashes[0][0] == "hermes"
+        assert slashes[0][0] == "ht"
+        assert all(name != "hermes" for name, _, _ in slashes)
 
     def test_names_respect_slack_limits(self):
         for name, _desc, _hint in slack_native_slashes():

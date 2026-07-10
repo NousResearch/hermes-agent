@@ -39,7 +39,7 @@ def test_routermint_base_url_applies_user_agent_header(mock_openai):
     agent._apply_client_headers_for_base_url("https://api.routermint.com/v1")
 
     headers = agent._client_kwargs["default_headers"]
-    assert headers["User-Agent"].startswith("HermesAgent/")
+    assert headers["User-Agent"].startswith("HTAIAgent/")
 
 
 @patch("run_agent.OpenAI")
@@ -156,7 +156,7 @@ def test_gmi_base_url_picks_up_profile_user_agent(mock_openai):
     agent._apply_client_headers_for_base_url("https://api.gmi-serving.com/v1")
 
     headers = agent._client_kwargs["default_headers"]
-    assert headers["User-Agent"].startswith("HermesAgent/")
+    assert headers["User-Agent"].startswith("HTAIAgent/")
 
 
 @patch("run_agent.OpenAI")

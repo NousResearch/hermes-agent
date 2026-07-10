@@ -99,8 +99,8 @@ gateway:
     upload_failed:         "✗ Kon nie ontfoutverslag oplaai nie: {error}"
     header:                "**Ontfoutverslag opgelaai:**"
     auto_delete:           "⏱ Plakke sal outomaties oor 6 uur uitgevee word."
-    full_logs_hint:        "Vir volledige loglae, gebruik `hermes debug share` vanaf die CLI."
-    share_hint:            "Deel hierdie skakels met die Hermes-span vir ondersteuning."
+    full_logs_hint:        "Vir volledige loglae, gebruik `ht debug share` vanaf die CLI."
+    share_hint:            "Deel hierdie skakels met die HT AI Agent-onderhouers vir ondersteuning."
 
   deny:
     stale:                 "❌ Opdrag geweier (goedkeuring was verouderd)."
@@ -139,7 +139,7 @@ gateway:
     set:                   "⊙ Doelwit gestel ({budget}-beurt-begroting): {goal}\nEk sal aanhou werk totdat die doelwit klaar is, jy dit pouseer/verwyder, of die begroting opgebruik is.\nBeheer: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
-    header:                "📖 **Hermes-opdragte**\n"
+    header:                "📖 **HT AI Agent-opdragte**\n"
     skill_header:          "\n⚡ **Vaardigheidsopdragte** ({count} aktief):"
     more_use_commands:     "\n... en nog {count}. Gebruik `/commands` vir die volledige bladsy-lys."
 
@@ -150,7 +150,7 @@ gateway:
   kanban:
     error_prefix:          "⚠ kanban-fout: {error}"
     subscribed_suffix:     "(ingeteken — jy sal in kennis gestel word wanneer {task_id} voltooi of vasval)"
-    truncated_suffix:      "… (afgekap; gebruik `hermes kanban …` in jou terminale vir volle uitvoer)"
+    truncated_suffix:      "… (afgekap; gebruik `ht kanban …` in jou terminale vir volle uitvoer)"
     no_output:             "(geen uitvoer)"
     wake:
       completed:           "completed"
@@ -227,7 +227,7 @@ gateway:
 
   restart:
     in_progress:           "⏳ Gateway-herbegin reeds aan die gang..."
-    restarting:            "♻ Herbegin van gateway. As jy nie binne 60 sekondes in kennis gestel word nie, herbegin vanaf die konsole met `hermes gateway restart`."
+    restarting:            "♻ Herbegin van gateway. As jy nie binne 60 sekondes in kennis gestel word nie, herbegin vanaf die konsole met `ht gateway restart`."
 
   resume:
     db_unavailable:        "Sessie-databasis is nie beskikbaar nie."
@@ -235,7 +235,7 @@ gateway:
 Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "No named sessions found for this Matrix room.
 Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so HT AI Agent will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
@@ -271,7 +271,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     success:               "✅ Tuiste-kanaal gestel op **{name}** (ID: {chat_id}).\nKron-take en kruisplatform-boodskappe sal hier afgelewer word."
 
   status:
-    header:                "📊 **Hermes Gateway Status**"
+    header:                "📊 **HT AI Agent Gateway Status**"
     matrix_scope_header:   "**Matrix scope:**"
     matrix_scope_room:     "  room: {room}"
     matrix_scope_room_id:  "  room_id: {room_id}"
@@ -316,7 +316,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     topics_user_disallowed:  "Telegram-onderwerpe is geaktiveer, maar gebruikers mag nie onderwerpe skep nie.\n\nOpen @BotFather → kies jou bot → Bot Settings → Threads Settings, en skakel dan 'Disallow users to create new threads' af.\n\nStuur dan weer /topic."
     enable_failed:           "Kon nie Telegram-onderwerpmodus aktiveer nie: {error}"
     bound_status:            "Hierdie onderwerp is gekoppel aan:\nSessie: {label}\nID: {session_id}\n\nGebruik /new om hierdie onderwerp met 'n vars sessie te vervang.\nVir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n ander onderwerp te skep."
-    thread_ready:            "Telegram multi-sessie-onderwerpe is geaktiveer.\n\nHierdie onderwerp sal as 'n onafhanklike Hermes-sessie gebruik word. Gebruik /new om hierdie onderwerp se huidige sessie te vervang. Vir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n ander onderwerp te skep."
+    thread_ready:            "Telegram multi-sessie-onderwerpe is geaktiveer.\n\nHierdie onderwerp sal as 'n onafhanklike HT AI Agent-sessie gebruik word. Gebruik /new om hierdie onderwerp se huidige sessie te vervang. Vir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n ander onderwerp te skep."
     untitled_session:        "Sessie sonder titel"
 
   undo:
@@ -325,11 +325,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_count:         "Ongeldige getal \"{arg}\" — gebruik /undo of /undo N."
 
   update:
-    platform_not_messaging:  "✗ /update is slegs beskikbaar vanaf boodskapplatforms. Voer `hermes update` vanaf die terminale uit."
+    platform_not_messaging:  "✗ /update is slegs beskikbaar vanaf boodskapplatforms. Voer `ht update` vanaf die terminale uit."
     not_git_repo:            "✗ Nie 'n git-bewaarplek nie — kan nie opdateer nie."
-    hermes_cmd_not_found:    "✗ Kon nie die `hermes`-opdrag vind nie. Hermes loop, maar die opdateeropdrag kon nie die uitvoerbare lêer op PATH of via die huidige Python-vertolker vind nie. Probeer `hermes update` met die hand in jou terminale uitvoer."
+    hermes_cmd_not_found:    "✗ Kon nie die `hermes`-opdrag vind nie. HT AI Agent loop, maar die opdateeropdrag kon nie die uitvoerbare lêer op PATH of via die huidige Python-vertolker vind nie. Probeer `ht update` met die hand in jou terminale uitvoer."
     start_failed:            "✗ Kon nie opdatering begin nie: {error}"
-    starting:                "⚕ Begin Hermes-opdatering… Ek sal vordering hier stroom."
+    starting:                "⚕ Begin HT AI Agent-opdatering… Ek sal vordering hier stroom."
 
   usage:
     rate_limits:              "⏱️ **Tariefperke:** {state}"

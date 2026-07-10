@@ -90,7 +90,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError(
             "aiohttp is required for `hermes proxy`. Install with: "
-            "pip install 'hermes-agent[messaging]' or `pip install aiohttp`."
+            "pip install 'ht-ai-agent[messaging]' or `pip install aiohttp`."
         )
 
     app = web.Application(client_max_size=MAX_REQUEST_BYTES)
@@ -257,7 +257,7 @@ async def run_server(
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError(
             "aiohttp is required for `hermes proxy`. Install with: "
-            "pip install 'hermes-agent[messaging]' or `pip install aiohttp`."
+            "pip install 'ht-ai-agent[messaging]' or `pip install aiohttp`."
         )
 
     app = create_app(adapter)

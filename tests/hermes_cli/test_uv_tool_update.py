@@ -60,7 +60,7 @@ class TestIsUvToolInstall:
     def test_returns_true_when_sys_prefix_matches_uv_tool_layout(self):
         from hermes_cli import config
 
-        with patch.object(config.sys, "prefix", "/home/user/.local/share/uv/tools/hermes-agent"):
+        with patch.object(config.sys, "prefix", "/home/user/.local/share/uv/tools/ht-ai-agent"):
             assert config.is_uv_tool_install() is True
 
     def test_returns_true_when_sys_executable_matches_uv_tool_layout(self):
@@ -71,7 +71,7 @@ class TestIsUvToolInstall:
              patch.object(
                  config.sys,
                  "executable",
-                 "/home/user/.local/share/uv/tools/hermes-agent/bin/python",
+                 "/home/user/.local/share/uv/tools/ht-ai-agent/bin/python",
              ):
             assert config.is_uv_tool_install() is True
 
@@ -104,7 +104,7 @@ class TestIsUvToolInstall:
         from hermes_cli import config
 
         with patch.object(
-            config.sys, "prefix", "/HOME/USER/.local/share/UV/Tools/hermes-agent"
+            config.sys, "prefix", "/HOME/USER/.local/share/UV/Tools/ht-ai-agent"
         ):
             assert config.is_uv_tool_install() is True
 
@@ -128,7 +128,7 @@ class TestRecommendedUpdateCommandForUvTool:
         with patch("shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(config, "is_uv_tool_install", return_value=True):
             cmd = config.recommended_update_command_for_method("pip")
-            assert cmd == "uv tool upgrade hermes-agent"
+            assert cmd == "uv tool upgrade ht-ai-agent"
 
     def test_uv_tool_install_recommends_uv_tool_upgrade_even_without_uv_on_path(self):
         """Recommendation reflects the *install method*, not whether ``uv`` is
@@ -138,7 +138,7 @@ class TestRecommendedUpdateCommandForUvTool:
         with patch("shutil.which", return_value=None), \
              patch.object(config, "is_uv_tool_install", return_value=True):
             cmd = config.recommended_update_command_for_method("pip")
-            assert cmd == "uv tool upgrade hermes-agent"
+            assert cmd == "uv tool upgrade ht-ai-agent"
 
     def test_uv_pip_install_keeps_legacy_recommendation(self):
         """Existing behavior: uv is on PATH but Hermes is a regular pip install."""
@@ -147,7 +147,7 @@ class TestRecommendedUpdateCommandForUvTool:
         with patch("shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(config, "is_uv_tool_install", return_value=False):
             cmd = config.recommended_update_command_for_method("pip")
-            assert cmd == "uv pip install --upgrade hermes-agent"
+            assert cmd == "uv pip install --upgrade ht-ai-agent"
 
     def test_no_uv_falls_back_to_plain_pip(self):
         from hermes_cli import config
@@ -155,7 +155,7 @@ class TestRecommendedUpdateCommandForUvTool:
         with patch("shutil.which", return_value=None), \
              patch.object(config, "is_uv_tool_install", return_value=False):
             cmd = config.recommended_update_command_for_method("pip")
-            assert cmd == "pip install --upgrade hermes-agent"
+            assert cmd == "pip install --upgrade ht-ai-agent"
 
     def test_recommendation_does_not_spawn_subprocess(self):
         """Computing the recommendation string must be cheap — no ``uv tool list``
@@ -170,7 +170,7 @@ class TestRecommendedUpdateCommandForUvTool:
              patch("subprocess.run") as mock_run:
             cmd = config.recommended_update_command_for_method("pip")
             mock_run.assert_not_called()
-            assert cmd == "uv pip install --upgrade hermes-agent"
+            assert cmd == "uv pip install --upgrade ht-ai-agent"
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +189,7 @@ class TestCmdUpdatePipUsesUvTool:
              patch("hermes_cli.config.is_uv_tool_install", return_value=True):
             _cmd_update_pip(SimpleNamespace())
 
-        assert mock_run.call_args[0][0] == ["/usr/local/bin/uv", "tool", "upgrade", "hermes-agent"]
+        assert mock_run.call_args[0][0] == ["/usr/local/bin/uv", "tool", "upgrade", "ht-ai-agent"]
 
     @patch("subprocess.run")
     def test_runs_uv_pip_install_when_not_uv_tool(self, mock_run):
@@ -206,7 +206,7 @@ class TestCmdUpdatePipUsesUvTool:
             "pip",
             "install",
             "--upgrade",
-            "hermes-agent",
+            "ht-ai-agent",
         ]
 
     @patch("subprocess.run")
@@ -219,7 +219,7 @@ class TestCmdUpdatePipUsesUvTool:
             _cmd_update_pip(SimpleNamespace())
 
         cmd = mock_run.call_args[0][0]
-        assert cmd[1:] == ["-m", "pip", "install", "--upgrade", "hermes-agent"]
+        assert cmd[1:] == ["-m", "pip", "install", "--upgrade", "ht-ai-agent"]
 
     @patch("subprocess.run")
     def test_exits_nonzero_on_subprocess_failure(self, mock_run):
@@ -277,7 +277,7 @@ class TestCmdUpdatePipInstallLayouts:
              patch("hermes_cli.config.is_uv_tool_install", return_value=False):
             hm._cmd_update_pip(SimpleNamespace())
 
-        assert mock_run.call_args[0][0] == ["/usr/bin/pipx", "upgrade", "hermes-agent"]
+        assert mock_run.call_args[0][0] == ["/usr/bin/pipx", "upgrade", "ht-ai-agent"]
         # pipx upgrade ignores VIRTUAL_ENV; we must not set it.
         assert "env" not in mock_run.call_args.kwargs
 
@@ -301,7 +301,7 @@ class TestCmdUpdatePipInstallLayouts:
 
         # prefix != base_prefix, so this is treated as a venv -> overlay, no --system.
         assert mock_run.call_args[0][0] == [
-            "/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent",
+            "/usr/bin/uv", "pip", "install", "--upgrade", "ht-ai-agent",
         ]
         assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"].endswith("hermes-agent")
 
@@ -319,7 +319,7 @@ class TestCmdUpdatePipInstallLayouts:
             hm._cmd_update_pip(SimpleNamespace())
 
         assert mock_run.call_args[0][0] == [
-            "/usr/bin/uv", "pip", "install", "--system", "--upgrade", "hermes-agent",
+            "/usr/bin/uv", "pip", "install", "--system", "--upgrade", "ht-ai-agent",
         ]
         assert "env" not in mock_run.call_args.kwargs
 
@@ -338,5 +338,5 @@ class TestCmdUpdatePipInstallLayouts:
 
         cmd = mock_run.call_args[0][0]
         assert "--system" not in cmd
-        assert cmd == ["/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent"]
+        assert cmd == ["/usr/bin/uv", "pip", "install", "--upgrade", "ht-ai-agent"]
         assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"] == "/home/u/.hermes/hermes-agent/venv"

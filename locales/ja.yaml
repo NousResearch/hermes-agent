@@ -99,8 +99,8 @@ gateway:
     upload_failed:         "✗ デバッグレポートのアップロードに失敗しました: {error}"
     header:                "**デバッグレポートをアップロードしました:**"
     auto_delete:           "⏱ ペーストは 6 時間後に自動削除されます。"
-    full_logs_hint:        "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
-    share_hint:            "サポートを受けるには、このリンクを Hermes チームに共有してください。"
+    full_logs_hint:        "完全なログのアップロードには、CLI から `ht debug share` を使用してください。"
+    share_hint:            "サポートを受けるには、このリンクを HT AI Agent のメンテナーに共有してください。"
 
   deny:
     stale:                 "❌ コマンドを拒否しました (承認は期限切れでした)。"
@@ -139,7 +139,7 @@ gateway:
     set:                   "⊙ 目標を設定しました ({budget} ターンの予算): {goal}\n目標が完了するか、一時停止/解除されるか、予算が尽きるまで作業を続けます。\nコントロール: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
-    header:                "📖 **Hermes コマンド**\n"
+    header:                "📖 **HT AI Agent コマンド**\n"
     skill_header:          "\n⚡ **スキルコマンド** ({count} 件アクティブ):"
     more_use_commands:     "\n... 他に {count} 件。完全なページ分けリストは `/commands` で確認してください。"
 
@@ -150,7 +150,7 @@ gateway:
   kanban:
     error_prefix:          "⚠ kanban エラー: {error}"
     subscribed_suffix:     "(購読しました — {task_id} が完了またはブロックされたときに通知されます)"
-    truncated_suffix:      "… (切り詰めました; 完全な出力にはターミナルで `hermes kanban …` を使用してください)"
+    truncated_suffix:      "… (切り詰めました; 完全な出力にはターミナルで `ht kanban …` を使用してください)"
     no_output:             "(出力なし)"
     wake:
       completed:           "completed"
@@ -227,7 +227,7 @@ gateway:
 
   restart:
     in_progress:           "⏳ ゲートウェイの再起動はすでに進行中です..."
-    restarting:            "♻ ゲートウェイを再起動しています。60 秒以内に通知が届かない場合は、コンソールで `hermes gateway restart` を実行してください。"
+    restarting:            "♻ ゲートウェイを再起動しています。60 秒以内に通知が届かない場合は、コンソールで `ht gateway restart` を実行してください。"
 
   resume:
     db_unavailable:        "セッションデータベースは利用できません。"
@@ -235,7 +235,7 @@ gateway:
 Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "No named sessions found for this Matrix room.
 Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so HT AI Agent will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
@@ -271,7 +271,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     success:               "✅ ホームチャンネルを **{name}** (ID: {chat_id}) に設定しました。\nCron ジョブとプラットフォーム間メッセージはここに配信されます。"
 
   status:
-    header:                "📊 **Hermes ゲートウェイ状態**"
+    header:                "📊 **HT AI Agent ゲートウェイ状態**"
     matrix_scope_header:   "**Matrix scope:**"
     matrix_scope_room:     "  room: {room}"
     matrix_scope_room_id:  "  room_id: {room_id}"
@@ -316,7 +316,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     topics_user_disallowed:  "Telegram topics は有効ですが、ユーザーは topic を作成できません。\n\n@BotFather → 自分の bot → Bot Settings → Threads Settings を開き、'Disallow users to create new threads' をオフにしてください。\n\nそして /topic をもう一度送信してください。"
     enable_failed:           "Telegram topic モードの有効化に失敗しました: {error}"
     bound_status:            "この topic は次にリンクされています:\nセッション: {label}\nID: {session_id}\n\nこの topic を新しいセッションに置き換えるには /new を使用してください。\n並行作業には、All Messages を開いてメッセージを送信し、別の topic を作成してください。"
-    thread_ready:            "Telegram のマルチセッション topics が有効です。\n\nこの topic は独立した Hermes セッションとして使用されます。この topic の現在のセッションを置き換えるには /new を使用してください。並行作業には、All Messages を開いてメッセージを送信し、別の topic を作成してください。"
+    thread_ready:            "Telegram のマルチセッション topics が有効です。\n\nこの topic は独立した HT AI Agent セッションとして使用されます。この topic の現在のセッションを置き換えるには /new を使用してください。並行作業には、All Messages を開いてメッセージを送信し、別の topic を作成してください。"
     untitled_session:        "無題のセッション"
 
   undo:
@@ -325,11 +325,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_count:         "無効な数値「{arg}」— /undo または /undo N を使用してください。"
 
   update:
-    platform_not_messaging:  "✗ /update はメッセージングプラットフォームでのみ利用可能です。ターミナルで `hermes update` を実行してください。"
+    platform_not_messaging:  "✗ /update はメッセージングプラットフォームでのみ利用可能です。ターミナルで `ht update` を実行してください。"
     not_git_repo:            "✗ Git リポジトリではありません — 更新できません。"
-    hermes_cmd_not_found:    "✗ `hermes` コマンドが見つかりません。Hermes は実行中ですが、更新コマンドは PATH 上にも現在の Python インタープリタ経由でも実行可能ファイルを見つけられませんでした。ターミナルで `hermes update` を手動で実行してみてください。"
+    hermes_cmd_not_found:    "✗ `hermes` コマンドが見つかりません。HT AI Agent は実行中ですが、更新コマンドは PATH 上にも現在の Python インタープリタ経由でも実行可能ファイルを見つけられませんでした。ターミナルで `ht update` を手動で実行してみてください。"
     start_failed:            "✗ 更新の開始に失敗しました: {error}"
-    starting:                "⚕ Hermes の更新を開始しています… 進捗をここにストリーミングします。"
+    starting:                "⚕ HT AI Agent の更新を開始しています… 進捗をここにストリーミングします。"
 
   usage:
     rate_limits:              "⏱️ **レート制限:** {state}"

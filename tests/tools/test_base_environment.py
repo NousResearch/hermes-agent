@@ -447,3 +447,56 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestDeletedCwdFallback:
+    """Test CWD fallback when the directory no longer exists. Issue #62169."""
+
+    def test_wrap_command_fallback_to_home_on_deleted_cwd(self, monkeypatch, tmp_path):
+        """When CWD is deleted, fallback to $HOME then / instead of exit 126."""
+        import tempfile
+
+        env = _TestableEnv(cwd=str(tmp_path), timeout=10)
+        env._snapshot_ready = True
+
+        # Mock $HOME to a temp dir so we can verify the fallback
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        # Build the wrapped command
+        wrapped = env._wrap_command("echo hello", str(tmp_path))
+
+        # The fallback should be present: try CWD, fall back to $HOME, then /
+        assert "builtin cd --" in wrapped
+        # The fallback chain should include $HOME and /
+        assert '"$HOME"' in wrapped
+        assert "builtin cd -- /" in wrapped
+        # The final exit 126 should only trigger if ALL three fail
+        assert "|| exit 126" in wrapped
+
+    def test_wrap_command_success_when_cwd_exists(self, monkeypatch, tmp_path):
+        """When CWD exists, the command should succeed without fallback."""
+        env = _TestableEnv(cwd=str(tmp_path), timeout=10)
+        env._snapshot_ready = True
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        wrapped = env._wrap_command("echo hello", str(tmp_path))
+
+        # The first cd should target the actual CWD
+        assert str(tmp_path) in wrapped or shlex.quote(str(tmp_path)) in wrapped
+        # The fallback chain is present but only activates if first cd fails
+        assert "builtin cd --" in wrapped
+
+    def test_wrap_command_quotes_cwd_with_spaces(self):
+        """CWD with spaces should be properly quoted in all cd attempts."""
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        cwd_with_spaces = "/tmp/my dir with spaces"
+        wrapped = env._wrap_command("echo hello", cwd_with_spaces)
+
+        # The primary CWD should be quoted
+        assert "dir with spaces" in wrapped

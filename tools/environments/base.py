@@ -498,7 +498,14 @@ class BaseEnvironment(ABC):
         # ``$HOME`` so suffixes with spaces remain a single shell word.
         quoted_cwd = self._quote_cwd_for_cd(cwd)
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
-        parts.append(f"builtin cd -- {quoted_cwd} || exit 126")
+        # Fall back to $HOME then / if the CWD no longer exists (e.g., worktree cleanup,
+        # npm install restructuring, rm -rf on workspace). Without this, a deleted CWD
+        # causes exit 126 on every subsequent command, permanently bricking the session.
+        # Issue #62169.
+        parts.append(
+            f"builtin cd -- {quoted_cwd} 2>/dev/null || "
+            "{ builtin cd -- \"$HOME\" 2>/dev/null || builtin cd -- /; } || exit 126"
+        )
 
         # Run the actual command
         parts.append(f"eval '{escaped}'")

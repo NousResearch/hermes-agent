@@ -323,6 +323,19 @@ def _format_clarify_question_html(question: str) -> str:
     return "".join(parts)
 
 
+def _telegram_message_text_html(message: Any) -> str:
+    """Return existing Telegram text with its formatting entities preserved."""
+    if message is None:
+        return ""
+    try:
+        formatted = message.text_html
+    except Exception:
+        formatted = None
+    if isinstance(formatted, str):
+        return formatted
+    return _html.escape(getattr(message, "text", "") or "")
+
+
 def _clarify_choices_are_numeric_buttons(choices: Optional[list]) -> bool:
     if not choices:
         return False
@@ -5312,7 +5325,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             await query.edit_message_text(
                 text=(
-                    f"❓ {_html.escape(query.message.text or '')}\n\n"
+                    f"{_telegram_message_text_html(query.message)}\n\n"
                     "<i>⚠️ This question expired or the session reset — please /retry.</i>"
                 ),
                 parse_mode=ParseMode.HTML,
@@ -5575,7 +5588,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="✏️ Type your answer in the chat.")
                     try:
                         await query.edit_message_text(
-                            text=f"❓ {query.message.text or ''}\n\n<i>Awaiting typed response from {_html.escape(user_display)}…</i>",
+                            text=(
+                                f"{_telegram_message_text_html(query.message)}\n\n"
+                                f"<i>Awaiting typed response from {_html.escape(user_display)}…</i>"
+                            ),
                             parse_mode=ParseMode.HTML,
                             reply_markup=None,
                         )
@@ -5621,7 +5637,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text=f"✓ {resolved_text[:60]}")
                     try:
                         await query.edit_message_text(
-                            text=f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
+                            text=(
+                                f"{_telegram_message_text_html(query.message)}\n\n"
+                                f"<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}"
+                            ),
                             parse_mode=ParseMode.HTML,
                             reply_markup=None,
                         )

@@ -1155,12 +1155,6 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     platforms and the SSE/API stream fixed in #50767). Reuse the shared gateway
     seam so all approval transports redact consistently."""
     payload = dict(data or {})
-    # tools.approval's internal queue is FIFO and approval.respond does not
-    # require a request id, but downstream presentation adapters (including the
-    # Mini App Desktop-parity bridge) need a stable non-empty id to render a
-    # clickable card instead of dropping the event as malformed.
-    if not str(payload.get("id") or payload.get("approval_id") or "").strip():
-        payload["id"] = f"approval-{uuid.uuid4().hex[:12]}"
     if "command" in payload:
         from gateway.run import _redact_approval_command
 

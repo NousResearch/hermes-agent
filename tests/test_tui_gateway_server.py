@@ -757,7 +757,12 @@ def test_load_enabled_toolsets_folds_project_into_focus_posture(monkeypatch):
 
     monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
 
-    assert server._load_enabled_toolsets() == ["coding", "figma", "project"]
+    assert server._load_enabled_toolsets() == [
+        "browser_action",
+        "coding",
+        "figma",
+        "project",
+    ]
 
 
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
@@ -779,10 +784,15 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    # Sorted: ["kanban", "memory", "project"]. `kanban` is auto-recovered by
-    # _get_platform_tools (a non-configurable platform toolset in hermes-cli's
-    # universe); `project` is GUI-only, folded in by _load_enabled_toolsets.
-    assert server._load_enabled_toolsets() == ["kanban", "memory", "project"]
+    # `kanban` is auto-recovered by _get_platform_tools (a non-configurable
+    # platform toolset in hermes-cli's universe); `browser_action` and `project`
+    # are GUI-only and folded in by _load_enabled_toolsets.
+    assert server._load_enabled_toolsets() == [
+        "browser_action",
+        "kanban",
+        "memory",
+        "project",
+    ]
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -803,7 +813,12 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    assert server._load_enabled_toolsets() == ["kanban", "memory", "project"]
+    assert server._load_enabled_toolsets() == [
+        "browser_action",
+        "kanban",
+        "memory",
+        "project",
+    ]
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 
@@ -4834,7 +4849,8 @@ def test_browser_action_request_rejects_restricted_and_unsupported_actions():
     assert unsupported["error"]["message"] == "unsupported_action"
 
 
-def test_browser_action_request_rejects_duplicate_and_caps_pending():
+def test_browser_action_request_rejects_duplicate_and_caps_pending(monkeypatch):
+    monkeypatch.setattr(server.time, "time", lambda: 1000.0)
     server._sessions["sid"] = _session(
         browser_action_requests={
             "existing": {"status": "requested", "created_at": 1000, "action": {"type": "scroll"}},
@@ -4903,7 +4919,8 @@ def test_browser_action_result_expires_stale_pending_requests(monkeypatch):
     assert session["browser_action_results"]["old"] == {"ok": False, "reason": "expired"}
 
 
-def test_browser_action_result_records_denied_and_blocked_statuses():
+def test_browser_action_result_records_denied_and_blocked_statuses(monkeypatch):
+    monkeypatch.setattr(server.time, "time", lambda: 1000.0)
     server._sessions["sid"] = _session(
         browser_action_requests={
             "deny": {"status": "requested", "created_at": 1000, "action": {"type": "click"}},

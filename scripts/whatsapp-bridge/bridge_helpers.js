@@ -157,8 +157,11 @@ export function pollUpdateForAggregation({
   return null;
 }
 
-export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
+export function buildTextSendPayload(text, { replyTo, messageStore, mentions } = {}) {
   const content = { text };
+  if (Array.isArray(mentions) && mentions.length > 0) {
+    content.mentions = mentions;
+  }
   const options = {};
   const quoted = messageStore?.get(replyTo);
   if (quoted?.key && quoted?.message) {

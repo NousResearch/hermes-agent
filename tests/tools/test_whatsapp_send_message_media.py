@@ -41,10 +41,8 @@ from plugins.platforms.whatsapp.adapter import _bridge_media_type, _standalone_s
         ("a.wav", False, False, "audio"),
         ("a.pdf", False, False, "document"),
         ("a.zip", False, False, "document"),
-        # force_document overrides everything
         ("a.png", False, True, "document"),
         ("a.mp4", False, True, "document"),
-        # is_voice wins over a video extension
         ("a.mp4", True, False, "audio"),
     ],
 )
@@ -122,12 +120,10 @@ def test_text_plus_mixed_media_routes_native_types():
                 )
             )
         assert res["success"] is True
-        # text first, then three media uploads in order
         assert calls[0][0].endswith("/send")
         assert calls[0][1]["message"] == "hello"
         media_types = [c[1]["mediaType"] for c in calls if c[0].endswith("/send-media")]
         assert media_types == ["image", "video", "audio"]
-        # chat id normalized to a WhatsApp JID
         assert "@" in calls[0][1]["chatId"]
     finally:
         for p in (img, vid, voice):
@@ -148,10 +144,37 @@ def test_missing_captioned_file_falls_back_to_text():
                 caption="floor plan",
             )
         )
-    # The send still surfaces the missing-file error...
     assert "error" in res
     assert "not found" in res["error"]
-    # ...but the caption text was delivered on its own first.
     assert len(calls) == 1
     assert calls[0][0].endswith("/send")
     assert calls[0][1]["message"] == "floor plan"
+
+
+def test_standalone_send_forwards_mentions_on_text_send():
+    session_ctx, calls = _session_with([_resp(200, {"messageId": "t1"})])
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        res = asyncio.run(
+            _standalone_send(
+                _pconfig(),
+                "12345",
+                "hey team",
+                mentions=["67890", "13579@s.whatsapp.net"],
+            )
+        )
+
+    assert res["success"] is True
+    assert len(calls) == 1 and calls[0][0].endswith("/send")
+    assert calls[0][1]["mentions"] == [
+        "67890@s.whatsapp.net",
+        "13579@s.whatsapp.net",
+    ]
+
+
+def test_standalone_send_without_mentions_omits_field():
+    session_ctx, calls = _session_with([_resp(200, {"messageId": "t1"})])
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        res = asyncio.run(_standalone_send(_pconfig(), "12345", "plain"))
+
+    assert res["success"] is True
+    assert "mentions" not in calls[0][1]

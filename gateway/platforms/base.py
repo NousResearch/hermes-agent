@@ -15,6 +15,7 @@ import re
 import socket as _socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -128,6 +129,22 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
             return is_voice
         return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
     return True
+
+
+def build_auto_tts_output_path(platform) -> str:
+    """Return a unique temp path for gateway auto-TTS output.
+
+    The TTS tool may rewrite the suffix for explicit Telegram auto-TTS
+    depending on provider capability. Start from MP3 so conversion-based
+    providers do not skip their Opus conversion path.
+    """
+    audio_path = os.path.join(
+        tempfile.gettempdir(),
+        "hermes_voice",
+        f"tts_reply_{uuid.uuid4().hex[:12]}.mp3",
+    )
+    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+    return audio_path
 
 
 def utf16_len(s: str) -> int:
@@ -4954,6 +4971,8 @@ class BasePlatformAdapter(ABC):
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
+                _tts_requested_path = None
+                _tts_attempted_path = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
@@ -4965,16 +4984,24 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            _tts_requested_path = build_auto_tts_output_path(self.platform)
                             tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                                text_to_speech_tool,
+                                text=speech_text,
+                                output_path=_tts_requested_path,
+                                target_platform=self.platform,
+                                prefer_voice=True,
                             )
                             tts_data = _json.loads(tts_result_str)
-                            _tts_path = tts_data.get("file_path")
+                            _tts_attempted_path = tts_data.get("attempted_file_path")
+                            if tts_data.get("success", True):
+                                _tts_path = tts_data.get("file_path") or _tts_requested_path
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
+                _tts_cleanup_paths = {_tts_requested_path, _tts_path, _tts_attempted_path} - {None}
                 if _tts_path and Path(_tts_path).exists():
                     try:
                         telegram_tts_caption = None
@@ -4994,8 +5021,15 @@ class BasePlatformAdapter(ABC):
                             telegram_tts_caption and getattr(tts_result, "success", False)
                         )
                     finally:
+                        for _cleanup_path in _tts_cleanup_paths:
+                            try:
+                                os.remove(_cleanup_path)
+                            except OSError:
+                                pass
+                elif _tts_cleanup_paths:
+                    for _cleanup_path in _tts_cleanup_paths:
                         try:
-                            os.remove(_tts_path)
+                            os.remove(_cleanup_path)
                         except OSError:
                             pass
 

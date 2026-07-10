@@ -398,11 +398,34 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "kittentts",
     "piper",
 })
+NATIVE_OPUS_TTS_PROVIDERS = frozenset({"elevenlabs", "openai", "mistral", "gemini"})
+CONVERSION_OPUS_TTS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
 DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
 COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac"})
 DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 5000
+
+
+def _normalize_platform_name(platform: Optional[str]) -> str:
+    value = getattr(platform, "value", platform)
+    return str(value or "").strip().lower()
+
+
+def _auto_tts_effective_output_path(path: Path, provider: str) -> Path:
+    """Align an explicit auto-TTS path with the provider's Opus strategy."""
+    if provider in NATIVE_OPUS_TTS_PROVIDERS:
+        return path.with_suffix(".ogg")
+    if provider in CONVERSION_OPUS_TTS_PROVIDERS:
+        return path.with_suffix(".mp3")
+    return path
+
+
+def _tts_error_json(error: str, *, attempted_file_path: Optional[str] = None) -> str:
+    payload: Dict[str, Any] = {"success": False, "error": error}
+    if attempted_file_path:
+        payload["attempted_file_path"] = str(attempted_file_path)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _get_provider_section(tts_config: Dict[str, Any], name: str) -> Dict[str, Any]:
@@ -2153,6 +2176,9 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
+    *,
+    target_platform: Optional[str] = None,
+    prefer_voice: Optional[bool] = None,
 ) -> str:
     """
     Convert text to speech audio.
@@ -2167,6 +2193,10 @@ def text_to_speech_tool(
     Args:
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+        target_platform: Internal gateway hint for automatic TTS delivery.
+            Not exposed in the model tool schema.
+        prefer_voice: Internal gateway hint to prefer native voice-bubble
+            output when the target platform supports it.
 
     Returns:
         str: JSON result with success, file_path, and optionally MEDIA tag.
@@ -2193,13 +2223,19 @@ def text_to_speech_tool(
         )
         text = text[:max_len]
 
-    # Detect platform from gateway env var to choose the best output format.
-    # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
-    # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
-    # and needs ffmpeg for conversion.
+    # Detect platform from an explicit gateway hint first, falling back to the
+    # historical ambient session context. Manual custom output paths are only
+    # rewritten when target_platform is explicit, preserving existing CLI/tool
+    # semantics when the hint is absent.
     from gateway.session_context import get_session_env
-    platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    explicit_target_platform = target_platform is not None
+    platform = (
+        _normalize_platform_name(target_platform)
+        if explicit_target_platform
+        else get_session_env("HERMES_SESSION_PLATFORM", "").lower()
+    )
+    prefer_voice = True if prefer_voice is None else bool(prefer_voice)
+    want_opus = platform == "telegram" and prefer_voice
 
     # Determine output path
     if output_path:
@@ -2229,6 +2265,8 @@ def text_to_speech_tool(
             file_path = _configured_command_tts_output_path(
                 file_path, command_provider_config
             )
+        elif explicit_target_platform and want_opus:
+            file_path = _auto_tts_effective_output_path(file_path, provider)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
@@ -2238,7 +2276,7 @@ def text_to_speech_tool(
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+        elif want_opus and provider in NATIVE_OPUS_TTS_PROVIDERS:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -2276,10 +2314,10 @@ def text_to_speech_tool(
             try:
                 _import_elevenlabs()
             except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "ElevenLabs provider selected but 'elevenlabs' package not installed. Run: pip install elevenlabs"
-                }, ensure_ascii=False)
+                return _tts_error_json(
+                    "ElevenLabs provider selected but 'elevenlabs' package not installed. Run: pip install elevenlabs",
+                    attempted_file_path=file_str,
+                )
             logger.info("Generating speech with ElevenLabs...")
             _generate_elevenlabs(text, file_str, tts_config)
 
@@ -2287,10 +2325,10 @@ def text_to_speech_tool(
             try:
                 _import_openai_client()
             except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "OpenAI provider selected but 'openai' package not installed."
-                }, ensure_ascii=False)
+                return _tts_error_json(
+                    "OpenAI provider selected but 'openai' package not installed.",
+                    attempted_file_path=file_str,
+                )
             logger.info("Generating speech with OpenAI TTS...")
             _generate_openai_tts(text, file_str, tts_config)
 
@@ -2306,11 +2344,11 @@ def text_to_speech_tool(
             try:
                 _import_mistral_client()
             except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "Mistral provider selected but 'mistralai' package not installed. "
-                             "Run: pip install 'hermes-agent[mistral]'"
-                }, ensure_ascii=False)
+                return _tts_error_json(
+                    "Mistral provider selected but 'mistralai' package not installed. "
+                    "Run: pip install 'hermes-agent[mistral]'",
+                    attempted_file_path=file_str,
+                )
             logger.info("Generating speech with Mistral Voxtral TTS...")
             _generate_mistral_tts(text, file_str, tts_config)
 
@@ -2320,11 +2358,11 @@ def text_to_speech_tool(
 
         elif provider == "neutts":
             if not _check_neutts_available():
-                return json.dumps({
-                    "success": False,
-                    "error": "NeuTTS provider selected but neutts is not installed. "
-                             "Run hermes setup and choose NeuTTS, or install espeak-ng and run python -m pip install -U neutts[all]."
-                }, ensure_ascii=False)
+                return _tts_error_json(
+                    "NeuTTS provider selected but neutts is not installed. "
+                    "Run hermes setup and choose NeuTTS, or install espeak-ng and run python -m pip install -U neutts[all].",
+                    attempted_file_path=file_str,
+                )
             logger.info("Generating speech with NeuTTS (local)...")
             _generate_neutts(text, file_str, tts_config)
 
@@ -2332,12 +2370,12 @@ def text_to_speech_tool(
             try:
                 _import_kittentts()
             except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "KittenTTS provider selected but 'kittentts' package not installed. "
-                             "Run 'hermes setup tts' and choose KittenTTS, or install manually: "
-                             "pip install https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"
-                }, ensure_ascii=False)
+                return _tts_error_json(
+                    "KittenTTS provider selected but 'kittentts' package not installed. "
+                    "Run 'hermes setup tts' and choose KittenTTS, or install manually: "
+                    "pip install https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl",
+                    attempted_file_path=file_str,
+                )
             logger.info("Generating speech with KittenTTS (local, ~25MB)...")
             _generate_kittentts(text, file_str, tts_config)
 
@@ -2345,12 +2383,12 @@ def text_to_speech_tool(
             try:
                 _import_piper()
             except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "Piper provider selected but 'piper-tts' package not installed. "
-                             "Run 'hermes tools' and select Piper under TTS, or install manually: "
-                             "pip install piper-tts",
-                }, ensure_ascii=False)
+                return _tts_error_json(
+                    "Piper provider selected but 'piper-tts' package not installed. "
+                    "Run 'hermes tools' and select Piper under TTS, or install manually: "
+                    "pip install piper-tts",
+                    attempted_file_path=file_str,
+                )
             logger.info("Generating speech with Piper (local)...")
             _generate_piper_tts(text, file_str, tts_config)
 
@@ -2377,18 +2415,18 @@ def text_to_speech_tool(
                 provider = "neutts"
                 _generate_neutts(text, file_str, tts_config)
             else:
-                return json.dumps({
-                    "success": False,
-                    "error": "No TTS provider available. Install edge-tts (pip install edge-tts) "
-                             "or set up NeuTTS for local synthesis."
-                }, ensure_ascii=False)
+                return _tts_error_json(
+                    "No TTS provider available. Install edge-tts (pip install edge-tts) "
+                    "or set up NeuTTS for local synthesis.",
+                    attempted_file_path=file_str,
+                )
 
         # Check the file was actually created
         if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
-            return json.dumps({
-                "success": False,
-                "error": f"TTS generation produced no output (provider: {provider})"
-            }, ensure_ascii=False)
+            return _tts_error_json(
+                f"TTS generation produced no output (provider: {provider})",
+                attempted_file_path=file_str,
+            )
 
         # Try Opus conversion for Telegram compatibility.
         # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV. Keep those native
@@ -2419,14 +2457,14 @@ def text_to_speech_tool(
                 voice_compatible = file_str.endswith(".ogg")
         elif (
             want_opus
-            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
+            and provider in CONVERSION_OPUS_TTS_PROVIDERS
             and not file_str.endswith(".ogg")
         ):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
+        elif provider in NATIVE_OPUS_TTS_PROVIDERS:
             voice_compatible = want_opus and file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -2449,17 +2487,17 @@ def text_to_speech_tool(
         # Configuration errors (missing API keys, etc.)
         error_msg = f"TTS configuration error ({provider}): {e}"
         logger.error("%s", error_msg)
-        return tool_error(error_msg, success=False)
+        return _tts_error_json(error_msg, attempted_file_path=file_str)
     except FileNotFoundError as e:
         # Missing dependencies or files
         error_msg = f"TTS dependency missing ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
-        return tool_error(error_msg, success=False)
+        return _tts_error_json(error_msg, attempted_file_path=file_str)
     except Exception as e:
         # Unexpected errors
         error_msg = f"TTS generation failed ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
-        return tool_error(error_msg, success=False)
+        return _tts_error_json(error_msg, attempted_file_path=file_str)
 
 
 # ===========================================================================

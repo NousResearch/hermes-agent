@@ -36,7 +36,6 @@ import shlex
 import site
 import sys
 import signal
-import tempfile
 import threading
 import time
 import sqlite3
@@ -1764,6 +1763,7 @@ from gateway.platforms.base import (
     MessageType,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
+    build_auto_tts_output_path,
     merge_pending_message_event,
     utf16_len,
 )
@@ -13069,9 +13069,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
-        import uuid as _uuid
         audio_path = None
         actual_path = None
+        attempted_path = None
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
@@ -13081,15 +13081,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Telegram's adapter only sends native voice bubbles for OGG/Opus.
             # Other platforms keep the existing MP3 default.
-            audio_ext = "ogg" if event.source.platform == Platform.TELEGRAM else "mp3"
-            audio_path = os.path.join(
-                tempfile.gettempdir(), "hermes_voice",
-                f"tts_reply_{_uuid.uuid4().hex[:12]}.{audio_ext}",
-            )
-            os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+            # build_auto_tts_output_path uses uuid-backed names to avoid collisions.
+            audio_path = build_auto_tts_output_path(event.source.platform)
 
             result_json = await asyncio.to_thread(
-                text_to_speech_tool, text=tts_text, output_path=audio_path
+                text_to_speech_tool,
+                text=tts_text,
+                output_path=audio_path,
+                target_platform=event.source.platform,
+                prefer_voice=True,
             )
             try:
                 result = json.loads(result_json)
@@ -13098,6 +13098,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
 
             # Use the actual file path from result (may differ after opus conversion)
+            attempted_path = result.get("attempted_file_path")
             actual_path = result.get("file_path", audio_path)
             if not result.get("success") or not os.path.isfile(actual_path):
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
@@ -13137,7 +13138,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
         finally:
-            for p in {audio_path, actual_path} - {None}:
+            for p in {audio_path, actual_path, attempted_path} - {None}:
                 try:
                     os.unlink(p)
                 except OSError:

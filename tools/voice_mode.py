@@ -1164,7 +1164,10 @@ def play_audio_file(file_path: str) -> bool:
             except subprocess.TimeoutExpired:
                 logger.warning("System player %s timed out, killing process", cmd[0])
                 proc.kill()
-                proc.wait()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
                 with _playback_lock:
                     _active_playback = None
                 return False

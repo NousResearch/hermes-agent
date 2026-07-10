@@ -973,6 +973,57 @@ describe('usePromptActions file attachment sync', () => {
       params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
     })
   })
+
+  it('resumes the stored session and retries once when file.attach reports "session not found"', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    const storedSessionId = 'stored-db-xyz789'
+    const recoveredSessionId = 'rt-recovered-456'
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let attachAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach') {
+        attachAttempts += 1
+
+        if (attachAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return { attached: true, ref_text: '@file:data/report.txt', uploaded: false } as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: recoveredSessionId } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={storedSessionId}
+      />
+    )
+
+    const ok = await handle!.submitText('summarize', { attachments: [fileAttachment()] })
+
+    expect(ok).toBe(true)
+    expect(calls.map(c => c.method)).toEqual(['file.attach', 'session.resume', 'file.attach', 'prompt.submit'])
+    expect(calls[0]?.params).toMatchObject({ session_id: RUNTIME_SESSION_ID })
+    expect(calls[1]?.params).toEqual({ session_id: storedSessionId, source: 'desktop' })
+    expect(calls[2]?.params).toMatchObject({ session_id: recoveredSessionId })
+    expect(calls[3]).toEqual({
+      method: 'prompt.submit',
+      params: { session_id: recoveredSessionId, text: '@file:data/report.txt\n\nsummarize' }
+    })
+  })
 })
 
 describe('usePromptActions eager-upload races', () => {
@@ -1239,7 +1290,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID })
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({
       session_id: RECOVERED_SESSION_ID,
       text: 'message during starved loop'

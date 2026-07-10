@@ -206,7 +206,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       setAwaitingResponse(true)
       clearNotifications()
 
-      let sessionId: null | string = activeSessionId
+      let sessionId: null | string = activeSessionIdRef.current || activeSessionId
 
       if (sessionId) {
         seedOptimistic(sessionId)
@@ -265,9 +265,18 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
 
       try {
+        sessionId = activeSessionIdRef.current || sessionId
+
         const syncedAttachments = await syncAttachmentsForSubmit(sessionId, attachments, {
           updateComposerAttachments: usingComposerAttachments
         })
+
+        const recoveredAttachmentSessionId =
+          activeSessionIdRef.current && activeSessionIdRef.current !== sessionId ? activeSessionIdRef.current : null
+
+        if (recoveredAttachmentSessionId) {
+          sessionId = recoveredAttachmentSessionId
+        }
 
         // Rewrite the optimistic message + prompt text with the synced refs so
         // the gateway receives @file: paths that resolve in its workspace.

@@ -159,6 +159,26 @@ def _warm_gateway_module() -> None:
         import hermes_cli.gateway  # noqa: F401
     except Exception:
         pass
+    # gateway.config 和 hermes_state 也在 /api/status 中 inline import，
+    # 冷启动时同样会阻塞事件循环。一并预热。
+    try:
+        import gateway.config  # noqa: F401
+    except Exception:
+        pass
+    try:
+        import hermes_state  # noqa: F401
+    except Exception:
+        pass
+    # /api/status 中还 inline import 了 dashboard_auth 和 auth，
+    # 虽然比 gateway.config 轻量，一并预热避免任何阻塞可能。
+    try:
+        import hermes_cli.dashboard_auth  # noqa: F401
+    except Exception:
+        pass
+    try:
+        import hermes_cli.auth  # noqa: F401
+    except Exception:
+        pass
 
 
 def _resolve_restart_drain_timeout() -> float:
@@ -181,13 +201,25 @@ async def _lifespan(app: "FastAPI"):
     # event loop during lifespan startup — see _get_event_state's docstring.
     app.state.chat_argv_lock = asyncio.Lock()
 
-    # Fire hermes_cli.gateway import into a background thread so the event
-    # loop is not blocked and HERMES_DASHBOARD_READY fires without delay.
+    # Fire hermes_cli.gateway + gateway.config + hermes_state import into a
+    # background thread so the event loop is not blocked and
+    # HERMES_DASHBOARD_READY fires without delay on server mode.
     # On a cold Windows install the module chain triggers .pyc compilation
     # and Defender real-time scans that can stall the event loop for 15-30s.
     # Running in an executor means the cost is paid in a worker thread while
     # the server socket is already open and accepting probes.
-    asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
+    #
+    # Desktop mode (HERMES_DESKTOP=1): await the warmup before announcing
+    # readiness.  Without this, HERMES(BACKEND|DASHBOARD)_READY fires too
+    # early — the Electron frontend immediately polls /api/status which
+    # still has cold imports that block the event loop, causing a 15-90s
+    # timeout and repeated backend restarts.
+    warm_future = asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
+    if os.getenv("HERMES_DESKTOP") == "1":
+        try:
+            await asyncio.wait_for(warm_future, timeout=120.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
@@ -17059,10 +17091,19 @@ def start_server(
             app.state.bound_port = actual_port
 
             _write_dashboard_ready_file(actual_port)
-            # Port-discovery sentinel parsed by the desktop spawn. `serve` is a
-            # plain backend, not a dashboard, so it announces a neutral token;
-            # `dashboard` keeps the legacy one. The desktop matches either.
-            ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
+            # Port-discovery sentinel parsed by the desktop spawn. The `serve`
+            # command was designed to announce HERMES_BACKEND_READY (a neutral
+            # token), but the packaged Electron desktop app (app.asar) only
+            # recognizes HERMES_DASHBOARD_READY. When the desktop spawns the
+            # backend, use the legacy token so the packaged app can find the
+            # port without a rebuild.
+            # See backend-ready.ts / backend-ready.cjs `_READY_RE`.
+            if os.getenv("HERMES_DESKTOP") == "1":
+                ready_token = "HERMES_DASHBOARD_READY"
+            elif headless:
+                ready_token = "HERMES_BACKEND_READY"
+            else:
+                ready_token = "HERMES_DASHBOARD_READY"
             print(f"{ready_token} port={actual_port}", flush=True)
             if headless:
                 # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't

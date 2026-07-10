@@ -140,6 +140,36 @@ class _RedirectingHandler(BaseHTTPRequestHandler):
         pass
 
 
+class _NativeGeminiHandler(BaseHTTPRequestHandler):
+    """Mimics the native /v1beta endpoint: rejects Bearer, honours ?key=."""
+
+    def do_GET(self):
+        # Native Gemini API rejects Bearer auth (this is the #62259 bug).
+        if self.headers.get("Authorization"):
+            self.send_response(401)
+            self.end_headers()
+            return
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        if parsed.path.rstrip("/") == "/models" and parse_qs(parsed.query).get("key"):
+            body = json.dumps({
+                "models": [
+                    {"name": "models/gemini-2.5-pro"},
+                    {"name": "models/gemini-3.5-flash"},
+                ]
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(401)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
+
+
 class TestFetchModelsRedirectCredentialStripping:
     """Credential headers must not follow a redirect outside the original origin."""
 
@@ -190,6 +220,31 @@ class TestFetchModelsRedirectCredentialStripping:
         assert result == ["redirected-model"]
         assert headers.get("authorization") == "Bearer bearer-secret"
         assert headers.get("x-api-key") == "default-header-secret"
+
+
+class TestGeminiNativeFetchModels:
+    """GeminiProfile.fetch_models uses query-param auth against the native API (#62259)."""
+
+    def test_native_query_param_auth_strips_prefix(self):
+        server = HTTPServer(("127.0.0.1", 0), _NativeGeminiHandler)
+        port = server.server_address[1]
+        Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            from plugins.model_providers.gemini import GeminiProfile
+            profile = GeminiProfile(name="gemini", base_url=f"http://127.0.0.1:{port}")
+            result = profile.fetch_models(api_key="test-key")
+            # models/ prefix stripped; Bearer path would have 401'd → None
+            assert result == ["gemini-2.5-pro", "gemini-3.5-flash"]
+        finally:
+            server.shutdown()
+
+    def test_no_api_key_returns_none(self):
+        from plugins.model_providers.gemini import GeminiProfile
+        profile = GeminiProfile(
+            name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        assert profile.fetch_models(api_key="") is None
 
 
 class TestModelPickerBaseUrlIntegration:

@@ -1185,6 +1185,42 @@ class ContextCompressor(ContextEngine):
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
+
+            # Anti-thrashing verdict, judged HERE because this is the only place
+            # that sees the provider's real prompt count for the just-compacted
+            # conversation. Effectiveness is "did the prompt get under the
+            # threshold?", not "did the message list shrink?": compaction can
+            # only shrink messages, while the system prompt and tool schemas are
+            # an incompressible floor (with 50+ tools, 20-30K tokens — see
+            # #14695). When that floor alone meets the threshold, every pass
+            # shrinks messages by a healthy margin yet leaves the prompt over the
+            # line, so the next turn compacts again, forever.
+            #
+            # It must NOT live in should_compress(): that runs twice per turn
+            # with two different measures (a rough preflight estimate and the
+            # real post-response count, #36718), and the rough one can dip below
+            # the threshold and reset the strike every turn, re-opening the loop.
+            # Keying on real usage compares like with like and fires exactly once
+            # per compaction.
+            if self._verify_compaction_cleared_threshold:
+                if self.last_prompt_tokens >= self.threshold_tokens:
+                    self._ineffective_compression_count += 1
+                    if not self.quiet_mode:
+                        logger.warning(
+                            "Compaction did not clear the threshold: %d real "
+                            "tokens still >= %d. The incompressible prompt "
+                            "(system prompt + tool schemas) may already exceed "
+                            "it, in which case shrinking messages cannot help. "
+                            "ineffective_compression_count=%d",
+                            self.last_prompt_tokens, self.threshold_tokens,
+                            self._ineffective_compression_count,
+                        )
+                else:
+                    self._ineffective_compression_count = 0
+        # Consume the pending-verification flag once real usage arrives, whether
+        # or not prompt_tokens was reported, so a usage-less response can't leave
+        # it armed for a later, unrelated reading.
+        self._verify_compaction_cleared_threshold = False
         self.awaiting_real_usage_after_compression = False
 
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
@@ -1237,41 +1273,8 @@ class ContextCompressor(ContextEngine):
         where each pass removes only 1-2 messages.
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-
-        # Verify the previous compaction against the SAME measure this method
-        # gates on. Effectiveness is "did the prompt get under the threshold?",
-        # not "did the message list shrink?": compaction can only shrink
-        # messages, while the system prompt and tool schemas are an
-        # incompressible floor (with 50+ tools, 20-30K tokens — see #14695).
-        # When that floor alone meets the threshold, every pass can shrink
-        # messages by a healthy margin and still leave the prompt over the line,
-        # so the next turn compacts again, forever.
-        #
-        # Both sides of this comparison are the caller's own token count, so it
-        # is immune to the skew between a rough estimate and the provider's real
-        # tokenizer — an analytic "floor = real_prompt - rough_estimate" is not,
-        # and would misread that skew as an incompressible floor.
         if tokens < self.threshold_tokens:
-            # The prompt fits. Whatever happened before, we are not thrashing.
-            self._ineffective_compression_count = 0
-            self._verify_compaction_cleared_threshold = False
             return False
-
-        # Past this point the prompt is over the threshold. If a compaction just
-        # ran, it failed to clear it — one strike. Two strikes and we stop and
-        # tell the user, instead of compacting on every turn forever.
-        if self._verify_compaction_cleared_threshold:
-            self._verify_compaction_cleared_threshold = False
-            self._ineffective_compression_count += 1
-            if not self.quiet_mode:
-                logger.warning(
-                    "Compaction did not clear the threshold: %d tokens still "
-                    ">= %d. The incompressible prompt (system prompt + tool "
-                    "schemas) may already exceed it, in which case shrinking "
-                    "messages cannot help. ineffective_compression_count=%d",
-                    tokens, self.threshold_tokens,
-                    self._ineffective_compression_count,
-                )
         # Do not trigger compression while the summary LLM is in cooldown.
         # On a 429/transient failure _generate_summary() sets a cooldown and
         # returns None; compress() then inserts a static fallback marker and

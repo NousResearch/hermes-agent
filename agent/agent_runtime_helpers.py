@@ -2236,8 +2236,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     around_message_id=next_args.get("around_message_id"),
                     window=next_args.get("window", 5),
                     sort=next_args.get("sort"),
+                    scope=next_args.get("scope"),
                     db=session_db,
                     current_session_id=agent.session_id,
+                    current_session_key=getattr(agent, "_gateway_session_key", None),
                 ),
                 next_args,
             )

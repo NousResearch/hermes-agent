@@ -2820,7 +2820,11 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
-    def resolve_session_by_title(self, title: str) -> Optional[str]:
+    def resolve_session_by_title(
+        self,
+        title: str,
+        session_key: str = None,
+    ) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.
 
         If the exact title exists, returns that session's ID.
@@ -2828,18 +2832,33 @@ class SessionDB:
         If the exact title exists AND numbered variants exist, returns the
         latest numbered variant (the most recent continuation).
         """
-        # First try exact match
-        exact = self.get_session_by_title(title)
+        # First try exact match. The optional session-key filter is used by
+        # gateway-scoped recall so a same-titled session in another chat cannot
+        # shadow the matching session in the current conversation.
+        if session_key:
+            with self._lock:
+                exact = self._conn.execute(
+                    "SELECT * FROM sessions WHERE title = ? AND session_key = ? "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (title, session_key),
+                ).fetchone()
+        else:
+            exact = self.get_session_by_title(title)
 
         # Also search for numbered variants: "title #2", "title #3", etc.
         # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
         escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        numbered_sql = (
+            "SELECT id, title, started_at FROM sessions "
+            "WHERE title LIKE ? ESCAPE '\\'"
+        )
+        numbered_params: list = [f"{escaped} #%"]
+        if session_key:
+            numbered_sql += " AND session_key = ?"
+            numbered_params.append(session_key)
+        numbered_sql += " ORDER BY started_at DESC"
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT id, title, started_at FROM sessions "
-                "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
-                (f"{escaped} #%",),
-            )
+            cursor = self._conn.execute(numbered_sql, numbered_params)
             numbered = cursor.fetchall()
 
         if numbered:
@@ -3011,6 +3030,7 @@ class SessionDB:
         id_query: str = None,
         search_query: str = None,
         compact_rows: bool = False,
+        session_key: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -3050,6 +3070,10 @@ class SessionDB:
         the SELECT so SQLite never copies it out of the B-tree page — a
         significant I/O saving on large databases where the blob routinely
         runs to tens of kilobytes per row.
+
+        Pass ``session_key`` to restrict results to one stable gateway
+        conversation scope (DM, group, channel, or thread, including the
+        configured per-user isolation policy).
         """
         where_clauses = []
         params = []
@@ -3075,6 +3099,9 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
+        if session_key:
+            where_clauses.append("s.session_key = ?")
+            params.append(session_key)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -4519,6 +4546,7 @@ class SessionDB:
         offset: int = 0,
         sort: str = None,
         include_inactive: bool = False,
+        session_key: str = None,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -4547,6 +4575,10 @@ class SessionDB:
         the live context but remain part of the conversation's record, so the
         pre-compaction transcript stays discoverable after in-place compaction
         (#38763). Pass ``include_inactive=True`` to search every row regardless.
+
+        Pass ``session_key`` to restrict every retrieval path (porter FTS,
+        trigram FTS, and the short-CJK LIKE fallback) to one stable gateway
+        conversation scope.
         """
         if not self._fts_enabled:
             return []
@@ -4600,6 +4632,10 @@ class SessionDB:
             role_placeholders = ",".join("?" for _ in role_filter)
             where_clauses.append(f"m.role IN ({role_placeholders})")
             params.extend(role_filter)
+
+        if session_key:
+            where_clauses.append("s.session_key = ?")
+            params.append(session_key)
 
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
@@ -4676,6 +4712,9 @@ class SessionDB:
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
+                if session_key:
+                    tri_where.append("s.session_key = ?")
+                    tri_params.append(session_key)
                 tri_sql = f"""
                     SELECT
                         m.id,
@@ -4733,6 +4772,9 @@ class SessionDB:
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
+                if session_key:
+                    like_where.append("s.session_key = ?")
+                    like_params.append(session_key)
                 like_sql = f"""
                     SELECT m.id, m.session_id, m.role,
                            substr(m.content,

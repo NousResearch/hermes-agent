@@ -87,9 +87,53 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
 
     agent = _make_agent(None, platform="acp")
-    result = json.loads(agent._invoke_tool("session_search", {"query": "Hermes"}, "task-id"))
+    agent._gateway_session_key = "agent:main:telegram:dm:42"
+    result = json.loads(agent._invoke_tool(
+        "session_search",
+        {"query": "Hermes", "scope": "global"},
+        "task-id",
+    ))
 
     assert result["success"] is True
     assert captured["db"] is sentinel_db
     assert captured["query"] == "Hermes"
+    assert captured["scope"] == "global"
+    assert captured["current_session_id"] == "acp-session"
+    assert captured["current_session_key"] == "agent:main:telegram:dm:42"
     assert agent._session_db is sentinel_db
+
+
+def test_sequential_session_search_passes_gateway_chat_scope(monkeypatch):
+    session_db = MagicMock()
+    captured = {}
+
+    session_search_mod = ModuleType("tools.session_search_tool")
+
+    def fake_session_search(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"success": True, "results": []})
+
+    session_search_mod.session_search = fake_session_search
+    monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
+
+    agent = _make_agent(session_db, platform="telegram")
+    agent._gateway_session_key = "agent:main:telegram:dm:42"
+    tool_call = SimpleNamespace(
+        id="search-1",
+        function=SimpleNamespace(
+            name="session_search",
+            arguments=json.dumps({"query": "Hermes", "scope": "current_chat"}),
+        ),
+    )
+    assistant_message = SimpleNamespace(tool_calls=[tool_call])
+
+    agent._execute_tool_calls_sequential(
+        assistant_message,
+        [],
+        "task-id",
+    )
+
+    assert captured["db"] is session_db
+    assert captured["scope"] == "current_chat"
+    assert captured["current_session_id"] == "telegram-session"
+    assert captured["current_session_key"] == "agent:main:telegram:dm:42"

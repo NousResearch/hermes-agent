@@ -1238,8 +1238,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     around_message_id=next_args.get("around_message_id"),
                     window=next_args.get("window", 5),
                     sort=next_args.get("sort"),
+                    scope=next_args.get("scope"),
                     db=session_db,
                     current_session_id=agent.session_id,
+                    current_session_key=getattr(agent, "_gateway_session_key", None),
                 )
             function_result, function_args = _run_agent_tool_execution_middleware(
                 agent,

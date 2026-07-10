@@ -58,6 +58,55 @@ def _seed_modpack_sessions(db):
     db._conn.commit()
 
 
+_CHAT_A_KEY = "agent:main:telegram:dm:100"
+_CHAT_B_KEY = "agent:main:telegram:dm:200"
+
+
+def _seed_scoped_sessions(db):
+    """Seed one active chat lineage plus a same-topic foreign chat."""
+    now = int(time.time())
+    rows = [
+        (
+            "chat-b",
+            _CHAT_B_KEY,
+            now - 3000,
+            "Other Chat Orchid Work",
+            "The orchid deployment belongs to another private chat.",
+        ),
+        (
+            "chat-a-old",
+            _CHAT_A_KEY,
+            now - 2000,
+            "Current Chat Orchid Work",
+            "The orchid deployment belongs to the current private chat.",
+        ),
+        (
+            "chat-a-current",
+            _CHAT_A_KEY,
+            now - 1000,
+            "Current Chat Active Session",
+            "The current orchid deployment turn is already in context.",
+        ),
+    ]
+    for session_id, session_key, started_at, title, content in rows:
+        db.create_session(
+            session_id,
+            source="telegram",
+            session_key=session_key,
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (started_at, title, session_id),
+        )
+        db.append_message(session_id, role="user", content=content)
+        db.append_message(
+            session_id,
+            role="assistant",
+            content=f"Recorded scoped result for {session_id}.",
+        )
+    db._conn.commit()
+
+
 # =========================================================================
 # Schema invariants
 # =========================================================================
@@ -75,6 +124,7 @@ class TestSchema:
         assert "window" in params
         # Shared
         assert "role_filter" in params
+        assert "scope" in params
 
     def test_no_mode_parameter(self):
         # Mode is inferred from which args are set — no explicit mode param
@@ -84,6 +134,10 @@ class TestSchema:
     def test_sort_enum(self):
         params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
         assert params["sort"]["enum"] == ["newest", "oldest"]
+
+    def test_scope_enum(self):
+        params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
+        assert params["scope"]["enum"] == ["current_chat", "global"]
 
     def test_schema_description_teaches_scroll(self):
         desc = SESSION_SEARCH_SCHEMA["description"]
@@ -148,6 +202,153 @@ class TestBrowseShape:
         result = json.loads(session_search(db=db))
         titles = [r.get("title") for r in result["results"]]
         assert any("Modpack" in (t or "") for t in titles)
+
+
+# =========================================================================
+# Gateway conversation scope
+# =========================================================================
+
+class TestConversationScope:
+    def test_gateway_browse_defaults_to_current_chat(self, db):
+        _seed_scoped_sessions(db)
+
+        result = json.loads(session_search(
+            db=db,
+            current_session_id="chat-a-current",
+            current_session_key=_CHAT_A_KEY,
+            limit=10,
+        ))
+
+        assert result["success"] is True
+        assert result["scope"] == "current_chat"
+        assert [row["session_id"] for row in result["results"]] == ["chat-a-old"]
+
+    def test_gateway_discovery_defaults_to_current_chat(self, db):
+        _seed_scoped_sessions(db)
+
+        result = json.loads(session_search(
+            query="orchid",
+            db=db,
+            current_session_id="chat-a-current",
+            current_session_key=_CHAT_A_KEY,
+            limit=10,
+        ))
+
+        assert result["success"] is True
+        assert result["scope"] == "current_chat"
+        assert {row["session_id"] for row in result["results"]} == {"chat-a-old"}
+
+    def test_explicit_global_scope_searches_across_chats(self, db):
+        _seed_scoped_sessions(db)
+
+        result = json.loads(session_search(
+            query="orchid",
+            scope="global",
+            db=db,
+            current_session_id="chat-a-current",
+            current_session_key=_CHAT_A_KEY,
+            limit=10,
+        ))
+
+        assert result["success"] is True
+        assert result["scope"] == "global"
+        assert {row["session_id"] for row in result["results"]} == {
+            "chat-a-old",
+            "chat-b",
+        }
+
+    def test_cli_without_gateway_key_remains_global(self, db):
+        _seed_scoped_sessions(db)
+
+        result = json.loads(session_search(query="orchid", db=db, limit=10))
+
+        assert result["scope"] == "global"
+        assert {row["session_id"] for row in result["results"]} == {
+            "chat-a-old",
+            "chat-a-current",
+            "chat-b",
+        }
+
+    def test_explicit_current_chat_requires_gateway_context(self, db):
+        result = json.loads(session_search(
+            query="orchid",
+            scope="current_chat",
+            db=db,
+        ))
+
+        assert result["success"] is False
+        assert "unavailable outside a gateway conversation" in result["error"]
+
+    def test_title_match_is_scoped_before_resolution(self, db):
+        now = int(time.time())
+        for session_id, session_key, started_at, title in (
+            ("title-other", _CHAT_B_KEY, now - 2000, "Shared Launch Plan #2"),
+            ("title-current", _CHAT_A_KEY, now - 1000, "Shared Launch Plan"),
+        ):
+            db.create_session(
+                session_id,
+                source="telegram",
+                session_key=session_key,
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                (started_at, title, session_id),
+            )
+            db.append_message(
+                session_id,
+                role="user",
+                content=f"Unique kickoff text for {session_id}.",
+            )
+        db._conn.commit()
+
+        result = json.loads(session_search(
+            query="Shared Launch Plan",
+            db=db,
+            current_session_key=_CHAT_A_KEY,
+        ))
+
+        assert result["scope"] == "current_chat"
+        assert [row["session_id"] for row in result["results"]] == ["title-current"]
+
+    @pytest.mark.parametrize("query", ["大别山项目", "通信"])
+    def test_cjk_retrieval_paths_respect_current_chat(self, db, query):
+        for session_id, session_key in (
+            ("cjk-current", _CHAT_A_KEY),
+            ("cjk-other", _CHAT_B_KEY),
+        ):
+            db.create_session(
+                session_id,
+                source="telegram",
+                session_key=session_key,
+            )
+            db.append_message(
+                session_id,
+                role="user",
+                content="大别山项目通信记录已经归档。",
+            )
+        db._conn.commit()
+
+        result = json.loads(session_search(
+            query=query,
+            db=db,
+            current_session_key=_CHAT_A_KEY,
+            limit=10,
+        ))
+
+        assert {row["session_id"] for row in result["results"]} == {"cjk-current"}
+
+    def test_explicit_read_is_not_restricted_by_search_scope(self, db):
+        _seed_scoped_sessions(db)
+
+        result = json.loads(session_search(
+            session_id="chat-b",
+            db=db,
+            current_session_key=_CHAT_A_KEY,
+        ))
+
+        assert result["success"] is True
+        assert result["mode"] == "read"
+        assert result["session_id"] == "chat-b"
 
 
 # =========================================================================

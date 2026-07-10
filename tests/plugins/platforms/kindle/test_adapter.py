@@ -66,6 +66,7 @@ async def test_final_notify_delivers_reply_not_preview(monkeypatch: pytest.Monke
         preview = await adapter.send("scribe-1", "working", metadata={"notify": False})
         await asyncio.sleep(0)
         assert preview.success is True
+        assert preview.message_id is None
         assert request.done() is False
 
         delivered = await adapter.send("scribe-1", "finished", metadata={"notify": True})

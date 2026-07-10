@@ -402,6 +402,7 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
     ctx = _empty_ctx(provider="openai-codex", model="gpt-5.4")
     with (
         _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
         patch(
             "hermes_cli.auth.is_provider_explicitly_configured",
             side_effect=lambda slug: slug == "gemini",
@@ -414,6 +415,43 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
         "gemini",
         "custom:lab",
     ]
+
+
+def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
+    rows = [
+        {"slug": "moa", "name": "MoA", "models": ["review"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "virtual"},
+    ]
+    ctx = _empty_ctx(provider="openrouter", model="anthropic/claude-opus-4.8")
+    raw_config = {
+        "moa": {
+            "active_preset": "review",
+            "presets": {
+                "review": {
+                    "enabled": True,
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5"},
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                    },
+                },
+            },
+        },
+    }
+
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.load_config", return_value=raw_config),
+        patch("hermes_cli.config.read_raw_config", return_value=raw_config),
+        patch("hermes_cli.auth.is_provider_explicitly_configured", return_value=False),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert [row["slug"] for row in payload["providers"]] == ["moa"]
+    assert payload["providers"][0]["models"] == ["review"]
 
 
 # ─── picker_hints ──────────────────────────────────────────────────────

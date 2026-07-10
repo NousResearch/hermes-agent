@@ -11,7 +11,16 @@ Architectural invariants (spec: docs/memory-future-invariants.md; detail: docs/m
     context() iterates the registry and includes only capabilities with
     contributes_to_context=True. Guardrail: a newly registered capability contributes
     nothing to context() until a human explicitly opts it in.
-    Contract tests: tests/plugins/memory/test_future_invariants.py (562 memory tests pass).
+    Contract tests: tests/plugins/memory/test_future_invariants.py.
+  - DEFERRED BACKENDS (Joe directive, 2026-07-09): Mem0 and the other optional
+    external backends — Graphiti, Holographic, Byterover, OpenViking, RetainDB,
+    Supermemory, Hindsight — are NOT in use for the foreseeable future. They stay
+    on the legacy ABC and are excluded from the L1-L6 push. Do NOT activate / opt
+    any of them into context() without an explicit directive. (See §16 hard
+    constraint "Do NOT activate Holographic / Mem0 / Graphiti / embeddings.")
+  Baseline: 585 memory tests pass via
+  `HERMES_TEST_PATHS=tests/plugins/memory .venv/bin/python scripts/run_tests_parallel.py -q`
+  (per-file isolation; never `pytest tests/plugins/memory` as one process).
 This file is the single source of truth (consolidated 2026-07-09). Phase-by-phase
 status follows per section below.
 ================================================================

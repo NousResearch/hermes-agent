@@ -18,7 +18,11 @@ class KimiProfile(ProviderProfile):
     """Kimi/Moonshot — temperature omitted, thinking xor reasoning_effort."""
 
     def build_api_kwargs_extras(
-        self, *, reasoning_config: dict | None = None, **context
+        self,
+        *,
+        reasoning_config: dict | None = None,
+        model: str | None = None,
+        **context,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Kimi reasoning controls.
 
@@ -47,7 +51,9 @@ class KimiProfile(ProviderProfile):
         # Enabled: prefer an explicit effort; only fall back to extra_body
         # thinking when no recognized effort is requested.
         effort = (reasoning_config.get("effort") or "").strip().lower()
-        if effort == "max":
+        # Project Hermes' global ceiling only while shaping a concrete request.
+        # Context-free profile probes retain the conservative unsupported fallback.
+        if effort == "max" and model:
             projected_effort = project_reasoning_effort(
                 effort, ("low", "medium", "high")
             )

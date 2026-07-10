@@ -628,9 +628,10 @@ def _common_betas_for_base_url(
 def _build_anthropic_client_with_bearer_hook(
     token_provider,
     base_url: str = None,
-    timeout: float = None,
+    timeout: Optional[float] = None,
     *,
     drop_context_1m_beta: bool = False,
+    extra_headers: Optional[Dict[str, str]] = None,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
 
@@ -697,6 +698,11 @@ def _build_anthropic_client_with_bearer_hook(
     )
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+    if extra_headers:
+        kwargs["default_headers"] = {
+            **dict(kwargs.get("default_headers") or {}),
+            **{str(k): str(v) for k, v in extra_headers.items() if v is not None},
+        }
 
     return _anthropic_sdk.Anthropic(**kwargs)
 
@@ -704,9 +710,10 @@ def _build_anthropic_client_with_bearer_hook(
 def build_anthropic_client(
     api_key,
     base_url: str = None,
-    timeout: float = None,
+    timeout: Optional[float] = None,
     *,
     drop_context_1m_beta: bool = False,
+    extra_headers: Optional[Dict[str, str]] = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -748,6 +755,7 @@ def build_anthropic_client(
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout,
             drop_context_1m_beta=drop_context_1m_beta,
+            extra_headers=extra_headers,
         )
 
     normalize_proxy_env_vars()
@@ -826,6 +834,15 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    # Per-provider headers are required by some Anthropic-compatible gateways
+    # (for example a Vertex-style ``anthropic-version`` override). Apply them
+    # last so explicit provider config wins over Hermes' common beta defaults.
+    if extra_headers:
+        kwargs["default_headers"] = {
+            **dict(kwargs.get("default_headers") or {}),
+            **{str(k): str(v) for k, v in extra_headers.items() if v is not None},
+        }
 
     return _anthropic_sdk.Anthropic(**kwargs)
 
@@ -2739,6 +2756,14 @@ def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
 
 def _is_stream_unavailable_error(exc: Exception) -> bool:
     """Return True when an Anthropic stream call should fall back to create()."""
+    # Some Anthropic-compatible gateways ignore ``stream=true`` and return a
+    # complete JSON Message instead of SSE.  The Anthropic SDK then raises an
+    # empty AssertionError while entering/aggregating the stream.  A normal
+    # ``messages.create()`` call is still valid for those gateways, so treat
+    # this narrow SDK failure as stream unavailability rather than failing the
+    # whole provider.
+    if isinstance(exc, AssertionError) and not str(exc).strip():
+        return True
     err_lower = str(exc).lower()
     if "stream" in err_lower and "not supported" in err_lower:
         return True

@@ -832,7 +832,36 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+
+            # Custom Anthropic-compatible providers may require protocol
+            # headers (for example a Vertex ``anthropic-version`` override).
+            # Resolve them by endpoint and retain them for credential/client
+            # rebuilds; OpenAI-wire custom headers are handled separately.
+            _anthropic_extra_headers: Dict[str, str] = {}
+            try:
+                from hermes_cli.config import (
+                    get_compatible_custom_providers,
+                    get_custom_provider_extra_headers,
+                    load_config,
+                )
+
+                _cp_entries = get_compatible_custom_providers(load_config())
+                _anthropic_extra_headers = get_custom_provider_extra_headers(
+                    base_url,
+                    custom_providers=_cp_entries,
+                ) or {}
+            except Exception:
+                logger.debug(
+                    "custom Anthropic-provider extra_headers resolution skipped",
+                    exc_info=True,
+                )
+            agent._anthropic_extra_headers = _anthropic_extra_headers
+            agent._anthropic_client = build_anthropic_client(
+                effective_key,
+                base_url,
+                timeout=_provider_timeout,
+                extra_headers=_anthropic_extra_headers,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}

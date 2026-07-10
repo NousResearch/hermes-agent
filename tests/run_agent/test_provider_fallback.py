@@ -211,6 +211,70 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert agent.api_mode == "anthropic_messages"
 
+    def test_explicit_custom_anthropic_url_and_headers_survive_fallback(self):
+        explicit_url = "https://proxy.example.com/service/anthropic"
+        headers = {"anthropic-version": "vertex-2023-10-16"}
+        fbs = [
+            {
+                "provider": "custom",
+                "model": "claude-sonnet-4-6",
+                "base_url": explicit_url,
+                "key_env": "MY_FALLBACK_KEY",
+                "extra_headers": headers,
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        setattr(agent, "provider", "openai-codex")
+        setattr(agent, "model", "primary-model")
+        normalized_client = _mock_client(
+            base_url="https://proxy.example.com/service/v1/v1/",
+            api_key="env-secret",
+        )
+        with (
+            patch.dict("os.environ", {"MY_FALLBACK_KEY": "env-secret"}, clear=False),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(normalized_client, "claude-sonnet-4-6"),
+            ),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as build_client,
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "api_mode") == "anthropic_messages"
+        assert agent.base_url == explicit_url
+        assert getattr(agent, "_anthropic_extra_headers") == headers
+        assert build_client.call_args.args[0] == "env-secret"
+        assert build_client.call_args.kwargs["extra_headers"] == headers
+
+    def test_explicit_openai_wire_url_keeps_resolver_normalization(self):
+        """Anthropic URL preservation must not alter OpenAI-wire fallbacks."""
+        fbs = [{
+            "provider": "custom",
+            "model": "fallback-model",
+            "base_url": "https://proxy.example.com/service",
+            "api_key": "test-key",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        setattr(agent, "provider", "openai-codex")
+        setattr(agent, "model", "primary-model")
+        normalized_url = "https://proxy.example.com/service/v1/"
+        normalized_client = _mock_client(
+            base_url=normalized_url,
+            api_key="test-key",
+        )
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(normalized_client, "fallback-model"),
+            ),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "api_mode") == "chat_completions"
+        assert agent.base_url == normalized_url
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

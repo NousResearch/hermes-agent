@@ -4610,6 +4610,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                extra_headers=getattr(self, "_anthropic_extra_headers", None),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
@@ -4680,6 +4681,7 @@ class AIAgent:
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
                 drop_context_1m_beta=_drop_1m,
+                extra_headers=getattr(self, "_anthropic_extra_headers", None),
             )
 
     def _interruptible_api_call(self, api_kwargs: dict):

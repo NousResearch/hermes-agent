@@ -299,6 +299,60 @@ def test_bedrock_cross_region_profile_prefix_resolves_to_pricing():
         assert scoped.cache_read_cost_per_million == bare.cache_read_cost_per_million
 
 
+def test_bedrock_version_suffix_resolves_to_pricing():
+    """Bedrock foundation-model IDs carry a trailing revision suffix — a
+    release date (``-20250514``), a model version (``-v1``), and/or a minor
+    revision (``:0``) — that the bare pricing keys don't have.  The pricing
+    lookup does an exact dict-key match, so without stripping these suffixes
+    an id like ``anthropic.claude-sonnet-4-5-20250929-v1:0`` (the shape AWS
+    actually returns from ListFoundationModels / inference profiles) prices
+    as unknown even though its bare row exists.  Assert every suffixed shape,
+    with and without a cross-region prefix, resolves to the same entry as the
+    bare id.
+    """
+    bedrock_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+    bare = get_pricing_entry(
+        "anthropic.claude-sonnet-4-5", provider="bedrock", base_url=bedrock_url
+    )
+    assert bare is not None
+    suffixed_ids = [
+        "anthropic.claude-sonnet-4-5-v1",
+        "anthropic.claude-sonnet-4-5-v1:0",
+        "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "global.anthropic.claude-sonnet-4-5-v1",
+    ]
+    for mid in suffixed_ids:
+        entry = get_pricing_entry(mid, provider="bedrock", base_url=bedrock_url)
+        assert entry is not None, mid
+        assert entry.input_cost_per_million == bare.input_cost_per_million, mid
+        assert entry.output_cost_per_million == bare.output_cost_per_million, mid
+
+
+def test_bedrock_version_suffix_normalizer_preserves_model_version():
+    """The suffix stripper must not eat the model version itself.  Anchored to
+    the end, it only matches an 8-digit date, ``-vN``, and ``:N`` — so
+    ``-4-6`` / ``-4-8`` and bare provider IDs survive unchanged.
+    """
+    from agent.usage_pricing import _normalize_bedrock_model_name
+
+    assert (
+        _normalize_bedrock_model_name("anthropic.claude-opus-4-6-v1")
+        == "anthropic.claude-opus-4-6"
+    )
+    assert (
+        _normalize_bedrock_model_name("anthropic.claude-opus-4-6-20250514-v1:0")
+        == "anthropic.claude-opus-4-6"
+    )
+    # No suffix: unchanged.
+    assert (
+        _normalize_bedrock_model_name("anthropic.claude-opus-4-8")
+        == "anthropic.claude-opus-4-8"
+    )
+    # Non-Claude provider id with a version suffix collapses to its bare form.
+    assert _normalize_bedrock_model_name("amazon.nova-pro-v1:0") == "amazon.nova-pro"
+
+
 def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     """A Bedrock Claude session with cache hits must produce a dollar estimate,
     not ``unknown`` — the user-visible symptom in #50295.

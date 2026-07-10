@@ -687,6 +687,15 @@ def _normalize_bedrock_model_name(model: str) -> str:
     lookup or every cross-region session prices as unknown.  Mirrors the
     prefix list in ``bedrock_adapter.is_anthropic_bedrock_model``.  Also
     normalizes dot-notation version numbers (``4.7`` → ``4-7``).
+
+    Bedrock foundation-model IDs also carry a trailing revision suffix that
+    the bare pricing keys don't have — a release date (``-20250514``), a
+    Bedrock model version (``-v1``), and/or a minor revision (``:0``), e.g.
+    ``anthropic.claude-opus-4-6-20250514-v1:0`` or ``anthropic.claude-opus-4-6-v1``.
+    These are stripped from the end so the id collapses to its bare
+    ``anthropic.claude-opus-4-6`` form.  The suffix pattern is anchored to the
+    end and only matches an 8-digit date, ``-vN``, and ``:N`` — it never eats
+    the model version itself (``-4-6`` / ``-4-8`` are preserved).
     """
     name = model.lower().strip()
     for prefix in ("us.", "global.", "eu.", "ap.", "jp."):
@@ -694,6 +703,10 @@ def _normalize_bedrock_model_name(model: str) -> str:
             name = name[len(prefix):]
             break
     name = re.sub(r"(\d+)\.(\d+)", r"\1-\2", name)
+    # Strip trailing Bedrock revision suffix: optional release date, optional
+    # -vN model version, optional :N minor revision. Anchored to end so the
+    # model version (e.g. -4-6) is never touched.
+    name = re.sub(r"(-\d{8})?(-v\d+)?(:\d+)?$", "", name)
     return name
 
 

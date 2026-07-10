@@ -249,9 +249,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
 // Profile that profile-scoped REST settings (config/env/skills/tools/model/…)
 // should target. Mirrors $activeGatewayProfile, pushed in from the store via
 // setApiRequestProfile so this module needs no store import (avoids a cycle).
-// Electron main consumes request.profile to pick which backend *process* serves
-// the call; each pooled backend already has its own HERMES_HOME, so no backend
-// change is needed. Null → primary, so single-profile users are unaffected.
+// Electron main consumes request.profile as request scope. Local calls whose
+// REST handlers accept profile reuse the primary dashboard via ?profile=;
+// unscoped handlers retain a profile backend. Remote overrides still route to
+// their owning backend. Null → primary, so single-profile users are unaffected.
 let _apiProfile: null | string = null
 
 export function setApiRequestProfile(profile: null | string): void {
@@ -678,10 +679,8 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
   }
 }
 
-// Mutations take the owning `profile` so Electron routes them to that profile's
-// backend (remote pool or local primary) via request.profile — matching the
-// read path. A remote session's row lives only on its remote host, so a mutation
-// that hit the local primary would no-op or 404. Omit for the current/default.
+// Mutations take the owning `profile` so Electron can route them to the correct
+// remote backend or local profile scope. Omit for the current/default profile.
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...(profile ? { profile } : {}),

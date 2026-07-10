@@ -41,6 +41,7 @@ import {
   profileSshOverride,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
+  resolveProfileApiRequest,
   resolveProfileBackendRoute,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
@@ -354,9 +355,15 @@ const ROUTES = [
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   },
   {
-    name: 'a local non-primary profile gets its own pooled backend',
+    name: 'an unscoped local profile request keeps its pooled backend',
     profile: 'coder',
-    opts: { primaryProfile: 'default', globalRemote: false, profileRemoteOverride: false },
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'POST',
+      requestPath: '/api/memory/reset'
+    },
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   },
   {
@@ -380,6 +387,44 @@ const ROUTES = [
       profileRemoteOverride: false,
       primaryRemoteActive: true,
       ownEntry: true
+    },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a profile-aware local REST request reuses the primary backend',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET',
+      requestPath: '/api/config'
+    },
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
+  },
+  {
+    name: 'a profile-management request uses the primary without a query scope',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'DELETE',
+      requestPath: '/api/profiles/worker'
+    },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a stored local profile never reuses a remote primary for an eligible REST route',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      primaryRemoteActive: true,
+      ownEntry: true,
+      requestMethod: 'GET',
+      requestPath: '/api/config'
     },
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   }
@@ -547,6 +592,27 @@ test('translateSelfProfileQuery no-ops when alias and backend profile agree or a
   assert.equal(translateSelfProfileQuery('/api/cron/jobs?profile=mara', '', 'default'), '/api/cron/jobs?profile=mara')
 })
 
+test('pathWithGlobalRemoteProfile appends local-primary profile scope only for eligible routes', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/config', 'iris', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET',
+      requestPath: '/api/config'
+    }),
+    '/api/config?profile=iris'
+  )
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/memory/reset', 'iris', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'POST',
+      requestPath: '/api/memory/reset'
+    }),
+    '/api/memory/reset'
+  )
+})
+
 test('pathWithGlobalRemoteProfile skips empty profile/path safely', () => {
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info', '', {
@@ -561,6 +627,130 @@ test('pathWithGlobalRemoteProfile skips empty profile/path safely', () => {
       profileRemoteOverride: false
     }),
     ''
+  )
+})
+
+// --- resolveProfileApiRequest ---
+
+test('resolveProfileApiRequest keeps eligible local REST on the primary backend', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/config?view=desktop', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/config?view=desktop&profile=iris'
+    }
+  )
+})
+
+test('resolveProfileApiRequest keeps unscoped destructive routes on the profile backend', () => {
+  for (const [method, path] of [
+    ['POST', '/api/memory/reset'],
+    ['POST', '/api/curator/run'],
+    ['PUT', '/api/curator/paused'],
+    ['POST', '/api/webhooks']
+  ]) {
+    assert.deepEqual(
+      resolveProfileApiRequest('iris', path, {
+        globalRemote: false,
+        profileRemoteOverride: false,
+        requestMethod: method
+      }),
+      { backendProfile: 'iris', requestPath: path }
+    )
+  }
+})
+
+test('resolveProfileApiRequest uses exact method and path eligibility for mixed families', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/skills', {
+      requestMethod: 'GET'
+    }),
+    { backendProfile: null, requestPath: '/api/skills?profile=iris' }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/skills', {
+      requestMethod: 'POST'
+    }),
+    { backendProfile: 'iris', requestPath: '/api/skills' }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/config/defaults', {
+      requestMethod: 'GET'
+    }),
+    { backendProfile: 'iris', requestPath: '/api/config/defaults' }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/model/recommended-default?provider=nous', {
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: 'iris',
+      requestPath: '/api/model/recommended-default?provider=nous'
+    }
+  )
+})
+
+test('resolveProfileApiRequest scopes complete safe families according to their contracts', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/tools/toolsets/image_gen/config', {
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/tools/toolsets/image_gen/config?profile=iris'
+    }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/profiles/worker', {
+      requestMethod: 'DELETE'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/profiles/worker'
+    }
+  )
+})
+
+test('resolveProfileApiRequest preserves remote routing precedence', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/memory/reset', {
+      globalRemote: true,
+      profileRemoteOverride: false,
+      requestMethod: 'POST'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/memory/reset?profile=iris'
+    }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/config', {
+      globalRemote: true,
+      profileRemoteOverride: true,
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: 'iris',
+      requestPath: '/api/config'
+    }
+  )
+})
+
+test('resolveProfileApiRequest keeps a stored local profile off a remote primary', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/config', {
+      primaryRemoteActive: true,
+      ownEntry: true,
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: 'iris',
+      requestPath: '/api/config'
+    }
   )
 })
 

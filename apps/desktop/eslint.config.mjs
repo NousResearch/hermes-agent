@@ -118,8 +118,5 @@ export default [
     rules: {
       'no-restricted-globals': ['warn', 'document']
     }
-  },
-  {
-    ignores: ['*.config.*']
   }
 ]

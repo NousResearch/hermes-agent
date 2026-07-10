@@ -562,6 +562,24 @@ def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_pa
     )
 
 
+def test_background_without_notify_captures_parent_ui_return_address(monkeypatch, tmp_path):
+    """Ordinary background output stays bound to the commissioning WebUI tab."""
+    from gateway.session_context import bind_ui_session_id
+
+    spawned = {}
+    tt = _silent_bg_harness(monkeypatch, tmp_path, spawn_capture=spawned)
+    try:
+        with bind_ui_session_id("parent-tab"):
+            tt.terminal_tool(
+                command="python -m http.server",
+                background=True,
+            )
+        assert spawned["origin_ui_session_id"] == "parent-tab"
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+
 def test_background_with_notify_does_not_emit_hint(monkeypatch, tmp_path):
     """The correct shape — bg+notify together — must not nag."""
     tt = _silent_bg_harness(monkeypatch, tmp_path)

@@ -8029,10 +8029,12 @@ def test_notification_poller_delivers_completion(monkeypatch):
 
     turns = []
     emitted = []
+    stop = threading.Event()
 
     class _Agent:
         def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
             turns.append(prompt)
+            stop.set()
             return {
                 "final_response": "ok",
                 "messages": [{"role": "assistant", "content": "ok"}],
@@ -8060,10 +8062,8 @@ def test_notification_poller_delivers_completion(monkeypatch):
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
     process_registry._completion_consumed.discard("proc_poller_test")
 
-    stop = threading.Event()
-
-    # Put event on queue, then immediately signal stop so the poller
-    # runs exactly one iteration.
+    # Keep the stop signal clear until the agent turn runs so this exercises
+    # the live poller loop rather than its post-stop shutdown drain.
     isolated_queue.put({
         "type": "completion",
         "session_id": "proc_poller_test",
@@ -8072,7 +8072,6 @@ def test_notification_poller_delivers_completion(monkeypatch):
         "exit_code": 0,
         "output": "hello",
     })
-    stop.set()
 
     try:
         server._notification_poller_loop(stop, "sid_poll", sess)
@@ -8128,6 +8127,7 @@ def test_notification_poller_skips_consumed(monkeypatch):
     isolated_queue.put({
         "type": "completion",
         "session_id": "proc_already_done",
+        "origin_ui_session_id": "sid_skip",
         "command": "echo x",
         "exit_code": 0,
         "output": "x",

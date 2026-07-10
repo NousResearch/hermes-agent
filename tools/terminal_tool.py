@@ -2358,19 +2358,19 @@ def terminal_tool(
             pass
 
         if background:
-            # Preserve the commissioning WebUI tab separately from session_key.
-            # Delegated children replace session_key with their temporary child
-            # session, but inherit HERMES_UI_SESSION_ID from the parent chat.
+            # Preserve the commissioning WebUI tab separately from session_key
+            # for both live output and later notifications. Delegated children
+            # replace session_key with their temporary child session, but inherit
+            # HERMES_UI_SESSION_ID from the parent chat.
             origin_ui_session_id = ""
-            if notify_on_complete or watch_patterns:
-                try:
-                    from gateway.session_context import get_session_env
+            try:
+                from gateway.session_context import get_session_env
 
-                    origin_ui_session_id = get_session_env(
-                        "HERMES_UI_SESSION_ID", ""
-                    )
-                except Exception:
-                    pass
+                origin_ui_session_id = get_session_env(
+                    "HERMES_UI_SESSION_ID", ""
+                )
+            except Exception:
+                pass
 
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
@@ -2555,7 +2555,6 @@ def terminal_tool(
                             proc_session.id,
                         )
                     else:
-                        proc_session.origin_ui_session_id = origin_ui_session_id
                         _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
                         if _gw_platform:
                             _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")

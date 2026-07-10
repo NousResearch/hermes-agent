@@ -8937,17 +8937,22 @@ def _wire_agent_terminal_output() -> None:
         return
 
     def _owner_sid_for_process(session) -> str:
-        evt = {
-            "origin_ui_session_id": str(
-                getattr(session, "origin_ui_session_id", "") or ""
-            ),
-            "session_key": str(getattr(session, "session_key", "") or ""),
-        }
+        origin_ui_session_id = str(
+            getattr(session, "origin_ui_session_id", "") or ""
+        )
         try:
             with _sessions_lock:
+                if origin_ui_session_id:
+                    exact_owner = _sessions.get(origin_ui_session_id)
+                    if exact_owner is not None and not exact_owner.get("_finalized"):
+                        return origin_ui_session_id
                 snapshot = list(_sessions.items())
         except Exception:
             return ""
+        evt = {
+            "origin_ui_session_id": origin_ui_session_id,
+            "session_key": str(getattr(session, "session_key", "") or ""),
+        }
         matches = [
             candidate_sid
             for candidate_sid, candidate in snapshot

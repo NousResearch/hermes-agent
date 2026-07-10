@@ -36,17 +36,25 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from hermes_constants import get_hermes_home
+from cron.jobs import _cron_dir
 from hermes_time import now as _hermes_now
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
 # Per-profile by design (issue #4707): suggestions live alongside the active
-# profile's cron store. Anchor on get_hermes_home() (profile home), not the
-# shared default root. See cron/jobs.py for the full rationale.
-CRON_DIR = get_hermes_home().resolve() / "cron"
-SUGGESTIONS_FILE = CRON_DIR / "suggestions.json"
+# profile's cron store. Reuse cron.jobs._cron_dir() (BUILD-344) instead of
+# resolving get_hermes_home() at import time here — that was the same
+# frozen-at-import bug BUILD-344 fixed in jobs.py, just re-added in this
+# module: a process whose active profile changes after import (no reload)
+# kept writing suggestions.json under the stale profile's cron dir. No test
+# monkeypatches this module's own CRON_DIR/SUGGESTIONS_FILE (only
+# ``cron.jobs.CRON_DIR`` has that override idiom, and only tests/web_server.py
+# use it), so this stays a plain function rather than duplicating jobs.py's
+# sentinel-override machinery for a caller that doesn't need it.
+def suggestions_file() -> Path:
+    """Resolve suggestions.json at call time. See ``cron.jobs._cron_dir()``."""
+    return _cron_dir() / "suggestions.json"
 
 # In-process lock protecting load->modify->save cycles (the background review
 # fork and the main agent can both write).
@@ -70,14 +78,15 @@ def _secure_file(path: Path) -> None:
 
 
 def _ensure_dir() -> None:
-    CRON_DIR.mkdir(parents=True, exist_ok=True)
+    _cron_dir().mkdir(parents=True, exist_ok=True)
 
 
 def _load_raw() -> Dict[str, Any]:
-    if not SUGGESTIONS_FILE.exists():
+    sf = suggestions_file()
+    if not sf.exists():
         return {"suggestions": []}
     try:
-        with open(SUGGESTIONS_FILE, "r", encoding="utf-8") as f:
+        with open(sf, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("suggestions.json unreadable (%s); starting empty", e)
@@ -92,7 +101,8 @@ def _load_raw() -> Dict[str, Any]:
 
 def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
     _ensure_dir()
-    fd, tmp_path = tempfile.mkstemp(dir=str(SUGGESTIONS_FILE.parent), suffix=".tmp", prefix=".sugg_")
+    sf = suggestions_file()
+    fd, tmp_path = tempfile.mkstemp(dir=str(sf.parent), suffix=".tmp", prefix=".sugg_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(
@@ -102,8 +112,8 @@ def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
             )
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, SUGGESTIONS_FILE)
-        _secure_file(SUGGESTIONS_FILE)
+        atomic_replace(tmp_path, sf)
+        _secure_file(sf)
     except BaseException:
         try:
             os.unlink(tmp_path)

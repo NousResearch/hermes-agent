@@ -19,7 +19,9 @@ def store(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    # Reload so module-level CRON_DIR/SUGGESTIONS_FILE pick up the temp home.
+    # These reloads are vestigial: neither hermes_constants (reads HERMES_HOME
+    # per call) nor suggestions.py (call-time resolution since BUILD-373) caches
+    # the home. Kept only to match this fixture's long-standing shape.
     import hermes_constants
     importlib.reload(hermes_constants)
     import cron.suggestions as s

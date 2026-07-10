@@ -124,6 +124,37 @@ def test_cron_storage_follows_profile_switch_without_reload(tmp_path, monkeypatc
     assert jobs.jobs_file().resolve() != (profile_a / "cron" / "jobs.json").resolve()
 
 
+def test_suggestions_storage_follows_profile_switch_without_reload(tmp_path, monkeypatch):
+    """BUILD-373: suggestions.py must resolve suggestions.json dynamically at
+    call time, like jobs.py (BUILD-344) already does — no module reload
+    required to see a profile switch mid-process."""
+    root = tmp_path / "hermes_home"
+    profile_a = root / "profiles" / "a"
+    profile_b = root / "profiles" / "b"
+    profile_a.mkdir(parents=True)
+    profile_b.mkdir(parents=True)
+
+    _set_profile_env(monkeypatch, root, profile_a)
+
+    import cron.suggestions as suggestions
+
+    assert (
+        suggestions.suggestions_file().resolve()
+        == (profile_a / "cron" / "suggestions.json").resolve()
+    )
+
+    # Switch profiles in the same process, same import, no reload.
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+    assert (
+        suggestions.suggestions_file().resolve()
+        == (profile_b / "cron" / "suggestions.json").resolve()
+    )
+    assert (
+        suggestions.suggestions_file().resolve()
+        != (profile_a / "cron" / "suggestions.json").resolve()
+    )
+
+
 def test_cron_storage_unaffected_when_no_profile(tmp_path, monkeypatch):
     """With no profile (HERMES_HOME == root), the store is the root's cron dir
     — unchanged behavior for single-profile installs."""

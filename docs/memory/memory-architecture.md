@@ -1,5 +1,20 @@
 
 ================================================================
+HERMES MEMORY SUBSYSTEM — CANONICAL DESIGN INDEX
+================================================================
+Status: APPROVED + IMPLEMENTED (2026-07-09).
+Architectural invariants (spec: docs/memory-future-invariants.md; detail: docs/memory/INVARIANTS.md):
+  - Invariant A — Provider self-registration: IMPLEMENTED.
+    Providers register themselves via module side-effects; MemoryRouter holds
+    zero concrete provider imports and sources single instances from the registry.
+  - Invariant B — Declarative context participation: IMPLEMENTED (default opt-out).
+    context() iterates the registry and includes only capabilities with
+    contributes_to_context=True. Guardrail: a newly registered capability contributes
+    nothing to context() until a human explicitly opts it in.
+    Contract tests: tests/plugins/memory/test_future_invariants.py (562 memory tests pass).
+This file is the single source of truth (consolidated 2026-07-09). Phase-by-phase
+status follows per section below.
+================================================================
 16. PHASE 4 DESIGN — MEMORY API ABSTRACTION (L6 interface)
 ================================================================
 Status: APPROVED + IMPLEMENTED (2026-07-09). Refinement vs below: writes raise typed CapabilityError/UnsupportedCapability — NEVER silent no-ops (see §17.5/§17.8 for the corrected trust stance carried into Phase 5).

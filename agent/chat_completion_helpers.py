@@ -1580,8 +1580,12 @@ def _append_route_change(
 # Friendly, user-facing labels for WHY a failover fired — rendered as a suffix in
 # the fallback announce (``🔄 Model fallback (safety refusal): fable → opus``) so a
 # content-policy refusal is distinguishable from a rate-limit blip in-session.
-# Only the reasons worth surfacing to a human are mapped; anything else → no suffix
-# (the bare "Model fallback: A → B" line, unchanged).
+# EVERY classifiable FailoverReason maps to a short, human-readable label so the
+# announce always says WHY a route changed. Reasons that are structurally
+# invisible to the user (context_overflow → compressed in place, never a
+# route-change announce; malformed_conversation → aborts, never fails over) are
+# intentionally omitted and resolve to the generic "connection issue" bucket via
+# ``_GENERIC_FALLBACK_LABEL`` rather than a bare, reason-less line.
 _FALLBACK_REASON_LABELS = {
     "content_policy_blocked": "safety refusal",
     "provider_policy_blocked": "provider policy",
@@ -1590,23 +1594,59 @@ _FALLBACK_REASON_LABELS = {
     "billing": "credit exhausted",
     "overloaded": "provider overloaded",
     "server_error": "provider error",
-    "timeout": "timeout",
+    "timeout": "connection dropped",
+    "ssl_cert_verification": "TLS error",
     "auth": "auth refresh",
+    "auth_permanent": "auth failed",
     "model_not_found": "model unavailable",
+    "payload_too_large": "payload too large",
+    "image_too_large": "image too large",
+    "format_error": "bad request",
 }
+
+# Any classified-but-unmapped reason (or a reason we couldn't classify) still
+# gets a rider so the announce is never silent about WHY — a bare
+# "Model fallback: A → B" left the user guessing (the 2026-07-10 peer-closed
+# stream-drop that failed over with no reason). "connection issue" is the honest
+# floor: a transport/stream fault we routed around but can't name precisely.
+_GENERIC_FALLBACK_LABEL = "connection issue"
 
 
 def _fallback_reason_label(reason: "Any | None") -> "str | None":
     """Map a FailoverReason (enum or its .value string) to a short user-facing
-    label, or None when the reason isn't worth surfacing (→ no suffix)."""
+    label. A known reason maps to its specific label; an unknown/unclassifiable
+    reason resolves to the generic ``connection issue`` floor so a failover
+    announce is NEVER reason-less. Returns None only when there is genuinely no
+    reason object at all (a no-op call)."""
     if reason is None:
         return None
     val = getattr(reason, "value", reason)
     try:
         val = str(val).strip().lower()
     except Exception:
-        return None
-    return _FALLBACK_REASON_LABELS.get(val)
+        return _GENERIC_FALLBACK_LABEL
+    return _FALLBACK_REASON_LABELS.get(val, _GENERIC_FALLBACK_LABEL)
+
+
+def _resolve_failover_reason(agent, reason: "Any | None") -> "Any | None":
+    """Resolve the effective failover reason and clear the pending stamp.
+
+    Invariant (unit-tested in test_fallback_reason_surfacing):
+    - An EXPLICIT reason at the call site always wins — the stamp never
+      overrides it.
+    - A reason-less call (``reason is None``, the loop's stub/empty/invalid
+      failover sites) is backfilled from ``agent._pending_stream_error_reason``,
+      which the streaming helper stamps when it swallows a mid-stream fault into
+      a partial-stream stub.
+    - Consume-once: the stamp is cleared UNCONDITIONALLY so it can never leak
+      into an unrelated later failover.
+    """
+    if reason is None:
+        _pending = getattr(agent, "_pending_stream_error_reason", None)
+        if _pending is not None:
+            reason = _pending
+    agent._pending_stream_error_reason = None
+    return reason
 
 
 def _emit_fallback_announce(
@@ -1874,6 +1914,16 @@ def try_activate_fallback(
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
+    # Reason backfill: several loop failover sites (empty-response, length /
+    # partial-stream stub, invalid-response) call this with reason=None because
+    # they don't carry the classified error at the call site. The streaming
+    # helper stamps ``_pending_stream_error_reason`` when it swallows a stream
+    # fault into a stub, so pick it up here — this is what makes the route-change
+    # announce say WHY (e.g. "(connection dropped)") instead of a bare line for
+    # the peer-closed stream-drop class (2026-07-10). Extracted to a pure helper
+    # so the explicit-wins / backfill / consume-once invariant is unit-testable
+    # without driving the whole provider-resolution path.
+    reason = _resolve_failover_reason(agent, reason)
     # A safety refusal (content_policy_blocked) is deterministic for the
     # unchanged prompt, exactly like a rate-limit is deterministic for its
     # window: restoring the primary next turn just reproduces the refusal and
@@ -3877,6 +3927,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # error_classifier is the single source of truth for "what counts
             # as a content filter" (#32421).
             _content_filter_terminated = False
+            _stream_error_reason = None
             try:
                 from agent.error_classifier import classify_api_error, FailoverReason
                 _cls = classify_api_error(
@@ -3887,6 +3938,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _content_filter_terminated = (
                     _cls.reason == FailoverReason.content_policy_blocked
                 )
+                # Stamp the classified reason so a failover triggered by this
+                # stub (partial-stream drop → length-continuation → the loop's
+                # reason-less _try_activate_fallback sites) can name WHY the
+                # route changed. Without this the announce fired bare — the
+                # 2026-07-10 peer-closed stream-drop that read "Model fallback:
+                # A → B" with no reason. The reason is consumed at the failover
+                # site and cleared on the next clean turn.
+                _stream_error_reason = _cls.reason
             except Exception:
                 _content_filter_terminated = False
             _stub = SimpleNamespace(
@@ -3900,6 +3959,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             )
             if _content_filter_terminated:
                 _stub._content_filter_terminated = True
+            # Stamp the classified transport/stream reason on the agent so the
+            # loop's reason-less failover sites (empty-response, length-stub,
+            # invalid-response) surface it in the route-change announce. This
+            # stamps for EVERY classified reason (content_policy_blocked
+            # included) — it's a fallback only: any explicit reason passed to
+            # try_activate_fallback wins over the stamp, and a content-filter
+            # stream stall already carries its own reason via the
+            # _content_filter_terminated escalation path.
+            if _stream_error_reason is not None:
+                agent._pending_stream_error_reason = _stream_error_reason
             # Partial-stream stub: chunks WERE received (deltas fired), so
             # the provider is demonstrably responsive — clear the circuit
             # breaker (#58962) just like the full-success return below.
@@ -3910,6 +3979,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # responsive.  See the canonical comment block above ``_stale_streak()``.
     if result["response"] is not None:
         _reset_stale_streak(agent)
+        # A clean streamed response means any earlier partial-stream stub in
+        # this turn recovered via continuation, NOT a failover — drop the
+        # pending stream-error reason so it can't leak a stale "(connection
+        # dropped)" rider onto an unrelated later failover.
+        agent._pending_stream_error_reason = None
     return result["response"]
 
 # ── Provider fallback ──────────────────────────────────────────────────

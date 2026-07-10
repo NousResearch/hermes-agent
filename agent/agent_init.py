@@ -1193,6 +1193,14 @@ def init_agent(
         agent._fallback_chain = []
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
+    # Reason stamped by the streaming helper when it swallows a mid-stream
+    # transport/content fault into a partial-stream stub, so a subsequent
+    # reason-less failover site can name WHY the route changed in the announce.
+    # Consumed-once and cleared in ``try_activate_fallback``; reset to None
+    # UNCONDITIONALLY here so a re-init of a live agent (whose stamp a prior
+    # stream fault set but no failover has consumed yet) can never carry a stale
+    # reason into an unrelated later failover announce.
+    agent._pending_stream_error_reason = None
     # Tracks the last announced (old_model, new_model) fallback transition so a
     # re-entrant fallback chain announces once per distinct transition (I5).
     agent._last_fallback_announced = getattr(agent, "_last_fallback_announced", None)

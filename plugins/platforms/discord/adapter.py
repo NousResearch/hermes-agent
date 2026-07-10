@@ -5794,9 +5794,33 @@ class DiscordAdapter(BasePlatformAdapter):
             clean_choices = clean_choices[:24]
 
             if clean_choices:
+                # Mirror the full choice text as a numbered list, same as the
+                # Telegram/WhatsApp adapters. Button labels are capped at 80
+                # chars by Discord and become unreadable on mobile long before
+                # that (see ClarifyChoiceView), so the button is just a short
+                # index — the full text the user needs to make an informed
+                # decision lives here, in the embed field / message body,
+                # which has a much higher cap (1024 for embed fields).
+                option_lines_full = "\n".join(
+                    f"**{i + 1}.** {c}" for i, c in enumerate(clean_choices)
+                )
+                embed_suffix = (
+                    "\n\nPick a button below, or click ✏️ Other to type a "
+                    "custom answer."
+                )
+                max_field = 1024
+                # Reserve space for the suffix before truncating the options
+                # list, otherwise a long-but-under-cap option_lines plus the
+                # suffix can push the combined field value past Discord's
+                # real 1024-char embed-field limit and the send silently
+                # fails downstream.
+                option_lines = option_lines_full
+                if len(option_lines) + len(embed_suffix) > max_field:
+                    budget = max_field - len(embed_suffix) - 3
+                    option_lines = option_lines_full[:budget] + "..."
                 embed.add_field(
                     name="Choices",
-                    value="Pick one below, or click ✏️ Other to type a custom answer.",
+                    value=f"{option_lines}{embed_suffix}",
                     inline=False,
                 )
                 view = ClarifyChoiceView(
@@ -5812,14 +5836,22 @@ class DiscordAdapter(BasePlatformAdapter):
                     inline=False,
                 )
                 view = None
+                option_lines_full = ""
 
-            # Mirror the question in plain content — embeds are invisible on
-            # some clients (see send_exec_approval).
-            clarify_tail = (
-                "\n\nPick one below, or click ✏️ Other to type a custom answer."
-                if clean_choices
-                else "\n\nReply in this channel with your answer."
-            )
+            # Mirror the question (and, for multi-choice, the full option
+            # text) in plain content — embeds are invisible on some clients
+            # (see send_exec_approval). The plain-text mirror uses the
+            # untruncated option list; Discord's message content cap (2000
+            # chars) is a separate, much larger limit than the embed field's
+            # 1024, so reusing the embed-truncated value here would cut off
+            # options unnecessarily.
+            if clean_choices:
+                clarify_tail = (
+                    f"\n\n{option_lines_full}\n\nPick a button below, or click "
+                    "✏️ Other to type a custom answer."
+                )
+            else:
+                clarify_tail = "\n\nReply in this channel with your answer."
             content = self._self_contained_prompt_content(
                 "❓ **Hermes needs your input**", str(question or "").strip(),
                 tail=clarify_tail,
@@ -7537,50 +7569,21 @@ def _define_discord_view_classes() -> None:
             self.resolved = False
 
             for index, choice in enumerate(self.choices):
-                # Discord button labels are capped at 80 chars. On mobile the
-                # visible width is much narrower (often <40 chars before it
-                # wraps to 2 lines and the second line gets cut off), so we
-                # cap aggressively and cut at a word boundary when possible
-                # to keep the trailing text readable.
-                #
-                # Cut strategy (most-preferred to least-preferred):
-                #   1. Last space in the trailing half of the budget
-                #      (cleanest word boundary)
-                #   2. Last soft boundary in the trailing half of the
-                #      budget (hyphen, comma, period, paren)
-                #   3. Hard cut at the budget limit (last resort)
-                prefix = f"{index + 1}. "
-                budget = _DISCORD_BUTTON_LABEL_LIMIT - utf16_len(prefix)
-                if utf16_len(choice) <= budget:
-                    label_body = choice
-                else:
-                    truncated = _prefix_within_utf16_limit(
-                        choice,
-                        max(0, budget - utf16_len(_DISCORD_ELLIPSIS)),
-                    ).rstrip()
-                    cut_at = -1
-                    # 1. Last space in the trailing half of the budget.
-                    space = truncated.rfind(" ")
-                    if space >= len(truncated) // 2:
-                        cut_at = space
-                    # 2. Soft boundary — only if no word boundary found.
-                    # Find the latest soft boundary in the trailing half
-                    # of the budget; that maximizes preserved text length.
-                    # Cut AT the soft boundary (inclusive) so the label
-                    # ends on the soft char (e.g. "-" or ",") rather than
-                    # on the alpha char that followed it.
-                    if cut_at < 0:
-                        latest_soft = max(
-                            (truncated.rfind(s) for s in ("-", ",", ".", ")")),
-                            default=-1,
-                        )
-                        if latest_soft >= len(truncated) // 2:
-                            cut_at = latest_soft + 1
-                    if cut_at > 0:
-                        truncated = truncated[:cut_at]
-                    label_body = truncated.rstrip() + _DISCORD_ELLIPSIS
+                # Button labels are just the option number ("1", "2", ...).
+                # The full choice text is unreadable on Discord buttons no
+                # matter how we truncate it: the 80-char API cap is already
+                # much wider than what mobile clients render before
+                # wrapping/cutting a second line (~40 visible chars), so any
+                # truncation strategy here still garbles longer choices.
+                # send_clarify() now mirrors the full, untruncated choice
+                # text as a numbered list in the embed/message body (mirrors
+                # the Telegram/WhatsApp adapters' approach) — the button only
+                # needs to carry the index so the label is always short and
+                # legible, and the real text lives where there's room to
+                # read it.
+                label_body = str(index + 1)
                 button = discord.ui.Button(
-                    label=f"{prefix}{label_body}",
+                    label=label_body,
                     style=discord.ButtonStyle.primary,
                     custom_id=f"clarify:{clarify_id}:{index}",
                 )

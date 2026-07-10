@@ -157,6 +157,18 @@ gateway:
     invalid:               "Invalid goal: {error}"
     set:                   "⊙ Goal set ({budget}-turn budget): {goal}\nI'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
 
+  plan:
+    unavailable:           "Plan mode unavailable on this session."
+    entered:               "📝 Plan mode on. I'll plan only — mutating tools are blocked until you approve. I'll write the plan under .hermes/plans/ and ask for approval.\nControls: /plan status · /plan show · /plan approve · /plan reject <feedback> · /plan exit"
+    off:                   "Plan mode is off. Enter it with /plan."
+    not_active:            "Plan mode is not active — nothing to approve or reject."
+    no_plan:               "No plan file has been written yet."
+    show:                  "📝 Plan file: {path}"
+    approved:              "✅ Plan approved — execution unlocks on the next turn."
+    rejected:              "↩ Staying in plan mode. Keep refining the plan."
+    rejected_feedback:     "↩ Staying in plan mode. Feedback: {feedback}"
+    exited:                "Plan mode off — the pending plan was discarded (not approved). Mutating tools are unlocked."
+
   help:
     header:                "📖 **Hermes Commands**\n"
     skill_header:          "\n⚡ **Skill Commands** ({count} active):"

@@ -2319,6 +2319,55 @@ class GatewaySlashCommandsMixin:
             return f"{base}\n(Couldn't draft a contract — running as a free-form goal.)"
         return base
 
+    async def _handle_plan_command(self, event: "MessageEvent") -> str:
+        """Handle /plan for gateway platforms.
+
+        Subcommands: ``/plan`` (enter) · ``/plan status`` · ``/plan show`` ·
+        ``/plan approve`` · ``/plan reject [feedback]`` · ``/plan exit``.
+
+        ``/plan exit`` DISCARDS a pending plan — it never approves it.
+        """
+        args = (event.get_command_args() or "").strip()
+        lower = args.lower()
+
+        mgr, _session_entry = self._get_plan_manager_for_event(event)
+        if mgr is None:
+            return t("gateway.plan.unavailable")
+
+        if lower == "status":
+            return mgr.status_line()
+
+        if lower == "show":
+            s = mgr.state
+            if s is None or s.plan_path is None:
+                return t("gateway.plan.no_plan")
+            return t("gateway.plan.show", path=s.plan_path)
+
+        if lower == "approve":
+            state = mgr.approve()
+            if state is None:
+                return t("gateway.plan.not_active")
+            return t("gateway.plan.approved")
+
+        if lower == "reject" or lower.startswith("reject "):
+            if not mgr.is_active():
+                return t("gateway.plan.not_active")
+            feedback = args[len("reject"):].strip()
+            mgr.keep_planning()
+            if feedback:
+                return t("gateway.plan.rejected_feedback", feedback=feedback)
+            return t("gateway.plan.rejected")
+
+        # /plan exit — leave plan mode, DISCARDING any pending plan. Never
+        # approves (shipped-bug lesson).
+        if lower == "exit":
+            had = mgr.exit()
+            return t("gateway.plan.exited") if had else t("gateway.plan.off")
+
+        # Bare /plan (or unknown arg) → enter plan mode.
+        state = mgr.enter(entered_by="user")
+        return t("gateway.plan.entered")
+
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).
 

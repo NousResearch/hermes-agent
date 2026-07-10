@@ -113,6 +113,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<prompt>"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | draft <text> | show | pause | resume | clear | status | wait <pid> | unwait]"),
+    CommandDef("plan", "Enter code-enforced plan mode (mutations blocked until you approve the plan)", "Session",
+               args_hint="[status | show | approve | reject <feedback> | exit]",
+               subcommands=("status", "show", "approve", "reject", "exit")),
     CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
                args_hint="<prompt>"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
@@ -1164,7 +1167,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - plan: code-enforced plan mode is a coding/CLI-centric control surface;
+#     reached via /hermes plan on Slack to stay under the 50-command cap.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "plan"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

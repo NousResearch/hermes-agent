@@ -9541,6 +9541,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "subgoal":
                 return await self._handle_subgoal_command(event)
 
+            # /plan is safe mid-run — it only mutates persisted plan state,
+            # which the next turn's agent build reads. It does not interrupt
+            # the running turn.
+            if _cmd_def_inner and _cmd_def_inner.name == "plan":
+                return await self._handle_plan_command(event)
+
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
             # the tool-progress display mode for the ongoing stream.
@@ -10054,6 +10060,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "goal":
             return await self._handle_goal_command(event)
+
+        if canonical == "plan":
+            return await self._handle_plan_command(event)
 
         if canonical == "moa":
             # /moa is one-shot sugar only: run a single prompt through the
@@ -12852,6 +12861,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None, None
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+
+    def _get_plan_manager_for_event(self, event: "MessageEvent"):
+        """Return a PlanManager bound to the session for this gateway event.
+
+        Returns ``(manager, session_entry)`` or ``(None, None)`` if the
+        plan_mode module can't be loaded.
+        """
+        try:
+            from hermes_cli.plan_mode import PlanManager
+        except Exception as exc:
+            logger.debug("plan manager unavailable: %s", exc)
+            return None, None
+        try:
+            session_entry = self.session_store.get_or_create_session(event.source)
+        except Exception as exc:
+            logger.debug("plan manager: session lookup failed: %s", exc)
+            return None, None
+        sid = getattr(session_entry, "session_id", None) or ""
+        if not sid:
+            return None, None
+        return PlanManager(session_id=sid), session_entry
 
 
 
@@ -17302,6 +17332,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+
+        # Plan mode: materialise the `plan_mode: always` default for a fresh
+        # session, then fold any active restriction into the toolset selection.
+        # Adding the `plan` toolset to enabled_toolsets also busts the agent
+        # cache signature so the restricted agent rebuilds on entry.
+        try:
+            from hermes_cli import plan_mode as _plan_mode
+            _plan_mode.ensure_default_for_session(session_id or "")
+            enabled_toolsets, disabled_toolsets = _plan_mode.apply_session_toolset_policy(
+                session_id or "", enabled_toolsets, disabled_toolsets,
+            )
+        except Exception as _plan_exc:
+            logger.debug("plan-mode toolset policy skipped: %s", _plan_exc)
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):

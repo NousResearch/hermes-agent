@@ -8875,6 +8875,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "plan":
+            self._handle_plan_command(cmd_original)
         elif canonical == "moa":
             # /moa is one-shot sugar only: run a single prompt through the
             # default MoA preset, then restore the prior model. To *switch* to a
@@ -9146,7 +9148,87 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._goal_manager = mgr
         return mgr
 
+    def _get_plan_manager(self):
+        """Return the PlanManager bound to the current session_id, or None.
 
+        Rebound lazily when ``session_id`` changes. Not cached across a
+        transition because callers re-read fresh state each time.
+        """
+        try:
+            from hermes_cli.plan_mode import PlanManager
+        except Exception as exc:
+            logging.debug("plan manager unavailable: %s", exc)
+            return None
+        sid = getattr(self, "session_id", None) or ""
+        if not sid:
+            return None
+        return PlanManager(session_id=sid)
+
+    def _handle_plan_command(self, cmd: str) -> None:
+        """Dispatch /plan subcommands: (enter) / status / show / approve /
+        reject <feedback> / exit.
+
+        Any transition that changes the mutating-toolset restriction drops the
+        cached agent (``self.agent = None``) so it rebuilds with the new
+        toolset policy on the next turn. ``/plan exit`` DISCARDS a pending plan
+        — it never approves it.
+        """
+        from cli import _DIM, _RST, _cprint
+        parts = (cmd or "").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        lower = arg.lower()
+
+        mgr = self._get_plan_manager()
+        if mgr is None:
+            _cprint(f"  {_DIM}Plan mode unavailable (no active session).{_RST}")
+            return
+
+        if lower == "status":
+            _cprint(f"  {mgr.status_line()}")
+            return
+
+        if lower == "show":
+            s = mgr.state
+            if s is None or s.plan_path is None:
+                _cprint("  No plan file has been written yet.")
+            else:
+                _cprint(f"  📝 Plan file: {s.plan_path}")
+            return
+
+        if lower == "approve":
+            if mgr.approve() is None:
+                _cprint("  Plan mode is not active — nothing to approve.")
+                return
+            self.agent = None  # rebuild unrestricted next turn
+            _cprint("  ✅ Plan approved — execution unlocks on the next turn.")
+            return
+
+        if lower == "reject" or lower.startswith("reject "):
+            if not mgr.is_active():
+                _cprint("  Plan mode is not active — nothing to reject.")
+                return
+            feedback = arg[len("reject"):].strip()
+            mgr.keep_planning()
+            if feedback:
+                _cprint(f"  ↩ Staying in plan mode. Feedback: {feedback}")
+            else:
+                _cprint("  ↩ Staying in plan mode. Keep refining the plan.")
+            return
+
+        if lower == "exit":
+            had = mgr.exit()
+            self.agent = None  # rebuild unrestricted next turn
+            if had:
+                _cprint("  Plan mode off — the pending plan was discarded (not approved). Mutating tools are unlocked.")
+            else:
+                _cprint("  Plan mode is off.")
+            return
+
+        # Bare /plan (or unknown arg) → enter plan mode.
+        mgr.enter(entered_by="user")
+        self.agent = None  # rebuild restricted next turn
+        _cprint("  📝 Plan mode on. I'll plan only — mutating tools are blocked until you approve.")
+        _cprint(f"  {_DIM}Controls: /plan status · /plan show · /plan approve · /plan reject <feedback> · /plan exit{_RST}")
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.

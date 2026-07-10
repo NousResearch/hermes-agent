@@ -466,8 +466,14 @@ TOOLSETS = {
     },
     
     "hermes-slack": {
-        "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS,
+        "description": "Slack bot toolset - full access for workspace use (terminal has safety checks) plus Slack Web API",
+        "tools": _HERMES_CORE_TOOLS + ["slack_api"],
+        "includes": []
+    },
+
+    "slack": {
+        "description": "Slack Web API tools (channels, threads, messages, files, reactions)",
+        "tools": ["slack_api"],
         "includes": []
     },
     

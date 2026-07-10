@@ -361,6 +361,22 @@ def finalize_turn(
 
     _response_transformed = False
 
+    # TheWon runtime enforcement: if this was a TheWon-adjacent request,
+    # surface the KH+LLM Wiki precheck evidence in the final response even if
+    # the model forgets. This is deliberately after turn-completion/file
+    # mutation footers and before plugin transforms so plugins still see the
+    # user-visible text.
+    if final_response and not interrupted:
+        try:
+            from agent.thewon_precheck import apply_precheck_response_block
+
+            final_response = apply_precheck_response_block(
+                final_response,
+                getattr(agent, "_thewon_precheck_bundle", None),
+            )
+        except Exception as _tw_precheck_err:
+            logger.debug("TheWon precheck response block failed: %s", _tw_precheck_err)
+
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can transform the LLM's output text before it's returned.

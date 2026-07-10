@@ -56,7 +56,7 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.
     # `launchctl unload ai.hermes.update-checker.plist`).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart)\b[^\n]*\bhermes[.\-]?gateway)"
+    r"|(?:launchctl\s+(?:kickstart|bootout|bootstrap|unload|load|stop|restart)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch C: systemctl ops on a hermes-gateway unit.
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both
@@ -135,7 +135,7 @@ def check_gateway_lifecycle(
         raise GatewayLifecycleBlocked(
             "Blocked: cron job contains a gateway lifecycle command "
             "(restart/stop/kill). This is blocked to prevent agent-driven "
-            "SIGTERM-respawn loops under launchd/systemd supervision "
-            "(#30719). Run `hermes gateway restart` from a shell outside "
+            "restart loops / SIGTERM-respawn loops under launchd/systemd "
+            "supervision (#30719). Run `hermes gateway restart` from a shell "
             "the running gateway instead."
         )

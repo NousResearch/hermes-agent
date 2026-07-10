@@ -580,7 +580,7 @@ def build_alias_map() -> dict[str, str]:
     if not wrapper_dir.is_dir():
         return result
     is_windows = sys.platform == "win32"
-    prefix = "hermes -p "
+    profile_token_pattern = re.compile(r'(?:^|\s)(?:\S*/)?hermes(?:\.exe)?\s+-p\s+([^\s"%]+)')
 
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
@@ -596,12 +596,13 @@ def build_alias_map() -> dict[str, str]:
         except (OSError, UnicodeDecodeError):
             # UnicodeDecodeError = a binary on PATH (ffmpeg etc.) — not a wrapper.
             continue
-        idx = content.find(prefix)
-        if idx == -1:
+        match = profile_token_pattern.search(content)
+        if not match:
             continue
-        rest = content[idx + len(prefix):]
-        # Profile id is the first whitespace-delimited token after the flag.
-        canon = rest.split(None, 1)[0].strip() if rest.strip() else ""
+        # Profile id is the complete shell token after the flag. This avoids
+        # treating wrappers for similarly-prefixed profiles (e.g. researcher)
+        # as aliases for shorter names (e.g. research).
+        canon = match.group(1).strip()
         if not canon:
             continue
         canon = normalize_profile_name(canon)

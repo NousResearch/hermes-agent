@@ -1018,6 +1018,16 @@ class TestFindAliasForProfile:
         from hermes_cli.profiles import find_alias_for_profile
         assert find_alias_for_profile("steve") is None
 
+    def test_prefix_profile_name_does_not_match_longer_profile(self, profile_env, monkeypatch):
+        # Regression: a wrapper for `researcher` must not display as an alias
+        # for the shorter `research` profile just because the old lookup used a
+        # substring search for "hermes -p research".
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
+        create_wrapper_script("researcher")
+        assert find_alias_for_profile("research") is None
+        assert find_alias_for_profile("researcher") == "researcher"
+
     def test_ignores_unrelated_files(self, profile_env, monkeypatch):
         # ~/.local/bin commonly holds unrelated binaries; they must not match.
         monkeypatch.setattr("sys.platform", "darwin")

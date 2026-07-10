@@ -40,6 +40,7 @@ from typing import Any, List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
+from cron.lifecycle_guard import check_gateway_lifecycle
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
@@ -2067,6 +2068,14 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
+    try:
+        script_text = path.read_text(encoding="utf-8", errors="replace")
+        check_gateway_lifecycle(str(script_path), str(path))
+    except ValueError as exc:
+        return False, str(exc)
+    except OSError as exc:
+        return False, f"Script could not be read: {path}: {exc}"
+
     script_timeout = _get_script_timeout()
 
     # Pick an interpreter by extension.  Bash for .sh/.bash, Python for
@@ -2503,6 +2512,27 @@ def run_job(
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+
+    try:
+        check_gateway_lifecycle(
+            "\n".join(
+                str(part)
+                for part in (job.get("prompt"), job.get("name"), job.get("script"))
+                if part
+            ),
+            str(job.get("script") or "") or None,
+        )
+    except ValueError as exc:
+        now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+        blocked_doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {now_iso}\n"
+            "**Status:** BLOCKED\n\n"
+            f"{exc}\n"
+        )
+        logger.warning("Job '%s' blocked by gateway lifecycle guard: %s", job_id, exc)
+        return False, blocked_doc, "", str(exc)
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.

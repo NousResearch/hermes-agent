@@ -6,6 +6,7 @@ delegate_task call instead of telling the user the command doesn't exist).
 """
 
 from datetime import datetime
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -16,18 +17,18 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
-def _make_source() -> SessionSource:
+def _make_source(platform: Platform = Platform.TELEGRAM, user_id: str = "u1") -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
-        user_id="u1",
+        platform=platform,
+        user_id=user_id,
         chat_id="c1",
         user_name="tester",
         chat_type="dm",
     )
 
 
-def _make_event(text: str) -> MessageEvent:
-    return MessageEvent(text=text, source=_make_source(), message_id="m1")
+def _make_event(text: str, *, platform: Platform = Platform.TELEGRAM, user_id: str = "u1") -> MessageEvent:
+    return MessageEvent(text=text, source=_make_source(platform, user_id), message_id="m1")
 
 
 def _make_runner():
@@ -104,6 +105,167 @@ async def test_unknown_slash_command_returns_guidance(monkeypatch):
     assert "Unknown command" in result
     assert "/definitely-not-a-command" in result
     assert "/commands" in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_twon_mina_task_command_forwards_to_router(monkeypatch):
+    """The deployment-specific /tw-mina-task command should be handled before
+    the generic unknown-command guard."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/tw-mina-task leaked through to the agent")
+    )
+
+    captured = {}
+
+    def _fake_forward(event, user_args):
+        captured["event"] = event
+        captured["user_args"] = user_args
+        return {
+            "request_id": "slack-gateway-test",
+            "status": 202,
+            "body": "{}",
+            "route_owner": "hermes_slack_gateway_command",
+        }
+
+    monkeypatch.setattr(gateway_run, "_post_thewon_mina_task_to_workflow_router", _fake_forward)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(
+        _make_event("/tw-mina-task Socket Mode bridge live smoke", platform=Platform.SLACK)
+    )
+
+    assert result is not None
+    assert "Min-A router accepted" in result
+    assert "slack-gateway-test" in result
+    assert captured["user_args"] == "Socket Mode bridge live smoke"
+    runner._run_agent.assert_not_called()
+
+
+
+def test_twon_mina_task_helper_enforces_allowlist_and_route_owner(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+
+    route_dir = tmp_path / "hermes"
+    route_dir.mkdir()
+    (route_dir / "webhook_subscriptions.json").write_text(
+        json.dumps({"thewon-workflow-router": {"secret": "dummy-secret"}}),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class _FakeResponse:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self):
+            return b'{"status":"accepted"}'
+
+    def _fake_urlopen(req, timeout):
+        captured["timeout"] = timeout
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeResponse()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", route_dir)
+    monkeypatch.setenv("THEWON_TW_MINA_TASK_ALLOWED_USERS", "u1")
+    monkeypatch.delenv("THEWON_SOCKET_MODE_BRIDGE_ACTIVE", raising=False)
+    monkeypatch.setenv("THEWON_TW_MINA_TASK_HANDLER", "gateway")
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    result = gateway_run._post_thewon_mina_task_to_workflow_router(
+        _make_event("/tw-mina-task Hardened path", platform=Platform.SLACK, user_id="u1"),
+        "Hardened path",
+    )
+
+    assert result["status"] == 202
+    assert result["route_owner"] == "hermes_slack_gateway_command"
+    assert captured["timeout"] == 20
+    assert captured["headers"]["X-gitlab-token"] == "dummy-secret"
+    envelope = captured["body"]
+    assert envelope["source"]["route_owner"] == "hermes_slack_gateway_command"
+    assert envelope["source"]["allowlist_source"] == "THEWON_TW_MINA_TASK_ALLOWED_USERS"
+    assert envelope["payload"]["route_owner"] == "hermes_slack_gateway_command"
+    assert "allowed_slack_user" in envelope["qg"]["hard_gates"]
+    assert "single_route_owner" in envelope["qg"]["hard_gates"]
+
+
+@pytest.mark.asyncio
+async def test_twon_mina_task_rejects_non_slack_event(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/tw-mina-task leaked through to the agent")
+    )
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "u1")
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/tw-mina-task nope"))
+
+    assert result is not None
+    assert "Min-A router bridge WARN" in result
+    assert "only enabled for Slack" in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_twon_mina_task_requires_allowed_slack_user(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/tw-mina-task leaked through to the agent")
+    )
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "someone-else")
+    monkeypatch.delenv("THEWON_TW_MINA_TASK_ALLOWED_USERS", raising=False)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(
+        _make_event("/tw-mina-task blocked", platform=Platform.SLACK, user_id="u1")
+    )
+
+    assert result is not None
+    assert "Min-A router bridge WARN" in result
+    assert "not allowed" in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_twon_mina_task_duplicate_route_guard(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/tw-mina-task leaked through to the agent")
+    )
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "u1")
+    monkeypatch.setenv("THEWON_SOCKET_MODE_BRIDGE_ACTIVE", "true")
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(
+        _make_event("/tw-mina-task duplicate", platform=Platform.SLACK, user_id="u1")
+    )
+
+    assert result is not None
+    assert "Min-A router bridge WARN" in result
+    assert "SOCKET_MODE_BRIDGE_ACTIVE" in result
     runner._run_agent.assert_not_called()
 
 

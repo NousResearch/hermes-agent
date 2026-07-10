@@ -602,6 +602,28 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    # TheWon L0.5 runtime precheck (KH + LLM Wiki). This is current-turn
+    # ephemeral context only: it does not mutate the stable system prompt or
+    # persisted user message, preserving prompt-cache invariants.
+    _thewon_precheck_context = ""
+    try:
+        from agent.thewon_precheck import format_precheck_context, run_thewon_precheck
+
+        agent._thewon_precheck_bundle = run_thewon_precheck(
+            original_user_message,
+            agent_code="Hermes",
+        )
+        _thewon_precheck_context = format_precheck_context(
+            agent._thewon_precheck_bundle
+        )
+    except Exception as _tw_precheck_err:
+        logger.warning("TheWon KH+Wiki precheck hook failed: %s", _tw_precheck_err)
+        agent._thewon_precheck_bundle = {
+            "required": False,
+            "query": str(original_user_message)[:500],
+            "errors": [f"precheck hook failed: {_tw_precheck_err!r}"],
+        }
+
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     final_response = None
@@ -632,8 +654,11 @@ def run_conversation(
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
+        _codex_user_message = user_message
+        if _thewon_precheck_context and isinstance(_codex_user_message, str):
+            _codex_user_message = _codex_user_message + "\n\n" + _thewon_precheck_context
         return agent._run_codex_app_server_turn(
-            user_message=user_message,
+            user_message=_codex_user_message,
             original_user_message=original_user_message,
             messages=messages,
             effective_task_id=effective_task_id,
@@ -806,6 +831,8 @@ def run_conversation(
                         _injections.append(_fenced)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
+                if _thewon_precheck_context:
+                    _injections.append(_thewon_precheck_context)
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):

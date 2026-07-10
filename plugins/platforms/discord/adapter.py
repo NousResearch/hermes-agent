@@ -886,6 +886,13 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        # Bridge config.yaml discord.allow_bots to the existing Discord bot-message
+        # filter/authz env knob. Values: none | mentions | all.
+        _allow_bots_cfg = self.config.extra.get("allow_bots")
+        if _allow_bots_cfg is not None and not os.getenv("DISCORD_ALLOW_BOTS"):
+            _allow_bots_value = str(_allow_bots_cfg).lower().strip()
+            if _allow_bots_value in {"none", "mentions", "all"}:
+                os.environ["DISCORD_ALLOW_BOTS"] = _allow_bots_value
         # In-memory cache of the bot's last message ID per channel, used by
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
@@ -901,6 +908,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Mirrors the Telegram #58563 fix. Entries are dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
         self._warned_fail_closed_default = False
+        self._handoff_thread_watch_tasks: Dict[str, asyncio.Task] = {}
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
@@ -1204,6 +1212,18 @@ class DiscordAdapter(BasePlatformAdapter):
                             return
 
                 await self._handle_message(message, role_authorized=_role_authorized)
+
+            @self._client.event
+            async def on_thread_create(thread):
+                """Join and hydrate threads created from messages we sent.
+
+                Other Hermes agents often auto-thread a mention-triggered
+                handoff by creating a thread from our parent-channel message.
+                Discord does not reliably deliver follow-up messages in that
+                thread to this bot until it has joined the thread, so a
+                parent-channel-only listener can miss the other agent's reply.
+                """
+                await adapter_self._maybe_join_and_hydrate_handoff_thread(thread)
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
@@ -1538,6 +1558,55 @@ class DiscordAdapter(BasePlatformAdapter):
             return "same slash-command fingerprint already synced"
         return None
 
+    async def _remote_slash_commands_match_desired(self) -> bool:
+        """Return True when Discord's live global commands match the local tree.
+
+        The cached fingerprint is only a local desired-state fingerprint.  If a
+        previous safe sync was interrupted between command deletes/recreates, or
+        Discord accepted only part of a mutation sequence, the cache can say the
+        desired tree was synced while the live app-command set is missing one
+        command.  Verify the live command set before honoring the skip cache.
+        """
+        if not self._client:
+            return True
+        tree = self._client.tree
+        desired_payloads = [command.to_dict(tree) for command in tree.get_commands()]
+        desired_by_key = {
+            (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): payload
+            for payload in desired_payloads
+        }
+        existing_commands = await tree.fetch_commands()
+        existing_by_key = {
+            (
+                int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1),
+                str(command.name or "").lower(),
+            ): command
+            for command in existing_commands
+        }
+        if set(existing_by_key) != set(desired_by_key):
+            missing = sorted(name for (_typ, name) in set(desired_by_key) - set(existing_by_key))
+            extra = sorted(name for (_typ, name) in set(existing_by_key) - set(desired_by_key))
+            logger.warning(
+                "[%s] Discord slash command drift detected before cached skip: missing=%s extra=%s",
+                self.name,
+                missing[:10],
+                extra[:10],
+            )
+            return False
+        for key, desired in desired_by_key.items():
+            current_payload = self._canonicalize_app_command_payload(
+                self._existing_command_to_payload(existing_by_key[key])
+            )
+            desired_payload = self._canonicalize_app_command_payload(desired)
+            if current_payload != desired_payload:
+                logger.warning(
+                    "[%s] Discord slash command drift detected before cached skip: changed=%s",
+                    self.name,
+                    key[1],
+                )
+                return False
+        return True
+
     def _record_command_sync_attempt(self, app_id: Any, fingerprint: str) -> None:
         state = self._read_command_sync_state()
         state[self._command_sync_state_key(app_id)] = {
@@ -1687,8 +1756,25 @@ class DiscordAdapter(BasePlatformAdapter):
             fingerprint = self._desired_command_sync_fingerprint()
             skip_reason = self._command_sync_skip_reason(app_id, fingerprint)
             if skip_reason:
-                logger.info("[%s] Skipping Discord slash command sync: %s", self.name, skip_reason)
-                return
+                if skip_reason == "same slash-command fingerprint already synced":
+                    try:
+                        if await self._remote_slash_commands_match_desired():
+                            logger.info("[%s] Skipping Discord slash command sync: %s", self.name, skip_reason)
+                            return
+                        logger.warning(
+                            "[%s] Cached Discord slash command sync state is stale; reconciling live commands",
+                            self.name,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[%s] Could not verify live Discord slash commands before cached skip: %s",
+                            self.name,
+                            e,
+                        )
+                        return
+                else:
+                    logger.info("[%s] Skipping Discord slash command sync: %s", self.name, skip_reason)
+                    return
             self._record_command_sync_attempt(app_id, fingerprint)
 
             http = getattr(self._client, "http", None)
@@ -2090,6 +2176,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     self._nonconversational_messages.mark_many(message_ids)
                 elif not _looks_like_nonconversational_history_message(content):
                     self._last_self_message_id[_target_id] = message_ids[-1]
+                    if not thread_id:
+                        for _mid in message_ids:
+                            self._watch_handoff_thread_for_message(chat_id, _mid)
 
             return SendResult(
                 success=True,
@@ -5313,6 +5402,143 @@ class DiscordAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Auto-thread helpers
     # ------------------------------------------------------------------
+
+    def _watch_handoff_thread_for_message(self, parent_chat_id: str, message_id: str) -> None:
+        """Poll briefly for a thread created from one of our sent messages."""
+        if not self._client or not parent_chat_id or not message_id:
+            return
+        if message_id in self._handoff_thread_watch_tasks:
+            return
+        task = asyncio.create_task(self._handoff_thread_watch_loop(parent_chat_id, message_id))
+        self._handoff_thread_watch_tasks[message_id] = task
+        task.add_done_callback(lambda _task, _mid=message_id: self._handoff_thread_watch_tasks.pop(_mid, None))
+
+    async def _handoff_thread_watch_loop(self, parent_chat_id: str, message_id: str) -> None:
+        """Join/hydrate an auto-thread whose id matches a sent message id."""
+        for _ in range(40):
+            await asyncio.sleep(3)
+            if not self._client:
+                return
+            thread = None
+            with suppress(Exception):
+                thread = self._client.get_channel(int(message_id))
+            if thread is None:
+                with suppress(Exception):
+                    thread = await self._client.fetch_channel(int(message_id))
+            if thread is None:
+                continue
+            if self._get_parent_channel_id(thread) != str(parent_chat_id):
+                return
+            await self._maybe_join_and_hydrate_handoff_thread(thread)
+            return
+
+    async def _maybe_join_and_hydrate_handoff_thread(self, thread: Any) -> None:
+        """Join other-agent auto-threads that originate from our messages.
+
+        Discord auto-thread handoffs create a thread whose id is the starter
+        message id.  When another bot creates that thread from a message this
+        bot sent, discord.py may not deliver subsequent thread messages until
+        this bot joins the thread.  Join the thread, then replay the latest
+        bot-authored replies so the normal message handler can continue the
+        cross-agent turn.
+        """
+        if not self._client or isinstance(thread, getattr(discord, "DMChannel", ())):
+            return
+
+        thread_id = str(getattr(thread, "id", "") or "")
+        if not thread_id:
+            return
+
+        parent_id = self._get_parent_channel_id(thread)
+        if not parent_id:
+            return
+
+        parent_channel = getattr(thread, "parent", None)
+        if parent_channel is None:
+            with suppress(Exception):
+                parent_channel = self._client.get_channel(int(parent_id))
+        if parent_channel is None:
+            with suppress(Exception):
+                parent_channel = await self._client.fetch_channel(int(parent_id))
+        if parent_channel is None:
+            return
+
+        starter = None
+        fetch_message = getattr(parent_channel, "fetch_message", None)
+        if fetch_message is not None:
+            with suppress(Exception):
+                starter = await fetch_message(int(thread_id))
+
+        self_user = getattr(self._client, "user", None)
+        self_id = str(getattr(self_user, "id", "") or "")
+        starter_author_id = str(getattr(getattr(starter, "author", None), "id", "") or "")
+        starter_from_self = bool(self_id and starter_author_id == self_id)
+        starter_mentions_self = bool(self_user and starter and self_user in (getattr(starter, "mentions", []) or []))
+
+        # Only auto-join threads that are plausibly part of a handoff to us:
+        # either they were created from a message we sent, or the starter
+        # explicitly mentioned us.  This keeps random public threads out of the
+        # agent loop.
+        if not starter_from_self and not starter_mentions_self:
+            return
+
+        join = getattr(thread, "join", None)
+        if join is not None:
+            with suppress(Exception):
+                await join()
+
+        self._threads.mark(thread_id)
+
+        messages: list[Any] = []
+        history = getattr(thread, "history", None)
+        if history is None:
+            return
+        try:
+            hist = history(limit=20, oldest_first=True)
+            if hasattr(hist, "__aiter__"):
+                async for msg in hist:
+                    messages.append(msg)
+            else:
+                if asyncio.iscoroutine(hist):
+                    hist = await hist
+                messages.extend(list(hist or []))
+        except Exception as exc:
+            logger.debug("[%s] Could not hydrate Discord handoff thread %s: %s", self.name, thread_id, exc)
+            return
+
+        allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+        for msg in messages:
+            msg_id = str(getattr(msg, "id", "") or "")
+            if not msg_id or msg_id == thread_id:
+                continue
+            if getattr(msg, "author", None) == self_user:
+                continue
+            if not (getattr(msg, "content", None) or getattr(msg, "attachments", None)):
+                continue
+
+            author_is_bot = bool(getattr(getattr(msg, "author", None), "bot", False))
+            if author_is_bot:
+                if allow_bots == "none":
+                    continue
+                msg_mentions_self = bool(self_user and self_user in (getattr(msg, "mentions", []) or []))
+                if allow_bots == "mentions" and not msg_mentions_self and not starter_from_self:
+                    continue
+            else:
+                # Hydration exists for bot-to-bot handoffs.  Human messages
+                # enter through normal on_message delivery/authorization.
+                continue
+
+            if self._dedup.is_duplicate(msg_id):
+                continue
+            logger.info(
+                "[%s] Hydrating Discord handoff thread %s with message %s from %s",
+                self.name,
+                thread_id,
+                msg_id,
+                getattr(getattr(msg, "author", None), "display_name", None) or getattr(getattr(msg, "author", None), "name", "unknown"),
+            )
+            await self._handle_message(msg)
+
 
     def _derive_auto_thread_name(self, content: str) -> str:
         """Return the fast placeholder name used at Discord thread creation time.

@@ -107,6 +107,160 @@ def _gateway_surface_passes_raw_text(platform: Any) -> bool:
     return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
 
 
+def _csv_env_values(*names: str) -> set[str]:
+    """Return comma/space-separated env allowlist values without logging them."""
+    values: set[str] = set()
+    for name in names:
+        raw = os.getenv(name, "")
+        for item in re.split(r"[,\s]+", raw):
+            item = item.strip()
+            if item:
+                values.add(item)
+    return values
+
+
+def _thewon_tw_mina_task_duplicate_guard() -> Optional[str]:
+    """Return a user-safe reason when another /tw-mina-task owner is active."""
+    handler = os.getenv("THEWON_TW_MINA_TASK_HANDLER", "gateway").strip().lower()
+    socket_active = os.getenv("THEWON_SOCKET_MODE_BRIDGE_ACTIVE", "").strip().lower()
+    if handler and handler not in {"gateway", "hermes_gateway", "hermes-slack-gateway"}:
+        return "disabled because THEWON_TW_MINA_TASK_HANDLER selects a non-gateway owner"
+    if socket_active in {"1", "true", "yes", "on"}:
+        return "disabled because THEWON_SOCKET_MODE_BRIDGE_ACTIVE is set"
+    return None
+
+
+def _authorize_thewon_tw_mina_task_user(user_id: str) -> tuple[bool, str]:
+    """Fail-closed allowlist for the deployment-specific TheWon task command."""
+    allowed = _csv_env_values("THEWON_TW_MINA_TASK_ALLOWED_USERS")
+    source = "THEWON_TW_MINA_TASK_ALLOWED_USERS"
+    if not allowed:
+        allowed = _csv_env_values("SLACK_ALLOWED_USERS")
+        source = "SLACK_ALLOWED_USERS"
+    if not allowed:
+        return False, "no command allowlist configured"
+    if "*" in allowed:
+        return True, source
+    if user_id and user_id in allowed:
+        return True, source
+    return False, source
+
+
+def _post_thewon_mina_task_to_workflow_router(event: Any, user_args: str) -> Dict[str, Any]:
+    """Forward Slack /tw-mina-task to the local TheWon workflow router.
+
+    This is intentionally a narrow deployment bridge, not a new model tool:
+    the existing gateway already receives the Slack slash-like message, and the
+    TheWon router already owns parent/thread/QG creation.  Keep secrets local,
+    never print them, and return only non-secret request metadata.
+    """
+    import urllib.request
+    import uuid
+
+    source = getattr(event, "source", None)
+    platform_value = _gateway_platform_value(getattr(source, "platform", None))
+    if platform_value != "slack":
+        raise PermissionError("/tw-mina-task is only enabled for Slack events")
+
+    duplicate_reason = _thewon_tw_mina_task_duplicate_guard()
+    if duplicate_reason:
+        raise RuntimeError(duplicate_reason)
+
+    channel_id = getattr(source, "chat_id", None) or "C0BFGRSM3K8"
+    user_id = getattr(source, "user_id", None) or "unknown"
+    user_name = getattr(source, "user_name", None) or user_id
+    allowed, allow_source = _authorize_thewon_tw_mina_task_user(user_id)
+    if not allowed:
+        raise PermissionError(f"Slack user is not allowed to run /tw-mina-task ({allow_source})")
+
+    route = "thewon-workflow-router"
+    route_file = _hermes_home / "webhook_subscriptions.json"
+    data = json.loads(route_file.read_text())
+    try:
+        secret = data[route]["secret"]
+    except KeyError as exc:
+        raise RuntimeError(f"Missing webhook route secret for {route!r}") from exc
+    if not secret:
+        raise RuntimeError(f"Webhook route {route!r} has empty secret")
+
+    message_id = getattr(event, "message_id", None)
+    request_id = f"slack-gateway-{message_id or uuid.uuid4()}"
+    title = (user_args.split("\n", 1)[0].strip() if user_args else "Min-A Slack 작업 요청")
+    bridge_owner = "hermes_slack_gateway_command"
+
+    envelope = {
+        "schema_version": "thewon.workflow.v1",
+        "event_type": "workflow_submission",
+        "workflow_type": "task_request",
+        "request_id": request_id,
+        "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "submitted_by": {
+            "slack_user_id": user_id,
+            "display_name": user_name,
+        },
+        "source": {
+            "platform": platform_value,
+            "workspace_id": os.environ.get("SLACK_TEAM_ID", "T0APGAC3AGJ"),
+            "channel_id": channel_id,
+            "thread_ts": getattr(event, "reply_to_message_id", None),
+            "workflow_name": "TW - Min-A 작업 요청 (Hermes Slack gateway /tw-mina-task)",
+            "bridge": bridge_owner,
+            "route_owner": bridge_owner,
+            "allowlist_source": allow_source,
+        },
+        "routing": {
+            "target_channel": "C0BFGRSM3K8",
+            "parent_ts": None,
+            "priority": "P2",
+            "due_at": None,
+            "sensitivity": "internal",
+        },
+        "payload": {
+            "title": title[:120],
+            "project": "TheWon",
+            "context": user_args or "Slack gateway /tw-mina-task request",
+            "deliverable": "agent_cao parent/thread + QG checklist",
+            "sources": ["Hermes Slack gateway /tw-mina-task"],
+            "assignees": ["Min-A"],
+            "split_policy": "auto",
+            "route_owner": bridge_owner,
+        },
+        "qg": {
+            "criteria": [
+                "Hermes Slack gateway received /tw-mina-task",
+                "Slack user allowlist enforced",
+                "Duplicate route owner guard passed",
+                "Hermes router accepted payload",
+                "agent_cao parent/thread created or clear WARN",
+                "no secret exposed",
+            ],
+            "pass_threshold": 95,
+            "hard_gates": ["no_secret_exposure", "allowed_slack_user", "single_route_owner"],
+        },
+        "ssot": {"target": "none", "vault_path": None},
+    }
+
+    body = json.dumps(envelope, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        "http://localhost:8644/webhooks/thewon-workflow-router",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Gitlab-Token": secret,
+            "X-Request-ID": request_id,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        response_body = resp.read().decode("utf-8")
+        return {
+            "request_id": request_id,
+            "status": resp.status,
+            "body": response_body,
+            "route_owner": bridge_owner,
+        }
+
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -10053,6 +10207,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         return f"Quick command '/{command}' has no target defined."
                 else:
                     return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
+
+        # TheWon Min-A task intake (Slack /tw-mina-task)
+        #
+        # Slack message-command text reaches the Hermes Slack gateway before the
+        # separate Socket Mode bridge in this deployment.  Handle the command at
+        # the gateway waist and forward the same workflow envelope to the local
+        # Hermes webhook router instead of returning the generic unknown-command
+        # notice.
+        if command == "tw-mina-task":
+            try:
+                user_args = event.get_command_args().strip()
+                result = await asyncio.to_thread(
+                    _post_thewon_mina_task_to_workflow_router,
+                    event,
+                    user_args,
+                )
+                return (
+                    "Min-A router accepted `/tw-mina-task` "
+                    f"`{result['request_id']}` (HTTP {result['status']})."
+                )
+            except Exception as e:
+                logger.warning("/tw-mina-task gateway bridge failed: %s", e)
+                return f"Min-A router bridge WARN: {type(e).__name__}: {e}"
 
         # Plugin-registered slash commands
         if command:

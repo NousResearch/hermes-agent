@@ -235,3 +235,109 @@ class TestPoolRotationCycle:
         )
         assert recovered is False
         assert has_retried is False
+
+
+# ---------------------------------------------------------------------------
+# 6. Copilot credential rotation refreshes both token and base_url
+# ---------------------------------------------------------------------------
+
+
+class TestCopilotCredentialRefresh:
+    """Copilot-specific: _swap_credential fetches fresh token+base_url together."""
+
+    def _make_copilot_entry(self, base_url: str) -> MagicMock:
+        """Create a mock pool entry for Copilot."""
+        entry = MagicMock()
+        entry.access_token = "gho_test_token"
+        entry.runtime_api_key = None
+        entry.runtime_base_url = None
+        entry.base_url = base_url
+        return entry
+
+    @patch("hermes_cli.copilot_auth.get_copilot_api_token")
+    def test_copilot_swap_refreshes_token_and_base_url(self, mock_exchange):
+        """When provider is copilot, _swap_credential calls live token exchange."""
+        from run_agent import AIAgent
+
+        # Mock live exchange returning Enterprise endpoint
+        mock_exchange.return_value = ("exchanged_jwt", "https://api.enterprise.githubcopilot.com")
+
+        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
+            agent = AIAgent()
+        agent.provider = "copilot"
+        agent.api_mode = "openai"
+        agent._client_kwargs = {}
+        agent.base_url = "https://api.githubcopilot.com"  # initial public endpoint
+        agent._replace_primary_openai_client = MagicMock()
+
+        # Pool entry with stale public endpoint
+        stale_entry = self._make_copilot_entry("https://api.githubcopilot.com")
+
+        # Swap credential - should trigger live exchange
+        agent._swap_credential(stale_entry)
+
+        # Verify live exchange was called with the entry's raw token
+        mock_exchange.assert_called_once_with("gho_test_token")
+
+        # Verify the client was updated with fresh Enterprise endpoint
+        assert agent.api_key == "exchanged_jwt"
+        assert agent.base_url == "https://api.enterprise.githubcopilot.com"
+        assert agent._client_kwargs["api_key"] == "exchanged_jwt"
+        assert agent._client_kwargs["base_url"] == "https://api.enterprise.githubcopilot.com"
+
+    @patch("hermes_cli.copilot_auth.get_copilot_api_token")
+    def test_copilot_swap_falls_back_on_exchange_failure(self, mock_exchange):
+        """If Copilot exchange fails, _swap_credential falls back to entry values."""
+        from run_agent import AIAgent
+
+        # Simulate exchange failure
+        mock_exchange.side_effect = ValueError("network error")
+
+        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
+            agent = AIAgent()
+        agent.provider = "copilot"
+        agent.api_mode = "openai"
+        agent._client_kwargs = {}
+        agent.base_url = "https://api.githubcopilot.com"
+        agent._replace_primary_openai_client = MagicMock()
+
+        # Pool entry
+        entry = self._make_copilot_entry("https://api.githubcopilot.com")
+
+        # Swap credential - should attempt exchange, fall back on failure
+        agent._swap_credential(entry)
+
+        # Verify exchange was attempted
+        mock_exchange.assert_called_once_with("gho_test_token")
+
+        # Verify fallback to entry values occurred
+        assert agent.api_key == "gho_test_token"  # from entry.access_token
+        assert agent.base_url == "https://api.githubcopilot.com"
+
+    def test_non_copilot_swap_does_not_call_exchange(self):
+        """For non-Copilot providers, _swap_credential uses entry values directly."""
+        from run_agent import AIAgent
+
+        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
+            agent = AIAgent()
+        agent.provider = "openai"  # Not Copilot
+        agent.api_mode = "openai"
+        agent._client_kwargs = {}
+        agent.base_url = "https://api.openai.com"
+        agent._replace_primary_openai_client = MagicMock()
+
+        # Entry
+        entry = MagicMock()
+        entry.access_token = "sk_test"
+        entry.runtime_api_key = None
+        entry.runtime_base_url = None
+        entry.base_url = "https://api.openai.com"
+
+        # Swap - should NOT call Copilot exchange
+        with patch("hermes_cli.copilot_auth.get_copilot_api_token") as mock_exchange:
+            agent._swap_credential(entry)
+            mock_exchange.assert_not_called()
+
+        # Verify entry values were used
+        assert agent.api_key == "sk_test"
+        assert agent.base_url == "https://api.openai.com"

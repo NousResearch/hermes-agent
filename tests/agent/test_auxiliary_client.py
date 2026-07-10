@@ -1,5 +1,6 @@
 """Tests for agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
 
+import asyncio
 import base64
 import json
 import logging
@@ -4796,6 +4797,73 @@ class TestBuildCallKwargsToolDedup:
             provider="openai", model="gpt-4o", messages=[], tools=None,
         )
         assert "tools" not in kwargs
+
+
+class TestBuildCallKwargsMaxTokens:
+    """Explicit auxiliary output caps must survive provider kwarg building."""
+
+    def test_custom_local_route_preserves_explicit_max_tokens(self):
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="llama3-vision",
+            messages=[],
+            max_tokens=500,
+            base_url="http://localhost:8080/v1",
+        )
+
+        assert kwargs["max_tokens"] == 500
+        assert "max_completion_tokens" not in kwargs
+
+    def test_custom_gpt5_route_uses_max_completion_tokens(self):
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="gpt-5.4",
+            messages=[],
+            max_tokens=500,
+            base_url="https://my-gateway.example.com/v1",
+        )
+
+        assert kwargs["max_completion_tokens"] == 500
+        assert "max_tokens" not in kwargs
+
+    def test_async_vision_custom_route_sends_explicit_output_cap(self):
+        client = SimpleNamespace(base_url="http://localhost:8080/v1")
+        create = AsyncMock(return_value=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))],
+        ))
+        client.chat = SimpleNamespace(
+            completions=SimpleNamespace(create=create),
+        )
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=(
+                    "custom",
+                    "llama3-vision",
+                    "http://localhost:8080/v1",
+                    "test-key",
+                    None,
+                ),
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                return_value=("custom", client, "llama3-vision"),
+            ),
+        ):
+            asyncio.run(
+                async_call_llm(
+                    task="vision",
+                    provider="custom",
+                    model="llama3-vision",
+                    messages=[{"role": "user", "content": "describe"}],
+                    max_tokens=500,
+                )
+            )
+
+        call_kwargs = create.call_args.kwargs
+        assert call_kwargs["max_tokens"] == 500
+        assert "max_completion_tokens" not in call_kwargs
 
 
 @pytest.fixture(autouse=True)

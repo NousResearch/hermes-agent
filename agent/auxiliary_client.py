@@ -5470,7 +5470,12 @@ def get_auxiliary_extra_body() -> dict:
     return _nous_extra_body() if auxiliary_is_nous else {}
 
 
-def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
+def auxiliary_max_tokens_param(
+    value: int,
+    *,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict:
     """Return the correct max tokens kwarg for the auxiliary client's provider.
 
     OpenRouter and local models use 'max_tokens'. Direct OpenAI with newer
@@ -5480,7 +5485,7 @@ def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> di
     fronting the newer families are also recognised — URL-only detection
     misses the case where a custom base URL serves e.g. ``gpt-5.4``.
     """
-    custom_base = _current_custom_base_url()
+    custom_base = base_url if base_url is not None else _current_custom_base_url()
     or_key = os.getenv("OPENROUTER_API_KEY")
     # Use max_completion_tokens for direct OpenAI-compatible providers that reject
     # max_tokens on newer GPT-4o/o-series/GPT-5-style models.
@@ -6232,25 +6237,13 @@ def _build_call_kwargs(
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
-        # We do NOT cap output by default. Most chat-completions providers treat
-        # an omitted max_tokens as "use the model's max output", which is what we
-        # want for auxiliary tasks (compression summaries, titles, vision, etc.) —
-        # an explicit cap only risks truncating a summary or 400-ing on providers
-        # that reject the parameter outright (e.g. GitHub Copilot / newer OpenAI
-        # GPT-5 models require max_completion_tokens, not max_tokens; ZAI vision
-        # models reject it entirely with error 1210). Omitting it sidesteps all of
-        # those wire-format quirks at once.
+        # We still do NOT cap output by default. Most chat-completions providers
+        # treat an omitted max_tokens as "use the model's max output", which is
+        # what we want for auxiliary tasks (compression summaries, titles, etc.).
         #
-        # The one exception is the Anthropic Messages wire (MiniMax and any
-        # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
-        # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
-        # there.
-        #
-        # NVIDIA NIM (integrate.api.nvidia.com and local NIM endpoints) is a
-        # second exception: some models—notably minimaxai/minimax-m3—return HTTP
-        # 200 with an empty choices[] payload when max_tokens is omitted. The main
-        # NVIDIA chat path already sends an output cap via the provider profile;
-        # preserve it on the auxiliary path too.
+        # When a caller deliberately supplies a cap, preserve that intent with a
+        # provider-compatible wire parameter. The retry path below strips both
+        # max_tokens and max_completion_tokens if a backend rejects the cap.
         _effective_base = base_url or (
             _current_custom_base_url() if provider == "custom" else ""
         )
@@ -6264,6 +6257,14 @@ def _build_call_kwargs(
             or _is_nvidia_nim
         ):
             kwargs["max_tokens"] = max_tokens
+        else:
+            kwargs.update(
+                auxiliary_max_tokens_param(
+                    max_tokens,
+                    model=model,
+                    base_url=_effective_base,
+                )
+            )
 
     if tools:
         # Defensive dedup: providers like Google Vertex, Azure, and Bedrock

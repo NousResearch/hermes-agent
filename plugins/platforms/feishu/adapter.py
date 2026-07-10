@@ -1391,6 +1391,43 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
 
     ws_client._hermes_loop = loop
 
+    # ponytail: msg-frontier.feishu.cn DNS pool returns ~12 IPs, ~3 are black-
+    # holes (TCP or TLS hangs indefinitely with no RST). websockets.connect() tries
+    # resolved IPs sequentially under one open_timeout — if the first IP is a
+    # black-hole the entire connect times out. This helper resolves the hostname,
+    # tries each unique IP with a short per-IP timeout, and returns the first
+    # connection that completes TLS+WS handshake. Upgrade: replace with happy-
+    # eyeballs (RFC 8305) if websockets adds native support, or remove entirely
+    # if feishu cleans their DNS pool.
+    import socket as _socket
+
+    async def _connect_ws_with_ip_failover(conn_url: str, ws_host: str, ws_port: int) -> Any:
+        try:
+            infos = _socket.getaddrinfo(ws_host, ws_port, type=_socket.SOCK_STREAM)
+            unique_ips: list = list(dict.fromkeys(sa[0] for *_, sa in infos))
+        except Exception:
+            unique_ips = [ws_host]
+
+        last_err: Exception | None = None
+        for ip in unique_ips:
+            try:
+                kw: dict = {"open_timeout": None}  # we control timeout via wait_for
+                if ip != ws_host:
+                    kw["host"] = ip
+                    kw["port"] = ws_port
+                return await asyncio.wait_for(
+                    ws_client_module.websockets.connect(conn_url, **kw),
+                    timeout=4.0,
+                )
+            except Exception as e:
+                last_err = e
+                ws_client_module.logger.debug(
+                    "feishu WS connect to %s via IP %s failed (%s), trying next IP",
+                    ws_host, ip, type(e).__name__,
+                )
+                continue
+        raise last_err or ConnectionError(f"all IPs failed for {ws_host}")
+
     async def _patched_connect(self: Any) -> None:
         _loop = self._hermes_loop
         await self._lock.acquire()
@@ -1403,7 +1440,7 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             q = _parse_qs(u.query)
             conn_id = q["device_id"][0]
             service_id = q["service_id"][0]
-            conn = await ws_client_module.websockets.connect(conn_url)
+            conn = await _connect_ws_with_ip_failover(conn_url, u.hostname, u.port or 443)
             self._conn = conn
             self._conn_url = conn_url
             self._conn_id = conn_id

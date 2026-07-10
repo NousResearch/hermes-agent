@@ -1452,6 +1452,50 @@ class TestFetchModelMetadata:
         mock_get.assert_not_called()
         assert result["cached/model"]["context_length"] == 4321
 
+    def test_config_opt_out_skips_network(self, tmp_path, monkeypatch):
+        """openrouter.disable_metadata_fetch in config.yaml skips the network."""
+        import yaml
+        from hermes_cli.config import get_config_path
+
+        self._reset_cache()
+        self._isolate_disk_cache(monkeypatch, tmp_path)
+        monkeypatch.delenv("HERMES_DISABLE_OPENROUTER_METADATA", raising=False)
+        config_path = get_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            yaml.safe_dump({"openrouter": {"disable_metadata_fetch": True}}),
+            encoding="utf-8",
+        )
+
+        with patch("agent.model_metadata.requests.get") as mock_get:
+            result = fetch_model_metadata(force_refresh=True)
+
+        mock_get.assert_not_called()
+        assert result == {}
+
+    def test_env_override_re_enables_over_config_opt_out(self, tmp_path, monkeypatch):
+        """A falsy env override wins over config.yaml and lets the fetch proceed."""
+        import yaml
+        from hermes_cli.config import get_config_path
+
+        self._reset_cache()
+        self._isolate_disk_cache(monkeypatch, tmp_path)
+        monkeypatch.setenv("HERMES_DISABLE_OPENROUTER_METADATA", "0")
+        config_path = get_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            yaml.safe_dump({"openrouter": {"disable_metadata_fetch": True}}),
+            encoding="utf-8",
+        )
+
+        with patch(
+            "agent.model_metadata.requests.get",
+            side_effect=Exception("Tunnel connection failed: 502 Bad Gateway"),
+        ) as mock_get:
+            fetch_model_metadata(force_refresh=True)
+
+        mock_get.assert_called_once()
+
     def test_failure_warns_once_then_debug(self, tmp_path, monkeypatch, caplog):
         """Repeated fetch failures log WARNING once per process, then DEBUG."""
         import logging

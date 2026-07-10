@@ -1566,10 +1566,18 @@ DEFAULT_CONFIG = {
     #   pick the strongest available coder (router's documented default
     #   when the plugins block is omitted).
     #   See: https://openrouter.ai/docs/guides/routing/routers/pareto-router
+    # disable_metadata_fetch: skip the provider-unaware OpenRouter model-metadata
+    #   fetch (openrouter.ai/api/v1/models) used as a pricing/context fallback.
+    #   Set true where openrouter.ai is unreachable — corporate proxies that
+    #   refuse the CONNECT tunnel (502), firewalls, or air-gapped hosts — to
+    #   stop per-cold-start network stalls and log spam. Context/pricing then
+    #   resolve from the hardcoded tiers plus any cached data. The
+    #   HERMES_DISABLE_OPENROUTER_METADATA env var overrides this when set.
     "openrouter": {
         "response_cache": True,
         "response_cache_ttl": 300,
         "min_coding_score": 0.65,
+        "disable_metadata_fetch": False,
     },
 
     # AWS Bedrock provider configuration.

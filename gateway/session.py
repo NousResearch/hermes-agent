@@ -1162,6 +1162,7 @@ class SessionStore:
                                 session_key=key,
                                 source=entry.origin,
                                 now=_now(),
+                                reopen=False,
                             )
                         except Exception as exc:
                             logger.debug(
@@ -1394,8 +1395,16 @@ class SessionStore:
         session_key: str,
         source: SessionSource,
         now: datetime,
+        reopen: bool = True,
     ) -> Optional[SessionEntry]:
-        """Rebuild a missing session-key mapping from durable state.db data."""
+        """Rebuild a missing session-key mapping from durable state.db data.
+
+        When *reopen* is True (the default), calls ``reopen_session`` on the
+        found row so an ``agent_close``-ended session resumes with the same
+        session_id.  Pass ``reopen=False`` to perform a read-only lookup
+        (startup prune path) — the runtime guard in ``get_or_create_session``
+        will decide whether to reopen or create fresh (#61993).
+        """
         if not self._db:
             return None
         finder = getattr(self._db, "find_latest_gateway_session_for_peer", None)
@@ -1427,10 +1436,11 @@ class SessionStore:
                 session_key,
             )
             return None
-        try:
-            self._db.reopen_session(str(recovered["id"]))
-        except Exception as exc:
-            logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
+        if reopen:
+            try:
+                self._db.reopen_session(str(recovered["id"]))
+            except Exception as exc:
+                logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
         return self._create_entry_from_recovered_row(
             row=recovered,
             session_key=session_key,

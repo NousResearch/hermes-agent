@@ -113,6 +113,8 @@ class TestSshRemoteExemption:
         # Loopback ssh is still this machine's gateway — blocked.
         "ssh localhost 'systemctl restart hermes-gateway'",
         "ssh 127.0.0.1 hermes gateway restart",
+        "ssh [::1] 'systemctl restart hermes-gateway'",        # bracketed IPv6 loopback
+        "ssh [::1]:22 'systemctl restart hermes-gateway'",     # with explicit port
         "ssh ace@localhost 'launchctl kickstart gui/501/ai.hermes.gateway'",
         # A lifecycle command in a LATER shell segment is NOT covered by the
         # ssh prefix (heuristic split errs toward blocking).

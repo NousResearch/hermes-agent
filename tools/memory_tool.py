@@ -735,13 +735,25 @@ class MemoryStore:
         if not raw.strip():
             return None
 
-        parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
+        # Issue #61523: signal #1 must be whitespace-insensitive in the same
+        # way the reader is, so that formatting variants which parse to
+        # identical entries (e.g. blank lines around §) do not trigger drift.
+        # We also normalize line endings (CRLF -> LF) so that Windows-edited
+        # memory files (e.g. notepad, git's autocrlf) don't false-positive.
+        # Per the issue: "the only thing signal #1 can catch that signal #2
+        # does not is whitespace immediately around the delimiter and at
+        # file edges - all of which is cosmetic".
+        raw_norm = raw.replace("\r\n", "\n")
+        parsed = [e.strip() for e in raw_norm.split(ENTRY_DELIMITER) if e.strip()]
         roundtrip = ENTRY_DELIMITER.join(parsed)
+        normalized_raw = ENTRY_DELIMITER.join(
+            e.strip() for e in raw_norm.split(ENTRY_DELIMITER) if e.strip()
+        )
 
         char_limit = self._char_limit(target)
         max_entry_len = max((len(e) for e in parsed), default=0)
 
-        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
+        drift_detected = (normalized_raw != roundtrip) or (max_entry_len > char_limit)
         if not drift_detected:
             return None
 

@@ -6354,7 +6354,7 @@ def _update_via_zip(args):
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = {**os.environ, "VIRTUAL_ENV": str((_resolve_project_venv_dir() or PROJECT_ROOT / "venv"))}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -7132,7 +7132,7 @@ def _recover_from_interrupted_install() -> None:
 
             uv_bin = ensure_uv()
             if uv_bin:
-                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                uv_env = {**os.environ, "VIRTUAL_ENV": str((_resolve_project_venv_dir() or PROJECT_ROOT / "venv"))}
                 if _is_termux_env(uv_env):
                     uv_env.pop("PYTHONPATH", None)
                     uv_env.pop("PYTHONHOME", None)
@@ -7215,10 +7215,27 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _resolve_project_venv_dir() -> Path | None:
+    """Return the project venv directory, checking both ``venv/`` and ``.venv/``.
+
+    ``hermes setup`` and ``hermes update`` historically create ``venv/``, but
+    users who bootstrap with ``uv venv`` or ``python -m venv .venv`` end up with
+    a ``.venv/`` directory. The codebase already recognises both names in some
+    places (e.g. ``_dirs_to_preserve`` lists both), but several hot paths
+    hardcode ``"venv"`` — causing them to silently miss the venv on ``.venv``
+    installs and skip quarantine/concurrent-instance safety checks on Windows.
+    """
+    for name in ("venv", ".venv"):
+        candidate = PROJECT_ROOT / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
-    if not venv_dir.is_dir():
+    venv_dir = _resolve_project_venv_dir()
+    if not venv_dir:
         return None
     scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
     return scripts if scripts.is_dir() else None
@@ -9911,7 +9928,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {**os.environ, "VIRTUAL_ENV": str((_resolve_project_venv_dir() or PROJECT_ROOT / "venv"))}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)

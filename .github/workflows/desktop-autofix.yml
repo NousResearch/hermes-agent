@@ -1,0 +1,145 @@
+name: auto-fix lint issues & fmtting
+
+# On push to main, run `npm run fix` on each workspace package and commit any changes.
+
+# Fixable lint issues (import sorting, unused imports, curly braces, etc.) are
+# auto-corrected on merge so PRs aren't blocked by them. The PR-time eslint
+# check in typecheck.yml fails only when un-fixable errors remain.
+#
+# Pushes made by GITHUB_TOKEN don't trigger further workflow runs, so there's
+# no infinite loop.
+#
+# ── Security model: two-job split ───────────────────────────────────────────
+#
+# The eslint process executes repo code (eslint.config.mjs, package.json
+# scripts, installed plugins). To prevent a malicious PR from getting arbitrary
+# code execution on a runner with push access, the work is split:
+#
+#   1. generate-patch (unprivileged, contents: read only)
+#      Checks out, installs deps, runs eslint --fix, produces a .patch artifact.
+#      Worst case: malicious code runs here on an ephemeral runner with zero
+#      push permissions.
+#
+#   2. apply-patch (privileged, contents: write)
+#      Checks out, downloads the patch artifact, applies it, validates that
+#      only files under apps/desktop/src/ and apps/desktop/electron/ changed,
+#      then pushes with --force-with-lease. This job never runs npm, never
+#      installs anything, never executes any repo code. The only input it
+#      trusts is the patch artifact, and the path guard ensures the patch can
+#      only touch linted source files.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.js'
+      - '**/*.cjs'
+      - '**/*.mjs'
+      - '**/*.ts'
+      - '**/*.tsx'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read # default; apply-patch job overrides to write
+
+concurrency:
+  group: desktop-autofix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generate-patch:
+    name: Generate eslint --fix patch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # No permissions override → inherits workflow-level contents: read.
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # --ignore-scripts: eslint only needs TS sources + eslint packages.
+      - uses: ./.github/actions/retry
+        with:
+          command: npm ci --ignore-scripts
+
+      - name: npm run fix in all workspaces
+        # continue-on-error: if un-fixable errors exist on main, we still want
+        # to commit whatever fixes were applied. The PR-time check in
+        # typecheck.yml is what blocks un-fixable errors from landing.
+        continue-on-error: true
+        run: npm run fix
+
+      - name: Produce patch
+        run: |
+          if git diff --quiet; then
+            echo "No fixes needed."
+            # Empty patch signals "nothing to do" to apply-patch.
+            : > js-fix.patch
+          else
+            git diff > js-fix.patch
+            echo "Patch size: $(wc -c < js-fix.patch) bytes"
+          fi
+
+      - name: Upload patch artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: js-fix-patch
+          path: js-fix.patch
+          retention-days: 1
+          include-hidden-files: true
+
+  apply-patch:
+    name: Apply patch to main
+    needs: generate-patch
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write # needed to push to main
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download patch
+        uses: actions/download-artifact@v4
+        with:
+          name: js-fix-patch
+
+      - name: Apply patch and push
+        env:
+          START_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Empty patch = nothing to do.
+          if [ ! -s js-fix.patch ]; then
+            echo "Patch is empty. No fixes to apply."
+            exit 0
+          fi
+
+          # Apply the patch produced by the unprivileged job.
+          git apply --check js-fix.patch || {
+            echo "::error::Patch does not apply cleanly. Main may have moved???"
+            exit 0
+          }
+          git apply js-fix.patch
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fmt(js): `npm run fix` on merge"
+
+          # --force-with-lease=<ref>:<sha> makes the precondition check atomic
+          # on the server side: the push only succeeds if origin/main still
+          # points at START_SHA when the server processes it. If main moved
+          # since checkout (another push landed), the server rejects it and
+          # the next run will re-apply on the current state.
+          if git push --force-with-lease=main:"$START_SHA" origin HEAD:main; then
+            echo "Pushed fixes."
+          else
+            echo "Main moved since checkout ($START_SHA). Push rejected."
+            echo "Next run will re-apply on the current state."
+            exit 0
+          fi

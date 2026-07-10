@@ -535,17 +535,10 @@ async def test_dashboard_cron_context_from_is_profile_scoped(isolated_profiles):
 
 
 @pytest.mark.asyncio
-async def test_update_cron_job_refreshes_snapshots_when_unpinning(
+async def test_update_cron_job_unpins_provider_and_model(
     isolated_profiles,
-    monkeypatch,
 ):
-    from hermes_cli import runtime_provider, web_server
-
-    monkeypatch.setattr(
-        runtime_provider,
-        "resolve_runtime_provider",
-        lambda **kwargs: {"provider": "worker-provider"},
-    )
+    from hermes_cli import web_server
 
     job = web_server._call_cron_for_profile(
         "worker_alpha",
@@ -556,9 +549,6 @@ async def test_update_cron_job_refreshes_snapshots_when_unpinning(
         provider="fixed-provider",
         model="fixed-model",
     )
-
-    assert job["provider_snapshot"] is None
-    assert job["model_snapshot"] is None
 
     updated = await web_server.update_cron_job(
         job["id"],
@@ -573,23 +563,15 @@ async def test_update_cron_job_refreshes_snapshots_when_unpinning(
 
     assert updated["provider"] is None
     assert updated["model"] is None
-    assert updated["provider_snapshot"] == "worker-provider"
-    assert updated["model_snapshot"] == "test-model"
+    assert "provider_snapshot" not in updated
+    assert "model_snapshot" not in updated
 
 
 @pytest.mark.asyncio
-async def test_dashboard_cron_noop_inference_fields_keep_existing_snapshots(
+async def test_dashboard_cron_noop_inference_fields_stay_inherited(
     isolated_profiles,
-    monkeypatch,
 ):
-    from hermes_cli import runtime_provider, web_server
-
-    current_provider = {"name": "initial-provider"}
-    monkeypatch.setattr(
-        runtime_provider,
-        "resolve_runtime_provider",
-        lambda **kwargs: {"provider": current_provider["name"]},
-    )
+    from hermes_cli import web_server
 
     job = web_server._call_cron_for_profile(
         "worker_alpha",
@@ -597,15 +579,6 @@ async def test_dashboard_cron_noop_inference_fields_keep_existing_snapshots(
         prompt="managed by named profile",
         schedule="every 1h",
         name="dashboard-edit-job",
-    )
-
-    assert job["provider_snapshot"] == "initial-provider"
-    assert job["model_snapshot"] == "test-model"
-
-    current_provider["name"] = "changed-provider"
-    (isolated_profiles["worker_alpha"] / "config.yaml").write_text(
-        "model: changed-model\n",
-        encoding="utf-8",
     )
 
     updated = await web_server.update_cron_job(
@@ -623,22 +596,17 @@ async def test_dashboard_cron_noop_inference_fields_keep_existing_snapshots(
     )
 
     assert updated["name"] == "dashboard-edit-job-renamed"
-    assert updated["provider_snapshot"] == "initial-provider"
-    assert updated["model_snapshot"] == "test-model"
+    assert updated["provider"] is None
+    assert updated["model"] is None
+    assert "provider_snapshot" not in updated
+    assert "model_snapshot" not in updated
 
 
 @pytest.mark.asyncio
-async def test_update_cron_job_clears_snapshots_for_no_agent(
+async def test_update_cron_job_switches_to_no_agent_without_inference_routing(
     isolated_profiles,
-    monkeypatch,
 ):
-    from hermes_cli import runtime_provider, web_server
-
-    monkeypatch.setattr(
-        runtime_provider,
-        "resolve_runtime_provider",
-        lambda **kwargs: {"provider": "worker-provider"},
-    )
+    from hermes_cli import web_server
     scripts_dir = isolated_profiles["worker_alpha"] / "scripts"
     scripts_dir.mkdir()
     (scripts_dir / "collect.py").write_text("print('ok')\n", encoding="utf-8")
@@ -651,9 +619,6 @@ async def test_update_cron_job_clears_snapshots_for_no_agent(
         name="agent-to-script-job",
     )
 
-    assert job["provider_snapshot"] == "worker-provider"
-    assert job["model_snapshot"] == "test-model"
-
     updated = await web_server.update_cron_job(
         job["id"],
         web_server.CronJobUpdate(
@@ -665,8 +630,11 @@ async def test_update_cron_job_clears_snapshots_for_no_agent(
         profile="worker_alpha",
     )
 
-    assert updated["provider_snapshot"] is None
-    assert updated["model_snapshot"] is None
+    assert updated["no_agent"] is True
+    assert updated["provider"] is None
+    assert updated["model"] is None
+    assert "provider_snapshot" not in updated
+    assert "model_snapshot" not in updated
 
 
 @pytest.mark.asyncio

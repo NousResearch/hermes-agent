@@ -21,8 +21,14 @@ Cron jobs can:
 
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
-:::tip
-At creation, an unpinned job (one you don't give an explicit `provider`/`model`) follows the global default selected by `hermes model` — and Hermes **snapshots** that provider and model on the job. If the global default later changes, the job **fails closed**: it skips the run, makes no inference call, and sends an alert telling you to pin the provider/model explicitly (`cronjob action=update job_id=… provider=… model=…`) to proceed. This prevents an unattended job from silently inheriting a switch to a paid provider/model and spending money you didn't intend (#44585). To make a job deliberately track your global default, pin it to the new values after changing them. `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
+:::tip Model selection
+Cron jobs support three inference modes:
+
+- **Inherited:** omit the per-job `provider` and `model`. The job resolves the current global defaults selected by `hermes model` on every run, including after those defaults change.
+- **Pinned:** set an explicit per-job `provider` and `model` when a job should keep using a specific route for cost, latency, or capability reasons.
+- **No-agent:** set `no_agent: true` with a script. Hermes skips inference entirely and delivers the script's stdout verbatim.
+
+Changing the global default never pauses or blocks inherited jobs. Use a pinned job, rather than an inherited one, when an unattended automation must not follow future global model changes.
 :::
 
 :::warning

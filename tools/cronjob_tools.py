@@ -1024,7 +1024,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "model": {
                 "type": "object",
-                "description": "Optional per-job model override. If provider is omitted, the current main provider is pinned at creation time so the job stays stable.",
+                "description": "Optional per-job model override. Omit this object entirely to inherit the current main provider and model on every run. When overriding the model, include a provider to pin both explicitly; if provider is omitted, the current main provider is pinned at creation time.",
                 "properties": {
                     "provider": {
                         "type": "string",

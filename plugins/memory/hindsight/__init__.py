@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import hashlib
 import importlib
 import json
 import logging
@@ -477,6 +478,74 @@ def _normalize_observation_scopes(value: Any) -> Any:
         return scopes or None
 
     return None
+
+
+_BankConfigUpdates = Dict[str, str | None]
+_BANK_CONFIG_APPLIED_CACHE: set[tuple[str, str, str, tuple[tuple[str, str | None], ...]]] = set()
+
+
+def _hindsight_response_dict(response: Any) -> dict[str, Any]:
+    """Normalize generated Hindsight response models and plain dicts."""
+    if isinstance(response, dict):
+        return response
+    model_dump = getattr(response, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="json")
+        return dumped if isinstance(dumped, dict) else {}
+    to_dict = getattr(response, "to_dict", None)
+    if callable(to_dict):
+        dumped = to_dict()
+        return dumped if isinstance(dumped, dict) else {}
+    return {}
+
+
+def _hindsight_bank_config_section(config_response: Any, section: str) -> dict[str, Any]:
+    """Extract a dict section from Hindsight's bank-config response shape."""
+    values = _hindsight_response_dict(config_response).get(section)
+    return values if isinstance(values, dict) else {}
+
+
+def _hindsight_bank_config_value(config_response: Any, key: str) -> Any:
+    """Extract a resolved bank config value from Hindsight's response shape."""
+    config = _hindsight_response_dict(config_response)
+    for section in ("overrides", "config"):
+        values = config.get(section)
+        if isinstance(values, dict) and values.get(key) is not None:
+            return values.get(key)
+    return config.get(key)
+
+
+def _hindsight_bank_config_needs_update(
+    config_response: Any,
+    key: str,
+    desired_value: str | None,
+) -> bool:
+    """Return whether a bank config key needs a Hindsight override update."""
+    if desired_value is None:
+        # A configured empty value means "clear the bank override and fall back
+        # to server defaults". Only PATCH when an active bank-level override is
+        # present; resolved parent defaults are intentionally ignored.
+        overrides = _hindsight_bank_config_section(config_response, "overrides")
+        return key in overrides and overrides.get(key) is not None
+    return _hindsight_bank_config_value(config_response, key) != desired_value
+
+
+def _bank_config_cache_auth_fingerprint(api_key: str | None) -> str:
+    """Return a non-secret auth fingerprint for the per-process bank-config cache."""
+    if not api_key:
+        return ""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
+
+
+def _config_presence_value(config: dict[str, Any], key: str) -> tuple[bool, str | None]:
+    """Return whether a config key is present and its normalized string value."""
+    if key not in config:
+        return False, None
+    value = config.get(key)
+    if value is None:
+        return True, None
+    normalized = str(value).strip()
+    return True, normalized or None
 
 
 def _utc_timestamp() -> str:
@@ -1165,6 +1234,101 @@ class HindsightMemoryProvider(MemoryProvider):
             self._client = client
             return self._run_sync(operation(client))
 
+    def _configured_bank_config_updates(self) -> _BankConfigUpdates:
+        """Return bank-config overrides explicitly requested by Hermes config."""
+        updates: _BankConfigUpdates = {}
+        reflect_configured, reflect_mission = _config_presence_value(self._config or {}, "bank_mission")
+        retain_configured, retain_mission = _config_presence_value(self._config or {}, "bank_retain_mission")
+        if reflect_configured:
+            updates["reflect_mission"] = reflect_mission
+        if retain_configured:
+            updates["retain_mission"] = retain_mission
+        return updates
+
+    async def _get_hindsight_bank_config(self, client: Any) -> dict[str, Any]:
+        """Read Hindsight bank config through the public low-level Banks API."""
+        banks = getattr(client, "banks", None)
+        get_config: Any = getattr(banks, "get_bank_config", None)
+        if not callable(get_config):
+            raise AttributeError("Hindsight client does not expose banks.get_bank_config")
+        return _hindsight_response_dict(
+            await get_config(self._bank_id, _request_timeout=self._timeout)
+        )
+
+    async def _update_hindsight_bank_config(
+        self,
+        client: Any,
+        updates: _BankConfigUpdates,
+    ) -> dict[str, Any]:
+        """Patch Hindsight bank config through the public low-level Banks API."""
+        banks = getattr(client, "banks", None)
+        update_config: Any = getattr(banks, "update_bank_config", None)
+        if not callable(update_config):
+            raise AttributeError("Hindsight client does not expose banks.update_bank_config")
+        from hindsight_client_api.models.bank_config_update import BankConfigUpdate
+
+        request = BankConfigUpdate(updates=updates)
+        return _hindsight_response_dict(
+            await update_config(
+                self._bank_id,
+                request,
+                _request_timeout=self._timeout,
+            )
+        )
+
+    def _apply_configured_bank_config(self) -> None:
+        """Synchronize configured Hindsight bank overrides.
+
+        Hermes config is the integration source of truth. Hindsight stores
+        mission prompts at bank scope, so a configured non-empty value should be
+        visible in the bank's resolved config, and a configured empty/null value
+        clears an existing bank-level override back to Hindsight's defaults.
+        """
+        updates = self._configured_bank_config_updates()
+        if not updates or self._mode == "disabled":
+            return
+
+        cache_key = (
+            self._api_url or "",
+            _bank_config_cache_auth_fingerprint(self._api_key),
+            self._bank_id,
+            tuple(sorted(updates.items())),
+        )
+        if cache_key in _BANK_CONFIG_APPLIED_CACHE:
+            return
+
+        async def _apply(client):
+            current = await self._get_hindsight_bank_config(client)
+            changed = {
+                key: value
+                for key, value in updates.items()
+                if _hindsight_bank_config_needs_update(current, key, value)
+            }
+            if not changed:
+                return current
+            logger.info(
+                "Updating Hindsight bank config for %s: %s",
+                self._bank_id,
+                ", ".join(sorted(changed)),
+            )
+            return await self._update_hindsight_bank_config(client, changed)
+
+        try:
+            self._run_hindsight_operation(_apply)
+        except Exception as exc:
+            logger.warning(
+                "Failed to apply configured Hindsight bank config for %s: %s",
+                self._bank_id,
+                exc,
+                exc_info=True,
+            )
+            return
+        _BANK_CONFIG_APPLIED_CACHE.add(cache_key)
+
+    def _apply_configured_bank_missions(self) -> None:
+        """Backward-compatible alias for tests and older local callers."""
+        self._apply_configured_bank_config()
+
     def _probe_url(self) -> str:
         """Return the URL to probe /version on.
 
@@ -1433,6 +1597,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     client._ensure_started()
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write("\n=== Daemon started successfully ===\n")
+                    self._apply_configured_bank_config()
                 except Exception as e:
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"\n=== Daemon startup failed: {e} ===\n")
@@ -1440,6 +1605,8 @@ class HindsightMemoryProvider(MemoryProvider):
 
             t = threading.Thread(target=_start_daemon, daemon=True, name="hindsight-daemon-start")
             t.start()
+        else:
+            self._apply_configured_bank_config()
 
     def system_prompt_block(self) -> str:
         if self._memory_mode == "context":

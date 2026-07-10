@@ -84,6 +84,19 @@ class TestRunConversationCodexPath:
         assert result["api_calls"] == 1
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
+        assert result["interrupted"] is False
+        assert result["failed"] is False
+        assert result["turn_exit_reason"] == "text_response(runtime=codex_app_server)"
+        assert result["session_id"] == agent.session_id
+        assert result["model"] == agent.model
+        assert "last_reasoning" in result
+        assert "response_transformed" in result
+        assert "response_previewed" in result
+        for usage_key in (
+            "input_tokens", "output_tokens", "prompt_tokens",
+            "completion_tokens", "total_tokens", "estimated_cost_usd",
+        ):
+            assert usage_key in result
 
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
@@ -199,6 +212,59 @@ class TestRunConversationCodexPath:
 
         agent._memory_manager.sync_all.assert_called_once()
         assert agent._memory_manager.sync_all.call_args.kwargs["messages"] == result["messages"]
+
+    def test_ephemeral_memory_and_plugin_context_reach_codex_only(
+        self, monkeypatch
+    ):
+        captured = {}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured["user_input"] = user_input
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-context-1",
+                thread_id="thread-context-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        agent = _make_codex_agent()
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = ""
+        agent._memory_manager.prefetch_all.return_value = "remembered fact"
+
+        def invoke_hook(name, **kwargs):
+            if name == "pre_llm_call":
+                return [{"context": "plugin-only context"}]
+            return []
+
+        with patch("hermes_cli.plugins.invoke_hook", side_effect=invoke_hook), \
+             patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("durable prompt")
+
+        assert "remembered fact" in captured["user_input"]
+        assert "plugin-only context" in captured["user_input"]
+        durable_user = [m for m in result["messages"] if m.get("role") == "user"]
+        assert durable_user[-1]["content"] == "durable prompt"
+
+    def test_codex_path_runs_common_output_and_lifecycle_hooks(self, fake_session):
+        hook_names = []
+
+        def invoke_hook(name, **kwargs):
+            hook_names.append(name)
+            if name == "transform_llm_output":
+                return ["transformed by plugin"]
+            return []
+
+        agent = _make_codex_agent()
+        with patch("hermes_cli.plugins.invoke_hook", side_effect=invoke_hook), \
+             patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "transformed by plugin"
+        assert result["response_transformed"] is True
+        assert "post_llm_call" in hook_names
+        assert "on_session_end" in hook_names
 
     def test_nudge_counters_tick(self, fake_session):
         """The skill nudge counter must accumulate tool_iterations across
@@ -583,6 +649,7 @@ class TestErrorHandling:
             result = agent.run_conversation("hi")
         assert result["completed"] is False
         assert result["partial"] is True
+        assert result["api_calls"] == 0
         assert "subprocess died" in result["error"]
         assert "codex-runtime auto" in result["final_response"]
 
@@ -607,6 +674,41 @@ class TestErrorHandling:
         assert result["completed"] is False
         assert result["partial"] is True
         assert result["error"] == "user interrupted"
+        assert result["interrupted"] is True
+        assert result["failed"] is False
+        assert result["turn_exit_reason"] == "interrupted_by_user"
+        assert agent._interrupt_requested is False
+
+    def test_interrupt_before_codex_turn_skips_runtime_call(self, monkeypatch):
+        called = {"run_turn": 0}
+
+        def should_not_run(self, user_input, **kwargs):
+            called["run_turn"] += 1
+            raise AssertionError("pre-turn interrupt must skip Codex")
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", should_not_run)
+        agent = _make_codex_agent()
+        agent.interrupt("new message")
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("old message")
+
+        assert called["run_turn"] == 0
+        assert result["api_calls"] == 0
+        assert result["interrupted"] is True
+        assert result["interrupt_message"] == "new message"
+        assert agent._interrupt_requested is False
+
+    def test_agent_interrupt_bridges_to_existing_codex_session(self):
+        agent = _make_codex_agent()
+        session = MagicMock()
+        agent._codex_session = session
+
+        agent.interrupt("stop")
+        session.request_interrupt.assert_called_once_with()
+
+        agent.clear_interrupt()
+        session.clear_interrupt.assert_called_once_with()
 
 
 class TestSessionRetirementOnRunAgent:
@@ -759,4 +861,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

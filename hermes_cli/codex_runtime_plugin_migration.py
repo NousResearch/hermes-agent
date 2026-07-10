@@ -15,8 +15,8 @@ module:
      OpenClaw calls "migrate native codex plugins" — the YouTube-video-
      worthy bit Pash highlighted: Canva, GitHub, Calendar, Gmail
      pre-configured.)
-  3. Writes a [permissions] default profile so users on this runtime
-     don't get an approval prompt on every write attempt.
+  3. Writes Codex's current top-level ``sandbox_mode`` setting so users on
+     this runtime don't get an approval prompt on every workspace write.
 
 What translates (MCP servers):
   Hermes mcp_servers.<n>.command/args/env  → codex stdio transport
@@ -95,7 +95,7 @@ class MigrationReport:
             lines.append(f"Codex plugin discovery skipped: {self.plugin_query_error}")
         if self.wrote_permissions_default:
             lines.append(
-                f"Wrote default_permissions = "
+                f"Wrote sandbox_mode = "
                 f"{self.wrote_permissions_default!r}"
             )
         for err in self.errors:
@@ -243,12 +243,43 @@ def _quote_key(key: str) -> str:
     escaped = key.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
+
+_PERMISSION_PROFILE_TO_SANDBOX_MODE = {
+    "workspace": "workspace-write",
+    "workspace-write": "workspace-write",
+    "read-only": "read-only",
+    "read-only-with-approval": "read-only",
+    "full-access": "danger-full-access",
+    "danger-no-sandbox": "danger-full-access",
+    "danger-full-access": "danger-full-access",
+    "unrestricted": "danger-full-access",
+    "yolo": "danger-full-access",
+}
+
+
+def _sandbox_mode_for_permission_profile(profile: str) -> str:
+    """Translate legacy Hermes/Codex profile names to current Codex config.
+
+    ``default_permissions`` profiles were accepted by early app-server builds
+    but are no longer part of Codex's config schema. Unknown legacy/custom
+    names fail closed to ``read-only`` instead of silently granting writes.
+    """
+    normalized = str(profile or "").strip().lstrip(":").lower()
+    mode = _PERMISSION_PROFILE_TO_SANDBOX_MODE.get(normalized)
+    if mode is None:
+        logger.warning(
+            "Unknown Codex permission profile %r; using sandbox_mode=read-only",
+            profile,
+        )
+        return "read-only"
+    return mode
+
 def render_codex_toml_section(
     servers: dict[str, dict],
     plugins: Optional[list[dict]] = None,
     default_permission_profile: Optional[str] = None,
 ) -> str:
-    """Render the managed [mcp_servers.<n>] / [plugins.<id>] / [permissions]
+    """Render the managed [mcp_servers.<n>] / [plugins.<id>] / sandbox block
     block for ~/.codex/config.toml.
 
     Args:
@@ -256,10 +287,9 @@ def render_codex_toml_section(
         plugins: optional list of {name, marketplace, enabled} for native
             Codex plugins to enable. (E.g. the Linear / Atlassian / Asana
             curated plugins, or per-account ChatGPT apps.)
-        default_permission_profile: when set, write `[permissions] default`
-            so the user doesn't get an approval prompt on every write
-            attempt. Common values: "workspace-write", "read-only",
-            "full-access".
+        default_permission_profile: legacy profile name mapped to Codex's
+            current top-level ``sandbox_mode``. Common values:
+            "workspace-write", "read-only", "full-access".
     """
     out = [MIGRATION_MARKER]
     if not servers and not plugins and not default_permission_profile:
@@ -268,18 +298,11 @@ def render_codex_toml_section(
         return "\n".join(out) + "\n"
 
     if default_permission_profile:
-        # Codex's config schema: `default_permissions` is a top-level
-        # string referencing a profile name. Built-in profile names start
-        # with ":" (":workspace-write", ":read-only", ":full-access"). The
-        # [permissions] table is for *user-defined* named profiles with
-        # structured fields — not what we want.
-        normalized = (
+        sandbox_mode = _sandbox_mode_for_permission_profile(
             default_permission_profile
-            if default_permission_profile.startswith(":")
-            else f":{default_permission_profile}"
         )
         out.append("")
-        out.append(f"default_permissions = {_format_toml_value(normalized)}")
+        out.append(f"sandbox_mode = {_format_toml_value(sandbox_mode)}")
 
     if servers:
         for name in sorted(servers.keys()):
@@ -333,6 +356,27 @@ def _insert_managed_block_at_top_level(user_text: str, managed_block: str) -> st
     if prefix:
         return f"{prefix}\n\n{managed_block}\n{suffix}"
     return f"{managed_block}\n{suffix}"
+
+
+def _has_top_level_toml_key(toml_text: str, key: str) -> bool:
+    """Return whether ``key`` is explicitly set before the first TOML table.
+
+    Root keys cannot resume after a table header in TOML. This lightweight
+    scan is therefore sufficient and avoids rejecting otherwise-valid Codex
+    config extensions that an older Python ``tomllib`` may not understand.
+    """
+    prefix = f"{key}"
+    for line in toml_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if _looks_like_table_header(stripped):
+            return False
+        if stripped.startswith(prefix):
+            remainder = stripped[len(prefix):].lstrip()
+            if remainder.startswith("="):
+                return True
+    return False
 
 
 def _strip_unmanaged_plugin_tables(toml_text: str) -> str:
@@ -411,7 +455,7 @@ def _strip_existing_managed_block(toml_text: str) -> str:
     Backward compatibility: if the start marker is found but no end marker
     follows, we fall back to the heuristic that swallows lines until we
     hit a section that's not [mcp_servers.*]/[plugins.*]/[permissions]/
-    a `default_permissions =` key. This matches what older versions of
+    a `default_permissions =` / `sandbox_mode =` key. This matches what older versions of
     this code wrote so re-runs don't break configs from prior Hermes
     versions."""
     lines = toml_text.splitlines(keepends=True)
@@ -626,15 +670,12 @@ def migrate(
             the live codex CLI to migrate any installed curated plugins
             into [plugins."<name>@<marketplace>"] entries. Set False to
             skip the subprocess spawn (for tests or restricted environments).
-        default_permission_profile: when set (default ":workspace"), write
-            top-level `default_permissions = "<name>"` so users on this
-            runtime don't get an approval prompt on every write attempt.
-            Built-in codex profile names are ":workspace", ":read-only",
-            ":danger-no-sandbox" (note the leading ":"). Also accepts a
-            user-defined profile name (no leading ":") that the user has
-            configured in their own [permissions.<name>] table. Set None
-            to leave permissions unset and let codex use its compiled-in
-            default (which is read-only).
+        default_permission_profile: legacy profile name mapped to the current
+            top-level ``sandbox_mode`` key. The default ``:workspace`` maps
+            to ``workspace-write``; ``:read-only`` maps to ``read-only`` and
+            full-access aliases map to ``danger-full-access``. Unknown names
+            fail closed to ``read-only``. Set None to leave Codex's existing
+            policy untouched.
         expose_hermes_tools: when True (default), register Hermes' own
             tool surface (web_search, browser_*, delegate_task, vision,
             memory, skills, etc.) as an MCP server in ~/.codex/config.toml
@@ -645,6 +686,16 @@ def migrate(
     codex_home = codex_home or Path.home() / ".codex"
     target = codex_home / "config.toml"
     report.target_path = target
+
+    existing: Optional[str] = None
+    without_managed = ""
+    if target.exists():
+        try:
+            existing = target.read_text(encoding="utf-8")
+        except Exception as exc:
+            report.errors.append(f"could not read {target}: {exc}")
+            return report
+        without_managed = _strip_existing_managed_block(existing)
 
     hermes_servers = (hermes_config or {}).get("mcp_servers") or {}
     if not isinstance(hermes_servers, dict):
@@ -682,10 +733,18 @@ def migrate(
         for p in plugins:
             report.migrated_plugins.append(f"{p['name']}@{p['marketplace']}")
 
-    # Track whether we wrote a default permission profile so the report
-    # surfaces it to the user.
-    if default_permission_profile:
-        report.wrote_permissions_default = default_permission_profile
+    # Respect an explicit user-owned sandbox policy. Hermes only supplies a
+    # workspace-write default when no top-level sandbox_mode exists outside
+    # its managed block; emitting the key twice would make config.toml invalid.
+    effective_permission_profile = default_permission_profile
+    if _has_top_level_toml_key(without_managed, "sandbox_mode"):
+        effective_permission_profile = None
+
+    # Track whether we wrote a sandbox default so the report surfaces it.
+    if effective_permission_profile:
+        report.wrote_permissions_default = _sandbox_mode_for_permission_profile(
+            effective_permission_profile
+        )
 
     # Inject Hermes' own tool surface as an MCP server so the spawned
     # codex subprocess can call back into Hermes for the tools codex
@@ -701,18 +760,12 @@ def migrate(
     # Build the new managed block
     managed_block = render_codex_toml_section(
         translated, plugins=plugins,
-        default_permission_profile=default_permission_profile,
+        default_permission_profile=effective_permission_profile,
     )
 
     # Read existing codex config if any, strip the prior managed block,
     # append the new one.
-    if target.exists():
-        try:
-            existing = target.read_text(encoding="utf-8")
-        except Exception as exc:
-            report.errors.append(f"could not read {target}: {exc}")
-            return report
-        without_managed = _strip_existing_managed_block(existing)
+    if existing is not None:
         # Bug B: when plugin/list ran authoritatively, codex's own
         # [plugins."<name>@<marketplace>"] tables outside our managed block
         # would survive _strip_existing_managed_block and then collide with

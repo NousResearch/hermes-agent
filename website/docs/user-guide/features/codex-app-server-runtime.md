@@ -83,7 +83,7 @@ These four Hermes tools require the running AIAgent context (mid-loop state) to 
 
 **Works on this runtime.** Goals persist in `state_meta` keyed by session id, the continuation prompt feeds back as a normal user message through `run_conversation()`, and codex executes the next turn natively. The goal judge runs via the auxiliary client (configured via `auxiliary.goal_judge` in config.yaml), independent of which runtime is active. The judge's "blocked, needs user input" verdict is a clean escape if codex stalls on approvals.
 
-**One thing to be aware of:** each continuation prompt is a fresh codex turn, which means codex re-evaluates command approval policy from scratch. If you're doing a long-running goal with lots of writes, expect more approval prompts than you'd see on a single in-session task. Set `default_permissions = ":workspace"` (which Hermes does automatically when you enable the runtime) so simple workspace writes don't require prompting.
+**One thing to be aware of:** each continuation prompt is a fresh codex turn, which means codex re-evaluates command approval policy from scratch. If you're doing a long-running goal with lots of writes, expect more approval prompts than you'd see on a single in-session task. Hermes writes `sandbox_mode = "workspace-write"` when no user-owned `sandbox_mode` is already configured, so ordinary workspace writes stay inside Codex's sandbox.
 
 ### Kanban (multi-agent worktree dispatch)
 
@@ -166,7 +166,7 @@ That command:
 - Migrates user MCP servers from `~/.hermes/config.yaml` to `~/.codex/config.toml`.
 - **Discovers and migrates installed native Codex plugins** (Linear, GitHub, Gmail, Calendar, Canva, etc.) by querying Codex's `plugin/list` RPC.
 - **Registers Hermes' own tools as an MCP server** so the codex subprocess can call back for tools codex doesn't ship with.
-- **Writes `default_permissions = ":workspace"`** so the sandbox allows writes within the workspace without prompting for every operation.
+- **Writes `sandbox_mode = "workspace-write"`** when you have not configured a sandbox mode yourself, using the current Codex config schema.
 - Tells you what was migrated. Takes effect on the **next** session — the current cached agent keeps the prior runtime so prompt caches stay valid.
 
 Synonyms: `/codex-runtime on`, `/codex-runtime off`, `/codex-runtime auto`.
@@ -229,20 +229,21 @@ Codex requests approval before executing commands or applying patches. These get
 
 For `apply_patch` (file edit) approvals, Hermes shows a summary of what changed (`1 add, 1 update: /tmp/new.py, /tmp/old.py`) when codex provides the data via the corresponding `fileChange` item.
 
-## Permission profiles
+## Sandbox and approval policy
 
-Codex has three built-in permission profiles:
-- `:read-only` — no writes; every shell command requires approval
-- `:workspace` — writes within the current workspace allowed without prompts (Hermes' default when you enable the runtime)
-- `:danger-no-sandbox` — no sandbox at all (don't use this unless you understand it)
+Codex separates filesystem/network sandboxing from approval policy. Common sandbox modes are:
+- `read-only` — workspace writes are blocked by the sandbox
+- `workspace-write` — writes within the current workspace are allowed (Hermes' default when you enable the runtime)
+- `danger-full-access` — no sandbox boundary (do not use this unless you understand it)
 
-You can override the default in `~/.codex/config.toml` outside Hermes' managed block:
+You can set your own policy in `~/.codex/config.toml` outside Hermes' managed block:
 
 ```toml
-default_permissions = ":read-only"
+sandbox_mode = "read-only"
+approval_policy = "on-request"
 ```
 
-(Hermes will preserve your override on re-migration as long as it lives outside the `# managed by hermes-agent` markers.)
+Hermes detects a user-owned top-level `sandbox_mode`, preserves it, and omits its default on re-migration.
 
 ## Auxiliary tasks and ChatGPT subscription token cost
 
@@ -276,7 +277,7 @@ Hermes wraps everything it manages between two marker comments:
 
 ```toml
 # managed by hermes-agent — `hermes codex-runtime migrate` regenerates this section
-default_permissions = ":workspace"
+sandbox_mode = "workspace-write"
 [mcp_servers.filesystem]
 ...
 [plugins."github@openai-curated"]
@@ -287,9 +288,8 @@ default_permissions = ":workspace"
 Anything **outside** that block is yours. Re-running migration (via `/codex-runtime codex_app_server` or whenever you toggle the runtime on) replaces the managed block in place but preserves user content above and below it verbatim. This means you can:
 
 - Add your own MCP servers Hermes doesn't know about
-- Override `default_permissions` to `:read-only` if you prefer to be prompted
+- Set `sandbox_mode` and `approval_policy` explicitly for a stricter policy
 - Configure codex-only options (model, providers, otel, etc.)
-- Add user-defined permission profiles in `[permissions.<name>]` tables
 
 Anything you add **inside** the managed block will get clobbered on the next migration. If you need a tweak that requires editing the managed block, file an issue and we'll add the knob.
 

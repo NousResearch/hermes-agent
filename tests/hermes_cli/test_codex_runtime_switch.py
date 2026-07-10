@@ -122,7 +122,7 @@ class TestApply:
             mig.return_value.migrated = ["filesystem", "hermes-tools"]
             mig.return_value.migrated_plugins = []
             mig.return_value.plugin_query_error = None
-            mig.return_value.wrote_permissions_default = ":workspace"
+            mig.return_value.wrote_permissions_default = "workspace-write"
             mig.return_value.errors = []
             mig.return_value.target_path = "/fake/.codex/config.toml"
             r = crs.apply(cfg, "codex_app_server",
@@ -135,7 +135,7 @@ class TestApply:
         # Migration output still surfaces
         assert "Migrated 1 MCP server" in r.message
         assert "filesystem" in r.message
-        assert "Default sandbox: :workspace" in r.message
+        assert "Default sandbox: workspace-write" in r.message
         # No config write needed when value is unchanged — the persist
         # callback should NOT have fired (avoids spurious config.yaml mtimes
         # on every re-apply).
@@ -220,7 +220,7 @@ class TestApply:
             mig.return_value.migrated = ["filesystem", "hermes-tools"]
             mig.return_value.migrated_plugins = []
             mig.return_value.plugin_query_error = None
-            mig.return_value.wrote_permissions_default = ":workspace"
+            mig.return_value.wrote_permissions_default = "workspace-write"
             mig.return_value.errors = []
             mig.return_value.target_path = "/fake/.codex/config.toml"
             r = crs.apply(cfg, "codex_app_server")
@@ -230,7 +230,7 @@ class TestApply:
         assert "Migrated 1 MCP server" in r.message
         assert "filesystem" in r.message
         # Permissions default surfaces
-        assert "Default sandbox: :workspace" in r.message
+        assert "Default sandbox: workspace-write" in r.message
         # Hermes tool callback announcement
         assert "via MCP" in r.message
 

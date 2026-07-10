@@ -2711,6 +2711,15 @@ class AIAgent:
                 child.interrupt(message)
             except Exception as e:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
+        # Codex app-server owns a separate blocking event loop and cannot see
+        # Hermes' thread-local tool interrupt bit. Signal its protocol bridge
+        # explicitly so the active Codex turn receives turn/interrupt.
+        _codex_session = getattr(self, "_codex_session", None)
+        if _codex_session is not None:
+            try:
+                _codex_session.request_interrupt()
+            except Exception as e:
+                logger.debug("Failed to propagate interrupt to Codex session: %s", e)
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
 
@@ -2721,6 +2730,12 @@ class AIAgent:
         self._interrupt_thread_signal_pending = False
         if self._execution_thread_id is not None:
             _set_interrupt(False, self._execution_thread_id)
+        _codex_session = getattr(self, "_codex_session", None)
+        if _codex_session is not None:
+            try:
+                _codex_session.clear_interrupt()
+            except Exception:
+                logger.debug("Failed to clear Codex session interrupt", exc_info=True)
         # Also clear any concurrent-tool worker thread bits.  Tracked
         # workers normally clear their own bit on exit, but an explicit
         # clear here guarantees no stale interrupt can survive a turn
@@ -5817,12 +5832,23 @@ class AIAgent:
         user_message: str,
         original_user_message: Any,
         messages: List[Dict[str, Any]],
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
         effective_task_id: str,
+        hermes_turn_id: Optional[str] = None,
         should_review_memory: bool = False,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
-        return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+        return run_codex_app_server_turn(
+            self,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            conversation_history=conversation_history,
+            effective_task_id=effective_task_id,
+            hermes_turn_id=hermes_turn_id,
+            should_review_memory=should_review_memory,
+        )
 
 def main(
     query: str = None,

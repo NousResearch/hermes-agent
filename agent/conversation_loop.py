@@ -79,6 +79,35 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _with_ephemeral_user_context(
+    user_message: Any,
+    *,
+    external_memory_context: str = "",
+    plugin_context: str = "",
+) -> Any:
+    """Return the API/runtime view of the current user turn.
+
+    Memory prefetch and ``pre_llm_call`` plugin context are deliberately
+    ephemeral: they must reach whichever runtime owns the turn without
+    mutating the durable ``messages`` transcript.  Keeping this construction
+    in one helper prevents the Codex app-server path from silently dropping
+    context that the normal provider loop receives.
+    """
+    if not isinstance(user_message, str):
+        return user_message
+
+    injections: list[str] = []
+    if isinstance(external_memory_context, str) and external_memory_context:
+        fenced = build_memory_context_block(external_memory_context)
+        if fenced:
+            injections.append(fenced)
+    if isinstance(plugin_context, str) and plugin_context:
+        injections.append(plugin_context)
+    if not injections:
+        return user_message
+    return user_message + "\n\n" + "\n\n".join(injections)
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -628,10 +657,16 @@ def run_conversation(
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
         return agent._run_codex_app_server_turn(
-            user_message=user_message,
+            user_message=_with_ephemeral_user_context(
+                user_message,
+                external_memory_context=_ext_prefetch_cache,
+                plugin_context=_plugin_user_context,
+            ),
             original_user_message=original_user_message,
             messages=messages,
+            conversation_history=conversation_history,
             effective_task_id=effective_task_id,
+            hermes_turn_id=turn_id,
             should_review_memory=_should_review_memory,
         )
 
@@ -794,17 +829,11 @@ def run_conversation(
             # API-call-time only — the original message in `messages` is
             # never mutated, so nothing leaks into session persistence.
             if idx == current_turn_user_idx and msg.get("role") == "user":
-                _injections = []
-                if _ext_prefetch_cache:
-                    _fenced = build_memory_context_block(_ext_prefetch_cache)
-                    if _fenced:
-                        _injections.append(_fenced)
-                if _plugin_user_context:
-                    _injections.append(_plugin_user_context)
-                if _injections:
-                    _base = api_msg.get("content", "")
-                    if isinstance(_base, str):
-                        api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                api_msg["content"] = _with_ephemeral_user_context(
+                    api_msg.get("content", ""),
+                    external_memory_context=_ext_prefetch_cache,
+                    plugin_context=_plugin_user_context,
+                )
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved

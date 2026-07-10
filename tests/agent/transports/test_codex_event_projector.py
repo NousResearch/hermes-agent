@@ -225,8 +225,8 @@ class TestMcpToolCallProjection:
         assert "error" in msgs[1]["content"]
 
 
-class TestUserAndOpaqueProjection:
-    def test_user_message_text_fragments_only(self) -> None:
+class TestNonConversationItems:
+    def test_user_message_is_not_projected_twice(self) -> None:
         item = {
             "type": "userMessage", "id": "u1",
             "content": [
@@ -238,19 +238,27 @@ class TestUserAndOpaqueProjection:
         msgs = CodexEventProjector().project(
             {"method": "item/completed", "params": {"item": item}}
         ).messages
-        assert msgs[0]["role"] == "user"
-        assert "hello" in msgs[0]["content"]
-        assert "world" in msgs[0]["content"]
+        assert msgs == []
 
-    def test_opaque_item_recorded_without_fabricated_tool_calls(self) -> None:
+    def test_opaque_item_is_not_fabricated_as_assistant_turn(self) -> None:
         item = {"type": "plan", "id": "p1", "text": "do the thing"}
         msgs = CodexEventProjector().project(
             {"method": "item/completed", "params": {"item": item}}
         ).messages
-        assert len(msgs) == 1
-        assert msgs[0]["role"] == "assistant"
-        assert "plan" in msgs[0]["content"].lower()
-        assert "tool_calls" not in msgs[0]
+        assert msgs == []
+
+    def test_unknown_item_cannot_break_role_alternation(self) -> None:
+        projector = CodexEventProjector()
+        projected = []
+        for item in (
+            {"type": "userMessage", "id": "u1", "content": []},
+            {"type": "futureProtocolItem", "id": "x1", "payload": "opaque"},
+            {"type": "agentMessage", "id": "a1", "text": "done"},
+        ):
+            projected.extend(projector.project(
+                {"method": "item/completed", "params": {"item": item}}
+            ).messages)
+        assert projected == [{"role": "assistant", "content": "done"}]
 
 
 class TestHelpers:

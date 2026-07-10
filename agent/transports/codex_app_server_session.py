@@ -49,18 +49,6 @@ logger = logging.getLogger(__name__)
 _STDERR_TAIL_LINES = 12
 
 
-# Permission profile mapping mirrors the docstring in PR proposal:
-# Hermes' tools.terminal.security_mode → Codex's permissions profile id.
-# Defaults if config is missing → workspace-write (matches Codex's own default).
-_HERMES_TO_CODEX_PERMISSION_PROFILE = {
-    "auto": "workspace-write",
-    "approval-required": "read-only-with-approval",
-    "unrestricted": "full-access",
-    # Backstop alias used by some skills/tests.
-    "yolo": "full-access",
-}
-
-
 @dataclass
 class TurnResult:
     """Result of one user→assistant→tool turn through the codex app-server."""
@@ -213,12 +201,11 @@ class CodexAppServerSession:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
         self._codex_home = codex_home
-        self._permission_profile = (
-            permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
-                os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"),
-                "workspace-write",
-            )
-        )
+        # Retained as a constructor compatibility hint for older callers.
+        # Current Codex policy is read from sandbox_mode / approval_policy in
+        # config.toml; Hermes no longer invents the removed permissions-profile
+        # protocol on thread/start.
+        self._permission_profile = permission_profile
         self._approval_callback = approval_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
@@ -253,20 +240,10 @@ class CodexAppServerSession:
             client_version=_get_hermes_version(),
         )
         # Permission selection is intentionally NOT sent on thread/start.
-        # Two reasons (live-tested against codex 0.130.0):
-        #   1. `thread/start.permissions` is gated behind the experimentalApi
-        #      capability on this codex version — we'd have to opt in during
-        #      initialize and accept the unstable surface.
-        #   2. Even with experimentalApi declared and the correct shape
-        #      (`{"type": "profile", "id": "..."}`, not `{"profileId": ...}`),
-        #      codex requires a matching `[permissions]` table in
-        #      ~/.codex/config.toml or it fails the request with
-        #      'default_permissions requires a [permissions] table'.
-        # Letting codex pick its default (`:read-only` unless the user has
-        # configured otherwise in their codex config.toml) is the standard
-        # codex CLI workflow and avoids fighting codex's own validation.
-        # Users who want a write-capable profile configure it in their
-        # ~/.codex/config.toml the same way they would for any codex usage.
+        # Current Codex releases use config.toml sandbox_mode and
+        # approval_policy; the older permissions-profile request was
+        # experimental and version-specific. The Hermes migration writes a
+        # current sandbox_mode default only when the user has not supplied one.
         params: dict[str, Any] = {"cwd": self._cwd}
         result = self._client.request("thread/start", params, timeout=15)
         # Cross-fill thread.id/sessionId — different codex versions have
@@ -292,7 +269,7 @@ class CodexAppServerSession:
         logger.info(
             "codex app-server thread started: id=%s profile=%s cwd=%s",
             self._thread_id[:8],
-            self._permission_profile,
+            self._permission_profile or "config.toml",
             self._cwd,
         )
         return self._thread_id
@@ -321,6 +298,10 @@ class CodexAppServerSession:
         """Idempotent: signal the active turn loop to issue turn/interrupt
         and unwind. Called by AIAgent's _interrupt_requested path."""
         self._interrupt_event.set()
+
+    def clear_interrupt(self) -> None:
+        """Clear the interrupt only after Hermes has finalized the turn."""
+        self._interrupt_event.clear()
 
     # ---------- diagnostics ----------
 
@@ -400,7 +381,6 @@ class CodexAppServerSession:
         assert self._client is not None and self._thread_id is not None
         result.thread_id = self._thread_id
 
-        self._interrupt_event.clear()
         projector = CodexEventProjector()
 
         user_input_text = _coerce_turn_input_text(user_input)

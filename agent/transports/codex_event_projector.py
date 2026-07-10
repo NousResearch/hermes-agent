@@ -6,14 +6,14 @@ OpenAI-shaped `{role, content, tool_calls, tool_call_id}` entries that
 `agent/curator.py` already knows how to read.
 
 Codex emits items with a discriminator field `type`:
-  - userMessage         → {role: "user", content}
+  - userMessage         → ignored (Hermes already persisted the inbound turn)
   - agentMessage        → {role: "assistant", content}
   - reasoning           → stashed in the assistant's "reasoning" field
   - commandExecution    → assistant tool_call(name="exec") + tool result
   - fileChange          → assistant tool_call(name="apply_patch") + tool result
   - mcpToolCall         → assistant tool_call(name=f"mcp.{server}.{tool}") + tool result
   - dynamicToolCall     → assistant tool_call(name=tool) + tool result
-  - plan/hookPrompt/collabAgentToolCall → recorded as opaque assistant notes
+  - plan/hookPrompt/collabAgentToolCall/unknown → ignored for conversation replay
 
 Each item maps to AT MOST one assistant entry + one tool entry, preserving
 Hermes' message-alternation invariants (system → user → assistant → user/tool
@@ -107,12 +107,17 @@ class CodexEventProjector:
         if item_type == "dynamicToolCall":
             return self._project_dynamic_tool_call(item, item_id)
         if item_type == "userMessage":
-            return self._project_user_message(item)
+            # Hermes appends and persists the inbound user turn before Codex is
+            # invoked. Projecting Codex's echo would create ``user → user`` and
+            # duplicate the prompt in durable memory/session search.
+            return ProjectionResult()
 
         # Unknown / rare items (plan, hookPrompt, collabAgentToolCall, etc.)
-        # — record as opaque assistant note so memory review can still see
-        # *something* happened, but don't fabricate tool_call structure.
-        return self._project_opaque(item, item_type)
+        # are protocol telemetry, not assistant conversation turns. The Codex
+        # item enum is intentionally non-exhaustive, so fabricating an
+        # assistant row here would make a newly-added item type capable of
+        # breaking role alternation or leaking internal state into memory.
+        return ProjectionResult()
 
     # ---------- per-type projections ----------
 
@@ -123,21 +128,6 @@ class CodexEventProjector:
             msg["reasoning"] = "\n".join(self._pending_reasoning)
             self._pending_reasoning = []
         return ProjectionResult(messages=[msg], final_text=text)
-
-    def _project_user_message(self, item: dict) -> ProjectionResult:
-        # codex's userMessage content is a list of UserInput variants. For
-        # projection purposes we flatten any text fragments and ignore
-        # non-text parts (images, etc.) — Hermes' messages store text only.
-        text_parts: list[str] = []
-        for fragment in item.get("content") or []:
-            if isinstance(fragment, dict):
-                if fragment.get("type") == "text":
-                    text_parts.append(fragment.get("text") or "")
-                elif "text" in fragment:
-                    text_parts.append(str(fragment["text"]))
-        return ProjectionResult(
-            messages=[{"role": "user", "content": "\n".join(text_parts)}]
-        )
 
     def _project_command(self, item: dict, item_id: str) -> ProjectionResult:
         call_id = _deterministic_call_id("exec", item_id)
@@ -295,20 +285,4 @@ class CodexEventProjector:
         }
         return ProjectionResult(
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
-        )
-
-    def _project_opaque(self, item: dict, item_type: str) -> ProjectionResult:
-        # Record the existence of the item without inventing tool_calls.
-        # Memory review will see this and may or may not save anything.
-        try:
-            payload = json.dumps(item, ensure_ascii=False)[:1500]
-        except (TypeError, ValueError):
-            payload = repr(item)[:1500]
-        return ProjectionResult(
-            messages=[
-                {
-                    "role": "assistant",
-                    "content": f"[codex {item_type}] {payload}",
-                }
-            ]
         )

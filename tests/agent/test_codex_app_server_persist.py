@@ -47,7 +47,15 @@ def _make_turn():
 
 
 def _make_agent(session_db=None, session_id="sess-codex"):
-    agent = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        session_db=session_db,
+        session_id=session_id,
+    )
     # Pre-seed the session so run_codex_app_server_turn skips the spawn block.
     agent._codex_session = MagicMock()
     agent._codex_session.run_turn.return_value = _make_turn()
@@ -55,9 +63,7 @@ def _make_agent(session_db=None, session_id="sess-codex"):
     agent._iters_since_skill = 0
     agent._skill_nudge_interval = 0
     agent.valid_tool_names = set()
-    agent._session_db = session_db
     agent._session_db_created = True
-    agent.session_id = session_id
     return agent
 
 

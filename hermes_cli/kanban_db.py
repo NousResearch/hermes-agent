@@ -1268,12 +1268,48 @@ CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
+-- Per-API-call usage ledger for Kanban task accounting (HERMES-OBS-001).
+-- Records provider-authoritative token usage, costs, and auxiliary model
+-- consumption. Composite key (board, task_id, run_id, api_call_index)
+-- ensures idempotent writes.
+CREATE TABLE IF NOT EXISTS run_usage (
+    board                    TEXT NOT NULL,
+    task_id                  TEXT NOT NULL,
+    run_id                   INTEGER NOT NULL,
+    api_call_index           INTEGER NOT NULL,
+    call_kind                TEXT NOT NULL DEFAULT 'primary',
+    provider                 TEXT NOT NULL,
+    model                    TEXT NOT NULL,
+    input_tokens             INTEGER NOT NULL DEFAULT 0,
+    output_tokens            INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens        INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens       INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens         INTEGER NOT NULL DEFAULT 0,
+    elapsed_ms               INTEGER NOT NULL DEFAULT 0,
+    aux_input_tokens         INTEGER DEFAULT NULL,
+    aux_output_tokens        INTEGER DEFAULT NULL,
+    aux_cache_read_tokens    INTEGER DEFAULT NULL,
+    aux_cache_write_tokens   INTEGER DEFAULT NULL,
+    parent_task_id           TEXT,
+    profile                  TEXT,
+    token_source             TEXT NOT NULL,
+    cost_usd                 REAL,
+    cost_status              TEXT,
+    checker_result           TEXT,
+    repair_cycle             INTEGER NOT NULL DEFAULT 0,
+    created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (board, task_id, run_id, call_kind, api_call_index)
+);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_run_usage_task        ON run_usage(task_id);
+CREATE INDEX IF NOT EXISTS idx_run_usage_run         ON run_usage(run_id);
+CREATE INDEX IF NOT EXISTS idx_run_usage_profile     ON run_usage(profile);
+CREATE INDEX IF NOT EXISTS idx_run_usage_provider    ON run_usage(provider);
 """
 
 

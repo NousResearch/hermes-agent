@@ -398,7 +398,6 @@ def _probe_voice_duration_seconds(path: str) -> Optional[int]:
     return None
 
 
-<<<<<<< HEAD
 def telegram_deps_present() -> bool:
     """PASSIVE probe: is python-telegram-bot importable right now?
 
@@ -408,7 +407,7 @@ def telegram_deps_present() -> bool:
     and runs from ``create_adapter()`` when this returns False (#79812).
     """
     return TELEGRAM_AVAILABLE
-=======
+
 
 def _probe_video_metadata(video_path: str) -> Dict[str, int]:
     """Best-effort Telegram sendVideo metadata from ffprobe.
@@ -539,7 +538,6 @@ def _ensure_video_thumbnail(video_path: str) -> Optional[str]:
         logger.debug("[Telegram] Failed to create video thumbnail for %s", video_path, exc_info=True)
     return None
 
->>>>>>> 29110bdb9a (fix(telegram): improve local video delivery metadata)
 
 
 def check_telegram_requirements() -> bool:
@@ -8161,25 +8159,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
-<<<<<<< HEAD
-            with open(video_path, "rb") as f:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
-                    self._bot.send_video,
-                    {
-                        "chat_id": normalize_telegram_chat_id(chat_id),
-                        "video": f,
-                        "caption": caption[:1024] if caption else None,
-                        "reply_to_message_id": reply_to_id,
-                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
-                        **thread_kwargs,
-                        **self._notification_kwargs(metadata),
-                    },
-                    metadata,
-                    reply_to_id,
-                    "video",
-                    reset_media=lambda: f.seek(0),
-                )
-=======
             video_metadata, thumbnail_path = await asyncio.gather(
                 asyncio.to_thread(_probe_video_metadata, video_path),
                 asyncio.to_thread(_ensure_video_thumbnail, video_path),
@@ -8188,6 +8167,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "chat_id": normalize_telegram_chat_id(chat_id),
                 "caption": caption[:1024] if caption else None,
                 "reply_to_message_id": reply_to_id,
+                "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                 "supports_streaming": True,
                 **video_metadata,
                 **thread_kwargs,
@@ -8268,7 +8248,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     finally:
                         if thumb_file is not None:
                             thumb_file.close()
->>>>>>> 29110bdb9a (fix(telegram): improve local video delivery metadata)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning(

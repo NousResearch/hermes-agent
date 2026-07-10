@@ -1492,6 +1492,17 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             assert get_cached_context_length("test/model", "http://x") is None
 
+    def test_null_context_lengths_key_returns_empty(self, tmp_path):
+        """``context_lengths:`` with no value parses as None — must behave
+        like an empty cache instead of crashing every caller (#47135)."""
+        cache_file = tmp_path / "cache.yaml"
+        cache_file.write_text("context_lengths:\n")
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            assert get_cached_context_length("test/model", "http://x") is None
+            # save must also survive the null key and repair the file
+            save_context_length("test/model", "http://x", 32768)
+            assert get_cached_context_length("test/model", "http://x") == 32768
+
     def test_multiple_models_cached(self, tmp_path):
         cache_file = tmp_path / "cache.yaml"
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):

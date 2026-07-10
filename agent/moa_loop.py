@@ -120,7 +120,7 @@ _REFERENCE_SYSTEM_PROMPT = (
 
 
 def _slot_label(slot: dict[str, str]) -> str:
-    return f"{slot.get('provider', '').strip()}:{slot.get('model', '').strip()}"
+    return f"{(slot.get('provider') or '').strip()}:{(slot.get('model') or '').strip()}"
 
 
 def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:

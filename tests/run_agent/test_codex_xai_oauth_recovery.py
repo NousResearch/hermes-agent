@@ -603,6 +603,69 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
     assert refresh_calls["n"] == 0, "try_refresh_current must NOT be called on entitlement 403"
 
 
+def test_recover_with_credential_pool_rotates_on_xai_spending_limit_403():
+    """xAI's explicit spending-limit 403 must rotate, not hit the entitlement guard."""
+    from agent.error_classifier import FailoverReason, classify_api_error
+
+    agent = _make_codex_agent()
+    next_entry = MagicMock(id="healthy-account")
+    refresh_calls = {"n": 0}
+
+    class _SpendingLimitError(Exception):
+        status_code = 403
+        body = {
+            "code": "personal-team-blocked:spending-limit",
+            "error": (
+                "You have run out of credits or need a Grok subscription. "
+                "Add credits at Grok or upgrade at Grok."
+            ),
+        }
+
+    class _FakePool:
+        provider = "xai-oauth"
+
+        def try_refresh_current(self):
+            refresh_calls["n"] += 1
+            return MagicMock(id="should_not_be_called")
+
+        def mark_exhausted_and_rotate(
+            self,
+            *,
+            status_code,
+            error_context=None,
+            api_key_hint=None,
+        ):
+            assert status_code == 403
+            assert api_key_hint == "test-key"
+            assert error_context == {
+                "reason": "personal-team-blocked:spending-limit",
+                "message": (
+                    "You have run out of credits or need a Grok subscription. "
+                    "Add credits at Grok or upgrade at Grok."
+                ),
+            }
+            return next_entry
+
+    error = _SpendingLimitError("Error code: 403")
+    classified = classify_api_error(error, provider="xai-oauth", model="grok-4.5")
+    error_context = agent._extract_api_error_context(error)
+    setattr(agent, "_credential_pool", _FakePool())
+    agent._swap_credential = MagicMock()
+
+    recovered, retried_429 = agent._recover_with_credential_pool(
+        status_code=error.status_code,
+        has_retried_429=False,
+        classified_reason=classified.reason,
+        error_context=error_context,
+    )
+
+    assert classified.reason == FailoverReason.billing
+    assert recovered is True
+    assert retried_429 is False
+    assert refresh_calls["n"] == 0
+    agent._swap_credential.assert_called_once_with(next_entry)
+
+
 def test_recover_with_credential_pool_skips_refresh_on_bare_403_for_xai_oauth():
     """A bare HTTP 403 from ``xai-oauth`` (no keyword match) must NOT loop refresh.
 

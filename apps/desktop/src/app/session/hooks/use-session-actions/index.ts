@@ -121,7 +121,9 @@ export function useSessionActions({
     (options: boolean | FreshSessionDraftOptions = false) => {
       const draftOptions = typeof options === 'boolean' ? { replaceRoute: options } : options
       const replaceRoute = draftOptions.replaceRoute ?? false
-      const hasWorkspaceTarget = Object.hasOwn(draftOptions, 'workspaceTarget')
+
+      const hasWorkspaceTarget =
+        Object.hasOwn(draftOptions, 'workspaceTarget') && draftOptions.workspaceTarget !== undefined
 
       const workspaceTarget = hasWorkspaceTarget
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)

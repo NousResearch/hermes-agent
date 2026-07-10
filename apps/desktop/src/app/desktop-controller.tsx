@@ -736,11 +736,11 @@ export function DesktopController() {
   )
 
   const startSessionInWorkspace = useCallback(
-    (path: null | string) => {
+    (path: null | string, explicitNoWorkspace = false) => {
       // A worktree lane carries its own path; the trunk "+" can be path-less (the
       // main checkout is implicit), so fall back to the active project's root
       // instead of no-op'ing on null — that was "+ on main does nothing".
-      const target = path?.trim() || resolveNewSessionCwd()
+      const target = explicitNoWorkspace ? null : path?.trim() || resolveNewSessionCwd()
 
       startFreshSessionDraft({ workspaceTarget: target || null })
 

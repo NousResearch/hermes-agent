@@ -64,7 +64,7 @@ export function ProjectBackRow({ label, onClick }: { label: string; onClick: () 
 interface ProjectOverviewRowProps {
   project: SidebarProjectTree
   onEnter?: (id: string) => void
-  onNewSession?: (path: null | string) => void
+  onNewSession?: (path: null | string, explicitNoWorkspace?: boolean) => void
   renderRows?: (sessions: SessionInfo[]) => React.ReactNode
   activeProjectId?: null | string
   previewSessions?: SessionInfo[]
@@ -117,7 +117,10 @@ export function ProjectOverviewRow({
         actions={
           <>
             {onNewSession && (
-              <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
+              <WorkspaceAddButton
+                label={s.newSessionIn(project.label)}
+                onClick={() => onNewSession(project.path, project.isNoProject)}
+              />
             )}
             <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />
           </>

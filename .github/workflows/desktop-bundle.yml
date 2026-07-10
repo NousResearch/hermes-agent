@@ -1,0 +1,232 @@
+name: Build ApexNodes Runtime Bundle
+
+# hc-472 P1 (B1): prebuilt self-contained runtime bundles, one per (os, arch),
+# built NATIVELY on a per-OS matrix — venvs are platform-bound, so win/mac
+# bundles cannot be cross-built (design §3; the prod hc-401 assembly line is
+# linux-only and keeps building Docker images, not desktop bundles).
+#
+# Each job: scripts/build-runtime-bundle.mjs build → same-machine smoke
+# (extract → fixup → verify → interpreter/CLI probes → MOVE the tree and
+# re-probe, proving relocatability) → publish to COS under
+#   bundle/hermes-agent/<key>/<os>-<arch>/
+#     runtime-bundle-<key>-<os>-<arch>.tar.gz (+ .sha256, manifest.json)
+# → re-check the PUBLIC url (HEAD 200 + sha match) so "published" means
+# "downloadable and intact", not "coscli exited 0".
+#
+# mac jobs are marked experimental for P1 (win-x64 is the acceptance gate;
+# design §7 Phase 1) — their failure does not fail the workflow.
+#
+# Design: hermes-cloud docs/work-notes/DESIGN-hc472-runtime-bundle.md
+# COS upload skeletons mirror desktop-windows.yml (coscli) and
+# desktop-macos.yml (coscmd); same COS_SECRET_ID/KEY repo secrets, same
+# skip-cleanly-when-unset behavior.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "runtime commit/ref to bundle (default: the dispatched ref)"
+        required: false
+        default: ""
+      min_desktop_version:
+        description: "oldest desktop shell allowed to consume this bundle (manifest.min_desktop_version)"
+        required: false
+        default: "0.17.0"
+      uv_version:
+        description: "pin a uv release tag (default: latest)"
+        required: false
+        default: ""
+  # Pre-merge validation trigger for the hc-472 P1 branch: pushing the branch
+  # runs the full matrix for real (same-repo branch ⇒ COS secrets available).
+  # Harmless to keep after merge; dispatch is the normal entry point.
+  push:
+    branches:
+      - "codex/hc472-p1-bundle-build"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: runtime bundle (${{ matrix.os }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, os: win, arch: x64, experimental: false }
+          - { runner: macos-14, os: mac, arch: arm64, experimental: true }
+          - { runner: macos-13, os: mac, arch: x64, experimental: true }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.ref || github.sha }}
+
+      # Host node only ORCHESTRATES (runs the build script); the bundle gets
+      # its own freshly downloaded portable node.
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Build bundle
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UV_VERSION_PIN: ${{ github.event.inputs.uv_version }}
+          MIN_DESKTOP_VERSION: ${{ github.event.inputs.min_desktop_version }}
+        run: |
+          set -euo pipefail
+          ARGS=(build --out "$RUNNER_TEMP/hb" --min-desktop-version "${MIN_DESKTOP_VERSION:-0.17.0}")
+          if [ -n "${UV_VERSION_PIN:-}" ]; then ARGS+=(--uv-version "$UV_VERSION_PIN"); fi
+          node scripts/build-runtime-bundle.mjs "${ARGS[@]}"
+
+      - name: Smoke (extract → fixup → verify → probes → move → re-probe)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # windows: RUNNER_TEMP is D:\a\_temp — normalize for bash globbing
+          RT="${RUNNER_TEMP//\\//}"
+          ARCHIVE=$(ls "$RT"/hb/runtime-bundle-*.tar.gz)
+          node scripts/build-runtime-bundle.mjs smoke --archive "$ARCHIVE" --workdir "$RT/hb-smoke"
+
+      - name: Read bundle summary
+        id: summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          RT="${RUNNER_TEMP//\\//}"
+          SUMMARY=$(ls "$RT"/hb/runtime-bundle-*.summary.json)
+          cat "$SUMMARY"
+          echo "key=$(jq -r .key "$SUMMARY")" >> "$GITHUB_OUTPUT"
+          echo "bundle=$(jq -r .bundle "$SUMMARY")" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(jq -r .sha256 "$SUMMARY")" >> "$GITHUB_OUTPUT"
+          {
+            echo "### runtime bundle ${{ matrix.os }}-${{ matrix.arch }}"
+            echo '```json'
+            cat "$SUMMARY"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Small artifacts only (manifest + sha + summary) — the tar.gz goes to
+      # COS, its bytes have no business in GH artifact storage.
+      - name: Upload manifest artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-bundle-meta-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/hb/*.manifest.json
+            ${{ runner.temp }}/hb/*.sha256
+            ${{ runner.temp }}/hb/*.summary.json
+          if-no-files-found: error
+
+      # ── COS publish, windows leg (coscli — mirrors desktop-windows.yml) ────
+      - name: Publish bundle to COS (windows)
+        if: matrix.os == 'win'
+        shell: pwsh
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          BUNDLE_KEY: ${{ steps.summary.outputs.key }}
+        run: |
+          if (-not $env:COS_SECRET_ID -or -not $env:COS_SECRET_KEY) {
+            Write-Host "COS_SECRET_ID/COS_SECRET_KEY not set; skipping COS publish (meta artifact still uploaded)."
+            exit 0
+          }
+          $ErrorActionPreference = "Stop"
+          Invoke-WebRequest -Uri "https://github.com/tencentyun/coscli/releases/download/v1.0.8/coscli-v1.0.8-windows-amd64.exe" -OutFile coscli.exe
+          $cfg = @(
+            "cos:",
+            "  base:",
+            "    protocol: https",
+            "    secretid: $env:COS_SECRET_ID",
+            "    secretkey: $env:COS_SECRET_KEY",
+            "  buckets:",
+            "  - name: apexnodes-runtime-202606250443-1300912302",
+            "    alias: apexnodes-runtime",
+            "    region: ap-guangzhou",
+            "    endpoint: cos.ap-guangzhou.myqcloud.com"
+          )
+          Set-Content -Path (Join-Path $env:USERPROFILE ".cos.yaml") -Value $cfg -Encoding ascii
+          $out = Join-Path $env:RUNNER_TEMP "hb"
+          $prefix = "bundle/hermes-agent/$env:BUNDLE_KEY/win-x64"
+          $tarball = Get-ChildItem "$out/runtime-bundle-*.tar.gz" | Select-Object -First 1
+          $sha = Get-ChildItem "$out/runtime-bundle-*.tar.gz.sha256" | Select-Object -First 1
+          $manifest = Get-ChildItem "$out/runtime-bundle-*.manifest.json" | Select-Object -First 1
+          foreach ($pair in @(
+            @($tarball.FullName, $tarball.Name),
+            @($sha.FullName, $sha.Name),
+            @($manifest.FullName, "manifest.json")
+          )) {
+            $t0 = Get-Date
+            ./coscli.exe cp $pair[0] "cos://apexnodes-runtime/$prefix/$($pair[1])"
+            $dt = ((Get-Date) - $t0).TotalSeconds
+            Write-Host ("COS publish OK: {0}/{1} ({2:n1}s)" -f $prefix, $pair[1], $dt)
+          }
+
+      # ── COS publish, mac legs (coscmd — mirrors desktop-macos.yml) ─────────
+      - name: Publish bundle to COS (mac)
+        if: matrix.os == 'mac'
+        shell: bash
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          BUNDLE_KEY: ${{ steps.summary.outputs.key }}
+        run: |
+          set -euo pipefail
+          if [ -z "$COS_SECRET_ID" ] || [ -z "$COS_SECRET_KEY" ]; then
+            echo "COS_SECRET_ID/COS_SECRET_KEY not set; skipping COS publish (meta artifact still uploaded)."
+            exit 0
+          fi
+          pip3 install --quiet --break-system-packages coscmd
+          coscmd config -a "$COS_SECRET_ID" -s "$COS_SECRET_KEY" \
+            -b apexnodes-runtime-202606250443-1300912302 -r ap-guangzhou
+          PREFIX="bundle/hermes-agent/${BUNDLE_KEY}/mac-${{ matrix.arch }}"
+          cd "$RUNNER_TEMP/hb"
+          TARBALL=$(ls runtime-bundle-*.tar.gz)
+          SHA=$(ls runtime-bundle-*.tar.gz.sha256)
+          MANIFEST=$(ls runtime-bundle-*.manifest.json)
+          for f in "$TARBALL" "$SHA"; do
+            t0=$SECONDS
+            coscmd upload "$f" "$PREFIX/$f"
+            echo "COS publish OK: $PREFIX/$f ($((SECONDS - t0))s)"
+          done
+          coscmd upload "$MANIFEST" "$PREFIX/manifest.json"
+          echo "COS publish OK: $PREFIX/manifest.json"
+
+      # "Published" is only true when the PUBLIC url serves the exact bytes we
+      # built: HEAD 200 on all three objects + downloaded .sha256 == local
+      # (the hc-448 class of gate — never trust a green upload step alone).
+      - name: Verify public COS objects (HEAD 200 + sha)
+        shell: bash
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          BUNDLE_KEY: ${{ steps.summary.outputs.key }}
+          BUNDLE_NAME: ${{ steps.summary.outputs.bundle }}
+          BUNDLE_SHA: ${{ steps.summary.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$COS_SECRET_ID" ]; then
+            echo "COS secrets absent; nothing was published; skipping public verification."
+            exit 0
+          fi
+          BASE="https://apexnodes-runtime-202606250443-1300912302.cos.ap-guangzhou.myqcloud.com"
+          PREFIX="bundle/hermes-agent/${BUNDLE_KEY}/${{ matrix.os }}-${{ matrix.arch }}"
+          for obj in "$BUNDLE_NAME" "$BUNDLE_NAME.sha256" "manifest.json"; do
+            curl -sSfI "$BASE/$PREFIX/$obj" >/dev/null
+            echo "HEAD 200: $PREFIX/$obj"
+          done
+          REMOTE_SHA=$(curl -sSf "$BASE/$PREFIX/$BUNDLE_NAME.sha256" | awk '{print $1}')
+          if [ "$REMOTE_SHA" != "$BUNDLE_SHA" ]; then
+            echo "sha mismatch: remote $REMOTE_SHA != local $BUNDLE_SHA" >&2
+            exit 1
+          fi
+          echo "public sha256 verified: $BUNDLE_SHA"

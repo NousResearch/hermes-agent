@@ -27,8 +27,6 @@ describe("api.getSessionChildren", () => {
       parent_session_id: "parent-1",
       focused: [],
       branches: [],
-      interactive: [],
-      compression: [],
       subagents: { active: [], completed: [], stale: [], stale_count: 0 },
       other: [],
     });

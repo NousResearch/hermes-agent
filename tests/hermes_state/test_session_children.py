@@ -9,14 +9,11 @@ def test_session_children_group_focused_before_read_only_subagents(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         db.create_session("parent", source="cli")
+        db.end_session("parent", "compression")
         db.create_session(
             "focused",
             source="cli",
             parent_session_id="parent",
-            model_config={
-                "_focused_continuation_of": "parent",
-                "_child_kind": "focused_continuation",
-            },
         )
         db.append_message("focused", "assistant", "focused continuation")
         db.create_session(
@@ -54,6 +51,7 @@ def test_session_children_group_focused_before_read_only_subagents(tmp_path):
 
         assert grouped["parent_session_id"] == "parent"
         assert [s["id"] for s in grouped["focused"]] == ["focused"]
+        assert "child_kind" not in grouped["focused"][0]
         assert [s["id"] for s in grouped["branches"]] == ["branch"]
         assert [s["id"] for s in grouped["subagents"]["active"]] == ["active_subagent"]
         assert [s["id"] for s in grouped["subagents"]["completed"]] == ["done_subagent"]

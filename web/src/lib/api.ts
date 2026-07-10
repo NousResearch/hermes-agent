@@ -1821,25 +1821,12 @@ export interface SessionInfo {
   preview: string | null;
   parent_session_id?: string | null;
   _lineage_root_id?: string | null;
-  child_kind?: SessionChildKind;
 }
-
-export type SessionChildKind =
-  | "focused_continuation"
-  | "branch"
-  | "interactive_child"
-  | "compression_continuation"
-  | "delegate_subagent_active"
-  | "delegate_subagent_completed"
-  | "delegate_subagent_stale"
-  | "child";
 
 export interface SessionChildrenResponse {
   parent_session_id: string;
   focused: SessionInfo[];
   branches: SessionInfo[];
-  interactive: SessionInfo[];
-  compression: SessionInfo[];
   subagents: {
     active: SessionInfo[];
     completed: SessionInfo[];

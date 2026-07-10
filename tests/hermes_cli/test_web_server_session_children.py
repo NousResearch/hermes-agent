@@ -17,13 +17,11 @@ class _FakeSessionDB:
         self.include_stale = include_stale
         return {
             "parent_session_id": "parent",
-            "focused": [{"id": "focused", "child_kind": "focused_continuation"}],
+            "focused": [{"id": "focused"}],
             "branches": [],
-            "interactive": [],
-            "compression": [],
             "subagents": {
                 "active": [],
-                "completed": [{"id": "audit", "child_kind": "delegate_subagent_completed"}],
+                "completed": [{"id": "audit"}],
                 "stale": [],
                 "stale_count": 1,
             },

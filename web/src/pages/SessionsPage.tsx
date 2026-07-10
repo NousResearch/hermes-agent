@@ -381,17 +381,6 @@ function MessageList({
   );
 }
 
-const CHILD_KIND_LABELS: Record<string, string> = {
-  focused_continuation: "Focused continuation",
-  branch: "Branch",
-  interactive_child: "Interactive child",
-  compression_continuation: "Compression continuation",
-  delegate_subagent_active: "Active delegate",
-  delegate_subagent_completed: "Completed delegate",
-  delegate_subagent_stale: "Stale delegate",
-  child: "Child",
-};
-
 function childSessionTitle(session: SessionInfo, untitled: string): string {
   const title = session.title?.trim();
   if (title && title !== "Untitled") return title;
@@ -421,11 +410,6 @@ function ChildSessionRow({
             <span className="min-w-0 truncate text-sm font-medium">
               {childSessionTitle(session, t.sessions.untitledSession)}
             </span>
-            {session.child_kind && (
-              <Badge tone="outline" className="text-[10px]">
-                {CHILD_KIND_LABELS[session.child_kind] ?? session.child_kind}
-              </Badge>
-            )}
             {session.is_active && (
               <Badge tone="success" className="text-[10px]">
                 {t.common.live}
@@ -503,16 +487,6 @@ function ChildSessionsBlock({
   const completedSubagents = grouped.subagents.completed;
   const staleCount = grouped.subagents.stale_count;
   const subagentCount = activeSubagents.length + completedSubagents.length + staleCount;
-  const visibleCount =
-    grouped.focused.length +
-    grouped.branches.length +
-    grouped.interactive.length +
-    grouped.compression.length +
-    grouped.other.length +
-    subagentCount;
-
-  if (visibleCount === 0) return null;
-
   const primaryGroups: Array<{
     title: string;
     description?: string;
@@ -526,9 +500,13 @@ function ChildSessionsBlock({
       icon: GitBranch,
     },
     { title: "Branches", rows: grouped.branches, icon: GitBranch },
-    { title: "Interactive promoted children", rows: grouped.interactive, icon: MessageSquare },
-    { title: "Compression continuations", rows: grouped.compression, icon: Archive },
   ];
+
+  const visibleCount = primaryGroups.reduce(
+    (count, group) => count + group.rows.length,
+    grouped.other.length + subagentCount,
+  );
+  if (visibleCount === 0) return null;
 
   return (
     <div className="mb-4 space-y-4 rounded border border-border bg-midground/20 p-3">
@@ -643,29 +621,24 @@ function SessionRow({
   }, [isExpanded, session.id, messages]);
 
   useEffect(() => {
-    if (isExpanded && childrenRequestRef.current !== childParentId && !childrenLoading) {
-      let cancelled = false;
+    if (isExpanded && childrenRequestRef.current !== childParentId) {
       childrenRequestRef.current = childParentId;
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setChildrenLoading(true);
       setChildGroups(null);
       setChildrenError(null);
       api
         .getSessionChildren(childParentId)
         .then((groups) => {
-          if (!cancelled) setChildGroups(groups);
+          if (childrenRequestRef.current === childParentId) setChildGroups(groups);
         })
         .catch((err) => {
-          if (!cancelled) setChildrenError(String(err));
+          if (childrenRequestRef.current === childParentId) setChildrenError(String(err));
         })
         .finally(() => {
-          if (!cancelled) setChildrenLoading(false);
+          if (childrenRequestRef.current === childParentId) setChildrenLoading(false);
         });
-      return () => {
-        cancelled = true;
-      };
     }
-  }, [isExpanded, childParentId, childrenLoading]);
+  }, [isExpanded, childParentId]);
 
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]

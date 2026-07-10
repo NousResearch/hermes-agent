@@ -28,7 +28,6 @@ from pathlib import Path
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
-from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -76,49 +75,26 @@ _COMPRESSION_CHILD_SQL = (
 )
 
 
-def _compression_continuation_child_sql(
-    parent_alias: str = "parent",
-    child_alias: str = "child",
-) -> str:
-    """SQL predicate for real compression-continuation edges.
-
-    Branches, delegate subagents, tool sessions, and retained subagent audit
-    rows also use ``parent_session_id`` but must not be followed as the live
-    compression chain for a normal chat.
-    """
-    return (
-        f"{parent_alias}.end_reason = 'compression'"
-        f" AND json_extract(COALESCE({child_alias}.model_config, '{{}}'), '$._branched_from') IS NULL"
-        f" AND json_extract(COALESCE({child_alias}.model_config, '{{}}'), '$._delegate_from') IS NULL"
-        f" AND COALESCE({child_alias}.source, '') != 'tool'"
-        f" AND (COALESCE({child_alias}.source, '') != 'subagent'"
-        f"      OR COALESCE({parent_alias}.source, '') = 'subagent')"
-    )
+_COMPRESSION_CONTINUATION_CHILD_SQL = (
+    "parent.end_reason = 'compression'"
+    " AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL"
+    " AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL"
+    " AND COALESCE(child.source, '') != 'tool'"
+    " AND (COALESCE(child.source, '') != 'subagent'"
+    "      OR COALESCE(parent.source, '') = 'subagent')"
+)
 
 # Rows that surface in pickers: roots + branch children (subagent runs and
 # compression continuations stay hidden).
 _LISTABLE_CHILD_SQL = f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')})"
 
-SESSION_CHILD_KIND_PRIORITY: Dict[str, int] = {
-    "focused_continuation": 0,
-    "branch": 1,
-    "interactive_child": 2,
-    "compression_continuation": 2,
-    "delegate_subagent_active": 3,
-    "delegate_subagent_completed": 4,
-    "delegate_subagent_stale": 5,
-    "child": 6,
-}
-
-_SESSION_CHILD_KIND_BUCKETS: Dict[str, Tuple[str, ...]] = {
-    "focused_continuation": ("focused",),
-    "branch": ("branches",),
-    "interactive_child": ("interactive",),
-    "compression_continuation": ("compression",),
-    "delegate_subagent_active": ("subagents", "active"),
-    "delegate_subagent_completed": ("subagents", "completed"),
-    "delegate_subagent_stale": ("subagents", "stale"),
-    "child": ("other",),
+_SESSION_CHILD_KINDS: Dict[str, Tuple[int, Tuple[str, ...]]] = {
+    "focused_continuation": (0, ("focused",)),
+    "branch": (1, ("branches",)),
+    "delegate_subagent_active": (2, ("subagents", "active")),
+    "delegate_subagent_completed": (3, ("subagents", "completed")),
+    "delegate_subagent_stale": (4, ("subagents", "stale")),
+    "child": (5, ("other",)),
 }
 
 _STALE_DELEGATE_END_REASONS = {
@@ -149,23 +125,12 @@ def _model_config_dict(row: Dict[str, Any]) -> Dict[str, Any]:
 def classify_session_child(child: Dict[str, Any], parent: Optional[Dict[str, Any]]) -> str:
     """Classify a child session for parent/child UI ordering.
 
-    ``parent_session_id`` alone is too broad: focused continuations, explicit
-    branches, compression rotations, and read-only delegate subagents all use
-    that edge. This classifier gives WebUI/API callers one authoritative order
-    so retained audit/debug subagents never occupy the focused continuation
-    slot.
+    ``parent_session_id`` alone is too broad: compression continuations,
+    branches, and read-only delegate subagents all use that edge.
     """
     cfg = _model_config_dict(child)
-    parent_id = parent.get("id") if parent else child.get("parent_session_id")
     source = (child.get("source") or "").strip().lower()
     parent_source = ((parent or {}).get("source") or "").strip().lower()
-    explicit_kind = str(cfg.get("_child_kind") or "").strip().lower()
-
-    focused_of = cfg.get("_focused_continuation_of")
-    if explicit_kind == "focused_continuation" or (
-        focused_of is not None and str(focused_of) == str(parent_id)
-    ):
-        return "focused_continuation"
 
     if cfg.get("_branched_from") is not None:
         return "branch"
@@ -174,11 +139,7 @@ def classify_session_child(child: Dict[str, Any], parent: Optional[Dict[str, Any
         if parent_ended and (child.get("started_at") or 0) >= parent_ended:
             return "branch"
 
-    delegate_marker = cfg.get("_delegate_from") is not None or explicit_kind == "delegate_subagent"
-    promoted = is_truthy_value(cfg.get("_promoted_from_delegate"), default=False)
-    continuable = is_truthy_value(cfg.get("_continuable"), default=False)
-    if promoted or (delegate_marker and continuable):
-        return "interactive_child"
+    delegate_marker = cfg.get("_delegate_from") is not None
 
     if parent and parent.get("end_reason") == "compression" and not delegate_marker:
         # Compression continuations are internal rotations, not read-only
@@ -188,7 +149,7 @@ def classify_session_child(child: Dict[str, Any], parent: Optional[Dict[str, Any
         if source != "tool" and (source != "subagent" or parent_source == "subagent"):
             parent_ended = parent.get("ended_at") or 0
             if not parent_ended or (child.get("started_at") or 0) >= parent_ended:
-                return "compression_continuation"
+                return "focused_continuation"
 
     if delegate_marker or source == "subagent":
         if child.get("ended_at") is None:
@@ -3386,7 +3347,7 @@ class SessionDB:
                     FROM sessions parent
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
-                      AND {_compression_continuation_child_sql('parent', 'child')}
+                      AND {_COMPRESSION_CONTINUATION_CHILD_SQL}
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -3642,7 +3603,7 @@ class SessionDB:
                     FROM chain c
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
-                    WHERE {_compression_continuation_child_sql('parent', 'child')}
+                    WHERE {_COMPRESSION_CONTINUATION_CHILD_SQL}
                 ),
                 chain_max AS (
                     SELECT
@@ -3895,7 +3856,7 @@ class SessionDB:
             rows = self._conn.execute(query, (session_id,)).fetchall()
 
         now = time.time()
-        children: List[Tuple[int, float, str, Dict[str, Any]]] = []
+        children: List[Tuple[int, float, str, str, Dict[str, Any]]] = []
         for row in rows:
             child = dict(row)
             raw = child.pop("_preview_raw", "").strip()
@@ -3914,18 +3875,13 @@ class SessionDB:
             if kind == "delegate_subagent_active" and not is_recent_open_delegate:
                 kind = "delegate_subagent_stale"
 
-            child["child_kind"] = kind
             child["is_active"] = is_recent_open_delegate
-            child["archived"] = bool(child.get("archived"))
             # The classifier needs model_config, but WebUI child rows do not.
             child.pop("model_config", None)
             child.pop("system_prompt", None)
 
-            priority = SESSION_CHILD_KIND_PRIORITY.get(
-                kind,
-                SESSION_CHILD_KIND_PRIORITY["child"],
-            )
-            children.append((priority, -last_active, str(child.get("id") or ""), child))
+            priority = _SESSION_CHILD_KINDS.get(kind, _SESSION_CHILD_KINDS["child"])[0]
+            children.append((priority, -last_active, str(child.get("id") or ""), kind, child))
 
         children.sort(key=lambda item: (item[0], item[1], item[2]))
 
@@ -3933,25 +3889,24 @@ class SessionDB:
             "parent_session_id": session_id,
             "focused": [],
             "branches": [],
-            "interactive": [],
-            "compression": [],
             "subagents": {
                 "active": [],
                 "completed": [],
                 "stale": [],
                 "stale_count": sum(
-                    1 for _, _, _, child in children
-                    if child.get("child_kind") == "delegate_subagent_stale"
+                    1 for _, _, _, kind, _ in children
+                    if kind == "delegate_subagent_stale"
                 ),
             },
             "other": [],
         }
 
-        for _, _, _, child in children[:visible_limit]:
-            kind = child.get("child_kind") or "child"
-            if kind == "delegate_subagent_stale" and not include_stale:
-                continue
-            bucket = _SESSION_CHILD_KIND_BUCKETS.get(kind, ("other",))
+        visible = [
+            entry for entry in children
+            if include_stale or entry[3] != "delegate_subagent_stale"
+        ]
+        for _, _, _, kind, child in visible[:visible_limit]:
+            bucket = _SESSION_CHILD_KINDS.get(kind, _SESSION_CHILD_KINDS["child"])[1]
             if len(bucket) == 1:
                 grouped[bucket[0]].append(child)
             else:

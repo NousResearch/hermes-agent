@@ -1337,10 +1337,11 @@ def init_agent(
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
-                from tools.memory_tool import MemoryStore
+                from tools.memory_tool import MemoryStore, resolve_user_scope
                 agent._memory_store = MemoryStore(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
+                    user_scope=resolve_user_scope(user_id, mem_config),
                 )
                 agent._memory_store.load_from_disk()
         except Exception:

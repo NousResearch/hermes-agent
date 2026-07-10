@@ -25,6 +25,7 @@ Design:
 
 import json
 import logging
+import re
 import os
 import tempfile
 import time
@@ -55,6 +56,41 @@ logger = logging.getLogger(__name__)
 def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
+
+
+def _sanitize_user_scope(key: str) -> str:
+    """Normalize a user-scope key to a filesystem-safe slug ("" = legacy)."""
+    return re.sub(r"[^a-z0-9_-]", "", (key or "").strip().lower())
+
+
+def resolve_user_scope(user_id: Optional[str], mem_config: Dict[str, Any]) -> str:
+    """Map a platform user_id to a USER.md scope key.
+
+    Returns "" (legacy shared USER.md) unless memory.per_user_profiles is
+    enabled. With the flag on:
+      - a session WITHOUT a user_id (CLI, cron) uses memory.default_user_key;
+      - a user_id listed in the registry file (memory.users_registry, default
+        <hermes_home>/data/users.json, schema {"users": {"<id>": {"key": ...}}})
+        maps to that entry's key;
+      - an unlisted user_id falls back to the sanitized id itself, so unknown
+        speakers get their own isolated profile rather than someone else's.
+    """
+    if not mem_config or not mem_config.get("per_user_profiles", False):
+        return ""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return _sanitize_user_scope(str(mem_config.get("default_user_key", "")))
+    reg_path = str(mem_config.get("users_registry", "") or
+                   (get_hermes_home() / "data" / "users.json"))
+    key = ""
+    try:
+        with open(reg_path, encoding="utf-8") as fh:
+            entry = (json.load(fh).get("users") or {}).get(uid)
+        if isinstance(entry, dict):
+            key = str(entry.get("key", ""))
+    except Exception:
+        key = ""
+    return _sanitize_user_scope(key) or _sanitize_user_scope(uid) or "unknown"
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -127,9 +163,13 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
+                 user_scope: str = ""):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
+        # Scope key for the USER.md profile ("" = legacy shared file).
+        # MEMORY.md is always shared; only the user profile is per-person.
+        self.user_scope = _sanitize_user_scope(user_scope)
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
@@ -186,7 +226,7 @@ class MemoryStore:
         mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        self.user_entries = self._read_file(self._path_for("user"))
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -277,10 +317,11 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
+    def _path_for(self, target: str) -> Path:
         mem_dir = get_memory_dir()
         if target == "user":
+            if self.user_scope:
+                return mem_dir / "users" / self.user_scope / "USER.md"
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
@@ -308,8 +349,9 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        path = self._path_for(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_file(path, self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":

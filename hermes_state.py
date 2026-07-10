@@ -231,6 +231,47 @@ _FTS_TRIGRAM_TRIGGERS = (
     "messages_fts_trigram_update",
 )
 
+# Base (non-trigram) FTS triggers — the expected trigger set when the trigram
+# index is disabled via config (session_store.trigram_fts: false).
+_FTS_BASE_TRIGGERS = tuple(
+    t for t in _FTS_TRIGGERS if t not in _FTS_TRIGRAM_TRIGGERS
+)
+
+
+def _trigram_fts_config_enabled() -> bool:
+    """Whether the trigram FTS index is enabled by config (default True).
+
+    Reads ``session_store.trigram_fts`` from config.yaml. The trigram index
+    roughly doubles the on-disk footprint of every message (it stores a full
+    second copy of message content plus a trigram token index); on large,
+    busy installs it can dominate state.db size (observed: ~2GB of a 4.5GB
+    DB) and slow synchronous queries enough to stall the dashboard event
+    loop. Setting ``session_store.trigram_fts: false`` disables it: CJK /
+    substring message search degrades to the existing LIKE fallback (same
+    degradation as a SQLite build without the trigram tokenizer); base FTS,
+    title/session search, and message writes are unaffected.
+
+    Lazy import + fail-open so hermes_state keeps zero hard deps on the CLI
+    config layer (tests and standalone scripts open SessionDB directly).
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        section = cfg.get("session_store")
+        if not isinstance(section, dict):
+            return True
+        val = section.get("trigram_fts", True)
+        if isinstance(val, bool):
+            return val
+        # Tolerate integer 0/1 written in YAML or produced by env-var
+        # substitution; anything else fails open (trigram stays enabled).
+        if isinstance(val, int):
+            return bool(val)
+        return True
+    except Exception:
+        return True
+
 
 def _set_last_init_error(msg: Optional[str]) -> None:
     """Record (or clear) the most recent state.db init failure.
@@ -1831,7 +1872,11 @@ class SessionDB:
                 # v11+ code drops and rebuilds both FTS tables below, so doing
                 # the v10-only trigram backfill first only burns startup time
                 # and WAL space before v11 throws the work away.
-                if fts5_available:
+                if fts5_available and not _trigram_fts_config_enabled():
+                    # Trigram disabled by config: skip the v10 backfill —
+                    # the post-migration init drops the table anyway.
+                    pass
+                elif fts5_available:
                     _fts_trigram_exists = self._fts_table_probe(
                         cursor, "messages_fts_trigram"
                     )
@@ -1889,9 +1934,16 @@ class SessionDB:
                                 "COALESCE(tool_calls, '') "
                                 "FROM messages"
                             )
-                        trigram_ok = self._ensure_fts_schema(
-                            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
-                        )
+                        # Skip trigram recreate+backfill entirely when disabled
+                        # by config — the post-migration init below drops it
+                        # anyway; backfilling first just burns startup time and
+                        # WAL space on a multi-GB index we're about to discard.
+                        if not _trigram_fts_config_enabled():
+                            trigram_ok = False
+                        else:
+                            trigram_ok = self._ensure_fts_schema(
+                                cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                            )
                         if trigram_ok:
                             cursor.execute(
                                 "INSERT INTO messages_fts_trigram(rowid, content) "
@@ -1988,7 +2040,40 @@ class SessionDB:
             # under this interpreter succeed; a later open under a trigram-capable
             # runtime recreates them and backfills.
             if self._fts_enabled:
-                if self._sqlite_supports_trigram(cursor):
+                if not _trigram_fts_config_enabled():
+                    # Trigram FTS disabled by config (session_store.trigram_fts:
+                    # false). Same degradation path as a trigram-less SQLite:
+                    # drop the triggers so message writes don't reference a
+                    # table we won't maintain, drop the table itself to free
+                    # its (potentially multi-GB) pages, and route CJK search
+                    # to the LIKE fallback via _trigram_available=False.
+                    self._trigram_available = False
+                    self._drop_trigram_triggers(cursor)
+                    try:
+                        cursor.execute(
+                            "DROP TABLE IF EXISTS messages_fts_trigram"
+                        )
+                    except sqlite3.OperationalError as exc:
+                        # Triggers are already gone, so writes stay safe; the
+                        # orphaned table just goes stale until the drop is
+                        # retried on the next open. Surface it rather than
+                        # failing the whole schema init.
+                        logger.warning(
+                            "trigram FTS disabled by config but DROP TABLE "
+                            "messages_fts_trigram failed for %s: %s — the "
+                            "stale index remains until the next open.",
+                            self.db_path, exc,
+                        )
+                    # Base FTS trigger repair still applies (measure against
+                    # the base trigger set — the trigram triggers are
+                    # intentionally absent, not degraded).
+                    base_triggers_need_repair = (
+                        self._fts_trigger_count(cursor)
+                        < len(_FTS_BASE_TRIGGERS)
+                    )
+                    if base_triggers_need_repair:
+                        self._rebuild_fts_indexes(cursor, include_trigram=False)
+                elif self._sqlite_supports_trigram(cursor):
                     trigram_enabled = self._ensure_fts_schema(
                         cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
                     )
@@ -7476,8 +7561,8 @@ class SessionDB:
         index internally, then VACUUM returns the freed pages to the OS.
 
         Skips any FTS table that does not exist (e.g. the trigram index when
-        disabled via ``HERMES_DISABLE_FTS_TRIGRAM`` or not yet created), so
-        it is safe to call unconditionally.
+        disabled via ``session_store.trigram_fts: false`` or not yet
+        created), so it is safe to call unconditionally.
 
         Returns the number of FTS indexes that were optimized.
         """

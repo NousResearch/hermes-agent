@@ -577,6 +577,118 @@ class TestSessionLifecycle:
         finally:
             db.close()
 
+    def test_trigram_config_disabled_skips_creation(self, tmp_path, monkeypatch):
+        """session_store.trigram_fts=false must skip trigram table creation."""
+        monkeypatch.setattr(
+            "hermes_state._trigram_fts_config_enabled", lambda: False
+        )
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            # Base FTS5 fully functional.
+            assert db._fts_enabled is True
+            assert db._fts_table_exists("messages_fts") is True
+            # Trigram table not created; CJK search routes to LIKE fallback.
+            assert db._fts_table_exists("messages_fts_trigram") is False
+            assert db._trigram_available is False
+
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="hello gated world")
+            # Message writes work (no dangling trigram triggers) and base
+            # keyword search still finds them.
+            assert len(db.search_messages("gated")) == 1
+            # No trigram triggers were installed.
+            trigger_names = {
+                row[0]
+                for row in db._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='trigger'"
+                )
+            }
+            assert not any("trigram" in name for name in trigger_names)
+        finally:
+            db.close()
+
+    def test_trigram_config_disabled_drops_existing_index(
+        self, tmp_path, monkeypatch
+    ):
+        """Flipping trigram_fts to false drops an existing trigram index on reopen."""
+        db_path = tmp_path / "state.db"
+        # Phase 1: default config — trigram index built and populated.
+        seeded = SessionDB(db_path=db_path)
+        try:
+            seeded.create_session(session_id="s1", source="cli")
+            seeded.append_message("s1", role="user", content="alpha beta gamma")
+            assert seeded._fts_table_exists("messages_fts_trigram") is True
+            assert seeded._trigram_available is True
+        finally:
+            seeded.close()
+
+        # Phase 2: reopen with the config gate off.
+        monkeypatch.setattr(
+            "hermes_state._trigram_fts_config_enabled", lambda: False
+        )
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_table_exists("messages_fts_trigram") is False
+            assert reopened._trigram_available is False
+            # Existing content still searchable via base FTS; writes still work.
+            assert len(reopened.search_messages("alpha")) == 1
+            reopened.append_message("s1", role="assistant", content="delta epsilon")
+            assert len(reopened.search_messages("delta")) == 1
+        finally:
+            reopened.close()
+
+    def test_trigram_config_reenabled_rebuilds_and_backfills(
+        self, tmp_path, monkeypatch
+    ):
+        """Re-enabling trigram_fts after a disabled period rebuilds + backfills."""
+        db_path = tmp_path / "state.db"
+        monkeypatch.setattr(
+            "hermes_state._trigram_fts_config_enabled", lambda: False
+        )
+        gated = SessionDB(db_path=db_path)
+        try:
+            gated.create_session(session_id="s1", source="cli")
+            gated.append_message("s1", role="user", content="written while gated")
+        finally:
+            gated.close()
+
+        # Reopen with the gate back on (default) — trigger repair recreates
+        # the trigram table and backfills the rows written while it was off.
+        monkeypatch.setattr(
+            "hermes_state._trigram_fts_config_enabled", lambda: True
+        )
+        restored = SessionDB(db_path=db_path)
+        try:
+            assert restored._fts_table_exists("messages_fts_trigram") is True
+            assert restored._trigram_available is True
+            count = restored._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram"
+            ).fetchone()[0]
+            assert count == 1
+        finally:
+            restored.close()
+
+    def test_trigram_config_default_is_enabled(self, tmp_path):
+        """With no config override, the trigram index builds as before."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            assert db._fts_table_exists("messages_fts_trigram") is True
+            assert db._trigram_available is True
+        finally:
+            db.close()
+
+    def test_trigram_fts_config_enabled_fail_open(self, monkeypatch):
+        """A broken/absent config layer must fail open (trigram stays enabled)."""
+        import hermes_state as hs
+
+        def boom():
+            raise RuntimeError("config unavailable")
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly", boom, raising=False
+        )
+        assert hs._trigram_fts_config_enabled() is True
+
     def test_v11_migration_backfills_base_fts_when_trigram_unavailable(
         self, tmp_path, monkeypatch
     ):
@@ -5513,10 +5625,15 @@ class TestCompactRows:
             row[1] for row in db._conn.execute("PRAGMA table_info(sessions)")
         }
         row = db.list_sessions_rich(compact_rows=True)[0]
-        # Hardcode the one sanctioned exclusion: if the excluded set ever
+        # Hardcode the sanctioned exclusions: if the excluded set ever
         # widens (or the projection silently drops a column), this fails and
         # forces a conscious review of what list consumers lose.
-        missing = live_cols - set(row) - {"system_prompt"}
+        #   * system_prompt — payload-heavy blob no list consumer renders.
+        #   * effective_last_active — fork denorm/ordering column stripped from
+        #     list rows on purpose (consumers use the computed ``last_active``);
+        #     the raw stored value is internal to the recency-ordering CTEs.
+        sanctioned_exclusions = {"system_prompt", "effective_last_active"}
+        missing = live_cols - set(row) - sanctioned_exclusions
         assert not missing, f"compact projection lost schema columns: {missing}"
         assert "system_prompt" not in row
 

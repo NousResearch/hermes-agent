@@ -100,3 +100,69 @@ class TestResolveImageSource:
 
         with pytest.raises(SourceNotFound):
             _resolve(tmp_path / "a b.png")
+
+    def test_leading_and_trailing_unicode_space_is_stripped_before_lookup(
+        self, tmp_path, monkeypatch,
+    ):
+        """``resolve_image_source`` strips the source first; U+202F is whitespace.
+
+        Pinned so nobody mistakes the strip for the fuzzy retry: a trailing NNBSP
+        never reaches ``_fuzzy_whitespace_match`` at all.
+        """
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        exact = tmp_path / "plain.png"
+        exact.write_bytes(PNG)
+        assert _resolve(f"{NNBSP}{exact}{NNBSP}").data == PNG
+
+    def test_internal_narrow_space_survives_the_strip(self, tmp_path, monkeypatch):
+        """The macOS case is an INTERNAL U+202F; only the retry can rescue it."""
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        (tmp_path / f"shot at 9.23.58{NNBSP}AM.png").write_bytes(PNG)
+        assert _resolve(tmp_path / "shot at 9.23.58 AM.png").data == PNG
+
+
+class TestCredentialGuardStillApplies:
+    def test_guard_receives_the_fuzzy_resolved_path(self, tmp_path, monkeypatch):
+        """The retry's target must go through raise_if_read_blocked, not around it."""
+        import agent.file_safety as fs
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        real = tmp_path / f"a{NNBSP}b.png"
+        real.write_bytes(PNG)
+
+        seen = []
+        monkeypatch.setattr(fs, "raise_if_read_blocked", lambda p: seen.append(p))
+
+        _resolve(tmp_path / "a b.png")
+
+        assert seen == [str(real)], (
+            "the guard must be handed the path the retry actually resolved to"
+        )
+
+    def test_guard_can_still_block_a_fuzzy_resolved_path(self, tmp_path, monkeypatch):
+        import agent.file_safety as fs
+        from tools.image_source import SourceUnsafe
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        (tmp_path / f"a{NNBSP}b.png").write_bytes(PNG)
+
+        def deny(_path):
+            raise ValueError("Access denied: test")
+
+        monkeypatch.setattr(fs, "raise_if_read_blocked", deny)
+
+        with pytest.raises(SourceUnsafe):
+            _resolve(tmp_path / "a b.png")
+
+    def test_no_blocked_basename_can_be_fabricated_by_flattening(self):
+        """A blocked name has no preimage but itself.
+
+        ``_flatten_unicode_spaces`` only maps Zs -> U+0020. No blocked basename
+        contains a Zs codepoint, so no *other* filename can flatten onto one and
+        be picked up by the retry.
+        """
+        from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as blocked
+
+        assert blocked, "sanity: the denylist is non-empty"
+        for name in blocked:
+            assert _flatten_unicode_spaces(name) == name, name

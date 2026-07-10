@@ -539,9 +539,26 @@ class GatewayKanbanWatchersMixin:
                                 f"after repeated spawn failures{err}"
                             )
                         elif kind == "crashed":
+                            # BUILD-343: surface the reap classifier's own
+                            # exit_kind/exit_code (hermes_cli/kanban_db.py
+                            # `_classify_worker_exit` / dispatch reap loop)
+                            # instead of the fixed "(pid gone)" for every
+                            # crash — lets an operator tell a real crash
+                            # apart from other failure shapes at a glance.
+                            # Falls back to the original wording when the
+                            # reap registry didn't capture a classification
+                            # (kind == "unknown" — no new plumbing added).
+                            _exit_kind = ev.payload.get("exit_kind") if ev.payload else None
+                            _exit_code = ev.payload.get("exit_code") if ev.payload else None
+                            if _exit_kind == "signaled" and _exit_code is not None:
+                                _crash_detail = f"killed by signal {_exit_code}"
+                            elif _exit_kind == "nonzero_exit" and _exit_code is not None:
+                                _crash_detail = f"exited {_exit_code}"
+                            else:
+                                _crash_detail = "pid gone"
                             msg = (
                                 f"✖ {board_tag}{tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
+                                f"({_crash_detail}); dispatcher will retry"
                             )
                         elif kind == "timed_out":
                             limit = 0

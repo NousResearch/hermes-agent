@@ -2555,6 +2555,15 @@ def run_conversation(
                             agent._buffer_status(
                                 f"⚠️ {_pool_exhausted} — switching to fallback provider..."
                             )
+                            # BUILD-343: same quota-origin memory as the
+                            # eager rate-limit/billing failover below —
+                            # pool exhaustion escalating to fallback is
+                            # itself a quota-class event.
+                            if (
+                                classified.is_quota_exhaustion
+                                and _retry.quota_origin_reason is None
+                            ):
+                                _retry.quota_origin_reason = classified.reason.value
                             if agent._try_activate_fallback(reason=classified.reason):
                                 active_system_prompt = _sync_failover_system_message(
                                     agent, api_messages, active_system_prompt)
@@ -2576,6 +2585,16 @@ def run_conversation(
                     agent._flush_status_buffer()
                     agent._emit_status(f"❌ {_pool_exhausted}")
                     agent._persist_session(messages, conversation_history)
+                    # BUILD-343: this park IS the quota-exhaustion terminal
+                    # case (pool billing-out / rate-limited with no
+                    # fallback left) — without failure_reason here, the
+                    # kanban exit-75 gate in cli.py never sees it and a
+                    # pure quota death on a chain-less worker gets counted
+                    # as a crash. Same origin-preference semantics as the
+                    # main terminal return below.
+                    _park_failure_reason = classified.reason.value
+                    if not classified.is_quota_exhaustion and _retry.quota_origin_reason:
+                        _park_failure_reason = _retry.quota_origin_reason
                     return {
                         "final_response": str(_pool_exhausted),
                         "messages": messages,
@@ -2583,6 +2602,7 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": str(_pool_exhausted),
+                        "failure_reason": _park_failure_reason,
                     }
                 if recovered_with_pool:
                     continue
@@ -3102,11 +3122,7 @@ def run_conversation(
                 # the primary provider won't recover within the retry window.
                 # Transport errors: allow 1 retry first (transient hiccups
                 # recover), then fall back if the provider is truly unreachable.
-                is_rate_limited = classified.reason in {
-                    FailoverReason.rate_limit,
-                    FailoverReason.billing,
-                    FailoverReason.upstream_rate_limit,
-                }
+                is_rate_limited = classified.is_quota_exhaustion
                 _is_transport_failure = classified.reason in {
                     FailoverReason.timeout,
                     FailoverReason.overloaded,
@@ -3135,6 +3151,14 @@ def run_conversation(
                         )
                     )
                     if not pool_may_recover:
+                        # BUILD-343: remember the quota-class origin before
+                        # walking to the next hop — see TurnRetryState.
+                        # quota_origin_reason. `is_rate_limited` is exactly
+                        # the quota-class check (rate_limit/billing/
+                        # upstream_rate_limit); `_is_transport_failure`
+                        # shares this block but must not be recorded.
+                        if is_rate_limited and _retry.quota_origin_reason is None:
+                            _retry.quota_origin_reason = classified.reason.value
                         if _is_upstream:
                             _upstream_name = (classified.error_context or {}).get(
                                 "upstream_provider", "aggregator"
@@ -3987,6 +4011,22 @@ def run_conversation(
                             "execute_code with Python's open() for large "
                             "files, or to write in smaller sections."
                         )
+                    # BUILD-343: if THIS last hop's own error isn't itself
+                    # quota-class but a quota-class reason was recorded
+                    # earlier in the turn (e.g. the primary hit billing,
+                    # failed over, and the chain's final tier — often a
+                    # local model with no billing/rate-limit concept —
+                    # died on a plain transport error), report the quota
+                    # origin instead. Implements the fallback-chain
+                    # contract in hermes-runtime-routing-debugging/
+                    # SKILL.md: "when the fallback chain exhausts, Hermes
+                    # surfaces the original primary error, not the last
+                    # fallback error." The error/message fields above stay
+                    # the last hop's own text — only this classification
+                    # prefers the origin.
+                    _reported_failure_reason = classified.reason.value
+                    if not classified.is_quota_exhaustion and _retry.quota_origin_reason:
+                        _reported_failure_reason = _retry.quota_origin_reason
                     return {
                         "final_response": _final_response,
                         "messages": messages,
@@ -3999,7 +4039,7 @@ def run_conversation(
                         # transient throttle from a real failure and choose a
                         # different exit code. ``rate_limit`` / ``billing`` here
                         # mean "quota wall, not a task error".
-                        "failure_reason": classified.reason.value,
+                        "failure_reason": _reported_failure_reason,
                     }
 
                 # For rate limits, respect the Retry-After header if present

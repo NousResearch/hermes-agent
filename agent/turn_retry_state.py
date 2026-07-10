@@ -27,6 +27,7 @@ imported by the turn loop without an import cycle.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from typing import Optional
 
 
 @dataclass
@@ -73,6 +74,20 @@ class TurnRetryState:
     # was rolled back off ``messages`` and the loop should re-issue the API
     # call against the newly-activated provider (#32421).
     restart_with_rebuilt_messages: bool = False
+
+    # ── Cross-hop quota-origin memory (BUILD-343) ────────────────────────
+    # First quota-class (rate_limit / billing / upstream_rate_limit)
+    # FailoverReason value seen this turn, set where the loop escalates to
+    # a fallback/failover for such a reason. A fallback chain can end at a
+    # local/transport-only tier (e.g. omlx-local) with no billing/rate-
+    # limit concept of its own; if THAT hop is what ultimately exhausts
+    # the turn, the terminal failure_reason prefers this recorded origin
+    # over the last hop's transport-class classification — implementing
+    # the documented contract in hermes-runtime-routing-debugging/
+    # SKILL.md: "when the fallback chain exhausts, Hermes surfaces the
+    # original primary error, not the last fallback error." First quota
+    # reason wins; never overwritten once set.
+    quota_origin_reason: Optional[str] = None
 
     def __iter__(self):
         # Convenience for debugging / tests: iterate (name, value) pairs.

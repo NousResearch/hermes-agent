@@ -91,6 +91,24 @@ class ClassifiedError:
     def is_auth(self) -> bool:
         return self.reason in {FailoverReason.auth, FailoverReason.auth_permanent}
 
+    @property
+    def is_quota_exhaustion(self) -> bool:
+        """Whether this reason is a hard usage-limit wall (rate_limit /
+        billing / upstream_rate_limit), not a transport hiccup.
+
+        Mirrors the quota-class grouping already used elsewhere (the
+        eager-fallback ``is_rate_limited`` gate and cooldown logic in
+        agent/conversation_loop.py and agent/chat_completion_helpers.py).
+        Used by BUILD-343's cross-hop origin memory: a quota-class reason
+        recorded earlier in a turn should survive to the terminal
+        ``failure_reason`` even if the LAST hop in the fallback chain
+        fails with a transport-class error instead.
+        """
+        return self.reason in {
+            FailoverReason.rate_limit,
+            FailoverReason.billing,
+            FailoverReason.upstream_rate_limit,
+        }
 
 
 # ── Provider-specific patterns ──────────────────────────────────────────

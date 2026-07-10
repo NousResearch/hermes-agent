@@ -15997,7 +15997,7 @@ def main(
                             _exit_code = 1
                             if os.environ.get("HERMES_KANBAN_TASK") and result.get(
                                 "failure_reason"
-                            ) in ("rate_limit", "billing"):
+                            ) in ("rate_limit", "billing", "upstream_rate_limit"):
                                 try:
                                     from hermes_cli.kanban_db import (
                                         KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,

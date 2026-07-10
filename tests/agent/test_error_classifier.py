@@ -92,6 +92,26 @@ class TestClassifiedError:
         assert e.status_code is None
         assert e.message == ""
 
+    def test_is_quota_exhaustion_property(self):
+        # BUILD-343: the quota-class trio the rest of the codebase already
+        # treats as one bucket (agent/chat_completion_helpers.py cooldown
+        # logic, conversation_loop.py's `is_rate_limited` eager-fallback
+        # gate) — a hard usage-limit wall, not a transport hiccup.
+        for reason in (
+            FailoverReason.rate_limit,
+            FailoverReason.billing,
+            FailoverReason.upstream_rate_limit,
+        ):
+            assert ClassifiedError(reason=reason).is_quota_exhaustion is True
+
+        for reason in (
+            FailoverReason.timeout,
+            FailoverReason.overloaded,
+            FailoverReason.auth,
+            FailoverReason.unknown,
+        ):
+            assert ClassifiedError(reason=reason).is_quota_exhaustion is False
+
 
 # ── Test: Status code extraction ───────────────────────────────────────
 

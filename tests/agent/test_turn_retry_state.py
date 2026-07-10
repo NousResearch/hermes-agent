@@ -32,13 +32,28 @@ EXPECTED_FIELDS = {
     "restart_with_compressed_messages",
     "restart_with_length_continuation",
     "restart_with_rebuilt_messages",
+    "quota_origin_reason",
 }
+
+# Fields that aren't one-shot boolean guards — checked separately below.
+_NON_BOOL_FIELDS = {"quota_origin_reason"}
 
 
 def test_all_guards_default_false():
     s = TurnRetryState()
     for name, value in s:
+        if name in _NON_BOOL_FIELDS:
+            continue
         assert value is False, f"{name} should default to False"
+
+
+def test_quota_origin_reason_defaults_to_none():
+    # BUILD-343: cross-hop memory of the first quota-class (rate_limit /
+    # billing / upstream_rate_limit) FailoverReason seen this turn, so the
+    # terminal failure_reason can report the quota origin even when the
+    # last hop in the fallback chain fails with a transport-class error.
+    s = TurnRetryState()
+    assert s.quota_origin_reason is None
 
 
 def test_field_set_matches_contract():

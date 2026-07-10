@@ -296,6 +296,92 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
     assert "crashed" in adapter.sent[1]["text"].lower()
 
 
+def test_crashed_message_includes_exit_code_and_kind_when_known(tmp_path, monkeypatch):
+    """BUILD-343: a crash with a known exit classification (captured by
+    ``_classify_worker_exit`` in the reap registry — see hermes_cli/
+    kanban_db.py's ``event_payload["exit_kind"] / ["exit_code"]``) must
+    surface that detail instead of the fixed generic "(pid gone)" text, so
+    an operator can tell a real crash (exit 1, killed by signal) apart from
+    a quota death at a glance.
+    """
+    db_path = tmp_path / "crashed-exit-code.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="real crash", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        # Matches the payload shape _classify_worker_exit's reap path
+        # actually writes for a nonzero_exit (kanban_db.py:7326-7330).
+        kb._append_event(
+            conn, tid, kind="crashed",
+            payload={"pid": 4242, "claimer": "host:1", "exit_kind": "nonzero_exit", "exit_code": 1},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "1" in text
+    assert "pid gone" not in text.lower()
+
+
+def test_crashed_message_includes_signal_when_signaled(tmp_path, monkeypatch):
+    db_path = tmp_path / "crashed-signal.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="oom killed", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(
+            conn, tid, kind="crashed",
+            payload={"pid": 555, "claimer": "host:1", "exit_kind": "signaled", "exit_code": 9},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "9" in text
+    assert "signal" in text.lower()
+    assert "pid gone" not in text.lower()
+
+
+def test_crashed_message_falls_back_to_pid_gone_when_classification_unknown(tmp_path, monkeypatch):
+    """No exit_kind/exit_code captured (the pre-existing ``"unknown"``
+    reap-classifier case, e.g. reaped by something else) — keep the
+    original generic wording rather than inventing detail that isn't
+    there."""
+    db_path = tmp_path / "crashed-unknown.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="unknown crash", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(
+            conn, tid, kind="crashed", payload={"pid": 777, "claimer": "host:1"},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert "pid gone" in adapter.sent[0]["text"].lower()
+
+
 def test_notifier_owning_profile_adapter_no_default_fallback(tmp_path, monkeypatch):
     """A subscription owned by a secondary profile whose profile-adapter
     registry entry EXISTS but lacks this platform must NOT fall back to the

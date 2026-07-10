@@ -207,6 +207,12 @@ class TestCredentialPoolExhaustedChainExhaustedStillParks:
         assert result["failed"] is True
         assert result["completed"] is False
         assert "deepseek" in result["error"]
+        # BUILD-343: this park IS a quota-exhaustion terminal (billing-out
+        # pool, no fallback configured) — without failure_reason here,
+        # cli.py's kanban exit-75 gate never sees it and the deepseek
+        # incident's worker would exit 1 ("crashed") instead of 75
+        # ("rate_limited"), tripping the circuit breaker on a quota wall.
+        assert result["failure_reason"] == "billing"
 
     def test_fallback_chain_already_exhausted_still_parks(self):
         """The chain exists but every entry has already been consumed
@@ -233,3 +239,82 @@ class TestCredentialPoolExhaustedChainExhaustedStillParks:
         assert result["failed"] is True
         assert result["completed"] is False
         assert "deepseek" in result["error"]
+        # BUILD-343: same as above — a chain that exists but is already
+        # exhausted still parks on a quota-class reason and must report it.
+        assert result["failure_reason"] == "billing"
+
+
+class TestParkReportsRecordedQuotaOriginOverOwnNonQuotaReason:
+    """BUILD-343: the park path's failure_reason must prefer a quota
+    origin recorded EARLIER in the turn even when the pool-exhaustion
+    park itself is triggered by a non-quota-class error.
+
+    Sequence: primary hits billing -> eager fallback activates the (only)
+    fallback tier and records quota_origin_reason="billing" ->  that
+    tier then hits a plain transport error whose OWN credential-pool
+    recovery attempt raises CredentialPoolExhausted -> chain is already
+    exhausted (one entry, already consumed) -> park. The park's own
+    ``classified.reason`` is ``timeout`` (not quota-class), so without
+    the recorded-origin override the deepseek-style incident would still
+    report "timeout" and miss the kanban exit-75 gate.
+    """
+
+    def test_park_after_non_quota_pool_exhaustion_reports_earlier_quota_origin(self):
+        agent = _make_agent(fallback_model=_FB_CHAIN)
+
+        calls = []
+
+        def fake_api_call(api_kwargs):
+            calls.append((agent.provider, agent.model))
+            if len(calls) == 1:
+                raise _billing_error()
+            raise ConnectionError("connection refused: fallback tier unreachable")
+
+        def fake_recover(*, status_code, has_retried_429, classified_reason=None, error_context=None):
+            # First hop (billing): let it fall through to the eager
+            # quota-fallback block below instead of pool rotation.
+            if len(calls) == 1:
+                return (False, has_retried_429)
+            # Second hop (transport error on the fallback tier): its own
+            # credential pool is exhausted too.
+            raise CredentialPoolExhausted(provider="zai", earliest_available_at=None)
+
+        mock_fb_client = _mock_fallback_client()
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
+            patch.object(agent, "_recover_with_credential_pool", side_effect=fake_recover),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(mock_fb_client, "glm-4.7"),
+            ) as mock_resolve,
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+        ):
+            result = agent.run_conversation("hello")
+
+        # Guard against a vacuous pass: both hops actually fired and the
+        # single-entry chain is genuinely exhausted by the time of the
+        # second CredentialPoolExhausted (no third tier exists).
+        assert calls == [
+            ("deepseek", "deepseek-chat"),
+            ("zai", "glm-4.7"),
+        ]
+        mock_resolve.assert_called_once()
+        assert agent._fallback_activated is True
+
+        assert result["failed"] is True
+        assert result["completed"] is False
+        # The park's own error text is the pool-exhaustion message for the
+        # SECOND hop ("zai") — that part is unchanged by this fix. Only
+        # the failure_reason classification prefers the earlier quota
+        # origin ("billing") over this hop's own transport-triggered
+        # pool exhaustion.
+        assert result["failure_reason"] == "billing"
+        assert "zai" in result["error"]

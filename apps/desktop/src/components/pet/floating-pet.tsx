@@ -7,7 +7,7 @@ import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
 import { PetHeartField } from '@/components/chat/vibe-hearts'
 import { persistString, storedString } from '@/lib/storage'
 import { $petAtRest, $petBubble, $petControls, $petDismissed, $petInfo, $petRoam, $petRoamDir, clearPetUnread, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
-import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
+import { resetPetGallery, setPetEnabled, setPetScale } from '@/store/pet-gallery'
 import { $petOverlayActive, initPetOverlayBridge, popOutPet, restorePetOverlay } from '@/store/pet-overlay'
 import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
@@ -504,6 +504,14 @@ export function FloatingPet() {
               e.stopPropagation()
               $petDismissed.set(true)
               setPetInfo({ enabled: false })
+              // Route through the canonical disable path so the gateway
+              // stops polling and the poll guard can reconcile.  If the
+              // RPC fails the error surfaces via $petGalleryError and the
+              // dismiss flag is cleared so the poll loop resumes.
+              setPetEnabled(requestGateway, false, {
+                noneAvailable: '',
+                fallback: 'Could not turn the pet off.'
+              }).then(ok => { if (!ok) $petDismissed.set(false) })
             }}
             onPointerDown={e => e.stopPropagation()}
             onPointerUp={e => e.stopPropagation()}

@@ -1569,6 +1569,15 @@ class SessionDB:
         self._fts_cjk_loaded = False
         self._fts_cjk_available = False
         self._fts_unavailable_warned = False
+        # Permanent-close latch: set by close(permanent=True) when the owning
+        # process is exiting for good (gateway shutdown, process terminate).
+        # Distinguishes "this conn closed itself and can be lazy-reopened for
+        # a stray background write" (interim close — e.g. cron's between-job
+        # teardown) from "we're done, never reconnect — let write attempts
+        # fail loudly instead of resurrecting a connection in a dying
+        # process". Read-only SessionDBs are never reconnected (no write
+        # path means no lazy-reopen path), so the flag is inert there.
+        self._closed_permanently = False
         self._conn = None
         try:
             if read_only:
@@ -2011,11 +2020,24 @@ class SessionDB:
         SQLite's built-in deterministic backoff creates.
 
         Returns whatever *fn* returns.
+
+        Lazy-reopen net: if the connection was closed by a prior
+        ``close(permanent=False)`` (e.g. cron's between-job teardown) and
+        a backgrounded writer still calls in, we transparently re-open
+        a fresh connection via ``_ensure_conn()`` and proceed. The
+        net only triggers for interim closes — a permanent close
+        (gateway shutdown path) raises ``OperationalError`` cleanly
+        from ``_ensure_conn`` instead of letting ``self._conn`` access
+        blow up with ``AttributeError: NoneType``.
         """
         last_err: Optional[Exception] = None
         for attempt in range(self._WRITE_MAX_RETRIES):
             try:
                 with self._lock:
+                    if self._conn is None:
+                        # Re-open or fail loudly, per _ensure_conn's
+                        # permanent-vs-interim rules.
+                        self._ensure_conn()
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
                         result = fn(self._conn)
@@ -2175,13 +2197,25 @@ class SessionDB:
         except Exception:
             pass  # Best effort — never fatal.
 
-    def close(self):
+    def close(self, permanent: bool = False):
         """Close the database connection.
 
         Attempts a TRUNCATE WAL checkpoint first so that exiting processes
         help shrink the WAL file.
+
+        ``permanent`` (default False): when True, marks the SessionDB as
+        permanently closed — subsequent write attempts will raise
+        ``sqlite3.OperationalError`` immediately instead of lazily
+        reconnecting. Use on process-shutdown paths (gateway teardown,
+        process termination) where resurrecting a connection in a dying
+        process would create more problems than it solves. Interim closes
+        (cron's between-job teardown, any place where we expect a later
+        write to happen) leave ``permanent`` False so the lazy-reopen net
+        in ``_execute_write`` can still save late stragglers.
         """
         with self._lock:
+            if permanent:
+                self._closed_permanently = True
             if self._conn:
                 try:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -2765,6 +2799,54 @@ class SessionDB:
             "FTS storage optimization complete (layout v%d).", FTS_STORAGE_VERSION
         )
         return {"ok": True, "vacuumed": vacuum_ok}
+
+    def _ensure_conn(self) -> None:
+        """Re-open a closed connection if it's safe to do so.
+
+        Called by ``_execute_write`` when a write encounters
+        ``self._conn is None`` after an interim close. Mirrors the
+        write-path portion of ``__init__`` without re-running schema
+        init (DB is already initialised — closing and reopening
+        preserves the on-disk schema; FTS triggers are SQL-level and
+        survive a fresh connection). On permanent close, raises
+        ``sqlite3.OperationalError`` immediately so the caller hears the
+        truth instead of seeing a phantom reconnection in a dying
+        process.
+
+        Must be called with ``self._lock`` already held, since
+        ``_execute_write`` invokes us from inside its `with self._lock:`
+        block on the retry path. Holding the lock prevents two writers
+        racing to reopen the same connection.
+        """
+        if self.read_only:
+            # Read-only opens never auto-reconnect: callers that want a
+            # fresh handle call the constructor; the startup probe
+            # path is a separate code path.
+            raise sqlite3.OperationalError(
+                "SessionDB is closed and was opened read-only; "
+                "construct a fresh handle"
+            )
+        if self._closed_permanently:
+            raise sqlite3.OperationalError(
+                "SessionDB was closed with permanent=True; "
+                "no writes permitted after process-shutdown close"
+            )
+        try:
+            new_conn = sqlite3.connect(
+                str(self.db_path),
+                check_same_thread=False,
+                timeout=1.0,
+                isolation_level=None,
+            )
+            new_conn.row_factory = sqlite3.Row
+            apply_wal_with_fallback(new_conn, db_label="state.db")
+            new_conn.execute("PRAGMA foreign_keys=ON")
+            self._conn = new_conn
+        except Exception:
+            # Re-raise so the caller surfaces a clear OperationalError
+            # instead of letting a NoneType AttributeError propagate
+            # from the next statement.
+            raise
 
     @staticmethod
     def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:

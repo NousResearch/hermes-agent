@@ -6462,14 +6462,34 @@ class AIAgent:
         #     its own turn to compose a summary, and a subagent doesn't own the
         #     gateway session the async result would route back to.
         # The schema-level `background` param is intentionally ignored here.
+        #
+        # Cron-path exception: HERMES_CRON_SESSION=1 means we are running under
+        # cron/scheduler.py (a fire-and-exit CLI invocation, not a long-lived
+        # gateway process). Async background dispatch relies on
+        # gateway/run.py:15390's main loop to drain
+        # ``process_registry.completion_queue`` and surface results back into
+        # the conversation. Cron has no such consumer — when the worker's
+        # delegate_task returns "dispatched" and the worker's turn ends, the
+        # subagent completion event has no path back to the worker. The
+        # research prompts (research-scan, research-sweep) already assume
+        # synchronous semantics ("merge subagent findings into draft" / "wait
+        # for the skeptic result") — we force sync on the cron path here so
+        # the worker actually receives the consolidated findings in its
+        # tool-result block within its own turn. The per-child timeout floor
+        # in ``delegate_tool._get_child_timeout`` keeps the sync wait bounded.
         _is_subagent = getattr(self, "_delegate_depth", 0) > 0
+        _is_cron_session = os.environ.get("HERMES_CRON_SESSION") == "1"
+        if _is_cron_session and not _is_subagent:
+            _background = False
+        else:
+            _background = (not _is_subagent)
         return _delegate_task(
             goal=function_args.get("goal"),
             context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"),
             role=function_args.get("role"),
-            background=(not _is_subagent),
+            background=_background,
             parent_agent=self,
         )
 

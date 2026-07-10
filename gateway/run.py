@@ -9417,13 +9417,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the new gateway tries to open the same file.
             # ``self`` holds the DB at ``_session_db`` (an AsyncSessionDB facade);
             # unwrap to the sync handle. ``session_store`` holds it at ``_db``.
+            # On shutdown we hand each handle ``permanent=True`` so that
+            # any later ``_execute_write`` call (e.g. a completion-event
+            # echo or notification flush that races interpreter exit)
+            # fails loudly via the lazy-reopen net in
+            # hermes_state.SessionDB._ensure_conn instead of silently
+            # resurrecting a connection in a process that's already
+            # tearing down WAL locks. The Hunk A lazy-reopen path is
+            # for *interim* closes (cron between-job teardown), not
+            # process-shutdown closes.
             _self_db = getattr(self, "_session_db", None)
             _self_db = getattr(_self_db, "_db", _self_db)
             for _db in (_self_db, getattr(getattr(self, "session_store", None), "_db", None)):
                 if _db is None or not hasattr(_db, "close"):
                     continue
                 try:
-                    _db.close()
+                    _db.close(permanent=True)
+                except TypeError:
+                    # Defensive: if a stub adapter's close() doesn't accept
+                    # the keyword (pre-Hunk-A class on disk), fall back to
+                    # plain close. New code paths always accept the kwarg.
+                    try:
+                        _db.close()
+                    except Exception as _e:
+                        logger.debug("SessionDB close error: %s", _e)
                 except Exception as _e:
                     logger.debug("SessionDB close error: %s", _e)
             GatewayRunner._shutdown_executor(self)

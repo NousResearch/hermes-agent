@@ -3750,6 +3750,79 @@ def run_job(
                 )
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
+            # Drain any straggler subagents registered on this agent's
+            # `_active_children` list before closing the SessionDB. Under
+            # the Hunk D sync-dispatch contract, subagents stay attached
+            # to the parent's active-children list until they complete
+            # (delegate_tool.py:2298-2305 removes them on successful
+            # completion; the async branch's detach at lines 2824-2834
+            # is skipped entirely on the sync path). A cron worker that
+            # finishes its LLM turn while a child is still in its
+            # `run_conversation` would otherwise leak the connection:
+            # the child's finalize_turn → _persist_session calls would
+            # race the close and either crash on `self._conn is None`
+            # (Hunk A's lazy-reopen net catches that) or, worse, write
+            # after the WAL checkpoint truncated.
+            #
+            # Drain mechanism: copy the current `_active_children`
+            # snapshot under the agent's `_active_children_lock`,
+            # release the lock, sleep, repeat. Children remove
+            # themselves under the same lock when they complete; on
+            # the happy path the snapshot is empty on the first poll
+            # and we exit immediately. Bounded at 30 seconds total —
+            # a stuck child must not freeze the scheduler. On timeout,
+            # log a structured warning that names Hunk A's lazy-reopen
+            # safety net (so a future engineer reading the log knows
+            # the children *will* still produce their writes, just
+            # through a fresh connection).
+            #
+            # Bounded loop also runs in O(snapshot_count) memory; worst
+            # case is one extra list copy per poll which is bounded by
+            # delegation.max_concurrent_children (default 3).
+            try:
+                if agent is not None:
+                    _drain_budget_s = 30.0
+                    _drain_start = time.monotonic()
+                    _drain_lock = getattr(agent, "_active_children_lock", None)
+                    _drain_remaining = _drain_budget_s
+                    _snapshot: list = []
+                    while _drain_remaining > 0:
+                        if _drain_lock is not None:
+                            with _drain_lock:
+                                _snapshot = list(agent._active_children)
+                        else:
+                            _snapshot = list(agent._active_children)
+                        if not _snapshot:
+                            break
+                        # Snapshot shows live children — sleep, then re-poll.
+                        # 0.5s cadence matches the executor.wait timeout in
+                        # delegate_tool's _execute_and_aggregate, so we're
+                        # not slower than the children themselves.
+                        time.sleep(0.5)
+                        _drain_remaining = _drain_budget_s - (
+                            time.monotonic() - _drain_start
+                        )
+                    if _snapshot:
+                        # Still children registered after the budget — the
+                        # lazy-reopen net in hermes_state.SessionDB._ensure_conn
+                        # will re-establish a connection on their next write,
+                        # but log the situation so it's visible in
+                        # agent.log/cron.log for future debugging.
+                        logger.warning(
+                            "Job '%s': %d subagent(s) still registered on "
+                            "agent._active_children after %.1fs drain; "
+                            "their late writes will be served by "
+                            "SessionDB._ensure_conn's lazy-reopen net "
+                            "(interim close path, not permanent)",
+                            job_id,
+                            len(_snapshot),
+                            _drain_budget_s,
+                        )
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug(
+                    "Job '%s': subagent drain raised (continuing to close): %s",
+                    job_id, e,
+                )
             try:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:

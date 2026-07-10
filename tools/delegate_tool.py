@@ -439,7 +439,38 @@ def _get_child_timeout() -> Optional[float]:
 
     Set ``delegation.child_timeout_seconds`` to a positive number to opt back
     in to a hard cap (floor 30 s); ``0`` or a negative value means disabled.
+
+    Cron-path floor: when ``HERMES_CRON_SESSION=1`` (set by the cron scheduler
+    for every job in cron/scheduler.py:2686), this returns a hard cap default
+    of 600 s, env-overridable via ``HERMES_CRON_CHILD_TIMEOUT_SECONDS``. This
+    is a code-level safety net rather than a config dependency — a stuck
+    subagent must not be able to hang cron indefinitely on the direct-CLI
+    path, which lacks the gateway's inactivity_timeout that would otherwise
+    fire the heartbeat staleness monitor. The interactive path (cron env var
+    unset) keeps the original ``None`` default so heavy legitimate work isn't
+    capped. Set ``HERMES_CRON_CHILD_TIMEOUT_SECONDS=0`` (or any negative
+    value) to explicitly opt out per-run; the value is still floored at 30 s
+    when positive so a too-small override can't kill in-progress children.
     """
+    if os.environ.get("HERMES_CRON_SESSION") == "1":
+        cron_val = os.getenv("HERMES_CRON_CHILD_TIMEOUT_SECONDS", "600")
+        try:
+            parsed = float(cron_val)
+        except (TypeError, ValueError):
+            logger.warning(
+                "HERMES_CRON_CHILD_TIMEOUT_SECONDS=%r is not a valid number; "
+                "using 600s cron default for this run",
+                cron_val,
+            )
+            return 600.0
+        if parsed <= 0:
+            # Explicit opt-out (0/negative) — fall through to the
+            # existing config-driven behavior below. This keeps
+            # HERMES_CRON_CHILD_TIMEOUT_SECONDS=0 as an escape hatch
+            # for an operator who really does want unbounded children.
+            pass
+        else:
+            return max(30.0, parsed)
     cfg = _load_config()
     val = cfg.get("child_timeout_seconds")
     if val is not None:
@@ -3616,8 +3647,28 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     ``run_agent._dispatch_delegate_task``; this lambda mirrors it for the rare
     case the intercept is bypassed. Direct Python callers of ``delegate_task``
     keep the historical synchronous default.
+
+    Cron-path exception: the cron scheduler is a fire-and-exit CLI invocation,
+    not a long-lived gateway process. Async background dispatch relies on the
+    gateway's main loop (gateway/run.py:15390) draining
+    ``process_registry.completion_queue`` to surface results back into the
+    conversation. Cron has no such consumer — when the worker's
+    ``delegate_task`` returns ``"dispatched"`` and the worker's turn ends, the
+    subagent completion event has no path back to the cron worker. The research
+    prompts (research-scan, research-sweep) already assume synchronous
+    semantics — "merge subagent findings into draft" / "wait for the skeptic
+    result" — so we force sync on the cron path here. The per-child timeout
+    floor (see ``_get_child_timeout``) keeps the sync wait bounded.
     """
     is_subagent = getattr(parent_agent, "_delegate_depth", 0) > 0
+    is_cron_session = os.environ.get("HERMES_CRON_SESSION") == "1"
+    if is_cron_session and not is_subagent:
+        # Top-level agent on the cron path — sync dispatch. Children stay
+        # attached to the parent's _active_children (the detach block in
+        # delegate_task's async branch is skipped), the worker blocks on them
+        # via _execute_and_aggregate's executor.wait loop, and the consolidated
+        # results land in the worker's tool-result block in this turn.
+        return False
     return not is_subagent
 
 

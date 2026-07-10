@@ -50,7 +50,7 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import display_hermes_home
@@ -1732,24 +1732,24 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         },
     }
 
-    try:
-        import hermes_cli as _hermes_cli
+    headers = {"Content-Type": "application/json"}
+    if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
+        try:
+            import hermes_cli as _hermes_cli
 
-        _hermes_version = str(_hermes_cli.__version__)
-    except Exception:
-        _hermes_version = "0.0.0"
+            _hermes_version = str(_hermes_cli.__version__)
+        except Exception:
+            _hermes_version = "0.0.0"
+        # Include Hermes client context following Gemini's partner
+        # integration guidance:
+        # https://ai.google.dev/gemini-api/docs/partner-integration
+        headers["X-Goog-Api-Client"] = f"hermes-agent/{_hermes_version}"
 
     endpoint = f"{base_url}/models/{model}:generateContent"
     response = requests.post(
         endpoint,
         params={"key": api_key},
-        headers={
-            "Content-Type": "application/json",
-            # Include Hermes client context following Gemini's partner
-            # integration guidance:
-            # https://ai.google.dev/gemini-api/docs/partner-integration
-            "X-Goog-Api-Client": f"hermes-agent/{_hermes_version}",
-        },
+        headers=headers,
         json=payload,
         timeout=60,
     )

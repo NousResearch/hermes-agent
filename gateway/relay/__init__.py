@@ -29,6 +29,11 @@ _RELAY_GATEWAY_CONFIG_SNAPSHOT: ContextVar[object] = ContextVar(
 )
 
 
+class _LazyGatewayConfigSnapshot:
+    def __init__(self) -> None:
+        self.value: object = _CONFIG_SNAPSHOT_UNSET
+
+
 def _read_gateway_config() -> dict:
     """Read gateway config once; absence or parse errors are treated as empty."""
     try:
@@ -42,6 +47,10 @@ def _read_gateway_config() -> dict:
 
 def _gateway_config() -> dict:
     snapshot = _RELAY_GATEWAY_CONFIG_SNAPSHOT.get()
+    if isinstance(snapshot, _LazyGatewayConfigSnapshot):
+        if snapshot.value is _CONFIG_SNAPSHOT_UNSET:
+            snapshot.value = _read_gateway_config()
+        return snapshot.value if isinstance(snapshot.value, dict) else {}
     if snapshot is not _CONFIG_SNAPSHOT_UNSET:
         return snapshot if isinstance(snapshot, dict) else {}
     return _read_gateway_config()
@@ -563,7 +572,7 @@ def self_provision_relay() -> bool:
 
     logger = logging.getLogger("gateway.relay")
 
-    snapshot_token = _RELAY_GATEWAY_CONFIG_SNAPSHOT.set(_read_gateway_config())
+    snapshot_token = _RELAY_GATEWAY_CONFIG_SNAPSHOT.set(_LazyGatewayConfigSnapshot())
     try:
         dial_url = relay_url()
         if not dial_url:

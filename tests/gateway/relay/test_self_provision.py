@@ -210,6 +210,27 @@ def test_self_provision_reuses_one_gateway_config_snapshot(monkeypatch):
     assert captured["wake_url"] == "https://gw.example.com/wake"
 
 
+def test_self_provision_secret_env_skip_does_not_read_config(monkeypatch):
+    calls = {"n": 0}
+
+    def _fake_config():
+        calls["n"] += 1
+        return {
+            "gateway": {
+                "relay_url": "wss://from-config.example/relay",
+                "relay_secret": "should-not-be-read",
+            }
+        }
+
+    monkeypatch.setenv("GATEWAY_RELAY_URL", "wss://connector.example/relay")
+    monkeypatch.setenv("GATEWAY_RELAY_ID", "gw-env")
+    monkeypatch.setenv("GATEWAY_RELAY_SECRET", "pinned-env-secret")
+    monkeypatch.setattr("gateway.run._load_gateway_config", _fake_config, raising=False)
+
+    assert relay.self_provision_relay() is False
+    assert calls["n"] == 0
+
+
 # ─────────────────── instance-id forwarding (Phase 6 Unit α) ───────────────────
 
 def test_forwards_instance_id_to_provision(monkeypatch):

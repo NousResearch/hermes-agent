@@ -1,4 +1,5 @@
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -139,6 +140,29 @@ class _FakeWebSocket:
         self.closed = True
 
 
+class _BlockingFakeWebSocket(_FakeWebSocket):
+    """Socket that stays in recv until a cross-thread close wakes it."""
+
+    def __init__(self):
+        super().__init__([])
+        self.recv_started = threading.Event()
+        self.closed_event = threading.Event()
+        self.recv_thread_id = None
+        self.close_thread_ids = []
+
+    def recv(self, timeout=None):
+        self.recv_thread_id = threading.get_ident()
+        self.recv_started.set()
+        if not self.closed_event.wait(timeout=timeout):
+            raise TimeoutError
+        return None
+
+    def close(self):
+        self.close_thread_ids.append(threading.get_ident())
+        self.closed = True
+        self.closed_event.set()
+
+
 def test_run_codex_websocket_reuses_responses_event_consumer(monkeypatch):
     ws = _FakeWebSocket(
         [
@@ -248,3 +272,83 @@ def test_run_codex_websocket_marks_pre_response_errors_safe_to_fallback(monkeypa
 
     assert exc_info.value.started is False
     assert exc_info.value.status_code == 403
+
+
+def test_abort_hook_closes_active_websocket_without_http_replay(monkeypatch):
+    """A cross-thread abort must close, clear, and never replay a sent request."""
+    from agent.codex_runtime import run_codex_stream
+    from run_agent import AIAgent
+
+    ws = _BlockingFakeWebSocket()
+    monkeypatch.setattr("websockets.sync.client.connect", lambda *args, **kwargs: ws)
+    monkeypatch.setattr(
+        "agent.codex_runtime._codex_model_capabilities",
+        lambda _agent: SimpleNamespace(
+            use_responses_lite=True,
+            prefer_websockets=True,
+            should_use_websocket=True,
+        ),
+    )
+
+    agent = _agent()
+    agent.provider = "openai-codex"
+    agent.model = "gpt-5.6-luna"
+    agent._base_url_lower = agent.base_url
+    agent._base_url_hostname = "chatgpt.com"
+    agent._fire_stream_delta = lambda text: None
+    agent._fire_reasoning_delta = lambda text: None
+    agent._touch_activity = lambda message: None
+    agent._client_log_context = lambda: "test-context"
+    agent._force_close_tcp_sockets = lambda client: 0
+
+    http_calls = []
+
+    def create(**kwargs):
+        http_calls.append(kwargs)
+        raise AssertionError("a sent WebSocket request must not be replayed over HTTP")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    outcome = {}
+
+    def run_request():
+        try:
+            outcome["response"] = run_codex_stream(
+                agent,
+                {
+                    "model": "gpt-5.6-luna",
+                    "instructions": "Be concise.",
+                    "input": [{"role": "user", "content": "hello"}],
+                    "store": False,
+                },
+                client=client,
+            )
+        except Exception as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run_request, daemon=True)
+    worker.start()
+    recv_started = ws.recv_started.wait(timeout=3.0)
+    if not recv_started:
+        ws.close()
+        worker.join(timeout=3.0)
+    assert recv_started, f"WebSocket request did not reach recv: {outcome!r}"
+
+    abort_thread_id = threading.get_ident()
+    close_count_before_abort = len(ws.close_thread_ids)
+    AIAgent._abort_request_openai_client(agent, client, reason="interrupt_abort")
+    abort_close_thread_ids = ws.close_thread_ids[close_count_before_abort:]
+    worker.join(timeout=3.0)
+    stopped_by_abort = not worker.is_alive()
+    if not stopped_by_abort:
+        ws.close()
+        worker.join(timeout=3.0)
+
+    assert stopped_by_abort
+    assert len(ws.sent) == 1
+    assert ws.closed is True
+    assert abort_thread_id in abort_close_thread_ids
+    assert ws.recv_thread_id != abort_thread_id
+    assert getattr(agent, "_codex_active_websocket", None) is None
+    assert http_calls == []
+    assert isinstance(outcome.get("error"), CodexWebSocketError)
+    assert outcome["error"].safe_to_fallback is False

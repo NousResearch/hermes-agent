@@ -28,7 +28,9 @@ from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError
 from hermes_cli.dashboard_auth.cookies import (
     clear_sso_attempt_cookie,
     read_session_cookies,
+    read_session_provider,
     read_sso_attempt_cookie,
+    set_session_provider_cookie,
     set_sso_attempt_cookie,
 )
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
@@ -276,6 +278,7 @@ async def gated_auth_middleware(
         return await call_next(request)
 
     at, _rt = read_session_cookies(request)
+    provider_hint = read_session_provider(request)
     if not at and not _rt:
         # Neither token present — no session at all. Nothing to verify or
         # refresh. Before falling back to the /login interstitial, try to
@@ -321,7 +324,10 @@ async def gated_auth_middleware(
         # 503 — distinguishing "transient IDP outage" (don't force re-login)
         # from "token genuinely invalid" (fall through to refresh/relogin).
         unreachable_provider: str | None = None
-        for provider in list_session_providers():
+        providers = list_session_providers()
+        if provider_hint:
+            providers = [provider for provider in providers if provider.name == provider_hint]
+        for provider in providers:
             try:
                 session = provider.verify_session(access_token=at)
             except ProviderError as e:
@@ -355,7 +361,7 @@ async def gated_auth_middleware(
         # one). On success we re-set the rotated cookies on the response and
         # serve the request transparently; on RefreshExpiredError (RT dead /
         # revoked / reuse-detected) we fall through to clear-and-relogin.
-        refreshed = _attempt_refresh(request, refresh_token=_rt)
+        refreshed = _attempt_refresh(request, refresh_token=_rt, provider_hint=provider_hint)
         if refreshed is not None:
             new_session, refreshing_provider = refreshed
             request.state.session = new_session
@@ -378,6 +384,7 @@ async def gated_auth_middleware(
                 access_token_expires_in=_expires_in_seconds(new_session),
                 use_https=detect_https(request),
                 prefix=prefix_from_request(request),
+                provider=refreshing_provider,
             )
             audit_log(
                 AuditEvent.REFRESH_SUCCESS,
@@ -405,7 +412,18 @@ async def gated_auth_middleware(
         return response
 
     request.state.session = session
-    return await call_next(request)
+    response = await call_next(request)
+    if not provider_hint and session.provider:
+        from hermes_cli.dashboard_auth.cookies import detect_https
+        from hermes_cli.dashboard_auth.prefix import prefix_from_request
+
+        set_session_provider_cookie(
+            response,
+            provider=session.provider,
+            use_https=detect_https(request),
+            prefix=prefix_from_request(request),
+        )
+    return response
 
 
 def _expires_in_seconds(session) -> int:
@@ -421,7 +439,7 @@ def _expires_in_seconds(session) -> int:
     return max(60, int(session.expires_at) - int(time.time()))
 
 
-def _attempt_refresh(request: Request, *, refresh_token):
+def _attempt_refresh(request: Request, *, refresh_token, provider_hint: str | None = None):
     """Try to rotate an expired session via the refresh token.
 
     Returns ``(new_session, provider_name)`` on success, or ``None`` if
@@ -435,7 +453,10 @@ def _attempt_refresh(request: Request, *, refresh_token):
     """
     if not refresh_token:
         return None
-    for provider in list_session_providers():
+    providers = list_session_providers()
+    if provider_hint:
+        providers = [provider for provider in providers if provider.name == provider_hint]
+    for provider in providers:
         try:
             new_session = provider.refresh_session(refresh_token=refresh_token)
         except RefreshExpiredError:

@@ -365,6 +365,7 @@ async def auth_callback(
         access_token_expires_in=expires_in,
         use_https=detect_https(request),
         prefix=_prefix(request),
+        provider=session.provider,
     )
     clear_pkce_cookie(resp, prefix=_prefix(request))
     # Clear the one-shot auto-SSO loop-guard marker now that login succeeded,
@@ -549,6 +550,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         access_token_expires_in=expires_in,
         use_https=detect_https(request),
         prefix=_prefix(request),
+        provider=session.provider,
     )
     return resp
 

@@ -35,6 +35,7 @@ from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.cookies import (
     SESSION_AT_COOKIE,
+    SESSION_PROVIDER_COOKIE,
     SESSION_RT_COOKIE,
     clear_session_cookies,
     set_session_cookies,
@@ -251,6 +252,61 @@ class TestTransparentRefreshOnAccessTokenEviction:
             c.startswith(SESSION_RT_COOKIE) or f"-{SESSION_RT_COOKIE}" in c
             for c in set_cookies
         ), f"no rotated RT cookie in {set_cookies!r}"
+
+    def test_provider_hint_routes_refresh_to_token_owner(self, gated_app):
+        """A Nous-style RT must not be rejected by Basic just because Basic
+        was registered first. The non-secret provider hint routes directly to
+        the provider that minted the session."""
+        class WrongProvider(StubAuthProvider):
+            name = "basic"
+
+            def __init__(self):
+                super().__init__()
+                self.refresh_calls = 0
+
+            def refresh_session(self, *, refresh_token: str):
+                self.refresh_calls += 1
+                raise AssertionError("foreign refresh token reached Basic provider")
+
+        wrong = WrongProvider()
+        _provider, valid_rt = self._build_rt_only_app()
+        clear_providers()
+        register_provider(wrong)
+        register_provider(StubAuthProvider(default_ttl=900))
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_RT_COOKIE, valid_rt)
+        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "stub")
+
+        response = gated_app.get("/api/sessions", follow_redirects=False)
+
+        assert response.status_code == 200
+        assert wrong.refresh_calls == 0
+        assert any(
+            SESSION_PROVIDER_COOKIE in cookie and "stub" in cookie
+            for cookie in response.headers.get_list("set-cookie")
+        )
+
+    def test_valid_legacy_session_is_migrated_with_provider_hint(self, gated_app):
+        import time as _t
+        from tests.hermes_cli.conftest_dashboard_auth import _sign
+
+        valid_at = _sign({
+            "sub": "stub-user-1",
+            "email": "stub@example.test",
+            "name": "Stub User",
+            "org_id": "stub-org-1",
+            "exp": int(_t.time()) + 900,
+        })
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_AT_COOKIE, valid_at)
+
+        response = gated_app.get("/api/sessions")
+
+        assert response.status_code == 200
+        assert any(
+            SESSION_PROVIDER_COOKIE in cookie and "stub" in cookie
+            for cookie in response.headers.get_list("set-cookie")
+        )
 
     def test_no_cookies_at_all_still_bounces(self, gated_app):
         """Guard the fix didn't over-reach: a request with NEITHER cookie

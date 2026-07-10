@@ -61,7 +61,7 @@ def _wire_channel(adapter, *, original_msg, send_side_effect=None):
     records every ``channel.send`` call."""
     sends = []
 
-    async def fake_send(*, content, reference=None):
+    async def fake_send(*, content, reference=None, **_kwargs):
         sends.append({"content": content, "reference": reference})
         if send_side_effect is not None:
             res = send_side_effect(len(sends), content, reference)

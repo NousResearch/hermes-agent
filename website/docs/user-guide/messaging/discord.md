@@ -609,6 +609,20 @@ gateway:
 
 Leaving this at `true` on the "primary" gateway keeps the normal behavior — global `/`-menu commands for built-ins and installed skills.
 
+### Suppressing Link-Preview Embeds
+
+Discord auto-embeds a preview card for any URL in a plain-text message, with no built-in way to opt out — unlike Telegram's `disable_link_previews`. For naming parity, set `extra.disable_link_previews` to suppress these cards on the bot's own outgoing text (assistant replies, forum thread posts, and overflow-split continuations):
+
+```yaml
+gateway:
+  platforms:
+    discord:
+      extra:
+        disable_link_previews: true   # default: false
+```
+
+This uses discord.py's native `suppress_embeds` send parameter, which is enforced server-side and works regardless of message formatting — no need for the manual `<https://...>` angle-bracket workaround. Default is `false` to preserve existing behavior.
+
 ## Sending Media (inline `MEDIA:` tags)
 
 The Discord adapter supports native file uploads for every common media type via inline `MEDIA:/path/to/file` tags emitted in the agent's response — the adapter strips the tag and auto-uploads the file:

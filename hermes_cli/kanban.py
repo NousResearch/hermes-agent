@@ -320,9 +320,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
-    p_create.add_argument("--workspace", default="scratch",
+    p_create.add_argument("--workspace", default=None,
                           help="scratch | worktree | worktree:<path> | dir:<path> "
-                               "(default: scratch)")
+                               "(default: scratch). An explicit choice is "
+                               "pinned: it is never auto-upgraded to a "
+                               "worktree on git-backed boards.")
     p_create.add_argument("--branch", default=None,
                           help="Branch name for worktree tasks, e.g. wt/t6-wire")
     p_create.add_argument("--project", default=None,
@@ -1314,7 +1316,10 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 def _cmd_create(args: argparse.Namespace) -> int:
     try:
-        ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+        # None = the flag was omitted; an explicit value pins the choice so
+        # create/dispatch never auto-upgrade it to a worktree.
+        ws_pinned = args.workspace is not None
+        ws_kind, ws_path = _parse_workspace_flag(args.workspace or "scratch")
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
     except argparse.ArgumentTypeError as exc:
         print(f"kanban: {exc}", file=sys.stderr)
@@ -1358,6 +1363,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
             board=kb.get_current_board(),
+            workspace_pinned=ws_pinned,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

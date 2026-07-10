@@ -153,7 +153,7 @@ describe('PaneShell composition', () => {
 
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        <Pane id="files" resizable={true} side="left" width="240px">
           files
         </Pane>
         <PaneMain>main</PaneMain>

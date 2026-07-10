@@ -68,8 +68,7 @@ describe('statusBarSegments', () => {
       compressions: true,
       voice: true,
       bg: true,
-      subagents: true,
-      cost: true
+      subagents: true
     })
   })
 
@@ -79,19 +78,17 @@ describe('statusBarSegments', () => {
     expect(s.compactCtx).toBe(true)
     expect(s.bar).toBe(false)
     expect(s.duration).toBe(false)
-    expect(s.cost).toBe(false)
   })
 
   it('sheds tail segments in priority order as the terminal narrows', () => {
-    // cost is the first to go, the context bar the last of the tail.
+    // The context bar is the last of the low-priority tail to go.
     const order: (keyof ReturnType<typeof statusBarSegments>)[] = [
       'bar',
       'duration',
       'compressions',
       'voice',
       'bg',
-      'subagents',
-      'cost'
+      'subagents'
     ]
 
     let prevCount = Infinity

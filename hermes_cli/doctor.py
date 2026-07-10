@@ -17,6 +17,8 @@ from hermes_constants import agent_browser_runnable
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
+_DOCTOR_IMPORTED_HOME = HERMES_HOME
+_DOCTOR_LAST_ENV_HOME: Path | None = None
 _DHH = display_hermes_home()  # user-facing display path (e.g. ~/.hermes or ~/.hermes/profiles/coder)
 
 # Load environment variables from ~/.hermes/.env so API key checks work
@@ -44,6 +46,7 @@ _PROVIDER_ENV_HINTS = (
     "GMI_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
+    "XAI_API_KEY",
     "KILOCODE_API_KEY",
     "DEEPSEEK_API_KEY",
     "DASHSCOPE_API_KEY",
@@ -510,6 +513,20 @@ def managed_scope_check() -> None:
 
 def run_doctor(args):
     """Run diagnostic checks."""
+    global HERMES_HOME, _DHH, _DOCTOR_LAST_ENV_HOME
+    env_home = os.getenv("HERMES_HOME")
+    if env_home and (
+        HERMES_HOME == _DOCTOR_IMPORTED_HOME or HERMES_HOME == _DOCTOR_LAST_ENV_HOME
+    ):
+        HERMES_HOME = get_hermes_home()
+        _DOCTOR_LAST_ENV_HOME = HERMES_HOME
+        _DHH = display_hermes_home()
+    elif _DOCTOR_LAST_ENV_HOME is not None and HERMES_HOME == _DOCTOR_LAST_ENV_HOME:
+        HERMES_HOME = get_hermes_home()
+        _DOCTOR_LAST_ENV_HOME = None
+        _DHH = display_hermes_home()
+    _prev_env_home_for_doctor = os.environ.get("HERMES_HOME")
+    os.environ["HERMES_HOME"] = str(HERMES_HOME)
     should_fix = getattr(args, 'fix', False)
     ack_target = getattr(args, 'ack', None)
 
@@ -1236,7 +1253,7 @@ def run_doctor(args):
             # repaired in place with --fix).
             from hermes_state import _db_opens_cleanly, repair_state_db_schema
 
-            _write_reason = _db_opens_cleanly(state_db_path)
+            _write_reason = _db_opens_cleanly(state_db_path, run_quick_check=should_fix)
             if _write_reason is not None:
                 check_warn(
                     f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)",
@@ -2410,3 +2427,7 @@ def run_doctor(args):
         print(color("  All checks passed! 🎉", Colors.GREEN, Colors.BOLD))
     
     print()
+    if _prev_env_home_for_doctor is None:
+        os.environ.pop("HERMES_HOME", None)
+    else:
+        os.environ["HERMES_HOME"] = _prev_env_home_for_doctor

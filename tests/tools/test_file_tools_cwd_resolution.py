@@ -431,6 +431,25 @@ def test_live_cwd_ignored_for_non_owning_session(_two_worktree_sessions):
     assert ft._get_live_tracking_cwd("sess-a") is None
 
 
+def test_default_task_ignores_foreign_owned_live_cwd_for_session_workspace(
+    _two_worktree_sessions, monkeypatch
+):
+    """Collapsed ``default`` must not inherit another gateway session's cwd."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    wt_a, wt_b, _main = _two_worktree_sessions
+    monkeypatch.setattr(ft, "_last_known_cwd", {})
+    tokens = set_session_vars(session_key="sess-a", terminal_cwd=str(wt_a))
+    try:
+        assert ft._get_live_tracking_cwd("default") is None
+        resolved = ft._resolve_path_for_task("target.py", task_id="default")
+    finally:
+        clear_session_vars(tokens)
+
+    assert resolved == (wt_a / "target.py")
+    assert not str(resolved).startswith(str(wt_b))
+
+
 def test_resolution_routes_to_resolving_sessions_worktree(_two_worktree_sessions):
     """The wrong-worktree fix: A resolves into wt_a, not the shared env's wt_b."""
     wt_a, wt_b, _main = _two_worktree_sessions

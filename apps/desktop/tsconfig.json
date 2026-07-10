@@ -15,6 +15,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "react-jsx",
+    "noEmit": true,
     "paths": {
       "@/*": ["./src/*"],
       "@hermes/shared": ["../shared/src/index.ts"]

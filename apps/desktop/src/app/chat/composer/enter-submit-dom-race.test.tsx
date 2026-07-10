@@ -1,11 +1,6 @@
-import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { act, fireEvent, render } from '@testing-library/react'
 import { useRef, useState } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-
-// No global setupFiles registers auto-cleanup, so unmount between tests —
-// otherwise a second render() leaks the first editor and getByTestId('editor')
-// matches multiple nodes.
-afterEach(cleanup)
+import { describe, expect, it, vi } from 'vitest'
 
 // Faithful mirror of index.tsx's Enter wiring (handleEditorKeyDown's Enter
 // branch + submitDraft), driven through REAL DOM keydown events on a

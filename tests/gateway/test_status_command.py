@@ -128,6 +128,24 @@ async def test_status_command_includes_session_title_when_present():
 
 
 @pytest.mark.asyncio
+async def test_status_command_includes_session_workspace():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        current_workspace="/tmp/capy-workspace",
+    )
+    runner = _make_runner(session_entry)
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Workspace:** `/tmp/capy-workspace`" in result
+
+
+@pytest.mark.asyncio
 async def test_status_command_reads_token_totals_from_session_db():
     """Regression test for #17158: /status must source token totals from the
     SQLite SessionDB (where run_agent.py persists them) and sum all component

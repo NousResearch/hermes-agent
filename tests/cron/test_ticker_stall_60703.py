@@ -45,6 +45,15 @@ except ImportError:  # pragma: no cover - non-POSIX
 pytestmark = pytest.mark.skipif(fcntl is None, reason="flock semantics are POSIX-only")
 
 
+def test_collection_time_cron_import_uses_hermetic_store():
+    """The global test fixture must rebind cron paths imported at collection."""
+    hermes_home = Path(os.environ["HERMES_HOME"]).resolve()
+    assert jobs_mod.HERMES_DIR == hermes_home
+    assert jobs_mod.CRON_DIR == hermes_home / "cron"
+    assert jobs_mod.JOBS_FILE == hermes_home / "cron" / "jobs.json"
+    assert jobs_mod.OUTPUT_DIR == hermes_home / "cron" / "output"
+
+
 def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event):
     """Hold an exclusive flock on *path* from a separate fd until released.
 

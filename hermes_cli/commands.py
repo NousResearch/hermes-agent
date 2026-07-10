@@ -119,11 +119,17 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session, model, token, and context info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
+    CommandDef("capy", "Show Capy capability dashboard", "Info",
+               aliases=("capabilities", "dashboard", "health"), gateway_only=True),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("workspace", "Show or set this gateway session workspace", "Session",
+               aliases=("ws", "workdir", "cwd", "workspaces"),
+               args_hint="[path|list|clear]", gateway_only=True,
+               subcommands=("list", "clear")),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
@@ -1134,7 +1140,7 @@ _SLACK_RESERVED_COMMANDS = frozenset({
     # https://slack.com/help/articles/201259356-Use-built-in-slash-commands
     "me", "status", "away", "dnd", "shrug", "remind", "msg", "feed",
     "who", "collapse", "expand", "leave", "join", "open", "search",
-    "topic", "mute", "pro", "shortcuts",
+    "topic", "mute", "pro", "shortcuts", "debug", "version",
 })
 
 # High-value aliases that must survive Slack's 50-slash cap even when the
@@ -1163,7 +1169,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "update"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

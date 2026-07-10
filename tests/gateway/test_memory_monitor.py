@@ -91,16 +91,23 @@ def test_periodic_timer_fires(caplog):
     caplog.set_level(logging.INFO, logger="gateway.memory_monitor")
     # Short interval so we can observe multiple ticks inside the test budget.
     mm.start_memory_monitoring(interval_seconds=0.1)
-    time.sleep(0.45)
+
+    deadline = time.monotonic() + 1.5
+    periodic = []
+    while time.monotonic() < deadline:
+        periodic = [
+            r for r in caplog.records
+            if r.getMessage().startswith("[MEMORY] rss=")
+            or r.getMessage().startswith("[MEMORY] rss=unavailable")
+        ]
+        if len(periodic) >= 3:
+            break
+        time.sleep(0.02)
+
     mm.stop_memory_monitoring(timeout=1.0)
 
-    periodic = [
-        r for r in caplog.records
-        if r.getMessage().startswith("[MEMORY] rss=") or r.getMessage().startswith("[MEMORY] rss=unavailable")
-    ]
-    # baseline + at least 2 periodic + shutdown — but shutdown has the
-    # "shutdown " prefix so it won't match the strict "[MEMORY] rss=" start.
-    # We expect >= 3 bare "[MEMORY] rss=..." lines.
+    # Baseline and shutdown have prefixes that do not match the strict
+    # "[MEMORY] rss=" filter, so these are three genuine periodic callbacks.
     assert len(periodic) >= 3, [r.getMessage() for r in caplog.records]
 
 

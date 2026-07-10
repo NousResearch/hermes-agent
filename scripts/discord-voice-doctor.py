@@ -14,6 +14,8 @@ import sys
 import shutil
 from pathlib import Path
 
+from packaging.version import InvalidVersion, Version
+
 # Resolve project root
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -28,6 +30,10 @@ WARN = "\033[93m!\033[0m"
 
 # Track whether discord.py is available for later sections
 _discord_available = False
+VOICE_INSTALL_SPEC = (
+    "discord.py==2.7.1 davey==0.1.5 PyNaCl==1.6.2 aiohttp==3.14.1"
+)
+MIN_PYNACL = Version("1.6.2")
 
 
 def mask(value):
@@ -69,7 +75,7 @@ def check_packages():
         _discord_available = True
         check("discord.py", True, f"v{discord.__version__}")
     except ImportError:
-        check("discord.py", False, "pip install discord.py[voice]")
+        check("discord.py", False, f"pip install {VOICE_INSTALL_SPEC}")
         ok = False
 
     # PyNaCl
@@ -79,12 +85,16 @@ def check_packages():
         try:
             import nacl.secret
             nacl.secret.Aead(bytes(32))
-            check("PyNaCl", True, f"v{ver}")
-        except (AttributeError, Exception):
-            check("PyNaCl (Aead)", False, f"v{ver} — need >=1.5.0")
+            if Version(ver) < MIN_PYNACL:
+                check("PyNaCl", False, f"v{ver} — need >={MIN_PYNACL}")
+                ok = False
+            else:
+                check("PyNaCl", True, f"v{ver}")
+        except (AttributeError, InvalidVersion, Exception):
+            check("PyNaCl (Aead)", False, f"v{ver} — need >={MIN_PYNACL}")
             ok = False
     except ImportError:
-        check("PyNaCl", False, "pip install PyNaCl>=1.5.0")
+        check("PyNaCl", False, f"pip install {VOICE_INSTALL_SPEC}")
         ok = False
 
     # davey (DAVE E2EE)
@@ -92,7 +102,7 @@ def check_packages():
         import davey
         check("davey (DAVE E2EE)", True, f"v{getattr(davey, '__version__', '?')}")
     except ImportError:
-        check("davey (DAVE E2EE)", False, "pip install davey")
+        check("davey (DAVE E2EE)", False, f"pip install {VOICE_INSTALL_SPEC}")
         ok = False
 
     # Optional: local STT

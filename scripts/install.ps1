@@ -2936,14 +2936,14 @@ function Install-PlatformSdks {
     if (-not (Test-Path $envPath)) { return }
     $envLines = Get-Content $envPath -ErrorAction SilentlyContinue
 
-    # Map: env var set in .env -> (import name, pip spec matching [messaging] extra).
+    # Map: env var set in .env -> (import name, pip specs matching project extras).
     # Specs mirror pyproject.toml to avoid version drift.
     $sdkMap = @(
-        @{ Var = "TELEGRAM_BOT_TOKEN"; Import = "telegram";  Spec = "python-telegram-bot[webhooks]>=22.6,<23" },
-        @{ Var = "DISCORD_BOT_TOKEN";  Import = "discord";   Spec = "discord.py[voice]>=2.7.1,<3" },
-        @{ Var = "SLACK_BOT_TOKEN";    Import = "slack_sdk"; Spec = "slack-sdk>=3.27.0,<4" },
-        @{ Var = "SLACK_APP_TOKEN";    Import = "slack_bolt";Spec = "slack-bolt>=1.18.0,<2" },
-        @{ Var = "WHATSAPP_ENABLED";   Import = "qrcode";    Spec = "qrcode>=7.0,<8" }
+        @{ Var = "TELEGRAM_BOT_TOKEN"; Import = "telegram";  Specs = @("python-telegram-bot[webhooks]>=22.6,<23") },
+        @{ Var = "DISCORD_BOT_TOKEN";  Import = "discord";   Specs = @("discord.py==2.7.1", "davey==0.1.5", "PyNaCl==1.6.2", "aiohttp==3.14.1") },
+        @{ Var = "SLACK_BOT_TOKEN";    Import = "slack_sdk"; Specs = @("slack-sdk>=3.27.0,<4") },
+        @{ Var = "SLACK_APP_TOKEN";    Import = "slack_bolt";Specs = @("slack-bolt>=1.18.0,<2") },
+        @{ Var = "WHATSAPP_ENABLED";   Import = "qrcode";    Specs = @("qrcode>=7.0,<8") }
     )
 
     # Which tokens are actually set (not placeholder)?
@@ -2995,18 +2995,21 @@ function Install-PlatformSdks {
             & $pythonExe -m ensurepip --upgrade 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 Write-Warn "ensurepip failed -- can't auto-install missing SDKs."
-                Write-Info "Manual recovery: $UvCmd pip install `"$($missing[0].Spec)`""
+                $recoverySpecs = $missing[0].Specs -join " "
+                Write-Info "Manual recovery: $UvCmd pip install $recoverySpecs"
                 return
             }
         }
 
         foreach ($sdk in $missing) {
-            Write-Info "  Installing $($sdk.Spec) ..."
-            & $pythonExe -m pip install $sdk.Spec 2>&1 | ForEach-Object { Write-Host "    $_" }
+            $specText = $sdk.Specs -join " "
+            Write-Info "  Installing $specText ..."
+            $installArgs = @("-m", "pip", "install") + $sdk.Specs
+            & $pythonExe @installArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
             if ($LASTEXITCODE -eq 0) {
                 Write-Success "  Installed $($sdk.Import)"
             } else {
-                Write-Warn "  Failed to install $($sdk.Spec). Recover manually: $pythonExe -m pip install `"$($sdk.Spec)`""
+                Write-Warn "  Failed to install $specText. Recover manually: $pythonExe -m pip install $specText"
             }
         }
     } finally {

@@ -14,6 +14,7 @@ from gateway.runtime_footer import (
     format_runtime_footer,
     resolve_footer_config,
 )
+from gateway.session_context import clear_session_vars, set_session_vars
 
 
 # ---------------------------------------------------------------------------
@@ -58,15 +59,19 @@ def test_home_relative_cwd_empty_returns_empty():
 
 def test_format_footer_all_fields(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "projects" / "hermes"))
-    (tmp_path / "projects" / "hermes").mkdir(parents=True)
-    out = format_runtime_footer(
-        model="openrouter/openai/gpt-5.4",
-        context_tokens=68000,
-        context_length=100000,
-        cwd=None,  # falls back to TERMINAL_CWD env var
-        fields=("model", "context_pct", "cwd"),
-    )
+    workspace = tmp_path / "projects" / "hermes"
+    workspace.mkdir(parents=True)
+    tokens = set_session_vars(session_key="session", terminal_cwd=str(workspace))
+    try:
+        out = format_runtime_footer(
+            model="openrouter/openai/gpt-5.4",
+            context_tokens=68000,
+            context_length=100000,
+            cwd=None,  # falls back to session-scoped TERMINAL_CWD
+            fields=("model", "context_pct", "cwd"),
+        )
+    finally:
+        clear_session_vars(tokens)
     assert out == "gpt-5.4 · 68% · ~/projects/hermes"
 
 
@@ -145,6 +150,25 @@ def test_format_footer_unknown_field_silently_ignored():
         fields=("model", "bogus", "context_pct"),
     )
     assert out == "gpt-5.4 · 50%"
+
+
+def test_format_footer_prefers_session_context_cwd(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_CWD", "/env/fallback")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tokens = set_session_vars(session_key="session", terminal_cwd=str(workspace))
+    try:
+        out = format_runtime_footer(
+            model="m",
+            context_tokens=0,
+            context_length=None,
+            cwd=None,
+            fields=("cwd",),
+        )
+    finally:
+        clear_session_vars(tokens)
+    assert out == "~/workspace"
 
 
 # ---------------------------------------------------------------------------

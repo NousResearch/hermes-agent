@@ -7,6 +7,7 @@ import logging
 import os
 import posixpath
 import sys
+import tempfile
 import threading
 from pathlib import Path, PurePosixPath
 
@@ -240,14 +241,22 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
 
 
 def _configured_terminal_cwd() -> str | None:
-    """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
+    """Return ``TERMINAL_CWD`` only when it names a real directory anchor.
 
-    Sentinel values (see ``_TERMINAL_CWD_SENTINELS``) and relative paths are
-    rejected — a relative anchor is meaningless without knowing which cwd it is
-    relative to, which is exactly the ambiguity that misroutes worktree edits.
-    Only an absolute, sentinel-free value is honored.
+    Prefer the gateway/session ContextVar value over ``os.environ`` so
+    concurrent gateway chats do not leak workspaces into each other. Sentinel
+    values (see ``_TERMINAL_CWD_SENTINELS``) and relative paths are rejected — a
+    relative anchor is meaningless without knowing which cwd it is relative to.
     """
-    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    try:
+        from gateway.session_context import get_session_env
+
+        raw = (get_session_env("TERMINAL_CWD", "") or "").strip()
+        if not raw:
+            raw = (os.environ.get("TERMINAL_CWD") or "").strip()
+    except Exception:
+        raw = (os.environ.get("TERMINAL_CWD") or "").strip()
+    return _sentinel_free_abs_cwd(raw)
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
@@ -288,7 +297,7 @@ def _live_cwd_if_owned(env, task_id: str) -> str | None:
         return None
     owner = str(getattr(env, "cwd_owner", "") or "")
     tid = str(task_id or "")
-    if owner and tid and owner != "default" and tid != "default" and owner != tid:
+    if owner and tid and owner != "default" and owner != tid:
         return None
     return live
 
@@ -302,7 +311,11 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
         container_key = task_id
 
     with _file_ops_lock:
-        cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
+        # Prefer an exact task-id cache entry over the collapsed container key.
+        # Tests and long-lived tool sessions can attach more precise live cwd
+        # metadata to the visible task id while the container runtime maps it to
+        # "default" for shared execution.
+        cached = _file_ops_cache.get(task_id) or _file_ops_cache.get(container_key)
     if cached is not None:
         env = getattr(cached, "env", None)
         live_cwd = _live_cwd_if_owned(env, task_id)
@@ -345,15 +358,18 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     case callers fall back to the process cwd.
     """
     live = _get_live_tracking_cwd(task_id)
+    registered = _registered_task_cwd_override(task_id)
+    configured = _configured_terminal_cwd()
+    # Ownership is enforced by _get_live_tracking_cwd, including for the
+    # collapsed "default" task id. A trusted live cwd is therefore always the
+    # most authoritative anchor (for example, after an interactive ``cd``).
     if live:
         return live
     # A session-specific registered override (TUI/Desktop/ACP workspace cwd)
-    # is more authoritative than the shared last-known anchor: it is keyed by
-    # the raw session id, so when two worktree sessions share the single
-    # "default" terminal env, a NON-owning session must resolve against its OWN
-    # registered worktree — never the other session's leftover cwd. (Checked
-    # before _last_known_cwd, which is keyed by the shared container id.)
-    registered = _registered_task_cwd_override(task_id)
+    # is more authoritative than the shared last-known/default anchor: it is
+    # keyed by the raw session id, so when two worktree sessions share the
+    # single "default" terminal env, a NON-owning session resolves against its
+    # own registered worktree — never another session's leftover cwd.
     if registered:
         return registered
     # When the terminal env was cleaned up mid-conversation, the live cwd is
@@ -366,7 +382,9 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     preserved = _last_known_cwd_for(task_id)
     if preserved:
         return preserved
-    return _configured_terminal_cwd()
+    if configured:
+        return configured
+    return None
 
 
 def _resolve_base_dir(
@@ -659,6 +677,33 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
+def _is_safe_temp_write_path(resolved: str, normalized: str) -> bool:
+    """Return True for OS temp roots that may resolve under /private/var.
+
+    macOS exposes pytest/tempfile paths as /var/folders/... while realpath()
+    canonicalizes them to /private/var/folders/....  The sensitive-system-path
+    guard intentionally blocks most of /private/var, but temp roots are the
+    normal place for unit tests and throwaway agent scratch files.
+    """
+    candidates = {
+        tempfile.gettempdir(),
+        os.path.realpath(tempfile.gettempdir()),
+        "/tmp",
+        os.path.realpath("/tmp"),
+        "/var/tmp",
+        os.path.realpath("/var/tmp"),
+    }
+    for candidate in candidates:
+        root = os.path.normpath(os.path.expanduser(candidate))
+        if not root or root == "/":
+            continue
+        if resolved == root or resolved.startswith(root + os.sep):
+            return True
+        if normalized == root or normalized.startswith(root + os.sep):
+            return True
+    return False
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -670,15 +715,11 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
-        return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
-    # this file.
+    # this file. Check this before the temp-root allowlist so pytest profiles
+    # with HERMES_HOME under /tmp still fail closed for config.yaml.
     hermes_config = _get_hermes_config_resolved()
     if hermes_config and (resolved == hermes_config or normalized == hermes_config):
         return (
@@ -686,6 +727,13 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
         )
+    if _is_safe_temp_write_path(resolved, normalized):
+        return None
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        if resolved.startswith(prefix) or normalized.startswith(prefix):
+            return _err
+    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+        return _err
     return None
 
 

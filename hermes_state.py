@@ -497,33 +497,40 @@ def _backup_db_file(db_path: Path) -> Optional[Path]:
         return None
 
 
-def _db_opens_cleanly(db_path: Path) -> Optional[str]:
+def _db_opens_cleanly(db_path: Path, *, run_quick_check: bool = False) -> Optional[str]:
     """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
 
     Runs the same first-statement (``PRAGMA journal_mode``) that trips the
-    malformed-schema parse, then ``PRAGMA integrity_check`` and a canonical
-    ``sessions`` read, and finally a rolled-back ``messages`` write so that
-    FTS5 index corruption — which leaves base-table reads and
-    ``integrity_check`` passing while every ``INSERT INTO messages`` fails
-    through the FTS triggers — is reported as unhealthy rather than slipping
-    past as a false "ok" (#50502).
+    malformed-schema parse, optionally runs ``PRAGMA quick_check`` for explicit
+    maintenance/repair flows, then performs a canonical ``sessions`` read and a
+    rolled-back ``messages`` write so that FTS5 index corruption — which leaves
+    base-table reads passing while every ``INSERT INTO messages`` fails through
+    the FTS triggers — is reported as unhealthy rather than slipping past as a
+    false "ok" (#50502).
+
+    ``quick_check`` can take minutes on a large live ``state.db`` and is not
+    interruptible by SQLite's busy timeout, so normal health checks keep it off.
     """
-    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=1.0)
     try:
+        conn.execute("PRAGMA busy_timeout=1000")
         conn.execute("PRAGMA journal_mode").fetchone()
-        rows = conn.execute("PRAGMA integrity_check").fetchall()
-        problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
-        if problems:
-            return "; ".join(problems[:3])
+        if run_quick_check:
+            rows = conn.execute("PRAGMA quick_check").fetchall()
+            problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
+            if problems:
+                return "; ".join(problems[:3])
         conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
 
-        # FTS write probe: drive a row through the messages_fts* triggers in a
-        # transaction that is always rolled back, so a corrupt FTS index that
-        # rejects writes is caught even though reads look healthy. The probe is
-        # best-effort — if the messages/sessions tables don't exist yet (brand
-        # new file mid-init) the OperationalError is treated as "not yet a
-        # populated DB", not corruption.
+        # FTS write/read probe: drive a row through the messages_fts* triggers
+        # in a transaction that is always rolled back, then perform a unique
+        # MATCH lookup against the inserted term. Some malformed FTS5 shadow
+        # b-trees accept INSERTs but fail on MATCH, while base-table reads still
+        # look healthy. The probe is best-effort — if the messages/sessions/FTS
+        # tables don't exist yet (brand new file mid-init) the OperationalError
+        # is treated as "not yet a populated DB", not corruption.
         probe_session_id = f"_hermes_fts_health_probe_{time.time_ns()}"
+        probe_term = f"hermesftsprobe{time.time_ns()}"
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -533,10 +540,14 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             conn.execute(
                 "INSERT INTO messages (session_id, role, content, timestamp) "
                 "VALUES (?, ?, ?, ?)",
-                (probe_session_id, "user", "_fts_health_probe", time.time()),
+                (probe_session_id, "user", probe_term, time.time()),
             )
+            conn.execute(
+                "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?",
+                (probe_term,),
+            ).fetchone()
             conn.execute("ROLLBACK")
-        except sqlite3.OperationalError as exc:
+        except sqlite3.DatabaseError as exc:
             # Missing tables / FTS disabled — not the corruption class we probe.
             try:
                 conn.execute("ROLLBACK")
@@ -1139,6 +1150,30 @@ class SessionDB:
                 self._warn_fts5_unavailable(exc)
             return False
 
+    def _ensure_write_connection_locked(self) -> None:
+        """Ensure a writable SQLite connection exists while ``self._lock`` is held.
+
+        Some gateway/cron teardown paths can close the shared SessionDB object
+        before a late flush/end-session path attempts one final write.  Reopen
+        the connection lazily instead of failing with ``None.execute`` and
+        losing the final transcript rows.
+        """
+        if self._conn is not None:
+            return
+        if self.read_only:
+            raise sqlite3.ProgrammingError("read-only SessionDB connection is closed")
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+            timeout=1.0,
+            isolation_level=None,
+        )
+        self._conn.row_factory = sqlite3.Row
+        apply_wal_with_fallback(self._conn, db_label="state.db")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema()
+
     def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
 
@@ -1158,6 +1193,7 @@ class SessionDB:
         for attempt in range(self._WRITE_MAX_RETRIES):
             try:
                 with self._lock:
+                    self._ensure_write_connection_locked()
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
                         result = fn(self._conn)

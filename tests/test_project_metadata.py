@@ -3,6 +3,8 @@
 from pathlib import Path
 import tomllib
 
+from packaging.version import Version
+
 
 def _load_optional_dependencies():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
@@ -16,6 +18,13 @@ def _load_package_data():
     with pyproject_path.open("rb") as handle:
         tool = tomllib.load(handle)["tool"]
     return tool["setuptools"]["package-data"]
+
+
+def _load_uv_lock_versions():
+    lock_path = Path(__file__).resolve().parents[1] / "uv.lock"
+    with lock_path.open("rb") as handle:
+        packages = tomllib.load(handle)["package"]
+    return {package["name"].lower(): package["version"] for package in packages}
 
 
 def test_matrix_extra_not_in_all():
@@ -202,6 +211,63 @@ def test_messaging_extra_includes_qrcode_for_weixin_setup():
 
     messaging_extra = optional_dependencies["messaging"]
     assert any(dep.startswith("qrcode") for dep in messaging_extra)
+
+
+def test_security_audited_python_dependency_floors():
+    """Project metadata and uv.lock must not reintroduce audited CVEs."""
+    optional_dependencies = _load_optional_dependencies()
+
+    assert "ascii-guard==2.3.0" in optional_dependencies["dev"]
+    assert "pytest==9.0.3" in optional_dependencies["dev"]
+    assert "python-multipart==0.0.32" in optional_dependencies["web"]
+
+    messaging = optional_dependencies["messaging"]
+    assert "discord.py[voice]==2.7.1" not in messaging
+    assert "discord.py==2.7.1" in messaging
+    assert "davey==0.1.5" in messaging
+    assert "PyNaCl==1.6.2" in messaging
+
+    versions = _load_uv_lock_versions()
+    floors = {
+        "msgpack": "1.2.1",
+        "pydantic-settings": "2.14.2",
+        "pynacl": "1.6.2",
+        "pytest": "9.0.3",
+        "python-multipart": "0.0.32",
+        "tornado": "6.5.7",
+    }
+    for package, floor in floors.items():
+        assert Version(versions[package]) >= Version(floor), (
+            f"uv.lock has vulnerable {package}=={versions[package]}; need >= {floor}"
+        )
+
+
+def test_discord_voice_install_surfaces_avoid_vulnerable_pynacl_cap():
+    """Recovery/install guidance must use the explicit patched voice set."""
+    root = Path(__file__).resolve().parents[1]
+    paths = [
+        root / "gateway" / "run.py",
+        root / "scripts" / "discord-voice-doctor.py",
+        root / "scripts" / "install.ps1",
+        root / "website" / "docs" / "user-guide" / "features" / "voice-mode.md",
+        root
+        / "website"
+        / "i18n"
+        / "zh-Hans"
+        / "docusaurus-plugin-content-docs"
+        / "current"
+        / "user-guide"
+        / "features"
+        / "voice-mode.md",
+    ]
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert "discord.py[voice]" not in text, path
+        assert "PyNaCl>=1.5.0" not in text, path
+
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+    for pin in ("discord.py==2.7.1", "davey==0.1.5", "PyNaCl==1.6.2"):
+        assert pin in combined
 
 
 def test_dingtalk_extra_includes_qrcode_for_qr_auth():

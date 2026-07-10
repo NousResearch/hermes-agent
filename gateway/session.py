@@ -312,6 +312,7 @@ class SessionContext:
     # Session metadata
     session_key: str = ""
     session_id: str = ""
+    current_workspace: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -325,6 +326,7 @@ class SessionContext:
             "shared_multi_user_session": self.shared_multi_user_session,
             "session_key": self.session_key,
             "session_id": self.session_id,
+            "current_workspace": self.current_workspace,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -571,6 +573,9 @@ def build_session_context_prompt(
 
     lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
 
+    if context.current_workspace:
+        lines.append(f"**Workspace:** {context.current_workspace}")
+
     # Home channels
     if context.home_channels:
         lines.append("")
@@ -697,6 +702,11 @@ class SessionEntry:
     # Set by /stop to break stuck-resume loops (#7536).
     suspended: bool = False
 
+    # Current workspace for this gateway session.  When set, tools that honor
+    # TERMINAL_CWD resolve relative paths from this directory; when empty the
+    # gateway falls back to WebUI last-workspace/default cwd discovery.
+    current_workspace: str = ""
+
     # When True the session was interrupted by a gateway restart/shutdown
     # drain timeout, but recovery is still expected.  Unlike ``suspended``,
     # ``resume_pending`` preserves the existing session_id on next access —
@@ -722,6 +732,7 @@ class SessionEntry:
         result = {
             "session_key": self.session_key,
             "session_id": self.session_id,
+            "current_workspace": self.current_workspace,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "display_name": self.display_name,
@@ -816,6 +827,7 @@ class SessionEntry:
             cost_status=data.get("cost_status", "unknown"),
             expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),
             suspended=data.get("suspended", False),
+            current_workspace=data.get("current_workspace", "") or "",
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
@@ -2071,6 +2083,18 @@ class SessionStore:
                 return None
             return dict(entry.model_override) if entry.model_override else None
 
+    def set_current_workspace(self, session_key: str, workspace: str) -> bool:
+        """Persist the current workspace for a gateway session."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                entry = self._entries[session_key]
+                entry.current_workspace = workspace or ""
+                entry.updated_at = _now()
+                self._save()
+                return True
+        return False
+
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.
 
@@ -2568,6 +2592,11 @@ def build_session_context(
     if session_entry:
         context.session_key = session_entry.session_key
         context.session_id = session_entry.session_id
+        try:
+            from gateway.workspace_state import default_workspace
+            context.current_workspace = session_entry.current_workspace or default_workspace()
+        except Exception:
+            context.current_workspace = session_entry.current_workspace or ""
         context.created_at = session_entry.created_at
         context.updated_at = session_entry.updated_at
     

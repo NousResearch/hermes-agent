@@ -178,7 +178,7 @@ export const ThreadTimeline: FC = () => {
   useEffect(() => {
     const viewport = document.querySelector<HTMLElement>(VIEWPORT)
 
-    if (!viewport || entries.length === 0) {
+    if (!viewport || entries.length < MIN_ENTRIES) {
       return
     }
 

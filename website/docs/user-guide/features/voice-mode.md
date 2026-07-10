@@ -42,7 +42,7 @@ A paid [Nous Portal](/user-guide/features/tool-gateway) subscription supplies th
 # CLI voice mode (microphone + audio playback)
 cd ~/.hermes/hermes-agent && uv pip install -e ".[voice]"
 
-# Discord + Telegram messaging (includes discord.py[voice] for VC support)
+# Discord + Telegram messaging (includes patched discord.py, davey, and PyNaCl)
 cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
 
 # Premium TTS (ElevenLabs)
@@ -58,13 +58,13 @@ cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"
 | Extra | Packages | Required For |
 |-------|----------|-------------|
 | `voice` | `sounddevice`, `numpy` | CLI voice mode |
-| `messaging` | `discord.py[voice]`, `python-telegram-bot`, `aiohttp` | Discord & Telegram bots |
+| `messaging` | `discord.py`, `davey`, `PyNaCl`, `python-telegram-bot`, `aiohttp` | Discord & Telegram bots |
 | `tts-premium` | `elevenlabs` | ElevenLabs TTS provider |
 
 Optional local TTS provider: install `neutts` separately with `python -m pip install -U neutts[all]`. On first use it downloads the model automatically.
 
 :::info
-`discord.py[voice]` installs **PyNaCl** (for voice encryption) and **opus bindings** automatically. This is required for Discord voice channel support.
+Hermes declares `discord.py==2.7.1`, `davey==0.1.5`, and `PyNaCl==1.6.2` separately. The upstream voice extra caps PyNaCl below the patched 1.6.x line, so do not replace this explicit set with that extra. A system Opus codec is still required for Discord voice channels.
 :::
 
 ### System Dependencies

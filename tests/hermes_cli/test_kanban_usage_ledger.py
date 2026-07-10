@@ -1549,7 +1549,7 @@ class TestRuntimeContextFields:
             "SELECT parent_task_id FROM run_usage_parents WHERE task_id=? ORDER BY parent_task_id",
             ("t_abc",),
         ).fetchall()
-        assert [r[0] for r in parents] == ["t_parent_456"]
+        assert [r[0] for r in parents] == ["t_parent_123", "t_parent_456"]
 
     def test_checker_result_and_repair_cycle_persisted(self, isolated_kanban):
         """checker_result and repair_cycle are recorded."""

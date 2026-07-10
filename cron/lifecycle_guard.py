@@ -66,11 +66,58 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 )
 
 
+# A lifecycle command wrapped in an ssh invocation targets a *remote* host's
+# gateway, so the local foot-gun rationale does not apply: the command runs
+# under the remote sshd, the local gateway is never SIGTERMed, and no
+# supervisor respawn loop can form on this machine.  Fleet maintenance
+# (restarting a sibling machine's gateway over ssh) is a legitimate, common
+# operation and must not be blocked.
+#
+# Loopback targets (``ssh localhost ...``) are still blocked: the *effect*
+# (this host's gateway dying, on a schedule for the cron path) can still
+# produce the #30719 respawn loop even though the ssh client itself would
+# survive.  We cannot resolve arbitrary hostnames in a text guard, so an ssh
+# to this machine's own LAN hostname is an accepted residual gap.
+_SSH_COMMAND_RE = re.compile(r"(?i)(?:^|\s)(?:\S*/)?(?:ssh|autossh)\s")
+_LOOPBACK_HOST_RE = re.compile(
+    r"(?i)(?:^|[\s@])(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|0\.0\.0\.0)\b"
+)
+
+# Rough shell-segment separators.  This is a heuristic split (it does not
+# honour quoting), which errs on the side of BLOCKING: a separator inside an
+# ssh remote-command string starts a "new segment" that no longer contains
+# ``ssh``, so such a match falls back to blocked rather than allowed.
+_SEGMENT_SPLIT_RE = re.compile(r"(?:\|\||&&|;|\||&|\$\(|`)")
+
+
+def _match_is_ssh_remote(text: str, match_start: int) -> bool:
+    """Return True if the lifecycle match at *match_start* sits inside an
+    ssh invocation targeting a non-loopback host."""
+    line_start = text.rfind("\n", 0, match_start) + 1
+    prefix = text[line_start:match_start]
+    # The command context for the match is the last shell segment before it.
+    segment = _SEGMENT_SPLIT_RE.split(prefix)[-1]
+    if not _SSH_COMMAND_RE.search(segment):
+        return False
+    if _LOOPBACK_HOST_RE.search(segment):
+        return False
+    return True
+
+
 def contains_gateway_lifecycle_command(text: str) -> bool:
-    """Return True if *text* contains a gateway lifecycle command pattern."""
+    """Return True if *text* contains a gateway lifecycle command pattern.
+
+    Matches that are ssh-wrapped to a remote (non-loopback) host are
+    exempt — restarting a *different* machine's gateway is legitimate fleet
+    maintenance and cannot SIGTERM-loop this process (see
+    ``_match_is_ssh_remote``).
+    """
     if not text:
         return False
-    return bool(_GATEWAY_LIFECYCLE_PATTERN.search(text))
+    for match in _GATEWAY_LIFECYCLE_PATTERN.finditer(text):
+        if not _match_is_ssh_remote(text, match.start()):
+            return True
+    return False
 
 
 def _resolve_script_path(script_path: str) -> Path:

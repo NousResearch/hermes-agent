@@ -271,6 +271,13 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    # Vertex OAuth/ADC aliases (mirror hermes_cli.models._PROVIDER_ALIASES).
+    # Without these, resolve_provider_client("google-vertex") never hits the
+    # auth_type=vertex branch even after the static registry entry lands.
+    "google-vertex": "vertex",
+    "vertex-ai": "vertex",
+    "gcp-vertex": "vertex",
+    "vertexai": "vertex",
 }
 
 

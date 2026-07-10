@@ -434,6 +434,20 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    # Vertex is OAuth/ADC (not a static API key). Must live in the static
+    # registry: plugins only auto-promote auth_type=api_key providers, so without
+    # this entry resolve_provider_client("vertex") looks up PROVIDER_REGISTRY,
+    # misses, and every auxiliary task dies with (None, None) (#61852).
+    "vertex": ProviderConfig(
+        id="vertex",
+        name="Google Vertex AI",
+        auth_type="vertex",
+        # Runtime base_url is computed from project/region in
+        # agent.vertex_adapter.get_vertex_config(); this is a documentation default.
+        inference_base_url="https://aiplatform.googleapis.com",
+        api_key_env_vars=(),
+        base_url_env_var="",
+    ),
     "azure-foundry": ProviderConfig(
         id="azure-foundry",
         name="Azure Foundry",

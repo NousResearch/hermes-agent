@@ -1549,6 +1549,51 @@ class AIAgent:
 
         return not self._has_natural_response_ending(visible_text)
 
+    def _detect_malformed_tool_final_response(
+        self,
+        content: str,
+        finish_reason: str,
+        messages: Optional[list] = None,
+    ) -> Optional[str]:
+        """Detect non-empty final answers that are structurally broken.
+
+        Empty/thinking-only finals already have a dedicated recovery path. This
+        catches a different local-model failure mode: after tool results, a
+        backend can report ``finish_reason=stop`` with visible text that ends in
+        a degenerate character run, making the loop treat a corrupted answer as
+        successful.
+        """
+        if finish_reason != "stop" or self.api_mode != "chat_completions":
+            return None
+        recent_messages = messages or []
+        if not any(
+            isinstance(msg, dict) and msg.get("role") == "tool"
+            for msg in recent_messages[-12:]
+        ):
+            return None
+        if not content:
+            return None
+
+        visible_text = self._strip_think_blocks(content).strip()
+        if len(visible_text) < 80:
+            return None
+
+        tail = visible_text[-160:]
+        repeated_tail = re.search(r"([^\s\w])\1{11,}\s*$", tail)
+        punctuation_tail = re.search(r"[!?.,;:_=+\-*/#~`|\\]{16,}\s*$", tail)
+        if repeated_tail or punctuation_tail:
+            return "degenerate repeated punctuation at final-response tail"
+        if not self._has_natural_response_ending(visible_text):
+            open_connector_tail = re.search(
+                r"\b(?:and|but|or|because|since|while|although|though|if|"
+                r"when|where|with|without|to|for|from|into|as|by)\s*$",
+                visible_text,
+                re.IGNORECASE,
+            )
+            if open_connector_tail:
+                return "open connector at final-response tail"
+        return None
+
     def _looks_like_codex_intermediate_ack(
         self,
         user_message: str,
@@ -1710,6 +1755,7 @@ class AIAgent:
             and (
                 messages[-1].get("_empty_recovery_synthetic")
                 or messages[-1].get("_empty_terminal_sentinel")
+                or messages[-1].get("_malformed_final_recovery_synthetic")
             )
         ):
             messages.pop()

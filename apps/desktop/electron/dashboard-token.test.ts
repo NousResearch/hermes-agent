@@ -15,7 +15,7 @@ import {
   fetchPublicText,
   isForeignBackendToken,
   resolveServedDashboardToken
-} from './dashboard-token'
+} from './dashboard-token.ts'
 
 test('extractInjectedDashboardToken reads the JSON-encoded dashboard token', () => {
   const html = '<script>window.__HERMES_SESSION_TOKEN__="served-token";window.__HERMES_BASE_PATH__=""</script>'

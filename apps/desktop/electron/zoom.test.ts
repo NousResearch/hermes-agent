@@ -17,7 +17,7 @@ import {
   ZOOM_REASSERT_WINDOW_EVENTS,
   ZOOM_STORAGE_KEY,
   zoomLevelToPercent
-} from './zoom'
+} from './zoom.ts'
 
 test('storage key stays stable so persisted zoom survives upgrades', () => {
   assert.equal(ZOOM_STORAGE_KEY, 'hermes:desktop:zoomLevel')

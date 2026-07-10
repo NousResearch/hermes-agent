@@ -16,7 +16,7 @@ import {
   MIN_WIDTH,
   onScreen,
   sanitizeWindowState
-} from './window-state'
+} from './window-state.ts'
 
 // A single 1920×1080 monitor (work area trimmed for the taskbar).
 const PRIMARY = [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }]

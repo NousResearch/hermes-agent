@@ -12,7 +12,7 @@ import {
   installedAgentInstallScript,
   resolveInstallScript,
   runBootstrap
-} from './bootstrap-runner'
+} from './bootstrap-runner.ts'
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
 

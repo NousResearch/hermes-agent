@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { resolveRequestedPathForIpc } from './hardening'
+import { resolveRequestedPathForIpc } from './hardening.ts'
 
 function runGit(gitBin, args, cwd): Promise<string> {
   return new Promise((resolve, reject) => {

@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request.ts'
 
 test('serializeJsonBody returns undefined for absent bodies', () => {
   assert.equal(serializeJsonBody(undefined), undefined)

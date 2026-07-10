@@ -33,8 +33,7 @@ describe('AttachmentList', () => {
   it('renders empty list without error', () => {
     renderWithI18n(<AttachmentList attachments={[]} />)
 
-    const container =
-      screen.getByTestId?.('composer-attachments') ?? document.querySelector('[data-slot="composer-attachments"]')
+    const container = document.querySelector('[data-slot="composer-attachments"]')
 
     expect(container).toBeDefined()
   })

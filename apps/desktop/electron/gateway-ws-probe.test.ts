@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { probeGatewayWebSocket } from './gateway-ws-probe'
+import { probeGatewayWebSocket } from './gateway-ws-probe.ts'
 
 // Minimal WebSocket double: records listeners synchronously (the probe attaches
 // them in its executor) and exposes emit() so the test can replay events.

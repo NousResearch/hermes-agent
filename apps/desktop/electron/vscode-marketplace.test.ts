@@ -1,7 +1,7 @@
 import assert from 'node:assert'
 import test from 'node:test'
 
-import { __testing, extractThemes, readCentralDirectory } from './vscode-marketplace'
+import { __testing, extractThemes, readCentralDirectory } from './vscode-marketplace.ts'
 
 // Build a minimal zip with stored (uncompressed) entries so the test controls
 // the bytes exactly — exercises the central-directory reader + theme extraction

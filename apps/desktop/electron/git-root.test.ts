@@ -5,7 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 
-import { gitRootForIpc } from './git-root'
+import { gitRootForIpc } from './git-root.ts'
 
 function mkTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-git-root-'))

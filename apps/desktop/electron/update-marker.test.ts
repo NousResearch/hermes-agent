@@ -24,7 +24,7 @@ import {
   readLiveUpdateMarker,
   UPDATE_MARKER_MAX_AGE_MS,
   writeUpdateMarker
-} from './update-marker'
+} from './update-marker.ts'
 
 function tmpHome(tag) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-marker-${tag}-`))

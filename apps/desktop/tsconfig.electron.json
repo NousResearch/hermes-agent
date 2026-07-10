@@ -11,6 +11,7 @@
     "noUncheckedIndexedAccess": false,
     "exactOptionalPropertyTypes": false,
     "ignoreDeprecations": "6.0",
+    "rewriteRelativeImportExtensions": true,
     "composite": true,
     "declaration": true,
     "outDir": "build/electron-types"

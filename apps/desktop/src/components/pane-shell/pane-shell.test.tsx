@@ -51,7 +51,7 @@ describe('PaneShell composition', () => {
   it('builds a 2-column grid for one left pane + main', () => {
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        <Pane id="files" resizable={true} side="left" width="240px">
           files
         </Pane>
         <PaneMain>main</PaneMain>
@@ -66,7 +66,7 @@ describe('PaneShell composition', () => {
   it('orders panes left-to-right by side, preserving source order within a side', () => {
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        <Pane id="files" resizable={true} side="left" width="240px">
           files
         </Pane>
         <Pane id="sessions" side="left" width="200px">
@@ -107,7 +107,7 @@ describe('PaneShell composition', () => {
 
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        <Pane id="files" resizable={true} side="left" width="240px">
           files
         </Pane>
         <PaneMain>main</PaneMain>
@@ -153,7 +153,7 @@ describe('PaneShell composition', () => {
 
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        <Pane id="files" resizable={true} side="left" width="240px">
           files
         </Pane>
         <PaneMain>main</PaneMain>

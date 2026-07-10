@@ -6,7 +6,7 @@ import {
   guardLinkTitleSession,
   linkTitleWindowOptions,
   readLinkTitleWindowTitle
-} from './link-title-window'
+} from './link-title-window.ts'
 
 function makeFakeBrowserWindow() {
   const calls = { audioMuted: [] }

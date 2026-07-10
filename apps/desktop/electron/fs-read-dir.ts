@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { resolveDirectoryForIpc } from './hardening'
+import { resolveDirectoryForIpc } from './hardening.ts'
 
 const FS_READDIR_STAT_CONCURRENCY = 16
 

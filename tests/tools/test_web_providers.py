@@ -201,6 +201,100 @@ class TestPerCapabilityBackendSelection:
         assert web_tools._get_extract_backend() == "tavily"
 
 
+class TestBackendFallbackRespectsCapability:
+    """Regression test: the final plugin-registry walk in ``_get_backend()``
+    must filter candidates by the requested capability.
+
+    Before this fix, an always-available, capability-restricted provider
+    (e.g. an extract-only local provider needing no API key/credentials)
+    could be handed back for a search request with no other configured
+    backend or credentials — ``_get_search_backend()`` would return a
+    provider whose ``supports_search()`` is False, and ``web_search_tool``
+    would then report a misleading "No web search provider configured"
+    error instead of actually trying an available search-capable provider
+    (or giving a correct error when none exists). Caught when re-adding
+    trafilatura (extract-only, always available) surfaced the gap in CI.
+    """
+
+    def _make_fake_provider(self):
+        """Build a fresh extract-only, always-available fake provider instance."""
+        from agent.web_search_provider import WebSearchProvider
+
+        class _AlwaysAvailableExtractOnly(WebSearchProvider):
+            """Fake provider: extract-only, no credentials ever required."""
+
+            @property
+            def name(self) -> str:
+                return "always-on-extract-only"
+
+            @property
+            def display_name(self) -> str:
+                return "Always-On Extract Only"
+
+            def is_available(self) -> bool:
+                return True
+
+            def supports_search(self) -> bool:
+                return False
+
+            def supports_extract(self) -> bool:
+                return True
+
+            def extract(self, urls, **kwargs):
+                return [{"url": u, "title": "", "content": "stub"} for u in urls]
+
+        return _AlwaysAvailableExtractOnly()
+
+    @pytest.fixture(autouse=True)
+    def _register_fake_provider(self):
+        from agent.web_search_registry import register_provider, _reset_for_tests
+
+        _reset_for_tests()
+        register_provider(self._make_fake_provider())
+        yield
+        _reset_for_tests()
+
+    def test_search_backend_never_returns_extract_only_provider(self, monkeypatch):
+        """``_get_search_backend()`` must skip an extract-only provider even
+        when it's the only always-available candidate in the registry."""
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        for k in (
+            "TAVILY_API_KEY", "EXA_API_KEY", "PARALLEL_API_KEY",
+            "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "SEARXNG_URL",
+            "BRAVE_SEARCH_API_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+
+        backend = web_tools._get_search_backend()
+        assert backend != "always-on-extract-only", (
+            "search backend resolution returned a provider that cannot "
+            "search — supports_search() was never checked in the "
+            "plugin-registry fallback walk"
+        )
+
+    def test_extract_backend_can_still_return_extract_only_provider(self, monkeypatch):
+        """Sanity check: the capability filter isn't overly strict — an
+        extract-only provider IS a valid extract backend."""
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        for k in (
+            "TAVILY_API_KEY", "EXA_API_KEY", "PARALLEL_API_KEY",
+            "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "SEARXNG_URL",
+            "BRAVE_SEARCH_API_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+
+        backend = web_tools._get_extract_backend()
+        assert backend == "always-on-extract-only"
+
+
 # ---------------------------------------------------------------------------
 # Config key presence in DEFAULT_CONFIG
 # ---------------------------------------------------------------------------

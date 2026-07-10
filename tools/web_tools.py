@@ -220,12 +220,22 @@ def _list_registered_web_providers():
         return []
 
 
-def _get_backend() -> str:
+def _get_backend(capability: Optional[str] = None) -> str:
     """Determine which web backend to use (shared fallback).
 
     Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
+
+    ``capability`` (``"search"`` / ``"extract"`` / ``None``) restricts the
+    final plugin-registry walk below to providers that actually support the
+    requested capability. Without this, an always-available capability-
+    restricted provider (e.g. trafilatura, extract-only) could be handed
+    back for a search request that has no other configured backend —
+    reachable in prod whenever no search credentials are set and no
+    ``web.backend``/``web.search_backend`` override is given. ``None``
+    preserves the old promiscuous behavior for the ``__main__`` demo block,
+    which doesn't have (or need) a specific capability in mind.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
     if configured in _LEGACY_WEB_BACKENDS or _registered_web_provider(configured) is not None:
@@ -260,6 +270,10 @@ def _get_backend() -> str:
     # _is_backend_available() (which would re-do the registry lookup).
     for provider in _list_registered_web_providers():
         if provider.name in _LEGACY_WEB_BACKENDS:
+            continue
+        if capability == "search" and not provider.supports_search():
+            continue
+        if capability == "extract" and not provider.supports_extract():
             continue
         try:
             if provider.is_available():
@@ -305,7 +319,7 @@ def _get_capability_backend(capability: str) -> str:
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
     if specific and _is_backend_available(specific):
         return specific
-    return _get_backend()
+    return _get_backend(capability)
 
 
 def _is_backend_available(backend: str) -> bool:

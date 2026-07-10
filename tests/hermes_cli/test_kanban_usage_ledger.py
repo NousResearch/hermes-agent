@@ -1142,6 +1142,70 @@ class TestMultiParentJoinTable:
         agg = ledger.aggregate_usage(isolated_kanban, task_id="t_child")
         assert agg["record_count"] == 1
 
+    def test_record_run_usage_retains_every_parent(self, isolated_kanban):
+        """One usage event retains every parent via record_run_usage associations."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(parent_task_id="t_parent_a", input_tokens=10, output_tokens=5),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(parent_task_id="t_parent_b", input_tokens=10, output_tokens=5),
+        )
+
+        events = ledger.query_usage(isolated_kanban, task_id="t_abc", run_id=1)
+        assert len(events) == 1, f"Expected one usage event, got {len(events)}"
+
+        parents = ledger.list_parents(
+            isolated_kanban,
+            board="default",
+            task_id="t_abc",
+            run_id=1,
+            call_kind="primary",
+            api_call_index=0,
+        )
+        assert parents == ["t_parent_a", "t_parent_b"], (
+            f"Adding parent B overwrote or dropped parent A: {parents}"
+        )
+
+    def test_record_run_usage_parent_association_is_idempotent(self, isolated_kanban):
+        """Repeating the same event-parent association does not duplicate."""
+        kwargs = _base_kwargs(parent_task_id="t_parent_a", input_tokens=10, output_tokens=5)
+        ledger.record_run_usage(isolated_kanban, **kwargs)
+        ledger.record_run_usage(isolated_kanban, **kwargs)
+        ledger.record_run_usage(isolated_kanban, **kwargs)
+
+        parents = ledger.list_parents(
+            isolated_kanban,
+            board="default",
+            task_id="t_abc",
+            run_id=1,
+            call_kind="primary",
+            api_call_index=0,
+        )
+        assert parents == ["t_parent_a"]
+        count = isolated_kanban.execute(
+            "SELECT COUNT(*) FROM run_usage_parents "
+            "WHERE board=? AND task_id=? AND run_id=? AND parent_task_id=?",
+            ("default", "t_abc", 1, "t_parent_a"),
+        ).fetchone()[0]
+        assert count == 1
+
+    def test_record_run_usage_does_not_overwrite_first_parent_column(
+        self, isolated_kanban
+    ):
+        """Denormalized parent_task_id keeps the first non-null parent on upsert."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(parent_task_id="t_parent_a"),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(parent_task_id="t_parent_b"),
+        )
+        row = ledger.query_usage(isolated_kanban, task_id="t_abc", run_id=1)[0]
+        assert row["parent_task_id"] == "t_parent_a"
+
 
 class TestUnobservedAuxClassification:
     """Checker blocker #4: unobserved auxiliary is 'incomplete' or 'unknown', never 'runtime_reported'."""

@@ -147,7 +147,7 @@ def record_run_usage(
             aux_output_tokens=excluded.aux_output_tokens,
             aux_cache_read_tokens=excluded.aux_cache_read_tokens,
             aux_cache_write_tokens=excluded.aux_cache_write_tokens,
-            parent_task_id=excluded.parent_task_id,
+            parent_task_id=COALESCE(run_usage.parent_task_id, excluded.parent_task_id),
             profile=excluded.profile,
             token_source=excluded.token_source,
             cost_usd=excluded.cost_usd,
@@ -168,6 +168,17 @@ def record_run_usage(
             accepted_result_tokens,
         )
     )
+    # Accumulate every parent association for this event (multi-parent safe).
+    if parent_task_id:
+        record_parent(
+            conn,
+            board=board,
+            task_id=task_id,
+            run_id=run_id,
+            call_kind=call_kind,
+            api_call_index=api_call_index,
+            parent_task_id=parent_task_id,
+        )
     return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
 
@@ -204,6 +215,35 @@ def record_parent(
         """,
         (board, task_id, run_id, call_kind, api_call_index, parent_task_id),
     )
+
+
+def list_parents(
+    conn: sqlite3.Connection,
+    *,
+    board: str,
+    task_id: str,
+    run_id: int,
+    call_kind: str,
+    api_call_index: int,
+) -> list[str]:
+    """Return every parent task id associated with a usage event.
+
+    Parents are ordered lexicographically for stable assertions and display.
+    """
+    rows = conn.execute(
+        """
+        SELECT parent_task_id
+        FROM run_usage_parents
+        WHERE board = ?
+          AND task_id = ?
+          AND run_id = ?
+          AND call_kind = ?
+          AND api_call_index = ?
+        ORDER BY parent_task_id
+        """,
+        (board, task_id, run_id, call_kind, api_call_index),
+    ).fetchall()
+    return [row[0] for row in rows]
 
 
 def record_from_canonical_usage(

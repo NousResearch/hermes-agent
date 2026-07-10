@@ -12534,7 +12534,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from gateway.capy_status import collect_capabilities, render_capabilities
         from gateway.workspace_state import default_workspace
 
-        session_entry = self.session_store.get_or_create_session(event.source)
+        session_entry = await self.async_session_store.get_or_create_session(event.source)
         workspace = getattr(session_entry, "current_workspace", "") or default_workspace()
         data = collect_capabilities(
             session_id=session_entry.session_id,
@@ -12552,7 +12552,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = await self.async_session_store.get_or_create_session(source)
         args = event.get_command_args().strip()
         current = getattr(session_entry, "current_workspace", "") or default_workspace()
 
@@ -12578,7 +12578,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "Known WebUI workspaces:\n" + format_workspace_list(workspaces)
 
         if lowered in {"clear", "default", "reset", "off"}:
-            self.session_store.set_current_workspace(session_entry.session_key, "")
+            await self.async_session_store.set_current_workspace(session_entry.session_key, "")
             return f"Workspace cleared. This session will use the default: `{default_workspace()}`"
 
         workspace, err = normalize_workspace_path(args)
@@ -12586,7 +12586,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return f"Could not set workspace: {err}"
         if not workspace:
             return "Could not set workspace: unknown error."
-        self.session_store.set_current_workspace(session_entry.session_key, workspace)
+        await self.async_session_store.set_current_workspace(session_entry.session_key, workspace)
         return (
             f"Workspace set for this session: `{workspace}`\n"
             "Relative terminal/file/code/delegation tool paths will resolve from this directory."

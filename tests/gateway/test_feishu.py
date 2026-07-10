@@ -173,6 +173,16 @@ class TestFeishuMessageNormalization(unittest.TestCase):
 
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
+    @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+    def test_websocket_sdk_accepts_channel_ua_tag(self):
+        """The shipped SDK must support the Channel signaling argument."""
+        import inspect
+
+        from lark_oapi.ws import Client as FeishuWSClient
+
+        signature = inspect.signature(FeishuWSClient)
+        self.assertIn("extra_ua_tags", signature.parameters)
+
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",

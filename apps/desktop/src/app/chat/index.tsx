@@ -499,7 +499,7 @@ export function ChatView({
           )}
           {showChatBar && <ScrollToBottomButton />}
           {/* Vibe hearts rise from the composer only when no pet is out (else
-              they play on the pet). DEV Shift+H to preview; not wired to ily/<3 yet. */}
+              they play on the pet). Fired by the core `reaction` event. */}
           {!petPresent && (
             <HeartField
               className="absolute inset-x-0 z-30"

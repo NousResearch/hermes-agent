@@ -8441,6 +8441,17 @@ class TelegramAdapter(BasePlatformAdapter):
                         )
                     except Exception:
                         reply_to_text = None
+        if reply_to_text:
+            # A replied-to bot message resolved above (echoed text or the
+            # send-time index) can still carry raw internal <TOOLCALL>
+            # markup from the agent's output stream; redact it so protocol
+            # markup never surfaces in the reply preview or the injected
+            # reply context (#61217).
+            try:
+                from agent.message_sanitization import strip_internal_markup
+                reply_to_text = strip_internal_markup(reply_to_text)
+            except Exception:
+                pass
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt

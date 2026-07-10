@@ -461,9 +461,34 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
     return found
 
 
+# Internal tool-call markup emitted in the agent's raw output stream.
+# Matches closed blocks and blocks left unclosed by truncation (stored
+# reply previews are capped, so a block can be cut mid-JSON).
+_TOOLCALL_BLOCK_RE = re.compile(r"<TOOLCALL>.*?(?:</TOOLCALL>|$)", re.DOTALL)
+
+_TOOLCALL_PLACEHOLDER = "[processing...]"
+
+
+def strip_internal_markup(text: str | None) -> str | None:
+    """Redact internal ``<TOOLCALL>`` blocks from user-facing text.
+
+    Raw agent output can carry ``<TOOLCALL>{...}</TOOLCALL>`` protocol
+    markup. When that text is surfaced back to users — e.g. as the
+    ``reply_to_text`` preview resolved from a replied-to bot message
+    (#61217) — the markup must not be shown verbatim. Each block (closed,
+    or unclosed through end-of-text) is replaced with a neutral
+    placeholder; text without markup is returned unchanged, and
+    ``None``/empty input passes through as-is.
+    """
+    if not text or "<TOOLCALL>" not in text:
+        return text
+    return _TOOLCALL_BLOCK_RE.sub(_TOOLCALL_PLACEHOLDER, text).strip()
+
+
 __all__ = [
     "_SURROGATE_RE",
     "close_interrupted_tool_sequence",
+    "strip_internal_markup",
     "_sanitize_surrogates",
     "_sanitize_structure_surrogates",
     "_sanitize_messages_surrogates",

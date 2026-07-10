@@ -983,7 +983,7 @@ Safety: cron-run sessions must not recursively schedule more cron jobs.""",
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, pause, resume, remove, run. For action=create, schedule is REQUIRED; prompt or skills is also required unless no_agent=True, which requires script instead."
             },
             "job_id": {
                 "type": "string",
@@ -1007,7 +1007,7 @@ Safety: cron-run sessions must not recursively schedule more cron jobs.""",
             },
             "deliver": {
                 "type": "string",
-                "description": "Delivery target. Omit (or 'origin') to auto-deliver to the current chat/topic. 'local' = save only; 'all' = every home channel; or platform:chat_id:thread_id (thread_id required to keep topics). Comma-combine (e.g. 'origin,all'). Only set when the user wants a non-origin destination."
+                "description": "Delivery target. Omit/'origin' = current chat/topic; 'local' = save only; 'all' = every connected home channel resolved at fire time; or platform:chat_id:thread_id (include thread_id to keep topics). Comma-combine, e.g. 'origin,all'."
             },
             "skills": {
                 "type": "array",
@@ -1047,14 +1047,14 @@ Safety: cron-run sessions must not recursively schedule more cron jobs.""",
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Job IDs whose most recent completed output is injected as context "
-                    "(chain jobs). Does not wait for same-tick upstreams. On update, [] clears."
+                    "Chain jobs by injecting each listed job's most recent completed output. "
+                    "Does not wait for same-tick upstreams. On update, [] clears."
                 ),
             },
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional toolset allowlist for the job agent (e.g. [\"web\", \"terminal\", \"file\"]). Omit for defaults. On update, [] clears."
+                "description": "Restrict the job agent to these toolsets (e.g. [\"web\", \"terminal\", \"file\"]) to reduce schema overhead. Omit for defaults; [] clears on update."
             },
             "workdir": {
                 "type": "string",
@@ -1062,7 +1062,7 @@ Safety: cron-run sessions must not recursively schedule more cron jobs.""",
             },
             "attach_to_session": {
                 "type": "boolean",
-                "description": "True = CONTINUABLE delivery (user can reply with brief in context; opens a thread on topic-capable platforms, mirrors into DM otherwise). Leave unset for fire-and-forget. Origin chat only; no effect when deliver='local'."
+                "description": "True makes delivery continuable: the user can reply with the brief in context. Opens a thread where supported, otherwise mirrors into the origin DM. Leave unset for fire-and-forget; no effect with deliver='local'."
             },
         },
         "required": ["action"]

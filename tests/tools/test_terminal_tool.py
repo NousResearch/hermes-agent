@@ -323,3 +323,11 @@ def test_transform_sudo_command_pipes_one_password_line_per_invocation(monkeypat
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+def test_terminal_schema_uses_valid_process_poll_wait_examples():
+    description = terminal_tool.TERMINAL_SCHEMA["description"]
+
+    assert 'process(action="poll")' in description
+    assert 'process(action="wait")' in description
+    assert 'process(action="poll"|"wait")' not in description

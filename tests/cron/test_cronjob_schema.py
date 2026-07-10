@@ -1,22 +1,24 @@
 """Tests for the cronjob tool schema shape.
 
-Guards the description text that flags ``schedule`` (and ``prompt``) as
-REQUIRED for ``action=create`` — the load-bearing fix for description-driven
-models (e.g. Grok) that omit schedule when the schema only lists ``action``
-in ``required[]``. See issue #32427 / PR #32448.
+Guards conditional create requirements and discoverability of the advanced
+delivery/chaining/context controls that description-driven models otherwise
+omit. See issue #32427 / PR #32448.
 """
 
 from __future__ import annotations
 
 
 def test_cronjob_schema_action_description_flags_create_requirements():
-    """`action` description must state schedule + prompt are required for create."""
+    """Create requirements must distinguish agent and no-agent jobs."""
     from tools.cronjob_tools import CRONJOB_SCHEMA
 
     action_desc = CRONJOB_SCHEMA["parameters"]["properties"]["action"]["description"]
     assert "action=create" in action_desc
     assert "schedule" in action_desc
     assert "REQUIRED" in action_desc
+    assert "prompt or skills" in action_desc
+    assert "no_agent=True" in action_desc
+    assert "script" in action_desc
 
 
 def test_cronjob_schema_schedule_description_flags_required_for_create():
@@ -39,3 +41,15 @@ def test_cronjob_schema_required_array_unchanged():
     from tools.cronjob_tools import CRONJOB_SCHEMA
 
     assert CRONJOB_SCHEMA["parameters"]["required"] == ["action"]
+
+
+def test_cronjob_schema_keeps_advanced_controls_discoverable():
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    props = CRONJOB_SCHEMA["parameters"]["properties"]
+    assert "all" in props["deliver"]["description"]
+    assert "fire time" in props["deliver"]["description"]
+    assert "most recent completed output" in props["context_from"]["description"]
+    assert "reduce schema overhead" in props["enabled_toolsets"]["description"]
+    assert "reply" in props["attach_to_session"]["description"]
+    assert "brief in context" in props["attach_to_session"]["description"]

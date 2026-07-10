@@ -121,6 +121,11 @@ class TestDelegateRequirements(unittest.TestCase):
             self.assertNotIn("default 3", surface)
             self.assertNotIn("default 2", surface)
 
+        # "Retains delegate_task" must not imply that orchestrators lose every
+        # other ordinary child tool; only the listed high-risk tools stay banned.
+        self.assertIn("Orchestrator additionally retains delegate_task", desc)
+        self.assertIn("same other bans", desc)
+
     def test_schema_overrides_applied_via_get_definitions(self):
         """Registry.get_definitions() must apply dynamic_schema_overrides so
         the model API call sees current values, not the static import-time text.

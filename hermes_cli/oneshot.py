@@ -379,6 +379,18 @@ def _run_agent(
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
+    # Issue #61184: read agent.disabled_toolsets from config and pass
+    # it through to AIAgent. The oneshot path was building AIAgent
+    # with only enabled_toolsets, so the disabled-toolset subtraction
+    # step in get_tool_definitions() never ran. Result: disabled
+    # MCP servers' tools were still registered as available, and when
+    # the intended MCP server was unreachable the agent silently
+    # fell back to the disabled one without surfacing the
+    # substitution. Pass the user's config through so the
+    # subtraction step actually applies.
+    _agent_cfg = cfg.get("agent") or {}
+    _disabled_toolsets = _agent_cfg.get("disabled_toolsets") if isinstance(_agent_cfg, dict) else None
+
     session_db = _create_session_db_for_oneshot()
     # Read the effective fallback chain from profile config so oneshot workers
     # honour the same merge semantics as interactive CLI and gateway sessions.
@@ -391,6 +403,10 @@ def _run_agent(
         api_mode=runtime.get("api_mode"),
         model=effective_model,
         enabled_toolsets=toolsets_list,
+        # Issue #61184: forward agent.disabled_toolsets from config so
+        # the disabled-toolset subtraction step in get_tool_definitions
+        # runs in the oneshot path too.
+        disabled_toolsets=_disabled_toolsets,
         quiet_mode=True,
         platform="cli",
         session_db=session_db,

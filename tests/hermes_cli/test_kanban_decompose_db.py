@@ -206,6 +206,51 @@ def test_decompose_children_stay_scratch_when_root_scratch(kanban_home):
     assert t.workspace_path is None
 
 
+def test_decompose_children_inherit_root_priority(kanban_home):
+    """Children of a nonzero-priority root inherit its dispatch priority.
+
+    Regression: children used to be INSERTed without a priority column and
+    defaulted to 0, so every auto-decomposed family starved forever on
+    boards saturated with priority>=1 work (dispatch claims priority DESC).
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="urgent root", assignee="worker",
+            priority=3, triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="orchestrator",
+            children=[
+                {"title": "first"},
+                {"title": "second", "parents": [0]},
+            ],
+            author="decomposer",
+        )
+    assert child_ids and len(child_ids) == 2
+    with kb.connect() as conn:
+        c0 = kb.get_task(conn, child_ids[0])
+        c1 = kb.get_task(conn, child_ids[1])
+    # Unblocked child is ready at the root's priority.
+    assert (c0.status, c0.priority) == ("ready", 3)
+    # The sibling-gated child parked in todo carries it too, so it
+    # dispatches at the right rank once its parent completes.
+    assert (c1.status, c1.priority) == ("todo", 3)
+
+
+def test_decompose_default_priority_root_keeps_default(kanban_home):
+    """No regression: a default-priority root still yields priority-0 children."""
+    with kb.connect() as conn:
+        tid = _create_triage(conn)
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="orch",
+            children=[{"title": "only child"}], author="me",
+        )
+    assert child_ids and len(child_ids) == 1
+    with kb.connect() as conn:
+        child = kb.get_task(conn, child_ids[0])
+    assert child.priority == 0
+
+
 def test_decompose_per_child_workspace_override(kanban_home):
     """An explicit per-child workspace beats inheritance."""
     proj = "/home/teknium/myproject"

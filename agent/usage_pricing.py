@@ -871,6 +871,9 @@ def normalize_usage(
         cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
         if not cache_read_tokens:
             cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
+        if not cache_read_tokens:
+            # DeepSeek returns top-level prompt_cache_hit_tokens instead of nested prompt_tokens_details
+            cache_read_tokens = _to_int(getattr(response_usage, "prompt_cache_hit_tokens", 0))
         cache_write_tokens = _to_int(
             getattr(details, "cache_write_tokens", 0) if details else 0
         )

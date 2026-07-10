@@ -322,3 +322,59 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+
+def test_normalize_usage_deepseek_reads_top_level_prompt_cache_hit_tokens():
+    """DeepSeek's native API returns cache stats as top-level prompt_cache_hit_tokens
+    instead of nested prompt_tokens_details. Regression guard for #61871.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        prompt_cache_hit_tokens=300,
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 300
+    assert normalized.cache_write_tokens == 0
+    # input_tokens = prompt_total - cache_read - cache_write = 1000 - 300 - 0 = 700
+    assert normalized.input_tokens == 700
+    assert normalized.output_tokens == 200
+
+
+def test_normalize_usage_deepseek_zero_cache_hit_tokens():
+    """When DeepSeek returns prompt_cache_hit_tokens=0, we should correctly
+    report zero cache hits instead of treating it as missing data.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        prompt_cache_hit_tokens=0,
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 0
+    assert normalized.cache_write_tokens == 0
+    assert normalized.input_tokens == 1000
+    assert normalized.output_tokens == 200
+
+
+def test_normalize_usage_deepseek_prefers_prompt_tokens_details_over_top_level():
+    """When both prompt_tokens_details and DeepSeek's top-level fields are
+    present, we prefer the OpenAI-standard nested fields. Top-level fields
+    are only a fallback when the nested ones are absent/zero.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=600, cache_write_tokens=150),
+        prompt_cache_hit_tokens=999,
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    # Should prefer prompt_tokens_details.cached_tokens over prompt_cache_hit_tokens
+    assert normalized.cache_read_tokens == 600
+    assert normalized.cache_write_tokens == 150

@@ -8127,12 +8127,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # is now in the loop). Defenses 1-2 cover the cron/CLI/terminal paths;
         # this catches every other SIGTERM source (e.g. a raw `terminal(
         # "launchctl kickstart ai.hermes.gateway")`).
+        #
+        # RECONCILIATION (2026-07-10 upstream parity sync): the fork's PRIMARY
+        # loop-breaker is the per-session F2 replay-mark → SUSPEND mechanism
+        # (_record_restart_replay_mark, threshold _restart_loop_threshold()),
+        # which surgically suspends the ONE looping session while still
+        # auto-resuming healthy ones. Upstream's global boot-count guard here is
+        # a COARSER backstop that short-circuits ALL auto-resume. If it fired
+        # first it would return 0 before any session resumes, so _resumed_this_boot
+        # never populates and the per-session breaker could never accrue its
+        # marks or suspend — shadowing F2 entirely. So the global guard still
+        # RECORDS every restart-interrupted boot (observability + its own
+        # cross-cutting trip for pathological multi-session storms) but only
+        # SHORT-CIRCUITS when the per-session breaker is disabled
+        # (_restart_loop_threshold() <= 0); otherwise F2 owns the break.
         if candidates:
             try:
                 from gateway import restart_loop_guard as _rlg
 
                 _max_restarts, _window = self._restart_loop_guard_config()
-                if _rlg.check_and_record(_max_restarts, _window):
+                _tripped = _rlg.check_and_record(_max_restarts, _window)
+                if _tripped and _restart_loop_threshold() <= 0:
                     return 0
             except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN
                 logger.debug("Restart-loop guard check skipped: %s", exc)

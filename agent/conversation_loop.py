@@ -1111,8 +1111,15 @@ def run_conversation(
         # LLM cooldown + anti-thrash guards (#11529). compression_attempts is a
         # hard per-turn backstop shared with the overflow error handlers.
         _compressor = agent.context_compressor
-        _defer_preflight = getattr(
-            _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
+        # The fork replaced the removed ``should_defer_preflight_to_real_usage``
+        # ratchet (v0.1 review BLOCKed it for multi-turn baseline-creep) with
+        # skew CALIBRATION: ``should_compress_calibrated`` scales the rough
+        # estimate by the measured rough/real ratio so a known-noisy over-count
+        # (schema overhead / post-compaction) defers, while a raw-rough window
+        # ceiling still fires the 413/dense-paste guard. Fall back to the raw
+        # ``should_compress`` only if a plugin engine lacks the calibrated API.
+        _should_compress_preflight = getattr(
+            _compressor, "should_compress_calibrated", _compressor.should_compress
         )
         _compression_cooldown = getattr(
             _compressor, "get_active_compression_failure_cooldown", lambda: None
@@ -1121,9 +1128,8 @@ def run_conversation(
             agent.compression_enabled
             and len(messages) > 1
             and compression_attempts < 3
-            and not _defer_preflight(request_pressure_tokens)
             and not _compression_cooldown
-            and _compressor.should_compress(request_pressure_tokens)
+            and _should_compress_preflight(request_pressure_tokens)
         ):
             compression_attempts += 1
             logger.info(
@@ -2306,7 +2312,18 @@ def run_conversation(
                     _agg_cost_model = agent.model
                     _agg_cost_provider = agent.provider
                     _agg_cost_base_url = agent.base_url
-                    _agg_slot = getattr(_moa_client, "last_aggregator_slot", None) if _moa_client is not None else None
+                    # Only the real MoA client carries a resolved aggregator slot
+                    # (a plain dict). A non-MoA client — or a MagicMock in tests,
+                    # which synthesizes every attribute so hasattr/getattr can't
+                    # distinguish it — must NOT route a mock provider/model into
+                    # pricing (TypeError in is_notional_anthropic_provider). Gate
+                    # on the slot actually being a dict, which a MagicMock is not.
+                    _agg_slot_raw = (
+                        getattr(_moa_client, "last_aggregator_slot", None)
+                        if _moa_client is not None
+                        else None
+                    )
+                    _agg_slot = _agg_slot_raw if isinstance(_agg_slot_raw, dict) else None
                     if _agg_slot and _agg_slot.get("model"):
                         _agg_cost_model = _agg_slot["model"]
                         _agg_cost_provider = _agg_slot.get("provider") or agent.provider

@@ -2631,8 +2631,8 @@ class GatewaySlashCommandsMixin:
             except (ValueError, IndexError):
                 return t("gateway.redo.invalid_count", arg=raw_args.split()[0])
 
-        session_entry = self.session_store.get_or_create_session(source)
-        result = self.session_store.restore_session(session_entry.session_id, n)
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        result = await self.async_session_store.restore_session(session_entry.session_id, n)
         if result is None:
             return t("gateway.redo.nothing")
 
@@ -3633,7 +3633,7 @@ class GatewaySlashCommandsMixin:
                     # measured count is still valid; zeroing it would destroy
                     # the only tokenizer-truth figure for the next /compress
                     # or /usage (#F4).
-                    self.session_store.update_session(
+                    await self.async_session_store.update_session(
                         session_entry.session_key, last_prompt_tokens=0
                     )
                 # After-compression estimates.
@@ -4374,8 +4374,8 @@ class GatewaySlashCommandsMixin:
 
         # Make sure a session_store entry exists for the thread key, then
         # re-point it at the copied branch session (mirrors _process_handoff).
-        self.session_store.get_or_create_session(dest_source)
-        switched = self.session_store.switch_session(thread_session_key, new_session_id)
+        await self.async_session_store.get_or_create_session(dest_source)
+        switched = await self.async_session_store.switch_session(thread_session_key, new_session_id)
         if switched is None:
             logger.warning(
                 "branch: could not bind thread key %s -> %s",
@@ -4639,7 +4639,7 @@ class GatewaySlashCommandsMixin:
             ]
             # Don't offer the caller's OWN current session as a merge target.
             try:
-                cur = self.session_store.get_or_create_session(source)
+                cur = await self.async_session_store.get_or_create_session(source)
                 titled = [s for s in titled if s.get("id") != cur.session_id]
             except Exception:
                 pass
@@ -4674,7 +4674,7 @@ class GatewaySlashCommandsMixin:
                     if await self._resume_row_visible(source, s, False)
                 ]
                 try:
-                    cur = self.session_store.get_or_create_session(source)
+                    cur = await self.async_session_store.get_or_create_session(source)
                     titled = [s for s in titled if s.get("id") != cur.session_id]
                 except Exception:
                     pass
@@ -4836,7 +4836,7 @@ class GatewaySlashCommandsMixin:
         ):
             name = name[1:-1].strip()
 
-        current_entry = self.session_store.get_or_create_session(source)
+        current_entry = await self.async_session_store.get_or_create_session(source)
         source_session_id = current_entry.session_id
 
         # --- Resolve the TARGET session and whether this is the thread form. ---
@@ -4911,7 +4911,7 @@ class GatewaySlashCommandsMixin:
             return t("gateway.merge.already_merged", title=target_title)
 
         # --- Summarize the CURRENT session (read-only). ---
-        source_history = self.session_store.load_transcript(source_session_id)
+        source_history = await self.async_session_store.load_transcript(source_session_id)
         if not source_history:
             return t("gateway.merge.no_conversation")
         source_title = await self._session_db.get_session_title(source_session_id) or "session"
@@ -5016,7 +5016,7 @@ class GatewaySlashCommandsMixin:
             logger.debug("merge: source agent eviction skipped: %s", exc)
 
         # Evict the target's cached agent so the fold is live on its next turn.
-        target_entry = self.session_store.lookup_by_session_id(target_id)
+        target_entry = await self.async_session_store.lookup_by_session_id(target_id)
         if target_entry is not None:
             try:
                 self._evict_cached_agent(target_entry.session_key)

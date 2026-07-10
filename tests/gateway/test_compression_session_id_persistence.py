@@ -38,56 +38,57 @@ def _session_id_assignments_followed_by_save(source: str) -> list[tuple[int, boo
     tree = ast.parse(textwrap.dedent(source))
     results: list[tuple[int, bool]] = []
 
-    class _Visitor(ast.NodeVisitor):
-        def _is_session_id_assign(self, node: ast.AST) -> bool:
-            if not isinstance(node, ast.Assign):
-                return False
-            for target in node.targets:
+    def _is_session_id_assign(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Assign):
+            return False
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and target.attr == "session_id"
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "session_entry"
+            ):
+                return True
+        return False
+
+    def _block_has_save_after(body: list[ast.stmt], idx: int) -> bool:
+        # A ``_save()`` (sync ``session_store._save()`` OR the async-boundary
+        # ``await async_session_store._save()``) within the next few statements
+        # of the SAME block. The 2026-07 async-session-store migration made
+        # these calls ``await ...async_session_store._save()``; ast.walk over
+        # each statement still finds the ``_save`` Call inside the Await.
+        for stmt in body[idx : idx + 6]:
+            for sub in ast.walk(stmt):
                 if (
-                    isinstance(target, ast.Attribute)
-                    and target.attr == "session_id"
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id == "session_entry"
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Attribute)
+                    and sub.func.attr == "_save"
                 ):
                     return True
-            return False
+        return False
 
-        def _block_has_save_after(self, body: list[ast.stmt], idx: int) -> bool:
-            for stmt in body[idx : idx + 6]:
-                for sub in ast.walk(stmt):
-                    if (
-                        isinstance(sub, ast.Call)
-                        and isinstance(sub.func, ast.Attribute)
-                        and sub.func.attr == "_save"
-                    ):
-                        return True
-            return False
+    # Robust traversal: recurse into EVERY statement-list-bearing node
+    # (functions, if/for/while/with/try + their orelse/finalbody/handlers,
+    # nested functions) so an assignment buried deep in the control flow of a
+    # large method — e.g. _handle_message_with_agent after the upstream
+    # restructure — is never missed. For each block, check the assignments it
+    # directly contains against the SAME block's following statements.
+    def _visit_block(body: list[ast.stmt]) -> None:
+        for i, stmt in enumerate(body):
+            if _is_session_id_assign(stmt):
+                results.append((stmt.lineno, _block_has_save_after(body, i)))
+        for stmt in body:
+            _descend(stmt)
 
-        def _walk_body(self, body: list[ast.stmt]) -> None:
-            for i, stmt in enumerate(body):
-                if self._is_session_id_assign(stmt):
-                    results.append((stmt.lineno, self._block_has_save_after(body, i)))
-                for child in ast.iter_child_nodes(stmt):
-                    if isinstance(child, (ast.If, ast.For, ast.While, ast.With,
-                                          ast.Try, ast.AsyncWith, ast.AsyncFor)):
-                        self._walk_node(child)
+    def _descend(node: ast.AST) -> None:
+        for attr in ("body", "orelse", "finalbody"):
+            inner = getattr(node, attr, None)
+            if isinstance(inner, list) and inner and isinstance(inner[0], ast.stmt):
+                _visit_block(inner)
+        for handler in getattr(node, "handlers", []) or []:
+            _visit_block(handler.body)
 
-        def _walk_node(self, node: ast.AST) -> None:
-            for attr in ("body", "orelse", "finalbody"):
-                inner = getattr(node, attr, None)
-                if isinstance(inner, list):
-                    self._walk_body(inner)
-            if hasattr(node, "handlers"):
-                for handler in node.handlers:
-                    self._walk_body(handler.body)
-
-        def visit(self, node: ast.AST) -> None:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self._walk_body(node.body)
-            for child in ast.iter_child_nodes(node):
-                self.visit(child)
-
-    _Visitor().visit(tree)
+    _visit_block(tree.body)
     return results
 
 

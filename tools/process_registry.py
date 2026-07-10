@@ -42,7 +42,13 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from tools.environments.local import (
+    _find_shell,
+    _path_env_key,
+    _prepend_hermes_bin_dir,
+    _resolve_safe_cwd,
+    _sanitize_subprocess_env,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -52,32 +58,33 @@ from hermes_cli.config import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
-def _inject_venv_env(env: dict) -> None:
-    """Inject VIRTUAL_ENV + venv bin/PATH so background processes use the
-    hermes venv's python (with torch, sklearn, GPU hook, etc.).
+def _ensure_hermes_bin_on_path(env: dict) -> None:
+    """Give background spawns the same PATH reachability as the foreground
+    terminal tool — WITHOUT recreating an "active venv".
 
-    The foreground terminal tool gets this via the session snapshot, but
-    background spawns use ``bash -lic`` with ``os.environ`` — the gateway
-    process doesn't have VIRTUAL_ENV set, so ``python3`` resolves to the
-    system interpreter which lacks hermes venv packages.
+    When the gateway is launched without its install dir on PATH (systemd,
+    service managers, desktop launchers, cron), the foreground terminal env
+    builder (``_make_run_env``) already prepends the hermes install dir —
+    which, for a venv install, is the venv's ``bin``/``Scripts`` directory
+    holding the venv ``python``/``python3`` — so bare ``hermes`` and the
+    agent's own interpreter resolve.  Background/PTY spawns build their env
+    via ``_sanitize_subprocess_env`` instead, which does no PATH work, so
+    ``python3`` silently fell back to the system interpreter and anything
+    importing the agent venv's installed deps crashed.  Reuse the same
+    audited, prepend-if-missing, ``os.pathsep``-aware helper for parity.
+
+    Deliberately NOT restored: ``VIRTUAL_ENV`` / ``CONDA_PREFIX``.
+    ``_sanitize_subprocess_env`` strips those active-venv markers on purpose —
+    ``uv``/``poetry`` run in an unrelated project would treat the inherited
+    value as the active environment and sync that project's dependencies into
+    the Hermes venv (#23473; covered by tests/tools/test_local_env_blocklist).
+    PATH reachability alone is the documented safe state ("the Hermes venv
+    stays reachable via PATH") and is all the interpreter fix needs.
     """
-    venv_root = getattr(sys, "prefix", "")
-    if not venv_root or venv_root == os.path.normpath(sys.base_prefix):
-        # sys.prefix == base_prefix means we're not in a venv; nothing to inject
-        return
-    venv_bin = os.path.join(venv_root, "bin")
-    if not os.path.isdir(venv_bin):
-        return
-    env["VIRTUAL_ENV"] = venv_root
-    # Prepend venv/bin to PATH so `python3` resolves to the venv's python
-    path_key = "PATH"
-    for k in env:
-        if k.upper() == "PATH":
-            path_key = k
-            break
-    current_path = env.get(path_key, "")
-    if venv_bin not in current_path:
-        env[path_key] = f"{venv_bin}:{current_path}" if current_path else venv_bin
+    path_key = _path_env_key(env) or ("Path" if _IS_WINDOWS else "PATH")
+    new_path = _prepend_hermes_bin_dir(env.get(path_key, ""))
+    if new_path:
+        env[path_key] = new_path
 
 
 # Checkpoint file for crash recovery (gateway only)
@@ -746,7 +753,7 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
-                _inject_venv_env(pty_env)
+                _ensure_hermes_bin_on_path(pty_env)
                 pty_proc = _PtyProcessCls.spawn(
                     [user_shell, "-lic", f"set +m; {command}"],
                     cwd=session.cwd,
@@ -789,7 +796,7 @@ class ProcessRegistry:
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
-        _inject_venv_env(bg_env)
+        _ensure_hermes_bin_on_path(bg_env)
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         proc = subprocess.Popen(

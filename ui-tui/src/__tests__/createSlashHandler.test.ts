@@ -192,7 +192,7 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
-  it('honors TUI picker session scope without adding --global', async () => {
+  it('rewrites the TUI picker sentinel to --session so the switch stays session-scoped', async () => {
     patchUiState({ sid: 'sid-abc' })
 
     const ctx = buildCtx({
@@ -209,8 +209,36 @@ describe('createSlashHandler', () => {
       confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
-      value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
+      value: 'anthropic/claude-sonnet-4.6 --provider openrouter --session'
     })
+  })
+
+  it('never forwards the raw TUI sentinel and scopes the pick to the session', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'anthropic/claude-sonnet-4.6' }))
+      }
+    })
+
+    createSlashHandler(ctx)(`/model anthropic/claude-sonnet-4.6 --provider openrouter ${TUI_SESSION_MODEL_FLAG}`)
+
+    // Regression: the UI-only sentinel must be rewritten, and the result must be
+    // session-scoped — not leaked to the gateway and not persisted globally.
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith(
+      'config.set',
+      expect.objectContaining({ value: expect.not.stringContaining(TUI_SESSION_MODEL_FLAG) })
+    )
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith(
+      'config.set',
+      expect.objectContaining({ value: expect.stringContaining('--session') })
+    )
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith(
+      'config.set',
+      expect.objectContaining({ value: expect.not.stringContaining('--global') })
+    )
   })
 
   it('does not duplicate --global for explicit persistent model switches', () => {

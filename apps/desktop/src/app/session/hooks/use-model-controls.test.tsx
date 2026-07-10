@@ -127,9 +127,31 @@ describe('useModelControls', () => {
     expect(requestGateway).toHaveBeenCalledWith('config.set', {
       session_id: 'session-1',
       key: 'model',
-      value: 'claude-sonnet-4.6 --provider anthropic'
+      value: 'claude-sonnet-4.6 --provider anthropic --session'
     })
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  })
+
+  it('keeps an active-session picker change session-scoped, never persisting to global config', async () => {
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'claude-sonnet-4.6' }) as never)
+    let controls!: Controls
+
+    render(
+      <Harness activeSessionId="session-1" onReady={value => (controls = value)} requestGateway={requestGateway} />
+    )
+
+    await controls.selectModel({ model: 'claude-sonnet-4.6', provider: 'anthropic' })
+
+    // Regression: the switch MUST carry --session so parse_model_flags() scopes
+    // it to the session instead of writing the profile default in config.yaml.
+    expect(requestGateway).toHaveBeenCalledWith(
+      'config.set',
+      expect.objectContaining({ value: expect.stringContaining('--session') })
+    )
+    expect(requestGateway).toHaveBeenCalledWith(
+      'config.set',
+      expect.objectContaining({ value: expect.not.stringContaining('--global') })
+    )
   })
 
   it('stores a no-session pick as UI state with no gateway or global write', async () => {

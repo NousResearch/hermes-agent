@@ -3992,6 +3992,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 
+    def _get_explicit_session_model_override(
+        self, session_key: Optional[str]
+    ) -> Optional[str]:
+        """Return an explicit `/model` selection without reclassifying it."""
+        if not session_key:
+            return None
+        overrides = getattr(self, "_session_model_overrides", None)
+        if not isinstance(overrides, dict):
+            return None
+        override = overrides.get(session_key)
+        if not isinstance(override, dict):
+            return None
+        model = override.get("model")
+        return model.strip() if isinstance(model, str) and model.strip() else None
+
     def _get_pinned_session_router_model(
         self, session_id: Optional[str]
     ) -> Tuple[Optional[str], Optional[int]]:
@@ -13349,7 +13364,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            session_key = self._session_key_for_source(source)
+            turn_route = self._resolve_turn_agent_config(
+                prompt,
+                model,
+                runtime_kwargs,
+                pinned_model=self._get_explicit_session_model_override(session_key),
+            )
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -18120,6 +18141,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _pinned_router_model, _current_msg_count = (
                 self._get_pinned_session_router_model(session_id)
             )
+            if _pinned_router_model is None:
+                _pinned_router_model = self._get_explicit_session_model_override(
+                    session_key
+                )
 
             turn_route = self._resolve_turn_agent_config(
                 message,

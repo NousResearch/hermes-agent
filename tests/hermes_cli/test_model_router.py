@@ -159,3 +159,15 @@ def test_gateway_router_does_not_pin_empty_session():
     assert gateway_run.GatewayRunner._get_pinned_session_router_model(
         runner, "session-1"
     ) == (None, 0)
+
+
+def test_gateway_router_preserves_explicit_model_override():
+    import gateway.run as gateway_run
+
+    runner = SimpleNamespace(
+        _session_model_overrides={"session-1": {"model": "custom-explicit-model"}}
+    )
+
+    assert gateway_run.GatewayRunner._get_explicit_session_model_override(
+        runner, "session-1"
+    ) == "custom-explicit-model"

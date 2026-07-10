@@ -3632,24 +3632,54 @@ def _launchctl_domain_unsupported(returncode: int) -> bool:
 _LAUNCHCTL_BOOTSTRAP_EIO = 5
 
 
+def _is_macos_26_or_later() -> bool:
+    """Return True on macOS 26+ where ``launchctl bootstrap`` is broken (exit 5).
+
+    ``launchctl bootstrap`` returns exit code 5 (EIO) on macOS 26+, and the
+    plist ``LimitLoadToSessionType`` key causes silent load failures during
+    login auto-load (#23387).  We fall back to the older ``launchctl load`` +
+    ``launchctl enable`` combination on affected hosts.
+    """
+    if sys.platform != "darwin":
+        return False
+    try:
+        import platform
+        ver = platform.mac_ver()[0]
+        if ver:
+            return int(ver.split(".")[0]) >= 26
+    except Exception:
+        pass
+    return False
+
+
 def _launchctl_bootstrap(
     domain: str, plist_path, label: str, *, timeout: int = 30
 ) -> None:
-    """Bootstrap a launchd job, recovering from a stale already-loaded label.
+    """Load a launchd job, using the correct command for this macOS version.
 
-    On modern macOS, ``launchctl bootstrap`` of a label that is still
-    registered in ``domain`` fails with ``5: Input/output error`` (EIO). That
-    is the *already loaded* case — distinct from the domain being unmanageable,
-    which callers handle via :func:`_launchctl_domain_unsupported`. A leftover
-    registration from an interrupted restart leaves the job
-    loaded-but-not-running, so the next bootstrap hits EIO; without this retry
-    we misclassify it as "launchd cannot manage this macOS version" and degrade
-    to a detached process, silently losing auto-start and crash-restart.
+    On macOS 26+, ``launchctl bootstrap`` is broken (exit 5, #23387) so we
+    use ``launchctl load`` + ``launchctl enable`` instead.  On older macOS,
+    ``launchctl bootstrap`` (the modern API) is preferred, with recovery for
+    the stale already-loaded label case.
 
-    Recover by booting the stale label out and bootstrapping once more. If the
-    retry still fails, the ``CalledProcessError`` propagates so callers apply
-    their domain-unsupported fallback for a genuinely broken domain.
+    Recover by booting the stale label out and retrying. If the retry still
+    fails, the ``CalledProcessError`` propagates so callers apply their
+    domain-unsupported fallback for a genuinely broken domain.
     """
+    if _is_macos_26_or_later():
+        subprocess.run(
+            ["launchctl", "load", str(plist_path)],
+            check=True,
+            timeout=timeout,
+        )
+        subprocess.run(
+            ["launchctl", "enable", f"{domain}/{label}"],
+            check=True,
+            timeout=timeout,
+        )
+        return
+
+    # macOS < 26: use launchctl bootstrap with stale-label recovery
     try:
         subprocess.run(
             ["launchctl", "bootstrap", domain, str(plist_path)],
@@ -3950,12 +3980,6 @@ def generate_launchd_plist() -> str:
         <string>{hermes_home}</string>
     </dict>
 
-    <key>LimitLoadToSessionType</key>
-    <array>
-        <string>Aqua</string>
-        <string>Background</string>
-    </array>
-    
     <key>RunAtLoad</key>
     <true/>
     

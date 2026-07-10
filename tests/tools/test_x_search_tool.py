@@ -425,14 +425,15 @@ def test_x_search_honors_config_model_and_timeout(monkeypatch, tmp_path):
     assert captured["timeout"] == 45
 
 
-def test_x_search_honors_config_reasoning_effort(monkeypatch):
+def test_x_search_honors_config_reasoning_effort(monkeypatch, tmp_path):
     """Configured reasoning effort reaches the xAI Responses request."""
     from tools.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
-    monkeypatch.setattr(
-        "tools.x_search_tool._load_x_search_config",
-        lambda: {"reasoning_effort": "low", "retries": 0},
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "x_search:\n  reasoning_effort: low\n  retries: 0\n",
+        encoding="utf-8",
     )
     captured = {}
 

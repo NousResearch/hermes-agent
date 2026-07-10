@@ -114,6 +114,34 @@ _oauth_interactive_forced: "contextvars.ContextVar[bool]" = contextvars.ContextV
 )
 
 
+# Loopback host used in the OAuth redirect_uri advertised to the provider.
+# The callback HTTP server always binds 127.0.0.1 (see _find_free_port /
+# _wait_for_callback); this only controls the *string* sent to the auth
+# server. Some providers front their authorize endpoint with a WAF (observed
+# with Motion's Azure Application Gateway) that 403s any redirect_uri holding
+# a raw loopback IP literal (``127.0.0.1``) while allowing the ``localhost``
+# hostname -- which resolves back to 127.0.0.1, so the local listener still
+# receives the callback. Default to ``localhost`` for maximum compatibility;
+# override per-server with ``oauth.redirect_host`` in config.yaml, or globally
+# with HERMES_MCP_OAUTH_REDIRECT_HOST.
+_DEFAULT_OAUTH_REDIRECT_HOST = os.getenv(
+    "HERMES_MCP_OAUTH_REDIRECT_HOST", "localhost"
+)
+
+
+def _redirect_host(cfg: "dict | None" = None) -> str:
+    """Resolve the loopback host for the OAuth redirect_uri.
+
+    Precedence: per-server ``cfg['redirect_host']`` (from the ``oauth:`` block)
+    > HERMES_MCP_OAUTH_REDIRECT_HOST env > ``localhost`` default.
+    """
+    if cfg:
+        host = cfg.get("redirect_host")
+        if host:
+            return str(host)
+    return _DEFAULT_OAUTH_REDIRECT_HOST
+
+
 # Skip tokens accepted at the paste prompt — exit OAuth without auth.
 _SKIP_TOKENS = frozenset({"skip", "cancel", "s", "n", "no", "q", "quit"})
 
@@ -846,7 +874,7 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         )
     client_name = cfg.get("client_name", "Hermes Agent")
     scope = cfg.get("scope")
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_uri = f"http://{_redirect_host(cfg)}:{port}/callback"
 
     metadata_kwargs: dict[str, Any] = {
         "client_name": client_name,
@@ -873,7 +901,7 @@ def _maybe_preregister_client(
     if not client_id:
         return
     port = cfg["_resolved_port"]
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_uri = f"http://{_redirect_host(cfg)}:{port}/callback"
 
     info_dict: dict[str, Any] = {
         "client_id": client_id,

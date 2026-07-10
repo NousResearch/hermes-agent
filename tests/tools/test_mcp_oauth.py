@@ -23,6 +23,7 @@ from tools.mcp_oauth import (
     _make_callback_handler,
     _redirect_handler,
     _paste_callback_reader,
+    _redirect_host,
 )
 
 
@@ -213,6 +214,53 @@ class TestBuildOAuthAuth:
         })
         assert provider is not None
         assert provider.context.client_metadata.scope == "read write admin"
+
+    def test_redirect_uri_defaults_to_localhost(self, tmp_path, monkeypatch):
+        """redirect_uri must use the ``localhost`` hostname by default, not a
+        raw ``127.0.0.1`` IP literal. Some providers front the authorize
+        endpoint with a WAF (e.g. Motion's Azure Application Gateway) that
+        403s a loopback-IP redirect_uri but allows the hostname."""
+        try:
+            from mcp.client.auth import OAuthClientProvider  # noqa: F401
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_MCP_OAUTH_REDIRECT_HOST", raising=False)
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("wafhost", "https://example.com/mcp")
+        assert provider is not None
+        uris = [str(u) for u in provider.context.client_metadata.redirect_uris]
+        assert uris, "expected at least one redirect_uri"
+        for uri in uris:
+            assert "127.0.0.1" not in uri
+            assert "localhost" in uri
+
+
+class TestRedirectHost:
+    def test_default_is_localhost(self, monkeypatch):
+        # Default (no per-server override) resolves to the module default,
+        # which ships as "localhost".
+        monkeypatch.setattr(
+            "tools.mcp_oauth._DEFAULT_OAUTH_REDIRECT_HOST", "localhost"
+        )
+        assert _redirect_host() == "localhost"
+        assert _redirect_host({}) == "localhost"
+        assert _redirect_host({"other": "x"}) == "localhost"
+
+    def test_per_server_override_wins(self):
+        assert _redirect_host({"redirect_host": "127.0.0.1"}) == "127.0.0.1"
+        assert _redirect_host({"redirect_host": "my.host"}) == "my.host"
+
+    def test_module_default_honours_env(self, monkeypatch):
+        # The module default is read from HERMES_MCP_OAUTH_REDIRECT_HOST at
+        # import. Simulate an operator override and confirm resolution + that
+        # per-server config still takes precedence over it.
+        monkeypatch.setattr(
+            "tools.mcp_oauth._DEFAULT_OAUTH_REDIRECT_HOST", "0.0.0.0"
+        )
+        assert _redirect_host() == "0.0.0.0"
+        assert _redirect_host({"redirect_host": "localhost"}) == "localhost"
 
 
 # ---------------------------------------------------------------------------

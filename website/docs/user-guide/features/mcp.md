@@ -245,6 +245,19 @@ Then run `hermes mcp login googledrive` — with the pre-registered client, Herm
 
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
 
+**Pitfall — provider WAF rejects the loopback-IP redirect (`403 Forbidden`).** The OAuth `redirect_uri` Hermes advertises defaults to `http://localhost:<port>/callback`. Some providers front their authorize endpoint with a Web Application Firewall (observed with Motion's `projects.motionapp.com`, served by Microsoft Azure Application Gateway) whose ruleset **403s any `redirect_uri` containing a raw loopback IP literal (`127.0.0.1`)** while allowing the `localhost` hostname. The symptom is a bare `403 Forbidden` page in the browser *before* any login/consent screen — it looks like a permissions problem but isn't. `localhost` is the default precisely because it clears these rules (it resolves back to `127.0.0.1`, so the local callback listener still receives the redirect). If a provider needs the opposite — the raw IP rather than the hostname — override it per server:
+
+```yaml
+mcp_servers:
+  motion:
+    url: "https://projects.motionapp.com/mcp"
+    auth: oauth
+    oauth:
+      redirect_host: "127.0.0.1"   # default is "localhost"
+```
+
+Or globally with the `HERMES_MCP_OAUTH_REDIRECT_HOST` environment variable. After changing it, clear any stale cached client from a prior failed attempt (`rm -f ~/.hermes/mcp-tokens/<server>.client.json`) so the next `hermes mcp login <server>` re-registers with the new redirect URI.
+
 ## mTLS / client certificates
 
 Remote HTTP MCP servers that require mutual TLS (client-certificate authentication) are supported via `client_cert` / `client_key`. Hermes passes the resolved certificate to the underlying HTTP client for the TLS handshake.

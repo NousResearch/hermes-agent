@@ -2247,6 +2247,15 @@ DEFAULT_CONFIG = {
                                        # delegation units. New async dispatches beyond the cap
                                        # fall back to synchronous execution. Floor of 1, no ceiling.
                                        # (Replaces the deprecated max_async_children.)
+        # Run batch subagents in isolated OS processes instead of worker
+        # threads inside the parent process. Each child gets its own GIL, so
+        # heavy subagent work (SSE parsing, regex, JSON) can no longer starve
+        # the parent's TUI/desktop WebSocket event loop (the "event loop
+        # stalled / desktop drops with 3+ subagents" class of issues: #58576,
+        # #57903, #32079). Opt-in while the process path matures; the default
+        # (false) keeps the historical in-process thread pool. Single-task
+        # delegations always run in-process either way.
+        "process_isolation": False,
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
         # raise deliberately, each level multiplies API cost.

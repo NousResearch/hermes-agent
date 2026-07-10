@@ -526,6 +526,20 @@ def _get_inherit_mcp_toolsets() -> bool:
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
 
+def _get_process_isolation() -> bool:
+    """Whether batch subagents run in isolated OS processes.
+
+    Config key: delegation.process_isolation (bool, default False).
+    Opt-in: each batch child gets its own process (own GIL), eliminating
+    the GIL contention between subagent worker threads and the parent's
+    TUI / desktop WebSocket event loop (issues #58576, #57903, #32079).
+    When False (default) the historical in-process ThreadPoolExecutor
+    path is used.
+    """
+    cfg = _load_config()
+    return is_truthy_value(cfg.get("process_isolation"), default=False)
+
+
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
     if not name:
@@ -1041,38 +1055,31 @@ def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> 
     return fallback_base_url or None
 
 
-def _build_child_agent(
+def _resolve_child_settings(
     task_index: int,
     goal: str,
     context: Optional[str],
     toolsets: Optional[List[str]],
     model: Optional[str],
-    max_iterations: int,
-    task_count: int,
     parent_agent,
-    # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
-    # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
-    # Per-call role controlling whether the child can further delegate.
-    # 'leaf' (default) cannot; 'orchestrator' retains the delegation
-    # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
-):
-    """
-    Build a child AIAgent on the main thread (thread-safe construction).
-    Returns the constructed child agent without running it.
+) -> Dict[str, Any]:
+    """Resolve everything about a child agent that is plain data.
 
-    When override_* params are set (from delegation config), the child uses
-    those credentials instead of inheriting from the parent.  This enables
-    routing subagents to a different provider:model pair (e.g. cheap/fast
-    model on OpenRouter while the parent runs on Nous Portal).
+    Shared by ``_build_child_agent`` (in-process thread path) and
+    ``_build_child_process_spec`` (process-isolation path).  Everything
+    returned here is derived from the parent agent + delegation config:
+    role/depth bounds, subagent identity, toolset intersection, the child
+    system prompt, and the full credential bundle.  The process path
+    additionally requires every value to be picklable — anything
+    parent-object-shaped (callbacks, pools, clients) stays out of this dict.
     """
-    from run_agent import AIAgent
     import uuid as _uuid
 
     # ── Role resolution ─────────────────────────────────────────────────
@@ -1155,46 +1162,8 @@ def _build_child_agent(
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
-    # Resolve the child's effective model early so it can ride on every event.
-    effective_model_for_cb = model or getattr(parent_agent, "model", None)
-
-    # Build progress callback to relay tool calls to parent display.
-    # Identity kwargs thread the subagent_id through every emitted event so the
-    # TUI can reconstruct the spawn tree and route per-branch controls.
-    child_session_ref: Dict[str, Any] = {}
-    child_progress_cb = _build_child_progress_callback(
-        task_index,
-        goal,
-        parent_agent,
-        task_count,
-        subagent_id=subagent_id,
-        parent_id=parent_subagent_id,
-        depth=tui_depth,
-        model=effective_model_for_cb,
-        toolsets=child_toolsets,
-        session_ref=child_session_ref,
-    )
-
-    # Each subagent gets its own iteration budget capped at max_iterations
-    # (configurable via delegation.max_iterations, default 50).  This means
-    # total iterations across parent + subagents can exceed the parent's
-    # max_iterations.  The user controls the per-subagent cap in config.yaml.
-
-    child_thinking_cb = None
-    if child_progress_cb:
-
-        def _child_thinking(text: str) -> None:
-            if not text:
-                return
-            try:
-                child_progress_cb("_thinking", text)
-            except Exception as e:
-                logger.debug("Child thinking callback relay failed: %s", e)
-
-        child_thinking_cb = _child_thinking
-
     # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
+    effective_model = model or getattr(parent_agent, "model", None)
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     if not override_base_url:
@@ -1298,22 +1267,135 @@ def _build_child_agent(
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
 
+    return {
+        "subagent_id": subagent_id,
+        "parent_subagent_id": parent_subagent_id,
+        "child_depth": child_depth,
+        "tui_depth": tui_depth,
+        "effective_role": effective_role,
+        "max_spawn": max_spawn,
+        "child_toolsets": child_toolsets,
+        "child_prompt": child_prompt,
+        "model": effective_model,
+        "provider": effective_provider,
+        "base_url": effective_base_url,
+        "api_key": effective_api_key,
+        "api_mode": effective_api_mode,
+        "acp_command": effective_acp_command,
+        "acp_args": effective_acp_args,
+        "reasoning_config": child_reasoning,
+        "fallback_model": parent_fallback,
+        "providers_allowed": child_providers_allowed,
+        "providers_ignored": child_providers_ignored,
+        "providers_order": child_providers_order,
+        "provider_sort": child_provider_sort,
+        "openrouter_min_coding_score": child_openrouter_min_coding_score,
+    }
+
+
+def _build_child_agent(
+    task_index: int,
+    goal: str,
+    context: Optional[str],
+    toolsets: Optional[List[str]],
+    model: Optional[str],
+    max_iterations: int,
+    task_count: int,
+    parent_agent,
+    # Credential overrides from delegation config (provider:model resolution)
+    override_provider: Optional[str] = None,
+    override_base_url: Optional[str] = None,
+    override_api_key: Optional[str] = None,
+    override_api_mode: Optional[str] = None,
+    # ACP transport overrides from trusted delegation config.
+    override_acp_command: Optional[str] = None,
+    override_acp_args: Optional[List[str]] = None,
+    # Per-call role controlling whether the child can further delegate.
+    # 'leaf' (default) cannot; 'orchestrator' retains the delegation
+    # toolset subject to depth/kill-switch bounds applied below.
+    role: str = "leaf",
+):
+    """
+    Build a child AIAgent on the main thread (thread-safe construction).
+    Returns the constructed child agent without running it.
+
+    When override_* params are set (from delegation config), the child uses
+    those credentials instead of inheriting from the parent.  This enables
+    routing subagents to a different provider:model pair (e.g. cheap/fast
+    model on OpenRouter while the parent runs on Nous Portal).
+    """
+    from run_agent import AIAgent
+
+    s = _resolve_child_settings(
+        task_index,
+        goal,
+        context,
+        toolsets,
+        model,
+        parent_agent,
+        override_provider=override_provider,
+        override_base_url=override_base_url,
+        override_api_key=override_api_key,
+        override_api_mode=override_api_mode,
+        override_acp_command=override_acp_command,
+        override_acp_args=override_acp_args,
+        role=role,
+    )
+    subagent_id = s["subagent_id"]
+    parent_subagent_id = s["parent_subagent_id"]
+    effective_role = s["effective_role"]
+
+    # Build progress callback to relay tool calls to parent display.
+    # Identity kwargs thread the subagent_id through every emitted event so the
+    # TUI can reconstruct the spawn tree and route per-branch controls.
+    child_session_ref: Dict[str, Any] = {}
+    child_progress_cb = _build_child_progress_callback(
+        task_index,
+        goal,
+        parent_agent,
+        task_count,
+        subagent_id=subagent_id,
+        parent_id=parent_subagent_id,
+        depth=s["tui_depth"],
+        model=s["model"],
+        toolsets=s["child_toolsets"],
+        session_ref=child_session_ref,
+    )
+
+    # Each subagent gets its own iteration budget capped at max_iterations
+    # (configurable via delegation.max_iterations, default 50).  This means
+    # total iterations across parent + subagents can exceed the parent's
+    # max_iterations.  The user controls the per-subagent cap in config.yaml.
+
+    child_thinking_cb = None
+    if child_progress_cb:
+
+        def _child_thinking(text: str) -> None:
+            if not text:
+                return
+            try:
+                child_progress_cb("_thinking", text)
+            except Exception as e:
+                logger.debug("Child thinking callback relay failed: %s", e)
+
+        child_thinking_cb = _child_thinking
+
     child = AIAgent(
-        base_url=effective_base_url,
-        api_key=effective_api_key,
-        model=effective_model,
-        provider=effective_provider,
-        api_mode=effective_api_mode,
-        acp_command=effective_acp_command,
-        acp_args=effective_acp_args,
+        base_url=s["base_url"],
+        api_key=s["api_key"],
+        model=s["model"],
+        provider=s["provider"],
+        api_mode=s["api_mode"],
+        acp_command=s["acp_command"],
+        acp_args=s["acp_args"],
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
-        reasoning_config=child_reasoning,
+        reasoning_config=s["reasoning_config"],
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
-        enabled_toolsets=child_toolsets,
+        fallback_model=s["fallback_model"],
+        enabled_toolsets=s["child_toolsets"],
         quiet_mode=True,
-        ephemeral_system_prompt=child_prompt,
+        ephemeral_system_prompt=s["child_prompt"],
         log_prefix=f"[subagent-{task_index}]",
         platform="subagent",
         skip_context_files=True,
@@ -1322,11 +1404,11 @@ def _build_child_agent(
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, "_session_db", None),
         parent_session_id=getattr(parent_agent, "session_id", None),
-        providers_allowed=child_providers_allowed,
-        providers_ignored=child_providers_ignored,
-        providers_order=child_providers_order,
-        provider_sort=child_provider_sort,
-        openrouter_min_coding_score=child_openrouter_min_coding_score,
+        providers_allowed=s["providers_allowed"],
+        providers_ignored=s["providers_ignored"],
+        providers_order=s["providers_order"],
+        provider_sort=s["provider_sort"],
+        openrouter_min_coding_score=s["openrouter_min_coding_score"],
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )
@@ -1335,7 +1417,7 @@ def _build_child_agent(
     # (including the spawn_requested below — first emit happens after this).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     # Set delegation depth so children can't spawn grandchildren
-    child._delegate_depth = child_depth
+    child._delegate_depth = s["child_depth"]
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
@@ -1356,7 +1438,7 @@ def _build_child_agent(
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
     child_pool = _resolve_child_credential_pool(
-        effective_provider, parent_agent, effective_base_url
+        s["provider"], parent_agent, s["base_url"]
     )
     if child_pool is not None:
         child._credential_pool = child_pool
@@ -1395,6 +1477,180 @@ def _build_child_agent(
         logger.debug("subagent_start hook invocation failed", exc_info=True)
 
     return child
+
+
+def _build_child_process_spec(
+    task_index: int,
+    goal: str,
+    context: Optional[str],
+    toolsets: Optional[List[str]],
+    model: Optional[str],
+    max_iterations: int,
+    task_count: int,
+    parent_agent,
+    override_provider: Optional[str] = None,
+    override_base_url: Optional[str] = None,
+    override_api_key: Optional[str] = None,
+    override_api_mode: Optional[str] = None,
+    override_acp_command: Optional[str] = None,
+    override_acp_args: Optional[List[str]] = None,
+    role: str = "leaf",
+):
+    """Build a ``ChildProcessSpec`` for one process-isolated subagent.
+
+    Process-mode counterpart of ``_build_child_agent``: resolves the same
+    settings via ``_resolve_child_settings`` but, instead of constructing
+    the (unpicklable) AIAgent here, packages plain-data constructor params
+    for ``tools.delegate_process._child_process_main`` to rebuild the
+    agent inside a spawned child process.
+
+    Credentials are leased from the pool HERE (in the parent) and passed
+    as strings — the pool object itself never crosses the process
+    boundary; the lease is released by the runner when the child exits.
+
+    Raises if any parameter is not picklable; ``delegate_task`` catches
+    that and falls back to the in-process thread path for the batch.
+    """
+    import pickle
+    import time as _time
+    import uuid as _uuid
+
+    from tools.delegate_process import ChildProcessSpec
+
+    s = _resolve_child_settings(
+        task_index,
+        goal,
+        context,
+        toolsets,
+        model,
+        parent_agent,
+        override_provider=override_provider,
+        override_base_url=override_base_url,
+        override_api_key=override_api_key,
+        override_api_mode=override_api_mode,
+        override_acp_command=override_acp_command,
+        override_acp_args=override_acp_args,
+        role=role,
+    )
+
+    # Pre-generate the child's session id (same format agent_init uses) so
+    # the parent can fire subagent_start hooks and thread child_session_id
+    # onto every relayed event before the child process even boots.
+    session_id = f"{_time.strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
+
+    # Lease a credential in the parent so the child starts with a live key
+    # even when the provider pool is mid-rotation. The child cannot rotate
+    # further on its own (the pool stays parent-side); rate-limit recovery
+    # inside the child falls to its fallback chain.
+    effective_api_key = s["api_key"]
+    effective_base_url = s["base_url"]
+    pool = _resolve_child_credential_pool(s["provider"], parent_agent, s["base_url"])
+    leased_cred_id = None
+    if pool is not None:
+        try:
+            leased_cred_id = pool.acquire_lease()
+            if leased_cred_id is not None:
+                leased_entry = pool.current()
+                if leased_entry is not None:
+                    _key = getattr(leased_entry, "runtime_api_key", None) or getattr(
+                        leased_entry, "access_token", ""
+                    )
+                    _base = getattr(leased_entry, "runtime_base_url", None) or getattr(
+                        leased_entry, "base_url", None
+                    )
+                    if _key:
+                        effective_api_key = _key
+                    if _base:
+                        effective_base_url = _base
+        except Exception as exc:
+            logger.debug("Failed to lease credential for child process: %s", exc)
+
+    session_db = getattr(parent_agent, "_session_db", None)
+    session_db_path = str(getattr(session_db, "db_path", "") or "") or None
+
+    parent_task_id = getattr(parent_agent, "_current_task_id", None)
+    try:
+        parent_reads_snapshot = (
+            list(file_state.known_reads(parent_task_id)) if parent_task_id else []
+        )
+    except Exception:
+        parent_reads_snapshot = []
+
+    params: Dict[str, Any] = {
+        "task_index": task_index,
+        "goal": goal,
+        "task_count": task_count,
+        "subagent_id": s["subagent_id"],
+        "parent_subagent_id": s["parent_subagent_id"],
+        "child_depth": s["child_depth"],
+        "role": s["effective_role"],
+        "session_id": session_id,
+        "session_db_path": session_db_path,
+        "parent_session_id": getattr(parent_agent, "session_id", None),
+        "parent_turn_id": getattr(parent_agent, "_current_turn_id", "") or "",
+        "parent_reads_snapshot": parent_reads_snapshot,
+        "base_url": effective_base_url,
+        "api_key": effective_api_key,
+        "model": s["model"],
+        "provider": s["provider"],
+        "api_mode": s["api_mode"],
+        "acp_command": s["acp_command"],
+        "acp_args": s["acp_args"],
+        "max_iterations": max_iterations,
+        "max_tokens": getattr(parent_agent, "max_tokens", None),
+        "reasoning_config": s["reasoning_config"],
+        "prefill_messages": getattr(parent_agent, "prefill_messages", None),
+        "fallback_model": s["fallback_model"],
+        "enabled_toolsets": s["child_toolsets"],
+        "ephemeral_system_prompt": s["child_prompt"],
+        "providers_allowed": s["providers_allowed"],
+        "providers_ignored": s["providers_ignored"],
+        "providers_order": s["providers_order"],
+        "provider_sort": s["provider_sort"],
+        "openrouter_min_coding_score": s["openrouter_min_coding_score"],
+        "auto_approve": _get_subagent_approval_callback() is _subagent_auto_approve,
+        "heartbeat_interval": _HEARTBEAT_INTERVAL,
+        "agent_factory": None,
+    }
+
+    # Everything crossing the process boundary must survive pickling
+    # (spawn re-imports a clean interpreter — no shared state). Validate
+    # NOW so the caller can fall back to threads before any child starts.
+    try:
+        pickle.dumps(params)
+    except Exception:
+        if pool is not None and leased_cred_id is not None:
+            try:
+                pool.release_lease(leased_cred_id)
+            except Exception:
+                pass
+        raise
+
+    # Same parent-side progress callback the thread path uses — the child
+    # relays raw events over the IPC queue and the runner feeds them here,
+    # so the TUI/gateway see byte-identical event streams.
+    child_session_ref: Dict[str, Any] = {"session_id": session_id}
+    child_progress_cb = _build_child_progress_callback(
+        task_index,
+        goal,
+        parent_agent,
+        task_count,
+        subagent_id=s["subagent_id"],
+        parent_id=s["parent_subagent_id"],
+        depth=s["tui_depth"],
+        model=s["model"],
+        toolsets=s["child_toolsets"],
+        session_ref=child_session_ref,
+    )
+
+    return ChildProcessSpec(
+        task_index=task_index,
+        goal=goal,
+        params=params,
+        progress_cb=child_progress_cb,
+        pool=pool if leased_cred_id is not None else None,
+        leased_cred_id=leased_cred_id,
+    )
 
 
 def _dump_subagent_timeout_diagnostic(
@@ -1716,6 +1972,191 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         )
 
 
+def _summarize_child_run(
+    child,
+    result: Dict[str, Any],
+    task_index: int,
+    duration: float,
+    child_task_id: str,
+    wall_start: float,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Build the (entry, complete_kwargs) pair for one finished child run.
+
+    ``entry`` is the structured result dict returned to the parent
+    aggregator; ``complete_kwargs`` is the observability payload for the
+    ``subagent.complete`` progress event.  Shared by ``_run_single_child``
+    (thread path) and ``tools.delegate_process._child_process_main``
+    (process-isolation path) so both produce byte-identical result shapes.
+
+    Reads the child's file-state registry, so it must run in the same
+    process the child's tools ran in.
+    """
+    summary = result.get("final_response") or ""
+    completed = result.get("completed", False)
+    interrupted = result.get("interrupted", False)
+    api_calls = result.get("api_calls", 0)
+
+    # The child emits the literal "(empty)" sentinel (see run_agent.py) when
+    # it gives up after repeated empty-LLM-response retries — typically a
+    # transport bug (misrouted provider, adapter returning empty
+    # ChatCompletion, etc.). Treat it as a failure so the parent surfaces
+    # it instead of silently accepting zero-content "success".
+    _empty_sentinel = summary.strip() == "(empty)"
+
+    if interrupted:
+        status = "interrupted"
+    elif summary and not _empty_sentinel:
+        # A summary means the subagent produced usable output.
+        # exit_reason ("completed" vs "max_iterations") already
+        # tells the parent *how* the task ended.
+        status = "completed"
+    else:
+        status = "failed"
+
+    # Build tool trace from conversation messages (already in memory).
+    # Uses tool_call_id to correctly pair parallel tool calls with results.
+    tool_trace: list[Dict[str, Any]] = []
+    trace_by_id: Dict[str, Dict[str, Any]] = {}
+    messages = result.get("messages") or []
+    if isinstance(messages, list):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    fn = tc.get("function", {})
+                    entry_t = {
+                        "tool": fn.get("name", "unknown"),
+                        "args_bytes": len(fn.get("arguments", "")),
+                    }
+                    tool_trace.append(entry_t)
+                    tc_id = tc.get("id")
+                    if tc_id:
+                        trace_by_id[tc_id] = entry_t
+            elif msg.get("role") == "tool":
+                content = _stringify_tool_content(msg.get("content", ""))
+                is_error = _looks_like_error_output(content)
+                result_meta = {
+                    "result_bytes": len(content),
+                    "status": "error" if is_error else "ok",
+                }
+                # Match by tool_call_id for parallel calls
+                tc_id = msg.get("tool_call_id")
+                target = trace_by_id.get(tc_id) if tc_id else None
+                if target is not None:
+                    target.update(result_meta)
+                elif tool_trace:
+                    # Fallback for messages without tool_call_id
+                    tool_trace[-1].update(result_meta)
+
+    # Determine exit reason
+    if interrupted:
+        exit_reason = "interrupted"
+    elif completed:
+        exit_reason = "completed"
+    else:
+        exit_reason = "max_iterations"
+
+    # Extract token counts (safe for mock objects)
+    _input_tokens = getattr(child, "session_prompt_tokens", 0)
+    _output_tokens = getattr(child, "session_completion_tokens", 0)
+    _model = getattr(child, "model", None)
+
+    entry: Dict[str, Any] = {
+        "task_index": task_index,
+        "status": status,
+        "summary": summary,
+        "api_calls": api_calls,
+        "duration_seconds": duration,
+        "model": _model if isinstance(_model, str) else None,
+        "exit_reason": exit_reason,
+        "tokens": {
+            "input": (
+                _input_tokens if isinstance(_input_tokens, (int, float)) else 0
+            ),
+            "output": (
+                _output_tokens if isinstance(_output_tokens, (int, float)) else 0
+            ),
+        },
+        "tool_trace": tool_trace,
+        # Captured before the finally block calls child.close() so the
+        # parent thread can fire subagent_stop with the correct role.
+        # Stripped before the dict is serialised back to the model.
+        "_child_role": getattr(child, "_delegate_role", None),
+        # Captured before child.close() so the parent aggregator can fold
+        # the child's total spend into the parent's session cost.  Port of
+        # Kilo-Org/kilocode#9448 — previously the footer only reflected the
+        # parent's direct API calls and under-counted subagent-heavy runs.
+        # Stripped before the dict is serialised back to the model.
+        "_child_cost_usd": (
+            float(getattr(child, "session_estimated_cost_usd", 0.0) or 0.0)
+            if isinstance(
+                getattr(child, "session_estimated_cost_usd", 0.0),
+                (int, float),
+            )
+            else 0.0
+        ),
+    }
+    if status == "failed":
+        entry["error"] = result.get("error", "Subagent did not produce a response.")
+
+    # Per-branch observability payload: tokens, cost, files touched, and
+    # a tail of tool-call results.  Fed into the TUI's overlay detail
+    # pane + accordion rollups (features 1, 2, 4).  All fields are
+    # optional — missing data degrades gracefully on the client.
+    _cost_usd = getattr(child, "session_estimated_cost_usd", None)
+    _reasoning_tokens = getattr(child, "session_reasoning_tokens", 0)
+    try:
+        _files_read = list(file_state.known_reads(child_task_id))[:40]
+    except Exception:
+        _files_read = []
+    try:
+        _files_written_map = file_state.writes_since(
+            "", wall_start, _files_read
+        )  # writes to files the subagent read during this run
+    except Exception:
+        _files_written_map = {}
+    _files_written = sorted(
+        {
+            p
+            for tid, paths in _files_written_map.items()
+            if tid == child_task_id
+            for p in paths
+        }
+    )[:40]
+
+    _output_tail = _extract_output_tail(result, max_entries=8, max_chars=600)
+
+    complete_kwargs: Dict[str, Any] = {
+        "preview": summary[:160] if summary else entry.get("error", ""),
+        "status": status,
+        "duration_seconds": duration,
+        "summary": summary[:500] if summary else entry.get("error", ""),
+        "input_tokens": (
+            int(_input_tokens) if isinstance(_input_tokens, (int, float)) else 0
+        ),
+        "output_tokens": (
+            int(_output_tokens) if isinstance(_output_tokens, (int, float)) else 0
+        ),
+        "reasoning_tokens": (
+            int(_reasoning_tokens)
+            if isinstance(_reasoning_tokens, (int, float))
+            else 0
+        ),
+        "api_calls": int(api_calls) if isinstance(api_calls, (int, float)) else 0,
+        "files_read": _files_read,
+        "files_written": _files_written,
+        "output_tail": _output_tail,
+    }
+    if _cost_usd is not None:
+        try:
+            complete_kwargs["cost_usd"] = float(_cost_usd)
+        except (TypeError, ValueError):
+            pass
+
+    return entry, complete_kwargs
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -2034,114 +2475,9 @@ def _run_single_child(
 
         duration = round(time.monotonic() - child_start, 2)
 
-        summary = result.get("final_response") or ""
-        completed = result.get("completed", False)
-        interrupted = result.get("interrupted", False)
-        api_calls = result.get("api_calls", 0)
-
-        # The child emits the literal "(empty)" sentinel (see run_agent.py) when
-        # it gives up after repeated empty-LLM-response retries — typically a
-        # transport bug (misrouted provider, adapter returning empty
-        # ChatCompletion, etc.). Treat it as a failure so the parent surfaces
-        # it instead of silently accepting zero-content "success".
-        _empty_sentinel = summary.strip() == "(empty)"
-
-        if interrupted:
-            status = "interrupted"
-        elif summary and not _empty_sentinel:
-            # A summary means the subagent produced usable output.
-            # exit_reason ("completed" vs "max_iterations") already
-            # tells the parent *how* the task ended.
-            status = "completed"
-        else:
-            status = "failed"
-
-        # Build tool trace from conversation messages (already in memory).
-        # Uses tool_call_id to correctly pair parallel tool calls with results.
-        tool_trace: list[Dict[str, Any]] = []
-        trace_by_id: Dict[str, Dict[str, Any]] = {}
-        messages = result.get("messages") or []
-        if isinstance(messages, list):
-            for msg in messages:
-                if not isinstance(msg, dict):
-                    continue
-                if msg.get("role") == "assistant":
-                    for tc in msg.get("tool_calls") or []:
-                        fn = tc.get("function", {})
-                        entry_t = {
-                            "tool": fn.get("name", "unknown"),
-                            "args_bytes": len(fn.get("arguments", "")),
-                        }
-                        tool_trace.append(entry_t)
-                        tc_id = tc.get("id")
-                        if tc_id:
-                            trace_by_id[tc_id] = entry_t
-                elif msg.get("role") == "tool":
-                    content = _stringify_tool_content(msg.get("content", ""))
-                    is_error = _looks_like_error_output(content)
-                    result_meta = {
-                        "result_bytes": len(content),
-                        "status": "error" if is_error else "ok",
-                    }
-                    # Match by tool_call_id for parallel calls
-                    tc_id = msg.get("tool_call_id")
-                    target = trace_by_id.get(tc_id) if tc_id else None
-                    if target is not None:
-                        target.update(result_meta)
-                    elif tool_trace:
-                        # Fallback for messages without tool_call_id
-                        tool_trace[-1].update(result_meta)
-
-        # Determine exit reason
-        if interrupted:
-            exit_reason = "interrupted"
-        elif completed:
-            exit_reason = "completed"
-        else:
-            exit_reason = "max_iterations"
-
-        # Extract token counts (safe for mock objects)
-        _input_tokens = getattr(child, "session_prompt_tokens", 0)
-        _output_tokens = getattr(child, "session_completion_tokens", 0)
-        _model = getattr(child, "model", None)
-
-        entry: Dict[str, Any] = {
-            "task_index": task_index,
-            "status": status,
-            "summary": summary,
-            "api_calls": api_calls,
-            "duration_seconds": duration,
-            "model": _model if isinstance(_model, str) else None,
-            "exit_reason": exit_reason,
-            "tokens": {
-                "input": (
-                    _input_tokens if isinstance(_input_tokens, (int, float)) else 0
-                ),
-                "output": (
-                    _output_tokens if isinstance(_output_tokens, (int, float)) else 0
-                ),
-            },
-            "tool_trace": tool_trace,
-            # Captured before the finally block calls child.close() so the
-            # parent thread can fire subagent_stop with the correct role.
-            # Stripped before the dict is serialised back to the model.
-            "_child_role": getattr(child, "_delegate_role", None),
-            # Captured before child.close() so the parent aggregator can fold
-            # the child's total spend into the parent's session cost.  Port of
-            # Kilo-Org/kilocode#9448 — previously the footer only reflected the
-            # parent's direct API calls and under-counted subagent-heavy runs.
-            # Stripped before the dict is serialised back to the model.
-            "_child_cost_usd": (
-                float(getattr(child, "session_estimated_cost_usd", 0.0) or 0.0)
-                if isinstance(
-                    getattr(child, "session_estimated_cost_usd", 0.0),
-                    (int, float),
-                )
-                else 0.0
-            ),
-        }
-        if status == "failed":
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+        entry, complete_kwargs = _summarize_child_run(
+            child, result, task_index, duration, child_task_id, wall_start
+        )
 
         # Cross-agent file-state reminder.  If this subagent wrote any
         # files the parent had already read, surface it so the parent
@@ -2176,60 +2512,6 @@ def _run_single_child(
                             entry["stale_paths"] = mod_paths
         except Exception:
             logger.debug("file_state sibling-write check failed", exc_info=True)
-
-        # Per-branch observability payload: tokens, cost, files touched, and
-        # a tail of tool-call results.  Fed into the TUI's overlay detail
-        # pane + accordion rollups (features 1, 2, 4).  All fields are
-        # optional — missing data degrades gracefully on the client.
-        _cost_usd = getattr(child, "session_estimated_cost_usd", None)
-        _reasoning_tokens = getattr(child, "session_reasoning_tokens", 0)
-        try:
-            _files_read = list(file_state.known_reads(child_task_id))[:40]
-        except Exception:
-            _files_read = []
-        try:
-            _files_written_map = file_state.writes_since(
-                "", wall_start, []
-            )  # all writes since wall_start
-        except Exception:
-            _files_written_map = {}
-        _files_written = sorted(
-            {
-                p
-                for tid, paths in _files_written_map.items()
-                if tid == child_task_id
-                for p in paths
-            }
-        )[:40]
-
-        _output_tail = _extract_output_tail(result, max_entries=8, max_chars=600)
-
-        complete_kwargs: Dict[str, Any] = {
-            "preview": summary[:160] if summary else entry.get("error", ""),
-            "status": status,
-            "duration_seconds": duration,
-            "summary": summary[:500] if summary else entry.get("error", ""),
-            "input_tokens": (
-                int(_input_tokens) if isinstance(_input_tokens, (int, float)) else 0
-            ),
-            "output_tokens": (
-                int(_output_tokens) if isinstance(_output_tokens, (int, float)) else 0
-            ),
-            "reasoning_tokens": (
-                int(_reasoning_tokens)
-                if isinstance(_reasoning_tokens, (int, float))
-                else 0
-            ),
-            "api_calls": int(api_calls) if isinstance(api_calls, (int, float)) else 0,
-            "files_read": _files_read,
-            "files_written": _files_written,
-            "output_tail": _output_tail,
-        }
-        if _cost_usd is not None:
-            try:
-                complete_kwargs["cost_usd"] = float(_cost_usd)
-            except (TypeError, ValueError):
-                pass
 
         if child_progress_cb:
             try:
@@ -2476,37 +2758,87 @@ def delegate_task(
 
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
 
+    # Process isolation (delegation.process_isolation): batch children run
+    # in separate OS processes — each with its own GIL — instead of worker
+    # threads, so heavy subagent work can't starve the parent's TUI/desktop
+    # WebSocket event loop. Single-task mode keeps the historical direct
+    # path (no pool) regardless of the flag.
+    use_process_isolation = n_tasks > 1 and _get_process_isolation()
+
     # Build all child agents on the main thread (thread-safe construction)
     # Wrapped in try/finally so the global is always restored even if a
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
     try:
-        for i, t in enumerate(task_list):
-            # Per-task role beats top-level; normalise again so unknown
-            # per-task values warn and degrade to leaf uniformly.
-            effective_role = _normalize_role(t.get("role") or top_role)
-            child = _build_child_agent(
-                task_index=i,
-                goal=t["goal"],
-                context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
-                task_count=n_tasks,
-                parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
-                role=effective_role,
-            )
-            # Override with correct parent tool names (before child construction mutated global)
-            child._delegate_saved_tool_names = _parent_tool_names
-            children.append((i, t, child))
+        if use_process_isolation:
+            # Build picklable process specs instead of live AIAgents. If any
+            # task's params can't cross the process boundary (unpicklable
+            # reasoning config, exotic test doubles, ...), fall back to the
+            # thread path for the WHOLE batch — never split a batch across
+            # both execution models.
+            try:
+                for i, t in enumerate(task_list):
+                    effective_role = _normalize_role(t.get("role") or top_role)
+                    spec = _build_child_process_spec(
+                        task_index=i,
+                        goal=t["goal"],
+                        context=t.get("context"),
+                        toolsets=None,
+                        model=creds["model"],
+                        max_iterations=effective_max_iter,
+                        task_count=n_tasks,
+                        parent_agent=parent_agent,
+                        override_provider=creds["provider"],
+                        override_base_url=creds["base_url"],
+                        override_api_key=creds["api_key"],
+                        override_api_mode=creds["api_mode"],
+                        override_acp_command=creds.get("command"),
+                        override_acp_args=creds.get("args"),
+                        role=effective_role,
+                    )
+                    children.append((i, t, spec))
+            except Exception as exc:
+                logger.warning(
+                    "delegation.process_isolation: could not prepare "
+                    "process-isolated subagents (%s); falling back to "
+                    "in-process threads for this batch.",
+                    exc,
+                )
+                for _i, _t, _spec in children:
+                    try:
+                        _spec.release()
+                    except Exception:
+                        pass
+                children = []
+                use_process_isolation = False
+
+        if not use_process_isolation:
+            for i, t in enumerate(task_list):
+                # Per-task role beats top-level; normalise again so unknown
+                # per-task values warn and degrade to leaf uniformly.
+                effective_role = _normalize_role(t.get("role") or top_role)
+                child = _build_child_agent(
+                    task_index=i,
+                    goal=t["goal"],
+                    context=t.get("context"),
+                    # Subagents always inherit the parent's toolsets; the model
+                    # cannot choose or narrow them (no model-facing toolsets arg).
+                    toolsets=None,
+                    model=creds["model"],
+                    max_iterations=effective_max_iter,
+                    task_count=n_tasks,
+                    parent_agent=parent_agent,
+                    override_provider=creds["provider"],
+                    override_base_url=creds["base_url"],
+                    override_api_key=creds["api_key"],
+                    override_api_mode=creds["api_mode"],
+                    override_acp_command=creds.get("command"),
+                    override_acp_args=creds.get("args"),
+                    role=effective_role,
+                )
+                # Override with correct parent tool names (before child construction mutated global)
+                child._delegate_saved_tool_names = _parent_tool_names
+                children.append((i, t, child))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
@@ -2526,6 +2858,50 @@ def delegate_task(
             _i, _t, child = children[0]
             result = _run_single_child(_i, _t["goal"], child, parent_agent)
             results.append(result)
+        elif use_process_isolation:
+            # Batch -- each child in its own OS process (own GIL). The
+            # runner relays child progress into the same parent-side
+            # callbacks the thread path uses, so the TUI/gateway event
+            # stream is identical.
+            completed_counter = [0]
+            spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
+
+            def _note_completion(entry: Dict[str, Any]) -> None:
+                # Same per-task completion line the thread path prints.
+                completed_counter[0] += 1
+                idx = entry.get("task_index", 0)
+                label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+                dur = entry.get("duration_seconds", 0)
+                status = entry.get("status", "?")
+                icon = "✓" if status == "completed" else "✗"
+                remaining = n_tasks - completed_counter[0]
+                completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                if spinner_ref:
+                    try:
+                        spinner_ref.print_above(completion_line)
+                    except Exception:
+                        _emit_parent_console(parent_agent, f"  {completion_line}")
+                else:
+                    _emit_parent_console(parent_agent, f"  {completion_line}")
+                if spinner_ref and remaining > 0:
+                    try:
+                        spinner_ref.update_text(
+                            f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
+                        )
+                    except Exception as e:
+                        logger.debug("Spinner update_text failed: %s", e)
+
+            from tools.delegate_process import run_children_in_processes
+
+            results.extend(
+                run_children_in_processes(
+                    children=children,
+                    parent_agent=parent_agent,
+                    child_timeout=_get_child_timeout(),
+                    on_complete=_note_completion,
+                )
+            )
+            results.sort(key=lambda r: r["task_index"])
         else:
             # Batch -- run in parallel with per-task progress lines
             completed_count = 0

@@ -258,6 +258,10 @@ def build_turn_context(
         _msg_preview,
     )
 
+    # Compression may rotate ``agent.session_id`` during this turn. Verification
+    # evidence must keep the identity that owns edits made before that rotation.
+    agent._verification_session_id = agent.session_id or ""
+
     # Initialize conversation (copy to avoid mutating the caller's list).
     messages = list(conversation_history) if conversation_history else []
 

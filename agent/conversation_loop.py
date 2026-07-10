@@ -5067,7 +5067,10 @@ def run_conversation(
 
                     if verify_on_stop_enabled():
                         _verify_nudge = build_verify_on_stop_nudge(
-                            session_id=getattr(agent, "session_id", None),
+                            session_id=(
+                                getattr(agent, "_verification_session_id", None)
+                                or getattr(agent, "session_id", None)
+                            ),
                             changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
                             attempts=getattr(agent, "_verification_stop_nudges", 0),
                         )
@@ -5126,7 +5129,11 @@ def run_conversation(
                             coding = bool(is_coding_context(platform=getattr(agent, "platform", "") or ""))
                             agent._resolved_is_coding = coding
                         _verify_nudge2 = get_pre_verify_continue_message(
-                            session_id=getattr(agent, "session_id", None) or "",
+                            session_id=(
+                                getattr(agent, "_verification_session_id", None)
+                                or getattr(agent, "session_id", None)
+                                or ""
+                            ),
                             platform=getattr(agent, "platform", "") or "",
                             model=getattr(agent, "model", "") or "",
                             coding=coding,

@@ -1400,7 +1400,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = _ra().handle_function_call(
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
-                    session_id=agent.session_id or "",
+                    session_id=(
+                        getattr(agent, "_verification_session_id", None)
+                        or agent.session_id
+                        or ""
+                    ),
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
@@ -1442,7 +1446,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = _ra().handle_function_call(
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
-                    session_id=agent.session_id or "",
+                    session_id=(
+                        getattr(agent, "_verification_session_id", None)
+                        or agent.session_id
+                        or ""
+                    ),
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,

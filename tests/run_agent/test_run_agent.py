@@ -3984,6 +3984,37 @@ class TestRunConversation:
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
 
+    def test_verification_session_survives_compression_rotation(self, agent, monkeypatch):
+        """A turn keeps its verification identity when compression rotates the live session."""
+        self._setup_agent(agent)
+        agent.session_id = "parent-session"
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        original_execute = agent._execute_tool_calls
+
+        def rotate_before_dispatch(*args, **kwargs):
+            agent.session_id = "child-session"
+            agent._turn_file_mutation_paths = {"/tmp/project/app.py"}
+            return original_execute(*args, **kwargs)
+
+        monkeypatch.setattr(agent, "_execute_tool_calls", rotate_before_dispatch)
+        with (
+            patch("run_agent.handle_function_call", return_value="search result") as dispatch,
+            patch("agent.verification_stop.verify_on_stop_enabled", return_value=True),
+            patch("agent.verification_stop.build_verify_on_stop_nudge", return_value=None) as nudge,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+        assert dispatch.call_args.kwargs["session_id"] == "parent-session"
+        assert nudge.call_args.kwargs["session_id"] == "parent-session"
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

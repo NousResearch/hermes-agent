@@ -429,6 +429,19 @@ class TestExpensiveFuzzyGuards:
         assert err == "Could not find a match for old_string in the file"
         assert CountingSequenceMatcher.calls <= 5
 
+    def test_block_anchor_skips_oversized_middle_comparison(self, monkeypatch):
+        class ForbiddenSequenceMatcher:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("SequenceMatcher should not run for oversized block-anchor middle")
+
+        monkeypatch.setattr(fm, "_SEQUENCE_MATCHER_MAX_PAIR_CHAR_PRODUCT", 100)
+        monkeypatch.setattr(fm, "SequenceMatcher", ForbiddenSequenceMatcher)
+
+        content = "anchor start\n" + ("content middle " * 20) + "\nanchor end"
+        pattern = "anchor start\n" + ("pattern middle " * 20) + "\nanchor end"
+
+        assert fm._strategy_block_anchor(content, pattern) == []
+
 
 class TestStrategyNameSurfaced:
     """Tests for the strategy name in the 4-tuple return (Bug 6)."""

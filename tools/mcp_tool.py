@@ -609,7 +609,9 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str):
         result = await (list_method(cursor=cursor) if cursor else list_method())
         items.extend(getattr(result, items_attr, None) or [])
         cursor = getattr(result, "nextCursor", None)
-        if not cursor:
+        # Per the MCP spec the cursor is an opaque string; anything else
+        # (including mock objects in tests) means "no more pages".
+        if not isinstance(cursor, str) or not cursor:
             break
     else:
         logger.warning(

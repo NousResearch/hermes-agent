@@ -464,6 +464,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception:
                 block_message = None
 
+            # Plan-mode dispatch guard (fail-closed): block mutating tools while
+            # the session is planning / awaiting approval. See hermes_cli/plan_mode.
+            _plan_block = None
+            if block_message is None:
+                try:
+                    from hermes_cli.plan_mode import tool_block_reason as _plan_block_reason
+                    _plan_block = _plan_block_reason(
+                        getattr(agent, "session_id", "") or "",
+                        function_name,
+                        function_args,
+                    )
+                except Exception:
+                    _plan_block = None
+
             if block_message is not None:
                 block_result = json.dumps({"error": block_message}, ensure_ascii=False)
                 _emit_terminal_post_tool_call(
@@ -476,6 +490,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     status="blocked",
                     error_type="plugin_block",
                     error_message=block_message,
+                    middleware_trace=list(middleware_trace),
+                )
+            elif _plan_block is not None:
+                block_result = json.dumps({"error": _plan_block}, ensure_ascii=False)
+                _emit_terminal_post_tool_call(
+                    agent,
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=block_result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    status="blocked",
+                    error_type="plan_mode_block",
+                    error_message=_plan_block,
                     middleware_trace=list(middleware_trace),
                 )
             else:
@@ -1126,6 +1154,22 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
             except Exception:
                 pass
+
+            # Plan-mode dispatch guard (fail-closed): block mutating tools while
+            # the session is planning / awaiting approval. See hermes_cli/plan_mode.
+            if _block_msg is None:
+                try:
+                    from hermes_cli.plan_mode import tool_block_reason as _plan_block_reason
+                    _plan_reason = _plan_block_reason(
+                        getattr(agent, "session_id", "") or "",
+                        function_name,
+                        function_args,
+                    )
+                    if _plan_reason is not None:
+                        _block_msg = _plan_reason
+                        _block_error_type = "plan_mode_block"
+                except Exception:
+                    pass
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:

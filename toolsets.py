@@ -235,6 +235,14 @@ TOOLSETS = {
         "tools": ["clarify"],
         "includes": []
     },
+
+    "plan": {
+        # Injected into enabled_toolsets by hermes_cli/plan_mode.py only while
+        # plan mode is active; carries the plan_ready approval tool.
+        "description": "Plan-mode approval tool (request execution approval for a written plan)",
+        "tools": ["plan_ready"],
+        "includes": []
+    },
     
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",

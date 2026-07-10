@@ -495,7 +495,9 @@ class TestCodexOAuthContextLength:
         fake_response.json.return_value = {
             "models": [{"slug": "gpt-5.6-terra", "context_window": 372_000}]
         }
-
+        # Exercise real persistence here: this test verifies that a live value
+        # replaces the stale on-disk entry. Failure-path tests below mock the
+        # writer because they assert that fallback values are not persisted.
         with patch("agent.model_metadata.requests.get", return_value=fake_response) as mock_get:
             ctx = mm.get_model_context_length(
                 model="gpt-5.6-terra",

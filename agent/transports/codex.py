@@ -257,6 +257,15 @@ class ResponsesApiTransport(ProviderTransport):
         # the cache-scope routing headers below. Falls back to session_id when
         # there is no static content to hash.
         cache_key = _content_cache_key(instructions, response_tools) or session_id
+        # prompt_cache_key is capped at 64 chars by the OpenAI Responses /
+        # ChatGPT-Codex backend (HTTP 400 "string too long" past that). The
+        # content-addressed hash from _content_cache_key() is always well
+        # under the limit, but the session_id fallback is caller-supplied and
+        # unbounded (e.g. control-plane session keys like
+        # ``agent:<uuid>:issue:<uuid>``), so clamp here. Routing hint only —
+        # never a correctness boundary — so truncation is safe. See #62063.
+        if cache_key and len(cache_key) > 64:
+            cache_key = cache_key[:64]
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
         if not is_github_responses and not is_xai_responses and cache_key:

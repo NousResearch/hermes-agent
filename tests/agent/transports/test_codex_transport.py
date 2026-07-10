@@ -112,6 +112,60 @@ class TestCodexBuildKwargs:
         )
         assert kw1["prompt_cache_key"] == kw2["prompt_cache_key"]
 
+    def test_cache_key_session_id_fallback_clamped_to_64_chars(self, transport, monkeypatch):
+        """Regression for #62063: the OpenAI Responses / ChatGPT-Codex backend
+        caps prompt_cache_key at 64 chars (HTTP 400 'string too long' past
+        that). When there's no static content to hash, the session_id
+        fallback must be clamped — caller-supplied session keys (e.g.
+        control-plane keys like ``agent:<uuid>:issue:<uuid>``) can exceed 64
+        chars."""
+        import agent.transports.codex as codex_module
+
+        monkeypatch.setattr(codex_module, "_content_cache_key", lambda *a, **k: None)
+        long_session_id = "agent:" + ("a" * 140)
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id=long_session_id,
+        )
+        assert kw["prompt_cache_key"] == long_session_id[:64]
+        assert len(kw["prompt_cache_key"]) == 64
+
+    def test_content_cache_key_is_none_only_when_both_empty(self):
+        """The session_id fallback in build_kwargs only fires when
+        _content_cache_key() returns None, which only happens when both
+        instructions and tools are empty. Pins down the actual trigger
+        condition for #62063's fallback path."""
+        from agent.transports.codex import _content_cache_key
+
+        assert _content_cache_key("", None) is None
+        assert _content_cache_key("", []) is None
+        assert _content_cache_key("some instructions", None) is not None
+        assert _content_cache_key("", [{"name": "terminal"}]) is not None
+
+    def test_realistic_call_never_leaks_raw_long_session_id_today(self, transport):
+        """End-to-end sanity check mirroring the production call site
+        (agent/chat_completion_helpers.py never passes an explicit
+        ``instructions`` kwarg — it relies on the messages[0] system-role
+        extraction or the DEFAULT_AGENT_IDENTITY fallback in build_kwargs).
+        Because that fallback always yields non-empty instructions,
+        ``_content_cache_key`` never returns None in real traffic, so
+        ``prompt_cache_key`` is always the bounded ``pck_`` hash — never the
+        raw (potentially >64-char) session_id. This is what makes the
+        session_id-fallback clamp defense-in-depth rather than the only
+        guard, and documents the current DEFAULT_AGENT_IDENTITY-dependent
+        behavior in case that fallback is ever removed."""
+        long_session_id = "agent:" + ("b" * 140)
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id=long_session_id,
+            is_codex_backend=True,
+        )
+        assert kw["prompt_cache_key"].startswith("pck_")
+        assert kw["prompt_cache_key"] != long_session_id
+        assert len(kw["prompt_cache_key"]) <= 64
+
     def test_github_responses_no_cache_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

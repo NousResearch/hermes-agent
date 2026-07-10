@@ -1251,6 +1251,11 @@ def _terminal_env_snapshot() -> Dict[str, str]:
     terminal tools run. A cold-start tool call can arrive before that bridge has
     completed, so build a local snapshot here as the final guard. This preserves
     the existing config bridge semantics without mutating process-global env.
+
+    When the config bridge fails, stale TERMINAL_* values are stripped from the
+    snapshot so callers cannot silently downgrade an isolated backend (Docker,
+    Modal, etc.) to host-local execution. The caller must check for the
+    ``_config_bridge_failed`` sentinel and refuse to run.
     """
     env = dict(os.environ)
 
@@ -1259,6 +1264,12 @@ def _terminal_env_snapshot() -> Dict[str, str]:
         apply_terminal_config_to_env(env=env)
     except Exception:
         logger.debug("Could not bridge terminal config into env snapshot", exc_info=True)
+        # Fail closed: wipe stale terminal env vars so a configured isolated
+        # backend cannot be silently downgraded to host-local execution.
+        for key in list(env.keys()):
+            if key.startswith("TERMINAL_"):
+                env.pop(key, None)
+        env["_config_bridge_failed"] = "1"
 
     return env
 
@@ -1279,6 +1290,23 @@ def _get_env_config() -> Dict[str, Any]:
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     terminal_env = _terminal_env_snapshot()
     env_type = _resolve_backend_type(terminal_env)
+
+    if terminal_env.get("_config_bridge_failed"):
+        # The config bridge failed and stripped stale TERMINAL_* values.
+        # Check whether config.yaml intends an isolated backend; if so, fail
+        # closed instead of silently downgrading to host-local execution.
+        try:
+            from hermes_cli.config import load_config_readonly
+            cfg = load_config_readonly()
+            intended = cfg.get("terminal", {}).get("backend", "local")
+        except Exception:
+            intended = "local"
+        if intended != "local":
+            raise RuntimeError(
+                f"Terminal config bridge failed. Refusing to downgrade "
+                f"terminal.backend={intended} to local execution. "
+                f"Check hermes CLI config connectivity."
+            )
     
     mount_docker_cwd = terminal_env.get("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
     container_backend = env_type in {"docker", "singularity", "modal", "daytona"}

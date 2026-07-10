@@ -145,3 +145,36 @@ class TestResolveBackendType:
         assert config["container_memory"] == 1024
         assert config["container_disk"] == 2048
         assert config["cwd"] == "/root"
+
+    def test_config_bridge_failure_raises_when_backend_is_docker(self, monkeypatch):
+        """When config bridge fails and config intends Docker, fail closed."""
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "stale-image")
+
+        # Simulate a config bridge failure.
+        monkeypatch.setattr(
+            "hermes_cli.config.apply_terminal_config_to_env",
+            lambda env=None: (_ for _ in ()).throw(RuntimeError("Bridge error")),
+        )
+        # load_config_readonly still returns the intended Docker config
+        # for the fallback check in _get_env_config.
+        cfg = {"terminal": {"backend": "docker"}}
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+
+        with pytest.raises(RuntimeError, match="Refusing to downgrade"):
+            _tt_mod._get_env_config()
+
+    def test_config_bridge_failure_allows_local_when_backend_is_local(self, monkeypatch):
+        """When config bridge fails but config intends local, it is safe to proceed."""
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+
+        monkeypatch.setattr(
+            "hermes_cli.config.apply_terminal_config_to_env",
+            lambda env=None: (_ for _ in ()).throw(RuntimeError("Bridge error")),
+        )
+        cfg = {"terminal": {"backend": "local"}}
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+
+        # Must not raise — local → local is a safe fallback.
+        config = _tt_mod._get_env_config()
+        assert config["env_type"] == "local"

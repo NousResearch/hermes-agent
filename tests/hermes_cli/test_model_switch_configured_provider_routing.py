@@ -308,3 +308,100 @@ def test_xai_oauth_soft_accept_preserved_when_no_match():
     )
     assert result.success is True, result.error_message
     assert result.target_provider == "xai-oauth"
+
+
+# ---------------------------------------------------------------------------
+# #62240: step-e static-catalog reroute must not switch onto an unconfigured
+# provider.  ``detect_provider_for_model`` matches Hermes' built-in
+# CURATED_MODELS, so a bare name that also lives there (e.g. ``gpt-5.5`` under
+# ``openai-api``) would silently reroute the session to that vendor even when
+# the user only configured a different endpoint for it — leaving the previous
+# provider's base_url in place and 401ing.  The reroute is now gated on the
+# detected provider actually having credentials.
+# ---------------------------------------------------------------------------
+
+def _run_switch_detect(
+    *,
+    raw_input,
+    current_provider,
+    detected,
+    authed,
+    custom_providers=None,
+    current_model="old-model",
+    current_base_url="https://api.deepseek.com/v1",
+):
+    """Drive ``switch_model`` with a live step-e ``detect_provider_for_model``
+    return and a controlled authenticated-provider set.
+
+    Only step e is exercised here: alias/aggregator/config paths are neutralised
+    so ``detect_provider_for_model`` decides the reroute, and
+    ``get_authenticated_provider_slugs`` is pinned to ``authed`` to prove the
+    credential gate.
+    """
+    with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
+         patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
+         patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
+         patch("hermes_cli.models.validate_requested_model", return_value=_ACCEPTED), \
+         patch("hermes_cli.models.detect_provider_for_model", return_value=detected), \
+         patch("hermes_cli.model_switch.get_authenticated_provider_slugs", return_value=authed), \
+         patch("hermes_cli.model_switch.get_model_info", return_value=None), \
+         patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
+         patch(
+             "hermes_cli.runtime_provider.resolve_runtime_provider",
+             return_value={
+                 "api_key": "***",
+                 "base_url": current_base_url or "http://resolved/v1",
+                 "api_mode": "",
+             },
+         ):
+        return switch_model(
+            raw_input=raw_input,
+            current_provider=current_provider,
+            current_model=current_model,
+            current_base_url=current_base_url,
+            custom_providers=custom_providers or [],
+        )
+
+
+def test_static_reroute_skipped_when_detected_provider_unauthenticated():
+    """The core #62240 repro: ``/model gpt-5.5`` while on deepseek must NOT
+    reroute to the built-in ``openai-api`` catalog when the user has no
+    openai-api credentials — stay on the current provider instead of inheriting
+    a stale base_url."""
+    result = _run_switch_detect(
+        raw_input="gpt-5.5",
+        current_provider="deepseek",
+        detected=("openai-api", "gpt-5.5"),
+        authed=["deepseek", "custom:lmuai"],
+        custom_providers=[{"name": "lmuai", "base_url": "https://api.lmuai.com/v1"}],
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "deepseek"
+    assert result.new_model == "gpt-5.5"
+
+
+def test_static_reroute_allowed_when_detected_provider_authenticated():
+    """No regression: when the user IS authenticated for the detected provider,
+    the static reroute still happens."""
+    result = _run_switch_detect(
+        raw_input="gpt-5.5",
+        current_provider="deepseek",
+        detected=("openai-api", "gpt-5.5"),
+        authed=["deepseek", "openai-api"],
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "openai-api"
+    assert result.new_model == "gpt-5.5"
+
+
+def test_static_reroute_allowed_when_authed_set_unknown():
+    """When the authenticated set can't be determined (empty), fall back to the
+    historical reroute behaviour so the gate never over-blocks."""
+    result = _run_switch_detect(
+        raw_input="gpt-5.5",
+        current_provider="deepseek",
+        detected=("openai-api", "gpt-5.5"),
+        authed=[],
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "openai-api"

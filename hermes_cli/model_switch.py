@@ -1144,7 +1144,35 @@ def switch_model(
         ):
             detected = detect_provider_for_model(new_model, current_provider)
             if detected:
-                target_provider, new_model = detected
+                detected_provider = detected[0]
+                # detect_provider_for_model() matches Hermes' built-in static
+                # catalogs (CURATED_MODELS), so a bare name that also lives
+                # there — e.g. ``gpt-5.5`` under ``openai-api`` — would silently
+                # reroute the session onto that vendor even when the user never
+                # configured it.  The credential resolver then finds no key for
+                # it and leaves the *previous* provider's base_url in place, so
+                # the request is sent to the wrong endpoint and 401s (#62240).
+                # Only accept a cross-provider static reroute when the detected
+                # provider actually has credentials; a configured custom/user
+                # provider that declares the model already wins earlier via
+                # step d.5.  When the authed set is unknown (empty), fall back
+                # to the historical behaviour so we never over-block.
+                if detected_provider == current_provider:
+                    target_provider, new_model = detected
+                else:
+                    _authed = get_authenticated_provider_slugs(
+                        current_provider=current_provider,
+                        user_providers=user_providers,
+                        custom_providers=custom_providers,
+                    )
+                    if not _authed or detected_provider in _authed:
+                        target_provider, new_model = detected
+                    else:
+                        logger.debug(
+                            "Not rerouting '%s' to unconfigured provider %s "
+                            "(no credentials); keeping current provider %s",
+                            new_model, detected_provider, current_provider,
+                        )
 
     # =================================================================
     # COMMON PATH: Resolve credentials, normalize, get metadata

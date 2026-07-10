@@ -802,6 +802,9 @@ function registerMediaProtocol() {
 let mainWindow = null
 let hermesProcess = null
 let connectionPromise = null
+// True while connection-config:apply soft-rehomes the primary — suppresses the
+// backend-exit toast so an intentional kill doesn't look like a crash.
+let softRehomeInProgress = false
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
 // (the desktop's launch profile) stays managed by hermesProcess +
 // connectionPromise + startHermes(); this pool only holds EXTRA profile
@@ -4491,6 +4494,12 @@ function getWindowState() {
 }
 
 function sendBackendExit(payload) {
+  // Intentional soft re-home (gateway mode apply) kills the child on purpose —
+  // don't surface the "backend stopped" error toast / boot-failure path.
+  if (softRehomeInProgress) {
+    return
+  }
+
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
@@ -5552,20 +5561,6 @@ function openPortalLoginWindow() {
   })
 }
 
-// A "portal session is gone, re-login" error the renderer flips to signed-out
-// on (via the `needsCloudLogin` tag). `cause` chains the underlying 401 when
-// the session lapsed mid-flight.
-function cloudLoginError(message, cause?) {
-  const err = new Error(message) as any
-  err.needsCloudLogin = true
-
-  if (cause) {
-    err.cause = cause
-  }
-
-  return err
-}
-
 // Discover the hosted (Hermes Cloud) agents the signed-in user can see. Calls
 // the NAS trimmed-summary endpoint over the partition-bound net, so the portal
 // session cookie is attached automatically (no bearer needed — NAS accepts the
@@ -5578,9 +5573,11 @@ async function discoverCloudAgents(org?: string) {
   const portalBaseUrl = resolvePortalBaseUrl()
 
   if (!(await hasLivePortalSession())) {
-    throw cloudLoginError(
+    const err = new Error(
       'You are not signed in to Hermes Cloud. Open Settings → Gateway, choose Hermes Cloud, and sign in.'
-    )
+    ) as any
+    err.needsCloudLogin = true
+    throw err
   }
 
   const orgQuery = org ? `?org=${encodeURIComponent(org)}` : ''
@@ -5595,7 +5592,10 @@ async function discoverCloudAgents(org?: string) {
     // A 401 means the portal session lapsed between the liveness check and the
     // call — surface it as a re-login, not a generic failure.
     if (error && error.statusCode === 401) {
-      throw cloudLoginError('Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.', error)
+      const err = new Error('Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.') as any
+      err.needsCloudLogin = true
+      err.cause = error
+      throw err
     }
 
     // A 409 means we're a multi-org user who hasn't picked an org. The body
@@ -5616,10 +5616,8 @@ async function discoverCloudAgents(org?: string) {
   return { agents: trimCloudAgents(body), org: trimCloudOrg(body?.org) }
 }
 
-// Project a NAS org row ({ id, slug, name, isPersonal, role }) to the trimmed
-// shape the renderer consumes/persists, or null when absent/malformed. Shared
-// by the success-body echo (trimCloudOrg) and the 409 org list, so the two can
-// never drift.
+// Project a NAS response org ({ id, slug, name, isPersonal }) to the trimmed
+// shape the renderer persists, or null when absent/malformed.
 function trimCloudOrg(org) {
   if (!org || typeof org !== 'object' || typeof org.id !== 'string') {
     return null
@@ -5657,7 +5655,15 @@ function parseOrgSelectionError(error) {
     return null
   }
 
-  return parsed.orgs.map(trimCloudOrg).filter(Boolean)
+  return parsed.orgs
+    .filter(o => o && typeof o === 'object' && typeof o.id === 'string')
+    .map(o => ({
+      id: o.id,
+      slug: typeof o.slug === 'string' ? o.slug : null,
+      name: typeof o.name === 'string' ? o.name : o.id,
+      isPersonal: Boolean(o.isPersonal),
+      role: typeof o.role === 'string' ? o.role : 'MEMBER'
+    }))
 }
 
 // Project NAS's agent rows to the trimmed DTO the renderer consumes.
@@ -5691,7 +5697,9 @@ async function cloudAgentSilentSignIn(dashboardUrl) {
   // interactive prompt rather than a silent cascade. Discovery already gates on
   // this, but a selection can arrive after the session lapsed.
   if (!(await hasLivePortalSession())) {
-    throw cloudLoginError('Your Hermes Cloud session has expired. Sign in to Hermes Cloud again.')
+    const err = new Error('Your Hermes Cloud session has expired. Sign in to Hermes Cloud again.') as any
+    err.needsCloudLogin = true
+    throw err
   }
 
   await openOauthLoginWindow(baseUrl, { silent: true })
@@ -6322,26 +6330,57 @@ function stopBackendChild(child) {
   }
 }
 
-function resetHermesConnection() {
+// Soft gateway-mode apply: tear down the primary without resetting boot UI or
+// reloading the renderer. The shell stays up; the renderer wipes session lists
+// (so skeletons retrigger) and re-dials. Distinct from hard re-home (profile
+// switch / crash recovery), which still resets boot progress + reloads.
+function resetHermesConnection({ soft = false } = {}) {
   connectionPromise = null
   backendStartFailure = null
 
   stopBackendChild(hermesProcess)
 
   hermesProcess = null
-  resetBootProgressForReconnect()
+
+  if (!soft) {
+    resetBootProgressForReconnect()
+  }
 }
 
 // Re-home the primary backend: reset connection state, then wait for the live
 // dashboard process to actually exit (SIGKILL after 5s) so the next
 // startHermes() spawns fresh instead of racing the dying one. Shared by the
 // connection-config and profile switch flows.
-async function teardownPrimaryBackendAndWait() {
+async function teardownPrimaryBackendAndWait({ soft = false } = {}) {
   // Capture the reference before resetHermesConnection() nulls hermesProcess.
   const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
-  resetHermesConnection()
 
-  await waitForBackendExit(dying)
+  if (soft) {
+    softRehomeInProgress = true
+  }
+
+  try {
+    resetHermesConnection({ soft })
+    await waitForBackendExit(dying)
+  } finally {
+    if (soft) {
+      softRehomeInProgress = false
+    }
+  }
+}
+
+function sendConnectionApplied() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  const { webContents } = mainWindow
+
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
+
+  webContents.send('hermes:connection:applied')
 }
 
 async function waitForBackendExit(child, timeoutMs = 5000) {
@@ -7648,10 +7687,11 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
     // re-resolves against the new remote/local target.
     stopPoolBackend(key)
   } else {
-    // Global connection, or the primary profile's connection: re-home the
-    // window backend by tearing it down and reloading the renderer.
-    await teardownPrimaryBackendAndWait()
-    mainWindow?.reload()
+    // Global / primary connection: soft re-home. Tear down the window backend
+    // without resetting boot UI or reloading — the shell stays, the renderer
+    // wipes session lists (skeletons) and re-dials on hermes:connection:applied.
+    await teardownPrimaryBackendAndWait({ soft: true })
+    sendConnectionApplied()
   }
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)

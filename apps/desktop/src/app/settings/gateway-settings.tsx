@@ -3,11 +3,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Tip } from '@/components/ui/tooltip'
 import type { DesktopAuthProvider, DesktopCloudAgent, DesktopCloudOrg, DesktopConnectionProbeResult } from '@/global'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
-import { AlertCircle, Check, Cloud, FileText, Globe, Loader2, LogIn, Monitor, RefreshCw } from '@/lib/icons'
+import { AlertCircle, Check, Cloud, FileText, Globe, HelpCircle, Loader2, LogIn, Monitor, RefreshCw } from '@/lib/icons'
+import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
+import { previewGatewaySwitch } from '@/store/gateway-switch'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
 
@@ -46,6 +49,7 @@ function ModeCard({
   active,
   description,
   disabled,
+  hint,
   icon: Icon,
   onSelect,
   title
@@ -53,6 +57,7 @@ function ModeCard({
   active: boolean
   description: string
   disabled?: boolean
+  hint?: string
   icon: typeof Monitor
   onSelect: () => void
   title: string
@@ -60,22 +65,29 @@ function ModeCard({
   return (
     <button
       className={cn(
-        'rounded-xl border p-3 text-left transition',
-        active
-          ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-          : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) hover:bg-(--chrome-action-hover)',
-        disabled && 'cursor-not-allowed opacity-50'
+        'flex h-full min-h-0 w-full flex-col p-3 text-left disabled:cursor-not-allowed disabled:opacity-50',
+        selectableCardClass({ active, prominent: true })
       )}
       disabled={disabled}
       onClick={onSelect}
       type="button"
     >
-      <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
-        <Icon className="size-4 text-muted-foreground" />
-        <span>{title}</span>
-        {active ? <Check className="ml-auto size-4 text-primary" /> : null}
+      <div className="flex items-center gap-1.5">
+        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 text-[length:var(--conversation-text-font-size)] font-medium">{title}</span>
+        {hint ? (
+          <Tip label={hint}>
+            <span
+              className="grid size-3.5 shrink-0 cursor-help place-items-center text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)"
+              onClick={event => event.stopPropagation()}
+            >
+              <HelpCircle className="size-3.5" />
+            </span>
+          </Tip>
+        ) : null}
+        {active ? <Check className="ml-auto size-3.5 shrink-0 text-primary" /> : null}
       </div>
-      <p className="mt-1.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+      <p className="mt-1.5 flex-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {description}
       </p>
     </button>
@@ -105,6 +117,7 @@ export function GatewaySettings() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [previewingSwitch, setPreviewingSwitch] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [remoteToken, setRemoteToken] = useState('')
@@ -428,10 +441,6 @@ export function GatewaySettings() {
 
   // --- Hermes Cloud handlers ---
 
-  // A rejected cloud IPC call tagged `needsCloudLogin` means the portal session
-  // lapsed — treat it as signed-out so the panel falls back to the sign-in view.
-  const cloudLoginLapsed = (err: unknown) => Boolean(err && typeof err === 'object' && 'needsCloudLogin' in err)
-
   // Pull the discovered agent list over the shared portal session. Tolerant of
   // a lapsed session: a needsCloudLogin error flips us back to signed-out.
   // `org` scopes discovery for multi-org users; when discovery comes back with
@@ -479,7 +488,7 @@ export function GatewaySettings() {
       setCloudDiscover('error')
 
       // A lapsed/absent portal session means we're effectively signed out.
-      if (cloudLoginLapsed(err)) {
+      if (err && typeof err === 'object' && 'needsCloudLogin' in err) {
         setCloudSignedIn(false)
       }
 
@@ -606,7 +615,7 @@ export function GatewaySettings() {
 
   // Select a discovered agent: drive the silent per-agent cascade (no second
   // prompt — the shared portal session auto-approves), then persist a cloud-mode
-  // connection pointed at its dashboardUrl and apply it (reconnects the window).
+  // connection pointed at its dashboardUrl and apply it (soft-reconnects in place).
   const connectCloudAgent = async (agent: DesktopCloudAgent) => {
     if (!agent.dashboardUrl) {
       return
@@ -633,10 +642,10 @@ export function GatewaySettings() {
         return
       }
 
-      // Persist a cloud-mode connection (remote-shaped, oauth) and reconnect.
-      // Include the selected org so Settings reopens into the same org + instance.
-      // Read the REF (not the cloudOrg state) so a just-resolved org from
-      // discovery in this same render tick is captured, not a stale null.
+  // Persist a cloud-mode connection (remote-shaped, oauth) and soft-reconnect.
+  // Include the selected org so Settings reopens into the same org + instance.
+  // Read the REF (not the cloudOrg state) so a just-resolved org from
+  // discovery in this same render tick is captured, not a stale null.
       const next = await desktop.applyConnectionConfig({
         mode: 'cloud',
         profile: scope ?? undefined,
@@ -648,7 +657,7 @@ export function GatewaySettings() {
       setState(next)
       notify({ kind: 'success', title: g.cloudConnectedTitle, message: g.cloudConnectedTo(agent.name) })
     } catch (err) {
-      if (cloudLoginLapsed(err)) {
+      if (err && typeof err === 'object' && 'needsCloudLogin' in err) {
         setCloudSignedIn(false)
       }
 
@@ -744,31 +753,37 @@ export function GatewaySettings() {
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        <ModeCard
-          active={state.mode === 'local'}
-          description={g.localDesc}
-          disabled={state.envOverride}
-          icon={Monitor}
-          onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-          title={g.localTitle}
-        />
-        <ModeCard
-          active={state.mode === 'cloud'}
-          description={g.cloudDesc}
-          disabled={state.envOverride}
-          icon={Cloud}
-          onSelect={() => setState(current => ({ ...current, mode: 'cloud' }))}
-          title={g.cloudTitle}
-        />
-        <ModeCard
-          active={state.mode === 'remote'}
-          description={g.remoteDesc}
-          disabled={state.envOverride}
-          icon={Globe}
-          onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
-          title={g.remoteTitle}
-        />
+      <div className="mb-5 grid gap-2">
+        <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
+          {g.modeTitle}
+        </div>
+        <div className="grid auto-rows-fr grid-cols-1 gap-2 min-[42rem]:grid-cols-3">
+          <ModeCard
+            active={state.mode === 'local'}
+            description={g.localDesc}
+            disabled={state.envOverride}
+            icon={Monitor}
+            onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
+            title={g.localTitle}
+          />
+          <ModeCard
+            active={state.mode === 'cloud'}
+            description={g.cloudDesc}
+            disabled={state.envOverride}
+            icon={Cloud}
+            onSelect={() => setState(current => ({ ...current, mode: 'cloud' }))}
+            title={g.cloudTitle}
+          />
+          <ModeCard
+            active={state.mode === 'remote'}
+            description={g.remoteDesc}
+            disabled={state.envOverride}
+            hint={g.remoteAuthHint}
+            icon={Globe}
+            onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
+            title={g.remoteTitle}
+          />
+        </div>
       </div>
 
       {/* Hermes Cloud panel: one portal sign-in, then a discovered-agent picker
@@ -864,10 +879,7 @@ export function GatewaySettings() {
                     <AlertCircle className="mt-0.5 size-4 shrink-0" />
                     <span>
                       {g.cloudNoAgents.before}
-                      <ExternalLink
-                        href="https://portal.nousresearch.com/cloud?setup=instance"
-                        showExternalIcon={false}
-                      >
+                      <ExternalLink href="https://portal.nousresearch.com/agents" showExternalIcon={false}>
                         {g.cloudNoAgents.linkText}
                       </ExternalLink>
                       {g.cloudNoAgents.after}
@@ -1053,6 +1065,26 @@ export function GatewaySettings() {
           description={g.diagnosticsDesc}
           title={g.diagnostics}
         />
+        {import.meta.env.DEV ? (
+          <ListRow
+            action={
+              <Button
+                disabled={previewingSwitch}
+                onClick={() => {
+                  setPreviewingSwitch(true)
+                  void previewGatewaySwitch().finally(() => setPreviewingSwitch(false))
+                }}
+                size="sm"
+                variant="textStrong"
+              >
+                {previewingSwitch ? <Loader2 className="animate-spin" /> : null}
+                Preview soft switch
+              </Button>
+            }
+            description="Wipe session lists so sidebar skeletons retrigger — no real backend teardown."
+            title="Dev · soft switch"
+          />
+        ) : null}
       </div>
     </SettingsContent>
   )

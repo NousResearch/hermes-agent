@@ -26,8 +26,9 @@ transport:
 install:
   type: git
   url: https://github.com/wassermanproductions/motion-previs-mcp.git
-  # Pin to a commit/tag. Required — manifests do not float HEAD.
-  ref: v1.0.0
+  # Pinned to an immutable commit SHA (the v1.0.0 release), per the
+  # dependency policy for Git URLs — tags can move, commits cannot.
+  ref: 693881823dee7e4ad7cbb8fc24c9b023562462c0
 
 # The app's control server binds to 127.0.0.1 only and authenticates with a
 # per-launch random token the bridge auto-discovers from the local discovery

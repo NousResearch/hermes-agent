@@ -155,6 +155,19 @@ class TestEditMessageBlocks:
         assert "set -euo pipefail" in kwargs["text"]
 
     @pytest.mark.asyncio
+    async def test_tool_progress_edit_caps_long_fallback_text(self):
+        adapter, client = _make_adapter()
+        long_progress = TOOL_PROGRESS + "\n    " + "&" * 38000
+        assert len(long_progress) < adapter.MAX_MESSAGE_LENGTH
+        assert len(adapter.format_message(long_progress)) > adapter.MAX_MESSAGE_LENGTH
+
+        await adapter.edit_message("C1", "111.222", long_progress, finalize=False)
+
+        kwargs = client.chat_update.await_args.kwargs
+        assert kwargs["blocks"]
+        assert len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+
+    @pytest.mark.asyncio
     async def test_tool_progress_toggle_expands_cached_card(self):
         adapter, client = _make_adapter()
         await adapter.send("C1", TOOL_PROGRESS)
@@ -178,6 +191,27 @@ class TestEditMessageBlocks:
         assert "Reading skill s2-github-pr-review" in visible
         assert "Run skill_view" not in visible
         assert "Run terminal" not in visible
+
+    @pytest.mark.asyncio
+    async def test_tool_progress_toggle_caps_long_fallback_text(self):
+        adapter, client = _make_adapter()
+        long_progress = TOOL_PROGRESS + "\n    " + "&" * 38000
+        adapter._remember_tool_progress_card(
+            "C1",
+            "111.222",
+            long_progress,
+            expanded=False,
+        )
+
+        await adapter._handle_tool_progress_toggle(
+            AsyncMock(),
+            {"channel": {"id": "C1"}, "message": {"ts": "111.222"}},
+            {"value": "collapsed"},
+        )
+
+        kwargs = client.chat_update.await_args.kwargs
+        assert kwargs["blocks"]
+        assert len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
 
     @pytest.mark.asyncio
     async def test_tool_progress_expanded_failed_step_shows_error_without_summary_row(self):

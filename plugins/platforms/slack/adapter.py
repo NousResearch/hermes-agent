@@ -1521,6 +1521,10 @@ class SlackAdapter(BasePlatformAdapter):
             expanded = self._tool_progress_expanded(chat_id, message_id)
             blocks = self._maybe_tool_progress_blocks(content, expanded=expanded)
             if blocks:
+                update_kwargs["text"] = self.truncate_message(
+                    formatted,
+                    self.MAX_MESSAGE_LENGTH,
+                )[0]
                 update_kwargs["blocks"] = blocks
                 self._remember_tool_progress_card(
                     chat_id,
@@ -3736,10 +3740,14 @@ class SlackAdapter(BasePlatformAdapter):
             return
 
         try:
+            fallback_text = self.truncate_message(
+                self.format_message(content),
+                self.MAX_MESSAGE_LENGTH,
+            )[0]
             await self._get_client(channel_id).chat_update(
                 channel=channel_id,
                 ts=msg_ts,
-                text=self.format_message(content),
+                text=fallback_text,
                 blocks=blocks,
             )
             self._remember_tool_progress_card(

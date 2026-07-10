@@ -28,6 +28,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.conversation_compression import conversation_history_after_compression
 from agent.iteration_budget import IterationBudget
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
@@ -142,7 +143,13 @@ def build_turn_context(
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 
-    agent._ensure_db_session()
+    # NOTE: the DB session row is created later, AFTER the system prompt is
+    # restored/built (see _ensure_db_session() below the system-prompt block).
+    # Creating it here — before _cached_system_prompt is populated — inserts a
+    # row with system_prompt=NULL on a fresh API/gateway agent that carries
+    # client-managed history, which then trips the "stored system prompt is
+    # null; rebuilding from scratch" warning and a needless first-turn prefix
+    # cache miss. (Issue #45499.)
 
     # Tell auxiliary_client what the live main provider/model are for this turn.
     try:
@@ -178,9 +185,19 @@ def build_turn_context(
     # name and leaves the snapshot untouched on no-change).
     try:
         if not getattr(agent, "_skip_mcp_refresh", False):
-            from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
-            if has_registered_mcp_tools():
-                refresh_agent_mcp_tools(agent, quiet_mode=True)
+            # Import-cost gate: ``tools.mcp_tool`` pulls in the whole ``mcp``
+            # package (~0.4s measured) even when the user has zero MCP servers
+            # configured.  MCP tools can only be registered by code that has
+            # already imported ``tools.mcp_tool`` (discovery, /reload-mcp,
+            # late-binding refresh) — so if it isn't in sys.modules yet, there
+            # is nothing to refresh and the import can be skipped outright.
+            # This keeps the no-MCP first turn off the heavy import path
+            # without changing behavior for MCP users.
+            import sys as _sys
+            if "tools.mcp_tool" in _sys.modules:
+                from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
+                if has_registered_mcp_tools():
+                    refresh_agent_mcp_tools(agent, quiet_mode=True)
     except Exception:
         logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
 
@@ -216,6 +233,9 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
+    if callable(_reset_consol):
+        _reset_consol()
     agent._vision_supported = True
 
     # Pre-turn connection health check: clean up dead TCP connections.
@@ -267,6 +287,9 @@ def build_turn_context(
 
     # Track user turns for memory flush and periodic nudge logic.
     agent._user_turn_count += 1
+    # Copilot x-initiator: the first API call of this user turn is
+    # user-initiated; tool-loop follow-ups revert to "agent" (#3040).
+    agent._is_user_initiated_turn = True
 
     # Reset the streaming context scrubber at the top of each turn.
     scrubber = getattr(agent, "_stream_context_scrubber", None)
@@ -309,6 +332,11 @@ def build_turn_context(
 
     active_system_prompt = agent._cached_system_prompt
 
+    # Create the DB session row now that _cached_system_prompt is populated, so
+    # the persisted snapshot is written non-NULL on the first turn (Issue
+    # #45499). Idempotent: _ensure_db_session() no-ops once the row exists.
+    agent._ensure_db_session()
+
     # Crash-resilience: persist the inbound user turn as soon as the session row exists.
     try:
         agent._persist_session(messages, conversation_history)
@@ -341,12 +369,32 @@ def build_turn_context(
             lambda _tokens: False,
         )
         _preflight_deferred = _defer_preflight(_preflight_tokens)
+        # Codex app-server threads are compacted by the codex agent itself;
+        # Hermes only initiates compaction in "hermes" mode (#36801).
+        _codex_native_auto = (
+            getattr(agent, "api_mode", None) == "codex_app_server"
+            and str(
+                getattr(
+                    agent,
+                    "codex_app_server_auto_compaction",
+                    "native",
+                )
+                or "native"
+            ).lower()
+            in {"native", "off"}
+        )
 
         if not _preflight_deferred:
             _last = _compressor.last_prompt_tokens
             # Do NOT overwrite the -1 sentinel (#36718).
             if _last >= 0 and _preflight_tokens > _last:
                 _compressor.last_prompt_tokens = _preflight_tokens
+
+        _compression_cooldown = getattr(
+            _compressor,
+            "get_active_compression_failure_cooldown",
+            lambda: None,
+        )()
 
         if _preflight_deferred:
             logger.info(
@@ -355,6 +403,19 @@ def build_turn_context(
                 f"{_preflight_tokens:,}",
                 f"{_compressor.threshold_tokens:,}",
                 f"{_compressor.last_real_prompt_tokens:,}",
+            )
+        elif _compression_cooldown:
+            logger.info(
+                "Skipping preflight compression: same-session cooldown active "
+                "(~%s seconds remaining, session %s)",
+                int(_compression_cooldown.get("remaining_seconds", 0.0)),
+                agent.session_id or "none",
+            )
+        elif _codex_native_auto:
+            logger.info(
+                "Skipping Hermes preflight compression for codex app-server "
+                "(mode=%s); Hermes will not start thread compaction here.",
+                getattr(agent, "codex_app_server_auto_compaction", "native"),
             )
         elif _compressor.should_compress(_preflight_tokens):
             logger.info(
@@ -389,7 +450,9 @@ def build_turn_context(
                     _orig_len, len(messages), _orig_tokens, _preflight_tokens
                 ):
                     break  # Cannot compress further: neither rows nor tokens moved
-                conversation_history = None
+                conversation_history = conversation_history_after_compression(
+                    agent, messages
+                )
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
                 agent._last_content_with_tools = None
@@ -415,11 +478,37 @@ def build_turn_context(
             sender_id=getattr(agent, "_user_id", None) or "",
         )
         _ctx_parts: list[str] = []
+        # Spill oversized per-hook context to disk so a runaway plugin
+        # can't inflate every subsequent turn's prompt. Ported from
+        # openai/codex PR #21069 ("Spill large hook outputs from context").
+        try:
+            from tools.hook_output_spill import (
+                get_spill_config as _spill_cfg,
+                spill_if_oversized as _spill_if_oversized,
+            )
+            _spill_config_cached = _spill_cfg()
+        except Exception:
+            _spill_if_oversized = None  # type: ignore[assignment]
+            _spill_config_cached = None
         for r in _pre_results:
+            _piece: str = ""
             if isinstance(r, dict) and r.get("context"):
-                _ctx_parts.append(str(r["context"]))
+                _piece = str(r["context"])
             elif isinstance(r, str) and r.strip():
-                _ctx_parts.append(r)
+                _piece = r
+            else:
+                continue
+            if _spill_if_oversized is not None:
+                try:
+                    _piece = _spill_if_oversized(
+                        _piece,
+                        session_id=agent.session_id,
+                        source="plugin hook",
+                        config=_spill_config_cached,
+                    )
+                except Exception as _spill_exc:
+                    logger.warning("hook context spill failed: %s", _spill_exc)
+            _ctx_parts.append(_piece)
         if _ctx_parts:
             plugin_user_context = "\n\n".join(_ctx_parts)
     except Exception as exc:
@@ -429,6 +518,7 @@ def build_turn_context(
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
     agent._verification_stop_nudges = 0
+    agent._pre_verify_nudges = 0
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.

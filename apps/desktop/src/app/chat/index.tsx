@@ -19,7 +19,13 @@ import { ErrorState } from '@/components/ui/error-state'
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { quickModelOptions, sessionTitle, toRuntimeMessage } from '@/lib/chat-runtime'
+import {
+  coalesceToolOnlyAssistants,
+  createToolMergeCache,
+  quickModelOptions,
+  sessionTitle,
+  toRuntimeMessage
+} from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
@@ -45,7 +51,7 @@ import {
   $sessions,
   sessionPinId
 } from '@/store/session'
-import { isSecondaryWindow } from '@/store/windows'
+import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { routeSessionId } from '../routes'
@@ -75,7 +81,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
-  onPasteClipboardImage: () => void
+  onPasteClipboardImage: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles: () => void
   onPickFolders: () => void
   onPickImages: () => void
@@ -88,7 +94,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
-  onRestoreToMessage?: (messageId: string) => Promise<void>
+  onRestoreToMessage?: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   onRetryResume: (sessionId: string) => void
   onTranscribeAudio?: (audio: Blob) => Promise<string>
   onDismissError?: (messageId: string) => void
@@ -201,6 +207,7 @@ function ChatRuntimeBoundary({
   const storeMessages = useStore($messages)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
   const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
+  const toolMergeCacheRef = useRef(createToolMergeCache())
 
   const runtimeMessageRepository = useMemo(() => {
     const items: { message: ThreadMessage; parentId: string | null }[] = []
@@ -208,7 +215,7 @@ function ChatRuntimeBoundary({
     let visibleParentId: string | null = null
     let headId: string | null = null
 
-    for (const message of messages) {
+    for (const message of coalesceToolOnlyAssistants(messages, toolMergeCacheRef.current)) {
       let parentId = visibleParentId
 
       if (message.role === 'assistant' && message.branchGroupId) {
@@ -317,7 +324,12 @@ export function ChatView({
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state.
   const showIntro =
-    !isSecondaryWindow() && freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messagesEmpty
+    !isSecondaryWindow() &&
+    freshDraftReady &&
+    !isRoutedSessionView &&
+    !selectedSessionId &&
+    !activeSessionId &&
+    messagesEmpty
 
   // Session is still loading if the route references a session we haven't
   // resumed yet. Once `activeSessionId` is set (runtime has resumed), the
@@ -337,8 +349,9 @@ export function ChatView({
 
   const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleIsUser)
   // Hide the composer in the exhausted error state too: there's no live runtime
-  // to send to until a retry rebinds one.
-  const showChatBar = !loadingSession && !resumeExhausted
+  // to send to until a retry rebinds one. Watch windows are pure spectators of a
+  // subagent run driven elsewhere — no composer, transcript is read-only.
+  const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
@@ -352,7 +365,10 @@ export function ChatView({
         throw new Error('Hermes gateway unavailable')
       }
 
-      return gateway.request<ModelOptionsResponse>('model.options', { session_id: activeSessionId })
+      return gateway.request<ModelOptionsResponse>('model.options', {
+        session_id: activeSessionId,
+        explicit_only: true
+      })
     },
     enabled: gatewayOpen
   })

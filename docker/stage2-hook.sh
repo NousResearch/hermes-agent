@@ -181,6 +181,45 @@ done
 # The canonical list of hermes-owned subdirs is the same one the s6-setuidgid
 # mkdir -p block below seeds. Keep them in sync if the seed list changes.
 actual_hermes_uid=$(id -u hermes)
+
+path_has_symlink_component() {
+    path="$1"
+    root="${2:-$HERMES_HOME}"
+    while [ -n "$path" ] && [ "$path" != "/" ]; do
+        if [ -L "$path" ]; then
+            return 0
+        fi
+        if [ "$path" = "$root" ]; then
+            break
+        fi
+        parent="$(dirname "$path")"
+        if [ "$parent" = "$path" ]; then
+            break
+        fi
+        path="$parent"
+    done
+    return 1
+}
+
+refuse_symlinked_path() {
+    action="$1"
+    target="$2"
+    if path_has_symlink_component "$target"; then
+        echo "[stage2] Warning: refusing $action through symlinked path $target — continuing"
+        return 0
+    fi
+    return 1
+}
+
+chown_hermes_tree() {
+    target="$1"
+    if refuse_symlinked_path "recursive chown" "$target"; then
+        return 0
+    fi
+    chown -R hermes:hermes "$target" 2>/dev/null || \
+        echo "[stage2] Warning: chown $target failed (rootless container?) — continuing"
+}
+
 needs_chown=false
 if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
     needs_chown=true
@@ -194,15 +233,18 @@ if [ "$needs_chown" = true ]; then
     # Top-level $HERMES_HOME: chown the directory itself (not its contents)
     # so hermes can mkdir new subdirs but bind-mounted host files keep
     # their existing ownership.
-    chown hermes:hermes "$HERMES_HOME" 2>/dev/null || \
-        echo "[stage2] Warning: chown $HERMES_HOME failed (rootless container?) — continuing"
+    if refuse_symlinked_path "chown" "$HERMES_HOME"; then
+        :
+    else
+        chown hermes:hermes "$HERMES_HOME" 2>/dev/null || \
+            echo "[stage2] Warning: chown $HERMES_HOME failed (rootless container?) — continuing"
+    fi
     # Hermes-owned subdirs: recursive chown is safe here because these are
     # created and managed exclusively by hermes (see the s6-setuidgid mkdir
     # -p block below for the canonical list).
     for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing lazy-packages; do
         if [ -e "$HERMES_HOME/$sub" ]; then
-            chown -R hermes:hermes "$HERMES_HOME/$sub" 2>/dev/null || \
-                echo "[stage2] Warning: chown $HERMES_HOME/$sub failed (rootless container?) — continuing"
+            chown_hermes_tree "$HERMES_HOME/$sub"
         fi
     done
 fi
@@ -234,7 +276,7 @@ fi
 # the profiles dir. Idempotent; skipped on rootless containers where
 # chown would fail.
 if [ -d "$HERMES_HOME/profiles" ]; then
-    chown -R hermes:hermes "$HERMES_HOME/profiles" 2>/dev/null || true
+    chown_hermes_tree "$HERMES_HOME/profiles"
 fi
 
 # Always reset ownership of $HERMES_HOME/cron on every boot for the same
@@ -242,7 +284,24 @@ fi
 # (jobs.json) must stay readable by the unprivileged hermes runtime even
 # after root-context maintenance commands or scheduler writes.
 if [ -d "$HERMES_HOME/cron" ]; then
-    chown -R hermes:hermes "$HERMES_HOME/cron" 2>/dev/null || true
+    chown_hermes_tree "$HERMES_HOME/cron"
+fi
+
+# Always reset ownership of pairing data on every boot, same docker-exec/
+# root-write reason as profiles/ and cron/. `docker exec <container>
+# hermes pairing approve …` defaults to uid=0 and writes 0600 root-owned
+# approval files that the unprivileged hermes gateway cannot read,
+# silently leaving the approved user unauthorized (#10270). The targeted
+# data-volume chown above only runs when the top-level $HERMES_HOME is
+# mis-owned, so warm boots skip it — this block makes a container restart
+# self-heal. Tiny directory (a handful of small JSON files), so the cost
+# is negligible.
+if [ -d "$HERMES_HOME/platforms/pairing" ]; then
+    chown_hermes_tree "$HERMES_HOME/platforms/pairing"
+fi
+# Legacy location (pre-consolidated layout).
+if [ -d "$HERMES_HOME/pairing" ]; then
+    chown_hermes_tree "$HERMES_HOME/pairing"
 fi
 
 # Reset ownership of hermes-owned top-level state files on every boot.
@@ -268,7 +327,11 @@ for f in \
     gateway.pid gateway.lock gateway_state.json processes.json \
     active_profile; do
     if [ -e "$HERMES_HOME/$f" ]; then
-        chown hermes:hermes "$HERMES_HOME/$f" 2>/dev/null || true
+        if refuse_symlinked_path "chown" "$HERMES_HOME/$f"; then
+            :
+        else
+            chown hermes:hermes "$HERMES_HOME/$f" 2>/dev/null || true
+        fi
     fi
 done
 
@@ -276,8 +339,12 @@ done
 # Ensure config.yaml is readable by the hermes runtime user even if it
 # was edited on the host after initial ownership setup.
 if [ -f "$HERMES_HOME/config.yaml" ]; then
-    chown hermes:hermes "$HERMES_HOME/config.yaml" 2>/dev/null || true
-    chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
+    if refuse_symlinked_path "chown/chmod" "$HERMES_HOME/config.yaml"; then
+        :
+    else
+        chown hermes:hermes "$HERMES_HOME/config.yaml" 2>/dev/null || true
+        chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
+    fi
 fi
 
 # --- Seed directory structure as hermes user ---
@@ -288,6 +355,7 @@ fi
 # shell isn't a second interpreter — defends against $HERMES_HOME values
 # containing shell metacharacters. PR #30136 review item O2.
 as_hermes mkdir -p \
+    "$HERMES_HOME/backups" \
     "$HERMES_HOME/cron" \
     "$HERMES_HOME/sessions" \
     "$HERMES_HOME/logs" \
@@ -328,7 +396,11 @@ seed_one() {
     dest=$1
     src=$2
     if [ ! -f "$HERMES_HOME/$dest" ] && [ -f "$INSTALL_DIR/$src" ]; then
-        as_hermes cp "$INSTALL_DIR/$src" "$HERMES_HOME/$dest"
+        if refuse_symlinked_path "seed" "$HERMES_HOME/$dest"; then
+            :
+        else
+            as_hermes cp "$INSTALL_DIR/$src" "$HERMES_HOME/$dest"
+        fi
     fi
 }
 seed_one ".env" ".env.example"
@@ -339,8 +411,12 @@ seed_one "SOUL.md" "docker/SOUL.md"
 # unconditionally (not only on first-seed) so a host-mounted .env that was
 # created with a permissive umask gets tightened on every container start.
 if [ -f "$HERMES_HOME/.env" ]; then
-    chown hermes:hermes "$HERMES_HOME/.env" 2>/dev/null || true
-    chmod 600 "$HERMES_HOME/.env" 2>/dev/null || true
+    if refuse_symlinked_path "chown/chmod" "$HERMES_HOME/.env"; then
+        :
+    else
+        chown hermes:hermes "$HERMES_HOME/.env" 2>/dev/null || true
+        chmod 600 "$HERMES_HOME/.env" 2>/dev/null || true
+    fi
 fi
 
 # --- Migrate persisted config schema ---
@@ -358,9 +434,38 @@ fi
 # pre-s6 entrypoint — the [ ! -f ] guard is critical to avoid clobbering
 # rotated refresh tokens on container restart.
 if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]; then
-    printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
-    chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
-    chmod 600 "$HERMES_HOME/auth.json"
+    if refuse_symlinked_path "seed" "$HERMES_HOME/auth.json"; then
+        :
+    else
+        printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
+        chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
+        chmod 600 "$HERMES_HOME/auth.json"
+    fi
+fi
+
+# auth.json: re-seed a TERMINALLY-DEAD Nous bootstrap session (self-heal).
+#
+# The [ ! -f ] guard above deliberately refuses to clobber an existing
+# auth.json, so a container whose Nous bootstrap session took a terminal
+# invalid_grant (tokens cleared, providers.nous.last_auth_error.relogin_required
+# stamped) can NOT recover from a plain restart — it stays unauthenticated until
+# the credential is replaced. An orchestrator that manages the container can
+# supply a freshly-issued session via HERMES_AUTH_JSON_REBOOTSTRAP (distinct
+# from the create-only *_BOOTSTRAP var); this helper swaps ONLY the
+# providers.nous entry, and ONLY when the on-disk entry is provably terminal.
+# Every other case (healthy, rotating, absent, or unparseable auth.json) is a
+# no-op, so it is safe to leave the env set across restarts and never risks
+# clobbering a good/rotated token. Runs as its own stdlib-only subprocess (no
+# app imports) and always exits 0.
+if [ -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_REBOOTSTRAP:-}" ]; then
+    if refuse_symlinked_path "reseed" "$HERMES_HOME/auth.json"; then
+        :
+    else
+        s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" \
+            "$INSTALL_DIR/scripts/docker_rebootstrap_nous_session.py" \
+            "$HERMES_HOME/auth.json" \
+            || echo "[stage2] Warning: docker_rebootstrap_nous_session.py failed; continuing"
+    fi
 fi
 
 # gateway_state.json: declare the gateway's INITIAL supervised state on a
@@ -390,9 +495,13 @@ fi
 # bogus state the reconciler would treat as "no prior state" anyway.
 if [ ! -f "$HERMES_HOME/gateway_state.json" ] && \
         [ "${HERMES_GATEWAY_BOOTSTRAP_STATE:-}" = "running" ]; then
-    printf '{"gateway_state":"running"}\n' > "$HERMES_HOME/gateway_state.json"
-    chown hermes:hermes "$HERMES_HOME/gateway_state.json" 2>/dev/null || true
-    chmod 644 "$HERMES_HOME/gateway_state.json"
+    if refuse_symlinked_path "seed" "$HERMES_HOME/gateway_state.json"; then
+        :
+    else
+        printf '{"gateway_state":"running"}\n' > "$HERMES_HOME/gateway_state.json"
+        chown hermes:hermes "$HERMES_HOME/gateway_state.json" 2>/dev/null || true
+        chmod 644 "$HERMES_HOME/gateway_state.json"
+    fi
 fi
 
 # --- Sync bundled skills ---

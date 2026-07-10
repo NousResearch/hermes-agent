@@ -39,6 +39,15 @@ from unittest.mock import MagicMock
 import pytest
 
 
+def make_async_session_db(sync_mock=None):
+    """Wrap a sync mock SessionDB in AsyncSessionDB so gateway code that awaits
+    the facade works in tests. Returns (facade, sync_mock); configure return
+    values and assert calls on sync_mock."""
+    from hermes_state import AsyncSessionDB
+    sync_mock = sync_mock if sync_mock is not None else MagicMock()
+    return AsyncSessionDB(sync_mock), sync_mock
+
+
 def _ensure_telegram_mock() -> None:
     """Install a comprehensive telegram mock in sys.modules.
 
@@ -182,6 +191,7 @@ def _ensure_discord_mock() -> None:
     discord_mod.Color = SimpleNamespace(
         orange=lambda: 1, green=lambda: 2, blue=lambda: 3,
         red=lambda: 4, purple=lambda: 5, greyple=lambda: 6,
+        gold=lambda: 7,
     )
 
     # app_commands — needed by _register_slash_commands auto-registration

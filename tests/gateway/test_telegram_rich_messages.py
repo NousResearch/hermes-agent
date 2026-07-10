@@ -10,6 +10,7 @@ The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
 ``TelegramAdapter`` and wire a mock bot.
 """
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,6 +27,12 @@ from telegram.error import BadRequest, NetworkError, TimedOut
 RICH_CONTENT = "## Results\n\n| Case | Status |\n|---|---|\n| rich | ✅ |\n\n- [x] table renders"
 CJK_RICH_CONTENT = "## 持仓\n\n| 项目 | 状态 |\n|---|---|\n| 早盘 | 正常 |"
 ASTRAL_CJK_RICH_CONTENT = "## Rare Han\n\n| glyph | status |\n|---|---|\n| \U00030000 | ok |"
+TABLE_ONLY_CONTENT = (
+    "| Team | W | L | GB |\n"
+    "|---|---|---|---|\n"
+    "| Red Sox | 36 | 34 | 6.0 |\n"
+    "| Dodgers | 40 | 30 | 2.0 |"
+)
 DANGEROUS_DETAILS_MATH = (
     "<details><summary>Complex proof</summary>\n\n"
     "$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$\n\n"
@@ -470,6 +477,53 @@ async def test_transient_timeout_is_not_retryable():
 
 
 @pytest.mark.asyncio
+async def test_rich_transport_error_redacts_bot_token_even_when_redaction_disabled(monkeypatch):
+    import agent.redact as redact
+
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
+    token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(
+        side_effect=NetworkError(
+            f"Timed out requesting https://api.telegram.org/bot{token}/sendRichMessage"
+        )
+    )
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is False
+    assert result.error is not None
+    assert token not in result.error
+    assert "bot123456789:***/sendRichMessage" in result.error
+    adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_legacy_send_error_redacts_bot_token_without_traceback(monkeypatch, caplog):
+    import agent.redact as redact
+
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
+    token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+    adapter = _make_adapter({"rich_messages": False})
+    adapter._bot.send_message = AsyncMock(
+        side_effect=BadRequest(
+            f"Bad Request: https://api.telegram.org/bot{token}/sendMessage"
+        )
+    )
+
+    with caplog.at_level(logging.ERROR):
+        result = await adapter.send("12345", "Plain legacy content.")
+
+    assert result.success is False
+    assert result.error is not None
+    assert token not in result.error
+    assert "bot123456789:***/sendMessage" in result.error
+    assert token not in caplog.text
+    assert "bot123456789:***/sendMessage" in caplog.text
+    adapter._bot.do_api_request.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_routing_thread_id_maps_to_message_thread_id():
     adapter = _make_adapter()
 
@@ -525,6 +579,77 @@ async def test_notification_opt_in_drops_disable_flag():
 
     api_kwargs = _rich_api_kwargs(adapter)
     assert "disable_notification" not in api_kwargs
+
+
+@pytest.mark.asyncio
+async def test_table_only_uses_rich_when_rich_messages_opt_out():
+    """Pipe tables auto-route to sendRichMessage even without the full opt-in."""
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.send("12345", TABLE_ONLY_CONTENT)
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == TABLE_ONLY_CONTENT
+    adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_table_only_uses_rich_with_default_config():
+    """Default config keeps task lists on legacy but upgrades bare tables."""
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = TelegramAdapter(config)
+    bot = MagicMock()
+    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    bot.send_chat_action = AsyncMock()
+    adapter._bot = bot
+
+    result = await adapter.send("12345", TABLE_ONLY_CONTENT)
+
+    assert result.success is True
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dm_topic_resumed_send_uses_rich_for_table_without_reply_anchor():
+    """Resumed/synthetic DM-topic sends route tables via direct_messages_topic_id."""
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.send(
+        "123",
+        TABLE_ONLY_CONTENT,
+        metadata={
+            "thread_id": "20189",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20189",
+        },
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["direct_messages_topic_id"] == 20189
+    assert "reply_parameters" not in api_kwargs
+    assert api_kwargs["rich_message"]["markdown"] == TABLE_ONLY_CONTENT
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_rich_includes_forum_topic_routing():
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.edit_message(
+        "-100123",
+        "555",
+        TABLE_ONLY_CONTENT,
+        finalize=True,
+        metadata={"thread_id": "5"},
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["message_thread_id"] == 5
+    assert api_kwargs["rich_message"]["markdown"] == TABLE_ONLY_CONTENT
 
 
 @pytest.mark.asyncio
@@ -744,6 +869,32 @@ async def test_finalize_edit_plain_content_stays_legacy():
     assert result.success is True
     adapter._bot.do_api_request.assert_not_called()
     adapter._bot.edit_message_text.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_edit_error_logs_redacted_bot_token_without_traceback(monkeypatch, caplog):
+    import agent.redact as redact
+
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
+    token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+    adapter = _make_adapter()
+    adapter._bot.edit_message_text = AsyncMock(
+        side_effect=BadRequest(
+            f"Bad Request: https://api.telegram.org/bot{token}/editMessageText"
+        )
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = await adapter.edit_message(
+            "12345", "555", "Just a normal answer.", finalize=True,
+        )
+
+    assert result.success is False
+    assert result.error is not None
+    assert token not in result.error
+    assert "bot123456789:***/editMessageText" in result.error
+    assert token not in caplog.text
+    assert "bot123456789:***/editMessageText" in caplog.text
 
 
 @pytest.mark.asyncio

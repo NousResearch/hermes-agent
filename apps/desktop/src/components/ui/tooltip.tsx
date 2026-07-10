@@ -24,18 +24,21 @@ function TooltipContent({
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
-        // Instant, no transition (the Provider's delayDuration=0 + no animate-*
-        // classes). bg-foreground/text-background auto-inverts per theme: white
-        // on near-black in light mode, black on white in dark.
-        className={cn(
-          'z-[200] w-fit bg-foreground px-1.5 py-1 text-[11px] font-bold leading-none text-background select-none [font-family:Arial,sans-serif]',
-          className
-        )}
+        // Transparent, width-capped wrapper. The visible chip is the inner inline
+        // span so `box-decoration-break: clone` gives a marker-style background
+        // that hugs EACH wrapped line (bg only on the text, ragged right — no
+        // rectangular dead space). Instant, no transition (delayDuration=0).
+        className={cn('z-[200] w-fit max-w-64 select-none', className)}
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         {...props}
       >
-        {children}
+        {/* bg-foreground/text-background auto-inverts per theme. leading-normal
+            keeps lines readable; py-1 makes the cloned line-boxes overlap just
+            enough to read as one continuous fill (no gaps between lines). */}
+        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif]">
+          {children}
+        </span>
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   )

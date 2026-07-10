@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from utils import safe_json_loads
+from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
@@ -339,6 +340,62 @@ def _read_file_line_label(args: dict) -> str:
     return f"L{offset}-{offset + limit - 1}"
 
 
+def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
+    """Apply secret redaction to browser_type text in display-facing payloads.
+
+    Backends sometimes echo the attempted input in error strings or fallback
+    metadata.  When the raw typed value contains a recognizable secret (API
+    key, token, JWT, etc.) the redacted form differs from the raw value, so we
+    replace every occurrence of the raw value with its redacted form before a
+    browser_type result reaches logs, callbacks, the model, or chat history.
+
+    Normal typed text (search queries, addresses, form fields) matches no
+    secret pattern, so it passes through unchanged and stays readable.
+
+    Redaction is forced here regardless of the global ``security.redact_secrets``
+    preference: a typed credential leaking into chat history is a security
+    boundary, not mere log hygiene.
+    """
+    if typed_text is None:
+        return value
+    needle = str(typed_text)
+    if needle == "":
+        return value
+    redacted = redact_sensitive_text(needle, force=True)
+    if redacted == needle:
+        # Nothing secret-looking in the typed text; leave payload untouched.
+        return value
+    if isinstance(value, str):
+        return value.replace(needle, redacted)
+    if isinstance(value, dict):
+        return {
+            key: redact_browser_typed_text_for_display(item, typed_text)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_browser_typed_text_for_display(item, typed_text) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_browser_typed_text_for_display(item, typed_text) for item in value)
+    return value
+
+
+def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | None:
+    """Return a copy of tool args safe for logs/progress UI.
+
+    For ``browser_type`` the ``text`` argument is run through the same
+    secret-pattern redactor used for logs.  Recognizable credentials (API
+    keys, tokens) are masked before the value reaches tool progress
+    notifications; normal typed text is left intact for debuggability.
+    """
+    if not isinstance(args, dict):
+        return args
+    if tool_name == "browser_type" and isinstance(args.get("text"), str):
+        safe_args = dict(args)
+        safe_args["text"] = redact_sensitive_text(args["text"], force=True)
+        return safe_args
+    return args
+
+
 def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, list[str]]:
     if not isinstance(tasks, list):
         return 0, []
@@ -362,13 +419,14 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         max_len = _tool_preview_max_len
     if not args:
         return None
+    args = redact_tool_args_for_display(tool_name, args) or args
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",
         "search_files": "pattern", "browser_navigate": "url",
         "browser_click": "ref", "browser_type": "text",
         "image_generate": "prompt", "text_to_speech": "text",
-        "vision_analyze": "question", "mixture_of_agents": "user_prompt",
+        "vision_analyze": "question",
         "skill_view": "name", "skills_list": "category",
         "cronjob": "action",
         "execute_code": "code", "delegate_task": "goal",
@@ -457,6 +515,16 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             msg = msg[:17] + "..."
         return f"to {target}: \"{msg}\""
 
+    if tool_name == "skill_view":
+        name = _oneline(str(args.get("name") or ""))
+        file_path = args.get("file_path")
+        if file_path:
+            file_path = _oneline(str(file_path))
+            preview = f"{name} → {file_path}" if name else file_path
+        else:
+            preview = name
+        return _truncate_preview(preview, max_len) if preview else None
+
     key = primary_args.get(tool_name)
     if not key:
         for fallback_key in ("query", "text", "command", "path", "name", "prompt", "code", "goal"):
@@ -477,6 +545,122 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if max_len > 0 and len(preview) > max_len:
         preview = preview[:max_len - 3] + "..."
     return preview
+
+
+# =========================================================================
+# Friendly tool labels (human-phrased verbs for built-in tools)
+#
+# Turns "web_search <query>" into "Searching the web for <query>" — the
+# ChatGPT-style "Searching…/Reading…" surface.  Curated and built-in only:
+# we know each core tool's semantics, so the verb is fixed, not computed.
+# Custom/plugin/MCP tools have no entry and fall back to the raw preview.
+# =========================================================================
+
+# Each entry maps a built-in tool name to its present-participle verb phrase.
+# A trailing space-then-preview is appended by build_tool_label() when the
+# tool's argument preview is available (e.g. "Reading docs/api.md").
+_TOOL_VERBS: dict[str, str] = {
+    "web_search": "Searching the web",
+    "web_extract": "Reading",
+    "browser_navigate": "Browsing",
+    "browser_click": "Clicking",
+    "browser_type": "Typing",
+    "read_file": "Reading",
+    "write_file": "Writing",
+    "patch": "Editing",
+    "search_files": "Searching files",
+    "terminal": "Running",
+    "execute_code": "Running code",
+    "image_generate": "Generating image",
+    "video_generate": "Generating video",
+    "text_to_speech": "Generating speech",
+    "vision_analyze": "Looking at the image",
+    "session_search": "Searching past sessions",
+    "skill_view": "Reading skill",
+    "skills_list": "Listing skills",
+    "skill_manage": "Updating skill",
+    "delegate_task": "Delegating",
+    "cronjob": "Scheduling",
+    "clarify": "Asking",
+    "memory": "Updating memory",
+    "todo": "Updating tasks",
+}
+
+# Verbs that read better without the raw argument preview appended.
+_TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({
+    "skills_list",
+    "session_search",
+})
+
+# Verbs that take a "for" connector before the preview (search-style phrasing):
+# "Searching the web for <query>" reads better than "Searching the web <query>".
+_TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({
+    "web_search",
+    "search_files",
+})
+
+_friendly_tool_labels: bool = True
+
+
+def set_friendly_tool_labels(enabled: bool) -> None:
+    """Toggle friendly human-phrased tool labels (display.friendly_tool_labels)."""
+    global _friendly_tool_labels
+    _friendly_tool_labels = bool(enabled)
+
+
+def get_friendly_tool_labels() -> bool:
+    """Return whether friendly tool labels are enabled."""
+    return _friendly_tool_labels
+
+
+def get_tool_verb(tool_name: str) -> str | None:
+    """Return the friendly verb for a built-in tool, or None.
+
+    Returns None when friendly labels are disabled or the tool has no curated
+    verb (custom/plugin/MCP tools).  Callers that already hold a computed
+    argument preview can compose ``f"{verb} {preview}"`` themselves; use
+    :func:`tool_verb_connector` to pick the right joiner.
+    """
+    if not _friendly_tool_labels:
+        return None
+    return _TOOL_VERBS.get(tool_name)
+
+
+def tool_verb_connector(tool_name: str) -> str:
+    """Return the connector between a verb and its preview (" for " or " ")."""
+    return " for " if tool_name in _TOOL_VERBS_FOR_CONNECTOR else " "
+
+
+def verb_drops_preview(tool_name: str) -> bool:
+    """Whether the verb should render alone, without the argument preview."""
+    return tool_name in _TOOL_VERBS_NO_PREVIEW
+
+
+def build_tool_label(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
+    """Build a human-phrased status label for a tool call.
+
+    For built-in tools with a known verb (``web_search`` -> "Searching the
+    web for ..."), returns the verb optionally followed by the argument
+    preview.  For everything else (custom/plugin/MCP tools, or when friendly
+    labels are disabled) returns the raw preview, so callers can use this as a
+    drop-in replacement for :func:`build_tool_preview`.
+    """
+    if not _friendly_tool_labels:
+        return build_tool_preview(tool_name, args, max_len=max_len)
+
+    verb = _TOOL_VERBS.get(tool_name)
+    if not verb:
+        return build_tool_preview(tool_name, args, max_len=max_len)
+
+    if tool_name in _TOOL_VERBS_NO_PREVIEW:
+        return verb
+
+    preview = build_tool_preview(tool_name, args, max_len=max_len)
+    if not preview:
+        return verb
+    if tool_name in _TOOL_VERBS_FOR_CONNECTOR:
+        return f"{verb} for {preview}"
+    return f"{verb} {preview}"
 
 
 # =========================================================================
@@ -1085,6 +1269,7 @@ def get_cute_tool_message(
     When *result* is provided the line is checked for failure indicators.
     Failed tool calls get a red prefix and an informational suffix.
     """
+    args = redact_tool_args_for_display(tool_name, args) or args
     dur = f"{duration:.1f}s"
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     skin_prefix = get_skin_tool_prefix()
@@ -1209,15 +1394,17 @@ def get_cute_tool_message(
     if tool_name == "skills_list":
         return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
     if tool_name == "skill_view":
-        return _wrap(f"┊ 📚 skill     {_trunc(args.get('name', ''), 30)}  {dur}")
+        label = args.get("name", "")
+        file_path = args.get("file_path")
+        if file_path:
+            label = f"{label} → {file_path}" if label else str(file_path)
+        return _wrap(f"┊ 📚 skill     {_trunc(label, 44)}  {dur}")
     if tool_name == "image_generate":
         return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
     if tool_name == "text_to_speech":
         return _wrap(f"┊ 🔊 speak     {_trunc(args.get('text', ''), 30)}  {dur}")
     if tool_name == "vision_analyze":
         return _wrap(f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}")
-    if tool_name == "mixture_of_agents":
-        return _wrap(f"┊ 🧠 reason    {_trunc(args.get('user_prompt', ''), 30)}  {dur}")
     if tool_name == "send_message":
         return _wrap(f"┊ 📨 send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
     if tool_name == "cronjob":

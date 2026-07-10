@@ -13,7 +13,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Download, Loader2, PawPrint, Pencil, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
-import { $petInfo } from '@/store/pet'
+import { $petInfo, $petRoam, setPetRoam } from '@/store/pet'
 import {
   $petBusy,
   $petGallery,
@@ -21,12 +21,12 @@ import {
   $petGalleryStatus,
   adoptPet,
   exportPet as exportPetAction,
+  type GalleryPet,
   loadPetGallery,
   loadPetThumb,
   PET_SCALE_DEFAULT,
   PET_SCALE_MAX,
   PET_SCALE_MIN,
-  type GalleryPet,
   rankedGalleryPets,
   removePet as removePetAction,
   renamePet as renamePetAction,
@@ -54,6 +54,7 @@ export function PetSettings() {
   const error = useStore($petGalleryError)
   const busySlug = useStore($petBusy)
   const petInfo = useStore($petInfo)
+  const roam = useStore($petRoam)
   const [query, setQuery] = useState('')
   const [confirmDelete, setConfirmDelete] = useState<GalleryPet | null>(null)
   const [renameTarget, setRenameTarget] = useState<GalleryPet | null>(null)
@@ -142,7 +143,7 @@ export function PetSettings() {
                     {copy.unreachable}
                   </p>
                 ) : shown.length === 0 ? (
-                  <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  <p className="wrap-anywhere text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                     {copy.noMatch(query)}
                   </p>
                 ) : (
@@ -279,6 +280,26 @@ export function PetSettings() {
             title={copy.scaleTitle}
           />
         )}
+
+        {enabled && (
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  setPetRoam(id === 'on')
+                  triggerHaptic('crisp')
+                }}
+                options={[
+                  { id: 'off', label: copy.off },
+                  { id: 'on', label: copy.on }
+                ]}
+                value={roam ? 'on' : 'off'}
+              />
+            }
+            description={copy.roamDesc}
+            title={copy.roamTitle}
+          />
+        )}
       </div>
 
       <ConfirmDialog
@@ -288,10 +309,16 @@ export function PetSettings() {
         onClose={() => setConfirmDelete(null)}
         onConfirm={async () => {
           if (confirmDelete) {
-            const ok = await removePetAction(requestGateway, confirmDelete.slug, copy.uninstallFailed(confirmDelete.slug))
+            const ok = await removePetAction(
+              requestGateway,
+              confirmDelete.slug,
+              copy.uninstallFailed(confirmDelete.slug)
+            )
+
             if (!ok) {
               throw new Error(copy.uninstallFailed(confirmDelete.slug))
             }
+
             triggerHaptic('crisp')
           }
         }}

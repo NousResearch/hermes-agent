@@ -422,7 +422,7 @@ async def test_adapter_go_dormant_noop_on_stub_transport():
     )
 
     class _StubTransport:
-        async def connect(self):
+        async def connect(self, *, is_reconnect: bool = False):
             return True
 
         def set_inbound_handler(self, h):

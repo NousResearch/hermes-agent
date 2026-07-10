@@ -27,18 +27,18 @@ This phase extends the Phase 1 `bank_routing` predicates without adding an LLM r
   "bank_registry_version": "2026-07-10",
   "bank_registry": [
     {
-      "id": "hindsight-product-rigplane",
-      "display_name": "RigPlane product memory",
-      "description": "RigPlane product/commercial/proprietary context, packaging, release, support.",
-      "domains": ["rigplane", "product", "release"],
-      "good_examples": ["rigplane-pro packaging decision", "beta release support note"],
+      "id": "team-product-memory",
+      "display_name": "Team product memory",
+      "description": "Team product context, packaging, release, and support notes.",
+      "domains": ["product", "release", "support"],
+      "good_examples": ["project-alpha packaging decision", "beta release support note"],
       "bad_examples": ["generic user preference", "unrelated homelab DNS note"],
-      "recall_policy": {"enabled": true, "tags": ["project:rigplane"], "tags_match": "any"},
-      "retain_policy": {"enabled": true, "tags": ["project:rigplane"], "max_banks": 1},
-      "match": {"git_repo_glob": "rigplane/rigplane-*", "repo_name_glob": "rigplane-*"},
-      "allowed_profiles": ["frontdesk", "coder"],
+      "recall_policy": {"enabled": true, "tags": ["project:alpha"], "tags_match": "any"},
+      "retain_policy": {"enabled": true, "tags": ["project:alpha"], "max_banks": 1},
+      "match": {"git_repo_glob": "acme/project-*", "repo_name_glob": "project-*"},
+      "allowed_profiles": ["support", "coder"],
       "allowed_platforms": ["cli", "telegram"],
-      "sensitivity": "proprietary"
+      "sensitivity": "team"
     }
   ]
 }

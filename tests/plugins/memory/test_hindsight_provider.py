@@ -871,11 +871,11 @@ class TestPrefetch:
                 "rules": [
                     {
                         "name": "infra",
-                        "workspace_path_prefix": "/Users/moroz/Projects/rigplane-pro",
+                        "workspace_path_prefix": "/work/acme/project-alpha",
                         "bank_id": "infra",
                         "retain": True,
                         "recall": True,
-                        "recall_tags": ["project:rigplane", "domain:infra"],
+                        "recall_tags": ["project:alpha", "domain:infra"],
                         "recall_tags_match": "all_strict",
                         "recall_types": ["observation"],
                     }
@@ -886,8 +886,8 @@ class TestPrefetch:
             session_id="test-session",
             hermes_home="unused",
             platform="cli",
-            agent_workspace="rigplane-pro",
-            agent_workspace_path="/Users/moroz/Projects/rigplane-pro",
+            agent_workspace="project-alpha",
+            agent_workspace_path="/work/acme/project-alpha",
         )
         p._client = _make_mock_client()
 
@@ -903,7 +903,7 @@ class TestPrefetch:
 
         calls = [call.kwargs for call in p._client.arecall.call_args_list]
         assert [call["bank_id"] for call in calls] == ["infra", "global-user"]
-        assert calls[0]["tags"] == ["project:rigplane", "domain:infra"]
+        assert calls[0]["tags"] == ["project:alpha", "domain:infra"]
         assert calls[0]["tags_match"] == "all_strict"
         assert calls[0]["types"] == ["observation"]
         assert calls[1]["types"] == ["observation"]
@@ -1222,15 +1222,15 @@ class TestSyncTurn:
                 "rules": [
                     {
                         "name": "infra",
-                        "workspace_path_prefix": "/Users/moroz/Projects/rigplane-pro",
+                        "workspace_path_prefix": "/work/acme/project-alpha",
                         "bank_id": "infra",
                         "retain": True,
                         "recall": True,
-                        "retain_tags": ["project:rigplane", "domain:infra"],
+                        "retain_tags": ["project:alpha", "domain:infra"],
                     },
                     {
                         "name": "skip-retain",
-                        "workspace": "rigplane-pro",
+                        "workspace": "project-alpha",
                         "bank_id": "scratch",
                         "retain": False,
                         "recall": True,
@@ -1243,8 +1243,8 @@ class TestSyncTurn:
             session_id="session-1",
             hermes_home="unused",
             platform="cli",
-            agent_workspace="rigplane-pro",
-            agent_workspace_path="/Users/moroz/Projects/rigplane-pro",
+            agent_workspace="project-alpha",
+            agent_workspace_path="/work/acme/project-alpha",
             parent_session_id="parent-1",
         )
         p._client = _make_mock_client()
@@ -1259,7 +1259,7 @@ class TestSyncTurn:
         item = calls[0]["items"][0]
         assert item["tags"] == [
             "source:hermes",
-            "project:rigplane",
+            "project:alpha",
             "domain:infra",
             "session:session-1",
             "parent:parent-1",
@@ -1872,7 +1872,7 @@ class TestBankRouting:
             bank_id_template="",
             profile="default",
             workspace="hermes",
-            workspace_path="/Users/moroz/Projects/unknown",
+            workspace_path="/work/acme/unknown",
             platform="cli",
             user="",
             session="s1",
@@ -1889,12 +1889,12 @@ class TestBankRouting:
                 "rules": [
                     {
                         "name": "projects",
-                        "workspace_path_prefix": "/Users/moroz/Projects",
+                        "workspace_path_prefix": "/work/acme",
                         "bank_id": "all-projects",
                     },
                     {
-                        "name": "common-memory",
-                        "workspace_path_prefix": "/Users/moroz/Projects/common-memory",
+                        "name": "docs-suite",
+                        "workspace_path_prefix": "/work/acme/docs-suite",
                         "bank_id": "infra",
                     },
                 ]
@@ -1907,24 +1907,24 @@ class TestBankRouting:
             bank_id_template="",
             profile="default",
             workspace="hermes",
-            workspace_path="/Users/moroz/Projects/common-memory/server",
+            workspace_path="/work/acme/docs-suite/server",
             platform="cli",
             user="",
             session="s1",
         )
 
         assert [route.bank_id for route in routes] == ["infra"]
-        assert routes[0].name == "common-memory"
+        assert routes[0].name == "docs-suite"
 
     def test_route_resolution_matches_portable_workspace_globs(self):
         config = {
             "bank_routing": {
                 "rules": [
-                    {"name": "workspace", "workspace_glob": "rigplane-*", "bank_id": "workspace-bank"},
-                    {"name": "repo", "repo_name_glob": "rigplane-*", "bank_id": "repo-bank"},
+                    {"name": "workspace", "workspace_glob": "project-*", "bank_id": "workspace-bank"},
+                    {"name": "repo", "repo_name_glob": "project-*", "bank_id": "repo-bank"},
                     {
                         "name": "path",
-                        "workspace_path_glob": "/work/*/rigplane-*",
+                        "workspace_path_glob": "/work/*/project-*",
                         "bank_id": "path-bank",
                     },
                 ],
@@ -1937,8 +1937,8 @@ class TestBankRouting:
             fallback_bank_id="global-user",
             bank_id_template="",
             profile="default",
-            workspace="rigplane-desktop",
-            workspace_path="/work/alice/rigplane-pro",
+            workspace="project-alpha-desktop",
+            workspace_path="/work/alice/project-alpha",
             platform="cli",
             user="",
             session="s1",
@@ -1951,9 +1951,9 @@ class TestBankRouting:
             "bank_routing": {
                 "rules": [
                     {
-                        "name": "rigplane-git",
-                        "git_remote_glob": "*github.com*rigplane/rigplane-*",
-                        "bank_id": "rigplane-bank",
+                        "name": "project-alpha-git",
+                        "git_remote_glob": "*github.com*acme/project-*",
+                        "bank_id": "project-alpha-bank",
                     }
                 ]
             }
@@ -1965,32 +1965,32 @@ class TestBankRouting:
             bank_id_template="",
             profile="default",
             workspace="hermes",
-            workspace_path="/some/host/path/rigplane-pro",
+            workspace_path="/some/host/path/project-alpha",
             platform="cli",
             user="",
             session="s1",
-            git_remote="git@github.com:rigplane/rigplane-pro.git",
+            git_remote="git@github.com:acme/project-alpha.git",
         )
 
-        assert [route.bank_id for route in routes] == ["rigplane-bank"]
+        assert [route.bank_id for route in routes] == ["project-alpha-bank"]
 
     def test_route_resolution_matches_normalized_git_repo_glob(self):
         config = {
             "bank_routing": {
                 "rules": [
                     {
-                        "name": "rigplane-repo",
-                        "git_repo_glob": "rigplane/rigplane-*",
-                        "bank_id": "rigplane-bank",
+                        "name": "project-alpha-repo",
+                        "git_repo_glob": "acme/project-*",
+                        "bank_id": "project-alpha-bank",
                     }
                 ]
             }
         }
 
         for remote in (
-            "git@github.com:rigplane/rigplane-pro.git",
-            "https://github.com/rigplane/rigplane-pro.git",
-            "ssh://git@github.com/rigplane/rigplane-pro.git",
+            "git@github.com:acme/project-alpha.git",
+            "https://github.com/acme/project-alpha.git",
+            "ssh://git@github.com/acme/project-alpha.git",
         ):
             routes = _resolve_hindsight_routes(
                 config,
@@ -1998,14 +1998,14 @@ class TestBankRouting:
                 bank_id_template="",
                 profile="default",
                 workspace="hermes",
-                workspace_path="/some/host/path/rigplane-pro",
+                workspace_path="/some/host/path/project-alpha",
                 platform="cli",
                 user="",
                 session="s1",
                 git_remote=remote,
             )
 
-            assert [route.bank_id for route in routes] == ["rigplane-bank"]
+            assert [route.bank_id for route in routes] == ["project-alpha-bank"]
 
     def test_provider_initialize_stores_resolved_routes(self, tmp_path, monkeypatch):
         config = {
@@ -2018,10 +2018,10 @@ class TestBankRouting:
                 "recall": {"include_global": True, "global_bank_id": "global-user"},
                 "rules": [
                     {
-                        "name": "rigplane",
-                        "workspace_path_prefix": "/Users/moroz/Projects/rigplane-pro",
+                        "name": "project-alpha",
+                        "workspace_path_prefix": "/work/acme/project-alpha",
                         "bank_id": "infra",
-                        "retain_tags": ["project:rigplane"],
+                        "retain_tags": ["project:alpha"],
                     }
                 ],
             },
@@ -2037,13 +2037,13 @@ class TestBankRouting:
             hermes_home=str(tmp_path),
             platform="cli",
             agent_identity="default",
-            agent_workspace="rigplane-pro",
-            agent_workspace_path="/Users/moroz/Projects/rigplane-pro",
+            agent_workspace="project-alpha",
+            agent_workspace_path="/work/acme/project-alpha",
         )
 
         assert [route.bank_id for route in p._hindsight_routes] == ["infra", "global-user"]
-        assert p._hindsight_routes[0].name == "rigplane"
-        assert p._hindsight_routes[0].retain_tags == ["source:hermes", "project:rigplane"]
+        assert p._hindsight_routes[0].name == "project-alpha"
+        assert p._hindsight_routes[0].retain_tags == ["source:hermes", "project:alpha"]
         assert p._hindsight_routes[1].retain is False
         assert p._bank_id == "infra"
 
@@ -2200,35 +2200,35 @@ class TestBankRouting:
         assert routes == []
 
     def test_extract_routing_context_caches_git_identity(self, tmp_path):
-        workspace = tmp_path / "rigplane-pro"
+        workspace = tmp_path / "project-alpha"
         workspace.mkdir()
-        (workspace / "AGENTS.md").write_text("# proprietary project\n")
+        (workspace / "AGENTS.md").write_text("# project marker\n")
         os.system(f"git -C {workspace} init -q")
-        os.system(f"git -C {workspace} remote add origin git@github.com:rigplane/rigplane-pro.git")
+        os.system(f"git -C {workspace} remote add origin git@github.com:acme/project-alpha.git")
         os.system(f"git -C {workspace} checkout -b feature/test >/dev/null 2>&1")
 
         cache_root = tmp_path / "profile" / "cache"
         first = _extract_hindsight_routing_context(
-            workspace="rigplane-pro",
+            workspace="project-alpha",
             workspace_path=str(workspace),
-            profile="frontdesk",
+            profile="support",
             platform="cli",
             user="",
             session="s1",
             cache_root=cache_root,
             registry_version="v1",
         )
-        assert first.repo_name == "rigplane-pro"
-        assert first.git_remote == "git@github.com:rigplane/rigplane-pro.git"
-        assert first.git_repo == "rigplane/rigplane-pro"
+        assert first.repo_name == "project-alpha"
+        assert first.git_remote == "git@github.com:acme/project-alpha.git"
+        assert first.git_repo == "acme/project-alpha"
         assert first.git_branch == "feature/test"
         assert first.cache_hit is False
 
         os.system(f"git -C {workspace} checkout -b feature/changed >/dev/null 2>&1")
         second = _extract_hindsight_routing_context(
-            workspace="rigplane-pro",
+            workspace="project-alpha",
             workspace_path=str(workspace),
-            profile="frontdesk",
+            profile="support",
             platform="cli",
             user="",
             session="s1",
@@ -2243,9 +2243,9 @@ class TestBankRouting:
         # are unavailable.
         os.system(f"rm -rf {workspace / '.git'}")
         third = _extract_hindsight_routing_context(
-            workspace="rigplane-pro",
+            workspace="project-alpha",
             workspace_path=str(workspace),
-            profile="frontdesk",
+            profile="support",
             platform="cli",
             user="",
             session="s1",
@@ -2253,13 +2253,13 @@ class TestBankRouting:
             registry_version="v1",
         )
         assert third.cache_hit is True
-        assert third.git_repo == "rigplane/rigplane-pro"
+        assert third.git_repo == "acme/project-alpha"
 
         (workspace / "AGENTS.md").write_text("# changed marker\n")
         fourth = _extract_hindsight_routing_context(
-            workspace="rigplane-pro",
+            workspace="project-alpha",
             workspace_path=str(workspace),
-            profile="frontdesk",
+            profile="support",
             platform="cli",
             user="",
             session="s1",
@@ -2277,7 +2277,7 @@ class TestBankRouting:
         context = _extract_hindsight_routing_context(
             workspace="private",
             workspace_path=str(workspace),
-            profile="frontdesk",
+            profile="support",
             platform="cli",
             user="",
             session="s1",
@@ -2313,13 +2313,13 @@ class TestBankRouting:
 
     def test_bank_registry_generates_deterministic_candidates(self):
         context = _extract_hindsight_routing_context(
-            workspace="rigplane-pro",
-            workspace_path="/work/rigplane-pro",
-            profile="frontdesk",
+            workspace="project-alpha",
+            workspace_path="/work/project-alpha",
+            profile="support",
             platform="cli",
             user="",
             session="s1",
-            git_remote="git@github.com:rigplane/rigplane-pro.git",
+            git_remote="git@github.com:acme/project-alpha.git",
             registry_version="v1",
         )
         candidates = _generate_hindsight_bank_candidates(
@@ -2329,19 +2329,19 @@ class TestBankRouting:
                     "display_name": "Global user",
                     "recall_policy": {"enabled": True, "tags": ["scope:global"]},
                     "retain_policy": {"enabled": False},
-                    "match": {"profile": "frontdesk"},
+                    "match": {"profile": "support"},
                 },
                 {
-                    "id": "hindsight-product-rigplane",
-                    "display_name": "RigPlane product",
+                    "id": "team-product-memory",
+                    "display_name": "Team product",
                     "recall_policy": {
                         "enabled": True,
-                        "tags": ["project:rigplane"],
+                        "tags": ["project:alpha"],
                         "tags_match": "all_strict",
                     },
-                    "retain_policy": {"enabled": True, "tags": ["project:rigplane"]},
-                    "match": {"git_repo_glob": "rigplane/rigplane-*", "repo_name_glob": "rigplane-*"},
-                    "allowed_profiles": ["frontdesk"],
+                    "retain_policy": {"enabled": True, "tags": ["project:alpha"]},
+                    "match": {"git_repo_glob": "acme/project-*", "repo_name_glob": "project-*"},
+                    "allowed_profiles": ["support"],
                     "allowed_platforms": ["cli"],
                 },
                 {
@@ -2354,11 +2354,11 @@ class TestBankRouting:
         )
 
         assert [candidate.bank_id for candidate in candidates] == [
-            "hindsight-product-rigplane",
+            "team-product-memory",
             "global-user",
         ]
         assert candidates[0].retain is True
-        assert candidates[0].recall_tags == ["project:rigplane"]
+        assert candidates[0].recall_tags == ["project:alpha"]
         assert candidates[0].recall_tags_match == "all_strict"
         assert candidates[1].recall is True
         assert candidates[1].retain is False
@@ -2369,11 +2369,11 @@ class TestBankRouting:
             "bank_registry_version": "v1",
             "bank_registry": [
                 {
-                    "id": "hindsight-product-rigplane",
-                    "display_name": "RigPlane product",
+                    "id": "team-product-memory",
+                    "display_name": "Team product",
                     "recall_policy": {"enabled": True, "types": ["observation"]},
-                    "retain_policy": {"enabled": True, "tags": ["project:rigplane"]},
-                    "match": {"git_repo_glob": "rigplane/rigplane-*"},
+                    "retain_policy": {"enabled": True, "tags": ["project:alpha"]},
+                    "match": {"git_repo_glob": "acme/project-*"},
                 }
             ],
         }
@@ -2382,17 +2382,17 @@ class TestBankRouting:
             config,
             fallback_bank_id="global-user",
             bank_id_template="",
-            profile="frontdesk",
-            workspace="rigplane-pro",
-            workspace_path="/work/rigplane-pro",
+            profile="support",
+            workspace="project-alpha",
+            workspace_path="/work/project-alpha",
             platform="cli",
             user="",
             session="s1",
-            git_remote="https://github.com/rigplane/rigplane-pro.git",
+            git_remote="https://github.com/acme/project-alpha.git",
         )
 
-        assert [route.bank_id for route in routes] == ["hindsight-product-rigplane"]
-        assert routes[0].retain_tags == ["project:rigplane"]
+        assert [route.bank_id for route in routes] == ["team-product-memory"]
+        assert routes[0].retain_tags == ["project:alpha"]
         assert routes[0].recall_types == ["observation"]
 
 

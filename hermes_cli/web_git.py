@@ -597,7 +597,15 @@ def worktree_add(cwd: str, options: dict) -> dict:
     target = _unique_dir(os.path.join(root, ".worktrees", slug))
     args = ["worktree", "add", "-b", branch, target]
     if options.get("base"):
-        args.append(str(options["base"]))
+        base = str(options["base"])
+        # Remote-tracking branches may be stale or missing; fetch just that
+        # branch so the local ref is up to date before branching. Ignore fetch
+        # failures (offline / no remote) — git will use whatever local ref
+        # exists, or raise a clear error below if the ref is entirely missing.
+        if base.startswith("origin/"):
+            remote_branch = base[len("origin/"):]
+            _git(root, ["fetch", "origin", remote_branch])
+        args.append(base)
     code, _, err = _git(root, args)
     if code != 0:
         if "already exists" in (err or "").lower():

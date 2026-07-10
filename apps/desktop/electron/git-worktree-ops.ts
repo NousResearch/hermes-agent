@@ -251,7 +251,25 @@ async function addWorktree(repoPath, options, gitBin) {
   const args = ['worktree', 'add', '-b', branch, dir]
 
   if (opts.base) {
-    args.push(String(opts.base))
+    // Remote-tracking branches may be stale or missing if the user hasn't
+    // fetched recently. When the base is an `origin/…` ref, fetch just that
+    // branch so `git worktree add -b new origin/main` works against the
+    // latest remote commit. Local branches are used as-is.
+    const base = String(opts.base)
+
+    if (base.startsWith('origin/')) {
+      const remoteBranch = base.slice('origin/'.length)
+
+      try {
+        await runGit(gitBin, ['fetch', 'origin', remoteBranch], root)
+      } catch {
+        // The fetch isn't mandatory, but it would be nice to do if possible.
+        // If it's not possible, just use the local ref of the remote branch.
+        // If it doesn't exist locally, we'll get an error anyways 
+      }
+    }
+
+    args.push(base)
   }
 
   try {

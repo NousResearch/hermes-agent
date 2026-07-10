@@ -3,11 +3,11 @@
 
 approval:
   dangerous_header: "⚠️  TEHLİKELİ KOMUT: {description}"
-  choose_long:     "      [b]ir kez  |  [o]turum  |  [h]er zaman  |  [r]eddet"
-  choose_short:    "      [b]ir kez  |  [o]turum  |  [r]eddet"
-  prompt_long:     "      Seçim [b/o/h/R]: "
-  prompt_short:    "      Seçim [b/o/R]: "
-  timeout:         "      ⏱ Zaman aşımı — komut reddedildi"
+  choose_long:     "      [o] bir kez  |  [s] oturum  |  [a] her zaman  |  [d] reddet"
+  choose_short:    "      [o] bir kez  |  [s] oturum  |  [d] reddet"
+  prompt_long:     "      Seçim [o/s/a/D]: "
+  prompt_short:    "      Seçim [o/s/D]: "
+  timeout:         "      ⏱ Zaman aşımı — komut reddediliyor"
   allowed_once:    "      ✓ Bir kez izin verildi"
   allowed_session: "      ✓ Bu oturum için izin verildi"
   allowed_always:  "      ✓ Kalıcı izin listesine eklendi"
@@ -17,7 +17,7 @@ approval:
 
 gateway:
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
-  draining:         "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
+  draining:         "⏳ Yeniden başlatmadan önce {count} aktif ajan boşaltılıyor..."
   goal_cleared:     "✓ Hedef temizlendi."
   no_active_goal:   "Aktif hedef yok."
   config_read_failed: "⚠️ config.yaml okunamadı: {error}"
@@ -88,11 +88,10 @@ gateway:
     not_enough:            "Sıkıştırmak için yeterli konuşma yok (en az 4 mesaj gerekli)."
     no_provider:           "Yapılandırılmış sağlayıcı yok — sıkıştırılamıyor."
     nothing_to_do:         "Henüz sıkıştırılacak bir şey yok (transkript hâlâ tamamen korunan bağlam)."
-    aggressive_unsupported: "--aggressive desteklenmiyor; yalnızca son alışverişleri tutmak için '/compress here [N]' kullanın veya turları silmek için /undo kullanın."
     focus_line:            "Odak: \"{topic}\""
-    summary_failed:        "⚠️ Özet oluşturma başarısız ({error}). {count} geçmiş mesaj kaldırılıp yer tutucuyla değiştirildi; önceki bağlam artık kurtarılamaz. auxiliary.compression model yapılandırmanızı kontrol edin."
+    summary_failed:        "⚠️ Özet oluşturma başarısız ({error}). {count} geçmiş mesaj kaldırılıp yer tutucuyla değiştirildi; önceki bağlam artık kurtarılamıyor. auxiliary.compression model yapılandırmanızı kontrol edin."
     aborted:               "⚠️ Sıkıştırma iptal edildi ({error}). Hiçbir mesaj silinmedi — konuşma değişmedi. Tekrar denemek için /compress, temiz bir oturum için /reset komutunu çalıştırın veya auxiliary.compression model yapılandırmanızı kontrol edin."
-    aux_failed:            "ℹ️ Yapılandırılmış sıkıştırma modeli `{model}` başarısız oldu ({error}). Ana modelinizle kurtarıldı — bağlam sağlam — ancak config.yaml içindeki `auxiliary.compression.model` öğesini kontrol etmek isteyebilirsiniz."
+    aux_failed:            "ℹ️ Yapılandırılan sıkıştırma modeli `{model}` başarısız oldu ({error}). Ana modelinizle kurtarıldı — bağlam sağlam — ancak config.yaml içindeki `auxiliary.compression.model` öğesini kontrol etmek isteyebilirsiniz."
     failed:                "Sıkıştırma başarısız: {error}"
 
   debug:
@@ -111,7 +110,7 @@ gateway:
     denied_reason_plural:  "❌ Komutlar reddedildi ({count} komut). Gerekçe ajana iletildi: \"{reason}\""
 
   fast:
-    not_supported:         "⚡ /fast yalnızca Priority Processing destekleyen OpenAI modellerinde kullanılabilir."
+    not_supported:         "⚡ /fast yalnızca Priority Processing'i destekleyen OpenAI modellerinde kullanılabilir."
     status:                "⚡ Priority Processing\n\nMevcut mod: `{mode}`\n\n_Kullanım:_ `/fast <normal|fast|status>`"
     unknown_arg:           "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seçenekler:** normal, fast, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (yapılandırmaya kaydedildi)\n_(sonraki mesajda geçerli olur)_"
@@ -152,15 +151,6 @@ gateway:
     subscribed_suffix:     "(abone olundu — {task_id} tamamlandığında veya engellendiğinde bildirim alacaksınız)"
     truncated_suffix:      "… (kısaltıldı; tam çıktı için terminalinizde `hermes kanban …` komutunu kullanın)"
     no_output:             "(çıktı yok)"
-    wake:
-      completed:           "completed"
-      gave_up:             "gave up (retries exhausted)"
-      crashed:             "crashed (worker exited); dispatcher will retry"
-      timed_out:           "timed out; dispatcher will retry"
-      blocked:             "blocked; needs attention"
-      status_default:      "status changed"
-      status_joiner:       ", "
-      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "`{path}/config.yaml` içinde yapılandırılmış kişilik yok"
@@ -182,7 +172,7 @@ gateway:
     level_disabled:            "none (devre dışı)"
     scope_session:             "oturum geçersiz kılma"
     scope_global:              "genel yapılandırma"
-    status:                    "🧠 **Akıl Yürütme Ayarları**\n\n**Güç:** `{level}`\n**Kapsam:** {scope}\n**Görüntüleme:** {display}\n\n_Kullanım:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    status:                    "🧠 **Akıl Yürütme Ayarları**\n\n**Çaba:** `{level}`\n**Kapsam:** {scope}\n**Görüntüleme:** {display}\n\n_Kullanım:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
     display_on:                "açık ✓"
     display_off:               "kapalı"
     display_set_on:            "🧠 ✓ Akıl yürütme görüntüleme: **AÇIK**\n**{platform}** üzerinde her yanıttan önce modelin düşüncesi gösterilecek."
@@ -231,22 +221,18 @@ gateway:
 
   resume:
     db_unavailable:        "Oturum veritabanı kullanılamıyor."
-    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
-Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room.
-Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
-    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
-Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
-    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
+    parse_error:           "⚠️ `/resume` argümanları ayrıştırılamadı: {error}.\nBoşluk içeren başlıklar için tırnak kullanın, örneğin: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "Bu Matrix odasında adlandırılmış oturum bulunamadı.\nMevcut oda oturumunu adlandırmak için `/title Oturumum`, tüm Matrix oturumlarını listelemek için `/resume --all` veya oda sınırlarını açıkça aşmak için `/resume --cross-room <oturum adı>` kullanın."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume engellendi: bu adlandırılmış oturumun kayıtlı bir oda kaynağı yok, bu nedenle Hermes varsayılan olarak bu oturumu mevcut odanın içinde sürdürmeyecek. Bilerek oda sınırlarını aşmak istiyorsanız `/resume --cross-room {name}` kullanın."
+    matrix_blocked_other_room: "⚠️ Matrix /resume engellendi: bu oturum farklı bir Matrix odasına ait ({room}). Bu oturumu burada sürdürmek istiyorsanız `/resume --cross-room {name}` kullanın."
+    matrix_cross_room_success: "⚠️ Odalar arası sürdürme: **{title}** oturumu **{room}** Matrix odasında sürdürüldü.\nBu odadaki sonraki mesajlar, `/reset` veya başka bir `/resume` yapılana kadar bu transkripti kullanacak.{msg_part}"
     no_named_sessions:     "Adlandırılmış oturum bulunamadı.\nMevcut oturumu adlandırmak için `/title Oturumum`, daha sonra geri dönmek için `/resume Oturumum` kullanın."
     list_header:           "📋 **Adlandırılmış Oturumlar**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nKullanım: `/resume <oturum adı>`"
-    list_footer_numbered:  "\nKullanım: `/resume <oturum adı>` veya `/resume <numara>` (örn. en yenisi için `/resume 1`)"
+    list_footer_numbered:  "\nKullanım: `/resume <oturum adı>` veya `/resume <numara>` (örn. en sonuncusu için `/resume 1`)"
     list_failed:           "Oturumlar listelenemedi: {error}"
     out_of_range:          "Devam endeksi {index} aralık dışında.\nKullanılabilir oturumları görmek için `/resume` komutunu argümansız çalıştırın."
     not_found:             "'**{name}**' ile eşleşen oturum bulunamadı.\nKullanılabilir oturumları görmek için argümansız `/resume` kullanın."
@@ -263,7 +249,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     not_enabled:           "Kontrol noktaları etkin değil.\nconfig.yaml içinde etkinleştirin:\n```\ncheckpoints:\n  enabled: true\n```"
     none_found:            "{cwd} için kontrol noktası bulunamadı"
     invalid_number:        "Geçersiz kontrol noktası numarası. 1-{max} aralığını kullanın."
-    restored:              "✅ {hash} kontrol noktasına geri yüklendi: {reason}\nGeri alma öncesi anlık görüntü otomatik olarak kaydedildi."
+    restored:              "✅ {hash} kontrol noktasına geri yüklendi: {reason}\nGeri almadan önceki anlık görüntü otomatik olarak kaydedildi."
     restore_failed:        "❌ {error}"
 
   set_home:
@@ -272,25 +258,25 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   status:
     header:                "📊 **Hermes Gateway Durumu**"
-    matrix_scope_header:   "**Matrix scope:**"
-    matrix_scope_room:     "  room: {room}"
-    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_header:   "**Matrix kapsamı:**"
+    matrix_scope_room:     "  oda: {room}"
+    matrix_scope_room_id:  "  oda_kimliği: {room_id}"
     matrix_scope_thread:   "  thread_id: {thread_id}"
-    matrix_scope_mode:     "  session_scope: {scope}"
-    matrix_scope_key:      "  session_key: {session_key}"
+    matrix_scope_mode:     "  oturum_kapsamı: {scope}"
+    matrix_scope_key:      "  oturum_anahtarı: {session_key}"
     session_id:            "**Oturum kimliği:** `{session_id}`"
     title:                 "**Başlık:** {title}"
     created:               "**Oluşturuldu:** {timestamp}"
     last_activity:         "**Son etkinlik:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
-    context:               "**Context:** {used} / {total} ({pct}%)"
-    context_used:          "**Context:** ~{used} tokens"
-    tokens:                "**Token:** {tokens}"
-    agent_running:         "**Aracı çalışıyor:** {state}"
+    context:               "**Bağlam:** {used} / {total} ({pct}%)"
+    context_used:          "**Bağlam:** ~{used} token"
+    tokens:                "**Kümülatif API token'ları (her çağrıda yeniden gönderilir):** {tokens}"
+    agent_running:         "**Ajan çalışıyor:** {state}"
     state_yes:             "Evet ⚡"
     state_no:              "Hayır"
-    queued:                "**Sıradaki devam:** {count}"
+    queued:                "**Bekleyen takipler:** {count}"
     platforms:             "**Bağlı platformlar:** {platforms}"
 
   stop:
@@ -345,16 +331,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_cost_included:      "Maliyet: dahil"
     label_context:            "Bağlam: {used} / {total} ({pct}%)"
     label_compressions:       "Sıkıştırmalar: {count}"
-    breakdown_header: "🧩 **Bağlam dökümü** _(tahmini)_"
-    breakdown_line: "• {label}: ~{count} ({pct}%)"
-    breakdown_cat_system_prompt: "Sistem istemi"
-    breakdown_cat_tool_definitions: "Araç tanımları"
-    breakdown_cat_rules: "Kurallar"
-    breakdown_cat_skills: "Beceriler"
-    breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "Alt aracı tanımları"
-    breakdown_cat_memory: "Bellek"
-    breakdown_cat_conversation: "Konuşma"
     header_session_info:      "📊 **Oturum Bilgisi**"
     label_messages:           "Mesajlar: {count}"
     label_estimated_context:  "Tahmini bağlam: ~{count} token"
@@ -370,7 +346,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_new:              "⚙️ Araç ilerlemesi: **NEW** — araç değiştiğinde gösterilir (önizleme uzunluğu: `display.tool_preview_length`, varsayılan 40)."
     mode_all:              "⚙️ Araç ilerlemesi: **ALL** — her araç çağrısı gösterilir (önizleme uzunluğu: `display.tool_preview_length`, varsayılan 40)."
     mode_verbose:          "⚙️ Araç ilerlemesi: **VERBOSE** — her araç çağrısı tüm argümanlarıyla gösterilir."
-    mode_log:              "⚙️ Araç ilerlemesi: **LOG** — sohbette sessiz; araç çağrıları ~/.hermes/logs/tool_calls.log dosyasına yazılır."
     saved_suffix:          "_(**{platform}** için kaydedildi — sonraki mesajda geçerli olur)_"
     save_failed:           "_(yapılandırmaya kaydedilemedi: {error})_"
 

@@ -28,7 +28,7 @@
 | DS2a | ก๊อป `tokens/` + `tools/` เข้า `<project>/design-system/` (โครงกลาง สะอาด ไม่มีสีแบรนด์ใคร) | `ls` เห็นไฟล์ครบ |
 | DS2b | ก๊อป `preview/onemanfleet-ds.html` เป็น **โครงตั้งต้น** แล้ว **แปลงสี/แบรนด์/ข้อความเป็นของโปรเจกต์ทันที** — แทน `#E94560`/`#1A1A2E` ด้วยสีแบรนด์โปรเจกต์ (จากด่านสี Phase 3) · เปลี่ยนชื่อ/โลโก้/ข้อความเป็นของโปรเจกต์ | เปิด HTML ได้ · **`grep -riE "E94560\|1A1A2E" <project>/design-system/` = 0** (ไม่เหลือสี OneManFleet) |
 | DS3 | ต่อชั้นเบา: รัน `ds-check.py` วัดคะแนนปัจจุบัน → เขียนลง `.ds-baseline` → ใส่เข้า CI เป็น "ratchet" (ห้ามต่ำกว่าเดิม) · **ไม่แตะ globals.css** | `ds-check` รายงาน % · CI ล็อกไม่ให้ถอยหลัง |
-| DS4 | รันเว็บจริง (`npm run dev`) + **ถ่ายรูปหน้าจอ** + รัน `contrast-check.mjs` | screenshot หน้าเว็บจริง + contrast exit 0 |
+| DS4 | รันเว็บจริง (`npm run dev`) + **ถ่ายรูปหน้าจอ** + รัน `node tools/contrast-audit-run.mjs <หน้า.html>` (ตรวจ contrast บนหน้าเรนเดอร์จริง headless · ครั้งแรก `npm i playwright` ในโฟลเดอร์ tools) | screenshot หน้าเว็บจริง + audit **exit 0** (0 fail) |
 | DS5 | อัป `.project/OverviewProgress.md` + `decisions.md` · commit งาน DS แยกก้อน (รอเจ้าของ) | Close report + ไฟล์เข้า git จริง |
 
 > DS4 (ถ่ายรูป) ห้ามข้าม — เป็นหลักฐานเดียวที่บอกว่า "เว็บไม่เพี้ยน" จริง · OneManFleet ยังค้างขั้นนี้อยู่
@@ -50,7 +50,7 @@
 หาชุดต้นทางได้ 2 ทาง (อย่าฝัง path เครื่องเดียวลงในงานโปรเจกต์):
 - Mac เจ้าของ: โฟลเดอร์ repo Hermes Agent → `design-system-standard-v2/`
 - VPS/เครื่องอื่น: ชุดอยู่บน GitHub → `git clone --depth 1 https://github.com/rattanasak-ops/hermes-agent.git` แล้วใช้ `design-system-standard-v2/`
-ไฟล์ที่ก๊อป: tokens/ (core/front/admin/effects) · tools/ (ds-check.py · contrast-check.mjs · brand-leak-check.sh · build-tokens.mjs) · preview/onemanfleet-ds.html (โครงตัวอย่าง — เปลี่ยนสี/แบรนด์เป็นของโปรเจกต์ก่อนใช้)
+ไฟล์ที่ก๊อป: tokens/ (core/front/admin/effects) · tools/ (ds-check.py · contrast-check.mjs · contrast-audit.js · contrast-audit-run.mjs · brand-leak-check.sh · build-tokens.mjs) · preview/onemanfleet-ds.html (โครงตัวอย่าง — เปลี่ยนสี/แบรนด์เป็นของโปรเจกต์ก่อนใช้)
 
 เริ่ม DS0-DS2 ก่อน (ปลอดภัย ไม่แตะโค้ดที่รันเว็บ) แล้วรายงานผลก่อนลุย DS3-DS4
 ```

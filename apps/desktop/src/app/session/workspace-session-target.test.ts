@@ -40,9 +40,9 @@ describe('startWorkspaceSession', () => {
 
     const activeSessionIdRef = { current: null }
 
-    const startFreshSessionDraft = vi.fn(({ workspaceTarget }: { workspaceTarget: null | string }) => {
-      setNewChatWorkspaceTarget(workspaceTarget)
-      setCurrentCwd(workspaceTarget || '')
+    const startFreshSessionDraft = vi.fn((options?: { workspaceTarget: string }) => {
+      setNewChatWorkspaceTarget(options?.workspaceTarget)
+      setCurrentCwd(options?.workspaceTarget || '')
     })
 
     const followActiveSessionCwd = vi.fn()

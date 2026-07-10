@@ -10,17 +10,15 @@ import {
 
 interface WorkspaceSessionOptions {
   activeSessionIdRef: MutableRefObject<string | null>
-  explicitNoWorkspace?: boolean
   followActiveSessionCwd?: (cwd: string) => void | Promise<void>
   onExplicitWorkspace?: (cwd: string) => void
   path: null | string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
-  startFreshSessionDraft: (options: { workspaceTarget: null | string }) => void
+  startFreshSessionDraft: (options?: { workspaceTarget: string }) => void
 }
 
 export function startWorkspaceSession({
   activeSessionIdRef,
-  explicitNoWorkspace = false,
   followActiveSessionCwd: followCwd = followActiveSessionCwd,
   onExplicitWorkspace,
   path,
@@ -28,10 +26,11 @@ export function startWorkspaceSession({
   startFreshSessionDraft
 }: WorkspaceSessionOptions): void {
   // A worktree lane carries its own path; a project trunk can be path-less, so
-  // only the synthetic No project row bypasses the active-project fallback.
-  const target = explicitNoWorkspace ? null : path?.trim() || resolveNewSessionCwd()
+  // fall back to the active project's root for that existing controller path.
+  const explicitTarget = path?.trim()
+  const target = explicitTarget || resolveNewSessionCwd()
 
-  startFreshSessionDraft({ workspaceTarget: target || null })
+  startFreshSessionDraft(target ? { workspaceTarget: target } : undefined)
 
   if (!target) {
     return
@@ -52,7 +51,7 @@ export function startWorkspaceSession({
       setNewChatWorkspaceTarget(resolved)
       setCurrentBranch(info.branch || '')
 
-      if (path?.trim()) {
+      if (explicitTarget) {
         onExplicitWorkspace?.(resolved)
         void followCwd(resolved)
       }

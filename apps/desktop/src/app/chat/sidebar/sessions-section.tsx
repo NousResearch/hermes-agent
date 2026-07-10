@@ -91,7 +91,7 @@ interface SidebarSessionsSectionProps {
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
-  onNewSessionInWorkspace?: (path: null | string, explicitNoWorkspace?: boolean) => void
+  onNewSessionInWorkspace?: (path: null | string) => void
   pinned: boolean
   rootClassName?: string
   contentClassName?: string

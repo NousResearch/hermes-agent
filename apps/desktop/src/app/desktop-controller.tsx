@@ -733,10 +733,9 @@ export function DesktopController() {
   )
 
   const startSessionInWorkspace = useCallback(
-    (path: null | string, explicitNoWorkspace = false) => {
+    (path: null | string) => {
       startWorkspaceSession({
         activeSessionIdRef,
-        explicitNoWorkspace,
         followActiveSessionCwd,
         onExplicitWorkspace: restoreWorktree,
         path,

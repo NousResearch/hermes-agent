@@ -2500,6 +2500,33 @@ class SessionDB:
             session_id,
         )
         def _do(conn):
+            row = conn.execute(
+                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            existing_model = row["model"] if row is not None else None
+            existing_provider = row["billing_provider"] if row is not None else None
+            existing_api_calls = int((row["api_call_count"] if row is not None else 0) or 0)
+
+            # Session creation records the requested primary route before any API
+            # call. If it fails and fallback succeeds, the first accounted usage
+            # event is the first authoritative route. After that, preserve the
+            # legacy row: one row cannot represent mixed-provider usage.
+            first_accounted_route = (
+                existing_api_calls == 0
+                and bool(model)
+                and bool(billing_provider)
+                and (existing_model != model or existing_provider != billing_provider)
+            )
+            if first_accounted_route:
+                conn.execute(
+                    """UPDATE sessions
+                       SET model = ?, billing_provider = ?,
+                           billing_base_url = COALESCE(?, billing_base_url),
+                           billing_mode = COALESCE(?, billing_mode)
+                       WHERE id = ?""",
+                    (model, billing_provider, billing_base_url, billing_mode, session_id),
+                )
             conn.execute(sql, params)
         self._execute_write(_do)
 

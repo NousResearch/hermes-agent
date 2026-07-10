@@ -443,6 +443,100 @@ class TestRunEvents:
 
 
 # ---------------------------------------------------------------------------
+# Run lifecycle TTL sweeping
+# ---------------------------------------------------------------------------
+
+
+class TestRunLifecycleSweep:
+    @pytest.mark.asyncio
+    async def test_expired_live_run_remains_counted_approvable_and_stoppable(self, adapter):
+        """Stream TTL must not detach control state from a still-running task."""
+        app = _create_runs_app(adapter)
+        adapter._max_concurrent_runs = 1
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert start_resp.status == 202
+                run_id = (await start_resp.json())["run_id"]
+                assert agent_ready.wait(timeout=3.0)
+
+                task = adapter._active_run_tasks[run_id]
+                assert isinstance(task, asyncio.Task)
+                assert not task.done()
+
+                pending = approval_mod._ApprovalEntry({
+                    "command": "bash -c long-running",
+                    "description": "approval after stream TTL",
+                    "pattern_keys": ["shell-c"],
+                })
+                with approval_mod._lock:
+                    approval_mod._gateway_queues[run_id] = [pending]
+
+                adapter._run_streams_created[run_id] -= adapter._RUN_STREAM_TTL + 1
+                # Exercise one real sweeper iteration without waiting 60 seconds.
+                with patch(
+                    "gateway.platforms.api_server.asyncio.sleep",
+                    side_effect=[None, asyncio.CancelledError()],
+                ):
+                    with pytest.raises(asyncio.CancelledError):
+                        await adapter._sweep_orphaned_runs()
+
+                assert adapter._active_run_tasks[run_id] is task
+                assert adapter._active_run_agents[run_id] is mock_agent
+                assert run_id in adapter._run_streams
+                assert adapter._run_approval_sessions[run_id] == run_id
+
+                limited = adapter._concurrency_limited_response()
+                assert limited is not None
+                assert limited.status == 429
+
+                approval_resp = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "once"},
+                )
+                assert approval_resp.status == 200
+                assert pending.event.is_set()
+                assert pending.result == "once"
+
+                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop_resp.status == 200
+                mock_agent.interrupt.assert_called_once_with("Stop requested via API")
+
+    @pytest.mark.asyncio
+    async def test_expired_orphan_run_state_is_reaped(self, adapter):
+        run_id = "run_expired_orphan"
+        adapter._run_streams[run_id] = asyncio.Queue()
+        adapter._run_streams_created[run_id] = 0
+        adapter._run_approval_sessions[run_id] = run_id
+
+        pending = approval_mod._ApprovalEntry({
+            "command": "bash -c orphaned",
+            "description": "orphaned approval",
+            "pattern_keys": ["shell-c"],
+        })
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [pending]
+
+        with patch(
+            "gateway.platforms.api_server.asyncio.sleep",
+            side_effect=[None, asyncio.CancelledError()],
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await adapter._sweep_orphaned_runs()
+
+        assert run_id not in adapter._run_streams
+        assert run_id not in adapter._run_streams_created
+        assert run_id not in adapter._run_approval_sessions
+        assert pending.event.is_set()
+        with approval_mod._lock:
+            assert run_id not in approval_mod._gateway_queues
+
+
+# ---------------------------------------------------------------------------
 # POST /v1/runs/{run_id}/stop — interrupt a running agent
 # ---------------------------------------------------------------------------
 

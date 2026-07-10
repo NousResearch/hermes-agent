@@ -1280,6 +1280,20 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.context_overflow
 
+    # ── Z.AI / Zhipu GLM error messages ──
+
+    def test_zai_glm_token_limit_overflow(self):
+        """Z.AI GLM's 'tokens in request more than max tokens allowed'
+        (error code 1210) → context_overflow, so the agent compresses
+        instead of blindly retrying. Port of anomalyco/opencode#35671."""
+        e = MockAPIError(
+            '{"error": {"code": "1210", "message": '
+            '"tokens in request more than max tokens allowed"}}',
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="zai")
+        assert result.reason == FailoverReason.context_overflow
+
     # ── vLLM / local inference server error messages ──
 
     def test_vllm_max_model_len_overflow(self):

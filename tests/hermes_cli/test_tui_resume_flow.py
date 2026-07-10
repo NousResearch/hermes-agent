@@ -423,7 +423,7 @@ def test_ultrafast_version_runs_off_termux(monkeypatch, capsys, main_mod):
 
     out = capsys.readouterr().out
     assert "Hermes Agent v" in out
-    assert "Project:" in out
+    assert "Install directory:" in out
     assert "Python:" in out
     assert "OpenAI SDK:" in out
 
@@ -484,7 +484,7 @@ def test_ultrafast_version_direct_script_invocation_works():
 
     assert result.returncode == 0, result.stderr
     assert "Hermes Agent v" in result.stdout
-    assert "Project:" in result.stdout
+    assert "Install directory:" in result.stdout
 
 
 def test_ultrafast_version_preserves_non_termux_version_command(

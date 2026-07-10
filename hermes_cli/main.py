@@ -310,7 +310,10 @@ def _print_fast_version_info() -> None:
     from hermes_cli import __release_date__, __version__
 
     print(f"Hermes Agent v{__version__} ({__release_date__})")
-    print(f"Install directory: {PROJECT_ROOT}")
+    # PROJECT_ROOT (module constant) is defined AFTER the ultrafast exit —
+    # referencing it here NameErrors (live bug on main since eb4040242 broke
+    # the Termux fast path). Compute it locally.
+    print(f"Install directory: {_project_root_str_fast()}")
 
     print(f"Python: {sys.version.split()[0]}")
 

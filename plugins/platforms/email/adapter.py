@@ -422,6 +422,8 @@ def _extract_attachments(
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
+    splits_long_messages = True  # send() delivers full payload without hard truncation
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 

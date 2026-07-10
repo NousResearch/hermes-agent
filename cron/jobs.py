@@ -1986,6 +1986,34 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                         times = repeat.get("times")
                         completed = repeat.get("completed", 0)
                         if times is not None and times > 0 and completed >= times:
+                            # Liveness guard (issue #62002): before deleting a stale
+                            # entry, check if the run is actually still alive in this
+                            # process. A one-shot whose run legitimately outlives its
+                            # run_claim TTL (e.g. stalled on network I/O) must not be
+                            # removed mid-flight, or its outcome/delivery record is lost.
+                            try:
+                                # Defer import to avoid circular dependency.
+                                from cron.scheduler import get_running_job_ids
+                                running_jobs = get_running_job_ids()
+                                if job["id"] in running_jobs:
+                                    logger.info(
+                                        "Job '%s': one-shot dispatch limit reached (%d/%d) "
+                                        "but still executing in this process — skipping removal",
+                                        job.get("name", job.get("id", "?")),
+                                        completed,
+                                        times,
+                                    )
+                                    continue
+                            except Exception as exc:
+                                # If liveness check fails (e.g. scheduler module
+                                # unavailable), log and fall through to removal.
+                                logger.warning(
+                                    "Job '%s': liveness check failed (%s) — "
+                                    "proceeding with stale-entry removal",
+                                    job.get("name", job.get("id", "?")),
+                                    exc,
+                                )
+
                             logger.info(
                                 "Job '%s': one-shot dispatch limit reached (%d/%d) "
                                 "— removing stale due entry",

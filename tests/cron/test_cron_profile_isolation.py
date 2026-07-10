@@ -102,6 +102,28 @@ def test_cron_execution_home_follows_active_profile(tmp_path, monkeypatch):
     assert scheduler._get_hermes_home().resolve() != root.resolve()
 
 
+def test_cron_storage_follows_profile_switch_without_reload(tmp_path, monkeypatch):
+    """BUILD-344: jobs.py must resolve the store dynamically at call time,
+    like scheduler.py's _get_hermes_home() already does — no module reload
+    required to see a profile switch mid-process."""
+    root = tmp_path / "hermes_home"
+    profile_a = root / "profiles" / "a"
+    profile_b = root / "profiles" / "b"
+    profile_a.mkdir(parents=True)
+    profile_b.mkdir(parents=True)
+
+    _set_profile_env(monkeypatch, root, profile_a)
+
+    import cron.jobs as jobs
+
+    assert jobs.jobs_file().resolve() == (profile_a / "cron" / "jobs.json").resolve()
+
+    # Switch profiles in the same process, same import, no reload.
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+    assert jobs.jobs_file().resolve() == (profile_b / "cron" / "jobs.json").resolve()
+    assert jobs.jobs_file().resolve() != (profile_a / "cron" / "jobs.json").resolve()
+
+
 def test_cron_storage_unaffected_when_no_profile(tmp_path, monkeypatch):
     """With no profile (HERMES_HOME == root), the store is the root's cron dir
     — unchanged behavior for single-profile installs."""

@@ -238,6 +238,107 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+# =========================================================================
+# BUILD-344 — missing/corrupt store handling
+# =========================================================================
+
+class TestLoadJobsMissingStore:
+    """A missing jobs.json (never-used profile) must degrade gracefully:
+    empty store, single WARNING, no raise. A corrupt (unparseable) file must
+    still fail loudly. See the 2026-07-09 coder-profile incident."""
+
+    def test_missing_jobs_file_returns_empty_with_single_warning(self, tmp_cron_dir, caplog):
+        import logging
+        caplog.set_level(logging.WARNING, logger="cron.jobs")
+
+        assert load_jobs() == []
+        assert load_jobs() == []  # second read for the same path — no re-warn
+
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and "jobs.json not found" in r.message
+        ]
+        assert errors == []
+        assert len(warnings) == 1
+
+    def test_missing_jobs_file_does_not_raise(self, tmp_cron_dir):
+        # Regression guard: this used to raise RuntimeError("Failed to read
+        # cron database") for a plain never-created profile store.
+        load_jobs()  # must not raise
+
+    def test_corrupt_jobs_file_still_raises(self, tmp_cron_dir):
+        cron_dir = tmp_cron_dir / "cron"
+        cron_dir.mkdir(parents=True, exist_ok=True)
+        (cron_dir / "jobs.json").write_text("{not valid json at all", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="corrupted"):
+            load_jobs()
+
+    def test_missing_file_race_after_exists_check_is_graceful(self, tmp_cron_dir, monkeypatch, caplog):
+        """Simulates the exact incident mechanism: something reports the file
+        exists (a stale directory listing / TOCTOU race) but open() hits
+        ENOENT. Must still degrade to an empty store, not raise."""
+        import logging
+        from pathlib import Path
+        import cron.jobs as jobs_module
+
+        caplog.set_level(logging.WARNING, logger="cron.jobs")
+        target = jobs_module.jobs_file()
+        real_exists = Path.exists
+
+        def fake_exists(self):
+            if self == target:
+                return True  # lie: pretend it exists so we reach open()
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+
+        result = load_jobs()
+
+        assert result == []
+        assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+
+
+class TestJobsFileDynamicResolution:
+    """cron/jobs.py must resolve its storage path at call time from the live
+    HERMES_HOME (like cron/scheduler.py's _get_hermes_home()), not once at
+    module import — otherwise a process whose active profile changes mid-life
+    (or any hermes_constants.set_hermes_home_override() caller) keeps reading/
+    writing a stale, frozen-at-import path. See BUILD-344."""
+
+    def test_jobs_file_follows_hermes_home_without_reload(self, tmp_path, monkeypatch):
+        import cron.jobs as jobs_module
+
+        home_a = tmp_path / "home_a"
+        home_b = tmp_path / "home_b"
+        home_a.mkdir()
+        home_b.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        assert jobs_module.jobs_file().resolve() == (home_a / "cron" / "jobs.json").resolve()
+
+        # Switch profiles WITHOUT touching cron.jobs.CRON_DIR/JOBS_FILE and
+        # WITHOUT importlib.reload() — a fresh call must see the new home.
+        monkeypatch.setenv("HERMES_HOME", str(home_b))
+        assert jobs_module.jobs_file().resolve() == (home_b / "cron" / "jobs.json").resolve()
+
+    def test_jobs_file_follows_context_override_without_reload(self, tmp_path, monkeypatch):
+        """Same as above but via hermes_constants.set_hermes_home_override()
+        — the mechanism hermes_cli/web_server.py uses to serve multiple
+        profiles from one long-lived process."""
+        import cron.jobs as jobs_module
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        home = tmp_path / "override_home"
+        home.mkdir()
+        token = set_hermes_home_override(str(home))
+        try:
+            assert jobs_module.jobs_file().resolve() == (home / "cron" / "jobs.json").resolve()
+        finally:
+            reset_hermes_home_override(token)
+
+
 class TestJobCRUD:
     def test_create_and_get(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="30m")

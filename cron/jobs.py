@@ -61,7 +61,8 @@ except ImportError:
 # profiles (the security boundary #4707 was filed for). Do NOT change this to
 # the default root: that re-breaks per-profile isolation. See also the dynamic
 # `_get_hermes_home()` / `_get_lock_paths()` resolution in cron/scheduler.py.
-HERMES_DIR = get_hermes_home().resolve()
+_DEFAULT_HERMES_DIR = get_hermes_home().resolve()
+HERMES_DIR = _DEFAULT_HERMES_DIR
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 # Heartbeat file the in-process ticker touches on every loop iteration. The
@@ -87,10 +88,73 @@ _jobs_lock_state = threading.local()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
+# Paths we've already logged a "missing jobs.json" warning for (BUILD-344) —
+# keyed by resolved path so switching profiles still gets one fresh warning
+# per distinct missing store, without re-warning on every read/tick.
+_missing_jobs_file_warned: Set[Path] = set()
+
+
+# ---------------------------------------------------------------------------
+# Dynamic path resolution (BUILD-344)
+#
+# HERMES_DIR/CRON_DIR/JOBS_FILE/OUTPUT_DIR/TICKER_*_FILE above are computed
+# ONCE, at import time. cron/scheduler.py resolves the active HERMES_HOME
+# dynamically instead (see its own ``_get_hermes_home()``/``_get_lock_paths()``)
+# specifically so a per-profile process — or any caller using
+# ``hermes_constants.set_hermes_home_override()`` — sees the right path
+# without needing a module reload. jobs.py's storage layer didn't, which is
+# how a process whose *current* profile is ``coder`` kept resolving jobs.json
+# under a stale, frozen-at-import path: a hard ENOENT per job per tick
+# instead of the correct (and correctly-missing) per-profile store.
+#
+# The functions below re-derive fresh from ``get_hermes_home()`` on every
+# call — UNLESS the legacy constant has been reassigned directly (the pattern
+# ~15 existing tests and ``hermes_cli/web_server.py`` already use to redirect
+# a single call to a specific profile's cron dir within one process). In that
+# case the explicit override wins, so none of that backward compatibility is
+# lost. Internal code below calls these functions; it does not read the bare
+# module constants directly.
+#
+# Collision caveat: a reassignment that happens to EQUAL the frozen default
+# is indistinguishable from "no override" — the accessor will silently keep
+# tracking ``get_hermes_home()`` dynamically (including any later profile
+# switch). Don't reassign a constant to the current default value as a pin.
+def _cron_dir() -> Path:
+    """Resolve the active cron directory at call time."""
+    if CRON_DIR != _DEFAULT_HERMES_DIR / "cron":
+        return CRON_DIR  # explicit legacy override in effect — honor it
+    return get_hermes_home().resolve() / "cron"
+
+
+def jobs_file() -> Path:
+    """Resolve jobs.json at call time. See ``_cron_dir()``."""
+    if JOBS_FILE != _DEFAULT_HERMES_DIR / "cron" / "jobs.json":
+        return JOBS_FILE
+    return _cron_dir() / "jobs.json"
+
+
+def output_dir() -> Path:
+    """Resolve the cron output directory at call time. See ``_cron_dir()``."""
+    if OUTPUT_DIR != _DEFAULT_HERMES_DIR / "cron" / "output":
+        return OUTPUT_DIR
+    return _cron_dir() / "output"
+
+
+def _ticker_heartbeat_file() -> Path:
+    if TICKER_HEARTBEAT_FILE != _DEFAULT_HERMES_DIR / "cron" / "ticker_heartbeat":
+        return TICKER_HEARTBEAT_FILE
+    return _cron_dir() / "ticker_heartbeat"
+
+
+def _ticker_success_file() -> Path:
+    if TICKER_SUCCESS_FILE != _DEFAULT_HERMES_DIR / "cron" / "ticker_last_success":
+        return TICKER_SUCCESS_FILE
+    return _cron_dir() / "ticker_last_success"
+
 
 def _jobs_lock_file() -> Path:
     """Return the advisory lock path for the current cron directory."""
-    return CRON_DIR / ".jobs.lock"
+    return _cron_dir() / ".jobs.lock"
 
 
 @contextlib.contextmanager
@@ -175,7 +239,7 @@ def _job_output_dir(job_id: str) -> Path:
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
     if Path(text).is_absolute() or Path(text).drive:
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
-    return OUTPUT_DIR / text
+    return output_dir() / text
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -285,10 +349,12 @@ def _secure_file(path: Path):
 
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
-    CRON_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    _secure_dir(CRON_DIR)
-    _secure_dir(OUTPUT_DIR)
+    cron_dir = _cron_dir()
+    out_dir = output_dir()
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir(cron_dir)
+    _secure_dir(out_dir)
 
 
 # =============================================================================
@@ -577,7 +643,7 @@ def _atomic_write_epoch(path: Path) -> None:
     torn/truncated file. Best-effort: failures are swallowed by callers.
     """
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(CRON_DIR), suffix=".tmp", prefix=".hb_")
+    fd, tmp_path = tempfile.mkstemp(dir=str(_cron_dir()), suffix=".tmp", prefix=".hb_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(str(time.time()))
@@ -605,12 +671,12 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     Best-effort: a write failure must never disrupt the tick loop.
     """
     try:
-        _atomic_write_epoch(TICKER_HEARTBEAT_FILE)
+        _atomic_write_epoch(_ticker_heartbeat_file())
     except Exception:
         pass
     if success:
         try:
-            _atomic_write_epoch(TICKER_SUCCESS_FILE)
+            _atomic_write_epoch(_ticker_success_file())
         except Exception:
             pass
 
@@ -629,38 +695,62 @@ def get_ticker_heartbeat_age() -> Optional[float]:
     None = heartbeat file missing/unreadable (older build, never ran, or a
     torn read). Callers treat None as "cannot determine", not "dead".
     """
-    return _epoch_file_age(TICKER_HEARTBEAT_FILE)
+    return _epoch_file_age(_ticker_heartbeat_file())
 
 
 def get_ticker_success_age() -> Optional[float]:
     """Seconds since the ticker last completed a tick WITHOUT raising, or None."""
-    return _epoch_file_age(TICKER_SUCCESS_FILE)
+    return _epoch_file_age(_ticker_success_file())
 
 
 # =============================================================================
 # Job CRUD Operations
 # =============================================================================
 
+def _warn_missing_jobs_file_once(jf: Path) -> None:
+    """Log a missing job store once per resolved path (best-effort under
+    concurrent callers — unlocked read paths may rarely double-log; benign,
+    log-line dedup only, add a lock only if this becomes a real spam source).
+
+    A missing jobs.json is a normal, expected state (a profile that has never
+    scheduled a cron job) — not an error. Before this, a missing file raised
+    a hard ``RuntimeError`` that ``cron/scheduler.py`` logged as an ERROR once
+    per due job per tick (BUILD-344 incident). Warning once per path (not once
+    per read/tick) keeps the signal without spamming the log every tick.
+    """
+    if jf not in _missing_jobs_file_warned:
+        _missing_jobs_file_warned.add(jf)
+        logger.warning("cron jobs.json not found at %s — treating as empty job store", jf)
+
+
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
+    jf = jobs_file()
     ensure_dirs()
-    if not JOBS_FILE.exists():
+    if not jf.exists():
+        _warn_missing_jobs_file_once(jf)
         return []
 
     _strict_retry = False  # track whether we used the strict=False fallback
 
     try:
-        with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+        with open(jf, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         _strict_retry = True
         try:
-            with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+            with open(jf, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
         except Exception as e:
             logger.error("Failed to auto-repair jobs.json: %s", e)
             raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
+    except FileNotFoundError:
+        # Raced away between the exists() check above and open() (concurrent
+        # delete/replace, or a stale directory listing). Same as a plain
+        # missing file: an empty store, not an error — see #BUILD-344.
+        _warn_missing_jobs_file_once(jf)
+        return []
     except IOError as e:
         logger.error("IOError reading jobs.json: %s", e)
         raise RuntimeError(f"Failed to read cron database: {e}") from e
@@ -692,14 +782,18 @@ def load_jobs() -> List[Dict[str, Any]]:
 def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage. Caller must hold _jobs_lock()."""
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
+    jf = jobs_file()
+    fd, tmp_path = tempfile.mkstemp(dir=str(jf.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, JOBS_FILE)
-        _secure_file(JOBS_FILE)
+        atomic_replace(tmp_path, jf)
+        _secure_file(jf)
+        # A successful write proves the store now exists — drop any stale
+        # "missing" warning latch for this path so a later deletion warns again.
+        _missing_jobs_file_warned.discard(jf)
     except BaseException:
         try:
             os.unlink(tmp_path)

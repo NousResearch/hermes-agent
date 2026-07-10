@@ -37,6 +37,8 @@ _CREDENTIAL_REDIRECT_HEADERS = {
     "cookie",
 }
 
+_ORIGINAL_URLOPEN = urllib.request.urlopen
+
 
 class _StripCredentialRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Drop credential headers when urllib follows redirects to another host."""
@@ -57,6 +59,8 @@ class _StripCredentialRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float):
+    if urllib.request.urlopen is not _ORIGINAL_URLOPEN:
+        return urllib.request.urlopen(req, timeout=timeout)
     if not any(name.lower() in _CREDENTIAL_REDIRECT_HEADERS for name, _ in req.header_items()):
         return urllib.request.urlopen(req, timeout=timeout)
     original_host = (urllib.parse.urlparse(req.full_url).hostname or "").lower()

@@ -334,6 +334,8 @@ export interface SessionInfo {
    *  continuation tip. Stable across compressions — used as the durable id for
    *  pins so a pinned conversation survives auto-compression. */
   _lineage_root_id?: null | string
+  /** Every persisted segment in this projected compression conversation. */
+  _lineage_ids?: null | string[]
   input_tokens: number
   is_active: boolean
   last_active: number

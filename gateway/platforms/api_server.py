@@ -1644,7 +1644,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "output_tokens", "cache_read_tokens", "cache_write_tokens",
             "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
             "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id",
+            "_lineage_root_id", "_lineage_ids",
         )
         payload = {key: session.get(key) for key in safe_keys if key in session}
         # Avoid exposing full system prompts/model_config through the client API;

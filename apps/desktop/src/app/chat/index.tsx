@@ -27,6 +27,7 @@ import {
   toRuntimeMessage
 } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
+import { sessionMatchesStoredId } from '@/lib/session-identity'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { $pinnedSessionIds } from '@/store/layout'
@@ -118,8 +119,7 @@ function ChatHeader({
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
 
-  const activeStoredSession =
-    sessions.find(session => session.id === selectedSessionId || session._lineage_root_id === selectedSessionId) || null
+  const activeStoredSession = sessions.find(session => sessionMatchesStoredId(session, selectedSessionId)) || null
 
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
 

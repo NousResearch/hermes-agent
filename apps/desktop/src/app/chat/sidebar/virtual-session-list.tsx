@@ -5,6 +5,7 @@ import { type FC, useCallback, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
 import { type SidebarSessionEntry } from '@/lib/session-branch-tree'
+import { sessionMatchesAnyId, sessionMatchesStoredId } from '@/lib/session-identity'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 
@@ -83,8 +84,8 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     const commonProps: SessionRowCommonProps = {
       branchStem,
       isPinned: pinned,
-      isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
+      isSelected: sessionMatchesStoredId(session, activeSessionId),
+      isWorking: sessionMatchesAnyId(session, workingSessionIdSet),
       onArchive: () => onArchiveSession(session.id),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),

@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { sessionMatchesStoredId } from '@/lib/session-identity'
 import type { SessionInfo } from '@/types/hermes'
 
 import { $selectedStoredSessionId, $sessions } from './session'
@@ -74,7 +75,7 @@ export function openOrAdvanceSwitcher(direction: 1 | -1): string | null {
     return null
   }
 
-  const current = sessions.findIndex(session => session.id === $selectedStoredSessionId.get())
+  const current = sessions.findIndex(session => sessionMatchesStoredId(session, $selectedStoredSessionId.get()))
   const start = current === -1 ? (direction === 1 ? -1 : 0) : current
   const nextIndex = wrap(start + direction, sessions.length)
 

@@ -3861,9 +3861,33 @@ class TestCompressionChainProjection:
         # The row surfaces the tip's identity but preserves the root's start
         # timestamp for stable ordering and lineage tracking.
         assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["_lineage_ids"] == ["root1", "mid1", "tip1"]
         assert tip_row["preview"].startswith("latest message")
         assert tip_row["ended_at"] is None  # tip is still live
         assert tip_row["end_reason"] is None
+
+    def test_projected_branch_lineage_excludes_non_compression_parent(self, db):
+        """Lineage aliases must not make a branch match its source session."""
+        db.create_session("parent", "cli")
+        db.end_session("parent", "branched")
+        db.create_session(
+            "branch-root",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+        db.append_message("branch-root", "user", "explore an alternative")
+        db.end_session("branch-root", "compression")
+        db.create_session("branch-tip", "cli", parent_session_id="branch-root")
+        db.append_message("branch-tip", "user", "continue the branch")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        branch_row = next(s for s in sessions if s["id"] == "branch-tip")
+
+        assert branch_row["_lineage_root_id"] == "branch-root"
+        assert branch_row["_lineage_ids"] == ["branch-root", "branch-tip"]
+        assert "parent" not in branch_row["_lineage_ids"]
 
     def test_list_projection_uses_tip_cwd(self, db):
         """Projected lineage rows should carry cwd from the live tip row.

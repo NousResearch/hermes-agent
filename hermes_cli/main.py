@@ -7589,6 +7589,179 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
         pass
 
 
+
+def _is_windows_native_package_lock_error(text: str) -> bool:
+    """True when pip/uv failed because a loaded native wheel/file is locked.
+
+    Observed on Windows during ``hermes update`` when a live Hermes/gateway
+    process holds ``cryptography``'s ``_rust.pyd`` (or similar). Symptoms:
+    ``Access is denied (os error 5)``, ``WinError 5``, and the follow-on
+    ``uninstall-no-record-file`` / missing RECORD state after a partial
+    uninstall.
+    """
+    t = (text or "").lower()
+    needles = (
+        "access is denied",
+        "winerror 5",
+        "os error 5",
+        "uninstall-no-record-file",
+        "no record file was found",
+        "cannot uninstall",
+    )
+    return any(n in t for n in needles)
+
+
+def _site_packages_for_install_target(
+    install_cmd_prefix: list[str], env: dict[str, str] | None
+) -> Path | None:
+    """Best-effort site-packages path for the install target venv."""
+    venv_python = _resolve_install_target_python(install_cmd_prefix, env)
+    if venv_python is None:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                str(venv_python),
+                "-c",
+                "import site,sys; "
+                "cands=[p for p in site.getsitepackages() if p.endswith('site-packages')]; "
+                "print(cands[0] if cands else '')",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    except Exception as e:
+        logger.debug("site-packages probe failed: %s", e)
+        return None
+    raw = (result.stdout or "").strip().splitlines()
+    if not raw or not raw[0].strip():
+        return None
+    p = Path(raw[0].strip())
+    return p if p.is_dir() else None
+
+
+def _quarantine_package_native_binaries(
+    site_packages: Path, package_name: str, *, max_files: int = 64
+) -> list[tuple[Path, Path]]:
+    """Rename locked ``.pyd`` / ``.dll`` files under a package so pip can rewrite them.
+
+    Mirrors the ``hermes.exe`` quarantine dance: Windows allows rename of a
+    mapped file even when REPLACE/DELETE is blocked. Returns (original,
+    quarantined) pairs for best-effort rollback.
+    """
+    moved: list[tuple[Path, Path]] = []
+    if not _is_windows() or site_packages is None:
+        return moved
+
+    import time
+
+    pkg_dir = site_packages / package_name
+    if not pkg_dir.is_dir():
+        matches = [
+            p for p in site_packages.iterdir()
+            if p.is_dir() and p.name.lower() == package_name.lower()
+        ]
+        if not matches:
+            return moved
+        pkg_dir = matches[0]
+
+    stamp = int(time.time() * 1000)
+    candidates: list[Path] = []
+    try:
+        for pattern in ("**/*.pyd", "**/*.dll"):
+            candidates.extend(pkg_dir.glob(pattern))
+    except OSError:
+        return moved
+
+    for src in candidates[:max_files]:
+        if not src.is_file():
+            continue
+        target = src.with_name(src.name + f".old.{stamp}")
+        try:
+            src.rename(target)
+            moved.append((src, target))
+        except OSError:
+            continue
+    return moved
+
+
+def _restore_quarantined_package_binaries(moved: list[tuple[Path, Path]]) -> None:
+    for original, quarantined in moved:
+        try:
+            if not original.exists() and quarantined.exists():
+                quarantined.rename(original)
+        except OSError:
+            pass
+
+
+def _cleanup_quarantined_package_binaries(site_packages: Path | None = None) -> None:
+    """Sweep ``*.pyd.old.*`` / ``*.dll.old.*`` left by prior native-wheel quarantine."""
+    if not _is_windows() or site_packages is None or not site_packages.is_dir():
+        return
+    try:
+        for stale in site_packages.rglob("*.old.*"):
+            name = stale.name.lower()
+            if not (".pyd.old." in name or ".dll.old." in name):
+                continue
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _load_exact_dependency_pins() -> dict[str, str]:
+    """Return ``{dist_name: exact_version}`` for ``name==version`` base deps."""
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:  # pragma: no cover
+        return {}
+
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    if not pyproject.is_file():
+        return {}
+    try:
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
+        raw_deps = data.get("project", {}).get("dependencies", []) or []
+    except Exception:
+        return {}
+
+    pins: dict[str, str] = {}
+    try:
+        from packaging.requirements import Requirement  # type: ignore
+
+        for spec in raw_deps:
+            try:
+                req = Requirement(spec)
+            except Exception:
+                continue
+            if req.marker is not None:
+                try:
+                    if not req.marker.evaluate():
+                        continue
+                except Exception:
+                    pass
+            for spec_item in req.specifier:
+                if spec_item.operator == "==":
+                    pins[req.name] = spec_item.version
+                    break
+    except Exception:
+        for spec in raw_deps:
+            head = spec.split(";", 1)[0].strip()
+            if "==" not in head:
+                continue
+            name, ver = head.split("==", 1)
+            name = name.strip().split("[", 1)[0].strip()
+            ver = ver.strip()
+            if name and ver:
+                pins[name] = ver
+    return pins
+
+
 def _refresh_active_lazy_features() -> None:
     """Refresh lazy-installed backends after a code update.
 
@@ -7682,9 +7855,27 @@ def _install_python_dependencies_with_optional_fallback(
 
     try:
         _install(["install", "-e", f".[{group}]"])
+        # Always verify exact pins / missing base deps — a "successful" install
+        # can still leave Windows native wheels half-upgraded (e.g. cryptography
+        # stuck at an older/newer version because _rust.pyd was locked).
+        _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
         _verify_console_scripts_installed(install_cmd_prefix, env=env)
         return
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as exc:
+        detail = ""
+        if getattr(exc, "stderr", None):
+            detail = str(exc.stderr)
+        elif getattr(exc, "output", None):
+            detail = str(exc.output)
+        if _is_windows() and _is_windows_native_package_lock_error(detail or str(exc)):
+            print(
+                "  ⚠ Install hit a Windows native-package lock "
+                "(often cryptography/_rust.pyd held by a live gateway)."
+            )
+            print(
+                "    Continuing with base reinstall + pin repair; if this keeps "
+                "failing, stop the gateway and re-run `hermes update`."
+            )
         print(
             "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
         )
@@ -7900,18 +8091,36 @@ def _verify_core_dependencies_installed(
     if venv_python is None:
         return
 
-    def _missing_deps() -> list[str]:
+    exact_pins = _load_exact_dependency_pins()
+
+    def _problem_deps() -> list[str]:
+        # Probe items are either bare names or "name==exact" for pin checks.
+        items: list[str] = []
+        for name in applicable:
+            pin = exact_pins.get(name)
+            items.append(f"{name}=={pin}" if pin else name)
+
         check_script = (
             "import importlib.metadata as md, sys\n"
-            "missing=[]\n"
-            "for name in sys.argv[1:]:\n"
-            "    try: md.version(name)\n"
-            "    except md.PackageNotFoundError: missing.append(name)\n"
-            "print('\\n'.join(missing))\n"
+            "problems=[]\n"
+            "for item in sys.argv[1:]:\n"
+            "    if '==' in item:\n"
+            "        name, want = item.split('==', 1)\n"
+            "        try:\n"
+            "            got = md.version(name)\n"
+            "        except md.PackageNotFoundError:\n"
+            "            problems.append(name)\n"
+            "            continue\n"
+            "        if got != want:\n"
+            "            problems.append(name)\n"
+            "    else:\n"
+            "        try: md.version(item)\n"
+            "        except md.PackageNotFoundError: problems.append(item)\n"
+            "print('\\n'.join(problems))\n"
         )
         try:
             result = subprocess.run(
-                [str(venv_python), "-c", check_script, *applicable],
+                [str(venv_python), "-c", check_script, *items],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -7922,12 +8131,12 @@ def _verify_core_dependencies_installed(
             return []
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
-    missing = _missing_deps()
+    missing = _problem_deps()
     if not missing:
         return
 
     print(
-        f"  ⚠ Verification: {len(missing)} declared dep(s) missing after install: "
+        f"  ⚠ Verification: {len(missing)} declared dep(s) missing/mismatched after install: "
         f"{', '.join(missing[:8])}{'...' if len(missing) > 8 else ''}"
     )
     print("  → Reinstalling base group with --reinstall to repair...")
@@ -7952,7 +8161,7 @@ def _verify_core_dependencies_installed(
         print("  ⚠ Repair install failed; check `hermes update` output above.")
         return
 
-    still_missing = _missing_deps()
+    still_missing = _problem_deps()
     if not still_missing:
         print("  ✓ All declared core dependencies now installed")
         return
@@ -7972,21 +8181,49 @@ def _verify_core_dependencies_installed(
 
     specs = [name_to_spec.get(n, n) for n in still_missing]
     print(
-        f"  → Force-installing remaining missing dep(s): {', '.join(specs)}"
+        f"  → Force-installing remaining missing/mismatched dep(s): {', '.join(specs)}"
     )
+
+    # On Windows, a live gateway can leave cryptography (etc.) half-uninstalled
+    # with a broken RECORD and a locked _rust.pyd. Quarantine native binaries
+    # and use --ignore-installed --no-deps so pip/uv can write a clean pin
+    # without needing a clean uninstall of the broken dist-info.
+    site_packages = (
+        _site_packages_for_install_target(install_cmd_prefix, env)
+        if _is_windows()
+        else None
+    )
+    moved_bins: list[tuple[Path, Path]] = []
+    if site_packages is not None:
+        for name in still_missing:
+            moved_bins.extend(
+                _quarantine_package_native_binaries(site_packages, name)
+            )
+
+    install_args = ["install", "--reinstall", *specs]
+    if _is_windows():
+        # Prefer ignore-installed so broken RECORD / locked files don't block.
+        install_args = ["install", "--ignore-installed", "--no-deps", *specs]
+
     try:
         _run_install_with_heartbeat(
-            install_cmd_prefix + ["install", "--reinstall", *specs], env=env
+            install_cmd_prefix + install_args, env=env
         )
     except subprocess.CalledProcessError as e:
+        if site_packages is not None:
+            _restore_quarantined_package_binaries(moved_bins)
         logger.warning("dep verification: per-package repair failed: %s", e)
         print(
             f"  ⚠ Could not install: {', '.join(still_missing)}. "
-            "Run `hermes update --force` after closing other hermes processes."
+            "Run `hermes update --force` after closing other hermes processes "
+            "(Windows: stop the gateway so native wheels like cryptography can be replaced)."
         )
         return
+    finally:
+        if site_packages is not None:
+            _cleanup_quarantined_package_binaries(site_packages)
 
-    final_missing = _missing_deps()
+    final_missing = _problem_deps()
     if final_missing:
         print(
             f"  ⚠ Still missing after repair: {', '.join(final_missing)}. "

@@ -98,6 +98,7 @@
   <div class="tabbar" id="tabbar">
     <div class="tab active" data-tab="surfaces">Surfaces<span class="badge"></span></div>
     <div class="tab" data-tab="machine">Machine</div>
+    <div class="tab" data-tab="computation">Computation</div>
     <div class="tab" data-tab="inference">Inference</div>
     <div class="tab" data-tab="factory">Factory</div>
     <div class="tab" data-tab="computer">Computer</div>
@@ -128,6 +129,7 @@ const SURFACES = [
   { id: 'machine',  name: 'Victus Capability',meta: 'live machine capability map',    file: 'C:/æ/hermes-fork/templates/surfaces/victus-capabilities.html', cmd: '', tab: 'machine' },
   { id: 'agentic',  name: 'Agentic Hub',      meta: 'Omniverse-ready engineering shell', file: 'C:/æ/hermes-fork/templates/agentic.html', cmd: 'remoteUse.agenticHtmlViewport', tab: 'surfaces' },
   { id: 'victus',   name: 'Victus Operator',  meta: 'sovereign mesh node · 6 surfaces',  file: 'C:/æ/hermes-fork/templates/victus-operator-surface.html', cmd: 'remoteUse.operatorSurface', tab: 'surfaces' },
+  { id: 'nvidia',   name: 'NVIDIA Tiles',     meta: '>_n: NemoClaw compute surface',     file: 'C:/æ/hermes-fork/templates/surfaces/nvidia-tiles.html', cmd: 'remoteUse.nvidia', tab: 'computation' },
   { id: 'webllm',   name: 'Hermes Native',    meta: 'WebLLM/WebGPU · Qwen3-0.6B',        file: 'C:/æ/hermes-fork/vscode-remote-use/templates/web-llm.html', cmd: 'remoteUse.hermesNative', tab: 'inference' },
   { id: 'factory',  name: 'Agentic Factory',  meta: 'spec → surface → write',            file: 'C:/æ/hermes-fork/vscode-remote-use/templates/factory.html', cmd: 'remoteUse.factory', tab: 'factory' },
   { id: 'computer', name: 'Computer Use',     meta: 'bounded desktop control',           file: '', cmd: 'remoteUse.computerUse', tab: 'computer' },
@@ -136,7 +138,7 @@ const SURFACES = [
   { id: 'boot',     name: 'StartABusiness',   meta: 'æ://#startabusiness boot sequence', file: 'C:/Users/yaelm/OneDrive/BEFORE 2023/Desktop/Y-L.com/startabusiness.html', cmd: '', tab: 'boot' },
 ];
 
-const TAB_TITLES = { surfaces: '◈ Local Surfaces', machine: '◈ Machine', inference: '◈ Inference', factory: '◈ Factory', computer: '◈ Computer Use', media: '◈ Media', secret: '◈ Secret Bridge', boot: '◈ Boot Sequence' };
+const TAB_TITLES = { surfaces: '◈ Local Surfaces', machine: '◈ Machine', computation: '◈ Computation', inference: '◈ Inference', factory: '◈ Factory', computer: '◈ Computer Use', media: '◈ Media', secret: '◈ Secret Bridge', boot: '◈ Boot Sequence' };
 let dockCount = 0;
 
 function log(msg, cls) {

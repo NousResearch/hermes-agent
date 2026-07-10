@@ -402,6 +402,41 @@ class TestDurableIdempotencyStore:
         assert survivor is not None
         assert survivor["fingerprint"] == "fp-new"
 
+    def test_release_refuses_completed_receipts(self, tmp_path):
+        """release() is running/dead-owner reconciliation only: terminal
+        evidence — fresh or tombstoned — is never removable through it, even
+        with a perfectly matching fingerprint + owner.  Terminal cleanup goes
+        exclusively through purge_completed()."""
+        store = DurableIdempotencyStore(tmp_path / "idem.db", retention_hours=1)
+        self._reserve(store, key="done")
+        self._complete(store, key="done")
+        inspected = store.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="done"
+        )
+
+        assert store.release(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess",
+            idempotency_key="done",
+            fingerprint=inspected["fingerprint"],
+            owner_instance_id=inspected["owner_instance_id"],
+        ) is False
+        assert self._reserve(store, key="done").kind == "replay"  # still served
+
+        # Tombstone (payload expired) — still terminal, still not releasable.
+        store._conn.execute(
+            "UPDATE idempotency_receipts SET completed_at=? WHERE idempotency_key='done'",
+            (time.time() - 25 * 3600,),
+        )
+        store._conn.commit()
+        assert self._reserve(store, key="done").kind == "response_expired"
+        assert store.release(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess",
+            idempotency_key="done",
+            fingerprint=inspected["fingerprint"],
+            owner_instance_id=inspected["owner_instance_id"],
+        ) is False
+        assert self._reserve(store, key="done").kind == "response_expired"  # evidence holds
+
     def test_release_then_reserve_after_reconciliation(self, tmp_path):
         first = DurableIdempotencyStore(tmp_path / "idem.db")
         self._reserve(first)
@@ -818,6 +853,149 @@ async def test_deleted_and_recreated_session_never_replays_old_receipt(auth_adap
     assert retry_body["error"]["code"] == "idempotency_conflict"
     assert "execution-1" not in json.dumps(retry_body)  # no stale replay
     assert calls == ["reused-id"]  # exactly one execution ever
+
+
+@pytest.mark.asyncio
+async def test_retry_cannot_replay_after_concurrent_session_recreate(auth_adapter, session_db, monkeypatch):
+    """Absorbed independent-review repro (rev-2 TOCTOU): a retry captures the
+    session row, awaits body parsing, the row is deleted/recreated out of
+    band, and the handler must then decide against the CURRENT incarnation —
+    the old incarnation's answer must never replay into the new session."""
+    session_id = session_db.create_session("reused-id", "api_server")
+    old_incarnation = _incarnation(session_db, "reused-id")
+    run_agent = AsyncMock(
+        return_value=(
+            {"final_response": "OLD INCARNATION ANSWER", "session_id": session_id},
+            {"total_tokens": 1},
+        )
+    )
+    headers = {**AUTH, "Idempotency-Key": "same-key"}
+    app = _create_session_app(auth_adapter)
+
+    with patch.object(auth_adapter, "_run_agent", run_agent):
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/api/sessions/reused-id/chat",
+                json={"message": "same payload"},
+                headers=headers,
+            )
+            assert first.status == 200
+
+            original_read = auth_adapter._read_json_body
+            session_already_captured = asyncio.Event()
+            resume_retry = asyncio.Event()
+            paused_once = False
+
+            async def pause_after_session_capture(request):
+                nonlocal paused_once
+                result = await original_read(request)
+                if not paused_once:
+                    paused_once = True
+                    session_already_captured.set()
+                    await resume_retry.wait()
+                return result
+
+            monkeypatch.setattr(auth_adapter, "_read_json_body", pause_after_session_capture)
+            retry_task = asyncio.create_task(
+                cli.post(
+                    "/api/sessions/reused-id/chat",
+                    json={"message": "same payload"},
+                    headers=headers,
+                )
+            )
+            await session_already_captured.wait()
+
+            # Out-of-band lifecycle mutation while the retry is parked
+            # between its early session read and the receipt decision.
+            assert session_db.delete_session("reused-id")
+            session_db.create_session("reused-id", "api_server")
+            assert _incarnation(session_db, "reused-id") != old_incarnation
+
+            resume_retry.set()
+            retry = await retry_task
+            retry_text = await retry.text()
+
+    assert retry.status == 409, retry_text
+    assert json.loads(retry_text)["error"]["code"] == "idempotency_conflict"
+    assert "OLD INCARNATION ANSWER" not in retry_text
+    assert run_agent.await_count == 1  # zero second executions
+
+
+@pytest.mark.asyncio
+async def test_retry_fails_closed_when_session_deleted_or_recreated_via_api_midflight(auth_adapter, session_db, monkeypatch):
+    """API-lifecycle variant of the TOCTOU repro: the delete/recreate runs
+    through the real endpoints while the keyed retry is parked in body
+    parsing.  Delete-only must 404 (never replay); recreate-then-retry must
+    conflict.  The agent never runs a second time."""
+    session_db.create_session("api-race-id", "api_server")
+    run_agent = AsyncMock(
+        return_value=(
+            {"final_response": "OLD INCARNATION ANSWER", "session_id": "api-race-id"},
+            {"total_tokens": 1},
+        )
+    )
+    headers = {**AUTH, "Idempotency-Key": "race-key"}
+    app = _create_session_app(auth_adapter)
+
+    with patch.object(auth_adapter, "_run_agent", run_agent):
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/api/sessions/api-race-id/chat",
+                json={"message": "same payload"},
+                headers=headers,
+            )
+            assert first.status == 200
+
+            original_read = auth_adapter._read_json_body
+            session_already_captured = asyncio.Event()
+            resume_retry = asyncio.Event()
+            paused_once = False
+
+            async def pause_after_session_capture(request):
+                nonlocal paused_once
+                result = await original_read(request)
+                if not paused_once:
+                    paused_once = True
+                    session_already_captured.set()
+                    await resume_retry.wait()
+                return result
+
+            monkeypatch.setattr(auth_adapter, "_read_json_body", pause_after_session_capture)
+            retry_task = asyncio.create_task(
+                cli.post(
+                    "/api/sessions/api-race-id/chat",
+                    json={"message": "same payload"},
+                    headers=headers,
+                )
+            )
+            await session_already_captured.wait()
+
+            # DELETE through the real endpoint (no request body, so it is
+            # not affected by the paused body-reader) while the retry waits.
+            deleted = await cli.delete("/api/sessions/api-race-id", headers=AUTH)
+            assert deleted.status == 200
+
+            resume_retry.set()
+            retry = await retry_task
+            retry_text = await retry.text()
+            assert retry.status == 404, retry_text  # decision-time re-read
+            assert "OLD INCARNATION ANSWER" not in retry_text
+
+            # Recreate the same textual ID through the endpoint; a fresh
+            # same-key retry must conflict, not replay.
+            recreated = await cli.post("/api/sessions", json={"id": "api-race-id"}, headers=AUTH)
+            assert recreated.status == 201, await recreated.text()
+            after = await cli.post(
+                "/api/sessions/api-race-id/chat",
+                json={"message": "same payload"},
+                headers=headers,
+            )
+            after_body = await after.json()
+
+    assert after.status == 409
+    assert after_body["error"]["code"] == "idempotency_conflict"
+    assert "OLD INCARNATION ANSWER" not in json.dumps(after_body)
+    assert run_agent.await_count == 1  # only the original execution, ever
 
 
 @pytest.mark.asyncio
@@ -1270,21 +1448,26 @@ async def test_streaming_endpoint_rejects_idempotency_keys_explicitly(auth_adapt
 
 
 @pytest.mark.asyncio
-async def test_agent_failure_holds_receipt_and_retry_fails_closed(auth_adapter, session_db):
+async def test_agent_failure_holds_receipt_and_retry_fails_closed(auth_adapter, session_db, caplog):
     """If the reserved turn dies mid-execution, tools may already have run:
-    the receipt must stay ``running``, a retry must not re-execute, and the
-    HTTP error must not reflect internal exception text."""
+    the receipt must stay ``running``, a retry must not re-execute, the HTTP
+    error must not reflect internal exception text, and the log must carry
+    only the exception type + redacted message — no raw traceback (which
+    would append the unredacted exception text verbatim)."""
+    import logging
+
     session_id = session_db.create_session("failed-turn-session", "api_server")
     mock_run = AsyncMock(side_effect=RuntimeError("provider exploded sk-secret-123"))
     app = _create_session_app(auth_adapter)
     with patch.object(auth_adapter, "_run_agent", mock_run):
         async with TestClient(TestServer(app)) as cli:
-            first = await cli.post(
-                f"/api/sessions/{session_id}/chat",
-                json={"message": "dangerous turn"},
-                headers={**AUTH, "Idempotency-Key": "failed-key"},
-            )
-            first_body = await first.json()
+            with caplog.at_level(logging.ERROR, logger="gateway.platforms.api_server"):
+                first = await cli.post(
+                    f"/api/sessions/{session_id}/chat",
+                    json={"message": "dangerous turn"},
+                    headers={**AUTH, "Idempotency-Key": "failed-key"},
+                )
+                first_body = await first.json()
             retry = await cli.post(
                 f"/api/sessions/{session_id}/chat",
                 json={"message": "dangerous turn"},
@@ -1297,6 +1480,21 @@ async def test_agent_failure_holds_receipt_and_retry_fails_closed(auth_adapter, 
     # Generic body: internal exception text is not reflected to the caller.
     assert "provider exploded" not in json.dumps(first_body)
     assert "sk-secret-123" not in json.dumps(first_body)
+
+    # Log-capture regression: the failure is logged with type + redacted
+    # message only.  No record carries exc_info/exc_text (a raw traceback
+    # would reprint "provider exploded sk-secret-123" verbatim), and the
+    # credential-shaped string appears nowhere in the emitted records.
+    failure_records = [
+        r for r in caplog.records if "idempotent session chat turn failed" in r.getMessage()
+    ]
+    assert failure_records
+    assert "RuntimeError" in failure_records[0].getMessage()
+    for record in caplog.records:
+        assert record.exc_info is None
+        assert not record.exc_text
+    assert "sk-secret-123" not in caplog.text
+
     assert retry.status == 409
     assert retry_body["error"]["code"] == "idempotency_state_uncertain"
     assert mock_run.await_count == 1

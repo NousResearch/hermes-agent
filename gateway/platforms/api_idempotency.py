@@ -569,22 +569,27 @@ class DurableIdempotencyStore:
         fingerprint: str,
         owner_instance_id: str,
     ) -> bool:
-        """Dead-owner reconciliation ONLY: delete one exact inspected receipt.
+        """Dead-owner reconciliation ONLY: release one ``running`` receipt.
 
         This is never called automatically.  It exists for an operator who
         has (1) confirmed the owning process is dead, (2) inspected the
         persisted session transcript to decide whether the ambiguous turn
         ran, and (3) read the receipt via :meth:`get_receipt`.  The DELETE
-        is compare-and-swap on the inspected ``fingerprint`` and
-        ``owner_instance_id``: if the receipt changed since inspection (for
-        example the key was already released and re-reserved by a live
-        owner), the stale release matches nothing and returns False.
+        is compare-and-swap on ``state='running'`` plus the inspected
+        ``fingerprint`` and ``owner_instance_id``: if the receipt changed
+        since inspection (for example the key was already released and
+        re-reserved by a live owner), the stale release matches nothing and
+        returns False.  ``completed`` receipts — fresh or tombstoned — are
+        terminal at-most-once evidence and can never be removed through
+        this path; capacity reclamation of terminal rows goes exclusively
+        through :meth:`purge_completed`.
         """
         try:
             with self._lock:
                 cur = self._conn.execute(
                     "DELETE FROM idempotency_receipts"
                     " WHERE scope=? AND principal_hash=? AND session_id=? AND idempotency_key=?"
+                    "   AND state='running'"
                     "   AND fingerprint=? AND owner_instance_id=?",
                     (scope, principal, session_id, idempotency_key, fingerprint, owner_instance_id),
                 )

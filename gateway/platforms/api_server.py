@@ -2091,7 +2091,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        session, err = self._get_existing_session_or_404(session_id)
+        # Early 404 gate only — the keyed path re-reads the session row at
+        # its own decision point, because anything captured here is stale by
+        # the time the request body has been awaited (see
+        # _handle_session_chat_idempotent for the TOCTOU this closes).
+        _, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
         body, err = await self._read_json_body(request)
@@ -2117,7 +2121,6 @@ class APIServerAdapter(BasePlatformAdapter):
         return await self._handle_session_chat_idempotent(
             idempotency_key=idempotency_key,
             session_id=session_id,
-            session=session,
             user_message=user_message,
             system_prompt=system_prompt,
             gateway_session_key=gateway_session_key,
@@ -2167,7 +2170,6 @@ class APIServerAdapter(BasePlatformAdapter):
         *,
         idempotency_key: str,
         session_id: str,
-        session: Dict[str, Any],
         user_message: Any,
         system_prompt: Optional[str],
         gateway_session_key: Optional[str],
@@ -2189,28 +2191,16 @@ class APIServerAdapter(BasePlatformAdapter):
           ``idempotency_state_uncertain`` — never auto-re-executed
         * store unavailable/corrupt/at-capacity/permissions-unenforceable →
           503 ``idempotency_store_unavailable``, no agent execution
+
+        The receipt decision's linearization point is inside the
+        serialization lock below: the session row is re-read there and the
+        incarnation/fingerprint derived from that fresh read, never from
+        state captured before the request body was awaited.
         """
         invalid = self._validate_idempotency_key_header(idempotency_key)
         if invalid is not None:
             return invalid
 
-        session_incarnation = _session_incarnation(session)
-        if session_incarnation is None:
-            # No usable creation identity to bind evidence to (defensive —
-            # the sessions schema guarantees started_at).  Fail closed
-            # rather than mint a receipt that a recreated session could match.
-            return self._idempotency_store_unavailable_response(
-                IdempotencyStoreUnavailable(
-                    f"session {session_id} has no usable creation identity"
-                )
-            )
-        fingerprint = _session_chat_fingerprint(
-            session_id=session_id,
-            session_incarnation=session_incarnation,
-            gateway_session_key=gateway_session_key,
-            user_message=user_message,
-            system_prompt=system_prompt,
-        )
         principal = self._idempotency_principal_scope()
         try:
             store = self._ensure_idempotency_store()
@@ -2219,12 +2209,48 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Load history before reserving so the durable ``running`` window
         # covers exactly the agent execution — a failure in this read-only
-        # step leaves no receipt behind.
+        # step leaves no receipt behind.  (Turn *inputs* carry the same
+        # read-then-act semantics as the unkeyed endpoint; the receipt
+        # decision below is what must be race-free.)
         conversation_history = self._conversation_history_for_session(session_id)
 
         inflight_key = (SESSION_CHAT_SCOPE, principal, session_id, idempotency_key)
         coalesced = False
         async with self._session_chat_idem_lock:
+            # Linearization point for the receipt decision.  Re-read the
+            # CURRENT persisted session row here — after every request-body
+            # await — and derive incarnation/fingerprint from it.  A session
+            # captured earlier in the handler can be stale: a concurrent
+            # delete/recreate during body parsing would let the old
+            # incarnation's receipt replay into the new session.  From this
+            # read through reserve() there are no awaits, so same-process
+            # lifecycle mutations (the API's own create/delete/fork handlers
+            # run on this event loop) cannot interleave.  Out-of-band
+            # SessionDB writers in other processes cannot be made
+            # transactional across the two database files; their mutations
+            # linearize against this read — a recreate committed after it is
+            # indistinguishable from one that happened just after the
+            # decision, and the receipt binds the incarnation observed here.
+            session, err = self._get_existing_session_or_404(session_id)
+            if err:
+                return err
+            session_incarnation = _session_incarnation(session)
+            if session_incarnation is None:
+                # No usable creation identity to bind evidence to (defensive
+                # — the sessions schema guarantees started_at).  Fail closed
+                # rather than mint a receipt a recreated session could match.
+                return self._idempotency_store_unavailable_response(
+                    IdempotencyStoreUnavailable(
+                        f"session {session_id} has no usable creation identity"
+                    )
+                )
+            fingerprint = _session_chat_fingerprint(
+                session_id=session_id,
+                session_incarnation=session_incarnation,
+                gateway_session_key=gateway_session_key,
+                user_message=user_message,
+                system_prompt=system_prompt,
+            )
             try:
                 decision = store.reserve(
                     scope=SESSION_CHAT_SCOPE,
@@ -2325,13 +2351,17 @@ class APIServerAdapter(BasePlatformAdapter):
             # The reserved turn failed mid-execution.  The receipt stays
             # ``running`` on purpose: tools may already have run, so a retry
             # with the same key must fail closed as uncertain, not re-execute.
-            # The HTTP body stays generic — agent/provider exception text is
-            # not reflected to the caller; the redacted cause goes to the log.
+            # The HTTP body stays generic, and the log line carries only the
+            # exception type plus the redacted message — deliberately no
+            # ``exc_info``: a raw traceback appends the original exception
+            # text verbatim, bypassing redaction (independent review of
+            # 488dcfe67 demonstrated a credential-bearing provider error
+            # reaching the log that way).
             logger.error(
-                "[api_server] idempotent session chat turn failed (session=%s): %s",
+                "[api_server] idempotent session chat turn failed (session=%s): %s: %s",
                 session_id,
+                type(exc).__name__,
                 _redact_api_error_text(exc),
-                exc_info=True,
             )
             return web.json_response(
                 _openai_error(

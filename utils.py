@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Union
@@ -88,6 +89,33 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         pass
 
 
+def durable_fsync(fd: int) -> None:
+    """``fsync`` that is actually durable on macOS.
+
+    On macOS, ``os.fsync`` only flushes writes to the drive's write cache,
+    not to persistent storage (Apple's documented ``fsync(2)`` behavior), so a
+    power loss or ``SIGKILL``/launchd shutdown right after a "synced" write can
+    still lose data.  ``fcntl`` ``F_FULLFSYNC`` forces a true flush to the
+    platter/flash.  This mirrors the ``PRAGMA checkpoint_fullfsync`` barrier
+    already applied to the SQLite write paths in ``hermes_state.py`` (#30636),
+    extending the same durability guarantee to the plain atomic file writes
+    (tempfile + fsync + ``os.replace``) used across the codebase.
+
+    Falls back to ``os.fsync`` where ``F_FULLFSYNC`` is unavailable or
+    unsupported (non-Darwin platforms, and network filesystems where the
+    request returns ``ENOTSUP``/``EINVAL``).
+    """
+    if sys.platform == "darwin":
+        try:
+            import fcntl
+
+            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+            return
+        except (OSError, AttributeError):
+            pass
+    os.fsync(fd)
+
+
 def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """Atomically move *tmp_path* onto *target*, preserving symlinks.
 
@@ -129,7 +157,7 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
             pass
         try:
             with open(real_path, "rb") as f:
-                os.fsync(f.fileno())
+                durable_fsync(f.fileno())
         except OSError:
             pass
         os.unlink(tmp_str)
@@ -186,7 +214,7 @@ def atomic_json_write(
                 **dump_kwargs,
             )
             f.flush()
-            os.fsync(f.fileno())
+            durable_fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
         real_path_obj = Path(real_path)
@@ -277,7 +305,7 @@ def atomic_yaml_write(
             if extra_content:
                 f.write(extra_content)
             f.flush()
-            os.fsync(f.fileno())
+            durable_fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
         real_path_obj = Path(real_path)
@@ -347,7 +375,7 @@ def atomic_roundtrip_yaml_update(
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             yaml_rt.dump(config, f)
             f.flush()
-            os.fsync(f.fileno())
+            durable_fsync(f.fileno())
         real_path = atomic_replace(tmp_path, path)
         real_path_obj = Path(real_path)
         _restore_file_owner(real_path_obj, original_owner)

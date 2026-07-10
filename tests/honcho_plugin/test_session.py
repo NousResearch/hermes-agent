@@ -1115,6 +1115,45 @@ class TestBaseContextSummary:
         formatted = provider._format_first_turn_context(ctx)
         assert "Session Summary" not in formatted
 
+    def test_timed_out_first_turn_context_surfaces_next_turn(self):
+        import threading
+        import time
+
+        ready = threading.Event()
+        cached = {}
+        manager = MagicMock()
+
+        def get_context(*args, **kwargs):
+            ready.wait(timeout=1)
+            return {"representation": "late user context", "card": ""}
+
+        manager.get_prefetch_context.side_effect = get_context
+        manager.set_context_result.side_effect = (
+            lambda session_key, result: cached.__setitem__(session_key, result)
+        )
+        manager.pop_context_result.side_effect = (
+            lambda session_key: cached.pop(session_key, {})
+        )
+
+        provider = HonchoMemoryProvider()
+        provider._manager = manager
+        provider._config = SimpleNamespace(timeout=0.01, context_tokens=0)
+        provider._session_key = "test"
+        provider._session_initialized = True
+        provider._recall_mode = "context"
+        provider._turn_count = 1
+        provider._last_dialectic_turn = 0
+
+        assert provider.prefetch("first question") == ""
+        ready.set()
+
+        deadline = time.monotonic() + 1
+        while "test" not in cached and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        provider._turn_count = 2
+        assert "late user context" in provider.prefetch("follow-up question")
+
 
 class TestDialecticDepth:
     """Tests for the dialecticDepth multi-pass system."""

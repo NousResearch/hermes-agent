@@ -754,9 +754,12 @@ class HonchoMemoryProvider(MemoryProvider):
 
                 def _fetch_base() -> None:
                     try:
-                        _ctx_holder["ctx"] = self._manager.get_prefetch_context(
+                        ctx = self._manager.get_prefetch_context(
                             self._session_key, query or None
                         ) or {}
+                        _ctx_holder["ctx"] = ctx
+                        if ctx:
+                            self._manager.set_context_result(self._session_key, ctx)
                     except Exception as e:
                         logger.debug("Honcho first-turn base context failed: %s", e)
 
@@ -773,6 +776,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 _bt.join(timeout=_base_wait)
                 _ctx = _ctx_holder.get("ctx")
                 if _ctx:
+                    self._manager.pop_context_result(self._session_key)
                     formatted = self._format_first_turn_context(_ctx)
                     if formatted:
                         with self._base_context_lock:
@@ -1248,7 +1252,9 @@ class HonchoMemoryProvider(MemoryProvider):
                     # nothing.
                     logger.debug("Honcho dialectic depth %d: pass %d has no non-empty prior — "
                                  "falling back to base prompt", self._dialectic_depth, i)
-                    prompt = self._build_dialectic_prompt(0, prior_results, is_cold)
+                    prompt = rewritten_query or self._build_dialectic_prompt(
+                        0, prior_results, is_cold
+                    )
                 else:
                     prompt = self._build_dialectic_prompt(i, prior_results, is_cold)
 

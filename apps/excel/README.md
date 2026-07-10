@@ -119,6 +119,10 @@ supervisor, Office sideload registration, and a post-install health check — se
 powershell -ExecutionPolicy Bypass -File install\apply.ps1
 ```
 
+The installer selects the first available port starting at `8787`, rewrites the
+sideloaded manifest to match, and fails if an explicitly requested port belongs
+to another service. Autostart uses one tracked Scheduled Task supervisor.
+
 ## Tests
 
 Dependency-free, no install step:

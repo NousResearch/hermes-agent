@@ -1,0 +1,25 @@
+' ===========================================================================
+'  run-bridge.vbs  --  hidden launcher for run-bridge.cmd (TEMPLATE)
+' ---------------------------------------------------------------------------
+'  requires elevation? NO.
+'
+'  Launches run-bridge.cmd with NO visible console window (WScript.Shell.Run
+'  window style 0). Used by the Startup-folder shortcut and as a quiet entry
+'  point so the bridge does not flash a cmd window at logon.
+'
+'  TEMPLATE token substituted by addin-install.ps1:
+'      __INSTALL_DIR__   absolute install root (no trailing backslash)
+' ===========================================================================
+
+Option Explicit
+
+Dim shell, cmdPath
+Set shell = CreateObject("WScript.Shell")
+
+cmdPath = "__INSTALL_DIR__\run-bridge.cmd"
+
+' Arg 1: command, Arg 2: window style 0 (hidden), Arg 3: bWaitOnReturn = False
+' Quote the path in case the install dir contains spaces.
+shell.Run """" & cmdPath & """", 0, False
+
+Set shell = Nothing

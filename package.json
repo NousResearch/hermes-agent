@@ -20,7 +20,10 @@
     "audit:tui": "npm audit --workspace ui-tui",
     "audit:fix:root": "npm audit fix --workspaces=false",
     "audit:fix:web": "npm audit fix --workspace web",
-    "audit:fix:tui": "npm audit fix --workspace ui-tui"
+    "audit:fix:tui": "npm audit fix --workspace ui-tui",
+    "test:excel": "node --test apps/excel/broker/server.test.mjs",
+    "smoke:excel": "node apps/excel/broker/smoke.mjs",
+    "check:excel-install": "powershell -NoProfile -ExecutionPolicy Bypass -File apps/excel/install/check.ps1"
   },
   "repository": {
     "type": "git",

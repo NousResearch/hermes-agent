@@ -1,0 +1,59 @@
+@echo off
+REM ===========================================================================
+REM  run-bridge.cmd  --  Hermes for Excel local bridge launcher (TEMPLATE)
+REM ---------------------------------------------------------------------------
+REM  requires elevation? NO. Per-user, runs entirely under %LOCALAPPDATA%.
+REM
+REM  This file is a TEMPLATE. addin-install.ps1 copies it to the install dir
+REM  and substitutes the __PLACEHOLDER__ tokens below with real values:
+REM      __INSTALL_DIR__   absolute install root (no trailing backslash)
+REM      __PORT__          bridge port (default 8787)
+REM      __DATA_DIR__      HERMES_EXCEL_DATA_DIR (writable, outside web root)
+REM      __BRIDGE_TOKEN__  per-install random session token
+REM      __DOCLING_MODE__  wsl | native | docker
+REM      __WSL_DISTRO__    WSL distro name (e.g. Ubuntu-24.04)
+REM
+REM  It sets the env the hardened server.mjs reads, KILLS any stale bridge that
+REM  was launched from this same install dir (the load-bearing "stale-bridge
+REM  killer" -- a relative path here reintroduces the documented
+REM  "re-run strands the old bridge" bug), then launches node on the ABSOLUTE
+REM  server.mjs path.
+REM ===========================================================================
+
+setlocal
+
+set "INSTALL_DIR=__INSTALL_DIR__"
+set "PORT=__PORT__"
+set "HERMES_EXCEL_DATA_DIR=__DATA_DIR__"
+set "HERMES_EXCEL_BRIDGE_TOKEN=__BRIDGE_TOKEN__"
+set "HERMES_EXCEL_DOCLING_MODE=__DOCLING_MODE__"
+set "HERMES_EXCEL_WSL_DISTRO=__WSL_DISTRO__"
+
+set "SERVER_MJS=%INSTALL_DIR%\broker\server.mjs"
+
+if not exist "%SERVER_MJS%" (
+  echo [run-bridge] ERROR: server.mjs not found at "%SERVER_MJS%"
+  exit /b 1
+)
+
+REM --- Ensure the data dir exists (uploads/exports/logs live here, NOT in web root) ---
+if not exist "%HERMES_EXCEL_DATA_DIR%" mkdir "%HERMES_EXCEL_DATA_DIR%" 2>nul
+
+REM --- Stale-bridge killer -------------------------------------------------
+REM  Kill any node.exe whose command line contains THIS install dir. Matching
+REM  the absolute install dir (not just "server.mjs") means re-runs cleanly
+REM  replace the previous bridge instead of stranding it on the port.
+echo [run-bridge] Stopping any previous bridge from "%INSTALL_DIR%" ...
+for /f "usebackq tokens=*" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine -like '*%INSTALL_DIR%*' } | Select-Object -ExpandProperty ProcessId"`) do (
+  echo [run-bridge] Killing stale bridge PID %%P
+  taskkill /PID %%P /F >nul 2>nul
+)
+
+echo [run-bridge] Starting bridge on port %PORT% (docling=%HERMES_EXCEL_DOCLING_MODE%, distro=%HERMES_EXCEL_WSL_DISTRO%)
+echo [run-bridge] Data dir: %HERMES_EXCEL_DATA_DIR%
+
+REM --- Launch the bridge on the ABSOLUTE path -----------------------------
+node "%SERVER_MJS%"
+set "RC=%ERRORLEVEL%"
+
+endlocal & exit /b %RC%

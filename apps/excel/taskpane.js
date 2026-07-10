@@ -1,7 +1,5 @@
 const brokerUrls = [
   window.location.origin,
-  "http://127.0.0.1:8787",
-  "http://localhost:8787",
 ].filter((url, index, list) => url && list.indexOf(url) === index);
 
 // Per-install token injected same-origin by the bridge into the served page. Echoed
@@ -179,6 +177,7 @@ async function checkBridgeHealth(showStatus = false) {
       const response = await fetch(`${brokerUrl}/api/health`, { cache: "no-store", headers: bridgeHeaders() });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const health = await response.json();
+      if (health?.service !== "hermes-excel-bridge") throw new Error("wrong service on bridge port");
       state.bridgeOk = true;
       if (showStatus && !state.sending) {
         setStatus(health.ok ? "Ready" : "Ready, but a local service is degraded");
@@ -683,13 +682,17 @@ async function beforeWriteCellsSnapshot(action, values) {
       });
       if (state.undoStack.length > 10) state.undoStack.shift();
     });
+    return true;
   } catch {
-    // A failed snapshot only means this particular write cannot be undone.
+    // Preserve the ordering contract: Undo must not fall through to an older
+    // action when this write could not be snapshotted.
+    pushNonUndoable("write whose prior cells could not be captured");
+    return false;
   }
 }
 
-function createSheetUndoRecord(name, rows) {
-  state.undoStack.push({ kind: "create_sheet", name, rows });
+function createSheetUndoRecord(name, formulas) {
+  state.undoStack.push({ kind: "create_sheet", name, formulas });
   if (state.undoStack.length > 10) state.undoStack.shift();
 }
 
@@ -729,14 +732,17 @@ async function undoLast() {
       await Excel.run(async (context) => {
         const sheet = context.workbook.worksheets.getItemOrNullObject(record.name);
         const used = sheet.getUsedRangeOrNullObject();
-        used.load(["rowCount"]);
+        used.load(["rowCount", "columnCount", "formulas"]);
         await context.sync();
         if (sheet.isNullObject) {
           addMessage("hermes", `The sheet "${record.name}" is already gone.`);
           return;
         }
         // Don't delete a sheet the user kept working on after Hermes created it.
-        if (!used.isNullObject && record.rows && used.rowCount > record.rows) {
+        const unchanged =
+          !used.isNullObject &&
+          JSON.stringify(used.formulas) === JSON.stringify(record.formulas);
+        if (!unchanged) {
           addMessage(
             "hermes",
             `"${record.name}" was edited after Hermes created it — leaving it in place. Delete the sheet yourself if you no longer want it.`,
@@ -800,7 +806,11 @@ async function createSheetAction(action) {
     sheet.activate();
     target.load("address");
     await context.sync();
-    createSheetUndoRecord(name, values.length);
+    // formulas preserves both literal values and formula text, giving Undo a
+    // stable fingerprint so it never deletes a sheet the user edited later.
+    target.load("formulas");
+    await context.sync();
+    createSheetUndoRecord(name, target.formulas);
     return { status: `Created ${name} and wrote ${values.length} row(s) to ${target.address}.`, address: target.address };
   });
 }

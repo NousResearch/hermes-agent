@@ -161,6 +161,34 @@
   border-radius: var(--radius-sm, 0.25rem);
 }
 
+/* Banner when the board body is empty because archived tasks are filtered
+   out by default (#61897). One-click "Show archived" sits next to the text. */
+.hermes-kanban-archived-hidden {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.8rem;
+  color: var(--color-muted-foreground);
+  background: color-mix(in srgb, var(--color-muted) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+.hermes-kanban-archived-hidden-action {
+  appearance: none;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+  color: var(--color-foreground);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.55rem;
+}
+.hermes-kanban-archived-hidden-action:hover {
+  background: color-mix(in srgb, var(--color-muted) 70%, transparent);
+}
+
 /* ---- Status dots ----------------------------------------------------- */
 
 .hermes-kanban-dot {

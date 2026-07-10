@@ -206,6 +206,11 @@
   // can inspect any board without shifting the CLI's active board out
   // from under a terminal they left open.
   const LS_BOARD_KEY = "hermes.kanban.selectedBoard";
+  // Persist the "Show archived" toggle so a user who enables it keeps
+  // seeing archived cards across reloads. Config's
+  // include_archived_by_default only applies when no preference has
+  // been stored yet. See #61897.
+  const LS_INCLUDE_ARCHIVED_KEY = "hermes.kanban.includeArchived";
 
   function readSelectedBoard() {
     try {
@@ -229,6 +234,21 @@
       // design intent. Regression: #20879.
       if (slug) window.localStorage.setItem(LS_BOARD_KEY, slug);
       else window.localStorage.removeItem(LS_BOARD_KEY);
+    } catch (_e) { /* ignore quota / private mode */ }
+  }
+
+  function readIncludeArchivedPref() {
+    try {
+      const v = window.localStorage.getItem(LS_INCLUDE_ARCHIVED_KEY);
+      if (v === "1" || v === "true") return true;
+      if (v === "0" || v === "false") return false;
+    } catch (_e) { /* ignore */ }
+    return null; // no stored preference
+  }
+
+  function writeIncludeArchivedPref(val) {
+    try {
+      window.localStorage.setItem(LS_INCLUDE_ARCHIVED_KEY, val ? "1" : "0");
     } catch (_e) { /* ignore quota / private mode */ }
   }
 
@@ -525,7 +545,17 @@
 
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
-    const [includeArchived, setIncludeArchived] = useState(false);
+    // Seed from localStorage when present; config default applied once
+    // below only if no preference has been stored yet (#61897).
+    const [includeArchived, setIncludeArchivedState] = useState(function () {
+      const pref = readIncludeArchivedPref();
+      return pref === null ? false : pref;
+    });
+    const setIncludeArchived = useCallback(function (val) {
+      const next = val === true;
+      setIncludeArchivedState(next);
+      writeIncludeArchivedPref(next);
+    }, []);
     const [search, setSearch] = useState("");
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
@@ -557,7 +587,13 @@
           if (!configApplied) {
             if (c.default_tenant) setTenantFilter(c.default_tenant);
             if (typeof c.lane_by_profile === "boolean") setLaneByProfile(c.lane_by_profile);
-            if (typeof c.include_archived_by_default === "boolean") setIncludeArchived(c.include_archived_by_default);
+            // Only apply the config default when the user has never set
+            // a local preference — otherwise the toggle would keep
+            // snapping back to config on every reload (#61897).
+            if (readIncludeArchivedPref() === null
+                && typeof c.include_archived_by_default === "boolean") {
+              setIncludeArchivedState(c.include_archived_by_default);
+            }
             setConfigApplied(true);
           }
         })
@@ -950,11 +986,12 @@
       setLoading(true);
       setBoard(nextSlug);
       writeSelectedBoard(nextSlug);
-      // Reset filters so stale search/tenant/assignee don't persist across boards.
+      // Reset search/tenant/assignee so filters from board A don't hide
+      // cards on board B. Keep includeArchived — that's a user preference
+      // persisted in localStorage (#61897), not a board-scoped filter.
       setSearch("");
       setTenantFilter("");
       setAssigneeFilter("");
-      setIncludeArchived(false);
       clearSelected();
     }, [board, clearSelected]);
 
@@ -1060,6 +1097,13 @@
               .catch(function (e) { setError(String(e.message || e)); });
           },
           onRefresh: loadBoard,
+        }),
+        h(ArchivedHiddenBanner, {
+          archivedCount: (boardData && boardData.archived_count) || 0,
+          includeArchived: includeArchived,
+          boardEmpty: !(filteredBoard && filteredBoard.columns
+            && filteredBoard.columns.some(function (c) { return c.tasks && c.tasks.length > 0; })),
+          onShow: function () { setIncludeArchived(true); },
         }),
        selectedIds.size > 0 ? h(BulkActionBar, {
          count: selectedIds.size,
@@ -1804,20 +1848,53 @@
     );
   }
 
+  function formatBoardTaskSummary(t, active, archived) {
+    // Badge text for the switcher. ``active`` is non-archived (matches the
+    // default board body); ``archived`` is the hidden count so a board full
+    // of archived work never looks like a phantom number (#61897).
+    const a = active || 0;
+    const ar = archived || 0;
+    if (a === 0 && ar === 0) {
+      return tx(t, "taskCountZero", "0 tasks");
+    }
+    const activeLabel = a === 1
+      ? tx(t, "taskCountOne", "1 task")
+      : tx(t, "taskCountMany", "{n} tasks", { n: a });
+    if (ar <= 0) return activeLabel;
+    const archivedLabel = ar === 1
+      ? tx(t, "archivedCountOne", "1 archived")
+      : tx(t, "archivedCountMany", "{n} archived", { n: ar });
+    return activeLabel + " · " + archivedLabel;
+  }
+
+  function formatBoardOptionLabel(b) {
+    const name = b.name || b.slug;
+    const active = b.total || 0;
+    const archived = b.archived || 0;
+    if (active > 0 && archived > 0) return `${name} · ${active} (+${archived})`;
+    if (active > 0) return `${name} · ${active}`;
+    if (archived > 0) return `${name} · ${archived} archived`;
+    return name;
+  }
+
   function BoardSwitcher(props) {
     const { t } = useI18n();
     const list = props.boardList || [];
     const current = list.find(function (b) { return b.slug === props.board; });
     const currentName = current && current.name ? current.name : props.board;
-    const currentTotal = current ? current.total : 0;
+    const currentTotal = current ? (current.total || 0) : 0;
+    const currentArchived = current ? (current.archived || 0) : 0;
     const hasMultipleBoards = list.length > 1;
 
     // Hide entirely when only the default board exists AND it's empty —
     // single-project users never see boards UI unless they ask for it.
     // We show the [+ New board] affordance as soon as any board has a
     // task (so the user can discover multi-project before they need it)
-    // OR when any non-default board exists.
-    const totalAcrossAllBoards = list.reduce(function (n, b) { return n + (b.total || 0); }, 0);
+    // OR when any non-default board exists. Count archived too so a
+    // board that only has archived work still exposes the switcher.
+    const totalAcrossAllBoards = list.reduce(function (n, b) {
+      return n + (b.total || 0) + (b.archived || 0);
+    }, 0);
     const shouldShow = hasMultipleBoards || totalAcrossAllBoards > 0;
     if (!shouldShow) {
       return h("div", {
@@ -1846,14 +1923,16 @@
               title: "Boards are independent work streams. Each board has its own tasks, tenants, and assignees.",
             }, selectChangeHandler(function (v) { if (v) props.onSwitch(v); })),
               list.map(function (b) {
-                const label = b.total > 0
-                  ? `${b.name || b.slug} · ${b.total}`
-                  : (b.name || b.slug);
-                return h(SelectOption, { key: b.slug, value: b.slug }, label);
+                return h(SelectOption, { key: b.slug, value: b.slug }, formatBoardOptionLabel(b));
               }),
             ),
-            h("span", { className: "text-xs text-muted-foreground" },
-              `${currentTotal || 0} task${currentTotal === 1 ? "" : "s"}`),
+            h("span", {
+              className: "text-xs text-muted-foreground",
+              title: currentArchived > 0
+                ? tx(t, "archivedHiddenHint",
+                    "Archived tasks are hidden from the board by default. Enable Show archived to view them.")
+                : undefined,
+            }, formatBoardTaskSummary(t, currentTotal, currentArchived)),
           ),
         ),
         h("div", { className: "flex-1" }),
@@ -2006,6 +2085,31 @@
   // -------------------------------------------------------------------------
   // Toolbar
   // -------------------------------------------------------------------------
+
+  function ArchivedHiddenBanner(props) {
+    // Shown when the board body has zero visible cards but archived
+    // tasks exist and are currently filtered out. Prevents the
+    // "badge says 48, board is empty" data-loss illusion (#61897).
+    const { t } = useI18n();
+    if (props.includeArchived) return null;
+    if (!props.boardEmpty) return null;
+    const n = props.archivedCount || 0;
+    if (n <= 0) return null;
+    const msg = n === 1
+      ? tx(t, "archivedHiddenOne", "1 archived task is hidden.")
+      : tx(t, "archivedHiddenMany", "{n} archived tasks are hidden.", { n: n });
+    return h("div", {
+      className: "hermes-kanban-archived-hidden",
+      role: "status",
+    },
+      h("span", null, msg),
+      h("button", {
+        type: "button",
+        className: "hermes-kanban-archived-hidden-action",
+        onClick: props.onShow,
+      }, tx(t, "showArchived", "Show archived")),
+    );
+  }
 
   function BoardToolbar(props) {
     const { t } = useI18n();

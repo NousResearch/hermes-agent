@@ -1115,6 +1115,59 @@ def test_bulk_archive(client):
     ids = {t["id"] for col in board["columns"] for t in col["tasks"]}
     assert a["id"] not in ids
     assert b["id"] not in ids
+    # Empty body still reports how many archived tasks are hidden (#61897).
+    assert board["archived_count"] == 2
+    assert board["include_archived"] is False
+
+
+def test_boards_total_excludes_archived(client):
+    """Switcher badge total must match the default board body (#61897).
+
+    Header used to count every task including archived while the board
+    body filtered them out, producing "Default · (48)" over an empty grid.
+    """
+    live = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "still active"},
+    ).json()["task"]
+    arch_a = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "gone a"},
+    ).json()["task"]
+    arch_b = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "gone b"},
+    ).json()["task"]
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [arch_a["id"], arch_b["id"]], "archive": True},
+    )
+    assert r.status_code == 200
+
+    boards = client.get("/api/plugins/kanban/boards").json()["boards"]
+    default = next(b for b in boards if b["slug"] == "default")
+    assert default["total"] == 1, default
+    assert default["archived"] == 2, default
+    assert default["total_all"] == 3, default
+    assert default["counts"].get("archived") == 2
+    # The live task is still counted under its status.
+    assert sum(
+        int(v) for k, v in default["counts"].items() if k != "archived"
+    ) == 1
+
+    # Board body (default) shows only the live task; archived_count still
+    # lets the UI explain what is hidden.
+    board = client.get("/api/plugins/kanban/board").json()
+    visible = [t for col in board["columns"] for t in col["tasks"]]
+    assert {t["id"] for t in visible} == {live["id"]}
+    assert board["archived_count"] == 2
+    assert board["include_archived"] is False
+
+    # With include_archived, cards come back and the flag flips.
+    shown = client.get(
+        "/api/plugins/kanban/board", params={"include_archived": True},
+    ).json()
+    shown_ids = {t["id"] for col in shown["columns"] for t in col["tasks"]}
+    assert shown_ids == {live["id"], arch_a["id"], arch_b["id"]}
+    assert shown["archived_count"] == 2
+    assert shown["include_archived"] is True
 
 
 def test_bulk_reassign(client):
@@ -2265,3 +2318,18 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_dashboard_archived_hidden_banner_and_pref_exists():
+    """Empty-board archived banner + localStorage toggle persistence (#61897)."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert "function ArchivedHiddenBanner" in js
+    assert "hermes-kanban-archived-hidden" in js
+    assert "hermes-kanban-archived-hidden" in css
+    assert "LS_INCLUDE_ARCHIVED_KEY" in js
+    assert "hermes.kanban.includeArchived" in js
+    assert "function formatBoardTaskSummary" in js
+    assert "archived_count" in js

@@ -98,6 +98,7 @@ class TestCheckWatchPatterns:
         session.watcher_user_id = "u123"
         session.watcher_user_name = "alice"
         session.watcher_thread_id = "42"
+        session.origin_ui_session_id = "parent-tab"
 
         registry._check_watch_patterns(session, "ERROR: disk full\n")
         evt = registry.completion_queue.get_nowait()
@@ -108,6 +109,7 @@ class TestCheckWatchPatterns:
         assert evt["user_id"] == "u123"
         assert evt["user_name"] == "alice"
         assert evt["thread_id"] == "42"
+        assert evt["origin_ui_session_id"] == "parent-tab"
 
     def test_multiple_patterns(self, registry):
         """First matching pattern is reported."""

@@ -1308,6 +1308,36 @@ def _get_env_config() -> Dict[str, Any]:
         "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"
     ).lower() in {"true", "1", "yes"}
 
+    container_backend = env_type in _CONTAINER_BACKENDS
+    docker_backend = env_type == "docker"
+    if container_backend:
+        container_cpu = _parse_env_var(
+            "TERMINAL_CONTAINER_CPU", "1", float, "number"
+        )
+        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120")
+        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200")
+    else:
+        container_cpu = 1.0
+        container_memory = 5120
+        container_disk = 51200
+
+    if docker_backend:
+        docker_forward_env = _parse_docker_env_var(
+            env_type, "TERMINAL_DOCKER_FORWARD_ENV", "[]"
+        )
+        docker_volumes = _parse_docker_env_var(
+            env_type, "TERMINAL_DOCKER_VOLUMES", "[]"
+        )
+        docker_env = _parse_docker_env_var(env_type, "TERMINAL_DOCKER_ENV", "{}")
+        docker_extra_args = _parse_docker_env_var(
+            env_type, "TERMINAL_DOCKER_EXTRA_ARGS", "[]"
+        )
+    else:
+        docker_forward_env = []
+        docker_volumes = []
+        docker_env = {}
+        docker_extra_args = []
+
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, and everything else starts in the backend's default
     # root-like cwd.
@@ -1347,9 +1377,7 @@ def _get_env_config() -> Dict[str, Any]:
         "env_type": env_type,
         "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
-        "docker_forward_env": _parse_docker_env_var(
-            env_type, "TERMINAL_DOCKER_FORWARD_ENV", "[]"
-        ),
+        "docker_forward_env": docker_forward_env,
         "singularity_image": os.getenv(
             "TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"
         ),

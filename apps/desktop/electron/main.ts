@@ -2501,7 +2501,9 @@ async function applyUpdates(opts = {}) {
       // whole update itself: `hermes update` (backend) + `hermes desktop
       // --build-only` (OS-aware GUI rebuild), then swap the running .app bundle
       // with the freshly built one and relaunch.
-      return await applyUpdatesPosixInApp(opts)
+      const result = await applyUpdatesPosixInApp(opts)
+      updateInFlight = false
+      return result
     }
 
     if (!updater) {
@@ -2535,6 +2537,7 @@ async function applyUpdates(opts = {}) {
       rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for CLI install at ${updateRoot}`)
       emitUpdateProgress({ stage: 'manual', message: command, percent: null })
 
+      updateInFlight = false
       return { ok: true, manual: true, command, hermesRoot: updateRoot }
     }
 
@@ -2591,7 +2594,7 @@ async function applyUpdates(opts = {}) {
       },
       detached: true,
       stdio: 'ignore',
-      windowsHide: false
+      windowsHide: true
     })
 
     child.unref()
@@ -2620,8 +2623,9 @@ async function applyUpdates(opts = {}) {
     }, UPDATE_HANDOFF_DWELL_MS)
 
     return { ok: true, handedOff: true, updater }
-  } finally {
+  } catch (error) {
     updateInFlight = false
+    throw error
   }
 }
 
@@ -2630,9 +2634,15 @@ async function handOffWindowsBootstrapRecovery(reason) {
     return false
   }
 
+  if (updateInFlight) {
+    return false
+  }
+  updateInFlight = true
+
   const updater = resolveUpdaterBinary()
 
   if (!updater) {
+    updateInFlight = false
     return false
   }
 
@@ -2669,7 +2679,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
     },
     detached: true,
     stdio: 'ignore',
-    windowsHide: false
+    windowsHide: true
   })
 
   child.unref()

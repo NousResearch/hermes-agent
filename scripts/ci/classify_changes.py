@@ -41,6 +41,16 @@ _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
 _PY_SKIP = ("docs/", "website/") + _FRONTEND
 
+# CI-sensitive files: eslint config, workflow files, composite actions.
+# Changes here can influence what code the autofix job executes and pushes to
+# main, so they require explicit maintainer review (ci-reviewed label).
+_CI_REVIEW_FILES = {
+    "apps/desktop/eslint.config.mjs",
+    "eslint.config.shared.mjs",
+    ".prettierrc",
+}
+_CI_REVIEW_PATHS = (".github/workflows/", ".github/actions/")
+
 # Supply-chain scan: files that can execute code at install/import time.
 _SCAN_EXTS = (".py", ".pth")
 _SCAN_FILES = {"setup.cfg", "pyproject.toml"}
@@ -67,6 +77,10 @@ def _is_mcp_catalog(p: str) -> bool:
     return p.startswith(_MCP_CATALOG_PATHS) or p in _MCP_CATALOG_FILES
 
 
+def _is_ci_review(p: str) -> bool:
+    return p in _CI_REVIEW_FILES or p.startswith(_CI_REVIEW_PATHS)
+
+
 def classify(files: list[str]) -> dict[str, bool]:
     """Map changed paths to ``{lane: should_run}``."""
     files = [f.strip() for f in files if f.strip()]
@@ -78,6 +92,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         "scan": any(_is_scan(f) for f in files),
         "deps": any(f == "pyproject.toml" for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
+        "ci_review": any(_is_ci_review(f) for f in files),
     }
     if not files or any(f.startswith(".github/") for f in files):
         ret["python"] = True
@@ -86,6 +101,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["site"] = True
         ret["scan"] = True
         ret["deps"] = True
+        ret["ci_review"] = True
 
         # explicitly skip mcp catalog here. it's not needed unless those files are modified.
     return ret

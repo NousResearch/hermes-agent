@@ -15,6 +15,10 @@ on:
         description: The event name from the calling orchestrator (pull_request or push).
         type: string
         required: true
+      ci_review:
+        description: Whether CI-sensitive files (eslint config, workflows, actions) changed and require a review label.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -158,3 +162,46 @@ jobs:
 
       - name: Run footgun checker
         run: python scripts/check-windows-footguns.py --all
+
+  ci-review:
+    # Require explicit maintainer review when CI-sensitive files change:
+    # eslint config, workflow YAMLs, or composite actions. These files
+    # influence what code the desktop-autofix job executes and pushes to
+    # main, so a malicious PR could inject arbitrary code via a custom eslint
+    # rule's `fix` function. The label gate ensures a human reviews before
+    # merge. Mirrors the mcp-catalog-reviewed pattern in supply-chain-audit.yml.
+    name: CI-sensitive file review
+    if: inputs.event_name == 'pull_request' && inputs.ci_review
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Require ci-reviewed label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          LABELS=$(gh pr view "$PR" --json labels --jq '.labels[].name' || true)
+          if echo "$LABELS" | grep -Fxq 'ci-reviewed'; then
+            echo "ci-reviewed label present."
+            exit 0
+          fi
+
+          BODY="## ⚠️ CI-sensitive file review required
+
+          This PR changes CI-sensitive files (eslint config, workflow YAMLs,
+          or composite actions). These files influence what code the
+          desktop-autofix job executes and pushes to main.
+
+          A maintainer should verify:
+          - no new eslint rules with custom \`fix\` functions that write outside linted paths,
+          - no workflow changes that widen permissions or remove guards,
+          - no composite action changes that alter what gets executed.
+
+          After review, add the \`ci-reviewed\` label and re-run this check."
+
+          gh pr comment "$PR" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs)"
+          echo "::error::CI-sensitive changes require the ci-reviewed label."
+          exit 1

@@ -20,7 +20,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider
@@ -226,10 +226,11 @@ class HonchoMemoryProvider(MemoryProvider):
             pass
         return paths
 
-    def __init__(self):
+    def __init__(self, query_rewriter: Optional[Callable[[str], str]] = None):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig
         self._session_key = ""
+        self._query_rewriter = query_rewriter
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
@@ -489,43 +490,52 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # ----- B7: Pre-warming at init -----
         # Context prewarm warms peer.context() (base layer), consumed via
-        # pop_context_result() in prefetch(). Dialectic prewarm runs the
-        # full configured depth and writes into _prefetch_result so turn 1
-        # consumes the result directly.
+        # pop_context_result() in prefetch(). A generic dialectic prewarm is
+        # retained only for providers without latest-message rewriting; otherwise
+        # it would shadow the real first user message and recreate #36017.
         if self._recall_mode in {"context", "hybrid"}:
             try:
                 self._manager.prefetch_context(self._session_key)
             except Exception as e:
                 logger.debug("Honcho context prewarm failed: %s", e)
 
-            _prewarm_query = (
-                "Summarize what you know about this user. "
-                "Focus on preferences, current projects, and working style."
-            )
+            if self._query_rewriter is None:
+                _prewarm_query = (
+                    "Summarize what you know about this user. "
+                    "Focus on preferences, current projects, and working style."
+                )
 
-            def _prewarm_dialectic() -> None:
-                try:
-                    r = self._run_dialectic_depth(_prewarm_query)
-                except Exception as exc:
-                    logger.debug("Honcho dialectic prewarm failed: %s", exc)
-                    self._dialectic_empty_streak += 1
-                    return
-                if r and r.strip():
-                    with self._prefetch_lock:
-                        self._prefetch_result = r
-                        self._prefetch_result_fired_at = 0
-                    # Treat prewarm as turn 0 so cadence gating starts clean.
-                    self._last_dialectic_turn = 0
-                    self._dialectic_empty_streak = 0
-                else:
-                    self._dialectic_empty_streak += 1
+                def _prewarm_dialectic() -> None:
+                    try:
+                        r = self._run_dialectic_depth(
+                            _prewarm_query, use_query_rewrite=False
+                        )
+                    except Exception as exc:
+                        logger.debug("Honcho dialectic prewarm failed: %s", exc)
+                        self._dialectic_empty_streak += 1
+                        return
+                    if r and r.strip():
+                        with self._prefetch_lock:
+                            self._prefetch_result = r
+                            self._prefetch_result_fired_at = 0
+                        # Treat prewarm as turn 0 so cadence gating starts clean.
+                        self._last_dialectic_turn = 0
+                        self._dialectic_empty_streak = 0
+                    else:
+                        self._dialectic_empty_streak += 1
 
-            self._prefetch_thread_started_at = time.monotonic()
-            prewarm_thread = threading.Thread(
-                target=_prewarm_dialectic, daemon=True, name="honcho-prewarm-dialectic"
-            )
-            prewarm_thread.start()
-            self._prefetch_thread = prewarm_thread
+                self._prefetch_thread_started_at = time.monotonic()
+                prewarm_thread = threading.Thread(
+                    target=_prewarm_dialectic,
+                    daemon=True,
+                    name="honcho-prewarm-dialectic",
+                )
+                prewarm_thread.start()
+                self._prefetch_thread = prewarm_thread
+            else:
+                logger.debug(
+                    "Honcho generic dialectic prewarm skipped: awaiting first user message"
+                )
             logger.debug("Honcho pre-warm started for session: %s", self._session_key)
 
         self._session_initialized = True
@@ -1182,7 +1192,7 @@ class HonchoMemoryProvider(MemoryProvider):
         # Long enough even without structure
         return len(result.strip()) > 300
 
-    def _run_dialectic_depth(self, query: str) -> str:
+    def _run_dialectic_depth(self, query: str, *, use_query_rewrite: bool = True) -> str:
         """Execute up to dialecticDepth .chat() calls with conditional bail-out.
 
         Cold start (no base context): general user-oriented query.
@@ -1195,6 +1205,12 @@ class HonchoMemoryProvider(MemoryProvider):
 
         is_cold = not self._base_context_cache
         results: list[str] = []
+        rewritten_query = ""
+        if use_query_rewrite and self._query_rewriter:
+            try:
+                rewritten_query = self._query_rewriter(query).strip()
+            except Exception as exc:
+                logger.debug("Honcho query rewriter failed: %s", exc)
 
         for i in range(self._dialectic_depth):
             # Only non-empty prior results are usable context for dependent
@@ -1205,7 +1221,9 @@ class HonchoMemoryProvider(MemoryProvider):
             # empty-spot symptom seen in Honcho request logs.
             prior_results = [r for r in results if r and r.strip()]
             if i == 0:
-                prompt = self._build_dialectic_prompt(0, prior_results, is_cold)
+                prompt = rewritten_query or self._build_dialectic_prompt(
+                    0, prior_results, is_cold
+                )
             else:
                 # Skip further passes if prior pass delivered strong signal
                 if prior_results and self._signal_sufficient(prior_results[-1]):
@@ -1587,4 +1605,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
 def register(ctx) -> None:
     """Register Honcho as a memory provider plugin."""
-    ctx.register_memory_provider(HonchoMemoryProvider())
+    from plugins.memory.honcho.query_rewrite import rewrite_dialectic_query
+
+    ctx.register_memory_provider(
+        HonchoMemoryProvider(query_rewriter=rewrite_dialectic_query)
+    )

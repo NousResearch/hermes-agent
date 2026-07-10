@@ -42,9 +42,32 @@ jobs:
 
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    outputs:
+      # 'true' only when Docker Hub credentials are configured — the merge job
+      # keys on this so a fork without a registry account builds and tests
+      # green instead of failing at docker login. Both matrix legs compute the
+      # same value, so last-writer-wins is deterministic here.
+      publish: ${{ steps.publish-gate.outputs.enabled }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Publish only when this is a main push/release AND the fork actually
+      # has Docker Hub credentials. Without this gate every main push fails
+      # at "Log in to Docker Hub" with "Username and password required" until
+      # a registry account is created (the IMAGE_NAME above is still a
+      # placeholder). Once DOCKERHUB_USERNAME/DOCKERHUB_TOKEN secrets are set,
+      # publishing turns on with no workflow change.
+      - name: Decide whether to publish
+        id: publish-gate
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        env:
+          HAS_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        run: |
+          echo "enabled=${HAS_CREDS}" >> "$GITHUB_OUTPUT"
+          if [ "${HAS_CREDS}" != "true" ]; then
+            echo "::notice::Docker Hub credentials not configured — image built and tested but NOT published. Set DOCKERHUB_USERNAME/DOCKERHUB_TOKEN repo secrets to enable publishing."
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -65,7 +88,7 @@ jobs:
           cache-to: ${{ (github.event_name != 'pull_request') && matrix.cache-to || '' }}
 
       - name: Log in to Docker Hub
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: steps.publish-gate.outputs.enabled == 'true'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -76,7 +99,7 @@ jobs:
       # pattern for multi-runner multi-platform builds.
       - name: Push ${{ matrix.arch }} by digest
         id: push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: steps.publish-gate.outputs.enabled == 'true'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
@@ -93,14 +116,14 @@ jobs:
       # Write the digest to a file and upload it as an artifact so the
       # merge job can stitch both per-arch digests into a manifest list.
       - name: Export digest
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: steps.publish-gate.outputs.enabled == 'true'
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.push.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: steps.publish-gate.outputs.enabled == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: digest-${{ matrix.arch }}
@@ -157,7 +180,7 @@ jobs:
   # On releases: tags :<release_tag_name>.
   # ---------------------------------------------------------------------------
   merge:
-    if: github.repository == 'uaixo/awesome-hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+    if: github.repository == 'uaixo/awesome-hermes-agent' && needs.build.outputs.publish == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
     runs-on: ubuntu-latest
     needs: [build]
     timeout-minutes: 10

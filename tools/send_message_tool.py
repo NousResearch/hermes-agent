@@ -1695,6 +1695,29 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         # disconnect it. Correctness here depends on this branch returning
         # before the ephemeral ``adapter`` is constructed below, so the
         # ephemeral ``finally`` disconnect never touches the live session.
+        #
+        # Thread safety: the live adapter's async methods were created on
+        # the gateway's event loop (_gateway_loop). When called from a
+        # tool worker thread (via _run_async → worker thread loop),
+        # direct await can cause cross-loop issues. Schedule on the
+        # gateway loop via run_coroutine_threadsafe (issue #46310).
+        try:
+            gateway_loop = getattr(runner, "_gateway_loop", None)
+            if gateway_loop and not gateway_loop.is_closed():
+                import asyncio as _asyncio
+                _future = _asyncio.run_coroutine_threadsafe(
+                    _matrix_send_core(
+                        live_adapter, chat_id, message, media_files, metadata
+                    ),
+                    gateway_loop,
+                )
+                return await _asyncio.wrap_future(_future)
+        except Exception:
+            logger.warning(
+                "Matrix: run_coroutine_threadsafe to gateway loop failed, "
+                "falling back to direct await",
+                exc_info=True,
+            )
         return await _matrix_send_core(
             live_adapter, chat_id, message, media_files, metadata
         )

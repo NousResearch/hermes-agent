@@ -7308,7 +7308,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return
         if hasattr(self, "_stream_buf") and self._stream_buf:
             self._flush_stream()
-        _cprint(f"  {display_text}")
+        # Lightweight box frame with left border — distinguishes
+        # interim commentary from tool output and final response panel.
+        try:
+            term_width = shutil.get_terminal_size().columns
+        except Exception:
+            term_width = 80
+        content_width = max(term_width - 10, 20)
+        wrapped = textwrap.fill(display_text, width=content_width)
+        lines = wrapped.split('\n')
+        max_line = max((len(l) for l in lines), default=0)
+        box_width = max_line + 6  # │  {text}  │
+
+        top_dashes = box_width - 6  # ╭─ ◆ ╮ overhead
+        _cprint(f"\n{_DIM}╭─ ◆ {'─' * max(top_dashes, 0)}╮{_RST}")
+        for line in lines:
+            pad = max_line - len(line)
+            _cprint(f"{_DIM}│{_RST}  {line}{' ' * pad}  {_DIM}│{_RST}")
+        bot_dashes = box_width - 2  # ╰╯ overhead
+        _cprint(f"{_DIM}╰{'─' * max(bot_dashes, 0)}╯{_RST}")
 
     # ── Streaming display ────────────────────────────────────────────────
 

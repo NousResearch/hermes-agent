@@ -25,16 +25,24 @@ def _msys_to_windows_path(cwd: str) -> str:
     native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
     ``subprocess.Popen(..., cwd=...)`` can find it.
 
+    Also accepts the Cygwin (``/cygdrive/c/...``) and WSL-mount
+    (``/mnt/c/...``) spellings of a drive root. Multi-segment POSIX paths
+    like ``/home/x`` or ``/tmp/foo`` are left untouched.
+
     No-ops on non-Windows hosts or for paths that aren't in MSYS form.
     Returns the input unchanged when no translation applies. This is
     idempotent — calling it on an already-Windows path returns it as-is.
     """
     if not _IS_WINDOWS or not cwd:
         return cwd
-    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
-    m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
+    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root),
+    # plus /cygdrive/<letter>/... and /mnt/<letter>/... variants.
+    m = re.match(r'^/(?:(?:cygdrive|mnt)/)?([a-zA-Z])(/.*)?$', cwd)
     if not m:
         return cwd
+    # Reject /cygdrive or /mnt with no drive letter — the optional group above
+    # already requires the letter. Multi-char first segments (/home, /tmp)
+    # fail the single-letter capture and fall through as no-ops.
     drive = m.group(1).upper()
     tail = (m.group(2) or "").replace('/', '\\')
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape

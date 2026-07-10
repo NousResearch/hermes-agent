@@ -686,6 +686,19 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    ultra_requested = (
+        isinstance(reasoning_config, dict)
+        and reasoning_config.get("enabled") is not False
+        and str(reasoning_config.get("effort") or "").strip().lower() == "ultra"
+    )
+    if ultra_requested and agent.api_mode not in {"codex_responses", "codex_app_server"}:
+        raise ValueError(
+            "Ultra is only supported by the OpenAI Responses Multi-agent beta "
+            "or the Codex app-server runtime. Choose another reasoning effort "
+            "for this provider."
+        )
+
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
@@ -736,6 +749,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
                 and "/backend-api/codex" in agent._base_url_lower
             )
         )
+        is_openai_api = agent._base_url_hostname == "api.openai.com"
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
 
@@ -780,8 +794,12 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             max_tokens=agent.max_tokens,
             timeout=agent._resolved_api_call_timeout(),
             request_overrides=agent.request_overrides,
+            provider=agent.provider,
+            base_url=agent.base_url,
+            base_url_hostname=agent._base_url_hostname,
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
+            is_openai_api=is_openai_api,
             is_xai_responses=is_xai_responses,
             github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
             replay_encrypted_reasoning=bool(
@@ -1100,9 +1118,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if codex_items:
         msg["codex_reasoning_items"] = codex_items
 
-    # Codex Responses API: preserve exact assistant message items (with
-    # id/phase) so follow-up turns can replay structured items instead of
-    # flattening to plain text. This is required for prefix cache hits.
+    # Codex Responses API: preserve replayable output items. Normal turns carry
+    # exact assistant message items (id/phase) for prefix-cache continuity;
+    # Multi-agent turns carry the complete ordered output list so hosted actions,
+    # agent messages, and agent-attributed function calls survive continuation.
     codex_message_items = getattr(assistant_message, "codex_message_items", None)
     if codex_message_items:
         msg["codex_message_items"] = codex_message_items

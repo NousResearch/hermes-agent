@@ -189,7 +189,7 @@ gateway:
     display_set_off:           "🧠 ✓ **{platform}** での推論表示: **オフ**"
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` はサポートされていません。グローバルのデフォルトを変更するには `/reasoning <level> --global` を使用してください。"
     reset_done:                "🧠 ✓ セッションの推論オーバーライドをクリアしました。グローバル設定にフォールバックします。"
-    unknown_arg:               "⚠️ 不明な引数: `{arg}`\n\n**有効なレベル:** none, minimal, low, medium, high, xhigh\n**表示:** show, hide\n**永続化:** セッションを越えて保存するには `--global` を追加"
+    unknown_arg:               "⚠️ 不明な引数: `{arg}`\n\n**有効なレベル:** none, minimal, low, medium, high, xhigh, ultra\n**表示:** show, hide\n**永続化:** セッションを越えて保存するには `--global` を追加"
     set_global:                "🧠 ✓ 推論強度を `{effort}` に設定しました (設定に保存)\n_(次のメッセージから有効)_"
     set_global_save_failed:    "🧠 ✓ 推論強度を `{effort}` に設定しました (セッションのみ — 設定の保存に失敗)\n_(次のメッセージから有効)_"
     set_session:               "🧠 ✓ 推論強度を `{effort}` に設定しました (セッションのみ — 永続化するには `--global` を追加)\n_(次のメッセージから有効)_"

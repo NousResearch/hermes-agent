@@ -204,7 +204,7 @@ gateway:
     display_set_off:           "🧠 ✓ Reasoning display: **OFF** for **{platform}**"
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` is not supported. Use `/reasoning <level> --global` to change the global default."
     reset_done:                "🧠 ✓ Session reasoning override cleared; falling back to global config."
-    unknown_arg:               "⚠️ Unknown argument: `{arg}`\n\n**Valid levels:** none, minimal, low, medium, high, xhigh\n**Display:** show, hide\n**Persist:** add `--global` to save beyond this session"
+    unknown_arg:               "⚠️ Unknown argument: `{arg}`\n\n**Valid levels:** none, minimal, low, medium, high, xhigh, ultra\n**Display:** show, hide\n**Persist:** add `--global` to save beyond this session"
     set_global:                "🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
     set_global_save_failed:    "🧠 ✓ Reasoning effort set to `{effort}` (session only — config save failed)\n_(takes effect on next message)_"
     set_session:               "🧠 ✓ Reasoning effort set to `{effort}` (session only — add `--global` to persist)\n_(takes effect on next message)_"

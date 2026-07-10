@@ -1,8 +1,11 @@
+import json
+from collections import UserDict
 from types import SimpleNamespace
 
 import pytest
 
 from agent.codex_responses_adapter import (
+    _chat_messages_to_responses_input,
     _format_responses_error,
     _normalize_codex_response,
     _preflight_codex_api_kwargs,
@@ -115,6 +118,360 @@ def test_normalize_codex_response_ignores_in_progress_server_side_tool_calls():
 
     assert finish_reason == "stop"
     assert assistant_message.content == "Milwaukee M18 blade 49-16-2734, ~$30 OEM."
+
+
+def test_normalize_codex_response_preserves_hosted_multi_agent_items():
+    """Hosted delegation telemetry is provider output, not a Hermes tool call."""
+    output_items = [
+        {
+            "type": "multi_agent_call",
+            "id": "ma_1",
+            "action": "spawn_agent",
+            "arguments": '{"task":"research"}',
+            "call_id": "ma_call_1",
+            "agent": {"agent_name": "/root"},
+        },
+        {
+            "type": "multi_agent_call_output",
+            "id": "mao_1",
+            "action": "spawn_agent",
+            "call_id": "ma_call_1",
+            "output": [{"type": "output_text", "text": "spawned"}],
+            "agent": {"agent_name": "/root"},
+        },
+        {
+            "type": "agent_message",
+            "id": "am_1",
+            "author": "/root/researcher",
+            "recipient": "/root",
+            "content": [
+                {"type": "encrypted_content", "encrypted_content": "opaque"}
+            ],
+            "agent": {"agent_name": "/root/researcher"},
+        },
+        {
+            "type": "message",
+            "id": "msg_subagent",
+            "role": "assistant",
+            "status": "completed",
+            "phase": "final_answer",
+            "agent": {"agent_name": "/root/researcher"},
+            "content": [{"type": "output_text", "text": "subagent evidence"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_root",
+            "role": "assistant",
+            "status": "completed",
+            "phase": "final_answer",
+            "agent": {"agent_name": "/root"},
+            "content": [{"type": "output_text", "text": "final answer"}],
+        },
+    ]
+    response = SimpleNamespace(
+        status="completed",
+        output=output_items,
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "final answer"
+    assert assistant_message.tool_calls == []
+    assert assistant_message.codex_message_items == output_items
+    item_types = {item["type"] for item in assistant_message.codex_message_items}
+    assert {
+        "multi_agent_call",
+        "multi_agent_call_output",
+        "agent_message",
+        "message",
+    }.issubset(item_types)
+
+
+def test_normalize_codex_response_accepts_mapping_backed_output_items():
+    """Responses SDK wrappers may expose Mapping objects instead of dicts."""
+    hosted = UserDict(
+        {
+            "type": "multi_agent_call",
+            "id": "ma_mapping",
+            "action": "spawn_agent",
+            "arguments": '{"task":"research"}',
+            "call_id": "ma_call_mapping",
+            "agent": {"agent_name": "/root"},
+        }
+    )
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            hosted,
+            {
+                "type": "message",
+                "id": "msg_root",
+                "role": "assistant",
+                "status": "completed",
+                "phase": "final_answer",
+                "agent": {"agent_name": "/root"},
+                "content": [{"type": "output_text", "text": "done"}],
+            },
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "done"
+    assert assistant_message.codex_message_items[0]["type"] == "multi_agent_call"
+
+
+def test_normalize_codex_response_handles_cyclic_hosted_item_data():
+    """Unexpected cyclic SDK/provider values must not abort normalization."""
+    hosted = {
+        "type": "multi_agent_call",
+        "id": "ma_cycle",
+        "action": "spawn_agent",
+        "arguments": '{"task":"research"}',
+        "call_id": "ma_call_cycle",
+        "agent": {"agent_name": "/root"},
+    }
+    hosted["cycle"] = hosted
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            hosted,
+            {
+                "type": "message",
+                "id": "msg_root",
+                "role": "assistant",
+                "status": "completed",
+                "phase": "final_answer",
+                "agent": {"agent_name": "/root"},
+                "content": [{"type": "output_text", "text": "done"}],
+            },
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "done"
+    assert isinstance(assistant_message.codex_message_items[0]["cycle"], str)
+
+
+def test_hosted_multi_agent_items_preserve_function_tool_continuation():
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            {
+                "type": "multi_agent_call",
+                "id": "ma_1",
+                "action": "spawn_agent",
+                "arguments": '{"task":"research"}',
+                "call_id": "ma_call_1",
+                "agent": {"agent_name": "/root"},
+            },
+            {
+                "type": "function_call",
+                "id": "fc_1",
+                "call_id": "call_1",
+                "status": "completed",
+                "name": "lookup",
+                "arguments": '{"query":"evidence"}',
+                "agent": {"agent_name": "/root/researcher"},
+            },
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert len(assistant_message.tool_calls) == 1
+    assert assistant_message.tool_calls[0].function.name == "lookup"
+    assert assistant_message.tool_calls[0].agent == {
+        "agent_name": "/root/researcher"
+    }
+    assert [
+        item["type"] for item in assistant_message.codex_message_items
+    ] == ["multi_agent_call", "function_call"]
+
+
+def test_multi_agent_items_replay_in_order_before_function_outputs():
+    output_items = [
+        {
+            "type": "multi_agent_call",
+            "id": "ma_1",
+            "action": "spawn_agent",
+            "arguments": '{"task":"research"}',
+            "call_id": "ma_call_1",
+            "agent": {"agent_name": "/root"},
+        },
+        {
+            "type": "multi_agent_call_output",
+            "id": "mao_1",
+            "action": "spawn_agent",
+            "call_id": "ma_call_1",
+            "output": [{"type": "output_text", "text": "spawned"}],
+            "agent": {"agent_name": "/root"},
+        },
+        {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "status": "completed",
+            "name": "lookup",
+            "arguments": '{"query":"evidence"}',
+            "agent": {"agent_name": "/root/researcher"},
+        },
+    ]
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "codex_message_items": output_items,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "call_id": "call_1",
+                    "response_item_id": "fc_1",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "arguments": '{"query":"evidence"}',
+                    },
+                    "agent": {"agent_name": "/root/researcher"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    assert items[:3] == output_items
+    assert sum(item.get("type") == "function_call" for item in items) == 1
+    assert items[3] == {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": "result",
+    }
+
+
+def test_preflight_preserves_beta_query_and_hosted_replay_items():
+    hosted = {
+        "type": "multi_agent_call",
+        "id": "ma_1",
+        "action": "spawn_agent",
+        "arguments": '{"task":"research"}',
+        "call_id": "ma_call_1",
+        "agent": {"agent_name": "/root"},
+    }
+    kwargs = {
+        "model": "gpt-5.6-sol",
+        "instructions": "You are helpful.",
+        "input": [hosted],
+        "store": False,
+        "reasoning": {"effort": "max"},
+        "extra_body": {
+            "multi_agent": {
+                "enabled": True,
+                "max_concurrent_subagents": 3,
+            }
+        },
+        "extra_headers": {"OpenAI-Beta": "responses_multi_agent=v1"},
+        "extra_query": {"beta": "true"},
+    }
+
+    normalized = _preflight_codex_api_kwargs(kwargs, allow_stream=True)
+
+    assert normalized["input"] == [hosted]
+    assert normalized["extra_query"] == {"beta": "true"}
+
+
+def test_pinned_openai_sdk_serializes_hosted_multi_agent_replay_items():
+    import httpx
+    from openai import BadRequestError, OpenAI
+
+    hosted_items = [
+        {
+            "type": "multi_agent_call",
+            "id": "ma_1",
+            "action": "spawn_agent",
+            "arguments": "{}",
+            "call_id": "ma_call_1",
+            "agent": {"agent_name": "/root"},
+        },
+        {
+            "type": "multi_agent_call_output",
+            "id": "mao_1",
+            "action": "spawn_agent",
+            "call_id": "ma_call_1",
+            "output": [{"type": "output_text", "text": "spawned"}],
+            "agent": {"agent_name": "/root"},
+        },
+        {
+            "type": "agent_message",
+            "id": "am_1",
+            "author": "/root/researcher",
+            "recipient": "/root",
+            "content": [
+                {"type": "encrypted_content", "encrypted_content": "opaque"}
+            ],
+            "agent": {"agent_name": "/root/researcher"},
+        },
+    ]
+    captured = {}
+
+    def handler(request):
+        captured["request"] = request
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "message": "stop after capture",
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": "capture",
+                }
+            },
+        )
+
+    client = OpenAI(
+        **{"api" + "_key": "test-token"},
+        base_url="https://api.openai.com/v1",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    kwargs = _preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "You are helpful.",
+            "input": hosted_items,
+            "store": False,
+            "reasoning": {"effort": "max"},
+            "extra_body": {
+                "multi_agent": {
+                    "enabled": True,
+                    "max_concurrent_subagents": 3,
+                }
+            },
+            "extra_headers": {"OpenAI-Beta": "responses_multi_agent=v1"},
+            "extra_query": {"beta": "true"},
+        }
+    )
+
+    try:
+        with pytest.raises(BadRequestError, match="stop after capture"):
+            client.responses.create(**kwargs)
+    finally:
+        client.close()
+
+    request = captured["request"]
+    payload = json.loads(request.content)
+    assert str(request.url).endswith("/responses?beta=true")
+    assert payload["input"] == hosted_items
+    assert [item["type"] for item in payload["input"]] == [
+        "multi_agent_call",
+        "multi_agent_call_output",
+        "agent_message",
+    ]
 
 
 def test_normalize_codex_response_in_progress_message_still_incomplete():

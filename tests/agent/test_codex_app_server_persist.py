@@ -51,6 +51,8 @@ def _make_agent(session_db=None, session_id="sess-codex"):
     # Pre-seed the session so run_codex_app_server_turn skips the spawn block.
     agent._codex_session = MagicMock()
     agent._codex_session.run_turn.return_value = _make_turn()
+    agent.model = "gpt-5.6-sol"
+    agent.reasoning_config = {"enabled": True, "effort": "ultra"}
     agent.tool_progress_callback = None
     agent._iters_since_skill = 0
     agent._skill_nudge_interval = 0
@@ -71,6 +73,11 @@ def test_codex_success_flushes_and_reports_persisted():
         messages=[{"role": "user", "content": "hello"}],
         effective_task_id="task-1",
     )
+    agent._codex_session.run_turn.assert_called_once_with(
+        user_input="hello",
+        model="gpt-5.6-sol",
+        reasoning_effort="ultra",
+    )
     assert result["completed"] is True
     # With the agent as sole persister, the gateway must SKIP its DB write.
     assert result["agent_persisted"] is True
@@ -82,6 +89,7 @@ def test_codex_turn_persists_each_message_exactly_once():
     real AIAgent._flush_messages_to_session_db to prove no #860/#42039
     duplicate-write regression on the codex path."""
     tmp = tempfile.mkdtemp(prefix="codex_persist_")
+    db = None
     try:
         db = SessionDB(Path(tmp) / "state.db")
         sid = "sess-codex-once"
@@ -130,6 +138,8 @@ def test_codex_turn_persists_each_message_exactly_once():
     finally:
         import shutil
 
+        if db is not None:
+            db.close()
         shutil.rmtree(tmp)
 
 

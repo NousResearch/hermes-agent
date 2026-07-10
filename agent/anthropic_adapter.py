@@ -21,6 +21,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
+from agent.message_content import to_plain_data as _message_value_to_plain_data
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, normalize_proxy_env_vars
@@ -1753,49 +1754,8 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
 
 
 def _to_plain_data(value: Any, *, _depth: int = 0, _path: Optional[set] = None) -> Any:
-    """Recursively convert SDK objects to plain Python data structures.
-
-    Guards against circular references (``_path`` tracks ``id()`` of objects
-    on the *current* recursion path) and runaway depth (capped at 20 levels).
-    Uses path-based tracking so shared (but non-cyclic) objects referenced by
-    multiple siblings are converted correctly rather than being stringified.
-    """
-    _MAX_DEPTH = 20
-    if _depth > _MAX_DEPTH:
-        return str(value)
-
-    if _path is None:
-        _path = set()
-
-    obj_id = id(value)
-    if obj_id in _path:
-        return str(value)
-
-    if hasattr(value, "model_dump"):
-        _path.add(obj_id)
-        result = _to_plain_data(value.model_dump(), _depth=_depth + 1, _path=_path)
-        _path.discard(obj_id)
-        return result
-    if isinstance(value, dict):
-        _path.add(obj_id)
-        result = {k: _to_plain_data(v, _depth=_depth + 1, _path=_path) for k, v in value.items()}
-        _path.discard(obj_id)
-        return result
-    if isinstance(value, (list, tuple)):
-        _path.add(obj_id)
-        result = [_to_plain_data(v, _depth=_depth + 1, _path=_path) for v in value]
-        _path.discard(obj_id)
-        return result
-    if hasattr(value, "__dict__"):
-        _path.add(obj_id)
-        result = {
-            k: _to_plain_data(v, _depth=_depth + 1, _path=_path)
-            for k, v in vars(value).items()
-            if not k.startswith("_")
-        }
-        _path.discard(obj_id)
-        return result
-    return value
+    """Compatibility wrapper around the provider-neutral SDK converter."""
+    return _message_value_to_plain_data(value, _depth=_depth, _path=_path)
 
 
 def _extract_preserved_thinking_blocks(message: Dict[str, Any]) -> List[Dict[str, Any]]:

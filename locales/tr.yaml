@@ -189,7 +189,7 @@ gateway:
     display_set_off:           "🧠 ✓ **{platform}** için akıl yürütme görüntüleme: **KAPALI**"
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` desteklenmiyor. Genel varsayılanı değiştirmek için `/reasoning <level> --global` kullanın."
     reset_done:                "🧠 ✓ Oturumun akıl yürütme geçersiz kılması temizlendi; genel yapılandırmaya geri dönülüyor."
-    unknown_arg:               "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seviyeler:** none, minimal, low, medium, high, xhigh\n**Görüntüleme:** show, hide\n**Kalıcı:** bu oturumun ötesinde kaydetmek için `--global` ekleyin"
+    unknown_arg:               "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seviyeler:** none, minimal, low, medium, high, xhigh, ultra\n**Görüntüleme:** show, hide\n**Kalıcı:** bu oturumun ötesinde kaydetmek için `--global` ekleyin"
     set_global:                "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yapılandırmaya kaydedildi)\n_(sonraki mesajda etkili)_"
     set_global_save_failed:    "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yalnızca bu oturum — yapılandırma kaydedilemedi)\n_(sonraki mesajda etkili)_"
     set_session:               "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yalnızca bu oturum — kalıcı yapmak için `--global` ekleyin)\n_(sonraki mesajda etkili)_"

@@ -233,6 +233,10 @@ class CodexAppServerSession:
         # approval params don't carry the changeset, so we cache here
         # to surface a real summary in the approval prompt (quirk #4).
         self._pending_file_changes: dict[str, str] = {}
+        # Live model/list capabilities are queried only for Ultra. One bounded
+        # catalog snapshot is cached for the lifetime of this subprocess.
+        self._reasoning_capabilities: dict[str, set[str]] = {}
+        self._reasoning_catalog_scanned = False
         self._closed = False
 
     # ---------- lifecycle ----------
@@ -361,12 +365,113 @@ class CodexAppServerSession:
         redacted = redact_sensitive_text(joined, force=True)
         return f"{base}\ncodex stderr (last {len(tail)} lines):\n{redacted}"
 
+    # ---------- model capabilities ----------
+
+    def _supported_reasoning_efforts(self, model: str) -> set[str]:
+        """Read live app-server reasoning capabilities for one model."""
+        normalized_model = str(model or "").strip()
+        if not normalized_model:
+            raise CodexAppServerError(
+                code=-32602,
+                message="Ultra requires an explicit Codex model selection.",
+            )
+        cache_key = normalized_model.lower()
+        cached = self._reasoning_capabilities.get(cache_key)
+        if cached is not None:
+            return cached
+        assert self._client is not None
+
+        if not self._reasoning_catalog_scanned:
+            cursor: Optional[str] = None
+            seen_cursors: set[str] = set()
+            for _page in range(10):
+                params: dict[str, Any] = {"limit": 100}
+                if cursor:
+                    params["cursor"] = cursor
+                payload = self._client.request("model/list", params, timeout=15)
+                entries = payload.get("data") or payload.get("models") or []
+                if not isinstance(entries, list):
+                    entries = []
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_model = (
+                        entry.get("model")
+                        or entry.get("id")
+                        or entry.get("slug")
+                        or ""
+                    )
+                    entry_key = str(entry_model).strip().lower()
+                    if not entry_key:
+                        continue
+                    raw_levels = (
+                        entry.get("supportedReasoningEfforts")
+                        or entry.get("supported_reasoning_efforts")
+                        or entry.get("supportedReasoningLevels")
+                        or entry.get("supported_reasoning_levels")
+                        or []
+                    )
+                    levels: set[str] = set()
+                    if isinstance(raw_levels, list):
+                        for raw_level in raw_levels:
+                            if isinstance(raw_level, str):
+                                value = raw_level
+                            elif isinstance(raw_level, dict):
+                                value = (
+                                    raw_level.get("reasoningEffort")
+                                    or raw_level.get("reasoning_effort")
+                                    or raw_level.get("effort")
+                                    or raw_level.get("value")
+                                    or raw_level.get("level")
+                                )
+                            else:
+                                value = None
+                            if value:
+                                levels.add(str(value).strip().lower())
+                    self._reasoning_capabilities.setdefault(entry_key, set()).update(
+                        levels
+                    )
+
+                cursor_value = payload.get("nextCursor") or payload.get("next_cursor")
+                next_cursor = str(cursor_value).strip() if cursor_value else None
+                if not next_cursor or next_cursor in seen_cursors:
+                    break
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
+            self._reasoning_catalog_scanned = True
+
+        cached = self._reasoning_capabilities.get(cache_key)
+        if cached is not None:
+            return cached
+        raise CodexAppServerError(
+            code=-32602,
+            message=(
+                f"Codex model/list did not return model {normalized_model!r}; "
+                "cannot verify Ultra support. Update Codex CLI or select an "
+                "advertised model."
+            ),
+        )
+
+    def _validate_ultra_support(self, model: str) -> None:
+        levels = self._supported_reasoning_efforts(model)
+        if "ultra" not in levels:
+            advertised = ", ".join(sorted(levels)) or "none"
+            raise CodexAppServerError(
+                code=-32602,
+                message=(
+                    f"Codex model {model!r} does not advertise reasoning effort "
+                    f"'ultra' (advertised: {advertised})."
+                ),
+            )
+
     # ---------- per-turn ----------
 
     def run_turn(
         self,
         user_input: Any,
         *,
+        model: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
         post_tool_quiet_timeout: float = 90.0,
@@ -408,12 +513,23 @@ class CodexAppServerSession:
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but Hermes' text path is the common case).
         try:
+            selected_model = str(model or "").strip()
+            selected_effort = str(reasoning_effort or "").strip().lower()
+            if selected_effort == "ultra":
+                self._validate_ultra_support(selected_model)
+
+            turn_params: dict[str, Any] = {
+                "threadId": self._thread_id,
+                "input": [{"type": "text", "text": user_input_text}],
+            }
+            if selected_model:
+                turn_params["model"] = selected_model
+            if selected_effort:
+                turn_params["effort"] = selected_effort
+
             ts = self._client.request(
                 "turn/start",
-                {
-                    "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input_text}],
-                },
+                turn_params,
                 timeout=10,
             )
         except CodexAppServerError as exc:

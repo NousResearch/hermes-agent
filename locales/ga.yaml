@@ -193,7 +193,7 @@ gateway:
     display_set_off:           "🧠 ✓ Taispeáint réasúnaíochta: **AS** do **{platform}**"
     reset_global_unsupported:  "⚠️ Ní thacaítear le `/reasoning reset --global`. Úsáid `/reasoning <level> --global` chun an réamhshocrú domhanda a athrú."
     reset_done:                "🧠 ✓ Sárú réasúnaíochta seisiúin glanta; ag titim siar ar an gcumraíocht dhomhanda."
-    unknown_arg:               "⚠️ Argóint anaithnid: `{arg}`\n\n**Leibhéil bhailí:** none, minimal, low, medium, high, xhigh\n**Taispeáint:** show, hide\n**Coinnigh:** cuir `--global` leis chun sábháil thar an seisiún seo"
+    unknown_arg:               "⚠️ Argóint anaithnid: `{arg}`\n\n**Leibhéil bhailí:** none, minimal, low, medium, high, xhigh, ultra\n**Taispeáint:** show, hide\n**Coinnigh:** cuir `--global` leis chun sábháil thar an seisiún seo"
     set_global:                "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (sábháilte sa chumraíocht)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
     set_global_save_failed:    "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — theip ar shábháil cumraíochta)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
     set_session:               "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — cuir `--global` leis chun é a choinneáil)\n_(éifeachtach ón gcéad teachtaireacht eile)_"

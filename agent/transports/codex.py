@@ -46,6 +46,31 @@ def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]])
     return f"pck_{digest}"
 
 
+_OPENAI_MULTI_AGENT_MODEL_EFFORTS = {
+    "gpt-5.6": "max",
+    "gpt-5.6-sol": "max",
+    "gpt-5.6-terra": "max",
+    "gpt-5.6-luna": "max",
+}
+_OPENAI_MULTI_AGENT_BETA = "responses_multi_agent=v1"
+
+
+def _openai_multi_agent_effort(model: str) -> Optional[str]:
+    """Return the strongest documented effort for a Multi-agent model."""
+    normalized = str(model or "").strip().lower()
+    if normalized.startswith("openai/"):
+        normalized = normalized.split("/", 1)[1]
+    return _OPENAI_MULTI_AGENT_MODEL_EFFORTS.get(normalized)
+
+
+def _merge_openai_beta_header(existing: Any, required: str) -> str:
+    """Append one beta token without dropping caller-supplied beta flags."""
+    tokens = [part.strip() for part in str(existing or "").split(",") if part.strip()]
+    if required not in tokens:
+        tokens.append(required)
+    return ",".join(tokens)
+
+
 class ResponsesApiTransport(ProviderTransport):
     """Transport for api_mode='codex_responses'.
 
@@ -118,6 +143,7 @@ class ResponsesApiTransport(ProviderTransport):
             base_url_hostname: str | None — hostname for backend detection
             is_github_responses: bool — Copilot/GitHub models backend
             is_codex_backend: bool — chatgpt.com/backend-api/codex
+            is_openai_api: bool — direct api.openai.com Responses endpoint
             is_xai_responses: bool — xAI/Grok backend
             github_reasoning_extra: dict | None — Copilot reasoning params
         """
@@ -139,6 +165,7 @@ class ResponsesApiTransport(ProviderTransport):
 
         is_github_responses = params.get("is_github_responses", False)
         is_codex_backend = params.get("is_codex_backend", False)
+        is_openai_api = params.get("is_openai_api", False)
         is_xai_responses = params.get("is_xai_responses", False)
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
@@ -160,10 +187,34 @@ class ResponsesApiTransport(ProviderTransport):
             if reasoning_config.get("enabled") is False:
                 reasoning_enabled = False
             elif reasoning_config.get("effort"):
-                reasoning_effort = reasoning_config["effort"]
+                reasoning_effort = str(reasoning_config["effort"]).strip().lower()
 
         _effort_clamp = {"minimal": "low"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
+        ultra_requested = reasoning_enabled and reasoning_effort == "ultra"
+        if ultra_requested:
+            if is_codex_backend:
+                raise ValueError(
+                    "Ultra cannot be sent as reasoning.effort on the normal "
+                    "ChatGPT Codex backend. Use `/codex-runtime app_server` "
+                    "with a Codex CLI model that advertises Ultra."
+                )
+            if not is_openai_api:
+                raise ValueError(
+                    "Ultra requires the direct OpenAI Responses API Multi-agent "
+                    "beta or `/codex-runtime app_server`; this Responses endpoint "
+                    "is not the OpenAI Responses API."
+                )
+            ultra_wire_effort = _openai_multi_agent_effort(model)
+            if ultra_wire_effort is None:
+                raise ValueError(
+                    f"Model {model!r} does not support OpenAI Multi-agent mode. "
+                    "Use gpt-5.6, gpt-5.6-sol, gpt-5.6-terra, or gpt-5.6-luna."
+                )
+            # `ultra` is a product mode, not a valid Responses reasoning effort.
+            # The direct API contract uses hosted Multi-agent plus the model's
+            # strongest supported effort.
+            reasoning_effort = ultra_wire_effort
 
         response_tools = _responses_tools(tools)
 
@@ -285,7 +336,11 @@ class ResponsesApiTransport(ProviderTransport):
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
             else:
-                kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                if ultra_requested:
+                    # Multi-agent beta rejects reasoning summaries.
+                    kwargs["reasoning"] = {"effort": reasoning_effort}
+                else:
+                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
                 kwargs["include"] = (
                     ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
                 )
@@ -295,6 +350,82 @@ class ResponsesApiTransport(ProviderTransport):
         request_overrides = params.get("request_overrides")
         if request_overrides:
             kwargs.update(request_overrides)
+
+        if ultra_requested:
+            # Apply the hosted Multi-agent contract after request overrides so a
+            # stale/custom override cannot accidentally send literal `ultra`,
+            # re-enable the unsupported reasoning summary, or disable delegation.
+            kwargs["reasoning"] = {"effort": reasoning_effort}
+            # Multi-agent rejects max_tool_calls, including caller overrides.
+            kwargs.pop("max_tool_calls", None)
+
+            existing_extra_body = kwargs.get("extra_body")
+            merged_extra_body: Dict[str, Any] = {}
+            if isinstance(existing_extra_body, dict):
+                merged_extra_body.update(existing_extra_body)
+            elif existing_extra_body is not None:
+                raise ValueError("OpenAI Multi-agent extra_body must be an object.")
+            existing_multi_agent = merged_extra_body.get("multi_agent")
+            multi_agent: Dict[str, Any] = {}
+            if isinstance(existing_multi_agent, dict):
+                multi_agent.update(existing_multi_agent)
+            elif existing_multi_agent is not None:
+                raise ValueError("OpenAI Multi-agent configuration must be an object.")
+            unknown_multi_agent_fields = sorted(
+                set(multi_agent) - {"enabled", "max_concurrent_subagents"}
+            )
+            if unknown_multi_agent_fields:
+                raise ValueError(
+                    "OpenAI Multi-agent configuration has unsupported field(s): "
+                    + ", ".join(unknown_multi_agent_fields)
+                )
+            max_subagents = multi_agent.get("max_concurrent_subagents", 3)
+            if (
+                not isinstance(max_subagents, int)
+                or isinstance(max_subagents, bool)
+                or max_subagents <= 0
+            ):
+                raise ValueError(
+                    "OpenAI Multi-agent max_concurrent_subagents must be a positive integer."
+                )
+            multi_agent["enabled"] = True
+            multi_agent["max_concurrent_subagents"] = max_subagents
+            merged_extra_body["multi_agent"] = multi_agent
+            kwargs["extra_body"] = merged_extra_body
+
+            existing_extra_headers = kwargs.get("extra_headers")
+            merged_extra_headers: Dict[str, str] = {}
+            if isinstance(existing_extra_headers, dict):
+                merged_extra_headers.update(
+                    {
+                        str(key): str(value)
+                        for key, value in existing_extra_headers.items()
+                        if key and value is not None
+                    }
+                )
+            elif existing_extra_headers is not None:
+                raise ValueError("OpenAI Multi-agent extra_headers must be an object.")
+            beta_key = next(
+                (key for key in merged_extra_headers if key.lower() == "openai-beta"),
+                "OpenAI-Beta",
+            )
+            merged_extra_headers[beta_key] = _merge_openai_beta_header(
+                merged_extra_headers.get(beta_key),
+                _OPENAI_MULTI_AGENT_BETA,
+            )
+            kwargs["extra_headers"] = merged_extra_headers
+
+            # openai>=2.45's beta Responses SDK posts to /responses?beta=true.
+            # Hermes pins openai==2.24, so mirror that route through the stable
+            # client's extra_query escape hatch while preserving caller params.
+            existing_extra_query = kwargs.get("extra_query")
+            merged_extra_query: Dict[str, Any] = {}
+            if isinstance(existing_extra_query, dict):
+                merged_extra_query.update(existing_extra_query)
+            elif existing_extra_query is not None:
+                raise ValueError("OpenAI Multi-agent extra_query must be an object.")
+            merged_extra_query["beta"] = "true"
+            kwargs["extra_query"] = merged_extra_query
 
         # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
         # supported: service_tier") — hit when ``/fast`` priority-processing

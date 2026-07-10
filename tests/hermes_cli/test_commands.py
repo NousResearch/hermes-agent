@@ -734,6 +734,7 @@ class TestSubcommandCompletion:
         completions = _completions(SlashCommandCompleter(), "/reasoning ")
         texts = {c.text for c in completions}
         assert "high" in texts
+        assert "ultra" in texts
         assert "show" in texts
 
     def test_fast_subcommand_completion_after_space(self):

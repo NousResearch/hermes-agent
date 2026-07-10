@@ -189,7 +189,7 @@ gateway:
     display_set_off:           "🧠 ✓ Reasoning-Anzeige: **AUS** für **{platform}**"
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` wird nicht unterstützt. Verwenden Sie `/reasoning <level> --global`, um den globalen Standard zu ändern."
     reset_done:                "🧠 ✓ Sitzungs-Reasoning-Override gelöscht; Rückfall auf globale Konfiguration."
-    unknown_arg:               "⚠️ Unbekanntes Argument: `{arg}`\n\n**Gültige Stärken:** none, minimal, low, medium, high, xhigh\n**Anzeige:** show, hide\n**Speichern:** `--global` hinzufügen, um über die Sitzung hinaus zu speichern"
+    unknown_arg:               "⚠️ Unbekanntes Argument: `{arg}`\n\n**Gültige Stärken:** none, minimal, low, medium, high, xhigh, ultra\n**Anzeige:** show, hide\n**Speichern:** `--global` hinzufügen, um über die Sitzung hinaus zu speichern"
     set_global:                "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (in Konfiguration gespeichert)\n_(wird mit der nächsten Nachricht wirksam)_"
     set_global_save_failed:    "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (nur Sitzung — Konfiguration konnte nicht gespeichert werden)\n_(wird mit der nächsten Nachricht wirksam)_"
     set_session:               "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (nur Sitzung — `--global` hinzufügen, um zu speichern)\n_(wird mit der nächsten Nachricht wirksam)_"

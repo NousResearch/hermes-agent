@@ -189,7 +189,7 @@ gateway:
     display_set_off:           "🧠 ✓ **{platform}** 上的推理显示：**关闭**"
     reset_global_unsupported:  "⚠️ 不支持 `/reasoning reset --global`。请使用 `/reasoning <level> --global` 修改全局默认值。"
     reset_done:                "🧠 ✓ 已清除本会话的推理覆盖；回退到全局配置。"
-    unknown_arg:               "⚠️ 未知参数：`{arg}`\n\n**有效级别：** none, minimal, low, medium, high, xhigh\n**显示：** show, hide\n**持久化：** 添加 `--global` 以跨会话保存"
+    unknown_arg:               "⚠️ 未知参数：`{arg}`\n\n**有效级别：** none, minimal, low, medium, high, xhigh, ultra\n**显示：** show, hide\n**持久化：** 添加 `--global` 以跨会话保存"
     set_global:                "🧠 ✓ 推理强度已设置为 `{effort}`（已保存到配置）\n_（下一条消息生效）_"
     set_global_save_failed:    "🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 配置保存失败）\n_（下一条消息生效）_"
     set_session:               "🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 添加 `--global` 以持久化）\n_（下一条消息生效）_"

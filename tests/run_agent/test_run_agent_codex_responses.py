@@ -428,6 +428,67 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
         assert kwargs["reasoning"]["effort"] == effort, f"{effort} should pass through unchanged"
 
 
+def test_ultra_direct_openai_agent_builds_multi_agent_request(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.6-sol",
+        provider="openai",
+        api_mode="codex_responses",
+        base_url="https://api.openai.com/v1",
+        **{"api" + "_key": "test-token"},
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+        reasoning_config={"enabled": True, "effort": "ultra"},
+    )
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["reasoning"] == {"effort": "max"}
+    assert "max_tool_calls" not in kwargs
+    assert kwargs["extra_query"] == {"beta": "true"}
+    assert kwargs["extra_body"]["multi_agent"]["enabled"] is True
+    assert "responses_multi_agent=v1" in kwargs["extra_headers"]["OpenAI-Beta"]
+
+
+def test_ultra_openai_provider_with_custom_base_url_fails_closed(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.6-sol",
+        provider="openai",
+        api_mode="codex_responses",
+        base_url="https://proxy.example.test/v1",
+        **{"api" + "_key": "test-token"},
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+        reasoning_config={"enabled": True, "effort": "ultra"},
+    )
+
+    with pytest.raises(ValueError, match="not the OpenAI Responses API"):
+        agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+
+def test_ultra_non_responses_transport_fails_closed(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="anthropic/claude-sonnet-4",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        **{"api" + "_key": "test-token"},
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+        reasoning_config={"enabled": True, "effort": "ultra"},
+    )
+
+    with pytest.raises(ValueError, match="Ultra is only supported"):
+        agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+
 def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
     agent = _build_copilot_agent(monkeypatch)
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
@@ -695,6 +756,78 @@ def test_consume_codex_stream_keeps_final_answer_phase_deltas(monkeypatch):
 
     assert streamed == ["visible answer"]
     assert response.output_text == "visible answer"
+
+
+def test_consume_codex_stream_filters_interleaved_subagent_text_by_output_index():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    subagent_item = {
+        "type": "message",
+        "id": "msg_subagent",
+        "role": "assistant",
+        "status": "completed",
+        "phase": "final_answer",
+        "agent": {"agent_name": "/root/researcher"},
+        "content": [{"type": "output_text", "text": "private evidence"}],
+    }
+    root_item = {
+        "type": "message",
+        "id": "msg_root",
+        "role": "assistant",
+        "status": "completed",
+        "phase": "final_answer",
+        "agent": {"agent_name": "/root"},
+        "content": [{"type": "output_text", "text": "public answer"}],
+    }
+    streamed = []
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(
+            [
+                {"type": "response.created"},
+                {
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": subagent_item,
+                },
+                {
+                    "type": "response.output_item.added",
+                    "output_index": 1,
+                    "item": root_item,
+                },
+                {
+                    "type": "response.output_text.delta",
+                    "output_index": 0,
+                    "delta": "private evidence",
+                },
+                {
+                    "type": "response.output_text.delta",
+                    "output_index": 1,
+                    "delta": "public answer",
+                },
+                {
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": subagent_item,
+                },
+                {
+                    "type": "response.output_item.done",
+                    "output_index": 1,
+                    "item": root_item,
+                },
+                {
+                    "type": "response.completed",
+                    "response": {"status": "completed"},
+                },
+            ]
+        ),
+        model="gpt-5.6-sol",
+        on_text_delta=streamed.append,
+    )
+
+    assert streamed == ["public answer"]
+    assert response.output_text == "public answer"
+    assert response.output == [subagent_item, root_item]
 
 
 def test_run_codex_stream_surfaces_failed_status_in_final_response(monkeypatch):

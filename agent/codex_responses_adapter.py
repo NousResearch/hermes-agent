@@ -18,6 +18,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from agent.message_content import get_message_field, to_plain_data
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,20 @@ def _classify_responses_issuer(
 # Throttle the per-process cross-issuer skip warning so we don't flood logs
 # when a long history contains many stale-issuer reasoning blocks.
 _CROSS_ISSUER_WARN_EMITTED = False
+
+_HOSTED_MULTI_AGENT_ITEM_TYPES = {
+    "multi_agent_call",
+    "multi_agent_call_output",
+    "agent_message",
+}
+_MULTI_AGENT_ACTIONS = {
+    "spawn_agent",
+    "interrupt_agent",
+    "list_agents",
+    "send_message",
+    "followup_task",
+    "wait_agent",
+}
 
 
 # Matches Codex/Harmony tool-call serialization that occasionally leaks into
@@ -367,6 +382,19 @@ def _chat_messages_to_responses_input(
                 content_text = str(content) if content is not None else ""
 
             if role == "assistant":
+                codex_message_items = msg.get("codex_message_items")
+                multi_agent_replay = bool(
+                    isinstance(codex_message_items, list)
+                    and any(
+                        isinstance(item, dict)
+                        and (
+                            item.get("type") in _HOSTED_MULTI_AGENT_ITEM_TYPES
+                            or isinstance(item.get("agent"), dict)
+                        )
+                        for item in codex_message_items
+                    )
+                )
+
                 # Replay encrypted reasoning items from previous turns
                 # so the API can maintain coherent reasoning chains.
                 # This applies to every Responses transport including
@@ -374,7 +402,7 @@ def _chat_messages_to_responses_input(
                 # for the May 2026 reversal of the earlier xAI gate.
                 codex_reasoning = (
                     msg.get("codex_reasoning_items")
-                    if replay_encrypted_reasoning
+                    if replay_encrypted_reasoning and not multi_agent_replay
                     else None
                 )
                 has_codex_reasoning = False
@@ -423,13 +451,24 @@ def _chat_messages_to_responses_input(
                                 seen_item_ids.add(item_id)
                             has_codex_reasoning = True
 
-                # Replay exact assistant message items (with id/phase) from
-                # previous turns so the API can maintain prefix-cache hits.
-                # OpenAI docs: "preserve and resend phase on all assistant
-                # messages — dropping it can degrade performance."
-                codex_message_items = msg.get("codex_message_items")
+                # Normal Codex turns preserve assistant messages for phase/cache
+                # continuity. Multi-agent turns use the same persisted carrier
+                # for the complete ordered output list because the beta requires
+                # every hosted item and agent-attributed function call on resume.
                 replayed_message_items = 0
-                if isinstance(codex_message_items, list):
+                if multi_agent_replay:
+                    for raw_item in codex_message_items:
+                        if not isinstance(raw_item, dict):
+                            continue
+                        replay_item = {
+                            key: value
+                            for key, value in raw_item.items()
+                            if not str(key).startswith("_")
+                        }
+                        if replay_item:
+                            items.append(replay_item)
+                            replayed_message_items += 1
+                elif isinstance(codex_message_items, list):
                     for raw_item in codex_message_items:
                         if not isinstance(raw_item, dict):
                             continue
@@ -486,7 +525,7 @@ def _chat_messages_to_responses_input(
                     items.append({"role": "assistant", "content": ""})
 
                 tool_calls = msg.get("tool_calls")
-                if isinstance(tool_calls, list):
+                if isinstance(tool_calls, list) and not multi_agent_replay:
                     for tc in tool_calls:
                         if not isinstance(tc, dict):
                             continue
@@ -576,7 +615,70 @@ def _chat_messages_to_responses_input(
 # Input preflight / validation
 # ---------------------------------------------------------------------------
 
-def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
+def _normalize_multi_agent_agent(value: Any, *, context: str) -> Optional[Dict[str, str]]:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} agent must be an object.")
+    agent_name = value.get("agent_name")
+    if not isinstance(agent_name, str) or not agent_name.strip():
+        raise ValueError(f"{context} agent.agent_name must be a non-empty string.")
+    return {"agent_name": agent_name.strip()}
+
+
+def _normalize_hosted_multi_agent_item(
+    item: Dict[str, Any], *, index: int
+) -> Dict[str, Any]:
+    item_type = item.get("type")
+    context = f"Codex Responses input[{index}] {item_type}"
+
+    def required_string(name: str) -> str:
+        value = item.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{context} is missing {name}.")
+        return value.strip()
+
+    normalized: Dict[str, Any] = {
+        "type": item_type,
+        "id": required_string("id"),
+    }
+    agent = _normalize_multi_agent_agent(item.get("agent"), context=context)
+    if agent is not None:
+        normalized["agent"] = agent
+
+    if item_type in {"multi_agent_call", "multi_agent_call_output"}:
+        action = required_string("action")
+        if action not in _MULTI_AGENT_ACTIONS:
+            raise ValueError(f"{context} has unsupported action {action!r}.")
+        normalized["action"] = action
+        normalized["call_id"] = required_string("call_id")
+        if item_type == "multi_agent_call":
+            normalized["arguments"] = required_string("arguments")
+        else:
+            output = item.get("output")
+            if not isinstance(output, list) or not all(
+                isinstance(part, dict) for part in output
+            ):
+                raise ValueError(f"{context} output must be a list of objects.")
+            normalized["output"] = [dict(part) for part in output]
+        return normalized
+
+    normalized["author"] = required_string("author")
+    normalized["recipient"] = required_string("recipient")
+    content = item.get("content")
+    if not isinstance(content, list) or not all(
+        isinstance(part, dict) for part in content
+    ):
+        raise ValueError(f"{context} content must be a list of objects.")
+    normalized["content"] = [dict(part) for part in content]
+    return normalized
+
+
+def _preflight_codex_input_items(
+    raw_items: Any,
+    *,
+    allow_multi_agent: bool = False,
+) -> List[Dict[str, Any]]:
     if not isinstance(raw_items, list):
         raise ValueError("Codex Responses input must be a list of input items.")
 
@@ -587,6 +689,16 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
             raise ValueError(f"Codex Responses input[{idx}] must be an object.")
 
         item_type = item.get("type")
+        if item_type in _HOSTED_MULTI_AGENT_ITEM_TYPES:
+            if not allow_multi_agent:
+                raise ValueError(
+                    f"Codex Responses input[{idx}] has unsupported item type {item_type!r}."
+                )
+            normalized.append(
+                _normalize_hosted_multi_agent_item(item, index=idx)
+            )
+            continue
+
         if item_type == "function_call":
             call_id = item.get("call_id")
             name = item.get("name")
@@ -602,14 +714,27 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 arguments = str(arguments)
             arguments = arguments.strip() or "{}"
 
-            normalized.append(
-                {
-                    "type": "function_call",
-                    "call_id": call_id.strip(),
-                    "name": name.strip(),
-                    "arguments": arguments,
-                }
-            )
+            function_call: Dict[str, Any] = {
+                "type": "function_call",
+                "call_id": call_id.strip(),
+                "name": name.strip(),
+                "arguments": arguments,
+            }
+            if allow_multi_agent:
+                item_id = item.get("id")
+                if isinstance(item_id, str) and item_id.strip():
+                    function_call["id"] = item_id.strip()
+                agent = _normalize_multi_agent_agent(
+                    item.get("agent"),
+                    context=f"Codex Responses input[{idx}] function_call",
+                )
+                if agent is not None:
+                    function_call["agent"] = agent
+                for field in ("status", "caller", "namespace"):
+                    value = item.get(field)
+                    if value is not None:
+                        function_call[field] = value
+            normalized.append(function_call)
             continue
 
         if item_type == "function_call_output":
@@ -681,6 +806,19 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                     reasoning_item["summary"] = summary
                 else:
                     reasoning_item["summary"] = []
+                if allow_multi_agent:
+                    if isinstance(item_id, str) and item_id.strip():
+                        reasoning_item["id"] = item_id.strip()
+                    agent = _normalize_multi_agent_agent(
+                        item.get("agent"),
+                        context=f"Codex Responses input[{idx}] reasoning",
+                    )
+                    if agent is not None:
+                        reasoning_item["agent"] = agent
+                    for field in ("content", "status"):
+                        value = item.get(field)
+                        if value is not None:
+                            reasoning_item[field] = value
                 normalized.append(reasoning_item)
             continue
 
@@ -722,6 +860,13 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
             phase = item.get("phase")
             if isinstance(phase, str) and phase.strip():
                 normalized_item["phase"] = phase.strip()
+            if allow_multi_agent:
+                agent = _normalize_multi_agent_agent(
+                    item.get("agent"),
+                    context=f"Codex Responses input[{idx}] message",
+                )
+                if agent is not None:
+                    normalized_item["agent"] = agent
             normalized.append(normalized_item)
             continue
 
@@ -811,7 +956,20 @@ def _preflight_codex_api_kwargs(
         instructions = str(instructions)
     instructions = instructions.strip() or DEFAULT_AGENT_IDENTITY
 
-    normalized_input = _preflight_codex_input_items(api_kwargs.get("input"))
+    extra_body_for_mode = api_kwargs.get("extra_body")
+    multi_agent_config = (
+        extra_body_for_mode.get("multi_agent")
+        if isinstance(extra_body_for_mode, dict)
+        else None
+    )
+    allow_multi_agent = bool(
+        isinstance(multi_agent_config, dict)
+        and multi_agent_config.get("enabled") is True
+    )
+    normalized_input = _preflight_codex_input_items(
+        api_kwargs.get("input"),
+        allow_multi_agent=allow_multi_agent,
+    )
 
     tools = api_kwargs.get("tools")
     normalized_tools = None
@@ -875,7 +1033,7 @@ def _preflight_codex_api_kwargs(
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
-        "extra_headers", "extra_body", "timeout",
+        "extra_headers", "extra_query", "extra_body", "timeout",
     }
     normalized: Dict[str, Any] = {
         "model": model,
@@ -931,6 +1089,21 @@ def _preflight_codex_api_kwargs(
             normalized_headers[key.strip()] = str(value)
         if normalized_headers:
             normalized["extra_headers"] = normalized_headers
+
+    extra_query = api_kwargs.get("extra_query")
+    if extra_query is not None:
+        if not isinstance(extra_query, dict):
+            raise ValueError("Codex Responses request 'extra_query' must be an object.")
+        normalized_query: Dict[str, Any] = {}
+        for key, value in extra_query.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError(
+                    "Codex Responses request 'extra_query' keys must be non-empty strings."
+                )
+            if value is not None:
+                normalized_query[key.strip()] = value
+        if normalized_query:
+            normalized["extra_query"] = normalized_query
 
     extra_body = api_kwargs.get("extra_body")
     if extra_body is not None:
@@ -990,16 +1163,16 @@ def _preflight_codex_api_kwargs(
 
 def _extract_responses_message_text(item: Any) -> str:
     """Extract assistant text from a Responses message output item."""
-    content = getattr(item, "content", None)
+    content = _responses_field(item, "content")
     if not isinstance(content, list):
         return ""
 
     chunks: List[str] = []
     for part in content:
-        ptype = getattr(part, "type", None)
+        ptype = _responses_field(part, "type")
         if ptype not in {"output_text", "text"}:
             continue
-        text = getattr(part, "text", None)
+        text = _responses_field(part, "text")
         if isinstance(text, str) and text:
             chunks.append(text)
     return "".join(chunks).strip()
@@ -1007,16 +1180,16 @@ def _extract_responses_message_text(item: Any) -> str:
 
 def _extract_responses_reasoning_text(item: Any) -> str:
     """Extract a compact reasoning text from a Responses reasoning item."""
-    summary = getattr(item, "summary", None)
+    summary = _responses_field(item, "summary")
     if isinstance(summary, list):
         chunks: List[str] = []
         for part in summary:
-            text = getattr(part, "text", None)
+            text = _responses_field(part, "text")
             if isinstance(text, str) and text:
                 chunks.append(text)
         if chunks:
             return "\n".join(chunks).strip()
-    text = getattr(item, "text", None)
+    text = _responses_field(item, "text")
     if isinstance(text, str) and text:
         return text.strip()
     return ""
@@ -1068,6 +1241,49 @@ def _format_responses_error(error_obj: Any, response_status: str) -> str:
 # Full response normalization
 # ---------------------------------------------------------------------------
 
+
+def _responses_field(value: Any, name: str, default: Any = None) -> Any:
+    return get_message_field(value, name, default)
+
+
+def _responses_agent_name(value: Any) -> Optional[str]:
+    agent = _responses_field(value, "agent")
+    agent_name = _responses_field(agent, "agent_name") if agent is not None else None
+    if isinstance(agent_name, str) and agent_name.strip():
+        return agent_name.strip()
+    return None
+
+
+def _responses_value_to_plain_data(value: Any) -> Any:
+    """Convert SDK/namespace response values into JSON-safe plain data."""
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            value = model_dump(mode="json", exclude_none=True)
+        except TypeError:
+            value = model_dump()
+    plain = to_plain_data(value)
+    if isinstance(plain, dict):
+        return {
+            str(key): _responses_value_to_plain_data(item)
+            for key, item in plain.items()
+            if not str(key).startswith("_") and item is not None
+        }
+    if isinstance(plain, list):
+        return [_responses_value_to_plain_data(item) for item in plain]
+    if plain is None or isinstance(plain, (str, int, float, bool)):
+        return plain
+    return str(plain)
+
+
+def _responses_output_item_to_dict(item: Any, item_type: str) -> Dict[str, Any]:
+    raw = _responses_value_to_plain_data(item)
+    if not isinstance(raw, dict):
+        raw = {}
+    raw["type"] = item_type
+    return raw
+
+
 def _normalize_codex_response(
     response: Any,
     *,
@@ -1110,10 +1326,29 @@ def _normalize_codex_response(
         error_msg = _format_responses_error(error_obj, response_status)
         raise RuntimeError(error_msg)
 
+    multi_agent_response = any(
+        str(_responses_field(item, "type", "") or "")
+        in _HOSTED_MULTI_AGENT_ITEM_TYPES
+        or _responses_agent_name(item) is not None
+        for item in output
+    )
+
     content_parts: List[str] = []
+    root_final_parts: List[str] = []
+    root_fallback_parts: List[str] = []
     reasoning_parts: List[str] = []
     reasoning_items_raw: List[Dict[str, Any]] = []
-    message_items_raw: List[Dict[str, Any]] = []
+    message_items_raw: List[Dict[str, Any]] = (
+        [
+            _responses_output_item_to_dict(
+                item,
+                str(_responses_field(item, "type", "") or ""),
+            )
+            for item in output
+        ]
+        if multi_agent_response
+        else []
+    )
     tool_calls: List[Any] = []
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
     saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
@@ -1146,15 +1381,12 @@ def _normalize_codex_response(
         "computer_call",
         "local_shell_call",
         "mcp_call",
+        *_HOSTED_MULTI_AGENT_ITEM_TYPES,
     }
 
     for item in output:
-        item_type = getattr(item, "type", None)
-        item_status = getattr(item, "status", None)
-        if isinstance(item_status, str):
-            item_status = item_status.strip().lower()
-        else:
-            item_status = None
+        item_type = str(_responses_field(item, "type", "") or "")
+        item_status = str(_responses_field(item, "status", "") or "").strip().lower()
 
         if (
             item_status in {"queued", "in_progress", "incomplete"}
@@ -1163,38 +1395,52 @@ def _normalize_codex_response(
             has_incomplete_items = True
             saw_streaming_or_item_incomplete = True
 
+        if item_type in _HOSTED_MULTI_AGENT_ITEM_TYPES:
+            # OpenAI executes these delegation items server-side. They are
+            # already captured in the full ordered Multi-agent replay list and
+            # must never be dispatched as Hermes client tools.
+            continue
+
         if item_type == "message":
-            item_phase = getattr(item, "phase", None)
+            item_phase = _responses_field(item, "phase")
+            item_agent_name = _responses_agent_name(item)
+            is_root_message = item_agent_name in {None, "/root"}
             normalized_phase = None
             is_commentary_phase = False
             if isinstance(item_phase, str):
                 normalized_phase = item_phase.strip().lower()
                 if normalized_phase in {"commentary", "analysis"}:
-                    saw_commentary_phase = True
                     is_commentary_phase = True
+                    if not multi_agent_response or is_root_message:
+                        saw_commentary_phase = True
                 elif normalized_phase in {"final_answer", "final"}:
-                    saw_final_answer_phase = True
+                    if not multi_agent_response or is_root_message:
+                        saw_final_answer_phase = True
             message_text = _extract_responses_message_text(item)
-            if message_text:
-                # Responses ``commentary``/``analysis`` phase text is mid-turn
-                # preamble/progress narration, never the turn's final answer
-                # (Codex CLI excludes it from last-message extraction; issues
-                # #24933 / #41293).  Keep it out of assistant content so it
-                # can't be concatenated into — or leak as — the final response,
-                # but surface it through the reasoning channel so the CLI/
-                # gateway display it like thinking text.  The exact message
-                # item is still preserved below for replay/cache continuity.
+            if message_text and (not multi_agent_response or is_root_message):
+                # Multi-agent subagent messages are replay state, not user-facing
+                # output. Root commentary remains reasoning/progress text; root
+                # final_answer wins over phase-less root fallback messages.
                 if is_commentary_phase:
                     reasoning_parts.append(message_text)
+                elif multi_agent_response and normalized_phase in {
+                    "final_answer",
+                    "final",
+                }:
+                    root_final_parts.append(message_text)
+                elif multi_agent_response:
+                    root_fallback_parts.append(message_text)
                 else:
                     content_parts.append(message_text)
+
+            if message_text and not multi_agent_response:
                 raw_message_item: Dict[str, Any] = {
                     "type": "message",
                     "role": "assistant",
                     "status": _normalize_responses_message_status(item_status),
                     "content": [{"type": "output_text", "text": message_text}],
                 }
-                item_id = getattr(item, "id", None)
+                item_id = _responses_field(item, "id")
                 if isinstance(item_id, str) and item_id:
                     raw_message_item["id"] = item_id
                 if normalized_phase:
@@ -1203,12 +1449,15 @@ def _normalize_codex_response(
         elif item_type == "reasoning":
             saw_reasoning_item = True
             reasoning_text = _extract_responses_reasoning_text(item)
-            if reasoning_text:
+            item_agent_name = _responses_agent_name(item)
+            if reasoning_text and (
+                not multi_agent_response or item_agent_name in {None, "/root"}
+            ):
                 reasoning_parts.append(reasoning_text)
             # Capture the full reasoning item for multi-turn continuity.
             # encrypted_content is an opaque blob the API needs back on
             # subsequent turns to maintain coherent reasoning chains.
-            encrypted = getattr(item, "encrypted_content", None)
+            encrypted = _responses_field(item, "encrypted_content")
             if isinstance(encrypted, str) and encrypted:
                 raw_item = {"type": "reasoning", "encrypted_content": encrypted}
                 # Stamp the issuer so future turns can detect when a
@@ -1217,7 +1466,7 @@ def _normalize_codex_response(
                 # cross-issuer guard.
                 if issuer_kind:
                     raw_item["_issuer_kind"] = issuer_kind
-                item_id = getattr(item, "id", None)
+                item_id = _responses_field(item, "id")
                 if isinstance(item_id, str) and item_id.startswith("rs_tmp_"):
                     logger.debug(
                         "Skipping transient Codex reasoning item during normalization: %s",
@@ -1227,24 +1476,25 @@ def _normalize_codex_response(
                 if isinstance(item_id, str) and item_id:
                     raw_item["id"] = item_id
                 # Capture summary — required by the API when replaying reasoning items
-                summary = getattr(item, "summary", None)
+                summary = _responses_field(item, "summary")
                 if isinstance(summary, list):
                     raw_summary = []
                     for part in summary:
-                        text = getattr(part, "text", None)
+                        text = _responses_field(part, "text")
                         if isinstance(text, str):
                             raw_summary.append({"type": "summary_text", "text": text})
                     raw_item["summary"] = raw_summary
-                reasoning_items_raw.append(raw_item)
+                if not multi_agent_response:
+                    reasoning_items_raw.append(raw_item)
         elif item_type == "function_call":
             if item_status in {"queued", "in_progress", "incomplete"}:
                 continue
-            fn_name = getattr(item, "name", "") or ""
-            arguments = getattr(item, "arguments", "{}")
+            fn_name = _responses_field(item, "name", "") or ""
+            arguments = _responses_field(item, "arguments", "{}")
             if not isinstance(arguments, str):
                 arguments = json.dumps(arguments, ensure_ascii=False)
-            raw_call_id = getattr(item, "call_id", None)
-            raw_item_id = getattr(item, "id", None)
+            raw_call_id = _responses_field(item, "call_id")
+            raw_item_id = _responses_field(item, "id")
             embedded_call_id, _ = _split_responses_tool_id(raw_item_id)
             call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
             if not isinstance(call_id, str) or not call_id.strip():
@@ -1256,16 +1506,19 @@ def _normalize_codex_response(
                 id=call_id,
                 call_id=call_id,
                 response_item_id=response_item_id,
+                agent=_responses_value_to_plain_data(
+                    _responses_field(item, "agent")
+                ),
                 type="function",
                 function=SimpleNamespace(name=fn_name, arguments=arguments),
             ))
         elif item_type == "custom_tool_call":
-            fn_name = getattr(item, "name", "") or ""
-            arguments = getattr(item, "input", "{}")
+            fn_name = _responses_field(item, "name", "") or ""
+            arguments = _responses_field(item, "input", "{}")
             if not isinstance(arguments, str):
                 arguments = json.dumps(arguments, ensure_ascii=False)
-            raw_call_id = getattr(item, "call_id", None)
-            raw_item_id = getattr(item, "id", None)
+            raw_call_id = _responses_field(item, "call_id")
+            raw_item_id = _responses_field(item, "id")
             embedded_call_id, _ = _split_responses_tool_id(raw_item_id)
             call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
             if not isinstance(call_id, str) or not call_id.strip():
@@ -1277,13 +1530,21 @@ def _normalize_codex_response(
                 id=call_id,
                 call_id=call_id,
                 response_item_id=response_item_id,
+                agent=_responses_value_to_plain_data(
+                    _responses_field(item, "agent")
+                ),
                 type="function",
                 function=SimpleNamespace(name=fn_name, arguments=arguments),
             ))
 
-    final_text = "\n".join([p for p in content_parts if p]).strip()
+    if multi_agent_response:
+        visible_parts = root_final_parts or root_fallback_parts
+        final_text = "\n".join([part for part in visible_parts if part]).strip()
+    else:
+        final_text = "\n".join([part for part in content_parts if part]).strip()
     if (
         not final_text
+        and not multi_agent_response
         and hasattr(response, "output_text")
         and not (saw_commentary_phase and not saw_final_answer_phase)
     ):

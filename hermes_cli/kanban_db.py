@@ -4208,7 +4208,7 @@ def _is_managed_scratch_path(p: Path) -> bool:
     if override:
         try:
             roots.append(Path(override).expanduser().resolve(strict=False))
-        except OSError:
+        except (OSError, RuntimeError):
             pass
     try:
         home = kanban_home()

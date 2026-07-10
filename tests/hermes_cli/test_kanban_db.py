@@ -2564,6 +2564,18 @@ def test_is_managed_scratch_path_rejects_kanban_metadata_subtrees(kanban_home):
     assert kb._is_managed_scratch_path(task_dir)
 
 
+def test_is_managed_scratch_path_tilde_user_env_does_not_crash(kanban_home, monkeypatch):
+    """``HERMES_KANBAN_WORKSPACES_ROOT`` with ``~nonexistent_user`` must not crash.
+
+    ``Path.expanduser()`` raises ``RuntimeError`` for ``~user`` tokens where
+    ``user`` is not a real account.  The workspace-root resolver must swallow
+    this just like it swallows ``OSError``.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", "~nonexistent_user/workspace")
+    # Must not raise — the path is simply skipped.
+    assert not kb._is_managed_scratch_path(Path("/tmp"))
+
+
 # ---------------------------------------------------------------------------
 # Tenancy
 # ---------------------------------------------------------------------------

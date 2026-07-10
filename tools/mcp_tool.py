@@ -491,15 +491,30 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
     implementations phrase it as "Unknown method: <name>" — agentmemory's MCP
     server is one such case (#50028). Without matching that phrasing the
     ping→list_tools fallback never latches and the keepalive reconnect-loops.
+
+    Empty exception messages (excluding well-known timeout/cancellation types)
+    are treated as method-not-found to prevent infinite reconnect loops on
+    silent stdio failures (#62212).
     """
     # Structural: mcp.shared.exceptions.McpError carries ErrorData.code.
     err = getattr(exc, "error", None)
     code = getattr(err, "code", None)
     if code == _JSONRPC_METHOD_NOT_FOUND:
         return True
+
+    # Well-known timeout/cancellation types are real failures, not ping unsupported.
+    # Their string messages may be empty, but they should trigger reconnect.
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError)):
+        return False
+
     msg = str(exc).lower()
     if not msg:
-        return False
+        # Empty exception — ambiguous. Could be pipe closure (real failure)
+        # or a server that doesn't implement ping (silent -32601). Treat as
+        # method-not-found so keepalive falls back to list_tools; if list_tools
+        # also fails with an empty message, the next cycle triggers reconnect.
+        # This breaks the infinite reconnect loop on silent stdio failures (#62212).
+        return True
     return (
         str(_JSONRPC_METHOD_NOT_FOUND) in msg
         or "method not found" in msg

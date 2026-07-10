@@ -265,6 +265,18 @@ class TestMethodNotFoundDetection:
         assert _is_method_not_found_error(TimeoutError()) is False
         assert _is_method_not_found_error(Exception("session terminated")) is False
 
+    def test_empty_exception_message_is_match(self):
+        """Empty exception messages are treated as method-not-found (#62212).
+
+        Empty messages are ambiguous (pipe closure vs silent -32601 server).
+        Treating them as method-not-found causes the keepalive path to fall
+        back to list_tools; if list_tools also fails with an empty message,
+        the next cycle triggers reconnect. This breaks infinite reconnect loops
+        on silent stdio failures.
+        """
+        from tools.mcp_tool import _is_method_not_found_error
+        assert _is_method_not_found_error(Exception("")) is True
+
 
 @pytest.mark.asyncio
 class TestKeepaliveProbeFallback:

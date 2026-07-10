@@ -21,11 +21,122 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from typing import Any, Dict, List, Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
+
+
+class _BackgroundReviewCancellation:
+    """Narrow cancellation token shared between the parent and one review worker."""
+
+    __slots__ = ("_event", "_lock", "_reason", "_review_agent")
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._reason = "background review cancelled"
+        self._review_agent = None
+
+    def cancel(self, reason: str = "background review cancelled") -> None:
+        if reason:
+            self._reason = str(reason)
+        self._event.set()
+        with self._lock:
+            review_agent = self._review_agent
+        if review_agent is not None:
+            try:
+                review_agent.interrupt(self._reason)
+            except Exception:
+                logger.debug("background review cancel interrupt failed", exc_info=True)
+
+    def attach_review_agent(self, review_agent: Any) -> None:
+        with self._lock:
+            self._review_agent = review_agent
+        if self._event.is_set():
+            try:
+                review_agent.interrupt(self._reason)
+            except Exception:
+                logger.debug("background review late attach interrupt failed", exc_info=True)
+
+    def is_cancelled(self) -> bool:
+        return self._event.is_set()
+
+
+def _background_review_registry(agent: Any) -> tuple[threading.Lock, set[_BackgroundReviewCancellation]]:
+    lock = getattr(agent, "_background_review_cancellation_lock", None)
+    if lock is None:
+        lock = threading.Lock()
+        agent._background_review_cancellation_lock = lock
+    tokens = getattr(agent, "_background_review_cancellations", None)
+    if tokens is None:
+        tokens = set()
+        agent._background_review_cancellations = tokens
+    return lock, tokens
+
+
+def _background_review_cancel_reason(agent: Any, fallback: str = "background review cancelled") -> str:
+    if getattr(agent, "_background_review_shutdown_requested", False):
+        return "runtime shutdown"
+    if getattr(agent, "_runtime_shutdown_requested", False):
+        return "runtime shutdown"
+    if getattr(agent, "_interrupt_requested", False):
+        return "parent interrupt"
+    return fallback
+
+
+def background_review_should_cancel(
+    agent: Any,
+    cancellation: Optional[_BackgroundReviewCancellation] = None,
+) -> bool:
+    if cancellation is not None and cancellation.is_cancelled():
+        return True
+    return bool(
+        getattr(agent, "_interrupt_requested", False)
+        or getattr(agent, "_background_review_shutdown_requested", False)
+        or getattr(agent, "_runtime_shutdown_requested", False)
+    )
+
+
+def cancel_background_reviews(agent: Any, reason: Optional[str] = None) -> None:
+    lock, tokens = _background_review_registry(agent)
+    with lock:
+        pending = list(tokens)
+    cancel_reason = reason or _background_review_cancel_reason(agent)
+    for token in pending:
+        token.cancel(cancel_reason)
+
+
+def request_background_review_shutdown(
+    agent: Any,
+    reason: str = "runtime shutdown",
+) -> None:
+    agent._background_review_shutdown_requested = True
+    agent._runtime_shutdown_requested = True
+    cancel_background_reviews(agent, reason=reason)
+
+
+def _register_background_review_cancellation(agent: Any) -> _BackgroundReviewCancellation:
+    token = _BackgroundReviewCancellation()
+    lock, tokens = _background_review_registry(agent)
+    with lock:
+        tokens.add(token)
+    if background_review_should_cancel(agent, token):
+        token.cancel(_background_review_cancel_reason(agent))
+    return token
+
+
+def _unregister_background_review_cancellation(
+    agent: Any,
+    token: Optional[_BackgroundReviewCancellation],
+) -> None:
+    if token is None:
+        return
+    lock, tokens = _background_review_registry(agent)
+    with lock:
+        tokens.discard(token)
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +684,7 @@ def _run_review_in_thread(
     agent: Any,
     messages_snapshot: List[Dict],
     prompt: str,
+    cancellation: Optional[_BackgroundReviewCancellation] = None,
 ) -> None:
     """Worker function executed in the background-review daemon thread.
 
@@ -599,6 +711,9 @@ def _run_review_in_thread(
         _set_approval_callback(_bg_review_auto_deny)
     except Exception:
         pass
+
+    if background_review_should_cancel(agent, cancellation):
+        return
 
     review_agent = None
     review_messages: List[Dict] = []
@@ -721,6 +836,8 @@ def _run_review_in_thread(
                 # if a future code path bypasses the cache.
                 review_agent.session_start = agent.session_start
             review_agent.session_id = agent.session_id
+            if cancellation is not None:
+                cancellation.attach_review_agent(review_agent)
             # The fork shares the parent's live session_id (pinned above for
             # prefix-cache parity). It is single-lifecycle and calls close()
             # right after this run_conversation(); without opting out, close()
@@ -775,6 +892,8 @@ def _run_review_in_thread(
                 pass
 
             try:
+                if background_review_should_cancel(agent, cancellation):
+                    return
                 # Routed to a different model -> replay a digest (cache is cold
                 # on that model anyway, so minimise cold-written tokens). Same
                 # model -> replay the full snapshot (warm cache reads).
@@ -812,6 +931,9 @@ def _run_review_in_thread(
             except Exception:
                 pass
             review_agent = None
+
+        if background_review_should_cancel(agent, cancellation):
+            return
 
         # Scan the review agent's messages for successful tool actions
         # and surface a compact summary to the user. Tool messages
@@ -891,8 +1013,23 @@ def spawn_background_review_thread(
     else:
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 
+    if background_review_should_cancel(agent):
+        return None, prompt
+
+    cancellation = _register_background_review_cancellation(agent)
+
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        try:
+            if background_review_should_cancel(agent, cancellation):
+                return
+            _run_review_in_thread(
+                agent,
+                messages_snapshot,
+                prompt,
+                cancellation=cancellation,
+            )
+        finally:
+            _unregister_background_review_cancellation(agent, cancellation)
 
     return _target, prompt
 

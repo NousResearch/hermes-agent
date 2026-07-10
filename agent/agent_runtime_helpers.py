@@ -1944,6 +1944,14 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     if not isinstance(function_args, dict):
         function_args = {}
 
+    # Compression may rotate ``agent.session_id`` while this turn is alive.
+    # Middleware, hooks, and registry dispatch must retain one verification
+    # owner so their writes/checks agree with the turn's edit/stop-gate state.
+    tool_session_id = (
+        getattr(agent, "_verification_session_id", None)
+        or getattr(agent, "session_id", "")
+        or ""
+    )
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:
         from hermes_cli.middleware import apply_tool_request_middleware
@@ -1953,7 +1961,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 function_name,
                 function_args,
                 task_id=effective_task_id or "",
-                session_id=getattr(agent, "session_id", "") or "",
+                session_id=tool_session_id,
                 tool_call_id=tool_call_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
@@ -1972,7 +1980,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 function_name,
                 function_args,
                 task_id=effective_task_id or "",
-                session_id=getattr(agent, "session_id", "") or "",
+                session_id=tool_session_id,
                 tool_call_id=tool_call_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
@@ -1989,7 +1997,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 function_args=function_args,
                 result=result,
                 task_id=effective_task_id or "",
-                session_id=getattr(agent, "session_id", "") or "",
+                session_id=tool_session_id,
                 tool_call_id=tool_call_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
@@ -2013,7 +2021,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 function_args=hook_args,
                 result=result,
                 task_id=effective_task_id or "",
-                session_id=getattr(agent, "session_id", "") or "",
+                session_id=tool_session_id,
                 tool_call_id=tool_call_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
@@ -2115,11 +2123,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             return _ra().handle_function_call(
                 function_name, next_args, effective_task_id,
                 tool_call_id=tool_call_id,
-                session_id=(
-                    getattr(agent, "_verification_session_id", None)
-                    or agent.session_id
-                    or ""
-                ),
+                session_id=tool_session_id,
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
@@ -2138,7 +2142,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         lambda next_args: _execute(next_args if isinstance(next_args, dict) else function_args),
         original_args=function_args,
         task_id=effective_task_id or "",
-        session_id=getattr(agent, "session_id", "") or "",
+        session_id=tool_session_id,
         tool_call_id=tool_call_id or "",
         turn_id=getattr(agent, "_current_turn_id", "") or "",
         api_request_id=getattr(agent, "_current_api_request_id", "") or "",

@@ -4015,6 +4015,141 @@ class TestRunConversation:
         assert dispatch.call_args.kwargs["session_id"] == "parent-session"
         assert nudge.call_args.kwargs["session_id"] == "parent-session"
 
+    def test_verification_owner_survives_rotation_to_tool_dispatch(self, agent, monkeypatch):
+        """Tool request middleware and dispatch retain the immutable owner."""
+        self._setup_agent(agent)
+        agent.session_id = "parent-session"
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        original_execute = agent._execute_tool_calls
+        seen = {}
+
+        def rotate_before_dispatch(*args, **kwargs):
+            agent.session_id = "child-session"
+            agent._turn_file_mutation_paths = {"/tmp/project/app.py"}
+            return original_execute(*args, **kwargs)
+
+        def request_middleware(**kwargs):
+            seen["request_session_id"] = kwargs["session_id"]
+            return None
+
+        manager = SimpleNamespace(_middleware={"tool_request": [request_middleware]})
+
+        monkeypatch.setattr(agent, "_execute_tool_calls", rotate_before_dispatch)
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_middleware",
+            lambda kind: kind == "tool_request",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_middleware",
+            lambda kind, **kwargs: [request_middleware(**kwargs)] if kind == "tool_request" else [],
+        )
+
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result") as dispatch,
+            patch("agent.verification_stop.verify_on_stop_enabled", return_value=True),
+            patch("agent.verification_stop.build_verify_on_stop_nudge", return_value=None) as nudge,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+        assert agent.session_id == "child-session"
+        assert seen["request_session_id"] == "parent-session"
+        assert dispatch.call_args.kwargs["session_id"] == "parent-session"
+        assert nudge.call_args.kwargs["session_id"] == "parent-session"
+
+    def test_model_dispatch_forwards_stable_owner_to_execution_middleware(self, monkeypatch):
+        """The normal model-tools dispatcher preserves its caller session owner."""
+        from model_tools import handle_function_call
+
+        seen = {}
+
+        def request_middleware(function_name, function_args, **_kwargs):
+            return SimpleNamespace(
+                payload=function_args,
+                original_payload=dict(function_args),
+                trace=[],
+            )
+
+        def execution_middleware(function_name, function_args, execute, **kwargs):
+            seen["session_id"] = kwargs["session_id"]
+            return execute(function_args)
+
+        monkeypatch.setattr(
+            "hermes_cli.middleware.apply_tool_request_middleware",
+            request_middleware,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.middleware.run_tool_execution_middleware",
+            execution_middleware,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *_args, **_kwargs: "search result")
+        monkeypatch.setattr("model_tools._emit_post_tool_call_hook", lambda **_kwargs: None)
+
+        result = handle_function_call(
+            "web_search",
+            {},
+            task_id="task-1",
+            session_id="turn-owner-session",
+        )
+
+        assert result == "search result"
+        assert seen["session_id"] == "turn-owner-session"
+
+    def test_invoke_tool_uses_verification_owner_for_every_middleware_boundary(
+        self, agent, monkeypatch
+    ):
+        """Concurrent helper middleware/hooks must retain the turn's owner."""
+        from agent.agent_runtime_helpers import invoke_tool
+
+        self._setup_agent(agent)
+        agent.session_id = "rotated-child-session"
+        agent._verification_session_id = "turn-owner-session"
+        seen = {}
+
+        def request_middleware(function_name, function_args, **kwargs):
+            seen["request_session_id"] = kwargs["session_id"]
+            return SimpleNamespace(payload=function_args, trace=[])
+
+        def execution_middleware(function_name, function_args, execute, **kwargs):
+            seen["execution_session_id"] = kwargs["session_id"]
+            return execute(function_args)
+
+        monkeypatch.setattr(
+            "hermes_cli.middleware.apply_tool_request_middleware",
+            request_middleware,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.middleware.run_tool_execution_middleware",
+            execution_middleware,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *_args, **_kwargs: None,
+        )
+
+        with patch("run_agent.handle_function_call", return_value="search result") as dispatch:
+            result = invoke_tool(agent, "web_search", {}, "task-1", tool_call_id="c1")
+
+        assert result == "search result"
+        assert seen == {
+            "request_session_id": "turn-owner-session",
+            "execution_session_id": "turn-owner-session",
+        }
+        assert dispatch.call_args.kwargs["session_id"] == "turn-owner-session"
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

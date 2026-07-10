@@ -13,6 +13,7 @@ runtime via a thread-local whitelist on the existing
 that caused the prefix-cache miss.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -227,3 +228,98 @@ def test_background_review_includes_memory_when_user_profile_enabled():
         )
 
     assert "memory" in captured["whitelist"]
+
+
+def test_background_review_interrupt_skips_spawn():
+    """An interrupted parent turn must not even spawn the review worker."""
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._interrupt_requested = True
+
+    class _ExplodingThread:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("background review thread should not be created")
+
+    with patch("run_agent.threading.Thread", _ExplodingThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+
+def test_cancelled_background_review_skips_model_work(monkeypatch):
+    """A cancelled review worker must stop before review model/tool execution."""
+    import run_agent
+    from agent.background_review import _BackgroundReviewCancellation, _run_review_in_thread
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._interrupt_requested = False
+    agent._background_review_shutdown_requested = False
+    agent._credential_pool = None
+    agent._safe_print = lambda *_a, **_k: None
+    agent.memory_notifications = "on"
+
+    token = _BackgroundReviewCancellation()
+    token.cancel("runtime shutdown")
+
+    monkeypatch.setattr("agent.background_review.thread_scoped_silence", lambda: _NullContext())
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **_kwargs: [])
+    monkeypatch.setattr("hermes_cli.plugins.set_thread_tool_whitelist", lambda *_a, **_k: None)
+    monkeypatch.setattr("hermes_cli.plugins.clear_thread_tool_whitelist", lambda: None)
+    monkeypatch.setattr("tools.terminal_tool.set_approval_callback", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_agent.AIAgent, "__init__", lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(run_agent.AIAgent, "shutdown_memory_provider", lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(run_agent.AIAgent, "close", lambda self, *args, **kwargs: None)
+
+    def _unexpected_run(*_args, **_kwargs):
+        raise AssertionError("cancelled background review should not run model/tool work")
+
+    monkeypatch.setattr(run_agent.AIAgent, "run_conversation", _unexpected_run)
+
+    _run_review_in_thread(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        prompt="review memory",
+        cancellation=token,
+    )
+
+
+def test_cancelling_registered_background_review_interrupts_active_worker():
+    """Parent cancellation reaches a registered review agent already in flight."""
+    from agent.background_review import (
+        _register_background_review_cancellation,
+        _unregister_background_review_cancellation,
+        cancel_background_reviews,
+    )
+
+    parent = SimpleNamespace(
+        _interrupt_requested=False,
+        _background_review_shutdown_requested=False,
+        _runtime_shutdown_requested=False,
+    )
+    token = _register_background_review_cancellation(parent)
+
+    class ReviewAgent:
+        reason = None
+
+        def interrupt(self, reason):
+            self.reason = reason
+
+    review_agent = ReviewAgent()
+    token.attach_review_agent(review_agent)
+    try:
+        cancel_background_reviews(parent, reason="parent interrupt")
+        assert token.is_cancelled()
+        assert review_agent.reason == "parent interrupt"
+    finally:
+        _unregister_background_review_cancellation(parent, token)
+
+
+class _NullContext:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False

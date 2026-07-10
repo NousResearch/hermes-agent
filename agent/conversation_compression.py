@@ -52,6 +52,21 @@ COMPACTION_STATUS = (
 )
 
 
+def _compression_should_abort(agent: Any) -> bool:
+    return bool(
+        getattr(agent, "_interrupt_requested", False)
+        or getattr(agent, "_runtime_shutdown_requested", False)
+        or getattr(agent, "_background_review_shutdown_requested", False)
+    )
+
+
+def _compression_abort_result(agent: Any, messages: list, system_message: str) -> tuple[list, str]:
+    existing = getattr(agent, "_cached_system_prompt", None)
+    if not existing:
+        existing = agent._build_system_prompt(system_message)
+    return messages, existing
+
+
 def _compression_lock_holder(agent: Any) -> str:
     """Build a unique holder id for the lock: pid:tid:agent-instance:uuid.
 
@@ -572,6 +587,12 @@ def compress_context(
             except Exception as _rel_err:
                 logger.debug("compression lock release failed: %s", _rel_err)
 
+    if _compression_should_abort(agent):
+        try:
+            return _compression_abort_result(agent, messages, system_message)
+        finally:
+            _release_lock()
+
     # Notify external memory provider before compression discards context
     if agent._memory_manager:
         try:
@@ -594,6 +615,12 @@ def compress_context(
         # session isn't permanently blocked from future compression.
         _release_lock()
         raise
+
+    if _compression_should_abort(agent):
+        try:
+            return _compression_abort_result(agent, messages, system_message)
+        finally:
+            _release_lock()
 
     # If compression aborted (aux LLM failed to produce a usable summary)
     # the compressor returns the input messages unchanged.  Surface the

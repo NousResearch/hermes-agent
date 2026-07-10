@@ -313,6 +313,8 @@ def init_agent(
     # would mangle the escape sequences.  None = use builtins.print.
     agent._print_fn = None
     agent.background_review_callback = None  # Optional sync callback for gateway delivery
+    agent._background_review_shutdown_requested = False
+    agent._runtime_shutdown_requested = False
     agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
     agent.skip_context_files = skip_context_files
     agent.load_soul_identity = load_soul_identity

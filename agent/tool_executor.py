@@ -142,7 +142,11 @@ def _emit_terminal_post_tool_call(
             function_args=function_args,
             result=result,
             task_id=effective_task_id or "",
-            session_id=getattr(agent, "session_id", "") or "",
+            session_id=(
+                getattr(agent, "_verification_session_id", None)
+                or getattr(agent, "session_id", "")
+                or ""
+            ),
             tool_call_id=tool_call_id or "",
             turn_id=getattr(agent, "_current_turn_id", "") or "",
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
@@ -252,6 +256,11 @@ def _apply_tool_request_middleware_for_agent(
     effective_task_id: str,
     tool_call_id: str,
 ) -> tuple[dict, list[dict[str, Any]]]:
+    tool_session_id = (
+        getattr(agent, "_verification_session_id", None)
+        or getattr(agent, "session_id", "")
+        or ""
+    )
     try:
         from hermes_cli.middleware import apply_tool_request_middleware
 
@@ -259,7 +268,7 @@ def _apply_tool_request_middleware_for_agent(
             function_name,
             function_args,
             task_id=effective_task_id or "",
-            session_id=getattr(agent, "session_id", "") or "",
+            session_id=tool_session_id,
             tool_call_id=tool_call_id or "",
             turn_id=getattr(agent, "_current_turn_id", "") or "",
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
@@ -281,6 +290,11 @@ def _run_agent_tool_execution_middleware(
     execute,
 ) -> tuple[Any, dict]:
     observed_args = function_args
+    tool_session_id = (
+        getattr(agent, "_verification_session_id", None)
+        or getattr(agent, "session_id", "")
+        or ""
+    )
 
     def _execute(next_args: dict) -> Any:
         nonlocal observed_args
@@ -295,7 +309,7 @@ def _run_agent_tool_execution_middleware(
         _execute,
         original_args=function_args,
         task_id=effective_task_id or "",
-        session_id=getattr(agent, "session_id", "") or "",
+        session_id=tool_session_id,
         tool_call_id=tool_call_id or "",
         turn_id=getattr(agent, "_current_turn_id", "") or "",
         api_request_id=getattr(agent, "_current_api_request_id", "") or "",
@@ -420,7 +434,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     function_name,
                     function_args,
                     task_id=effective_task_id or "",
-                    session_id=getattr(agent, "session_id", "") or "",
+                    session_id=(
+                        getattr(agent, "_verification_session_id", None)
+                        or getattr(agent, "session_id", "")
+                        or ""
+                    ),
                     tool_call_id=getattr(tool_call, "id", "") or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
@@ -1033,7 +1051,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     function_name,
                     function_args,
                     task_id=effective_task_id or "",
-                    session_id=getattr(agent, "session_id", "") or "",
+                    session_id=(
+                        getattr(agent, "_verification_session_id", None)
+                        or getattr(agent, "session_id", "")
+                        or ""
+                    ),
                     tool_call_id=getattr(tool_call, "id", "") or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",

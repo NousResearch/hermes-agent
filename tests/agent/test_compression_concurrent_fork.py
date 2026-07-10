@@ -418,6 +418,51 @@ def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path, mon
     assert agent.session_id != parent_sid
 
 
+@pytest.mark.parametrize("flag_name", ["_interrupt_requested", "_runtime_shutdown_requested"])
+def test_interrupt_or_shutdown_aborts_post_summary_rotation(
+    tmp_path: Path,
+    flag_name: str,
+) -> None:
+    """An interrupt/shutdown raised during compression must prevent rotation and release the lock."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = f"ABORT_{flag_name}"
+    db.create_session(parent_sid, source="discord")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    def _compress_then_cancel(*_a, **_kw):
+        setattr(agent, flag_name, True)
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress.side_effect = _compress_then_cancel
+    agent.commit_memory_session = MagicMock()
+    agent._build_system_prompt = MagicMock(return_value="system prompt")
+
+    with (
+        patch.object(agent._session_db, "end_session", wraps=agent._session_db.end_session) as end_session,
+        patch.object(agent._session_db, "create_session", wraps=agent._session_db.create_session) as create_session,
+        patch.object(agent._session_db, "update_system_prompt", wraps=agent._session_db.update_system_prompt) as update_system_prompt,
+    ):
+        compressed, rebuilt_prompt = agent._compress_context(
+            messages,
+            "sys",
+            approx_tokens=120_000,
+        )
+
+    assert compressed == messages
+    assert rebuilt_prompt == "system prompt"
+    assert agent.session_id == parent_sid
+    agent.commit_memory_session.assert_not_called()
+    end_session.assert_not_called()
+    create_session.assert_not_called()
+    update_system_prompt.assert_not_called()
+    assert db.get_compression_lock_holder(parent_sid) is None
+
+
 def test_review_fork_disables_compression_to_prevent_stale_parent_fork(tmp_path: Path) -> None:
     """The background-review fork must set ``compression_enabled = False``
     so it can never compress the parent it shares a session_id with

@@ -1589,6 +1589,8 @@ class AIAgent:
             review_memory=review_memory,
             review_skills=review_skills,
         )
+        if target is None:
+            return
         # Carry the active profile into the review thread so MEMORY.md / skill
         # review writes land in the right profile (#54937).
         t = threading.Thread(
@@ -2641,6 +2643,12 @@ class AIAgent:
         """
         self._interrupt_requested = True
         self._interrupt_message = message
+        try:
+            from agent.background_review import cancel_background_reviews
+
+            cancel_background_reviews(self, reason=message or "parent interrupt")
+        except Exception:
+            pass
         # Signal all tools to abort any in-flight operations immediately.
         # Scope the interrupt to this agent's execution thread so other
         # agents running in the same process (gateway) are not affected.
@@ -3277,6 +3285,12 @@ class AIAgent:
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
+        try:
+            from agent.background_review import request_background_review_shutdown
+
+            request_background_review_shutdown(self, reason="runtime shutdown")
+        except Exception:
+            pass
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
@@ -3443,6 +3457,13 @@ class AIAgent:
         independently guarded so a failure in one does not prevent the rest.
         """
         task_id = getattr(self, "session_id", None) or ""
+
+        try:
+            from agent.background_review import request_background_review_shutdown
+
+            request_background_review_shutdown(self, reason="runtime shutdown")
+        except Exception:
+            pass
 
         # 1. Kill background processes for this task
         try:

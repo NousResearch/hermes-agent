@@ -445,6 +445,30 @@ class TestElevenLabsTavilyExaKeys:
         assert "HOME=/home/user" in result
         assert "SHELL=/bin/bash" in result
 
+    def test_sk_filepath_not_redacted_in_code(self):
+        """Regression: sk_ filenames (e.g. sk_hynix_*.png) must not be
+        redacted by the ElevenLabs pattern — the body char class excludes
+        underscore so snake_case filenames don't match.  Issue #61876."""
+        text = "Chart saved to /home/roots/sk_hynix_screenshot.png"
+        result = redact_sensitive_text(text, force=True, code_file=True)
+        assert result == text, f"File path was corrupted: {result!r}"
+
+    def test_sk_filepath_not_redacted_in_general(self):
+        """Same as above but without code_file=True — the prefix pattern
+        should not match snake_case sk_ filenames in any context."""
+        text = "Data written to sk_telecom_report_july.csv"
+        result = redact_sensitive_text(text, force=True)
+        assert result == text, f"CSV path was corrupted: {result!r}"
+
+    def test_elevenlabs_bare_key_still_redacted(self):
+        """Verify the fix still redacts real ElevenLabs keys (no underscores
+        in the body after sk_). Issue #61876 regression."""
+        key = "sk_aabbccddeeffgghhiijjkkllmmnnoopp"
+        text = f"elevenlabs key: {key}"
+        result = redact_sensitive_text(text, force=True)
+        assert key not in result, f"ElevenLabs key leaked: {result!r}"
+        assert "sk_" in result, "Prefix should survive in head/tail mask"
+
 
 class TestJWTTokens:
     """JWT tokens start with eyJ (base64 for '{') and have dot-separated parts."""

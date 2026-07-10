@@ -63,8 +63,22 @@ export function pageProjectSessions(sessions: SessionInfo[], visibleCount: numbe
     return sessions
   }
 
-  const byId = new Map(sessions.map(session => [session.id, session]))
-  const visibleIds = new Set(sessions.slice(0, boundary).map(session => session.id))
+  const byId = new Map<string, SessionInfo>()
+  const visibleIds = new Set<string>()
+
+  const aliases = (session: SessionInfo): string[] => {
+    const lineageRootId = session._lineage_root_id?.trim()
+
+    return lineageRootId ? [session.id, lineageRootId] : [session.id]
+  }
+
+  for (const session of sessions) {
+    aliases(session).forEach(id => byId.set(id, session))
+  }
+
+  const addVisible = (session: SessionInfo) => aliases(session).forEach(id => visibleIds.add(id))
+
+  sessions.slice(0, boundary).forEach(addVisible)
   let end = boundary
 
   const hasVisibleAncestor = (session: SessionInfo): boolean => {
@@ -90,7 +104,7 @@ export function pageProjectSessions(sessions: SessionInfo[], visibleCount: numbe
   }
 
   while (end < sessions.length && hasVisibleAncestor(sessions[end])) {
-    visibleIds.add(sessions[end].id)
+    addVisible(sessions[end])
     end += 1
   }
 

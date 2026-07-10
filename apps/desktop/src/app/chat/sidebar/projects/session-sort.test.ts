@@ -124,6 +124,16 @@ describe('sortProjectSessions', () => {
     expect(pageProjectSessions(ordered, 10).map(item => item.id)).toEqual([...firstPage.map(item => item.id), 'beta'])
   })
 
+  it('extends a title-sorted page through a compressed lineage root alias', () => {
+    const continuation = session('Alpha continuation', { id: 'continuation', _lineage_root_id: 'original-root' })
+    const child = session('Alpha child', { id: 'child', parent_session_id: 'original-root' })
+    const input = [session('Beta root', { id: 'beta' }), child, continuation]
+
+    const ordered = sortProjectSessions(input, 'title-asc')
+
+    expect(pageProjectSessions(ordered, 1).map(item => item.id)).toEqual(['continuation', 'child'])
+  })
+
   it('sorts branch clusters and sibling branches by title without breaking nesting', () => {
     const input = [
       session('Zulu branch', { id: 'beta-zulu', parent_session_id: 'beta-parent' }),

@@ -141,7 +141,7 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
               <WorkspaceShowMoreButton
                 count={nextCount}
                 label={group.label}
-                onClick={() => setVisibleCount(count => count + SIDEBAR_GROUP_PAGE)}
+                onClick={() => setVisibleCount(visibleSessions.length + SIDEBAR_GROUP_PAGE)}
               />
             ))}
         </>

@@ -151,6 +151,35 @@ class TestPruneStaleSessionsLocked:
 
         assert key not in store._entries
 
+    def test_no_resurrect_ended_session_with_different_id(self, tmp_path):
+        """#61993 regression: a stale routing entry whose latest peer row is
+        ALSO ended (different id, e.g. an explicit ``/new`` reset or a
+        compression-ended parent whose newest sibling is ended) must NOT be
+        reopened and resurrected — recovery must drop the stale entry so the
+        next message mints a fresh session.
+
+        The bug: ``_recover_session_from_db`` reopened the ended row (clearing
+        end_reason) and repointed the route to it, silently undoing the user's
+        reset. The fix peeks the latest peer row's liveness *before* recovery
+        and only recovers genuinely live sessions.
+        """
+        key = "agent:main:telegram:dm:5140768830"
+        db = _db_returning({"sid_ended": {"end_reason": "session_reset", "id": "sid_ended"}})
+        # Latest peer row is a DIFFERENT but also-ended session — must be ignored.
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_ended_v2",
+            "end_reason": "session_reset",
+            "started_at": 1782744974.0,
+        }
+        store = _make_store_with_db(tmp_path, db)
+        store._entries[key] = _make_entry_with_origin(key, "sid_ended")
+
+        store._prune_stale_sessions_locked()
+
+        assert key not in store._entries
+        # Recovery must never reopen an ended session.
+        db.reopen_session.assert_not_called()
+
     def test_noop_when_db_is_none(self, tmp_path):
         config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))
         with patch("gateway.session.SessionStore._ensure_loaded"):

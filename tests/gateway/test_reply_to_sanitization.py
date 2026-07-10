@@ -43,6 +43,7 @@ from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 def test_strips_closed_toolcall_block():
     text = '<TOOLCALL>{"name": "terminal", "arguments": {}}</TOOLCALL>'
     result = strip_internal_markup(text)
+    assert result is not None
     assert "<TOOLCALL>" not in result
     assert "</TOOLCALL>" not in result
     assert "[processing...]" in result
@@ -53,6 +54,7 @@ def test_strips_unclosed_toolcall_block():
     # with no closing tag — exactly the shape seen in the issue logs.
     text = '<TOOLCALL>{"name": "terminal", "arguments": {"command": "ls'
     result = strip_internal_markup(text)
+    assert result is not None
     assert "<TOOLCALL>" not in result
     assert result == "[processing...]"
 
@@ -60,9 +62,20 @@ def test_strips_unclosed_toolcall_block():
 def test_strips_block_embedded_in_surrounding_text():
     text = 'Done!\n<TOOLCALL>{"name": "skill_view"}</TOOLCALL>\nHere is the result.'
     result = strip_internal_markup(text)
-    assert "<TOOLCALL>" not in result
-    assert "Done!" in result
-    assert "Here is the result." in result
+    # Only the markup block changes; surrounding text and its newlines
+    # are preserved exactly.
+    assert result == "Done!\n[processing...]\nHere is the result."
+
+
+def test_surrounding_whitespace_is_preserved():
+    # Redaction must be surgical: leading/trailing whitespace and inline
+    # spacing around the markup are user-visible content and must survive.
+    text = "  leading spaces <TOOLCALL>{}</TOOLCALL> trailing spaces  "
+    result = strip_internal_markup(text)
+    assert result == "  leading spaces [processing...] trailing spaces  "
+
+    newlined = "\nline one\n<TOOLCALL>{}</TOOLCALL>\nline two\n"
+    assert strip_internal_markup(newlined) == "\nline one\n[processing...]\nline two\n"
 
 
 def test_strips_multiple_blocks():
@@ -71,6 +84,7 @@ def test_strips_multiple_blocks():
         '<TOOLCALL>{"name": "b"}</TOOLCALL>'
     )
     result = strip_internal_markup(text)
+    assert result is not None
     assert "<TOOLCALL>" not in result
     assert "middle" in result
 
@@ -78,6 +92,7 @@ def test_strips_multiple_blocks():
 def test_strips_multiline_block():
     text = '<TOOLCALL>{\n  "name": "browser_press",\n  "arguments": {}\n}</TOOLCALL>'
     result = strip_internal_markup(text)
+    assert result is not None
     assert "<TOOLCALL>" not in result
     assert result == "[processing...]"
 
@@ -178,6 +193,87 @@ def test_native_quote_with_markup_is_redacted():
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert "<TOOLCALL>" not in (event.reply_to_text or "")
+
+
+def test_caption_reply_with_markup_is_redacted():
+    """Replied-to media message: markup arriving via ``.caption`` (a distinct
+    extraction path from ``.text``) must also be redacted."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_message(
+        text="what is this?",
+        reply_to_text=None,
+        reply_to_caption='before <TOOLCALL>{"name": "terminal"}</TOOLCALL> after',
+    )
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert "<TOOLCALL>" not in (event.reply_to_text or "")
+    assert event.reply_to_text == "before [processing...] after"
+
+
+def _make_bare_reply_message(reply_to_id=42):
+    """A reply whose replied-to message echoes no text/caption/rich blocks,
+    forcing resolution through the ``rich_sent_store`` send-time index."""
+    chat = SimpleNamespace(id=111, type="private", title=None, full_name="Alice")
+    user = SimpleNamespace(id=42, full_name="Alice")
+    # No ``api_kwargs`` attribute -> _extract_rich_reply_text yields None ->
+    # the adapter falls through to rich_sent_store.lookup().
+    reply_to_message = SimpleNamespace(
+        message_id=reply_to_id,
+        text=None,
+        caption=None,
+    )
+    return SimpleNamespace(
+        chat=chat,
+        from_user=user,
+        text="what did this mean?",
+        message_thread_id=None,
+        message_id=1001,
+        reply_to_message=reply_to_message,
+        quote=None,
+        date=None,
+        forum_topic_created=None,
+    )
+
+
+def test_rich_sent_store_reply_with_markup_is_redacted(monkeypatch, tmp_path):
+    """Markup recovered from the send-time index (the rich-message blind spot)
+    must be redacted just like the echoed-text path."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.platforms.base import MessageType
+    from gateway import rich_sent_store
+
+    rich_sent_store.record(
+        "111", "42", '<TOOLCALL>{"name": "terminal", "arguments": {}}</TOOLCALL>'
+    )
+    adapter = _make_adapter()
+
+    event = adapter._build_message_event(
+        _make_bare_reply_message("42"), MessageType.TEXT
+    )
+
+    assert event.reply_to_message_id == "42"
+    assert "<TOOLCALL>" not in (event.reply_to_text or "")
+    assert event.reply_to_text == "[processing...]"
+
+
+def test_rich_sent_store_plain_reply_is_untouched(monkeypatch, tmp_path):
+    """A recorded plain body (no markup) round-trips through the index
+    unchanged — the sanitizer is a no-op on clean text."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.platforms.base import MessageType
+    from gateway import rich_sent_store
+
+    rich_sent_store.record("111", "42", "Your morning briefing: CI is green.")
+    adapter = _make_adapter()
+
+    event = adapter._build_message_event(
+        _make_bare_reply_message("42"), MessageType.TEXT
+    )
+
+    assert event.reply_to_text == "Your morning briefing: CI is green."
 
 
 def test_no_reply_context_stays_none():

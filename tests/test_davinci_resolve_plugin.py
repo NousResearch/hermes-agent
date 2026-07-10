@@ -176,3 +176,53 @@ def test_davinci_resolve_plugin_manager_loads_with_registry_gating(tmp_path, mon
     assert entry.toolset == "davinciresolve"
     assert entry.check_fn is not None
     assert entry.check_fn() is (platform.system() == "Darwin")
+
+
+def test_davinci_resolve_loads_through_plugin_manager():
+    """Load the plugin through the real PluginManager directory loader.
+
+    Covers the loader-level contract from review: the plugin imports as a
+    package under the ``hermes_plugins`` namespace (package-relative imports
+    resolve without any ``sys.path`` mutation), registration succeeds through
+    the real ``PluginContext``, and the plugin's ``tools.py`` submodule does
+    not shadow Hermes' top-level ``tools`` package.
+    """
+    import tools as hermes_tools
+    from hermes_cli.plugins import PluginManager, PluginManifest
+
+    for name in [
+        m for m in list(sys.modules) if m.startswith("hermes_plugins.video__davinci_resolve")
+    ]:
+        sys.modules.pop(name, None)
+
+    manager = PluginManager()
+    manifest = PluginManifest(
+        name="davinci-resolve",
+        version="1.0.0",
+        description="DaVinci Resolve integration",
+        author="",
+        requires_env=[],
+        provides_tools=[],
+        provides_hooks=[],
+        source="project",
+        path=str(PLUGIN_DIR),
+        kind="standalone",
+        key="video/davinci_resolve",
+    )
+    manager._load_plugin(manifest)
+
+    loaded = manager._plugins["video/davinci_resolve"]
+    assert loaded.error is None, f"plugin failed to load: {loaded.error}"
+    assert loaded.enabled is True
+    assert "resolve_capabilities" in loaded.tools_registered
+    assert "resolve_import_media" in loaded.tools_registered
+
+    # Imported as a namespaced package, not a bare top-level module.
+    assert loaded.module.__name__ == "hermes_plugins.video__davinci_resolve"
+    assert "hermes_plugins.video__davinci_resolve.tools" in sys.modules
+
+    # Hermes' top-level ``tools`` package is untouched by the plugin's tools.py.
+    import tools as tools_after
+
+    assert tools_after is hermes_tools
+    assert Path(tools_after.__file__).resolve() != (PLUGIN_DIR / "tools.py").resolve()

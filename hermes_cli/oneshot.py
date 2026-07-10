@@ -166,6 +166,23 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         pass
 
 
+def _finalize_oneshot_session(result: dict) -> None:
+    """Best-effort close marker for sessions created by ``hermes -z``."""
+    try:
+        session_id = result.get("session_id") if isinstance(result, dict) else None
+        if not session_id:
+            return
+
+        import importlib
+
+        hermes_state = importlib.import_module("hermes_state")
+        get_session_db = getattr(hermes_state, "get_session_db", None)
+        db = get_session_db() if callable(get_session_db) else hermes_state.SessionDB()
+        db.end_session(session_id, "oneshot_complete")
+    except Exception:
+        return
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
@@ -281,6 +298,7 @@ def run_oneshot(
         real_stderr.flush()
         return 1
 
+    _finalize_oneshot_session(result)
     return 0
 
 

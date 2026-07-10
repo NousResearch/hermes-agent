@@ -11242,6 +11242,8 @@ def cmd_profile(args):
         check_alias_collision,
         create_wrapper_script,
         remove_wrapper_script,
+        scan_profile_for_legacy_aliases,
+        run_profile_probe,
         _is_wrapper_dir_in_path,
         _get_wrapper_dir,
     )
@@ -11592,6 +11594,36 @@ def cmd_profile(args):
             wrapper = _get_wrapper_dir() / (f"{alias_name}.bat" if is_windows else alias_name)
             print(f"Alias:   {alias_name} → hermes -p {name}  ({wrapper})")
         print()
+
+    elif action == "probe":
+        result = run_profile_probe(args.profile_name)
+        print(f"Profile: {result['profile']}")
+        print(f"Expected: {result['expected']}")
+        print(f"Exit: {result['exit_code']}")
+        print(f"Stdout matches: {'yes' if result['stdout_matches'] else 'no'}")
+        stdout = (result.get("stdout") or "").strip()
+        stderr = (result.get("stderr") or "").strip()
+        if stdout:
+            print(f"Stdout: {stdout}")
+        if stderr:
+            print(f"Stderr: {stderr}")
+        end_status = result.get("latest_session_end_status")
+        if end_status:
+            ended = "yes" if end_status.get("ended") else "no"
+            reason = end_status.get("end_reason") or "—"
+            print(f"Latest session ended: {ended} ({reason})")
+        sys.exit(0 if result["exit_code"] == 0 and result["stdout_matches"] else 1)
+
+    elif action == "stale-aliases":
+        name = getattr(args, "profile_name", None) or get_active_profile_name()
+        findings = scan_profile_for_legacy_aliases(name)
+        if not findings:
+            print(f"No legacy aliases found for profile {name}.")
+            return
+        print(f"Legacy aliases for profile {name}:")
+        for item in findings:
+            print(f"- {item['source']}: {item['alias']} ({item['path']})")
+        sys.exit(1)
 
     elif action == "alias":
         name = args.profile_name

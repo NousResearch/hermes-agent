@@ -9,6 +9,7 @@ import json
 import io
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
 import types
@@ -44,6 +45,8 @@ from hermes_cli.profiles import (
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
     profiles_to_serve,
+    scan_profile_for_legacy_aliases,
+    build_profile_probe,
 )
 from hermes_cli.config import DEFAULT_CONFIG
 
@@ -874,14 +877,14 @@ class TestWrapperScript:
 
     def test_creates_sh_on_posix(self, profile_env, monkeypatch):
         monkeypatch.setattr("sys.platform", "darwin")
-        monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
         from hermes_cli.profiles import create_wrapper_script
         wrapper = create_wrapper_script("mybot")
         assert wrapper is not None
         assert wrapper.name == "mybot"
         content = wrapper.read_text()
         assert content.startswith("#!/bin/sh")
-        assert "exec /opt/hermes/bin/hermes -p mybot" in content
+        assert 'exec hermes -p mybot "$@"' in content
+        assert "-z|--prompt|--prompt=*) needs_status=1" in content
 
     def test_creates_bat_on_windows(self, profile_env, monkeypatch):
         monkeypatch.setattr("sys.platform", "win32")
@@ -1896,3 +1899,61 @@ class TestProfilesToServe:
     def test_on_no_named_profiles_returns_just_default(self, profile_env):
         serve = profiles_to_serve(multiplex=True)
         assert [n for n, _ in serve] == ["default"]
+
+
+class TestProfileReliabilityHelpers:
+    def test_wrapper_oneshot_status_preserves_exit_code(self, profile_env, monkeypatch):
+        fake_bin = profile_env / "fake-bin"
+        fake_bin.mkdir()
+        fake_hermes = fake_bin / "hermes"
+        fake_hermes.write_text(
+            "#!/bin/sh\n"
+            "echo child-out\n"
+            "echo child-err >&2\n"
+            "exit 7\n",
+            encoding="utf-8",
+        )
+        fake_hermes.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+        wrapper = create_wrapper_script("coder")
+        result = subprocess.run(
+            [str(wrapper), "-z", "hello"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == 7
+        assert result.stdout == "child-out\n"
+        assert "child-err" in result.stderr
+        assert "[coder] failed profile=coder exit=7 elapsed=" in result.stderr
+
+    def test_legacy_alias_scanner_config_only_no_secret_values(self, profile_env):
+        profile_dir = get_profile_dir("coder")
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text(
+            "model:\n"
+            "  default: jcm/code-med\n"
+            "  provider: openrouter\n"
+            "api_key: do-not-leak\n",
+            encoding="utf-8",
+        )
+
+        findings = scan_profile_for_legacy_aliases("coder")
+
+        assert findings == [
+            {
+                "path": str(profile_dir / "config.yaml"),
+                "source": "config.yaml",
+                "alias": "jcm/code-med",
+            }
+        ]
+        assert "do-not-leak" not in repr(findings)
+        assert "openrouter" not in repr(findings)
+
+    def test_profile_probe_builder_expected_token(self):
+        cmd, expected = build_profile_probe("coder")
+
+        assert cmd == ["hermes", "-p", "coder", "-z", "reply exactly CODER_OK"]
+        assert expected == "CODER_OK"

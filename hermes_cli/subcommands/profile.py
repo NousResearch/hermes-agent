@@ -106,6 +106,19 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_show = profile_subparsers.add_parser("show", help="Show profile details")
     profile_show.add_argument("profile_name", help="Profile to show")
 
+    profile_probe = profile_subparsers.add_parser("probe", help="Run a one-shot profile probe")
+    profile_probe.add_argument("profile_name", help="Profile to probe")
+
+    profile_stale = profile_subparsers.add_parser(
+        "stale-aliases", help="Scan profile config/state for legacy model aliases"
+    )
+    profile_stale.add_argument(
+        "profile_name",
+        nargs="?",
+        default=None,
+        help="Profile to scan (default: active profile)",
+    )
+
     profile_alias = profile_subparsers.add_parser(
         "alias", help="Manage wrapper scripts"
     )

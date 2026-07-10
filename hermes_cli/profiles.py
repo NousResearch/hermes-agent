@@ -24,6 +24,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -35,6 +36,13 @@ from typing import List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+LEGACY_MODEL_ALIASES = (
+    "jcm/code-med",
+    "agents/low",
+    "gpt-5.4-mini",
+    "jcm/reas-low",
+)
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
@@ -380,6 +388,122 @@ def profile_exists(name: str) -> bool:
     return get_profile_dir(canon).is_dir()
 
 
+def _append_unique_alias_hit(
+    findings: list[dict], path: Path, source: str, alias: str
+) -> None:
+    hit = {"path": str(path), "source": source, "alias": alias}
+    if hit not in findings:
+        findings.append(hit)
+
+
+def scan_profile_for_legacy_aliases(profile: str) -> list[dict]:
+    """Read-only scan for legacy model/provider aliases in a profile.
+
+    Returned findings intentionally include only path/source/alias so config
+    values, API keys, and other secrets are never echoed.
+    """
+    profile_dir = get_profile_dir(profile)
+    findings: list[dict] = []
+
+    config_path = profile_dir / "config.yaml"
+    if config_path.is_file():
+        try:
+            text = config_path.read_text(encoding="utf-8", errors="replace")
+            for alias in LEGACY_MODEL_ALIASES:
+                if alias in text:
+                    _append_unique_alias_hit(findings, config_path, "config.yaml", alias)
+        except OSError:
+            pass
+
+    db_path = profile_dir / "state.db"
+    if db_path.is_file():
+        uri = f"file:{db_path}?mode=ro"
+        try:
+            conn = sqlite3.connect(uri, uri=True)
+            try:
+                rows = conn.execute("PRAGMA table_info(sessions)").fetchall()
+                columns = {row[1] for row in rows}
+                for column in (
+                    "model",
+                    "provider",
+                    "model_config",
+                    "billing_provider",
+                ):
+                    if column not in columns:
+                        continue
+                    query = (
+                        f'SELECT DISTINCT "{column}" FROM sessions '
+                        f'WHERE "{column}" IS NOT NULL'
+                    )
+                    for (value,) in conn.execute(query):
+                        value_text = str(value)
+                        for alias in LEGACY_MODEL_ALIASES:
+                            if alias in value_text:
+                                _append_unique_alias_hit(
+                                    findings,
+                                    db_path,
+                                    f"state.db:sessions.{column}",
+                                    alias,
+                                )
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            pass
+
+    return findings
+
+
+def build_profile_probe(profile: str) -> tuple[list[str], str]:
+    """Build the UX-facing profile probe command and expected stdout token."""
+    canon = normalize_profile_name(profile)
+    token_base = re.sub(r"[^A-Z0-9]+", "_", canon.upper()).strip("_") or "PROFILE"
+    expected = f"{token_base}_OK"
+    return ["hermes", "-p", canon, "-z", f"reply exactly {expected}"], expected
+
+
+def _latest_profile_session_end_status(profile: str) -> dict | None:
+    db_path = get_profile_dir(profile) / "state.db"
+    if not db_path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT id, ended_at, end_reason FROM sessions "
+                "ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+            if not row:
+                return None
+            return {"session_id": row[0], "ended": row[1] is not None, "end_reason": row[2]}
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
+def run_profile_probe(profile: str) -> dict:
+    """Run a read-only profile oneshot probe without mutating profile config."""
+    cmd, expected = build_profile_probe(profile)
+    try:
+        result = subprocess.run(cmd, text=True, capture_output=True, timeout=120, check=False)
+        stdout = result.stdout
+        stderr = result.stderr
+        exit_code = result.returncode
+    except Exception as exc:
+        stdout = ""
+        stderr = str(exc)
+        exit_code = 1
+    return {
+        "profile": normalize_profile_name(profile),
+        "expected": expected,
+        "exit_code": exit_code,
+        "stdout_matches": stdout.strip() == expected,
+        "stdout": stdout,
+        "stderr": stderr,
+        "latest_session_end_status": _latest_profile_session_end_status(profile),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Alias / wrapper script management
 # ---------------------------------------------------------------------------
@@ -466,8 +590,31 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     else:
         wrapper_path = wrapper_dir / canon
         try:
-            hermes_exe = shutil.which("hermes") or "hermes"
-            wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} "$@"\n')
+            hermes_exe = "hermes"
+            profile_arg = shlex.quote(profile)
+            alias_label = canon
+            wrapper_path.write_text(
+                "#!/bin/sh\n"
+                "needs_status=0\n"
+                "for arg in \"$@\"; do\n"
+                "  case \"$arg\" in\n"
+                "    -z|--prompt|--prompt=*) needs_status=1 ;;\n"
+                "  esac\n"
+                "done\n"
+                "if [ \"$needs_status\" -eq 0 ]; then\n"
+                f"  exec {hermes_exe} -p {profile_arg} \"$@\"\n"
+                "fi\n"
+                "start=$(date +%s)\n"
+                f"{hermes_exe} -p {profile_arg} \"$@\"\n"
+                "code=$?\n"
+                "end=$(date +%s)\n"
+                "elapsed=$((end - start))\n"
+                "status=done\n"
+                "[ \"$code\" -ne 0 ] && status=failed\n"
+                f"printf '[{alias_label}] %s profile={profile_arg} exit=%s "
+                "elapsed=%ss\\n' \"$status\" \"$code\" \"$elapsed\" >&2\n"
+                "exit $code\n"
+            )
             wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
             return wrapper_path
         except OSError as e:

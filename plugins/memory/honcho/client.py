@@ -17,8 +17,10 @@ import json
 import os
 import logging
 import hashlib
+import ipaddress
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from hermes_cli.profiles import _get_default_hermes_home
@@ -56,33 +58,37 @@ def resolve_active_host() -> str:
 
     Resolution order:
       1. HERMES_HONCHO_HOST env var (explicit override)
-      2. Active profile name via profiles system -> ``hermes.<profile>``
-      3. Fallback: ``"hermes"`` (default profile)
+      2. Active profile name via profiles system -> ``hermes_<profile>``
+      3. defaultHost from the active config, but only for the default profile
+      4. Fallback: ``"hermes"`` (default profile)
     """
     explicit = os.environ.get("HERMES_HONCHO_HOST", "").strip()
     if explicit:
         return explicit
 
-    # Respect defaultHost from honcho.json when no profile override is set.
-    # This keeps setup-generated configs (e.g. host block "local") in sync with
-    # the host key the rest of the plugin resolves.
-    try:
-        path = resolve_config_path()
-        if path.exists():
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            default_host = raw.get("defaultHost", "").strip()
-            if default_host:
-                return default_host
-    except Exception:
-        pass
-
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
-        return profile_host_key(profile)
+        profile_host = profile_host_key(profile)
     except Exception:
-        pass
-    return HOST
+        profile_host = HOST
+
+    # Honcho's generic config can carry a defaultHost (for example "local"),
+    # but applying it before profile resolution makes every named Hermes
+    # profile share that same host.  Keep named profiles isolated; only the
+    # default Hermes profile may opt into the config's default host.
+    if profile_host == HOST:
+        try:
+            path = resolve_config_path()
+            if path.exists():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                default_host = str(raw.get("defaultHost", "")).strip()
+                if default_host:
+                    return default_host
+        except Exception:
+            pass
+
+    return profile_host
 
 
 def resolve_global_config_path() -> Path:
@@ -237,6 +243,44 @@ def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] |
 # the Honcho backend is unreachable, preventing the gateway from
 # delivering the already-generated response.
 _DEFAULT_HTTP_TIMEOUT = 30.0
+
+
+def _is_local_base_url(base_url: str | None) -> bool:
+    """Return True for loopback/LAN/VPN self-hosted Honcho URLs.
+
+    Local Honcho deployments can run without auth, but the SDK requires a
+    non-empty api_key argument.  Treat loopback plus RFC1918/link-local/ULA
+    and carrier-grade-NAT IPs as local so LAN/VPN URLs such as
+    ``http://192.168.2.112:8000`` get the same placeholder-key behavior as
+    localhost.
+    """
+    if not base_url:
+        return False
+
+    try:
+        parsed = urlparse(base_url)
+        host = (parsed.hostname or "").strip().lower()
+    except Exception:
+        host = ""
+
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    if not host:
+        return False
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return True
+
+    # Tailscale/other VPN setups often sit in carrier-grade NAT space.
+    if ip.version == 4 and ipaddress.ip_address("100.64.0.0") <= ip <= ipaddress.ip_address("100.127.255.255"):
+        return True
+
+    return False
 
 
 def _resolve_optional_float(*values: Any) -> float | None:
@@ -490,9 +534,7 @@ class HonchoClientConfig:
         )
 
         base_url = (
-            host_block.get("baseUrl")
-            or host_block.get("base_url")
-            or raw.get("baseUrl")
+            raw.get("baseUrl")
             or raw.get("base_url")
             or os.environ.get("HONCHO_BASE_URL", "").strip()
             or None
@@ -937,16 +979,12 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         # For local: only use config.api_key if the host block explicitly
         # sets apiKey (meaning the user wants local auth). Otherwise skip
         # the stored key -- it's likely a cloud key that would break local.
-        _is_local = resolved_base_url and (
-            "localhost" in resolved_base_url
-            or "127.0.0.1" in resolved_base_url
-            or "::1" in resolved_base_url
-        )
+        _is_local = _is_local_base_url(resolved_base_url)
         if _is_local:
             # Check if the host block has its own apiKey (explicit local auth).
-            # Auth-skipping is loopback-only: a stored key is likely a cloud key
-            # that would break a no-auth local server, so we substitute the SDK's
-            # required-non-empty placeholder unless the host block opts in.
+            # For local/LAN/VPN self-hosts, a stored root key is likely a cloud
+            # key that would break a no-auth local server, so we substitute the
+            # SDK's required-non-empty placeholder unless the host block opts in.
             _raw = config.raw or {}
             _host_block = (_raw.get("hosts") or {}).get(config.host, {})
             _host_has_key = bool(_host_block.get("apiKey"))

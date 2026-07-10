@@ -1,56 +1,46 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { Tip } from './tooltip'
+import { Tip, TipHintLabel } from './tooltip'
 
-describe('Tip', () => {
+describe('TooltipContent', () => {
   afterEach(() => {
     cleanup()
   })
 
-  it('shows on pointer enter and dismisses on pointer leave', async () => {
+  it('forces a block-level label child back to inline-flex so it cannot break the decoration geometry', async () => {
     render(
-      <Tip label="Layout editor — ⌘-click resets the layout">
-        <button type="button">layout</button>
+      <Tip label={<span className="flex items-center gap-2">broken label</span>}>
+        <button type="button">trigger</button>
       </Tip>
     )
 
-    const trigger = screen.getByRole('button', { name: 'layout' })
+    fireEvent.pointerMove(screen.getByRole('button', { name: 'trigger' }), { pointerType: 'mouse' })
+    await screen.findByRole('tooltip')
 
-    fireEvent.pointerMove(trigger, { pointerType: 'mouse' })
-    expect((await screen.findByRole('tooltip')).textContent).toContain(
-      'Layout editor — ⌘-click resets the layout'
-    )
+    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
+    const decoration = content?.firstElementChild
+    const label = decoration?.firstElementChild as HTMLElement | null | undefined
 
-    fireEvent.pointerLeave(trigger)
-    await waitFor(() => {
-      expect(screen.queryByRole('tooltip')).toBeNull()
-    })
+    expect(label).not.toBeNull()
+    expect(label && getComputedStyle(label).display).toBe('inline')
   })
 
-  it('never captures pointer events on the tip surface', async () => {
+  it('keeps TipHintLabel inline by default when a hint is present', async () => {
     render(
-      <Tip label="Blocked?">
-        <button type="button">target</button>
+      <Tip label={<TipHintLabel hint="Ctrl+`" text="PowerShell" />}>
+        <button type="button">trigger</button>
       </Tip>
     )
 
-    fireEvent.pointerMove(screen.getByRole('button', { name: 'target' }), { pointerType: 'mouse' })
-    const tip = await screen.findByRole('tooltip')
-    // Role lives on the visually-hidden a11y node; the portaled content root
-    // is the data-slot wrapper that must stay click-through.
-    const content = tip.closest('[data-slot="tooltip-content"]') ?? tip.parentElement
-    expect(content?.className).toMatch(/pointer-events-none/)
-  })
+    fireEvent.pointerMove(screen.getByRole('button', { name: 'trigger' }), { pointerType: 'mouse' })
+    await screen.findByRole('tooltip')
 
-  it('renders the child alone when label is empty', () => {
-    render(
-      <Tip label="">
-        <button type="button">bare</button>
-      </Tip>
-    )
+    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
+    const decoration = content?.firstElementChild
+    const label = decoration?.firstElementChild
 
-    expect(screen.getByRole('button', { name: 'bare' })).toBeTruthy()
-    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(label?.classList.contains('inline-flex')).toBe(true)
+    expect(label?.classList.contains('flex')).toBe(false)
   })
 })

@@ -53,7 +53,7 @@ function TooltipContent({
         {/* bg-foreground/text-background auto-inverts per theme. leading-normal
             keeps lines readable; py-1 makes the cloned line-boxes overlap just
             enough to read as one continuous fill (no gaps between lines). */}
-        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif]">
+        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif] [&>*]:!inline-flex">
           {children}
         </span>
       </TooltipPrimitive.Content>
@@ -86,4 +86,26 @@ function Tip({ label, children, delayDuration = 0, ...props }: TipProps) {
   )
 }
 
-export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger }
+interface TipHintLabelProps {
+  text: string
+  hint?: string
+}
+
+/** Label with a trailing hotkey hint, safe to use inside Tip's box-decoration-clone
+ *  wrapper — a block-level child here breaks the wrapper's intrinsic geometry and
+ *  mis-positions the whole tooltip (see #62022). Use this instead of a bespoke
+ *  flex/gap span at the call site. */
+function TipHintLabel({ text, hint }: TipHintLabelProps) {
+  if (!hint) {
+    return <>{text}</>
+  }
+
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span>{text}</span>
+      <span className="opacity-55">{hint}</span>
+    </span>
+  )
+}
+
+export { Tip, TipHintLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger }

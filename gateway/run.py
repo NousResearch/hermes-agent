@@ -20730,6 +20730,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if runner.should_exit_cleanly:
         if runner.exit_reason:
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
+            # Also print to stderr so the error is visible in terminal/GUI
+            print(f"Gateway startup failed: {runner.exit_reason}", file=sys.stderr)
         # A clean exit that carries an explicit exit code (e.g. a fatal
         # config error stamped with GATEWAY_FATAL_CONFIG_EXIT_CODE) must
         # propagate that code to the process so the s6 finish script can

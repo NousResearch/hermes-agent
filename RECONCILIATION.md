@@ -94,4 +94,12 @@ The independent Claude Max and GLM 5.2 audit runners both exhausted their bounde
 
 ## Rollout status
 
-This branch is **not deployed**. A future rollout must first review/merge `7221727726`, then restart the controlled gateway and perform a real DM task creation/completion check. Legacy subscriptions will continue to receive direct status notifications but will not create internal wakes until recreated or self-healed by a new subscription event with authoritative chat type.
+**Deployed 2026-07-10 14:11 PDT.** Live checkout `lfdm-v018` is at `925dfaf1ff`; `hermes-gateway` was restarted and is active as process `3374049`.
+
+The additive `chat_type` migration was applied via the repository's idempotent `init_db()` path to the default board and all 52 named boards (53 live databases total). Consistent SQLite online backups are retained at:
+
+```
+/home/lfdm/.hermes/backups/kanban-chat-type-pre-migration-20260710T141314
+```
+
+All 53 live `kanban_notify_subs` tables now contain `chat_type`. The 15 existing legacy subscriptions have no authoritative historical type, so the notifier sends their direct status notification but deliberately skips their internal agent wake; they can populate `chat_type` only when recreated or through a new authoritative subscription event. A read-only production audit also found no active compression children missing a routable peer tuple.

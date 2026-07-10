@@ -391,6 +391,13 @@ platforms:
       # Default: true. Set false to leave Slack's default thread titles.
       assistant_thread_titles: true
 
+      # Accept messages posted by other Slack bots (default: "none").
+      # "none" ignores bots, "mentions" accepts a bot message only when
+      # that message itself @mentions Hermes, and "all" accepts every
+      # other bot. Hermes always ignores its own bot user to prevent
+      # self-echoes.
+      allow_bots: "none"
+
       # Continuable-cron delivery surface (default: "thread").
       # "in_channel" delivers a continuable cron job FLAT into the channel
       # (no dedicated thread); pair with reply_in_thread: false (and
@@ -408,7 +415,13 @@ platforms:
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
+| `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts a bot message only when **that message itself** @mentions Hermes, and `"all"` accepts all of them. Use `"mentions"` for the safest bot-to-bot collaboration mode. See [Accepting messages from other bots](#accepting-messages-from-other-bots-allow_bots). |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Delivery surface for [continuable cron jobs](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` opens a dedicated thread per delivery (default); `"in_channel"` delivers flat into the channel timeline. Pair `in_channel` with `reply_in_thread: false` (and `require_mention: false`) so a plain channel reply continues the job. |
+
+The equivalent environment variable is `SLACK_ALLOW_BOTS=none|mentions|all`.
+When both are set, `platforms.slack.extra.allow_bots` takes precedence. Avoid
+`all` when peer bots can answer each other without an explicit mention, because
+their own reply policies can still create loops.
 
 ### Working-State Status Line
 

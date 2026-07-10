@@ -927,6 +927,73 @@ class TestSendVideo:
         assert call_kwargs["supports_streaming"] is True
         assert getattr(call_kwargs["video"], "name", None) == str(test_file)
 
+
+    @pytest.mark.asyncio
+    async def test_send_video_multipart_forwards_metadata_and_thumbnail(
+        self, connected_adapter, tmp_path, monkeypatch
+    ):
+        """Default (non-local_mode) path must forward probe metadata + open thumbnail."""
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
+        thumb = tmp_path / "thumb.jpg"
+        thumb.write_bytes(b"jpeg-thumb")
+        assert not connected_adapter.config.extra.get("local_mode")
+
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter._probe_video_metadata",
+            lambda path: {"width": 1280, "height": 720, "duration": 15},
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter._ensure_video_thumbnail",
+            lambda path: str(thumb),
+        )
+
+        captured: dict = {}
+
+        async def capture_send_video(**kwargs):
+            video = kwargs["video"]
+            thumbnail = kwargs["thumbnail"]
+            captured["video_name"] = getattr(video, "name", None)
+            captured["thumbnail_name"] = getattr(thumbnail, "name", None)
+            captured["video_closed"] = getattr(video, "closed", None)
+            captured["thumbnail_closed"] = getattr(thumbnail, "closed", None)
+            captured["video_readable"] = video.read(4)
+            video.seek(0)
+            captured["thumbnail_readable"] = thumbnail.read(4)
+            thumbnail.seek(0)
+            captured["kwargs"] = {
+                key: kwargs[key]
+                for key in ("width", "height", "duration", "supports_streaming", "caption")
+            }
+            mock_msg = MagicMock()
+            mock_msg.message_id = 204
+            return mock_msg
+
+        connected_adapter._bot.send_video = AsyncMock(side_effect=capture_send_video)
+
+        result = await connected_adapter.send_video(
+            chat_id="12345",
+            video_path=str(test_file),
+            caption="Multipart clip",
+        )
+
+        assert result.success is True
+        assert result.message_id == "204"
+        connected_adapter._bot.send_video.assert_called_once()
+        assert captured["video_name"] == str(test_file)
+        assert captured["thumbnail_name"] == str(thumb)
+        assert captured["video_closed"] is False
+        assert captured["thumbnail_closed"] is False
+        assert captured["video_readable"] == b"\x00\x00\x00\x1c"
+        assert captured["thumbnail_readable"] == b"jpeg"
+        assert captured["kwargs"] == {
+            "width": 1280,
+            "height": 720,
+            "duration": 15,
+            "supports_streaming": True,
+            "caption": "Multipart clip",
+        }
+
     @pytest.mark.asyncio
     async def test_send_video_local_mode_passes_path_and_metadata(self, connected_adapter, tmp_path, monkeypatch):
         test_file = tmp_path / "clip.mp4"

@@ -193,6 +193,37 @@ def test_temp_script_records_ad_hoc_evidence_without_canonical_suite(tmp_path, m
     assert evidence.status == "passed"
 
 
+def test_dynamic_tempfile_runner_records_ad_hoc_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    command = '''set -euo pipefail
+verify_path="$(python3 -c 'import tempfile; tempfile.NamedTemporaryFile(prefix="hermes-verify-", suffix=".py", dir="/tmp", delete=False)')"
+printf 'temporary_script_created=%s\\n' "$verify_path"
+python3 "$verify_path"
+rm -f -- "$verify_path"
+printf 'temporary_script_cleaned=%s\\n' "$verify_path"'''
+    output = (
+        "temporary_script_created=/tmp/hermes-verify-a1b2c3.py\\n"
+        "ad_hoc_changed_behavior=passed\\n"
+        "temporary_script_cleaned=/tmp/hermes-verify-a1b2c3.py"
+    )
+
+    evidence = record_terminal_result(
+        command=command,
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output=output,
+    )
+
+    assert evidence is not None
+    assert evidence["canonical_command"] == "ad-hoc verification script"
+    assert evidence["kind"] == "ad_hoc"
+    assert evidence["scope"] == "targeted"
+    assert evidence["status"] == "passed"
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "passed"
+
+
 def test_unprefixed_temp_script_is_not_ad_hoc_evidence(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")

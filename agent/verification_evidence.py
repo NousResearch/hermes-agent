@@ -27,6 +27,14 @@ _MAX_EVIDENCE_AGE_DAYS = 30
 _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
+_DYNAMIC_AD_HOC_PREFIX_RE = re.compile(
+    r"prefix\s*=\s*['\"](?:hermes-verify-|hermes-ad-hoc-)",
+    re.IGNORECASE,
+)
+_DYNAMIC_AD_HOC_SHELL_RUN_RE = re.compile(
+    r"\b(?:python|python3|node|bash|sh)\s+['\"]?\$[A-Za-z_][A-Za-z0-9_]*",
+    re.IGNORECASE,
+)
 _VERIFY_SCHEMA_VERSION = 1
 _SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 
@@ -297,7 +305,27 @@ def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[
     return None
 
 
+def _is_dynamic_ad_hoc_runner(command: str) -> bool:
+    """Recognize the documented tempfile-backed verifier wrapper.
+
+    Terminal evidence sees the outer shell/Python driver, not dynamically
+    expanded paths or child-process commands. Count this only when that driver
+    creates a prefixed ``NamedTemporaryFile`` and visibly executes a dynamic
+    script path (or invokes it through ``subprocess.run``).
+    """
+    if "tempfile.NamedTemporaryFile" not in command:
+        return False
+    if not _DYNAMIC_AD_HOC_PREFIX_RE.search(command):
+        return False
+    return bool(
+        _DYNAMIC_AD_HOC_SHELL_RUN_RE.search(command)
+        or "subprocess.run" in command
+    )
+
+
 def _find_ad_hoc_match(command: str, root: str | Path | None) -> Optional[list[str]]:
+    if _is_dynamic_ad_hoc_runner(command):
+        return []
     for tokens in _split_segment_tokens(command):
         trailing_args = _ad_hoc_script_args(tokens, root)
         if trailing_args is not None:

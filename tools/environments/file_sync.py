@@ -342,13 +342,14 @@ class FileSyncManager:
         except Exception:
             file_mapping = []
 
-        with tempfile.NamedTemporaryFile(suffix=".tar") as tf:
-            self._bulk_download_fn(Path(tf.name))
+        with tempfile.TemporaryDirectory(prefix="hermes-sync-back-download-") as download_dir:
+            archive_path = Path(download_dir) / "remote.tar"
+            self._bulk_download_fn(archive_path)
 
             # Defensive size cap: a misbehaving sandbox could produce an
             # arbitrarily large tar. Refuse to extract if it exceeds the cap.
             try:
-                tar_size = os.path.getsize(tf.name)
+                tar_size = os.path.getsize(archive_path)
             except OSError:
                 tar_size = 0
             if tar_size > _SYNC_BACK_MAX_BYTES:
@@ -359,7 +360,7 @@ class FileSyncManager:
                 return
 
             with tempfile.TemporaryDirectory(prefix="hermes-sync-back-") as staging:
-                with tarfile.open(tf.name) as tar:
+                with tarfile.open(archive_path) as tar:
                     tar.extractall(staging, filter="data")
 
                 applied = 0
@@ -369,7 +370,7 @@ class FileSyncManager:
                 for dirpath, _dirnames, filenames in os.walk(staging):
                     for fname in filenames:
                         staged_file = os.path.join(dirpath, fname)
-                        rel = os.path.relpath(staged_file, staging)
+                        rel = Path(staged_file).relative_to(staging).as_posix()
                         remote_path = "/" + rel
 
                         pushed_hash = self._pushed_hashes.get(remote_path)

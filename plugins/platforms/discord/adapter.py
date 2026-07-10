@@ -765,6 +765,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
+        self._voice_auto_join_generations: Dict[int, int] = {}  # discard stale follow events
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
@@ -1187,6 +1188,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 if (joined or switched) and after.channel is not None and not getattr(member, "bot", False):
                     auto_cfg = getattr(adapter_self, "_voice_auto_join_cfg", None) or {}
                     if auto_cfg.get("auto_join_on_user_join"):
+                        event_generation = adapter_self._voice_auto_join_generations.get(guild_id, 0) + 1
+                        adapter_self._voice_auto_join_generations[guild_id] = event_generation
                         trigger_users = auto_cfg.get("auto_join_users") or []
                         member_matches_trigger_list = (
                             not trigger_users
@@ -1226,7 +1229,21 @@ class DiscordAdapter(BasePlatformAdapter):
                             )
                             if not already_here:
                                 try:
-                                    await adapter_self.join_voice_channel(after.channel)
+                                    joined_ok = await adapter_self.join_voice_channel(after.channel)
+                                    if not joined_ok:
+                                        logger.warning(
+                                            "[%s] Auto-join voice channel %s returned false",
+                                            adapter_self.name,
+                                            getattr(after.channel, "name", None)
+                                            or str(getattr(after.channel, "id", "unknown")),
+                                        )
+                                        return
+
+                                    # A newer voice-state event may have arrived while Discord
+                                    # was connecting/moving us. Never let this older event bind
+                                    # stale transcript/TTS routing over the newer destination.
+                                    if adapter_self._voice_auto_join_generations.get(guild_id) != event_generation:
+                                        return
 
                                     # Auto-join does not originate from a slash command, so
                                     # there is no event.source to bind as the text/session
@@ -1263,13 +1280,15 @@ class DiscordAdapter(BasePlatformAdapter):
                                                     auto_cfg.get("auto_join_thread_name_prefix")
                                                     or "Voice Chat"
                                                 ).strip() or "Voice Chat"
+                                                now = time.localtime()
                                                 thread_name = time.strftime(
-                                                    f"{prefix} %b %-d %H:%M",
-                                                    time.localtime(),
+                                                    f"{prefix} %b {now.tm_mday} %H:%M", now
                                                 )
                                                 thread_id = await adapter_self.create_handoff_thread(
                                                     str(text_channel_int), thread_name
                                                 )
+                                                if adapter_self._voice_auto_join_generations.get(guild_id) != event_generation:
+                                                    return
                                                 if thread_id:
                                                     try:
                                                         effective_chat_id = int(thread_id)
@@ -3016,7 +3035,11 @@ class DiscordAdapter(BasePlatformAdapter):
             # Already connected in this guild?
             existing = self._voice_clients.get(guild_id)
             if existing and existing.is_connected():
-                if existing.channel.id == channel.id:
+                existing_channel = getattr(existing, "channel", None)
+                if (
+                    existing_channel is not None
+                    and getattr(existing_channel, "id", None) == channel.id
+                ):
                     self._reset_voice_timeout(guild_id)
                     try:
                         self._ensure_voice_receiver(guild_id, existing)

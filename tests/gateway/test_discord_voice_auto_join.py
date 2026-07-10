@@ -364,6 +364,53 @@ async def test_join_voice_channel_keeps_running_receiver_when_already_connected(
 
 
 @pytest.mark.asyncio
+async def test_join_voice_channel_moves_transient_client_with_no_channel(monkeypatch, adapter):
+    """A connected Discord client may briefly expose channel=None during a move."""
+    adapter._client = object()
+    monkeypatch.setattr(discord_platform, "DISCORD_AVAILABLE", True)
+    monkeypatch.setattr(adapter, "_ensure_voice_receiver", MagicMock())
+
+    guild = SimpleNamespace(id=1)
+    target = SimpleNamespace(id=99, name="Development", guild=guild)
+    existing_vc = MagicMock()
+    existing_vc.is_connected.return_value = True
+    existing_vc.channel = None
+    existing_vc.move_to = AsyncMock()
+    adapter._voice_clients[guild.id] = existing_vc
+
+    assert await adapter.join_voice_channel(target) is True
+    existing_vc.move_to.assert_awaited_once_with(target)
+    adapter._ensure_voice_receiver.assert_called_once_with(guild.id, existing_vc)
+
+
+@pytest.mark.asyncio
+async def test_failed_auto_join_does_not_bind_routing_or_log_success(monkeypatch, adapter, caplog):
+    adapter._voice_auto_join_cfg = {
+        "auto_join_on_user_join": True,
+        "auto_join_users": ["42"],
+        "auto_join_text_channel_id": "123456789",
+        "auto_join_create_thread": True,
+    }
+    adapter._allowed_user_ids = {"42"}
+    bot = await _connect_adapter(monkeypatch, adapter)
+    adapter.join_voice_channel = AsyncMock(return_value=False)
+    adapter.create_handoff_thread = AsyncMock(return_value="987654321")
+
+    guild = SimpleNamespace(id=1)
+    member = _make_member(42, guild, name="mxu")
+    channel = SimpleNamespace(id=99, name="Development", guild=guild)
+    await bot._events["on_voice_state_update"](
+        member, _make_voice_state(None), _make_voice_state(channel)
+    )
+
+    assert guild.id not in adapter._voice_text_channels
+    assert guild.id not in adapter._voice_sources
+    adapter.create_handoff_thread.assert_not_awaited()
+    assert "Auto-joined voice channel" not in caplog.text
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_auto_join_respects_voice_channel_name_filter(monkeypatch, adapter):
     adapter._voice_auto_join_cfg = {
         "auto_join_on_user_join": True,

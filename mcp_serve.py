@@ -559,6 +559,16 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
     bridge = event_bridge or EventBridge()
 
+    def ensure_bridge_started() -> EventBridge:
+        """Start session polling only when an event/approval MCP tool needs it.
+
+        Eager polling can monopolize startup on a large state.db and delay the
+        stdio initialization handshake long enough for MCP clients to give up.
+        Conversation tools do not need the poller; event and approval tools do.
+        """
+        bridge.start()
+        return bridge
+
     # -- conversations_list ------------------------------------------------
 
     @mcp.tool()
@@ -780,7 +790,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         """
         after_cursor = _coerce_int(after_cursor, default=0, minimum=0, maximum=10**18)
         limit = _coerce_int(limit, default=20, minimum=1, maximum=200)
-        result = bridge.poll_events(
+        result = ensure_bridge_started().poll_events(
             after_cursor=after_cursor,
             session_key=session_key,
             limit=limit,
@@ -812,7 +822,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             minimum=0,
             maximum=300000,
         )  # Cap at 5 minutes
-        event = bridge.wait_for_event(
+        event = ensure_bridge_started().wait_for_event(
             after_cursor=after_cursor,
             session_key=session_key,
             timeout_ms=timeout_ms,
@@ -921,7 +931,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         since it started. Approvals are live-session only — older approvals
         from before the bridge connected are not included.
         """
-        approvals = bridge.list_pending_approvals()
+        approvals = ensure_bridge_started().list_pending_approvals()
         return json.dumps({
             "count": len(approvals),
             "approvals": approvals,
@@ -946,7 +956,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                          f"Must be allow-once, allow-always, or deny"
             })
 
-        result = bridge.respond_to_approval(id, decision)
+        result = ensure_bridge_started().respond_to_approval(id, decision)
         return json.dumps(result, indent=2)
 
     return mcp
@@ -972,7 +982,6 @@ def run_mcp_server(verbose: bool = False) -> None:
         logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
     bridge = EventBridge()
-    bridge.start()
 
     server = create_mcp_server(event_bridge=bridge)
 

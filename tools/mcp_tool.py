@@ -3790,13 +3790,27 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
     The server Task keeps the connection alive in the background.
     Call ``server.shutdown()`` (on the same event loop) to tear it down.
 
+    Returns the server even when ``start()`` fails, provided the background
+    ``_task`` is still alive (parked awaiting reconnect). This prevents
+    duplicate supervisors being created on the next registration attempt
+    (#60385).
+
     Raises:
         ValueError: if required config keys are missing.
         ImportError: if HTTP transport is needed but not available.
-        Exception: on connection or initialization failure.
+        Exception: on connection or initialization failure ONLY when the
+                   background task is also dead (unrecoverable).
     """
     server = MCPServerTask(name)
-    await server.start(config)
+    try:
+        await server.start(config)
+    except Exception:
+        # If the background task survived (parked with _error set), return the
+        # server so the caller can publish it — future reconnect/self-probe
+        # will attempt recovery. Only re-raise when the task is truly dead.
+        if server._task is not None and not server._task.done():
+            return server
+        raise
     return server
 
 
@@ -4845,7 +4859,10 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     """Connect to a single MCP server, discover tools, and register them.
 
-    Returns list of registered tool names.
+    Returns list of registered tool names. Publishes the server to ``_servers``
+    even when the initial connection fails but the background task is still
+    alive (parked awaiting reconnect), preventing duplicate supervisors on
+    the next registration attempt (#60385).
     """
     connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
     server = await asyncio.wait_for(
@@ -4856,6 +4873,17 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         _server_connecting.discard(name)
         _server_connect_errors.pop(name, None)
         _servers[name] = server
+
+    # Parked servers (initial connection failed) have no session — skip
+    # tool registration. The parked task will recover on its own via
+    # self-probe or explicit reconnect signal.
+    if getattr(server, "_error", None) is not None:
+        logger.info(
+            "MCP server '%s': parked after initial connection failure, "
+            "deferring tool registration until recovery",
+            name,
+        )
+        return []
 
     registered_names = _register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
@@ -4900,7 +4928,11 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         new_servers = {
             k: v
             for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+            if (
+                k not in _servers
+                and k not in _server_connecting
+                and _parse_boolish(v.get("enabled", True), default=True)
+            )
         }
         # Cached entries with no live session are parked or mid-reconnect.
         # Their tools are deregistered, so nothing else can reach

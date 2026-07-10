@@ -1769,6 +1769,96 @@ def test_seed_custom_pool_respects_config_suppression(tmp_path, monkeypatch):
     assert "config:my" not in active
 
 
+def test_seed_custom_pool_uses_extra_env_keys(tmp_path, monkeypatch):
+    """A custom provider can seed several env-backed keys into one pool."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("NVIDIA_KEY_1", "sk-one")
+    monkeypatch.setenv("NVIDIA_KEY_2", "sk-two")
+    monkeypatch.setenv("NVIDIA_KEY_DUP", "sk-one")
+
+    import yaml
+    (hermes_home / "config.yaml").write_text(yaml.dump({
+        "model": {},
+        "custom_providers": [
+            {
+                "name": "nvidia-rotating",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+                "api_key": "sk-primary",
+                "key_env": "NVIDIA_KEY_1",
+                "extra_keys_env": ["NVIDIA_KEY_2", "", "NVIDIA_KEY_DUP"],
+            },
+        ],
+    }))
+
+    from agent.credential_pool import _seed_custom_pool, get_custom_provider_pool_key
+    pool_key = get_custom_provider_pool_key("https://integrate.api.nvidia.com/v1")
+
+    entries = []
+    changed, active = _seed_custom_pool(pool_key, entries)
+
+    assert changed is True
+    assert {entry.source for entry in entries} == {
+        "config:nvidia-rotating",
+        "env:NVIDIA_KEY_1",
+        "env:NVIDIA_KEY_2",
+    }
+    assert {entry.access_token for entry in entries} == {
+        "sk-primary",
+        "sk-one",
+        "sk-two",
+    }
+    assert active == {entry.source for entry in entries}
+
+
+def test_load_custom_pool_dedupes_seeded_env_sources(tmp_path, monkeypatch):
+    """Older pools may already contain duplicate env-backed custom entries."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("NVIDIA_KEY_1", "sk-one")
+    monkeypatch.setenv("NVIDIA_KEY_2", "sk-two")
+
+    import yaml
+    (hermes_home / "config.yaml").write_text(yaml.dump({
+        "model": {},
+        "custom_providers": [
+            {
+                "name": "nvidia-rotating",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+                "key_env": "NVIDIA_KEY_1",
+                "extra_keys_env": ["NVIDIA_KEY_2"],
+            },
+        ],
+    }))
+
+    from agent.credential_pool import get_custom_provider_pool_key, load_pool
+    pool_key = get_custom_provider_pool_key("https://integrate.api.nvidia.com/v1")
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            pool_key: {
+                "credential_pool": [
+                    {"source": "env:NVIDIA_KEY_1", "access_token": "old-one", "auth_type": "api_key"},
+                    {"source": "env:NVIDIA_KEY_1", "access_token": "stale-duplicate", "auth_type": "api_key"},
+                    {"source": "env:NVIDIA_KEY_2", "access_token": "old-two", "auth_type": "api_key"},
+                    {"source": "env:NVIDIA_KEY_2", "access_token": "stale-duplicate", "auth_type": "api_key"},
+                ],
+            },
+        },
+    }))
+
+    pool = load_pool(pool_key)
+    entries = pool.entries()
+
+    assert [entry.source for entry in entries] == [
+        "env:NVIDIA_KEY_1",
+        "env:NVIDIA_KEY_2",
+    ]
+    assert [entry.access_token for entry in entries] == ["sk-one", "sk-two"]
+
+
 def test_credential_sources_registry_has_expected_steps():
     """Sanity check — the registry contains the expected RemovalSteps.
 

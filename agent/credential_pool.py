@@ -2266,6 +2266,30 @@ def _prune_stale_seeded_entries(
     return True
 
 
+def _dedupe_active_seeded_entries(
+    entries: List[PooledCredential],
+    active_sources: Set[str],
+) -> bool:
+    """Keep one seeded entry per active source.
+
+    Older pools may already contain duplicate env/config entries. Upsert keeps
+    the first copy fresh; this drops stale twins without touching manual creds.
+    """
+    seen: Set[str] = set()
+    retained: List[PooledCredential] = []
+    changed = False
+    for entry in entries:
+        if entry.source in active_sources and not _is_manual_source(entry.source):
+            if entry.source in seen:
+                changed = True
+                continue
+            seen.add(entry.source)
+        retained.append(entry)
+    if changed:
+        entries[:] = retained
+    return changed
+
+
 def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     """Seed a custom endpoint pool from custom_providers config and model config."""
     changed = False
@@ -2278,14 +2302,59 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
         def _is_suppressed(_p, _s):  # type: ignore[misc]
             return False
 
-    # Seed from the custom_providers config entry's api_key field
+    # Seed from the custom_providers config entry's configured keys.
     cp_config = _get_custom_provider_config(pool_key)
     if cp_config:
         api_key = str(cp_config.get("api_key") or "").strip()
         base_url = str(cp_config.get("base_url") or "").strip().rstrip("/")
         name = str(cp_config.get("name") or "").strip()
-        if api_key:
-            source = f"config:{name}"
+
+        key_specs: List[Tuple[str, str]] = []
+        seen_tokens: Set[str] = set()
+
+        def _add_key(source: str, token: str) -> None:
+            token = str(token or "").strip()
+            if not token or token in seen_tokens:
+                return
+            seen_tokens.add(token)
+            key_specs.append((source, token))
+
+        _add_key(f"config:{name}", api_key)
+
+        env_values: Optional[Dict[str, str]] = None
+
+        def _read_env_key(var_name: str) -> str:
+            nonlocal env_values
+            if env_values is None:
+                try:
+                    env_values = load_env()
+                except Exception:
+                    env_values = {}
+            return str(
+                env_values.get(var_name)
+                or _get_secret(var_name, "")
+                or os.environ.get(var_name)
+                or ""
+            ).strip()
+
+        env_names: List[str] = []
+        key_env = str(
+            cp_config.get("key_env") or cp_config.get("api_key_env") or ""
+        ).strip()
+        if key_env:
+            env_names.append(key_env)
+        extra_keys_env = cp_config.get("extra_keys_env")
+        if isinstance(extra_keys_env, list):
+            env_names.extend(str(item or "").strip() for item in extra_keys_env)
+
+        seen_env_names: Set[str] = set()
+        for env_name in env_names:
+            if not env_name or env_name in seen_env_names:
+                continue
+            seen_env_names.add(env_name)
+            _add_key(f"env:{env_name}", _read_env_key(env_name))
+
+        for source, token in key_specs:
             if not _is_suppressed(pool_key, source):
                 active_sources.add(source)
                 changed |= _upsert_entry(
@@ -2295,7 +2364,7 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                     {
                         "source": source,
                         "auth_type": AUTH_TYPE_API_KEY,
-                        "access_token": api_key,
+                        "access_token": token,
                         "base_url": base_url,
                         "label": name or source,
                     },
@@ -2358,7 +2427,12 @@ def load_pool(provider: str) -> CredentialPool:
         # Custom endpoint pool — seed from custom_providers config and model config
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)
         changed = raw_needs_sanitization or custom_changed
-        changed |= _prune_stale_seeded_entries(entries, custom_sources)
+        changed |= _prune_stale_seeded_entries(
+            entries,
+            custom_sources,
+            prune_env_sources=False,
+        )
+        changed |= _dedupe_active_seeded_entries(entries, custom_sources)
     else:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
         env_changed, env_sources = _seed_from_env(provider, entries)

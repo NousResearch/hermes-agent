@@ -4681,6 +4681,7 @@ def _normalize_custom_provider_entry(
         "apiMode": "api_mode",
         "keyEnv": "key_env",
         "apiKeyEnv": "key_env",  # alias — OpenClaw-compatible + docs variant
+        "extraKeysEnv": "extra_keys_env",
         "defaultModel": "default_model",
         "contextLength": "context_length",
         "rateLimitDelay": "rate_limit_delay",
@@ -4701,7 +4702,7 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify",
+        "ssl_ca_cert", "ssl_verify", "extra_keys_env",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -4773,6 +4774,16 @@ def _normalize_custom_provider_entry(
     key_env = entry.get("key_env")
     if isinstance(key_env, str) and key_env.strip():
         normalized["key_env"] = key_env.strip()
+
+    extra_keys_env = entry.get("extra_keys_env")
+    if isinstance(extra_keys_env, list):
+        cleaned_extra_keys_env = [
+            item.strip()
+            for item in extra_keys_env
+            if isinstance(item, str) and item.strip()
+        ]
+        if cleaned_extra_keys_env:
+            normalized["extra_keys_env"] = cleaned_extra_keys_env
 
     api_mode = entry.get("api_mode") or entry.get("transport")
     if isinstance(api_mode, str) and api_mode.strip():

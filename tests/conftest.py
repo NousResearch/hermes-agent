@@ -31,6 +31,11 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Canonical home resolution — imported at conftest-import time, i.e. BEFORE
+# any per-test isolation fixture runs, so it still sees the environment the
+# developer/CI invoked pytest with (see _guard_real_config_writes below).
+from hermes_constants import get_hermes_home as _get_hermes_home  # noqa: E402
+
 
 # ── Per-file process isolation ──────────────────────────────────────────────
 # Tests run via ``scripts/run_tests_parallel.py``, which spawns a fresh
@@ -400,6 +405,160 @@ def _hermetic_environment(tmp_path, monkeypatch):
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
     return None
+
+
+# ── Real-config write tripwire ──────────────────────────────────────────────
+#
+# ``cli.save_config_value()`` resolves its target from ``cli._hermes_home``,
+# which is captured once at ``import cli`` time — BEFORE the per-test
+# ``_hermetic_environment`` fixture repoints HERMES_HOME — and falls back to
+# the PROJECT config (repo-root ``cli-config.yaml``) whenever
+# ``cli._hermes_home / 'config.yaml'`` does not exist.  Net effect: any test
+# that reaches the real ``save_config_value()`` writes one of two files that
+# are never the test's own tmp home:
+#
+#   * the developer's LIVE user config (observed 2026-07-08: five config.set
+#     tests run via plain ``pytest tests/`` repointed model.default fleet-wide
+#     until manually restored), or
+#   * an invisible, gitignored ``cli-config.yaml`` in the checkout, which is
+#     read back as the project-config fallback by every later run and breaks
+#     unrelated tests.
+#
+# Both paths are resolved here, at conftest-import time, from the
+# PRE-isolation environment.  Tests that point ``cli._hermes_home`` (or
+# HERMES_HOME) at their own tmp_path keep writing configs freely — only the
+# two real paths are forbidden.
+
+_REAL_USER_CONFIG = (_get_hermes_home() / "config.yaml").resolve()
+_REPO_ROOT_CLI_CONFIG = (PROJECT_ROOT / "cli-config.yaml").resolve()
+
+
+_FORBIDDEN_CONFIG_PATHS = (_REAL_USER_CONFIG, _REPO_ROOT_CLI_CONFIG)
+
+
+def _real_config_offender_message(first_sentence: str) -> str:
+    return (
+        first_sentence
+        + " cli._hermes_home is captured at import time, so an un-repointed "
+        "cli.save_config_value() targets the developer's live config.yaml — "
+        "or falls through to the repo-root cli-config.yaml when that home "
+        "has no config.yaml. Monkeypatch cli.save_config_value, or point "
+        "cli._hermes_home / HERMES_HOME at the test's own tmp_path before "
+        "persisting."
+    )
+
+
+def _arm_save_config_tripwire() -> None:
+    """Wrap ``cli.save_config_value`` so writes to the real config fail loudly.
+
+    Armed process-wide and never unwrapped: background threads leaked by
+    earlier tests (gateway workers, watchers) can call ``save_config_value``
+    at any point — including BETWEEN tests — and a per-test wrapper would
+    leave that window unguarded.  The wrapper is marker-tagged and re-armed
+    by the autouse fixture below, so it survives ``importlib.reload(cli)``
+    (which replaces module attributes with fresh, unwrapped functions).
+
+    Every production caller does a function-local ``from cli import
+    save_config_value``, so the wrapper is picked up at call time; tests
+    that monkeypatch ``cli.save_config_value`` themselves simply never
+    reach it.  (``cli`` is deliberately NOT imported here: its module-level
+    ``load_hermes_dotenv`` would mutate os.environ mid-test if the first
+    import happened inside a fixture.)
+    """
+    cli_mod = sys.modules.get("cli")
+    if cli_mod is None:
+        return
+    current = getattr(cli_mod, "save_config_value", None)
+    if current is None or getattr(current, "_hermes_real_config_tripwire", False):
+        return
+    real_save = current
+
+    def _guarded_save_config_value(key_path, value):
+        # Mirror cli.save_config_value's own target resolution (user
+        # config if it exists, else the repo-root project config).
+        user_config = Path(cli_mod._hermes_home) / "config.yaml"
+        if user_config.exists():
+            target = user_config
+        else:
+            target = Path(cli_mod.__file__).resolve().parent / "cli-config.yaml"
+        target = target.resolve()
+        if target in _FORBIDDEN_CONFIG_PATHS:
+            # In the main thread during a test this fails that test at the
+            # offending call site BEFORE the write lands (a live gateway may
+            # be reading the file).  In a leaked background thread it kills
+            # the write and dies inside that thread — either way the real
+            # config is never touched.
+            pytest.fail(
+                _real_config_offender_message(
+                    f"this test attempted to write the real Hermes config "
+                    f"({target}) instead of a per-test home."
+                )
+            )
+        return real_save(key_path, value)
+
+    _guarded_save_config_value._hermes_real_config_tripwire = True
+    cli_mod.save_config_value = _guarded_save_config_value
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_config_writes(_hermetic_environment):
+    """Fail any test that writes the real user config or repo-root cli-config.yaml.
+
+    Two layers:
+
+    1. **Call-time interception** — ``_arm_save_config_tripwire()`` (see
+       above), re-armed here every test so it exists as soon as ``cli`` has
+       been imported and survives ``importlib.reload(cli)``.
+    2. **Before/after watch** — snapshot both forbidden files around the
+       test; if anything slipped past the wrapper (direct YAML writers,
+       subprocesses), restore the pre-test bytes so one polluting write
+       cannot cascade into unrelated failures runs later, then fail with a
+       pointer at this test.  (In a single-process multi-file run the actual
+       writer can also be a thread leaked by an EARLIER test that fired
+       while this one ran — the message says so; under the per-file runner
+       used by CI the writer is always in the same file.)
+    """
+
+    def _snapshot() -> dict:
+        return {
+            p: (p.read_bytes() if p.exists() else None)
+            for p in _FORBIDDEN_CONFIG_PATHS
+        }
+
+    _arm_save_config_tripwire()
+    before = _snapshot()
+
+    # Expose the forbidden paths so the guard's own regression tests can
+    # exercise it without re-deriving the pre-isolation environment.
+    guard_info = type(
+        "ConfigWriteGuardInfo",
+        (),
+        {
+            "real_user_config": _REAL_USER_CONFIG,
+            "repo_root_cli_config": _REPO_ROOT_CLI_CONFIG,
+        },
+    )
+
+    yield guard_info
+
+    after = _snapshot()
+    changed = [p for p in _FORBIDDEN_CONFIG_PATHS if after[p] != before[p]]
+    if not changed:
+        return
+    # Restore first so the pollution doesn't outlive the offending test.
+    for p in changed:
+        if before[p] is None:
+            p.unlink(missing_ok=True)
+        else:
+            p.write_bytes(before[p])
+    pytest.fail(
+        _real_config_offender_message(
+            f"the real Hermes config ({changed[0]}) was modified while this "
+            "test ran — by this test itself, or by a background thread "
+            "leaked from an earlier test in the same process; the pre-test "
+            "content has been restored."
+        )
+    )
 
 
 # ── Module-level state reset — replaced by per-file process isolation ──────

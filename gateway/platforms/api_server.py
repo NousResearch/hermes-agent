@@ -53,6 +53,12 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.api_idempotency import (
+    SESSION_CHAT_SCOPE,
+    DEFAULT_RETENTION_HOURS as IDEMPOTENCY_DEFAULT_RETENTION_HOURS,
+    DurableIdempotencyStore,
+    IdempotencyStoreUnavailable,
+)
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE,
     BasePlatformAdapter,
@@ -759,6 +765,43 @@ def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
+# Idempotency-Key syntax bound for the durable session-chat contract:
+# printable ASCII without spaces, 1-200 chars.  Rejected keys never reach the
+# receipt store, so a malformed/oversized header cannot create state.
+_IDEMPOTENCY_KEY_RE = re.compile(r"^[\x21-\x7e]{1,200}$")
+
+
+def _session_chat_fingerprint(
+    *,
+    session_id: str,
+    gateway_session_key: Optional[str],
+    user_message: Any,
+    system_prompt: Optional[str],
+) -> str:
+    """Canonical fingerprint of everything that shapes a session-chat turn.
+
+    Binds the route, the target session, the caller's memory scope
+    (``X-Hermes-Session-Key``), the *normalized* user message (so two wire
+    encodings of the same content — e.g. ``input_text`` vs ``text`` parts —
+    fingerprint identically), and any ephemeral system/instructions input.
+    The authenticated principal is bound separately in the receipt's storage
+    key (see ``_idempotency_principal_scope``).
+    """
+    material = json.dumps(
+        {
+            "route": SESSION_CHAT_SCOPE,
+            "session_id": session_id,
+            "session_key": gateway_session_key or "",
+            "message": user_message,
+            "system": system_prompt or "",
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def _derive_chat_session_id(
     system_prompt: Optional[str],
     first_user_message: str,
@@ -900,6 +943,17 @@ class APIServerAdapter(BasePlatformAdapter):
         # Number of in-flight runs on the non-streaming chat/responses paths
         # (the /v1/runs path tracks its own in-flight set via _run_streams).
         self._inflight_agent_runs: int = 0
+        # Durable Idempotency-Key receipts for session chat (lazy — the store
+        # only opens when the first keyed request arrives, so unkeyed
+        # deployments never touch the database file).
+        self._idempotency_store: Optional[DurableIdempotencyStore] = None
+        self._idempotency_store_error_logged: bool = False
+        # Process-local coalescing of concurrent duplicates: (scope, principal,
+        # session_id, key) -> the asyncio.Task executing the reserved turn.
+        # Serialized by _session_chat_idem_lock so a duplicate can never
+        # observe "reserved by us" before the owning task is registered.
+        self._session_chat_idem_inflight: Dict[tuple, "asyncio.Task"] = {}
+        self._session_chat_idem_lock = asyncio.Lock()
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -939,6 +993,32 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return default
         return max(0, value)
+
+    @staticmethod
+    def _resolve_idempotency_retention_hours() -> float:
+        """Read completed-receipt retention from config.yaml.
+
+        gateway.api_server.idempotency.retention_hours.  Falls back to the
+        24h default when unset, malformed, or non-positive; the store itself
+        floors the value at one hour so replay always outlives realistic
+        client retry windows.
+        """
+        default = IDEMPOTENCY_DEFAULT_RETENTION_HOURS
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            raw = cfg_get(
+                load_config(),
+                "gateway",
+                "api_server",
+                "idempotency",
+                "retention_hours",
+                default=default,
+            )
+            value = float(raw)
+        except Exception:
+            return default
+        return value if value > 0 else default
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -1136,6 +1216,98 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         return raw, None
+
+    # ------------------------------------------------------------------
+    # Durable session-chat idempotency helpers
+    # ------------------------------------------------------------------
+
+    def _validate_idempotency_key_header(self, key: str) -> Optional["web.Response"]:
+        """Validate an ``Idempotency-Key`` before any receipt state exists.
+
+        Security mirrors ``_parse_session_key_header``: durable receipts are
+        readable state (the completed response replays on demand), so
+        creating or probing them requires the API key to be configured —
+        otherwise any local client could enumerate another caller's receipts.
+        """
+        if not self._api_key:
+            logger.warning(
+                "Idempotency-Key rejected: no API key configured. "
+                "Set API_SERVER_KEY to enable durable session-chat idempotency."
+            )
+            return web.json_response(
+                _openai_error(
+                    "Idempotency-Key requires API key authentication. "
+                    "Configure API_SERVER_KEY to enable this feature."
+                ),
+                status=403,
+            )
+        if not _IDEMPOTENCY_KEY_RE.fullmatch(key):
+            return web.json_response(
+                _openai_error(
+                    "Invalid Idempotency-Key header: must be 1-200 printable "
+                    "ASCII characters with no whitespace.",
+                    code="invalid_idempotency_key",
+                ),
+                status=400,
+            )
+        return None
+
+    def _idempotency_principal_scope(self) -> str:
+        """Derive the receipt scope for the authenticated server principal.
+
+        The API server has one bearer principal (API_SERVER_KEY), so this is
+        a salted hash of that key: receipts created under one key become
+        unreachable after rotation instead of replaying across principals,
+        and the raw credential never lands in the database.
+        """
+        material = f"api-server-principal:{self._api_key}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+    def _ensure_idempotency_store(self) -> DurableIdempotencyStore:
+        """Lazily open the durable receipt store.
+
+        Raises :class:`IdempotencyStoreUnavailable` when the store cannot be
+        opened — keyed requests then fail closed (503, no agent execution)
+        while unkeyed requests never reach this path.  Open is retried on the
+        next keyed request rather than caching the failure, so a transient
+        filesystem problem does not require a gateway restart.
+        """
+        if self._idempotency_store is not None:
+            return self._idempotency_store
+        try:
+            from hermes_constants import get_hermes_home
+
+            db_path = get_hermes_home() / "api_idempotency.db"
+            store = DurableIdempotencyStore(
+                db_path,
+                retention_hours=self._resolve_idempotency_retention_hours(),
+            )
+        except IdempotencyStoreUnavailable:
+            raise
+        except Exception as exc:
+            raise IdempotencyStoreUnavailable(
+                f"cannot resolve idempotency store location: {exc}"
+            ) from exc
+        self._idempotency_store = store
+        return store
+
+    def _idempotency_store_unavailable_response(self, exc: Exception) -> "web.Response":
+        """503 for keyed requests when no durable receipt can be guaranteed."""
+        if not self._idempotency_store_error_logged:
+            logger.warning("Idempotency store unavailable: %s", exc)
+            self._idempotency_store_error_logged = True
+        else:
+            logger.debug("Idempotency store unavailable: %s", exc)
+        return web.json_response(
+            _openai_error(
+                "Idempotency store unavailable; refusing to run the turn "
+                "without a durable receipt. Retry later or retry without "
+                "Idempotency-Key to bypass the durable contract.",
+                err_type="server_error",
+                code="idempotency_store_unavailable",
+            ),
+            status=503,
+        )
 
     # ------------------------------------------------------------------
     # Session DB helper
@@ -1498,6 +1670,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_resources": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
+                "session_chat_idempotency": True,
+                "idempotency_key_header": "Idempotency-Key",
                 "session_fork": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
@@ -1874,7 +2048,15 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
 
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
-        """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
+        """POST /api/sessions/{session_id}/chat — one synchronous agent turn.
+
+        With an ``Idempotency-Key`` header the turn runs under the durable
+        at-most-once contract (see ``gateway/platforms/api_idempotency.py``):
+        the key is reserved in a crash-safe receipt before the agent is
+        constructed, duplicates coalesce or replay, and an ambiguous receipt
+        left by a restart fails closed instead of re-running tools.  Requests
+        without the header keep the exact pre-existing behavior.
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -1894,7 +2076,44 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
-        history = self._conversation_history_for_session(session_id)
+
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if idempotency_key is None:
+            payload, headers = await self._execute_session_chat_turn(
+                session_id=session_id,
+                user_message=user_message,
+                system_prompt=system_prompt,
+                gateway_session_key=gateway_session_key,
+            )
+            return web.json_response(payload, headers=headers)
+
+        return await self._handle_session_chat_idempotent(
+            idempotency_key=idempotency_key,
+            session_id=session_id,
+            user_message=user_message,
+            system_prompt=system_prompt,
+            gateway_session_key=gateway_session_key,
+        )
+
+    async def _execute_session_chat_turn(
+        self,
+        *,
+        session_id: str,
+        user_message: Any,
+        system_prompt: Optional[str],
+        gateway_session_key: Optional[str],
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> tuple[Dict[str, Any], Dict[str, str]]:
+        """Run one session-chat agent turn; return ``(payload, headers)``.
+
+        Shared by the legacy (unkeyed) path and the idempotent path so both
+        produce byte-identical response bodies for identical turns.
+        """
+        history = (
+            conversation_history
+            if conversation_history is not None
+            else self._conversation_history_for_session(session_id)
+        )
         result, usage = await self._run_agent(
             user_message=user_message,
             conversation_history=history,
@@ -1907,15 +2126,200 @@ class APIServerAdapter(BasePlatformAdapter):
         headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key
-        return web.json_response(
-            {
-                "object": "hermes.session.chat.completion",
-                "session_id": effective_session_id or session_id,
-                "message": {"role": "assistant", "content": final_response},
-                "usage": usage,
-            },
-            headers=headers,
+        payload = {
+            "object": "hermes.session.chat.completion",
+            "session_id": effective_session_id or session_id,
+            "message": {"role": "assistant", "content": final_response},
+            "usage": usage,
+        }
+        return payload, headers
+
+    async def _handle_session_chat_idempotent(
+        self,
+        *,
+        idempotency_key: str,
+        session_id: str,
+        user_message: Any,
+        system_prompt: Optional[str],
+        gateway_session_key: Optional[str],
+    ) -> "web.Response":
+        """Serve a session-chat turn under the durable idempotency contract.
+
+        Response semantics (documented in website/docs — Sessions API):
+
+        * first execution        → 200, ``X-Hermes-Idempotency: recorded``
+        * live duplicate (same process) → coalesces with the in-flight turn,
+          200, ``X-Hermes-Idempotency: coalesced``
+        * replay of completed    → stored body, ``X-Hermes-Idempotency: replayed``
+        * same key, different fingerprint → 409 ``idempotency_conflict``
+        * persisted ``running`` from a restarted/other process → 409
+          ``idempotency_state_uncertain`` — never auto-re-executed
+        * store unavailable/corrupt → 503 ``idempotency_store_unavailable``,
+          no agent execution
+        """
+        invalid = self._validate_idempotency_key_header(idempotency_key)
+        if invalid is not None:
+            return invalid
+
+        fingerprint = _session_chat_fingerprint(
+            session_id=session_id,
+            gateway_session_key=gateway_session_key,
+            user_message=user_message,
+            system_prompt=system_prompt,
         )
+        principal = self._idempotency_principal_scope()
+        try:
+            store = self._ensure_idempotency_store()
+        except IdempotencyStoreUnavailable as exc:
+            return self._idempotency_store_unavailable_response(exc)
+
+        # Load history before reserving so the durable ``running`` window
+        # covers exactly the agent execution — a failure in this read-only
+        # step leaves no receipt behind.
+        conversation_history = self._conversation_history_for_session(session_id)
+
+        inflight_key = (SESSION_CHAT_SCOPE, principal, session_id, idempotency_key)
+        coalesced = False
+        async with self._session_chat_idem_lock:
+            try:
+                decision = store.reserve(
+                    scope=SESSION_CHAT_SCOPE,
+                    principal=principal,
+                    session_id=session_id,
+                    idempotency_key=idempotency_key,
+                    fingerprint=fingerprint,
+                )
+            except IdempotencyStoreUnavailable as exc:
+                return self._idempotency_store_unavailable_response(exc)
+
+            if decision.kind == "conflict":
+                return web.json_response(
+                    _openai_error(
+                        "Idempotency-Key was already used for this session "
+                        "with a different request payload.",
+                        code="idempotency_conflict",
+                    ),
+                    status=409,
+                )
+            if decision.kind == "replay":
+                headers = dict(decision.response_headers)
+                headers["X-Hermes-Idempotency"] = "replayed"
+                return web.Response(
+                    text=decision.response_body,
+                    status=decision.response_status,
+                    content_type="application/json",
+                    headers=headers,
+                )
+            if decision.kind == "in_progress_local":
+                task = self._session_chat_idem_inflight.get(inflight_key)
+                if task is not None:
+                    coalesced = True
+            elif decision.kind == "reserved":
+                task = asyncio.create_task(
+                    self._run_session_chat_reserved_turn(
+                        store=store,
+                        principal=principal,
+                        session_id=session_id,
+                        idempotency_key=idempotency_key,
+                        user_message=user_message,
+                        system_prompt=system_prompt,
+                        gateway_session_key=gateway_session_key,
+                        conversation_history=conversation_history,
+                    )
+                )
+                self._session_chat_idem_inflight[inflight_key] = task
+
+                def _clear_inflight(done_task: "asyncio.Task", _key=inflight_key) -> None:
+                    if self._session_chat_idem_inflight.get(_key) is done_task:
+                        self._session_chat_idem_inflight.pop(_key, None)
+
+                task.add_done_callback(_clear_inflight)
+            else:
+                task = None
+
+            if task is None:
+                # Either the receipt belongs to a store instance we cannot
+                # see (process restart / sibling gateway process), or it is
+                # nominally ours but its execution already ended without a
+                # completed receipt (crashed turn, failed completion write).
+                # Both are ambiguous: the turn may have run tools.  Hold for
+                # operator reconciliation instead of re-executing.
+                return web.json_response(
+                    _openai_error(
+                        "A previous request with this Idempotency-Key was "
+                        "accepted but its outcome is unknown (the gateway may "
+                        "have restarted mid-turn). Refusing to re-run the turn "
+                        "automatically; inspect the session transcript, then "
+                        "retry with a new key once reconciled.",
+                        code="idempotency_state_uncertain",
+                    ),
+                    status=409,
+                )
+
+        try:
+            # shield: a disconnecting duplicate caller must not cancel the
+            # single execution other callers (and the durable receipt) rely on.
+            body_text, headers = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # The reserved turn failed mid-execution.  The receipt stays
+            # ``running`` on purpose: tools may already have run, so a retry
+            # with the same key must fail closed as uncertain, not re-execute.
+            logger.error(
+                "[api_server] idempotent session chat turn failed: %s", exc, exc_info=True
+            )
+            return web.json_response(
+                _openai_error(f"Internal server error: {exc}", err_type="server_error"),
+                status=500,
+            )
+
+        out_headers = dict(headers)
+        out_headers["X-Hermes-Idempotency"] = "coalesced" if coalesced else "recorded"
+        return web.Response(
+            text=body_text,
+            content_type="application/json",
+            headers=out_headers,
+        )
+
+    async def _run_session_chat_reserved_turn(
+        self,
+        *,
+        store: DurableIdempotencyStore,
+        principal: str,
+        session_id: str,
+        idempotency_key: str,
+        user_message: Any,
+        system_prompt: Optional[str],
+        gateway_session_key: Optional[str],
+        conversation_history: List[Dict[str, Any]],
+    ) -> tuple[str, Dict[str, str]]:
+        """Execute the reserved turn and durably record its response.
+
+        Returns ``(body_text, headers)`` where *body_text* is the exact JSON
+        the live caller receives — the same bytes ``complete()`` persists, so
+        replays are byte-identical.  ``complete()`` never raises; if the
+        completed write fails the response is still delivered and the receipt
+        stays ``running`` (later retries fail closed as uncertain).
+        """
+        payload, headers = await self._execute_session_chat_turn(
+            session_id=session_id,
+            user_message=user_message,
+            system_prompt=system_prompt,
+            gateway_session_key=gateway_session_key,
+            conversation_history=conversation_history,
+        )
+        body_text = json.dumps(payload)
+        store.complete(
+            scope=SESSION_CHAT_SCOPE,
+            principal=principal,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+            response_body=body_text,
+            response_headers=headers,
+            response_status=200,
+        )
+        return body_text, headers
 
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
@@ -1925,6 +2329,20 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        if request.headers.get("Idempotency-Key") is not None:
+            # No false guarantee: a partially-delivered SSE stream has no
+            # single replayable response, so the durable contract does not
+            # extend here yet.  Reject explicitly instead of silently
+            # ignoring the header.
+            return web.json_response(
+                _openai_error(
+                    "Idempotency-Key is not supported on the streaming session "
+                    "chat endpoint. Use POST /api/sessions/{session_id}/chat "
+                    "for the durable idempotency contract.",
+                    code="idempotency_not_supported",
+                ),
+                status=400,
+            )
         session_id = request.match_info["session_id"]
         _, err = self._get_existing_session_or_404(session_id)
         if err:
@@ -4869,8 +5287,9 @@ class APIServerAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the aiohttp web server and release all owned resources.
 
-        Closes the ResponseStore SQLite connection in addition to stopping
-        the aiohttp web server. Without this, every adapter instance leaks
+        Closes the ResponseStore (and, if opened, the idempotency receipt
+        store) SQLite connections in addition to stopping the aiohttp web
+        server. Without this, every adapter instance leaks
         2 file descriptors (the database file and its WAL sidecar) — the
         reconnect loop in ``gateway.run`` constructs a fresh adapter on
         every retry, so 2 fds/retry × 300s backoff cap ≈ 12 fds/hour, which
@@ -4886,6 +5305,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,
                 )
+        if self._idempotency_store is not None:
+            try:
+                self._idempotency_store.close()
+            except Exception:
+                logger.debug(
+                    "Failed to close idempotency store for %s", self.name, exc_info=True,
+                )
+            self._idempotency_store = None
         if self._site:
             await self._site.stop()
             self._site = None

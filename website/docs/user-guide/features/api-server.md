@@ -342,6 +342,38 @@ curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
   -d '{"input": "what files changed in the last hour?"}'
 ```
 
+### Durable idempotency for session chat (`Idempotency-Key`)
+
+`POST /api/sessions/{id}/chat` accepts an optional `Idempotency-Key` header (1–200 printable ASCII characters, no whitespace). Because a session-chat turn can run real tools (terminal, APIs, messaging), a blind retry after a timeout or gateway crash could repeat side effects. With a key, the turn runs under a durable **at-most-once** contract:
+
+- The key is reserved in a crash-safe SQLite receipt (`api_idempotency.db` in the profile's Hermes home, owner-only permissions) **before** the agent is constructed. If the reservation cannot be durably written, the turn does not run.
+- The receipt fingerprints the target session, the normalized message, `X-Hermes-Session-Key`, and any `system_message`/`instructions` — reusing a key with a different payload is rejected.
+- Requests without the header behave exactly as before and never touch the receipt store.
+
+Responses:
+
+| Situation | Response |
+|-----------|----------|
+| First execution | `200` + `X-Hermes-Idempotency: recorded` |
+| Concurrent duplicate (same process, turn still running) | Waits for the in-flight turn, then `200` + `X-Hermes-Idempotency: coalesced` — the agent runs once |
+| Retry after completion | Stored response replayed byte-for-byte, `X-Hermes-Idempotency: replayed`, zero agent invocations (replay window: `retention_hours`, default 24h) |
+| Same key, different payload | `409` with code `idempotency_conflict` |
+| Reserved turn found after a gateway restart (outcome unknown) | `409` with code `idempotency_state_uncertain` — **never re-executed automatically** |
+| Receipt store unavailable/corrupt | `503` with code `idempotency_store_unavailable`, no agent execution |
+| Key sent to `/chat/stream` | `400` with code `idempotency_not_supported` (the streaming endpoint has no replayable single response, so it rejects keys instead of advertising a false guarantee) |
+
+The `idempotency_state_uncertain` hold is deliberate: after an ambiguous crash the gateway cannot know whether tools already ran, and operator reconciliation beats duplicated side effects. Inspect the session transcript (`GET /api/sessions/{id}/messages`), then retry with a **new** key once reconciled. Completed receipts are pruned after `retention_hours`; ambiguous `running` receipts are never auto-evicted.
+
+`Idempotency-Key` on this endpoint requires `API_SERVER_KEY` to be configured (receipts replay stored responses, so unauthenticated callers must not be able to create or probe them). `/v1/capabilities` advertises support via `"session_chat_idempotency": true`.
+
+```yaml
+# config.yaml
+gateway:
+  api_server:
+    idempotency:
+      retention_hours: 24   # replay window for completed receipts
+```
+
 ## Skills and toolsets discovery
 
 `GET /v1/skills` and `GET /v1/toolsets` let external clients enumerate the agent's capabilities deterministically over REST instead of asking the model. Both are read-only and gated by `API_SERVER_KEY`.
@@ -433,7 +465,7 @@ API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 When CORS is enabled:
 - **Preflight responses** include `Access-Control-Max-Age: 600` (10 minute cache)
 - **SSE streaming responses** include CORS headers so browser EventSource clients work correctly
-- **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (responses are cached by key for 5 minutes)
+- **`Idempotency-Key`** is an allowed request header — on `/v1/chat/completions` and `/v1/responses` it deduplicates via an in-memory 5-minute cache; on `/api/sessions/{id}/chat` it engages the durable at-most-once contract (see [Sessions API](#durable-idempotency-for-session-chat-idempotency-key))
 
 Most documented frontends such as Open WebUI connect server-to-server and do not need CORS at all.
 

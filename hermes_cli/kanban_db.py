@@ -2150,6 +2150,45 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             (new, old),
         )
 
+    # ── run_usage additive migration (HERMES-OBS-001) ────────────────
+    # Idempotently add columns that were introduced after the initial
+    # run_usage table creation.  Also create the run_usage_parents join
+    # table if an existing DB doesn't have it yet.
+    ru_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='run_usage'"
+    ).fetchone() is not None
+    if ru_exists:
+        ru_cols = {row["name"] for row in conn.execute("PRAGMA table_info(run_usage)")}
+        if "accepted_result_tokens" not in ru_cols:
+            _add_column_if_missing(
+                conn, "run_usage", "accepted_result_tokens",
+                "accepted_result_tokens INTEGER DEFAULT NULL",
+            )
+        if "api_calls" not in ru_cols:
+            _add_column_if_missing(
+                conn, "run_usage", "api_calls",
+                "api_calls INTEGER NOT NULL DEFAULT 0",
+            )
+
+        # Create run_usage_parents if it doesn't exist
+        rup_exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='run_usage_parents'"
+        ).fetchone() is not None
+        if not rup_exists:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS run_usage_parents (
+                    board                    TEXT NOT NULL,
+                    task_id                  TEXT NOT NULL,
+                    run_id                   INTEGER NOT NULL,
+                    call_kind                TEXT NOT NULL,
+                    api_call_index           INTEGER NOT NULL,
+                    parent_task_id           TEXT NOT NULL,
+                    PRIMARY KEY (board, task_id, run_id, call_kind, api_call_index, parent_task_id),
+                    FOREIGN KEY (board, task_id, run_id, call_kind, api_call_index)
+                        REFERENCES run_usage(board, task_id, run_id, call_kind, api_call_index)
+                );
+            """)
+
     _rebuild_drifted_tables(conn)
 
 

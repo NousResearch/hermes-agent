@@ -154,6 +154,170 @@ class TestRunUsageSchema:
                 )
 
 
+    def test_migration_from_old_run_usage_schema(self, tmp_path, monkeypatch):
+        """Old 25-column run_usage schema upgrades in place with no data loss.
+
+        Acceptance (HERMES-OBS-001 finding 1):
+        - exact old 25-column run_usage (ed65e757a era) gains accepted_result_tokens + api_calls
+        - run_usage_parents is created
+        - existing rows are preserved (no destructive rebuild)
+        - re-running init_db is idempotent
+        - record_run_usage writes succeed after upgrade
+        """
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # Exact OLD 25-column schema (as of ed65e757a — before
+        # accepted_result_tokens, api_calls, and run_usage_parents).
+        old_schema = """
+        CREATE TABLE IF NOT EXISTS run_usage (
+            board                    TEXT NOT NULL,
+            task_id                  TEXT NOT NULL,
+            run_id                   INTEGER NOT NULL,
+            api_call_index           INTEGER NOT NULL,
+            call_kind                TEXT NOT NULL DEFAULT 'primary',
+            provider                 TEXT NOT NULL,
+            model                    TEXT NOT NULL,
+            input_tokens             INTEGER NOT NULL DEFAULT 0,
+            output_tokens            INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens        INTEGER NOT NULL DEFAULT 0,
+            cache_write_tokens       INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens         INTEGER NOT NULL DEFAULT 0,
+            elapsed_ms               INTEGER NOT NULL DEFAULT 0,
+            aux_input_tokens         INTEGER DEFAULT NULL,
+            aux_output_tokens        INTEGER DEFAULT NULL,
+            aux_cache_read_tokens    INTEGER DEFAULT NULL,
+            aux_cache_write_tokens   INTEGER DEFAULT NULL,
+            parent_task_id           TEXT,
+            profile                  TEXT,
+            token_source             TEXT NOT NULL,
+            cost_usd                 REAL,
+            cost_status              TEXT,
+            checker_result           TEXT,
+            repair_cycle             INTEGER NOT NULL DEFAULT 0,
+            created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            PRIMARY KEY (board, task_id, run_id, call_kind, api_call_index)
+        );
+        """
+        db_path = str(home / "kanban.db")
+        seed = sqlite3.connect(db_path)
+        seed.executescript(old_schema)
+        seed.execute(
+            """
+            INSERT INTO run_usage (
+                board, task_id, run_id, api_call_index, call_kind,
+                provider, model, input_tokens, output_tokens, token_source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "default",
+                "t_preexisting",
+                7,
+                0,
+                "primary",
+                "openrouter",
+                "gpt-4",
+                111,
+                22,
+                "provider_authoritative",
+            ),
+        )
+        seed.commit()
+        seed.close()
+
+        # Verify old schema is the exact 25-col shape and missing new objects.
+        pre = sqlite3.connect(db_path)
+        cols_before = [row[1] for row in pre.execute("PRAGMA table_info(run_usage)").fetchall()]
+        assert len(cols_before) == 25, f"Expected exact old 25-col schema, got {len(cols_before)}: {cols_before}"
+        assert "accepted_result_tokens" not in cols_before
+        assert "api_calls" not in cols_before
+        tables_before = {
+            row[0] for row in pre.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "run_usage_parents" not in tables_before
+        pre_row = pre.execute(
+            "SELECT task_id, input_tokens, output_tokens FROM run_usage WHERE task_id=?",
+            ("t_preexisting",),
+        ).fetchone()
+        assert pre_row == ("t_preexisting", 111, 22)
+        pre.close()
+
+        # First init: additive upgrade (no destructive rebuild of run_usage).
+        kb.init_db()
+        conn = kb.connect()
+
+        cols_after = {row[1] for row in conn.execute("PRAGMA table_info(run_usage)").fetchall()}
+        missing = {"accepted_result_tokens", "api_calls"} - cols_after
+        assert not missing, f"Columns not migrated: {missing}"
+
+        tables_after = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "run_usage_parents" in tables_after, "run_usage_parents missing after migration"
+
+        preserved = conn.execute(
+            "SELECT task_id, input_tokens, output_tokens, accepted_result_tokens, api_calls "
+            "FROM run_usage WHERE task_id=?",
+            ("t_preexisting",),
+        ).fetchone()
+        assert preserved is not None, "Pre-migration row was destroyed"
+        assert preserved[0] == "t_preexisting"
+        assert preserved[1] == 111
+        assert preserved[2] == 22
+        # New columns default correctly on preserved rows.
+        assert preserved[3] is None  # accepted_result_tokens DEFAULT NULL
+        assert preserved[4] == 0     # api_calls DEFAULT 0
+
+        # Runtime ledger write must succeed against upgraded schema.
+        ledger.record_run_usage(
+            conn,
+            board="default",
+            task_id="t_mig",
+            run_id=1,
+            call_kind="primary",
+            api_call_index=0,
+            provider="openrouter",
+            model="gpt-4",
+            input_tokens=100,
+            output_tokens=50,
+            token_source="provider_authoritative",
+            accepted_result_tokens=50,
+        )
+        rows = conn.execute(
+            "SELECT task_id, accepted_result_tokens, api_calls FROM run_usage WHERE task_id=?",
+            ("t_mig",),
+        ).fetchall()
+        assert len(rows) == 1, "Write failed after migration"
+        assert rows[0][1] == 50
+        assert rows[0][2] == 0
+        conn.close()
+
+        # Idempotent re-init: second pass must not fail or drop data.
+        kb.init_db()
+        conn2 = kb.connect()
+        cols_again = {row[1] for row in conn2.execute("PRAGMA table_info(run_usage)").fetchall()}
+        assert {"accepted_result_tokens", "api_calls"} <= cols_again
+        tables_again = {
+            row[0] for row in conn2.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "run_usage_parents" in tables_again
+        still = conn2.execute(
+            "SELECT COUNT(*) FROM run_usage WHERE task_id IN ('t_preexisting', 't_mig')"
+        ).fetchone()[0]
+        assert still == 2, "Idempotent re-init lost rows"
+        conn2.close()
+
+
 class TestTokenSourceClassification:
     """Token source must be explicit, never estimated from text length."""
 

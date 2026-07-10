@@ -1801,6 +1801,11 @@ DEFAULT_CONFIG = {
         # Per-platform overrides via display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
         "streaming": False,
+        # Classic CLI receives assistant answer-body stream deltas for recovery
+        # accounting, but renders the official answer from canonical
+        # final_response by default. Reasoning/tool/status progress streams are
+        # unaffected. Set true to opt back into legacy live answer-body output.
+        "assistant_body_streaming": False,
         "timestamps": False,      # Show timestamp on user and assistant labels
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
         "final_response_markdown": "strip",  # render | strip | raw

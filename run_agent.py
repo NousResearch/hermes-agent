@@ -4627,13 +4627,9 @@ class AIAgent:
                 if ctx_scrubber is not None:
                     think_tail = ctx_scrubber.feed(think_tail)
                 if think_tail:
-                    callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
-                    for cb in callbacks:
-                        try:
-                            cb(think_tail)
-                        except Exception:
-                            pass
                     self._record_streamed_assistant_text(think_tail)
+                    if self._deliver_stream_text_to_callbacks(think_tail):
+                        self._record_visible_streamed_assistant_text(think_tail)
         # Flush any benign partial-tag tail held by the context scrubber so it
         # reaches the UI before we clear state for the next model call.  If
         # the scrubber is mid-span, flush() drops the orphaned content.
@@ -4641,21 +4637,50 @@ class AIAgent:
         if scrubber is not None:
             tail = scrubber.flush()
             if tail:
-                callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
-                for cb in callbacks:
-                    try:
-                        cb(tail)
-                    except Exception:
-                        pass
                 self._record_streamed_assistant_text(tail)
+                if self._deliver_stream_text_to_callbacks(tail):
+                    self._record_visible_streamed_assistant_text(tail)
         self._current_streamed_assistant_text = ""
+        self._current_visible_streamed_assistant_text = ""
 
     def _record_streamed_assistant_text(self, text: str) -> None:
-        """Accumulate visible assistant text emitted through stream callbacks."""
+        """Accumulate assistant text received through stream callbacks."""
         if isinstance(text, str) and text:
             self._current_streamed_assistant_text = (
                 getattr(self, "_current_streamed_assistant_text", "") + text
             )
+
+    def _record_visible_streamed_assistant_text(self, text: str) -> None:
+        """Accumulate assistant text actually rendered to the user."""
+        if isinstance(text, str) and text:
+            self._current_visible_streamed_assistant_text = (
+                getattr(self, "_current_visible_streamed_assistant_text", "") + text
+            )
+
+    def _deliver_stream_text_to_callbacks(self, text: str) -> bool:
+        """Deliver stream text and report whether answer-body text was visible.
+
+        ``stream_delta_callback`` is the visual/UI callback and may return
+        ``False`` to indicate final-only buffering. ``_stream_callback`` is an
+        auxiliary stream consumer (for example streaming TTS) and does not make
+        text visible in the assistant transcript by itself.
+        """
+        visible_delivered = False
+        display_cb = getattr(self, "stream_delta_callback", None)
+        if display_cb is not None:
+            try:
+                rendered = display_cb(text)
+                if rendered is not False:
+                    visible_delivered = True
+            except Exception:
+                pass
+        aux_cb = getattr(self, "_stream_callback", None)
+        if aux_cb is not None and aux_cb is not display_cb:
+            try:
+                aux_cb(text)
+            except Exception:
+                pass
+        return visible_delivered
 
     @staticmethod
     def _normalize_interim_visible_text(text: str) -> str:
@@ -4670,7 +4695,9 @@ class AIAgent:
         if not visible_content:
             return False
         streamed = self._normalize_interim_visible_text(
-            self._strip_think_blocks(getattr(self, "_current_streamed_assistant_text", "") or "")
+            self._strip_think_blocks(
+                getattr(self, "_current_visible_streamed_assistant_text", "") or ""
+            )
         )
         return bool(streamed) and streamed == visible_content
 
@@ -4731,16 +4758,14 @@ class AIAgent:
                 text = text.lstrip("\n")
         if not text:
             return
-        callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
-        delivered = False
-        for cb in callbacks:
-            try:
-                cb(text)
-                delivered = True
-            except Exception:
-                pass
-        if delivered:
+        has_stream_consumers = bool(
+            getattr(self, "stream_delta_callback", None) is not None
+            or getattr(self, "_stream_callback", None) is not None
+        )
+        if has_stream_consumers or not getattr(self, "_current_streamed_assistant_text", ""):
             self._record_streamed_assistant_text(text)
+        if self._deliver_stream_text_to_callbacks(text):
+            self._record_visible_streamed_assistant_text(text)
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""

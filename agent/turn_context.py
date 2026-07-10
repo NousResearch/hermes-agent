@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.conversation_compression import conversation_history_after_compression
 from agent.iteration_budget import IterationBudget
+from agent.turn_receipt import TurnReceipt
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
@@ -218,6 +220,14 @@ def build_turn_context(
     turn_id = f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
     agent._current_turn_id = turn_id
     agent._current_api_request_id = ""
+    agent._current_turn_receipt = TurnReceipt.start(
+        session_id=agent.session_id or "",
+        turn_id=turn_id,
+        provider=getattr(agent, "provider", "") or "",
+        model=getattr(agent, "model", "") or "",
+        platform=getattr(agent, "platform", "") or "",
+        start_monotonic=time.monotonic(),
+    )
 
     # Reset retry counters and iteration budget at the start of each turn.
     agent._invalid_tool_retries = 0

@@ -52,6 +52,10 @@ os.environ["HERMES_QUIET"] = "1"  # Our own modules
 import yaml
 
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.final_response_display_policy import (
+    assistant_body_for_tts,
+    decide_final_response_display,
+)
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 
@@ -460,6 +464,7 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": True,
             "reasoning_full": False,
             "streaming": True,
+            "assistant_body_streaming": False,
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
@@ -3753,6 +3758,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
+        # Assistant answer-body deltas are draft/provisional until the agent
+        # finalizer returns canonical final_response. Keep tool/status/reasoning
+        # streams live, but render answer body from final_response by default so
+        # one user turn cannot show raw stream + transformed final as two full
+        # answers.
+        self.assistant_body_streaming = bool(
+            CLI_CONFIG["display"].get("assistant_body_streaming", False)
+        )
         # show_timestamps: prefix user and assistant labels with timestamps
         self.show_timestamps = CLI_CONFIG["display"].get("timestamps", False)
         self.timestamp_format = CLI_CONFIG["display"].get("timestamp_format", "%H:%M")
@@ -5619,7 +5632,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._deferred_content = ""
                 self._emit_stream_text(deferred)
 
-    def _stream_delta(self, text) -> None:
+    def _stream_delta(self, text) -> bool:
         """Line-buffered streaming callback for real-time token rendering.
 
         Receives text deltas from the agent as tokens arrive. Buffers
@@ -5634,12 +5647,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         about to execute).  Flushes any open boxes and resets state so
         tool feed lines render cleanly between turns.
         """
+        _visible_generation_before = getattr(self, "_stream_body_visible_generation", 0)
+
         if text is None:
             self._flush_stream()
             self._reset_stream_state()
-            return
+            return False
         if not text:
-            return
+            return False
 
         self._stream_started = True
 
@@ -5729,7 +5744,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._emit_stream_text(safe)
                     self._stream_last_was_newline = safe.endswith("\n")
                     self._stream_prefilt = self._stream_prefilt[len(safe):]
-                return
+                return (
+                    getattr(self, "_stream_body_visible_generation", 0)
+                    != _visible_generation_before
+                )
 
         # Inside a reasoning block — look for close tag.
         # Keep accumulating _stream_prefilt because close tags can arrive
@@ -5751,8 +5769,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # Process remaining text after close tag through full
                     # filtering (it could contain another open tag)
                     if after:
-                        self._stream_delta(after)
-                    return
+                        return self._stream_delta(after) or (
+                            getattr(self, "_stream_body_visible_generation", 0)
+                            != _visible_generation_before
+                        )
+                    return (
+                        getattr(self, "_stream_body_visible_generation", 0)
+                        != _visible_generation_before
+                    )
             # When show_reasoning is on, stream reasoning content live
             # instead of silently accumulating. Keep only the tail that
             # could be a partial close tag prefix.
@@ -5763,19 +5787,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     safe_reasoning = self._stream_prefilt[:-max_tag_len]
                     self._stream_reasoning_delta(safe_reasoning)
                 self._stream_prefilt = self._stream_prefilt[-max_tag_len:]
-            return
+            return (
+                getattr(self, "_stream_body_visible_generation", 0)
+                != _visible_generation_before
+            )
 
-    def _emit_stream_text(self, text: str) -> None:
+    def _emit_stream_text(self, text: str) -> bool:
         """Emit filtered text to the streaming display."""
         if not text:
-            return
+            return False
+
+        if not getattr(self, "assistant_body_streaming", True):
+            # Final-only answer-body mode: keep reasoning/status/tool progress
+            # live, but do not render draft assistant body deltas. The agent
+            # still records received text separately for partial-stream recovery.
+            return False
 
         # When show_reasoning is on and reasoning is still rendering,
         # defer content until the reasoning box closes.  This ensures the
         # reasoning block always appears BEFORE the response in the terminal.
         if self.show_reasoning and getattr(self, "_reasoning_box_opened", False):
             self._deferred_content = getattr(self, "_deferred_content", "") + text
-            return
+            return False
 
         # Close the live reasoning box before opening the response box
         self._close_reasoning_box()
@@ -5785,7 +5818,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Strip leading whitespace/newlines before first visible content
             text = text.lstrip("\n")
             if not text:
-                return
+                return False
             self._stream_box_opened = True
             try:
                 from hermes_cli.skin_engine import get_active_skin
@@ -5810,6 +5843,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             fill = w - 2 - HermesCLI._status_bar_display_width(label)
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
+        self._stream_body_visible_generation = getattr(
+            self, "_stream_body_visible_generation", 0
+        ) + 1
         self._stream_buf += text
 
         # Emit complete lines, keep partial remainder in buffer
@@ -5886,6 +5922,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if self.final_response_markdown == "strip":
                     chunk = _strip_markdown_syntax(chunk)
                 _emit_one(chunk)
+        return True
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -5899,6 +5936,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Close reasoning box if still open (in case no content tokens arrived)
         self._close_reasoning_box()
+
+        if not getattr(self, "assistant_body_streaming", True):
+            self._stream_buf = ""
+            self._stream_table_buf = []
+            self._in_stream_table = False
+            return
 
         _tc = getattr(self, "_stream_text_ansi", "")
 
@@ -5952,6 +5995,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._deferred_content = ""
         self._stream_table_buf = []
         self._in_stream_table = False
+        self._stream_body_visible_generation = 0
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -12656,7 +12700,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         display_reasoning = reasoning.strip()
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
 
-            if response and not response_previewed:
+            if response:
                 # Use skin engine for label/color with fallback
                 try:
                     from hermes_cli.skin_engine import get_active_skin
@@ -12670,16 +12714,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
-                already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
-                if use_streaming_tts and _streaming_box_opened and not is_error_response:
-                    # Text was already printed sentence-by-sentence; just close the box
+                stream_text_received = bool(
+                    result.get("stream_text_received")
+                    if result and "stream_text_received" in result
+                    else self._stream_started
+                )
+                stream_text_visible = bool(
+                    result.get("stream_text_visible")
+                    if result and "stream_text_visible" in result
+                    else (self._stream_started and self._stream_box_opened)
+                )
+                decision = decide_final_response_display(
+                    response=response,
+                    response_previewed=response_previewed,
+                    response_transformed=bool(result and result.get("response_transformed")),
+                    stream_text_received=stream_text_received,
+                    stream_text_visible=stream_text_visible,
+                    is_error_response=bool(is_error_response),
+                    use_streaming_tts=bool(use_streaming_tts),
+                    streaming_tts_box_opened=bool(_streaming_box_opened),
+                )
+                if decision.close_streaming_tts_box:
+                    # Text was already printed sentence-by-sentence; close that
+                    # frame before a transformed canonical panel is rendered.
                     w = self._scrollback_box_width()
                     _cprint(f"\n{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
-                elif already_streamed:
-                    # Response was already streamed token-by-token with box framing;
-                    # _flush_stream() already closed the box. Skip Rich Panel.
-                    pass
-                else:
+                if decision.render_panel:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
                         _render_final_assistant_content(response, mode=self.final_response_markdown),
@@ -12713,7 +12773,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Speak response aloud if voice TTS is enabled
             # Skip batch TTS when streaming TTS already handled it
             if self._voice_tts and response and not use_streaming_tts:
-                self._voice_speak_response_async(response)
+                self._voice_speak_response_async(assistant_body_for_tts(response))
 
 
             # Re-queue the interrupt message (and any that arrived while we were

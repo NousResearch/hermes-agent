@@ -135,12 +135,21 @@ def _run(
     )
 
 
+def _assert_cli_final(result, body: str) -> None:
+    """The cleanup contract preserves the body under one runtime-owned bar."""
+
+    final = result["final_response"]
+    assert final.count("路径：") == 1
+    assert final.splitlines()[0].startswith("路径：native｜原因：runtime_default")
+    assert final.splitlines()[1:] == body.splitlines()
+
+
 def test_all_cleanup_steps_raise_response_still_returned():
     agent = _StubAgent(
         raise_in=("save_trajectory", "cleanup_task_resources", "persist_session")
     )
     result = _run(agent)
-    assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
+    _assert_cli_final(result, "PARTIAL SUMMARY FROM MODEL")
     labels = [e.split(":")[0] for e in result["cleanup_errors"]]
     assert labels == ["save_trajectory", "cleanup_task_resources", "persist_session"]
 
@@ -152,7 +161,7 @@ def test_single_cleanup_step_raises_does_not_skip_others(step):
     agent = _StubAgent(raise_in=(step,))
     result = _run(agent)
     # Response survives.
-    assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
+    _assert_cli_final(result, "PARTIAL SUMMARY FROM MODEL")
     # Exactly the failing step is recorded; the others ran without error.
     assert result["cleanup_errors"] == [
         next(
@@ -167,7 +176,7 @@ def test_single_cleanup_step_raises_does_not_skip_others(step):
 def test_clean_turn_has_no_cleanup_errors_key():
     agent = _StubAgent(raise_in=())
     result = _run(agent)
-    assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
+    _assert_cli_final(result, "PARTIAL SUMMARY FROM MODEL")
     assert result["completed"] is False
     assert "cleanup_errors" not in result
 
@@ -180,5 +189,5 @@ def test_text_response_on_last_allowed_call_is_completed():
         api_call_count=agent.max_iterations,
         turn_exit_reason="text_response(finish_reason=stop)",
     )
-    assert result["final_response"] == "final report"
+    _assert_cli_final(result, "final report")
     assert result["completed"] is True

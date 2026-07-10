@@ -34,6 +34,7 @@ from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
 )
+from agent.transports.chat_completions import _normalize_developer_role
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -1668,6 +1669,18 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_summary_result.content or "").strip()
             else:
+                # BUILD-370: route through ChatCompletionsTransport's shared
+                # normalization instead of hand-building the wire payload.
+                # Explicit "chat_completions" lookup (not agent._get_transport()
+                # bare) because this .create() call speaks the Chat Completions
+                # wire format. NOTE: bedrock_converse/codex_app_server also fall
+                # into this else branch with no valid path — a separate,
+                # pre-existing gap this fix does not address.
+                _cc_transport = agent._get_transport("chat_completions")
+                summary_kwargs["messages"] = _normalize_developer_role(
+                    _cc_transport.convert_messages(summary_kwargs["messages"], model=agent.model),
+                    (agent.model or "").lower(),
+                )
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
                 _summary_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_summary_result.content or "").strip()
@@ -1711,6 +1724,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 
+                # BUILD-370: same transport-normalization routing as the
+                # first-attempt branch above.
+                _cc_transport_retry = agent._get_transport("chat_completions")
+                summary_kwargs["messages"] = _normalize_developer_role(
+                    _cc_transport_retry.convert_messages(summary_kwargs["messages"], model=agent.model),
+                    (agent.model or "").lower(),
+                )
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
                 _retry_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_retry_result.content or "").strip()

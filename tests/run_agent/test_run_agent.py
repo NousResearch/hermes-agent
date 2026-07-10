@@ -3762,6 +3762,59 @@ class TestHandleMaxIterations:
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
+    def test_summary_swaps_system_to_developer_for_gpt5_codex(self, agent):
+        """BUILD-370: the max-iterations summary path must route through
+        ChatCompletionsTransport's _normalize_developer_role, same as a
+        normal turn — gpt-5/codex models get the system prompt promoted
+        to the 'developer' role."""
+        agent.model = "gpt-5.1-codex"
+        agent.max_tokens = 512
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        sent_msgs = kwargs["messages"]
+        assert sent_msgs[0]["role"] == "developer"
+        assert sent_msgs[0]["content"] == "You are helpful."
+        # Key kwargs otherwise unchanged.
+        assert kwargs["model"] == "gpt-5.1-codex"
+        # subset check: the same max-tokens key/value pair is present in kwargs,
+        # whichever kwarg name (max_tokens vs max_completion_tokens) the model uses
+        assert agent._max_tokens_param(512).items() <= kwargs.items()
+
+    def test_summary_keeps_system_for_deepseek_even_with_stale_developer_role(self, agent):
+        """BUILD-370: a stale 'developer' role inherited from an earlier
+        gpt-5/codex lane (replayed on failover to a strict provider) must be
+        downgraded back to 'system' for deepseek, matching
+        _normalize_developer_role's reverse case (BUILD-345)."""
+        agent.model = "deepseek-chat"
+        agent.max_tokens = 512
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        # No _cached_system_prompt set, so the incoming list's own first
+        # message (already 'developer' from a prior gpt-5 lane) lands at
+        # index 0 unmodified by the summary path's own message assembly.
+        messages = [
+            {"role": "developer", "content": "You are helpful."},
+            {"role": "user", "content": "do stuff"},
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        sent_msgs = kwargs["messages"]
+        assert sent_msgs[0]["role"] == "system"
+        assert sent_msgs[0]["content"] == "You are helpful."
+        # Key kwargs otherwise unchanged.
+        assert kwargs["model"] == "deepseek-chat"
+        # subset check: the same max-tokens key/value pair is present in kwargs,
+        # whichever kwarg name (max_tokens vs max_completion_tokens) the model uses
+        assert agent._max_tokens_param(512).items() <= kwargs.items()
+
     def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
         agent.base_url = "https://api.openai.com/v1"
         agent._base_url_lower = agent.base_url.lower()

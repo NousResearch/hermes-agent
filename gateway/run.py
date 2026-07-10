@@ -30,6 +30,7 @@ import dataclasses
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -5661,6 +5662,213 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    @staticmethod
+    def _event_has_image_media(event: Optional[MessageEvent]) -> bool:
+        if event is None:
+            return False
+        media_urls = getattr(event, "media_urls", None) or []
+        if not media_urls:
+            return False
+        if getattr(event, "message_type", None) == MessageType.PHOTO:
+            return True
+        media_types = getattr(event, "media_types", None) or []
+        return any(str(mtype).startswith("image/") for mtype in media_types)
+
+    @staticmethod
+    def _event_has_batch_media(event: Optional[MessageEvent]) -> bool:
+        if event is None:
+            return False
+        media_urls = getattr(event, "media_urls", None) or []
+        if not media_urls:
+            return False
+        message_type = getattr(event, "message_type", None)
+        batch_media_types = {
+            MessageType.PHOTO,
+            MessageType.VIDEO,
+            MessageType.AUDIO,
+            MessageType.VOICE,
+            MessageType.DOCUMENT,
+        }
+        video_note_type = getattr(MessageType, "VIDEO_NOTE", None)
+        if video_note_type is not None:
+            batch_media_types.add(video_note_type)
+        if message_type in batch_media_types:
+            return True
+        media_types = getattr(event, "media_types", None) or []
+        return any(
+            str(mtype).startswith(("image/", "audio/", "video/"))
+            or str(mtype) == "application/octet-stream"
+            or str(mtype).startswith("application/")
+            for mtype in media_types
+        )
+
+    @staticmethod
+    def _event_has_forwarded_text_context(event: Optional[MessageEvent]) -> bool:
+        if event is None:
+            return False
+        if getattr(event, "message_type", None) != MessageType.TEXT:
+            return False
+        if getattr(event, "media_urls", None):
+            return False
+        if getattr(event, "forward_origin", None):
+            return True
+        text = (getattr(event, "text", None) or "").lstrip()
+        return text.startswith("[Forwarded message |")
+
+    @classmethod
+    def _event_can_join_startup_batch(cls, event: Optional[MessageEvent]) -> bool:
+        return cls._event_has_batch_media(event) or cls._event_has_forwarded_text_context(event)
+
+    def _pop_adapter_pending_startup_event(self, adapter: Any, session_key: str) -> Optional[MessageEvent]:
+        pending_messages = getattr(adapter, "_pending_messages", None)
+        if not isinstance(pending_messages, dict) or not pending_messages:
+            return None
+        pending_event = pending_messages.get(session_key)
+        if not self._event_can_join_startup_batch(pending_event):
+            return None
+        return pending_messages.pop(session_key, None)
+
+    @staticmethod
+    def _adapter_declared_method(adapter: Any, name: str) -> Optional[Callable[..., Any]]:
+        try:
+            inspect.getattr_static(adapter, name)
+        except AttributeError:
+            return None
+        method = getattr(adapter, name, None)
+        return method if callable(method) else None
+
+    @staticmethod
+    def _startup_media_grace_seconds() -> float:
+        raw = os.getenv("HERMES_TELEGRAM_STARTUP_MEDIA_GRACE_SECONDS", "1.0")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 1.0
+        if not math.isfinite(value):
+            value = 1.0
+        return max(0.0, min(value, 3.0))
+
+    @staticmethod
+    def _format_forward_origin_context(forward_origin: Optional[Dict[str, str]]) -> Optional[str]:
+        if not forward_origin:
+            return None
+
+        parts = ["Forwarded message"]
+        if forward_origin.get("automatic") == "true":
+            parts.append("automatic forward")
+
+        sender = forward_origin.get("sender_name")
+        if sender:
+            username = forward_origin.get("sender_username")
+            if username:
+                sender = f"{sender} (@{username})"
+            parts.append(f"From: {sender}")
+        elif forward_origin.get("type") == "hidden_user":
+            parts.append("From: hidden sender")
+
+        chat = forward_origin.get("chat_name")
+        if chat:
+            username = forward_origin.get("chat_username")
+            if username:
+                chat = f"{chat} (@{username})"
+            parts.append(f"Chat: {chat}")
+
+        author_signature = forward_origin.get("author_signature")
+        if author_signature:
+            parts.append(f"Author: {author_signature}")
+
+        date = forward_origin.get("date")
+        if date:
+            parts.append(f"Date: {date}")
+
+        return "[" + " | ".join(parts) + "]"
+
+    def _inline_forward_context_for_text_followup(self, event: MessageEvent) -> MessageEvent:
+        if not self._event_has_forwarded_text_context(event):
+            return event
+        if not getattr(event, "forward_origin", None):
+            return event
+        forward_context = self._format_forward_origin_context(event.forward_origin)
+        if not forward_context:
+            return event
+        text = event.text or ""
+        if text.lstrip().startswith("[Forwarded message |"):
+            return dataclasses.replace(event, forward_origin=None)
+        return dataclasses.replace(
+            event,
+            text=f"{forward_context}\n\n{text}" if text else forward_context,
+            forward_origin=None,
+        )
+
+    async def _merge_startup_media_followups(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        session_key: str,
+    ) -> MessageEvent:
+        """Merge Telegram attachments that arrived while a text turn was starting."""
+        if (
+            source.platform != Platform.TELEGRAM
+            or event.message_type != MessageType.TEXT
+            or getattr(event, "media_urls", None)
+        ):
+            return event
+
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            return event
+
+        grace = self._startup_media_grace_seconds()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + grace
+        merged_count = 0
+        merged_text_batches = 0
+        pop_startup_media_event = self._adapter_declared_method(adapter, "pop_startup_media_event")
+        has_startup_media_pending = self._adapter_declared_method(adapter, "has_startup_media_pending")
+
+        while True:
+            incoming = self._pop_adapter_pending_startup_event(adapter, session_key)
+            if incoming is None and pop_startup_media_event is not None:
+                try:
+                    incoming = pop_startup_media_event(session_key)
+                except Exception:
+                    logger.debug("Telegram startup media pop failed", exc_info=True)
+                    incoming = None
+
+            if incoming is not None:
+                if self._event_has_forwarded_text_context(incoming):
+                    incoming = self._inline_forward_context_for_text_followup(incoming)
+                    merged_text_batches += 1
+                slot = {session_key: event}
+                merge_pending_message_event(slot, session_key, incoming, merge_text=True)
+                event = slot[session_key]
+                merged_count += len(getattr(incoming, "media_urls", None) or [])
+                continue
+
+            has_pending = False
+            if has_startup_media_pending is not None:
+                try:
+                    has_pending = bool(has_startup_media_pending(session_key))
+                except Exception:
+                    logger.debug("Telegram startup media pending check failed", exc_info=True)
+                    has_pending = False
+            if merged_count and not has_pending:
+                break
+            if merged_text_batches and not has_pending:
+                break
+            if loop.time() >= deadline:
+                break
+            await asyncio.sleep(min(0.05, max(0.0, deadline - loop.time())))
+
+        if merged_count or merged_text_batches:
+            logger.info(
+                "Merged %d Telegram startup attachment(s) and %d forwarded text batch(es) into text turn for session %s",
+                merged_count,
+                merged_text_batches,
+                session_key,
+            )
+        return event
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -5804,6 +6012,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
+        if (
+            event.source.platform == Platform.TELEGRAM
+            and running_agent is _AGENT_PENDING_SENTINEL
+            and self._event_has_forwarded_text_context(event)
+        ):
+            logger.debug(
+                "Queueing Telegram startup forwarded text batch for session %s without interrupt/ack",
+                session_key,
+            )
+            merge_pending_message_event(
+                adapter._pending_messages,
+                session_key,
+                event,
+                merge_text=True,
+            )
+            return True
+        if self._event_has_batch_media(event):
+            logger.debug(
+                "Queueing busy media follow-up for session %s without interrupt/ack",
+                session_key,
+            )
+            merge_pending_message_event(
+                adapter._pending_messages,
+                session_key,
+                event,
+            )
+            return True
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
@@ -11488,6 +11723,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
             message_text = f"[{_safe_user_name}] {message_text}"
 
+        forward_context = self._format_forward_origin_context(getattr(event, "forward_origin", None))
+        if forward_context:
+            message_text = f"{forward_context}\n\n{message_text}"
+
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
         # trigger message, not the backfill block.
@@ -12772,6 +13011,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
+        event = await self._merge_startup_media_followups(event, source, session_key)
         message_text = await self._prepare_profile_scoped_inbound_message_text(
             event=event,
             source=source,

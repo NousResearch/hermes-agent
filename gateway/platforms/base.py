@@ -1793,6 +1793,7 @@ class MessageEvent:
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
+    forward_origin: Optional[Dict[str, str]] = None
     
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
@@ -2147,6 +2148,8 @@ def merge_pending_message_event(
         incoming_is_photo = event.message_type == MessageType.PHOTO
         existing_has_media = bool(existing.media_urls)
         incoming_has_media = bool(event.media_urls)
+        if getattr(event, "forward_origin", None) and not getattr(existing, "forward_origin", None):
+            existing.forward_origin = event.forward_origin
 
         if existing_is_photo and incoming_is_photo:
             existing.media_urls.extend(event.media_urls)

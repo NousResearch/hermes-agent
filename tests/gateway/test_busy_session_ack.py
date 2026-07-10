@@ -24,10 +24,10 @@ sys.modules.setdefault("telegram", _tg)
 sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
+from gateway.config import Platform
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
-    Platform,
     SessionSource,
     build_session_key,
 )
@@ -212,6 +212,75 @@ class TestBusySessionAck:
         agent.interrupt.assert_called_once_with("Are you working?")
 
     @pytest.mark.asyncio
+
+    @pytest.mark.asyncio
+    async def test_busy_image_followup_queues_without_interrupt_or_ack(self):
+        """Image follow-ups should not trigger the busy interrupt acknowledgment."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text="caption",
+            message_type=MessageType.PHOTO,
+            source=source,
+            message_id="photo-1",
+            media_urls=["/tmp/photo-a.jpg"],
+            media_types=["image/jpeg"],
+        )
+        sk = build_session_key(source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        assert adapter._pending_messages[sk] is event
+        agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_busy_voice_followup_queues_without_interrupt_or_ack(self):
+        """Voice follow-ups from one Telegram batch should not interrupt."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=source,
+            message_id="voice-1",
+            media_urls=["/tmp/voice-a.ogg"],
+            media_types=["audio/ogg"],
+        )
+        sk = build_session_key(source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        assert adapter._pending_messages[sk] is event
+        agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_not_called()
+
     async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):
         """When busy_input_mode is 'queue', message is queued WITHOUT interrupt."""
         runner, sentinel = _make_runner()

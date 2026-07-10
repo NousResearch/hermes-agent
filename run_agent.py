@@ -642,6 +642,13 @@ class AIAgent:
             except Exception as exc:
                 logger.debug("context engine on_session_end during transition: %s", exc)
 
+        # ── Time Awareness Layer 3: record sleep on session transition ──
+        try:
+            from agent.time_awareness import on_session_end as _ta_on_end
+            _ta_on_end()
+        except Exception:
+            pass
+
         if reset_engine and hasattr(engine, "on_session_reset"):
             try:
                 engine.on_session_reset()

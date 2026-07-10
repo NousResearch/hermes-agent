@@ -468,6 +468,30 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if user_block:
                 volatile_parts.append(user_block)
 
+    # ── Session Handoff: auto-load handoff files ──
+    # Reads files from ~/.hermes/session_handoff/ at session build time.
+    # Allows continuity between sessions without the user needing to
+    # explicitly reference the file.
+    try:
+        from pathlib import Path as _Path
+        from hermes_constants import get_hermes_home as _get_hh
+        _handoff_dir = _Path(_get_hh()) / "session_handoff"
+        if _handoff_dir.is_dir():
+            _handoff_parts = []
+            for _hf in sorted(_handoff_dir.glob("*.md")):
+                if _hf.is_file():
+                    _content = _hf.read_text(encoding="utf-8", errors="replace")
+                    if _content.strip():
+                        _handoff_parts.append(
+                            f"--- 交接文件: {_hf.name} ---\n{_content.strip()}"
+                        )
+            if _handoff_parts:
+                volatile_parts.append(
+                    "# 会话交接\n" + "\n\n".join(_handoff_parts)
+                )
+    except Exception:
+        pass
+
     # External memory provider system prompt block (additive to built-in)
     if agent._memory_manager:
         try:
@@ -486,6 +510,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # exact wall-clock time via tools when it actually needs it.
     # Credit: @iamfoz (PR #20451).
     timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
+
+    # ── Time Awareness Layer 1: Dormancy perception ──
+    # Injected at session-build time (cached for the full session).
+    # Tells the agent how long it was dormant between sessions.
+    # Does NOT break prompt cache — computed once, stable for the day.
+    try:
+        from agent.time_awareness import on_session_start as _ta_on_start
+        _wake_ctx = _ta_on_start()
+        if _wake_ctx.get("last_sleep_at"):
+            timestamp_line += (
+                f"\n你上次休眠于: {_wake_ctx['last_sleep_at']}"
+                f"，休眠时长: {_wake_ctx.get('sleep_duration', '未知')}"
+            )
+        else:
+            timestamp_line += "\n你刚刚苏醒。"
+    except Exception:
+        pass
     if agent.pass_session_id and agent.session_id:
         timestamp_line += f"\nSession ID: {agent.session_id}"
     if agent.model:

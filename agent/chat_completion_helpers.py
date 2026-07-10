@@ -667,6 +667,29 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
+    # Time awareness: inject heartbeat timestamp before every API call.
+    # This is NOT part of the system prompt (doesn't break cache), but is
+    # injected into the messages list so the agent perceives time flow
+    # across turns within a session.
+    try:
+        from agent.time_awareness import on_api_call as _time_heartbeat
+        _heartbeat_str = _time_heartbeat()
+        if _heartbeat_str and isinstance(api_messages, list):
+            _heartbeat_msg = {
+                "role": "system",
+                "content": f"[时间心跳] {_heartbeat_str}"
+            }
+            # Insert after the first system message (system prompt) but
+            # before conversation messages. This keeps the system prompt
+            # cache intact while giving the agent current time context.
+            _insert_idx = 0
+            for i, msg in enumerate(api_messages):
+                if msg.get("role") == "system":
+                    _insert_idx = i + 1
+            api_messages.insert(_insert_idx, _heartbeat_msg)
+    except Exception:
+        pass
+
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)

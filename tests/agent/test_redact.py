@@ -410,6 +410,21 @@ class TestElevenLabsTavilyExaKeys:
         result = redact_sensitive_text(text)
         assert "abc123def456ghi" not in result
 
+    def test_sk_snake_case_filename_not_masked(self):
+        """``sk_`` + snake_case is a filename/identifier, not an ElevenLabs key.
+
+        Real ElevenLabs keys are one long alnum run after ``sk_``; the old
+        ``sk_[A-Za-z0-9_]{10,}`` pattern also swallowed filenames like
+        ``sk_daily_report_chart.png``, so the model only ever saw the
+        masked (nonexistent) path and MEDIA delivery failed."""
+        text = "Chart saved to /home/user/sk_daily_report_chart.png"
+        assert redact_sensitive_text(text, code_file=True) == text
+
+    def test_sk_short_alnum_identifier_not_masked(self):
+        """A short underscore-free ``sk_`` token stays below the 20-char floor."""
+        text = "loaded sk_module2026 config"
+        assert redact_sensitive_text(text, code_file=True) == text
+
     def test_tavily_key_redacted(self):
         text = "TAVILY_API_KEY=tvly-ABCdef123456789GHIJKL0000"
         result = redact_sensitive_text(text)

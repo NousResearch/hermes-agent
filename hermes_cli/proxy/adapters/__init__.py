@@ -9,12 +9,14 @@ from typing import Dict, Type
 
 from hermes_cli.proxy.adapters.base import UpstreamAdapter
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
+from hermes_cli.proxy.adapters.openai_codex import OpenAICodexAdapter
 from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 
 # Registry of available adapter classes keyed by provider name as used on
 # the ``hermes proxy start --provider <name>`` CLI flag.
 ADAPTERS: Dict[str, Type[UpstreamAdapter]] = {
     "nous": NousPortalAdapter,
+    "openai-codex": OpenAICodexAdapter,
     "xai": XAIGrokAdapter,
 }
 

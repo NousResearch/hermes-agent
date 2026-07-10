@@ -12,6 +12,7 @@ or rewrite request/response bodies. It's a credential-attaching forwarder.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
 from typing import Optional
@@ -85,6 +86,23 @@ def _filter_response_headers(headers) -> dict:
     return out
 
 
+def _error_context(body: bytes) -> dict:
+    """Extract pool-relevant error metadata without logging request content."""
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        return {}
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return {}
+    context = {
+        "reason": error.get("code") or error.get("type"),
+        "message": error.get("message"),
+        "reset_at": error.get("reset_at") or error.get("resets_at"),
+    }
+    return {key: value for key, value in context.items() if value is not None}
+
+
 def create_app(adapter: UpstreamAdapter) -> "web.Application":
     """Build the aiohttp application bound to a specific upstream adapter."""
     if not AIOHTTP_AVAILABLE:
@@ -144,6 +162,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
 
             fwd_headers = _filter_request_headers(request.headers)
             fwd_headers["Authorization"] = f"{active_cred.token_type} {active_cred.bearer}"
+            fwd_headers.update(active_cred.headers)
 
             logger.debug(
                 "proxy: forwarding %s %s -> %s (body=%d bytes)",
@@ -198,23 +217,38 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             return session_or_response
         session = session_or_response
 
-        if upstream_resp.status in {401, 429}:
+        buffered_response_body = None
+        while upstream_resp.status in {401, 429}:
+            failure_status = upstream_resp.status
+            failure_body = await upstream_resp.read()
             try:
                 retry_cred = adapter.get_retry_credential(
                     failed_credential=cred,
-                    status_code=upstream_resp.status,
+                    status_code=failure_status,
+                    error_context=_error_context(failure_body),
                 )
             except Exception as exc:
                 logger.warning("proxy: retry credential resolution failed: %s", exc)
                 retry_cred = None
 
-            if retry_cred is not None:
-                upstream_resp.release()
-                await session.close()
-                session_or_response, upstream_resp = await _open_upstream(retry_cred)
-                if upstream_resp is None:
-                    return session_or_response
-                session = session_or_response
+            if retry_cred is None:
+                if adapter.fail_closed_on_exhaustion:
+                    upstream_resp.release()
+                    await session.close()
+                    return _json_error(
+                        503,
+                        "All upstream credentials are exhausted or rejected.",
+                        code="credential_pool_exhausted",
+                    )
+                buffered_response_body = failure_body
+                break
+            upstream_resp.release()
+            await session.close()
+            cred = retry_cred
+            session_or_response, upstream_resp = await _open_upstream(retry_cred)
+            if upstream_resp is None:
+                return session_or_response
+            session = session_or_response
 
         # Stream response back. Headers first, then chunked body.
         resp = web.StreamResponse(
@@ -224,6 +258,8 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         await resp.prepare(request)
 
         try:
+            if buffered_response_body:
+                await resp.write(buffered_response_body)
             async for chunk in upstream_resp.content.iter_any():
                 if chunk:
                     await resp.write(chunk)

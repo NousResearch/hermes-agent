@@ -14,8 +14,8 @@ The proxy server is otherwise provider-agnostic.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import FrozenSet, Optional
+from dataclasses import dataclass, field
+from typing import Dict, FrozenSet, Optional
 
 
 @dataclass(frozen=True)
@@ -34,9 +34,14 @@ class UpstreamCredential:
     expires_at: Optional[str] = None
     """ISO-8601 expiry timestamp for the bearer, when known. Informational."""
 
+    headers: Dict[str, str] = field(default_factory=dict)
+    """Provider-required HTTP headers, replacing same-named client headers."""
+
 
 class UpstreamAdapter(ABC):
     """Contract for an upstream provider the proxy can forward to."""
+
+    fail_closed_on_exhaustion = False
 
     @property
     @abstractmethod
@@ -86,13 +91,14 @@ class UpstreamAdapter(ABC):
         *,
         failed_credential: UpstreamCredential,
         status_code: int,
+        error_context: Optional[Dict[str, object]] = None,
     ) -> Optional[UpstreamCredential]:
         """Return an alternate credential after an upstream auth failure.
 
         The default is no retry. Providers can override this for one-shot
         fallback paths after the upstream rejects the first request.
         """
-        _ = failed_credential, status_code
+        _ = failed_credential, status_code, error_context
         return None
 
     def describe(self) -> str:

@@ -773,10 +773,16 @@ def content_hash(skill_path: Path) -> str:
     produce the same digest for the same skill (one operates on disk,
     one on an in-memory bundle), so any change to the hash shape MUST
     land in both places at once.
+
+    **Normalization contract:**
+    - All relative paths are normalized to forward slashes (``/``) before
+      being mixed into the hash.
+    - Files are sorted by the normalized relative path to ensure deterministic
+      ordering across platforms (Windows backslashes vs POSIX forward slashes).
     """
     h = hashlib.sha256()
     if skill_path.is_dir():
-        for f in sorted(skill_path.rglob("*")):
+        for f in sorted(skill_path.rglob("*"), key=lambda p: p.relative_to(skill_path).as_posix()):
             if f.is_file():
                 try:
                     rel = f.relative_to(skill_path).as_posix()

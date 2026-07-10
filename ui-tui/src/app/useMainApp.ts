@@ -208,6 +208,13 @@ export function useMainApp(gw: GatewayClient) {
   const slashRef = useRef<(cmd: string) => boolean>(() => false)
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
+  const [scrollHandle, setScrollHandle] = useState<null | ScrollBoxHandle>(null)
+
+  const bindScrollRef = useCallback((next: null | ScrollBoxHandle) => {
+    scrollRef.current = next
+    setScrollHandle(current => (current === next ? current : next))
+  }, [])
+
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   const clipboardPasteRef = useRef<(quiet?: boolean) => Promise<void> | void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
@@ -404,7 +411,7 @@ export function useMainApp(gw: GatewayClient) {
     [heightCache, virtualRows]
   )
 
-  const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols, {
+  const virtualHistory = useVirtualHistory(scrollHandle, virtualRows, cols, {
     estimateHeight: estimateRowHeight,
     initialHeights: heightCache,
     liveTailActive: turnLiveTailActive,
@@ -1137,8 +1144,8 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const appTranscript = useMemo(
-    () => ({ historyItems, scrollRef, virtualHistory, virtualRows }),
-    [historyItems, virtualHistory, virtualRows]
+    () => ({ bindScrollRef, historyItems, scrollRef, virtualHistory, virtualRows }),
+    [bindScrollRef, historyItems, virtualHistory, virtualRows]
   )
 
   return { appActions, appComposer, appProgress, appStatus, appTranscript, gateway }

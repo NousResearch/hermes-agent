@@ -1,6 +1,5 @@
 import type { ScrollBoxHandle } from '@hermes/ink'
 import {
-  type RefObject,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -108,7 +107,7 @@ export const ensureVirtualItemHeight = (
 }
 
 export function useVirtualHistory(
-  scrollRef: RefObject<ScrollBoxHandle | null>,
+  scrollHandle: ScrollBoxHandle | null,
   items: readonly { key: string }[],
   columns: number,
   {
@@ -141,7 +140,6 @@ export function useVirtualHistory(
     version: -1
   })
 
-  const [hasScrollRef, setHasScrollRef] = useState(false)
   // Height cache writes happen in layout effects; bump once so offsets and
   // clamp bounds rebuild without waiting for the next scroll/input event.
   const [measuredHeightVersion, bumpMeasuredHeightVersion] = useState(0)
@@ -181,24 +179,13 @@ export function useVirtualHistory(
     freezeRenders.current = FREEZE_RENDERS
   }
 
-  useLayoutEffect(() => {
-    setHasScrollRef(Boolean(scrollRef.current))
-  }, [scrollRef])
-
   // Quantized snapshot: same-bin scrolls (most wheel ticks) produce the same
   // key → React.Object.is short-circuits the commit entirely. The key includes
   // sticky state, target scroll position, and viewport height so resize-only
   // changes still recompute the mounted transcript window.
-  const subscribe = useCallback(
-    (cb: () => void) => (hasScrollRef ? scrollRef.current?.subscribe(cb) : null) ?? NOOP,
-    [hasScrollRef, scrollRef]
-  )
+  const subscribe = useCallback((cb: () => void) => scrollHandle?.subscribe(cb) ?? NOOP, [scrollHandle])
 
-  useSyncExternalStore(
-    subscribe,
-    () => virtualHistorySnapshotKey(scrollRef.current),
-    () => 'none'
-  )
+  useSyncExternalStore(subscribe, () => virtualHistorySnapshotKey(scrollHandle), () => 'none')
 
   useEffect(() => {
     const keep = new Set(items.map(i => i.key))
@@ -238,12 +225,12 @@ export function useVirtualHistory(
 
   const offsets = offsetsCache.current.arr
   const total = offsets[n] ?? 0
-  const top = Math.max(0, scrollRef.current?.getScrollTop() ?? 0)
-  const pendingDelta = scrollRef.current?.getPendingDelta() ?? 0
+  const top = Math.max(0, scrollHandle?.getScrollTop() ?? 0)
+  const pendingDelta = scrollHandle?.getPendingDelta() ?? 0
   const target = Math.max(0, top + pendingDelta)
-  const vp = Math.max(0, scrollRef.current?.getViewportHeight() ?? 0)
-  const sticky = scrollRef.current?.isSticky() ?? true
-  const recentManual = Date.now() - (scrollRef.current?.getLastManualScrollAt() ?? 0) < 1200
+  const vp = Math.max(0, scrollHandle?.getViewportHeight() ?? 0)
+  const sticky = scrollHandle?.isSticky() ?? true
+  const recentManual = Date.now() - (scrollHandle?.getLastManualScrollAt() ?? 0) < 1200
 
   // During a freeze, drop the frozen range if items shrank past its start
   // (/clear, compaction) — clamping would collapse to an empty mount and
@@ -452,7 +439,7 @@ export function useVirtualHistory(
   }, [])
 
   useLayoutEffect(() => {
-    const s = scrollRef.current
+    const s = scrollHandle
     let dirty = false
     let heightDirty = false
 
@@ -526,7 +513,7 @@ export function useVirtualHistory(
     if (heightDirty) {
       bumpMeasuredHeightVersion(n => n + 1)
     }
-  }, [effEnd, effStart, items, liveTailActive, measuredHeightVersion, n, offsets, scrollRef, sticky, total, vp])
+  }, [effEnd, effStart, items, liveTailActive, measuredHeightVersion, n, offsets, scrollHandle, sticky, total, vp])
 
   return {
     bottomSpacer: Math.max(0, total - (offsets[effEnd] ?? total)),

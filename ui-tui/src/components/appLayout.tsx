@@ -177,7 +177,7 @@ const TranscriptPane = memo(function TranscriptPane({
             actions.clearSelection()
           }
         }}
-        ref={transcript.scrollRef}
+        ref={transcript.bindScrollRef}
         stickyScroll
       >
         <Box flexDirection="column" paddingX={1}>

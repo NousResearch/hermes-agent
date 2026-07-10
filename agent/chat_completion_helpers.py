@@ -667,6 +667,28 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
+    # ── Time Awareness Layer 2: Heartbeat rhythm ──
+    # Injected into the per-turn message list (NOT the system prompt).
+    # Throttled to once per 5 minutes by default to avoid token waste.
+    # System prompt prefix cache is unaffected since this touches api_messages.
+    try:
+        from agent.time_awareness import on_api_call as _time_heartbeat
+        _heartbeat_str = _time_heartbeat()
+        if _heartbeat_str and isinstance(api_messages, list):
+            _heartbeat_msg = {
+                "role": "system",
+                "content": f"[时间心跳] {_heartbeat_str}"
+            }
+            # Insert after the last system message but before conversation
+            # messages to preserve prefix cache stability.
+            _insert_idx = 0
+            for i, msg in enumerate(api_messages):
+                if msg.get("role") == "system":
+                    _insert_idx = i + 1
+            api_messages.insert(_insert_idx, _heartbeat_msg)
+    except Exception:
+        pass
+
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)

@@ -3772,7 +3772,7 @@ def _save_custom_provider(
 
     # Check if this URL is already saved — update model/context_length if so
     for entry in providers:
-        if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
+        if isinstance(entry, dict) and (entry.get("base_url") or "").rstrip(
             "/"
         ) == base_url.rstrip("/"):
             changed = False

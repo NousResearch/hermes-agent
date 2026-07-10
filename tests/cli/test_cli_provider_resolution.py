@@ -882,3 +882,39 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+
+def test_save_custom_provider_tolerates_null_base_url_in_existing_entry(monkeypatch, tmp_path):
+    """A pre-existing custom_providers entry with ``base_url: null`` must not
+    crash the dedup-scan when saving/updating a different provider.
+
+    ``base_url: null`` parses when a user hand-edits config.yaml and leaves
+    the field blank, or a prior bug wrote an incomplete entry. ``entry.get(
+    "base_url", "")`` returns ``None`` (not the "" default) because the key
+    is present, so a bare ``.rstrip("/")`` raised AttributeError and blocked
+    saving *any* new custom provider until the user manually fixed the file.
+    """
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({
+        "custom_providers": [
+            {"name": "Broken", "base_url": None},
+        ]
+    }))
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: yaml.safe_load(cfg_path.read_text()) or {},
+    )
+    saved = {}
+    def _save(cfg):
+        saved.update(cfg)
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+
+    _save_custom_provider("http://localhost:11434/v1", name="Ollama")
+    entries = saved.get("custom_providers", [])
+    assert len(entries) == 2
+    assert entries[0]["base_url"] is None
+    assert entries[1]["name"] == "Ollama"
+    assert entries[1]["base_url"] == "http://localhost:11434/v1"

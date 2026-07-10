@@ -363,6 +363,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "anthropic": [
         "claude-fable-5",
         "claude-opus-4-8",
+        # Opus 4.8's fast offering is a SEPARATE model id (not the speed=fast
+        # param), so it must be enumerated for the picker to collapse it into
+        # the opus-4.8 family and expose the Fast toggle — mirroring the
+        # OpenRouter fallback (anthropic/claude-opus-4.8-fast). Without this,
+        # the desktop model picker shows no fast control for Opus 4.8.
+        "claude-opus-4-8-fast",
         "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-sonnet-4-6",

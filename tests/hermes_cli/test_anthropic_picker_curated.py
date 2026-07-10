@@ -56,3 +56,28 @@ def test_anthropic_falls_back_to_curated_when_live_unavailable():
 
     assert result == list(M._PROVIDER_MODELS["anthropic"])
     assert "claude-fable-5" in result
+
+
+def test_anthropic_curated_lists_opus_48_fast_sibling():
+    """Opus 4.8's fast variant is a SEPARATE model id, so the desktop picker
+    only exposes its Fast toggle when the ``-fast`` sibling is enumerated next
+    to its base (collapseModelFamilies groups them, resolveFastControl lights
+    the variant toggle). Regression for the missing desktop fast control.
+    """
+    curated = M._PROVIDER_MODELS["anthropic"]
+    assert "claude-opus-4-8" in curated
+    assert "claude-opus-4-8-fast" in curated
+
+    # Fast is offered as a variant model, NOT the speed=fast request param —
+    # so the base must not claim param-fast support (that path is Opus 4.6).
+    assert M.model_supports_fast_mode("claude-opus-4-8") is False
+    assert M.model_supports_fast_mode("claude-opus-4-6") is True
+
+
+def test_anthropic_fast_sibling_survives_live_merge():
+    """The curated fast variant surfaces even when /v1/models omits it."""
+    live = ["claude-opus-4-8", "claude-sonnet-4-6"]
+    with patch.object(M, "_fetch_anthropic_models", return_value=live):
+        result = M.provider_model_ids("anthropic")
+
+    assert "claude-opus-4-8-fast" in result

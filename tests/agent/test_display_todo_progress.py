@@ -280,9 +280,13 @@ class TestWebExtractDisplay:
             ]
         }
         msg = get_cute_tool_message("web_extract", args, 0.2)
-        # Should handle gracefully, default to empty string domain
         assert "📄" in msg
+        assert "pages" in msg
         assert "0.2s" in msg
+
+    def test_web_extract_with_non_string_item_uses_generic_label(self):
+        msg = get_cute_tool_message("web_extract", {"urls": [123]}, 0.2)
+        assert "pages" in msg
 
     def test_web_extract_with_multiple_dicts(self):
         """Multiple dict URLs show '+N' suffix."""

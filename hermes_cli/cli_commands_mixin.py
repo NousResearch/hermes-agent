@@ -2248,10 +2248,13 @@ class CLICommandsMixin:
         _cprint(f"  ✓ Added subgoal {idx}: {text}")
 
     def _handle_skin_command(self, cmd: str):
-        """Handle /skin [name] — show or change the display skin."""
+        """Handle /skin [name|auto] — show, change skin, or toggle auto-switch."""
         from cli import _ACCENT, save_config_value
         try:
-            from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
+            from hermes_cli.skin_engine import (
+                list_skins, set_active_skin, get_active_skin_name,
+                start_skin_auto_switch_monitor, stop_skin_auto_switch_monitor,
+            )
         except ImportError:
             print("Skin engine not available.")
             return
@@ -2261,17 +2264,53 @@ class CLICommandsMixin:
             # Show current skin and list available
             current = get_active_skin_name()
             skins = list_skins()
+            # Auto-switch status
+            display = self.config.get("display") or {}
+            auto_on = display.get("skin_auto_switch", False)
+            skin_dark = display.get("skin_dark", "default")
+            skin_light = display.get("skin_light", "daylight")
+            auto_label = f"● on ({skin_dark} ↔ {skin_light})" if auto_on else "○ off"
             print(f"\n  Current skin: {current}")
+            print(f"  Auto-switch:  {auto_label}")
             print("  Available skins:")
             for s in skins:
                 marker = " ●" if s["name"] == current else "  "
                 source = f" ({s['source']})" if s["source"] == "user" else ""
                 print(f"   {marker} {s['name']}{source} — {s['description']}")
-            print("\n  Usage: /skin <name>")
+            print("\n  Usage:")
+            print("    /skin <name>      Switch to a skin")
+            print("    /skin auto        Toggle auto-switch on/off")
+            print("    /skin auto on     Enable auto-switch")
+            print("    /skin auto off    Disable auto-switch")
             print(f"  Custom skins: drop a YAML file in {display_hermes_home()}/skins/\n")
             return
 
-        new_skin = parts[1].strip().lower()
+        arg = parts[1].strip().lower()
+
+        # /skin auto [on|off] — toggle auto-switch
+        if arg == "auto" or arg.startswith("auto "):
+            sub = arg.split(None, 1)
+            if len(sub) > 1 and sub[1] in ("on", "off"):
+                new_val = sub[1] == "on"
+            else:
+                # Toggle
+                display = self.config.get("display") or {}
+                new_val = not display.get("skin_auto_switch", False)
+
+            if save_config_value("display.skin_auto_switch", new_val):
+                self.config.setdefault("display", {})["skin_auto_switch"] = new_val
+                if new_val:
+                    start_skin_auto_switch_monitor(self.config)
+                    print("  Auto-switch: ON — skin follows system dark/light mode")
+                else:
+                    stop_skin_auto_switch_monitor()
+                    print("  Auto-switch: OFF — using fixed skin")
+            else:
+                print("  Failed to save auto-switch setting.")
+            return
+
+        # /skin <name> — switch to a named skin
+        new_skin = arg
         available = {s["name"] for s in list_skins()}
         if new_skin not in available:
             print(f"  Unknown skin: {new_skin}")

@@ -99,6 +99,26 @@ test('desktop backend teardown tree-kills Windows backend descendants', () => {
   assert.doesNotMatch(quitSnippet, /hermesProcess\.kill\('SIGTERM'\)/)
 })
 
+test('profile pool backend waits for an in-progress update before local runtime spawn', () => {
+  const source = readElectronFile('main.ts')
+  const functionStart = source.indexOf('async function spawnPoolBackend(profile, entry)')
+  const functionEnd = source.indexOf('\nfunction stopPoolBackend(profile)', functionStart)
+
+  assert.notEqual(functionStart, -1, 'missing spawnPoolBackend')
+  assert.notEqual(functionEnd, -1, 'missing end of spawnPoolBackend')
+
+  const body = source.slice(functionStart, functionEnd)
+  const remoteReturn = body.indexOf('if (remote) {')
+  const updateGate = body.indexOf('await waitForUpdateToFinish()')
+  const runtimeResolve = body.indexOf('await ensureRuntime(')
+  const localSpawn = body.indexOf('const child = spawn(')
+
+  assert.ok(remoteReturn >= 0, 'remote profile backends should remain a separate early-return path')
+  assert.ok(updateGate > remoteReturn, 'the update gate must not delay remote profile backends')
+  assert.ok(runtimeResolve > updateGate, 'the local runtime must not be resolved while an update is active')
+  assert.ok(localSpawn > updateGate, 'the local pool backend must not spawn while an update is active')
+})
+
 test('intentional or interactive desktop child processes stay documented', () => {
   const source = readElectronFile('main.ts')
 

@@ -6549,6 +6549,12 @@ async function spawnPoolBackend(profile, entry) {
     }
   }
 
+  // Pool backends are local child processes too. On Windows they can lock the
+  // same managed venv files as the primary backend, so they must obey the
+  // update hand-off marker before resolving or spawning the local runtime.
+  // Remote profile backends return above and never touch the install tree.
+  await waitForUpdateToFinish()
+
   const token = crypto.randomBytes(32).toString('base64url')
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.

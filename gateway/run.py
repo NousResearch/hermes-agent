@@ -12280,7 +12280,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             group_sessions_per_user=_group_sessions_per_user,
             thread_sessions_per_user=_thread_sessions_per_user,
         )
-        if _is_shared_multi_user and source.user_name:
+        # Synthetic gateway events (boot auto-resume, queued continuations,
+        # internal re-prompts) must never impersonate the user: stamping
+        # "[<user>] " onto an EMPTY internal event turned it non-empty, which
+        # ALSO skipped the reason-aware recovery system-note substitution
+        # downstream (it only fires on blank text) — so shared multi-user
+        # sessions saw a ghost "[Ace]" message instead of the recovery note
+        # (2026-07-10 live incident, boot-resume re-prompt).
+        if (
+            _is_shared_multi_user
+            and source.user_name
+            and not getattr(event, "internal", False)
+        ):
             message_text = f"[{source.user_name}] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This
@@ -12720,9 +12731,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
         _reply_id = getattr(event, "reply_to_message_id", None)
         _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
+        # Internal/synthetic events (boot auto-resume, continuations) are not
+        # sent by the human — log them as system-originated so incident
+        # forensics don't chase a phantom "user sent an empty message"
+        # (2026-07-10: `user=Ace msg=''` cost real diagnosis time).
+        _log_user = (
+            "<system:internal>"
+            if getattr(event, "internal", False)
+            else source.user_name or source.user_id or "unknown"
+        )
         logger.info(
             "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
-            _platform_name, source.user_name or source.user_id or "unknown",
+            _platform_name, _log_user,
             source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
         )
 
@@ -14919,6 +14939,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     source=source,
                     message_id=None,
                     channel_prompt=None,
+                    # Synthetic continuation from the goal judge — not authored
+                    # by the human. Without this flag the shared-multi-user
+                    # sender prefix would stamp "[<user>] " onto it
+                    # (impersonation; same class as the boot-resume ghost
+                    # message, 2026-07-10).
+                    internal=True,
                 )
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:

@@ -1240,12 +1240,15 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         optimize_streaming_latency = max(0, min(2, optimize_streaming_latency))
     if auto_speech_tags:
         text = _apply_xai_auto_speech_tags(text)
-    base_url = str(
-        xai_config.get("base_url")
-        or creds.get("base_url")
-        or get_env_value("XAI_BASE_URL")
-        or DEFAULT_XAI_BASE_URL
-    ).strip().rstrip("/")
+    if creds.get("provider") == "xai-oauth":
+        base_url = str(creds.get("base_url") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
+    else:
+        base_url = str(
+            xai_config.get("base_url")
+            or creds.get("base_url")
+            or get_env_value("XAI_BASE_URL")
+            or DEFAULT_XAI_BASE_URL
+        ).strip().rstrip("/")
 
     # Match the documented minimal POST /v1/tts shape by default. Only send
     # output_format when Hermes actually needs a non-default format/override.

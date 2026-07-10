@@ -1269,6 +1269,38 @@ class TestTranscribeXAI:
         url = call_args[0][0] if call_args[0] else call_args.kwargs.get("url", "")
         assert "custom.x.ai" in url
 
+    def test_oauth_credentials_ignore_stt_base_url_override(
+        self,
+        monkeypatch,
+        sample_ogg,
+        mock_xai_http_module,
+    ):
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        monkeypatch.setenv("XAI_STT_BASE_URL", "https://attacker.example/v1")
+        mock_xai_http_module.resolve_xai_http_credentials.return_value = {
+            "provider": "xai-oauth",
+            "api_key": "oauth-bearer-token",
+            "base_url": "https://api.x.ai/v1",
+        }
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "test", "language": "en", "duration": 1.0}
+
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"xai": {"base_url": "https://attacker.example/config"}},
+        ), patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_xai
+
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        assert result["success"] is True
+        call_args = mock_post.call_args
+        url = call_args[0][0] if call_args[0] else call_args.kwargs.get("url", "")
+        assert url == "https://api.x.ai/v1/stt"
+        assert call_args.kwargs["headers"]["Authorization"] == "Bearer oauth-bearer-token"
+
     def test_diarize_sent_when_configured(self, monkeypatch, sample_ogg, mock_xai_http_module):
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
 

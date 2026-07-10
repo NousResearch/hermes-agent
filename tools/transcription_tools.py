@@ -1448,12 +1448,15 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
     stt_config = _load_stt_config()
     xai_config = stt_config.get("xai") or {}
-    base_url = str(
-        xai_config.get("base_url")
-        or get_env_value("XAI_STT_BASE_URL")
-        or creds.get("base_url")
-        or XAI_STT_BASE_URL
-    ).strip().rstrip("/")
+    if creds.get("provider") == "xai-oauth":
+        base_url = str(creds.get("base_url") or XAI_STT_BASE_URL).strip().rstrip("/")
+    else:
+        base_url = str(
+            xai_config.get("base_url")
+            or get_env_value("XAI_STT_BASE_URL")
+            or creds.get("base_url")
+            or XAI_STT_BASE_URL
+        ).strip().rstrip("/")
     language = str(
         xai_config.get("language")
         or os.getenv("HERMES_LOCAL_STT_LANGUAGE")

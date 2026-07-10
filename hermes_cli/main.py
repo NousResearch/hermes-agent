@@ -82,11 +82,12 @@ def _exit_after_oneshot(rc: object) -> None:
     native code and subprocess teardown — the exact class of code that may be
     the abort source — so running them just before the hard exit risks
     re-arming the crash this routine exists to contain. The stateful cleanup
-    that actually matters for one-shot (the recall SQLite store) is closed
-    explicitly in ``_run_agent``; the only atexit-managed resource otherwise
-    skipped is the symlink-safe-skills ``mkdtemp`` reaper, which is not created
-    on the toolless health-check path this issue is about, and whose fds the OS
-    reclaims at process death regardless.
+    that actually matters for one-shot is closed explicitly in ``_run_agent``:
+    the agent owns its task-scoped processes, terminal/browser sessions, child
+    agents, and clients, while the recall SQLite store is checkpointed there as
+    well. Process-wide orphan sweeps and other general ``atexit`` handlers are
+    intentionally left to a later normal interpreter lifetime; daemon workers
+    and remaining file descriptors are reclaimed when this process exits.
     """
     for stream in (sys.stdout, sys.stderr):
         try:

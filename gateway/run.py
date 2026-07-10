@@ -6578,6 +6578,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0
 
+        # A startup self-turn needs positive recovery evidence.  ``updated_at``
+        # is not that evidence: ordinary inbound traffic bumps it, and legacy or
+        # malformed ``last_resume_marked_at`` values deserialize to ``None``.
+        # Likewise, a routing row with no persisted transcript has nothing to
+        # resume.  Clear only these invalid/stale one-shot markers; valid
+        # transcript-backed markers keep the intentional auto-resume behaviour
+        # on interactive platforms and webhook alike.
+        eligible = []
+        for entry in candidates:
+            reject_reason = None
+            marker = entry.last_resume_marked_at
+            if marker is None:
+                reject_reason = "missing interruption timestamp"
+            elif window > 0 and not _is_fresh_gateway_interruption(
+                marker, window_secs=window
+            ):
+                reject_reason = "stale interruption timestamp"
+            else:
+                db = getattr(self.session_store, "_db", None)
+                message_count = getattr(db, "message_count", None)
+                if callable(message_count):
+                    try:
+                        count = message_count(entry.session_id)
+                    except Exception as exc:  # fail open when transcript state is unavailable
+                        logger.debug(
+                            "Could not verify auto-resume transcript for %s: %s",
+                            entry.session_key,
+                            exc,
+                        )
+                    else:
+                        if isinstance(count, int) and not isinstance(count, bool) and count <= 0:
+                            reject_reason = "missing persisted transcript"
+
+            if reject_reason is not None:
+                logger.warning(
+                    "Clearing invalid resume_pending marker for %s: %s",
+                    entry.session_key,
+                    reject_reason,
+                )
+                try:
+                    self.session_store.clear_resume_pending(entry.session_key)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to clear invalid resume_pending marker for %s: %s",
+                        entry.session_key,
+                        exc,
+                    )
+                continue
+            eligible.append(entry)
+        candidates = eligible
+
         # Defense-3 (#30719): break the SIGTERM-respawn loop. Only count this
         # boot when there are restart-interrupted sessions to resume — a clean
         # boot must not accrue toward the breaker. If too many such boots have

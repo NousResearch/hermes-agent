@@ -1140,6 +1140,149 @@ async def test_startup_auto_resume_skips_stale_entries():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "platform",
+    [Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WEBHOOK],
+)
+async def test_startup_auto_resume_preserves_valid_transcript_on_all_surfaces(
+    tmp_path, platform
+):
+    """A fresh, transcript-backed marker remains intentionally auto-resumable."""
+    from hermes_state import SessionDB
+
+    runner, adapter = make_restart_runner()
+    source = SessionSource(
+        platform=platform,
+        chat_id=f"{platform.value}-chat",
+        chat_type="dm",
+        user_id="u1",
+    )
+    entry = SessionEntry(
+        session_key=f"agent:main:{platform.value}:dm:{platform.value}-chat",
+        session_id=f"sid-{platform.value}",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=platform,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    db = SessionDB(db_path=tmp_path / f"{platform.value}.db")
+    db.create_session(session_id=entry.session_id, source=platform.value)
+    db.append_message(entry.session_id, role="user", content="real user intent")
+    runner.session_store._entries = {entry.session_key: entry}
+    runner.session_store._db = db
+    runner.adapters = {platform: adapter}
+    adapter.handle_message = AsyncMock()
+
+    with patch("gateway.restart_loop_guard.check_and_record", return_value=False):
+        scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.internal is True
+    assert event.text == ""
+    assert entry.resume_pending is True
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_rejects_and_clears_transcriptless_marker(tmp_path):
+    """A routing marker without any persisted transcript must not self-turn."""
+    from hermes_state import SessionDB
+
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="transcriptless")
+    entry = SessionEntry(
+        session_key="agent:main:telegram:dm:transcriptless",
+        session_id="sid-transcriptless",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    db = SessionDB(db_path=tmp_path / "transcriptless.db")
+    db.create_session(session_id=entry.session_id, source="telegram")
+    runner.session_store._entries = {entry.session_key: entry}
+    runner.session_store._db = db
+    adapter.handle_message = AsyncMock()
+
+    with patch("gateway.restart_loop_guard.check_and_record", return_value=False):
+        scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    runner.session_store.clear_resume_pending.assert_called_once_with(entry.session_key)
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_rejects_and_clears_missing_marker():
+    """Missing/malformed timestamps deserialize to None and are not fresh proof."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="invalid-marker")
+    entry = SessionEntry(
+        session_key="agent:main:telegram:dm:invalid-marker",
+        session_id="sid-invalid-marker",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=None,
+    )
+    runner.session_store._entries = {entry.session_key: entry}
+    adapter.handle_message = AsyncMock()
+
+    with patch("gateway.restart_loop_guard.check_and_record", return_value=False):
+        scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    runner.session_store.clear_resume_pending.assert_called_once_with(entry.session_key)
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_clears_stale_marker():
+    """A stale one-shot marker must not linger and affect a later real turn."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="stale-clear")
+    stale_marker = datetime.now() - timedelta(
+        seconds=_auto_continue_freshness_window() + 60
+    )
+    entry = SessionEntry(
+        session_key="agent:main:telegram:dm:stale-clear",
+        session_id="sid-stale-clear",
+        created_at=stale_marker,
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=stale_marker,
+    )
+    runner.session_store._entries = {entry.session_key: entry}
+    adapter.handle_message = AsyncMock()
+
+    with patch("gateway.restart_loop_guard.check_and_record", return_value=False):
+        scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    runner.session_store.clear_resume_pending.assert_called_once_with(entry.session_key)
+
+
+@pytest.mark.asyncio
 async def test_startup_auto_resume_skips_suspended_and_originless():
     """suspended entries and entries with no origin are excluded."""
     runner, adapter = make_restart_runner()

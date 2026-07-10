@@ -9,6 +9,7 @@ spawning Node or binding ports.
 from __future__ import annotations
 
 import subprocess
+import sys
 from typing import Any, Dict, List, Tuple
 
 import pytest
@@ -75,6 +76,7 @@ async def test_reap_noop_when_port_free(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="orphan reaping is POSIX-only")
 async def test_reap_kills_verified_orphan(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
     monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _ProbeClient)
@@ -90,6 +92,7 @@ async def test_reap_kills_verified_orphan(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="orphan reaping is POSIX-only")
 async def test_reap_escalates_to_sigkill(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
     monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _ProbeClient)
@@ -107,6 +110,7 @@ async def test_reap_escalates_to_sigkill(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="orphan reaping is POSIX-only")
 async def test_reap_raises_for_foreign_listener(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -169,3 +173,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+    if sys.platform == "win32":
+        assert kwargs["creationflags"] == photon_adapter.windows_hide_flags()
+    else:
+        assert "creationflags" not in kwargs

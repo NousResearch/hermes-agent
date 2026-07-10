@@ -53,6 +53,7 @@ else:
         HTTPX_AVAILABLE = False
         httpx = None
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -944,6 +945,14 @@ class PhotonAdapter(BasePlatformAdapter):
         # never runs — can't leave it orphaned on the port.
         env["PHOTON_SIDECAR_WATCH_STDIN"] = "1"
 
+        # pythonw.exe has no console, so spawning node.EXE (a console app)
+        # without this flag makes Windows allocate a fresh console — which
+        # surfaces as a blank Windows Terminal window that lives as long as the
+        # sidecar does. CREATE_NO_WINDOW keeps the background sidecar headless.
+        _hide_kwargs = (
+            {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        )
+
         try:
             patch = subprocess.run(  # noqa: S603
                 [
@@ -955,6 +964,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 text=True,
                 timeout=10,
                 check=False,
+                **_hide_kwargs,
             )
             if patch.returncode != 0:
                 raise RuntimeError((patch.stderr or patch.stdout or "").strip())
@@ -973,6 +983,7 @@ class PhotonAdapter(BasePlatformAdapter):
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=(sys.platform != "win32"),
+            **_hide_kwargs,
         )
 
         # Pump sidecar stderr/stdout into our logger so users see crashes.

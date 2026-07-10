@@ -42,11 +42,11 @@ _OWNER_REPLY_PREFIX = "[owner reply] "
 
 
 def _listener_pids_on_port(port: int) -> list:
-    """PIDs of processes *listening* on ``port`` (POSIX) — never clients.
+    """PIDs of processes *listening* on ``port`` (POSIX) Ã¢â‚¬â€ never clients.
 
     This must match only LISTEN sockets. A bare ``lsof -i :PORT`` (or
     ``fuser PORT/tcp``) also returns *clients* whose connection merely involves
-    that port number — e.g. a browser with a tab open on a local dev server
+    that port number Ã¢â‚¬â€ e.g. a browser with a tab open on a local dev server
     sharing the port. SIGTERMing those closed the user's browser at irregular
     intervals. Restricting to LISTEN state frees the port for a new bridge
     without ever touching an unrelated client.
@@ -65,7 +65,7 @@ def _listener_pids_on_port(port: int) -> list:
         if pids:
             return pids
     except FileNotFoundError:
-        pass  # lsof not installed — fall through to ss
+        pass  # lsof not installed Ã¢â‚¬â€ fall through to ss
     # Fallback: ss (iproute2, present on virtually every modern Linux).
     try:
         result = subprocess.run(
@@ -122,12 +122,12 @@ def _bridge_pid_is_ours(pid: int, session_path: Path, expected_start) -> bool:
 
     The PID is read from a file written by a previous run.  Once that process
     exits and is reaped the kernel can recycle the number onto an unrelated
-    process — observed in the wild landing on a desktop browser's main process,
+    process Ã¢â‚¬â€ observed in the wild landing on a desktop browser's main process,
     which a bare-liveness ``os.kill`` then SIGTERMed, closing the whole browser
     at irregular intervals (every time the flapping bridge restarted).
 
     Identity is confirmed two ways: the kernel start time captured when we wrote
-    the pidfile (definitive), and — for legacy pidfiles with no baseline — the
+    the pidfile (definitive), and Ã¢â‚¬â€ for legacy pidfiles with no baseline Ã¢â‚¬â€ the
     command line, which must contain ``node`` and this session's unique path.
     A recycled PID (different start time / different cmdline) is never ours.
     """
@@ -153,7 +153,7 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
 
     The bridge writes ``bridge.pid`` into the session directory when it
     starts.  If the gateway crashed without a clean shutdown the old bridge
-    process becomes orphaned — this helper finds and kills it.
+    process becomes orphaned Ã¢â‚¬â€ this helper finds and kills it.
 
     Critically, the recorded PID is re-validated against the live process
     (:func:`_bridge_pid_is_ours`) before any signal, so a recycled PID that now
@@ -285,7 +285,7 @@ def _is_allowed_bridge_path(url: str) -> bool:
     hands back absolute file paths. A compromised or buggy bridge could hand
     back an arbitrary path (e.g. ``/etc/passwd``) which would otherwise be
     attached verbatim and sent to the model. Resolve the path (following any
-    symlinks) and require it to live under one of the real cache roots — this
+    symlinks) and require it to live under one of the real cache roots Ã¢â‚¬â€ this
     covers both the canonical ``cache/<kind>`` layout and the legacy
     ``<kind>_cache`` layout that ``get_hermes_dir`` may return.
     """
@@ -375,9 +375,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     - bridge_script: Path to the Node.js bridge script
     - bridge_port: Port for HTTP communication (default: 3000)
     - session_path: Path to store WhatsApp session data
-    - dm_policy: "open" | "allowlist" | "disabled" | "pairing" — how DMs are handled (default: "pairing")
+    - dm_policy: "open" | "allowlist" | "disabled" | "pairing" Ã¢â‚¬â€ how DMs are handled (default: "pairing")
     - allow_from: List of sender IDs allowed in DMs (when dm_policy="allowlist")
-    - group_policy: "open" | "allowlist" | "disabled" | "pairing" — which groups are processed (default: "pairing")
+    - group_policy: "open" | "allowlist" | "disabled" | "pairing" Ã¢â‚¬â€ which groups are processed (default: "pairing")
     - group_allow_from: List of group JIDs allowed (when group_policy="allowlist")
 
     Behavior (gating, mention parsing, markdown conversion, chunking) is
@@ -407,9 +407,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
-        self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
+        self._allow_from = self._coerce_allow_list(
+            config.extra.get("allow_from")
+            or config.extra.get("allowFrom")
+            or os.getenv("WHATSAPP_ALLOWED_USERS")
+        )
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        self._group_allow_from = self._coerce_allow_list(
+            config.extra.get("group_allow_from")
+            or config.extra.get("groupAllowFrom")
+            or os.getenv("WHATSAPP_GROUP_ALLOWED_USERS")
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -421,12 +429,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # shutdown-time exit (returncode -15 / -2 / 0) from a real crash.
         # Without this, every graceful gateway shutdown/restart would log
         # "Fatal whatsapp adapter error" plus dispatch a fatal-error
-        # notification before the normal "✓ whatsapp disconnected" fires.
+        # notification before the normal "Ã¢Å“â€œ whatsapp disconnected" fires.
         self._shutting_down: bool = False
 
         # Text debounce batching (mirrors Telegram adapter pattern).
         # WhatsApp often delivers multiple messages in rapid succession
-        # (e.g. forwarded batches, paste-splits) — without debounce each
+        # (e.g. forwarded batches, paste-splits) Ã¢â‚¬â€ without debounce each
         # message triggers a separate agent invocation, wasting tokens and
         # flooding the user with reply fragments.  Default 5s delay /
         # 10s split delay are conservative for WhatsApp's delivery cadence.
@@ -471,7 +479,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
             self._set_fatal_error(
                 "whatsapp_node_missing",
-                "Node.js is not installed — install Node.js and re-run `hermes gateway`.",
+                "Node.js is not installed Ã¢â‚¬â€ install Node.js and re-run `hermes gateway`.",
                 retryable=False,
             )
             return False
@@ -503,7 +511,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             self._set_fatal_error(
                 "whatsapp_not_paired",
-                "WhatsApp enabled but not paired — pair from the dashboard or run `hermes whatsapp`.",
+                "WhatsApp enabled but not paired Ã¢â‚¬â€ pair from the dashboard or run `hermes whatsapp`.",
                 retryable=False,
             )
             return False
@@ -713,9 +721,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     except Exception:
                         continue
                 else:
-                    # Still not connected — warn but proceed (bridge may
+                    # Still not connected Ã¢â‚¬â€ warn but proceed (bridge may
                     # auto-reconnect later, e.g. after a code 515 restart).
-                    print(f"[{self.name}] ⚠ WhatsApp not connected after 30s")
+                    print(f"[{self.name}] Ã¢Å¡Â  WhatsApp not connected after 30s")
                     print(f"[{self.name}]   Bridge log: {self._bridge_log}")
                     print(f"[{self.name}]   If session expired, re-pair: hermes whatsapp")
             
@@ -1123,7 +1131,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     ) -> SendResult:
         """Download image URL to cache, send natively via bridge.
 
-        ``metadata`` is accepted to honor the base-class contract — the
+        ``metadata`` is accepted to honor the base-class contract Ã¢â‚¬â€ the
         batch sender ``send_multiple_images`` passes it through to every
         send path. The bridge media call doesn't use it, matching the
         sibling overrides (send_video / send_voice / send_document).
@@ -1153,7 +1161,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a video natively via bridge — plays inline in WhatsApp."""
+        """Send a video natively via bridge Ã¢â‚¬â€ plays inline in WhatsApp."""
         return await self._send_media_to_bridge(chat_id, video_path, "video", caption)
 
     async def send_voice(
@@ -1192,7 +1200,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             import aiohttp
 
-            # Must wrap in `async with` — a bare `await session.post(...)`
+            # Must wrap in `async with` Ã¢â‚¬â€ a bare `await session.post(...)`
             # leaves the response object alive until GC, holding its TCP
             # socket in CLOSE_WAIT. See #18451.
             async with self._http_session.post(
@@ -1267,7 +1275,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             
             await asyncio.sleep(1)  # Poll interval
 
-    # ── Text debounce batching ──────────────────────────────────────
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Text debounce batching Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 
@@ -1383,7 +1391,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         cached_urls.append(url)
                         media_types.append(bridge_mime or "image/jpeg")
                 elif msg_type == MessageType.PHOTO and os.path.isabs(url):
-                    # Local file path — bridge already downloaded the image
+                    # Local file path Ã¢â‚¬â€ bridge already downloaded the image
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
                         media_types.append(bridge_mime or "image/jpeg")
@@ -1401,7 +1409,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         cached_urls.append(url)
                         media_types.append(bridge_mime or ("audio/ogg" if msg_type == MessageType.VOICE else "audio/mpeg"))
                 elif msg_type in {MessageType.VOICE, MessageType.AUDIO} and os.path.isabs(url):
-                    # Local file path — bridge already downloaded the audio
+                    # Local file path Ã¢â‚¬â€ bridge already downloaded the audio
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
                         media_types.append(bridge_mime or ("audio/ogg" if msg_type == MessageType.VOICE else "audio/mpeg"))
@@ -1409,7 +1417,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     else:
                         print(f"[{self.name}] Rejected bridge audio path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.DOCUMENT and os.path.isabs(url):
-                    # Local file path — bridge already downloaded the document
+                    # Local file path Ã¢â‚¬â€ bridge already downloaded the document
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
                         ext = Path(url).suffix.lower()
@@ -1521,19 +1529,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None
 
 
-# ──────────────────────────────────────────────────────────────────────────
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 # Plugin migration glue (#41112 / #3823)
 #
 # Added when the WhatsApp adapter moved from gateway/platforms/whatsapp.py into
 # this bundled plugin. Mirrors the Discord (#24356) / Slack migrations: a
 # register(ctx) entry point plus hook implementations that replace the
 # per-platform core touchpoints (the Platform.WHATSAPP elif in gateway/run.py,
-# the whatsapp_cfg YAML→env block + _PLATFORM_CONNECTED_CHECKERS entry in
+# the whatsapp_cfg YAMLÃ¢â€ â€™env block + _PLATFORM_CONNECTED_CHECKERS entry in
 # gateway/config.py, the _setup_whatsapp wizard + _PLATFORMS["whatsapp"] static
 # dict in hermes_cli/gateway.py, and the _send_whatsapp dispatch in
 # tools/send_message_tool.py).  WhatsApp auth is handled by the Node.js bridge,
 # so is_connected is always True (matches the legacy checker).
-# ──────────────────────────────────────────────────────────────────────────
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 
 _WA_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -1604,7 +1612,7 @@ async def _standalone_send(
             # 2) Each media file as a native attachment via /send-media. The
             # bridge maps mediaType -> image/video/audio/document message kinds
             # so PNG/JPEG/WebP/GIF arrive as inline images, MP4 as a video
-            # bubble, and ogg/opus as a voice note — not a file/document.
+            # bubble, and ogg/opus as a voice note Ã¢â‚¬â€ not a file/document.
             for media_path, is_voice in media:
                 if not os.path.exists(media_path):
                     return {"error": f"WhatsApp media file not found: {media_path}"}
@@ -1687,7 +1695,7 @@ def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     whatsapp_cfg block from gateway/config.py::load_gateway_config(). Env vars
-    take precedence over YAML. Returns None — everything flows through env.
+    take precedence over YAML. Returns None Ã¢â‚¬â€ everything flows through env.
     """
     import json as _json
     if "require_mention" in whatsapp_cfg and not os.getenv("WHATSAPP_REQUIRE_MENTION"):
@@ -1720,8 +1728,8 @@ def _is_connected(config) -> bool:
     """WhatsApp is considered connected when the user has explicitly enabled it
     via ``WHATSAPP_ENABLED`` (or the YAML-bridged equivalent on the config).
 
-    Auth itself is handled by the external Node.js bridge — we can't verify the
-    bridge token here — so the opt-in flag is the connection signal. The legacy
+    Auth itself is handled by the external Node.js bridge Ã¢â‚¬â€ we can't verify the
+    bridge token here Ã¢â‚¬â€ so the opt-in flag is the connection signal. The legacy
     built-in path keyed off ``WHATSAPP_ENABLED`` in both the connected-platforms
     check and the setup-status display; returning an unconditional True here
     would make WhatsApp always show as "configured" in ``hermes setup`` even
@@ -1733,8 +1741,8 @@ def _is_connected(config) -> bool:
         # YAML) counts as configured.
         return True
     # Read via hermes_cli.gateway.get_env_value (not os.getenv) so setup-status
-    # callers that patch get_env_value — and the gateway connected-platforms
-    # check — observe the same value. Matches the discord/slack plugin pattern.
+    # callers that patch get_env_value Ã¢â‚¬â€ and the gateway connected-platforms
+    # check Ã¢â‚¬â€ observe the same value. Matches the discord/slack plugin pattern.
     import hermes_cli.gateway as gateway_mod
     val = (gateway_mod.get_env_value("WHATSAPP_ENABLED") or "").strip().lower()
     return val in {"true", "1", "yes"}
@@ -1746,7 +1754,7 @@ def _build_adapter(config):
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system."""
+    """Plugin entry point Ã¢â‚¬â€ called by the Hermes plugin system."""
     ctx.register_platform(
         name="whatsapp",
         label="WhatsApp",
@@ -1754,7 +1762,7 @@ def register(ctx) -> None:
         check_fn=check_whatsapp_requirements,
         is_connected=_is_connected,
         required_env=["WHATSAPP_ENABLED"],
-        install_hint="WhatsApp requires a Node.js bridge — see the WhatsApp messaging docs",
+        install_hint="WhatsApp requires a Node.js bridge Ã¢â‚¬â€ see the WhatsApp messaging docs",
         setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config,
         allowed_users_env="WHATSAPP_ALLOWED_USERS",
@@ -1762,6 +1770,6 @@ def register(ctx) -> None:
         cron_deliver_env_var="WHATSAPP_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,
         max_message_length=4096,
-        emoji="💬",
+        emoji="ÄŸÅ¸â€™Â¬",
         allow_update_command=True,
     )

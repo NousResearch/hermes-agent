@@ -92,6 +92,20 @@ test('switchBranch: switches a normal checkout branch', async () => {
   }
 })
 
+test('switchBranch: no-ops for a plain project folder instead of failing outside a repo', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-switch-plain-'))
+
+  try {
+    fs.writeFileSync(path.join(dir, 'notes.txt'), 'still untracked\n')
+
+    assert.deepEqual(await switchBranch(dir, 'LLVM-Gen', 'git'), { branch: 'LLVM-Gen' })
+    assert.equal(fs.existsSync(path.join(dir, '.git')), false)
+    assert.equal(fs.readFileSync(path.join(dir, 'notes.txt'), 'utf8'), 'still untracked\n')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('listBranches: lists locals and flags the checked-out branch', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-branches-'))
 

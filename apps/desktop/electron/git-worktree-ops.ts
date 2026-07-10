@@ -122,6 +122,10 @@ async function gitLine(gitBin, args, cwd) {
   }
 }
 
+async function isGitRepo(gitBin, cwd) {
+  return (await gitLine(gitBin, ['rev-parse', '--is-inside-work-tree'], cwd)) === 'true'
+}
+
 async function defaultBranch(gitBin, cwd) {
   const remote = (
     await gitLine(gitBin, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], cwd)
@@ -330,6 +334,14 @@ async function switchBranch(repoPath, branch, gitBin) {
 
   if (!target) {
     throw new Error('Branch name is required.')
+  }
+
+  // A Desktop project may be a plain directory (for example a workspace that
+  // groups nested repos but is intentionally not itself a repo). If a stale or
+  // new-thread hand-off asks to "switch home" there, treat it as a no-op so
+  // normal threads can still start in that directory without creating `.git`.
+  if (!(await isGitRepo(gitBin, resolved))) {
+    return { branch: target }
   }
 
   await runGit(gitBin, ['switch', target], resolved)

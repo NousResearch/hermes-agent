@@ -2716,6 +2716,14 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Optional fail-closed worker startup guard. When canonical_roots is
+        # empty, dispatch behavior is unchanged. Once configured, workers may
+        # never run in/under those primary checkouts; worktree tasks must be
+        # registered linked worktrees on the task-scoped branch prefix.
+        "dispatcher": {
+            "canonical_roots": [],
+            "required_worktree_branch_prefix": "card/{task_id}/",
+        },
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.

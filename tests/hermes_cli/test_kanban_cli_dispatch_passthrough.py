@@ -71,6 +71,45 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
     assert captured.get("max_in_progress_per_profile") == 2
 
 
+def test_cli_dispatch_preserves_guard_with_unrelated_malformed_config(
+    isolated_kanban_home, monkeypatch,
+):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    guard = {"canonical_roots": ["/tmp/repo"]}
+    fake_config = {"kanban": {"dispatcher": guard, "default_assignee": ["bad"]}}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
+    captured = {}
+    monkeypatch.setattr(
+        kanban_db, "dispatch_once",
+        lambda conn, **kw: (captured.update(kw), kanban_db.DispatchResult())[1],
+    )
+    args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=False)
+    kb_cli._cmd_dispatch(args)
+    assert captured.get("workspace_guard") == guard
+    assert captured.get("default_assignee") is None
+
+
+def test_forced_daemon_passes_workspace_guard(isolated_kanban_home, monkeypatch):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    guard = {"canonical_roots": ["/tmp/repo"]}
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: {"kanban": {"dispatcher": guard}}
+    )
+    captured = {}
+    monkeypatch.setattr(kanban_db, "init_db", lambda: None)
+    monkeypatch.setattr(kanban_db, "run_daemon", lambda **kw: captured.update(kw))
+    args = argparse.Namespace(
+        force=True, interval=1.0, max=1, failure_limit=2,
+        pidfile=None, verbose=False,
+    )
+    assert kb_cli._cmd_daemon(args) == 0
+    assert captured.get("workspace_guard") == guard
+
+
 def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypatch):
     """--max on the CLI takes precedence over kanban.max_spawn in config.
     The CLI flag is the explicit operator signal; config is the default."""

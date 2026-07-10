@@ -5375,6 +5375,213 @@ def _git_current_branch(path: Path) -> Optional[str]:
     return branch or None
 
 
+@dataclass(frozen=True)
+class _CanonicalWorkspaceRoot:
+    path: Path
+    common_dir: Path
+    registered_worktrees: frozenset[Path]
+
+
+@dataclass(frozen=True)
+class _WorkspaceGuardState:
+    roots: tuple[_CanonicalWorkspaceRoot, ...] = ()
+    required_branch_prefix: str = "card/{task_id}/"
+    config_error: Optional[str] = None
+
+
+def _git_registered_worktrees(repo_root: Path) -> Optional[frozenset[Path]]:
+    """Read Git's registered worktree paths without changing repository state."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    paths: set[Path] = set()
+    for line in (result.stdout or "").splitlines():
+        if line.startswith("worktree "):
+            try:
+                paths.add(Path(line[len("worktree "):]).expanduser().resolve(strict=False))
+            except (OSError, RuntimeError):
+                return None
+    return frozenset(paths) if paths else None
+
+
+def _prepare_workspace_guard(config: Optional[dict]) -> Optional[_WorkspaceGuardState]:
+    """Validate configured canonical roots once per dispatcher tick.
+
+    An absent/empty root list preserves historical dispatch behavior. Once a
+    root is configured, malformed or unreadable guard state fails closed.
+    """
+    if config is None:
+        return None
+    if not isinstance(config, dict):
+        return _WorkspaceGuardState(config_error="kanban.dispatcher must be a mapping")
+    if not config:
+        return None
+    raw_roots = config.get("canonical_roots")
+    if raw_roots in (None, []):
+        return None
+    prefix = config.get("required_worktree_branch_prefix", "card/{task_id}/")
+    if not isinstance(raw_roots, (list, tuple)) or not raw_roots:
+        return _WorkspaceGuardState(config_error="canonical_roots must be a non-empty list")
+    if not isinstance(prefix, str) or not prefix:
+        return _WorkspaceGuardState(
+            config_error="required_worktree_branch_prefix must be a non-empty string"
+        )
+
+    roots: list[_CanonicalWorkspaceRoot] = []
+    seen_paths: set[Path] = set()
+    seen_common_dirs: set[Path] = set()
+    for raw_root in raw_roots:
+        if not isinstance(raw_root, str) or not raw_root.strip():
+            return _WorkspaceGuardState(config_error="canonical root entries must be paths")
+        root = Path(raw_root).expanduser()
+        if not root.is_absolute():
+            return _WorkspaceGuardState(
+                config_error=f"canonical root is not absolute: {raw_root!r}"
+            )
+        try:
+            root = root.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            return _WorkspaceGuardState(
+                config_error=f"cannot resolve canonical root {raw_root!r}: {exc}"
+            )
+        if not root.exists():
+            return _WorkspaceGuardState(config_error=f"missing canonical root: {root}")
+        if not root.is_dir() or not os.access(root, os.R_OK | os.X_OK):
+            return _WorkspaceGuardState(config_error=f"unreadable canonical root: {root}")
+        toplevel = _git_toplevel(root)
+        common_dir = _git_common_dir(root)
+        registered = _git_registered_worktrees(root)
+        if toplevel is None or common_dir is None or registered is None or toplevel != root:
+            return _WorkspaceGuardState(config_error=f"non-git canonical root: {root}")
+        if root in seen_paths or common_dir in seen_common_dirs:
+            return _WorkspaceGuardState(
+                config_error=f"ambiguous canonical roots resolve to the same repository: {root}"
+            )
+        seen_paths.add(root)
+        seen_common_dirs.add(common_dir)
+        roots.append(_CanonicalWorkspaceRoot(root, common_dir, registered))
+    return _WorkspaceGuardState(tuple(roots), prefix)
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _workspace_guard_preflight_reason(
+    task: Task,
+    guard: _WorkspaceGuardState | None,
+) -> str | None:
+    """Validate worktree metadata before ensure_task_worktree mutates Git state."""
+    if guard is None:
+        return None
+    if guard.config_error:
+        return f"workspace startup guard: BLOCKED: {guard.config_error}"
+    if task.workspace_kind != "worktree":
+        return None
+    branch = (task.branch_name or "").strip()
+    try:
+        required_prefix = guard.required_branch_prefix.format(task_id=task.id)
+    except (KeyError, ValueError, IndexError, AttributeError) as exc:
+        return (
+            "workspace startup guard: BLOCKED: invalid "
+            f"required_worktree_branch_prefix template: {exc}"
+        )
+    if not branch:
+        return (
+            "workspace startup guard: BLOCKED: guarded worktree tasks must "
+            f"declare branch_name with prefix {required_prefix!r}"
+        )
+    if not branch.startswith(required_prefix):
+        return (
+            "workspace startup guard: BLOCKED: declared branch "
+            f"{branch!r} does not start with {required_prefix!r}"
+        )
+    return None
+
+
+def _workspace_guard_reason(task: Task, guard: _WorkspaceGuardState | None) -> str | None:
+    """Return a fail-closed block reason, or ``None`` when startup is safe."""
+    preflight_reason = _workspace_guard_preflight_reason(task, guard)
+    if preflight_reason:
+        return preflight_reason
+    if guard is None:
+        return None
+
+    raw_workspace = (task.workspace_path or "").strip()
+    if task.workspace_kind == "scratch" and not raw_workspace:
+        try:
+            workspace = (workspaces_root() / task.id).resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            return f"workspace startup guard: BLOCKED: cannot resolve scratch workspace: {exc}"
+    elif not raw_workspace:
+        return (
+            "workspace startup guard: BLOCKED: worktree task has no existing "
+            "registered workspace_path"
+        )
+    else:
+        workspace = Path(raw_workspace).expanduser()
+        if not workspace.is_absolute():
+            return "workspace startup guard: BLOCKED: workspace path is not absolute"
+        try:
+            workspace = workspace.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            return f"workspace startup guard: BLOCKED: cannot resolve workspace path: {exc}"
+
+    for canonical in guard.roots:
+        if _path_is_within(workspace, canonical.path):
+            return (
+                "workspace startup guard: BLOCKED: workspace is equal to or inside "
+                f"configured canonical root {canonical.path}"
+            )
+
+    if task.workspace_kind != "worktree":
+        return None
+    if not workspace.is_dir() or not os.access(workspace, os.R_OK | os.X_OK):
+        return (
+            "workspace startup guard: BLOCKED: worktree workspace is missing or unreadable: "
+            f"{workspace}"
+        )
+    common_dir = _git_common_dir(workspace)
+    linked = [root for root in guard.roots if root.common_dir == common_dir]
+    if len(linked) != 1:
+        return (
+            "workspace startup guard: BLOCKED: worktree is not linked unambiguously "
+            "to exactly one configured canonical root"
+        )
+    if workspace not in linked[0].registered_worktrees or not _is_linked_worktree_checkout(workspace):
+        return (
+            "workspace startup guard: BLOCKED: workspace is not a registered linked "
+            f"Git worktree of {linked[0].path}"
+        )
+    try:
+        required_prefix = guard.required_branch_prefix.format(task_id=task.id)
+    except (KeyError, ValueError, IndexError, AttributeError) as exc:
+        return (
+            "workspace startup guard: BLOCKED: invalid "
+            f"required_worktree_branch_prefix template: {exc}"
+        )
+    branch = _git_current_branch(workspace)
+    if not branch or not branch.startswith(required_prefix):
+        return (
+            "workspace startup guard: BLOCKED: worktree branch "
+            f"{branch or '(detached)'} must start with {required_prefix}"
+        )
+    return None
+
+
 def _is_linked_worktree_checkout(path: Path) -> bool:
     git_dir = _git_dir(path)
     common_dir = _git_common_dir(path)
@@ -5722,6 +5929,10 @@ class DispatchResult:
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    workspace_blocked: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks blocked before worker startup by the canonical workspace guard,
+    as ``(task_id, explicit_reason)`` pairs. These are safety blocks, not
+    spawn failures, and therefore do not increment retry counts."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -6947,6 +7158,58 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _guard_dispatch_task(
+    conn: sqlite3.Connection,
+    task: Task,
+    guard: _WorkspaceGuardState | None,
+    result: DispatchResult,
+    *,
+    dry_run: bool,
+    preflight_only: bool = False,
+) -> bool:
+    """Apply the startup guard; return True when dispatch must stop for task."""
+    reason = (
+        _workspace_guard_preflight_reason(task, guard)
+        if preflight_only
+        else _workspace_guard_reason(task, guard)
+    )
+    # Dry-run must not create worktrees. A not-yet-materialized worktree
+    # cannot be fully validated until real dispatch, but metadata preflight
+    # above still rejects missing or wrong branch declarations.
+    if (
+        not preflight_only
+        and dry_run
+        and task.workspace_kind == "worktree"
+        and not (task.workspace_path or "").strip()
+        and reason
+        and "no existing registered workspace_path" in reason
+    ):
+        return False
+    if reason is None:
+        return False
+    result.workspace_blocked.append((task.id, reason))
+    if dry_run:
+        return True
+
+    blocked = block_task(
+        conn,
+        task.id,
+        reason=reason,
+        kind="capability",
+        expected_run_id=task.current_run_id,
+    )
+    if blocked:
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task.id,
+                "workspace_guard_blocked",
+                {"reason": reason},
+                run_id=task.current_run_id,
+            )
+    return True
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -6960,6 +7223,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    workspace_guard: Optional[dict] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -6994,6 +7258,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            workspace_guard=workspace_guard,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -7010,6 +7275,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            workspace_guard=workspace_guard,
         )
 
 
@@ -7026,6 +7292,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    workspace_guard: Optional[dict] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -7060,6 +7327,7 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    guard_state = _prepare_workspace_guard(workspace_guard)
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -7260,6 +7528,11 @@ def _dispatch_once_locked(
                     )
             continue
         if dry_run:
+            task = get_task(conn, row["id"])
+            if task is not None and _guard_dispatch_task(
+                conn, task, guard_state, result, dry_run=True
+            ):
+                continue
             result.spawned.append((row["id"], row_assignee, ""))
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
@@ -7272,6 +7545,15 @@ def _dispatch_once_locked(
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            continue
+        if _guard_dispatch_task(
+            conn,
+            claimed,
+            guard_state,
+            result,
+            dry_run=False,
+            preflight_only=True,
+        ):
             continue
         try:
             resolved_branch_name = None
@@ -7291,6 +7573,16 @@ def _dispatch_once_locked(
         set_workspace_path(conn, claimed.id, str(workspace))
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        guarded_task = get_task(conn, claimed.id) or claimed
+        current_guard_state = (
+            _prepare_workspace_guard(workspace_guard)
+            if claimed.workspace_kind == "worktree"
+            else guard_state
+        )
+        if _guard_dispatch_task(
+            conn, guarded_task, current_guard_state, result, dry_run=False
+        ):
+            continue
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
@@ -7360,10 +7652,24 @@ def _dispatch_once_locked(
             result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:
+            task = get_task(conn, row["id"])
+            if task is not None and _guard_dispatch_task(
+                conn, task, guard_state, result, dry_run=True
+            ):
+                continue
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            continue
+        if _guard_dispatch_task(
+            conn,
+            claimed,
+            guard_state,
+            result,
+            dry_run=False,
+            preflight_only=True,
+        ):
             continue
         try:
             resolved_branch_name = None
@@ -7383,6 +7689,16 @@ def _dispatch_once_locked(
         set_workspace_path(conn, claimed.id, str(workspace))
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        guarded_task = get_task(conn, claimed.id) or claimed
+        current_guard_state = (
+            _prepare_workspace_guard(workspace_guard)
+            if claimed.workspace_kind == "worktree"
+            else guard_state
+        )
+        if _guard_dispatch_task(
+            conn, guarded_task, current_guard_state, result, dry_run=False
+        ):
+            continue
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         # Force-load the sdlc-review skill for review agents — it carries
         # the review logic (AC verification, merge, etc.). The mandatory
@@ -7868,6 +8184,7 @@ def run_daemon(
     interval: float = 60.0,
     max_spawn: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
+    workspace_guard: Optional[dict] = None,
     stop_event=None,
     on_tick=None,
 ) -> None:
@@ -7905,6 +8222,7 @@ def run_daemon(
                     conn,
                     max_spawn=max_spawn,
                     failure_limit=failure_limit,
+                    workspace_guard=workspace_guard,
                 )
             if on_tick is not None:
                 try:

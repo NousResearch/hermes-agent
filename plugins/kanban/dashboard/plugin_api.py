@@ -1958,10 +1958,20 @@ def dispatch(
     board: Optional[str] = Query(None),
 ):
     board = _resolve_board(board)
+    workspace_guard = None
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        if isinstance(kanban_cfg, dict):
+            workspace_guard = kanban_cfg.get("dispatcher")
+    except Exception:
+        pass
     conn = _conn(board=board)
     try:
         result = kanban_db.dispatch_once(
             conn, dry_run=dry_run, max_spawn=max_n, board=board,
+            workspace_guard=workspace_guard,
         )
         # DispatchResult is a dataclass.
         try:

@@ -78,6 +78,13 @@ import pytest
     ("x-ai/grok-4-fast-reasoning", 300.0),
     ("x-ai/grok-4.20-reasoning", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
+    # MiniMax M2.x — reasoning models that emit reasoning_content before
+    # first content token (#17924, #62353).  Live-observed stall: 240s mid
+    # tool-call arguments (test_streaming.py:1270-1278).  The default 180s
+    # chat-model stale detector kills the connection mid-think.
+    ("minimax/minimax-m2.7", 300.0),
+    ("minimax/minimax-m2.5", 300.0),
+    ("minimax-m2.7", 300.0),  # catalog -free variant inherits via separator anchor
 ])
 def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
@@ -113,6 +120,10 @@ def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
     "deepseek-chat",
     "deepseek/deepseek-chat",
     "some-deepseek-v4-flash",     # embedded v4 slug, NOT start of slug
+    # MiniMax non-reasoning variants must not match minimax-m2 reasoning entry.
+    "minimax/minimax-vl",
+    "minimax-chat",
+    "some-minimax-m2-fork",       # embedded m2 slug, NOT start of slug
     # Empty / None / non-string inputs — must return None, not raise.
     "",
     None,

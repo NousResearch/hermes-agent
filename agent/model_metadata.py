@@ -230,7 +230,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     # provider-aware branches (_resolve_codex_oauth_context_length + models.dev).
     # This hardcoded value is only reached when every probe misses.
     # GPT-5.6 series (Sol/Terra/Luna, GA 2026-07-09) — 1.05M on the direct
-    # OpenAI API (same as gpt-5.5). Codex OAuth caps these at 272K.
+    # OpenAI API (same as gpt-5.5). Codex OAuth exposes a 372K total window
+    # with a 353.4K effective budget after its 5% safety margin.
     # (Lookups length-sort keys at match time, so dict order is cosmetic.)
     "gpt-5.6-luna": 1050000,
     "gpt-5.6-terra": 1050000,
@@ -534,8 +535,13 @@ def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
 
     LM Studio excludes caching because loaded context is transient — the user
     can reload the model with a different context_length at any time.
+
+    Codex OAuth also exposes authoritative, evolving per-model limits from its
+    own ``/models`` endpoint. Keep writing successful probes for diagnostics,
+    but do not let a fallback cached during an outage permanently mask a later
+    catalog update (for example GPT-5.6 moving from 272k fallback to 372k).
    """
-    return provider == "lmstudio"
+    return provider in {"lmstudio", "openai-codex"}
 
 
 def _maybe_cache_local_context_length(
@@ -1843,9 +1849,11 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.3-codex-spark": 128_000,
     "gpt-5.2-codex": 272_000,
     "gpt-5.4-mini": 272_000,
-    "gpt-5.6-sol": 272_000,
-    "gpt-5.6-terra": 272_000,
-    "gpt-5.6-luna": 272_000,
+    # GPT-5.6 exposes a 372k total window on Codex OAuth. Codex reserves a
+    # 5% safety margin at runtime, leaving a 353.4k effective input budget.
+    "gpt-5.6-sol": 372_000,
+    "gpt-5.6-terra": 372_000,
+    "gpt-5.6-luna": 372_000,
     "gpt-5.5": 272_000,
     "gpt-5.4": 272_000,
     "gpt-5.2": 272_000,
@@ -2106,24 +2114,23 @@ def get_model_context_length(
     # LM Studio is excluded — its loaded context length is transient (the
     # user can reload the model with a different context_length at any time
     # via /api/v1/models/load), so a stale cached value would mask reloads.
-    if base_url and not _skip_persistent_context_cache(base_url, provider):
+    # Codex likewise never returns a persisted value, but still removes the
+    # known pre-provider-aware direct-API values so the cache remains useful
+    # for diagnostics.
+    if base_url and provider == "openai-codex":
+        cached = get_cached_context_length(model, base_url)
+        if cached is not None and cached >= 400_000:
+            logger.info(
+                "Dropping stale Codex cache entry %s@%s -> %s (pre-fix value); "
+                "re-resolving via live /models probe",
+                model, base_url, f"{cached:,}",
+            )
+            _invalidate_cached_context_length(model, base_url)
+    elif base_url and not _skip_persistent_context_cache(base_url, provider):
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
-            # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
-            # resolved gpt-5.x to the direct-API value (e.g. 1.05M) via
-            # models.dev and persisted it. Codex OAuth caps at 272K for every
-            # slug, so any cached Codex entry at or above 400K is a leftover
-            # from the old resolution path. Drop it and fall through to the
-            # live /models probe in step 5 below.
-            if provider == "openai-codex" and cached >= 400_000:
-                logger.info(
-                    "Dropping stale Codex cache entry %s@%s -> %s (pre-fix value); "
-                    "re-resolving via live /models probe",
-                    model, base_url, f"{cached:,}",
-                )
-                _invalidate_cached_context_length(model, base_url)
             # Invalidate stale 32k cache entries for Kimi-family models.
-            elif cached <= 32768 and _model_name_suggests_kimi(model):
+            if cached <= 32768 and _model_name_suggests_kimi(model):
                 logger.info(
                     "Dropping stale Kimi cache entry %s@%s -> %s (OpenRouter underreport); "
                     "re-resolving via hardcoded defaults",

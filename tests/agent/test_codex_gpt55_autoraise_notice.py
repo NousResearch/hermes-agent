@@ -54,11 +54,27 @@ def _config(*, show_notice: bool) -> dict:
     }
 
 
-def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
-    """Construct a real Codex gpt-5.5 agent under an isolated config."""
+def _make_codex_agent(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    show_notice: bool,
+    model: str = "gpt-5.5",
+    context_length: int = 272_000,
+):
+    """Construct a real Codex agent under an isolated config."""
+    import run_agent
+
     from hermes_cli import config as config_mod
+    from agent import context_compressor as compressor_mod
 
     monkeypatch.setattr(config_mod, "load_config", lambda: _config(show_notice=show_notice))
+    monkeypatch.setattr(run_agent, "_hermes_home", get_hermes_home())
+    monkeypatch.setattr(
+        compressor_mod,
+        "get_model_context_length",
+        lambda *args, **kwargs: context_length,
+    )
     db = SessionDB(db_path=tmp_path / "state.db")
     stdout = io.StringIO()
 
@@ -67,7 +83,7 @@ def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
             base_url="https://chatgpt.com/backend-api/codex",
             api_key="test-key",
             provider="openai-codex",
-            model="gpt-5.5",
+            model=model,
             enabled_toolsets=[],
             disabled_toolsets=[],
             quiet_mode=False,
@@ -105,6 +121,23 @@ def test_codex_gpt55_autoraise_notice_can_be_suppressed_without_disabling_autora
     assert _threshold_ratio(agent) == 0.85
     assert getattr(agent, "_compression_warning") is None
     assert "auto-compaction was raised" not in stdout
+
+
+def test_codex_gpt56_uses_372k_window_and_95_percent_autoraise(monkeypatch, tmp_path):
+    agent, stdout = _make_codex_agent(
+        monkeypatch,
+        tmp_path,
+        show_notice=True,
+        model="gpt-5.6-sol",
+        context_length=372_000,
+    )
+
+    assert agent.context_compressor.context_length == 372_000
+    assert _threshold_ratio(agent) == 0.95
+    warning = getattr(agent, "_compression_warning")
+    assert "372K" in warning
+    assert "95%" in warning
+    assert "372K" in stdout
 
 
 def test_codex_gpt55_autoraise_notice_deduped_across_agent_inits(monkeypatch, tmp_path):

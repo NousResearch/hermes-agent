@@ -23,7 +23,7 @@ import type {
   ModelOptionProvider,
   StaleAuxAssignment
 } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
@@ -132,6 +132,7 @@ export const withActive = (models: readonly string[], active: string): readonly 
 
 interface StaleAuxWarningProps {
   applying: boolean
+  copy: Translations['settings']['model']
   onReset: () => void
   slots: readonly StaleAuxAssignment[]
   taskLabel: (key: string) => string
@@ -141,7 +142,7 @@ interface StaleAuxWarningProps {
 // current main. Surfaces the silent credit-burn path (e.g. aux pinned to a
 // $0-balance provider after switching main away from it) and offers the
 // existing one-click reset rather than auto-clearing legitimate pins.
-function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarningProps) {
+function StaleAuxWarning({ applying, copy, onReset, slots, taskLabel }: StaleAuxWarningProps) {
   if (!slots.length) {
     return null
   }
@@ -149,16 +150,16 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
   const provider = slots[0].provider
   const allSameProvider = slots.every(slot => slot.provider === provider)
   const names = slots.map(slot => taskLabel(slot.task)).join(', ')
+  const providerLabel = allSameProvider ? provider : copy.otherProviders
 
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
       <AlertTriangle className="size-3.5 shrink-0" />
       <span className="grow">
-        {slots.length} auxiliary task{slots.length === 1 ? '' : 's'} ({names}) still run on{' '}
-        <span className="font-mono">{allSameProvider ? provider : 'other providers'}</span>, not your main model.
+        {copy.staleAuxWarning(slots.length, names, providerLabel)}
       </span>
       <Button disabled={applying} onClick={onReset} size="sm" variant="textStrong">
-        Reset all to main
+        {copy.resetAllToMain}
       </Button>
     </div>
   )
@@ -753,6 +754,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           <div className="mt-2">
             <StaleAuxWarning
               applying={applying}
+              copy={m}
               onReset={() => void resetAuxiliaryModels()}
               slots={switchStaleAux}
               taskLabel={auxiliaryTaskLabel}
@@ -778,6 +780,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           <div className="mb-2.5">
             <StaleAuxWarning
               applying={applying}
+              copy={m}
               onReset={() => void resetAuxiliaryModels()}
               slots={persistentStaleAux}
               taskLabel={auxiliaryTaskLabel}
@@ -880,15 +883,17 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       </section>
       {moa && currentMoaPreset && (
         <section>
-          <SectionHeading icon={Cpu} title="Mixture of Agents" />
-          <p className="mb-2 text-xs text-muted-foreground">
-            Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
-            acting model.
-          </p>
+          <div className="mb-2.5 flex items-center justify-between">
+            <SectionHeading icon={Cpu} title={m.moa.title} />
+            <Button disabled={applying} onClick={() => void saveMoa(moa)} size="sm" variant="textStrong">
+              {applying ? m.applying : t.common.save}
+            </Button>
+          </div>
+          <p className="mb-2 text-xs text-muted-foreground">{m.moa.description}</p>
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-                <SelectValue placeholder="Preset" />
+                <SelectValue placeholder={m.moa.presetPlaceholder} />
               </SelectTrigger>
               <SelectContent>
                 {Object.keys(moa.presets).map(name => (
@@ -911,7 +916,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               size="sm"
               variant="text"
             >
-              Set default
+              {m.moa.setDefault}
             </Button>
             <Button
               disabled={Object.keys(moa.presets).length <= 1 || applying}
@@ -937,12 +942,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               size="sm"
               variant="ghost"
             >
-              Delete
+              {m.moa.deletePreset}
             </Button>
             <Input
               className={cn('w-40', CONTROL_TEXT)}
               onChange={event => setNewMoaPresetName(event.target.value)}
-              placeholder="new preset"
+              placeholder={m.moa.newPresetPlaceholder}
               value={newMoaPresetName}
             />
             <Button
@@ -965,11 +970,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               size="sm"
               variant="textStrong"
             >
-              Add preset
+              {m.moa.addPreset}
             </Button>
           </div>
           <div className="mb-2 text-xs text-muted-foreground">
-            Default: <span className="font-mono">{moa.default_preset}</span>
+            {m.moa.defaultLabel} <span className="font-mono">{moa.default_preset}</span>
           </div>
           <div className="grid gap-1">
             {currentMoaPreset.reference_models.map((slot, index) => (
@@ -1031,7 +1036,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                       size="sm"
                       variant="ghost"
                     >
-                      Remove
+                      {m.moa.removeReference}
                     </Button>
                   </div>
                 }
@@ -1041,7 +1046,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   </span>
                 }
                 key={`${selectedMoaPreset}-${slot.provider}-${slot.model}-${index}`}
-                title={`Reference ${index + 1}`}
+                title={m.moa.referenceTitle(index + 1)}
               />
             ))}
             <Button
@@ -1052,7 +1057,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               size="sm"
               variant="textStrong"
             >
-              Add reference model
+              {m.moa.addReferenceModel}
             </Button>
             <ListRow
               below={
@@ -1107,7 +1112,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   {currentMoaPreset.aggregator.provider} · {currentMoaPreset.aggregator.model}
                 </span>
               }
-              title="Aggregator"
+              title={m.moa.aggregatorTitle}
             />
           </div>
         </section>

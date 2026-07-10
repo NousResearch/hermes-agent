@@ -17,4 +17,4 @@ export {
   normalizeLocale
 } from './languages'
 export { setRuntimeI18nLocale, translateNow } from './runtime'
-export type { Locale, ToolTitleKey, Translations } from './types'
+export type { IntroCopy, Locale, ToolTitleKey, Translations } from './types'

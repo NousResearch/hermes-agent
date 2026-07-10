@@ -3571,10 +3571,15 @@ def probe_api_models(
         candidates.append((alternate_base, True))
 
     tried: list[str] = []
+    from utils import base_url_host_matches
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
+    # NVIDIA NIM endpoints require X-API-Key header instead of Bearer
+    _is_nvidia = base_url_host_matches(normalized, "integrate.api.nvidia.com")
     if api_key and api_mode == "anthropic_messages":
         headers["x-api-key"] = api_key
         headers["anthropic-version"] = "2023-06-01"
+    elif api_key and _is_nvidia:
+        headers["X-API-Key"] = api_key
     elif api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     if normalized.startswith(COPILOT_BASE_URL):

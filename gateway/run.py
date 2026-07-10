@@ -5334,6 +5334,71 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # semantics); everything else appends to the overflow tail.
         pending_slot = getattr(adapter, "_pending_messages", None)
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
+
+        # Real user input must outrank synthetic completion notifications.
+        # Internal events deliberately queue without interrupting a busy turn,
+        # so one can already occupy the head slot when a user sends an
+        # interrupting follow-up. Plain FIFO would abort the active model call
+        # but then run the older internal notification first — making the
+        # truthful-looking "Interrupting current task" ack a priority inversion
+        # and delaying the user's steering by an entire extra agent turn.
+        # Preserve order within each class, but place real user input before
+        # queued internal events.
+        incoming_internal = bool(getattr(event, "internal", False))
+        if existing is not None and not incoming_internal:
+            queued_events = getattr(self, "_queued_events", None)
+            if queued_events is None:
+                queued_events = {}
+                self._queued_events = queued_events
+            overflow = queued_events.setdefault(session_key, [])
+            existing_internal = bool(getattr(existing, "internal", False))
+
+            if existing_internal:
+                if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+                    # Prefer dropping one synthetic notification over dropping
+                    # live operator steering when the bounded queue is full.
+                    logger.warning(
+                        "Replacing queued internal event with user input for session %s — "
+                        "pending queue at cap (%d).",
+                        session_key,
+                        self._BUSY_QUEUE_MAX_PENDING,
+                    )
+                else:
+                    overflow.insert(0, existing)
+                adapter._pending_messages[session_key] = event
+                logger.info(
+                    "Prioritized user input ahead of queued internal event for session %s.",
+                    session_key,
+                )
+                return
+
+            first_internal = next(
+                (index for index, queued in enumerate(overflow) if getattr(queued, "internal", False)),
+                None,
+            )
+            if first_internal is not None:
+                if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+                    # Remove the last synthetic event to make room without
+                    # reordering or discarding any real user follow-up.
+                    last_internal = next(
+                        (
+                            index
+                            for index in range(len(overflow) - 1, -1, -1)
+                            if getattr(overflow[index], "internal", False)
+                        ),
+                        None,
+                    )
+                    if last_internal is not None:
+                        overflow.pop(last_internal)
+                        if last_internal < first_internal:
+                            first_internal -= 1
+                overflow.insert(first_internal, event)
+                logger.info(
+                    "Prioritized user input ahead of queued internal overflow for session %s.",
+                    session_key,
+                )
+                return
+
         if existing is not None and (
             getattr(existing, "message_type", None) == MessageType.PHOTO
             or event.message_type == MessageType.PHOTO

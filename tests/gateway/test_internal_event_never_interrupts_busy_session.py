@@ -69,6 +69,7 @@ def _make_runner() -> GatewayRunner:
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
+    runner._queued_events = {}
     runner._busy_ack_ts = {}
     runner._draining = False
     runner.adapters = {}
@@ -149,3 +150,31 @@ async def test_non_internal_event_still_interrupts() -> None:
 
     assert handled is True
     parent.interrupt.assert_called_once_with("please stop")
+
+
+@pytest.mark.asyncio
+async def test_user_interrupt_jumps_ahead_of_queued_internal_completion() -> None:
+    """A real user interrupt must be the next turn, even when a background
+    completion notification reached the pending slot first."""
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter()
+
+    internal = _make_internal_event(text="[background process completed]")
+    user_event = _make_internal_event(text="Need Marketing too. they'll run socials.")
+    object.__setattr__(user_event, "internal", False)
+    object.__setattr__(user_event, "source", internal.source)
+    object.__setattr__(user_event, "message_id", "user-msg")
+
+    sk = build_session_key(user_event.source)
+    adapter._pending_messages[sk] = internal
+    parent = _make_running_parent()
+    runner._running_agents[sk] = parent
+    runner.adapters[user_event.source.platform] = adapter
+
+    handled = await runner._handle_active_session_busy_message(user_event, sk)
+
+    assert handled is True
+    parent.interrupt.assert_called_once_with("Need Marketing too. they'll run socials.")
+    assert adapter._pending_messages[sk] is user_event
+    assert runner._queued_events[sk] == [internal]

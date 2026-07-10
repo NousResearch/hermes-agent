@@ -414,6 +414,18 @@ class TestNousProfile:
         body = p.build_extra_body()
         assert body["tags"] == nous_portal_tags()
 
+    def test_extra_body_with_provider_preferences(self):
+        from agent.portal_tags import nous_portal_tags
+
+        p = get_provider_profile("nous")
+        preferences = {"only": ["deepseek"], "ignore": ["deepinfra"]}
+        body = p.build_extra_body(provider_preferences=preferences)
+
+        assert body == {
+            "tags": nous_portal_tags(),
+            "provider": preferences,
+        }
+
     def test_auth_type(self):
         p = get_provider_profile("nous")
         assert p.auth_type == "oauth_device_code"

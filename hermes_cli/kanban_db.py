@@ -1566,7 +1566,24 @@ class KanbanDbCorruptError(RuntimeError):
         )
 
 
-def _backup_corrupt_db(path: Path) -> Optional[Path]:
+def _kanban_db_fingerprint(path: Path) -> Optional[str]:
+    """Return the first 16 hex chars of ``path``'s sha256, or ``None``.
+
+    Used to content-address ``.corrupt.*.bak`` names. Callers must fingerprint
+    the on-disk bytes *before* any read/write probe that could checkpoint a
+    WAL DB and mutate the file — see :func:`_guard_existing_db_is_healthy`.
+    """
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()[:16]
+
+
+def _backup_corrupt_db(path: Path, token: Optional[str] = None) -> Optional[Path]:
     """Copy a corrupt DB (and its WAL/SHM sidecars) to a content-addressed backup.
 
     The backup filename is deterministic in the main DB's sha256, so repeated
@@ -1589,14 +1606,14 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     resolved = path.resolve()
     parent = resolved.parent
     base_name = resolved.name  # basename only
-    digest = hashlib.sha256()
-    try:
-        with resolved.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError:
+    # Prefer a caller-supplied fingerprint taken from the pre-probe bytes so
+    # repeated quarantines of the same corruption reuse one backup even after
+    # an R/W integrity probe has checkpointed the WAL into the main file. Fall
+    # back to hashing the current bytes for callers that pass nothing.
+    if token is None:
+        token = _kanban_db_fingerprint(resolved)
+    if token is None:
         return None
-    token = digest.hexdigest()[:16]
     candidate = parent / f"{base_name}.corrupt.{token}.bak"
     # Defensive: candidate must still be inside parent after construction.
     if candidate.parent != parent:
@@ -1658,6 +1675,12 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         return
     if str(resolved) in _INITIALIZED_PATHS:
         return
+    # Fingerprint the on-disk bytes BEFORE the R/W probe below. Opening a
+    # WAL-mode DB read/write checkpoints frames into the main file and changes
+    # its content hash; fingerprinting afterward gave every re-probe of the
+    # same corruption a different .corrupt.<hash>.bak and defeated the
+    # content-addressed dedup (2026-07-09 backup storm).
+    pre_probe_token = _kanban_db_fingerprint(resolved)
     reason: Optional[str] = None
     try:
         probe = _sqlite_connect(resolved)
@@ -1674,7 +1697,7 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
         return
-    backup = _backup_corrupt_db(resolved)
+    backup = _backup_corrupt_db(resolved, token=pre_probe_token)
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 

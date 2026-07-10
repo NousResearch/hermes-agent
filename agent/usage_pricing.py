@@ -560,6 +560,57 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://aws.amazon.com/bedrock/pricing/",
         pricing_version="bedrock-pricing-2026-04",
     ),
+    # Current-gen Claude on Bedrock. Rates keyed to Anthropic's published
+    # list price (https://docs.anthropic.com/en/docs/about-claude/pricing +
+    # https://claude.com/pricing), which commercial Bedrock on-demand mirrors
+    # for the Claude line — the existing sonnet-4-5/4-6 rows above ($3/$15,
+    # cache $0.30/$3.75) already match Anthropic list exactly. NOTE: AWS
+    # GovCloud carries a ~20% premium (Opus 4.8 = $6/$30 there), and the AWS
+    # Price List API had NOT published these SKUs machine-readably as of the
+    # 2026-07-07 us-east-1 offer, so these are the commercial-list figures
+    # pending an authoritative AWS machine source. cache_write is the 5-minute
+    # TTL rate (1.25x input); cache_read is 0.1x input, per Anthropic's table.
+    (
+        "bedrock",
+        "anthropic.claude-opus-4-8",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://docs.anthropic.com/en/docs/about-claude/pricing",
+        pricing_version="anthropic-list-2026-07",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-opus-4-7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://docs.anthropic.com/en/docs/about-claude/pricing",
+        pricing_version="anthropic-list-2026-07",
+    ),
+    # Sonnet 5 launched 2026-06-30. Promotional launch pricing of $2/$10 is in
+    # effect through 2026-08-31; standard pricing of $3/$15 takes effect
+    # 2026-09-01. This snapshot uses the STANDARD rate so it does not silently
+    # under-report after the promo ends — the same convention as every other
+    # steady-state row here.
+    (
+        "bedrock",
+        "anthropic.claude-sonnet-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://docs.anthropic.com/en/docs/about-claude/pricing",
+        pricing_version="anthropic-list-2026-07",
+    ),
     (
         "bedrock",
         "amazon.nova-pro",

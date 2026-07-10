@@ -679,6 +679,114 @@ async def test_heartbeat_loop_ignores_non_connectivity_errors():
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_loop_triggers_reconnect_on_ptb_network_error():
+    """python-telegram-bot NetworkError must trigger reconnect, not be swallowed."""
+    # Import the real PTB exception classes if available, otherwise mock them.
+    try:
+        from telegram.error import NetworkError, TimedOut
+    except ImportError:
+        NetworkError = type("NetworkError", (Exception,), {})
+        TimedOut = type("TimedOut", (NetworkError,), {})
+
+    adapter = _make_adapter()
+    adapter._handle_polling_network_error = AsyncMock()
+
+    mock_app = MagicMock()
+    adapter._app = mock_app
+
+    sleep_call = 0
+
+    async def fast_sleep(seconds):
+        nonlocal sleep_call
+        sleep_call += 1
+        if sleep_call >= 3:
+            raise asyncio.CancelledError()
+
+    async def network_error_wait_for(coro, timeout):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise NetworkError("Network error from PTB")
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=network_error_wait_for):
+            await adapter._polling_heartbeat_loop()
+
+    # A reconnect task must have been created for PTB NetworkError.
+    assert adapter._polling_error_task is not None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_triggers_reconnect_on_ptb_timed_out():
+    """python-telegram-bot TimedOut (subclass of NetworkError) must trigger reconnect."""
+    try:
+        from telegram.error import TimedOut
+    except ImportError:
+        NetworkError = type("NetworkError", (Exception,), {})
+        TimedOut = type("TimedOut", (NetworkError,), {})
+
+    adapter = _make_adapter()
+    adapter._handle_polling_network_error = AsyncMock()
+
+    mock_app = MagicMock()
+    adapter._app = mock_app
+
+    sleep_call = 0
+
+    async def fast_sleep(seconds):
+        nonlocal sleep_call
+        sleep_call += 1
+        if sleep_call >= 3:
+            raise asyncio.CancelledError()
+
+    async def timed_out_wait_for(coro, timeout):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise TimedOut("Timed out from PTB")
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=timed_out_wait_for):
+            await adapter._polling_heartbeat_loop()
+
+    # A reconnect task must have been created for PTB TimedOut.
+    assert adapter._polling_error_task is not None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_ignores_ptb_bad_request():
+    """PTB BadRequest (non-connectivity) must not trigger reconnect."""
+    try:
+        from telegram.error import BadRequest
+    except ImportError:
+        BadRequest = type("BadRequest", (Exception,), {})
+
+    adapter = _make_adapter()
+    adapter._handle_polling_network_error = AsyncMock()
+
+    mock_app = MagicMock()
+    adapter._app = mock_app
+
+    sleep_call = 0
+
+    async def fast_sleep(seconds):
+        nonlocal sleep_call
+        sleep_call += 1
+        if sleep_call >= 3:
+            raise asyncio.CancelledError()
+
+    async def bad_request_wait_for(coro, timeout):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise BadRequest("Bad request from PTB")
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=bad_request_wait_for):
+            await adapter._polling_heartbeat_loop()
+
+    # No reconnect should have been triggered for BadRequest.
+    adapter._handle_polling_network_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_loop_exits_on_fatal_error():
     """A fatal error short-circuits the loop before probing get_me()."""
     adapter = _make_adapter()

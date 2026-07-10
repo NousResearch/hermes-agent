@@ -2177,6 +2177,18 @@ class TelegramAdapter(BasePlatformAdapter):
         HEARTBEAT_INTERVAL = 90   # seconds between probes
         PROBE_TIMEOUT = 15        # seconds before declaring the path dead
 
+        def _trigger_reconnect(err: Exception) -> None:
+            logger.warning(
+                "[%s] Polling heartbeat probe failed (%s); triggering reconnect",
+                self.name, err,
+            )
+            if self._polling_error_task and not self._polling_error_task.done():
+                return   # reconnect already in progress
+            loop = asyncio.get_running_loop()
+            self._polling_error_task = loop.create_task(
+                self._handle_polling_network_error(err)
+            )
+
         while True:
             try:
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
@@ -2204,17 +2216,21 @@ class TelegramAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 return
             except (asyncio.TimeoutError, OSError) as probe_err:
-                logger.warning(
-                    "[%s] Polling heartbeat probe failed (%s); triggering reconnect",
-                    self.name, probe_err,
-                )
-                if self._polling_error_task and not self._polling_error_task.done():
-                    continue   # reconnect already in progress
-                loop = asyncio.get_running_loop()
-                self._polling_error_task = loop.create_task(
-                    self._handle_polling_network_error(probe_err)
-                )
-            except Exception:
+                _trigger_reconnect(probe_err)
+            except Exception as probe_err:
+                # python-telegram-bot wraps network failures in TelegramError,
+                # which is not an OSError. We must explicitly check for PTB
+                # connectivity errors (NetworkError, TimedOut) and route them
+                # to the reconnect ladder.
+                try:
+                    from telegram.error import NetworkError, TimedOut
+                except ImportError:
+                    # PTB not available or version mismatch; fall through to pass.
+                    pass
+                else:
+                    if isinstance(probe_err, (NetworkError, TimedOut)):
+                        _trigger_reconnect(probe_err)
+                        continue
                 # Non-connectivity errors (e.g. TelegramError 401) are not
                 # CLOSE-WAIT symptoms — let PTB's own handlers surface them.
                 pass

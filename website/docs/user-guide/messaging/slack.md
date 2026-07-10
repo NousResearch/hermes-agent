@@ -353,6 +353,12 @@ platforms:
       # gracefully fall back to aligned monospace.
       rich_blocks: false
 
+      # Accept messages posted by other Slack bots (default: "none").
+      # "none" ignores bots, "mentions" accepts only bots that @mention
+      # Hermes, and "all" accepts every other bot. Hermes always ignores
+      # its own bot user to prevent self-echoes.
+      allow_bots: "none"
+
       # Continuable-cron delivery surface (default: "thread").
       # "in_channel" delivers a continuable cron job FLAT into the channel
       # (no dedicated thread); pair with reply_in_thread: false (and
@@ -367,7 +373,13 @@ platforms:
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
+| `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts only messages that @mention Hermes, and `"all"` accepts all of them. Use `"mentions"` for the safest bot-to-bot collaboration mode. |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Delivery surface for [continuable cron jobs](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` opens a dedicated thread per delivery (default); `"in_channel"` delivers flat into the channel timeline. Pair `in_channel` with `reply_in_thread: false` (and `require_mention: false`) so a plain channel reply continues the job. |
+
+The equivalent environment variable is `SLACK_ALLOW_BOTS=none|mentions|all`.
+When both are set, `platforms.slack.extra.allow_bots` takes precedence. Avoid
+`all` when peer bots can answer each other without an explicit mention, because
+their own reply policies can still create loops.
 
 ### Session Isolation
 

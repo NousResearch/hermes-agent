@@ -45,6 +45,7 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_OBSERVATION_SCOPES",
         "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "HINDSIGHT_API_LLM_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -855,6 +856,23 @@ class TestPrefetch:
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
 
+    def test_queue_prefetch_filters_noisy_recall_results_individually(self, provider_with_config):
+        p = provider_with_config(auto_retain_filter_enabled=True)
+        p._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(
+                results=[
+                    SimpleNamespace(text="[Note: model was just switched from gpt-5.4 to gpt-5.5.]"),
+                    SimpleNamespace(text="User prefers concise answers."),
+                ]
+            )
+        )
+
+        p.queue_prefetch("preferences")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert p._prefetch_result == "- User prefers concise answers."
+
 
 # ---------------------------------------------------------------------------
 # sync_turn tests
@@ -991,6 +1009,63 @@ class TestSyncTurn:
         assert "turn2-user" in content
         assert "turn3-user" in content
         assert "turn4-user" in content
+
+    def test_sync_turn_skips_model_switch_noise(self, provider_with_config):
+        p = provider_with_config(auto_retain_filter_enabled=True)
+        p.sync_turn(
+            "[Note: model was just switched from gpt-5.4 to gpt-5.5 via OpenAI Codex.]",
+            "",
+        )
+        p._retain_queue.join()
+        assert p._client.aretain_batch.call_count == 0
+        assert p._session_turns == []
+        assert p._turn_counter == 0
+
+    def test_sync_turn_strips_noise_from_mixed_turn_before_retaining(self, provider_with_config):
+        p = provider_with_config(auto_retain_filter_enabled=True)
+        p.sync_turn(
+            "[Note: model was just switched from gpt-5.4 to gpt-5.5 via OpenAI Codex.]\nRemember: user prefers concise answers.",
+            "done",
+        )
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        content = item["content"]
+        assert "model was just switched" not in content
+        assert "Remember: user prefers concise answers." in content
+
+    def test_auto_retain_audit_log_uses_sizes_not_raw_transcript(self, tmp_path, provider_with_config):
+        audit_path = tmp_path / "hindsight" / "audit.jsonl"
+        p = provider_with_config(
+            auto_retain_filter_enabled=True,
+            auto_retain_audit_log_path=str(audit_path),
+        )
+        secret_turn_text = "Remember this private transcript payload"
+
+        p.sync_turn(
+            "[Note: model was just switched from gpt-5.4 to gpt-5.5 via OpenAI Codex.]\n" + secret_turn_text,
+            "done",
+        )
+        p._retain_queue.join()
+
+        entry = json.loads(audit_path.read_text().splitlines()[0])
+        serialized = json.dumps(entry, ensure_ascii=False)
+        assert secret_turn_text not in serialized
+        assert "model was just switched" not in serialized
+        assert "preview" not in entry
+        assert "sanitized_preview" not in entry
+        assert entry["raw_user_chars"] > entry["sanitized_user_chars"]
+        assert entry["raw_assistant_chars"] == entry["sanitized_assistant_chars"]
+
+    def test_sync_turn_preserve_pattern_overrides_skip_pattern(self, provider_with_config):
+        p = provider_with_config(
+            auto_retain_filter_enabled=True,
+            auto_retain_skip_patterns=[r"(?is).*temporary debug note.*"],
+            auto_retain_preserve_patterns=[r"(?i)remember"],
+        )
+        p.sync_turn("Remember this temporary debug note as durable context", "ok")
+        p._retain_queue.join()
+        assert p._client.aretain_batch.call_count == 1
 
     def test_sync_turn_appends_only_delta_when_append_supported(self, provider_with_config, monkeypatch):
         """On append-capable APIs each retain ships only the new turns, not the whole session."""

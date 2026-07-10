@@ -523,6 +523,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,
         chat_id="chat1",
+        chat_type="dm",
         thread_id="th1",
         user_id="u1",
     )
@@ -546,6 +547,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     assert len(subs) == 1
     assert subs[0]["chat_id"] == "chat1"
     assert subs[0]["thread_id"] == "th1"
+    assert subs[0]["chat_type"] == "dm"
 
     conn = kb.connect(board="default")
     try:

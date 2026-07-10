@@ -2827,7 +2827,7 @@ def test_xai_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     pool = load_pool("xai-oauth")
     selected = pool.select()
     assert selected is not None
-    assert selected.source == "loopback_pkce"
+    assert selected.source == "device_code"
 
     # Add a manual API-key entry that must survive the quarantine.
     pool.add_entry(PooledCredential.from_dict("xai-oauth", {
@@ -2868,7 +2868,7 @@ def test_xai_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     assert [entry["id"] for entry in auth_payload["credential_pool"]["xai-oauth"]] == ["manual-key"]
 
     # A second try_refresh_current must not call refresh_xai_oauth_pure again
-    # (pool is now empty of loopback entries and current is None).
+    # (pool is now empty of device-code entries and current is None).
     assert pool.try_refresh_current() is None
     assert refresh_calls["count"] == 1
 
@@ -3050,6 +3050,11 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
 def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
     """Regression for #19566: stale rotation writes keep concurrent entries."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Block external-credential autodiscovery: a real ~/.claude/.credentials.json
+    # on a dev machine would seed an extra claude_code entry and break the
+    # exact-id assertions below (passes on CI where no such file exists).
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
     _write_auth_store(
         tmp_path,
         {
@@ -3111,6 +3116,9 @@ def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
 
 def test_remove_index_does_not_resurrect_via_disk_merge(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Block external-credential autodiscovery (see note in the test above).
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
     _write_auth_store(
         tmp_path,
         {

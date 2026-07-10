@@ -392,36 +392,34 @@ def _get_max_concurrent_children() -> int:
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 
 
-_DEFAULT_MAX_ASYNC_CHILDREN = 3
+_LEGACY_MAX_ASYNC_WARNED = False
 
 
 def _get_max_async_children() -> int:
-    """Read delegation.max_async_children from config (floor 1, no ceiling).
+    """Concurrency cap for background (``background=true``) delegations.
 
-    Caps how many background (``background=true``) subagents can run at once.
-    When at capacity, a new async dispatch is REJECTED (not queued) so a
-    runaway model can't pile up unbounded background work. Separate from
-    max_concurrent_children, which bounds a single synchronous batch.
+    DEPRECATED KNOB: ``delegation.max_async_children`` has been unified into
+    ``delegation.max_concurrent_children`` — one cap governs both a single
+    synchronous batch's parallelism and how many background delegation units
+    may run at once. When at capacity, a new async dispatch is REJECTED (not
+    queued) so a runaway model can't pile up unbounded background work; the
+    caller falls back to running the work synchronously.
+
+    A leftover ``max_async_children`` in config.yaml is ignored (the config
+    migration removes it, folding a raised value into
+    ``max_concurrent_children``); we log a one-time deprecation warning if
+    one is still present.
     """
+    global _LEGACY_MAX_ASYNC_WARNED
     cfg = _load_config()
-    val = cfg.get("max_async_children")
-    if val is not None:
-        try:
-            return max(1, int(val))
-        except (TypeError, ValueError):
-            logger.warning(
-                "delegation.max_async_children=%r is not a valid integer; "
-                "using default %d",
-                val, _DEFAULT_MAX_ASYNC_CHILDREN,
-            )
-            return _DEFAULT_MAX_ASYNC_CHILDREN
-    env_val = os.getenv("DELEGATION_MAX_ASYNC_CHILDREN")
-    if env_val:
-        try:
-            return max(1, int(env_val))
-        except (TypeError, ValueError):
-            return _DEFAULT_MAX_ASYNC_CHILDREN
-    return _DEFAULT_MAX_ASYNC_CHILDREN
+    if cfg.get("max_async_children") is not None and not _LEGACY_MAX_ASYNC_WARNED:
+        _LEGACY_MAX_ASYNC_WARNED = True
+        logger.warning(
+            "delegation.max_async_children is deprecated and ignored; "
+            "delegation.max_concurrent_children now caps background "
+            "delegations too. Remove the stale key from config.yaml."
+        )
+    return _get_max_concurrent_children()
 
 
 def _get_child_timeout() -> Optional[float]:
@@ -1057,7 +1055,7 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
-    # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
+    # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
     # Per-call role controlling whether the child can further delegate.
@@ -1214,11 +1212,9 @@ def _build_child_agent(
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
         effective_api_mode = getattr(parent_agent, "api_mode", None)
-    # Defensive: validate override_acp_command exists on PATH before honoring
-    # it. Models occasionally pass acp_command="copilot" / "claude" / etc. in
-    # delegate_task tool calls despite the schema saying not to, which forces
-    # the subagent onto the copilot-acp transport below and crashes the
-    # gateway when the binary is missing (e.g. headless container deploys).
+    # Defensive: validate trusted delegation.command exists on PATH before
+    # honoring it. Stale config should not force a child onto the ACP transport
+    # and then fail at subprocess startup.
     if override_acp_command:
         import shutil as _shutil
 
@@ -1257,8 +1253,11 @@ def _build_child_agent(
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
+        # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
+        # False (``reasoning_effort: false``) to "" and inherit the parent
+        # instead of disabling thinking for children.
+        delegation_effort = delegation_cfg.get("reasoning_effort")
+        if delegation_effort or delegation_effort is False:
             from hermes_constants import parse_reasoning_effort
 
             parsed = parse_reasoning_effort(delegation_effort)
@@ -1289,12 +1288,20 @@ def _build_child_agent(
     child_providers_ignored = getattr(parent_agent, "providers_ignored", None)
     child_providers_order = getattr(parent_agent, "providers_order", None)
     child_provider_sort = getattr(parent_agent, "provider_sort", None)
+    child_provider_require_parameters = getattr(
+        parent_agent, "provider_require_parameters", False
+    )
+    child_provider_data_collection = getattr(
+        parent_agent, "provider_data_collection", None
+    ) or ""
     child_openrouter_min_coding_score = getattr(parent_agent, "openrouter_min_coding_score", None)
     if override_provider:
         child_providers_allowed = None
         child_providers_ignored = None
         child_providers_order = None
         child_provider_sort = None
+        child_provider_require_parameters = False
+        child_provider_data_collection = ""
         # Note: openrouter_min_coding_score is model-gated (only emitted on
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
@@ -1327,6 +1334,8 @@ def _build_child_agent(
         providers_ignored=child_providers_ignored,
         providers_order=child_providers_order,
         provider_sort=child_provider_sort,
+        provider_require_parameters=child_provider_require_parameters,
+        provider_data_collection=child_provider_data_collection,
         openrouter_min_coding_score=child_openrouter_min_coding_score,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
@@ -1439,7 +1448,7 @@ def _dump_subagent_timeout_diagnostic(
         def _w(line: str = "") -> None:
             lines.append(line)
 
-        _w(f"# Subagent timeout diagnostic — issue #14726")
+        _w("# Subagent timeout diagnostic — issue #14726")
         _w(f"# Generated: {_dt.datetime.now().isoformat()}")
         _w("")
         _w("## Timeout")
@@ -1889,7 +1898,11 @@ def _run_single_child(
         # result(timeout=None) blocks until the child finishes). Stuck-child
         # protection comes from the heartbeat staleness monitor instead.
         child_timeout = _get_child_timeout()
-        _timeout_executor = ThreadPoolExecutor(
+        # Daemon worker (tools.daemon_pool): a timed-out child is abandoned
+        # below; a stdlib non-daemon worker would then block interpreter
+        # exit at atexit-join time if the child never unwinds.
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+        _timeout_executor = DaemonThreadPoolExecutor(
             max_workers=1,
             # Install a non-interactive approval callback in the worker thread
             # so dangerous-command prompts from the subagent don't fall back to
@@ -2341,8 +2354,6 @@ def delegate_task(
     context: Optional[str] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
-    acp_command: Optional[str] = None,
-    acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
@@ -2481,7 +2492,6 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
-            task_acp_args = t.get("acp_args") if "acp_args" in t else None
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
@@ -2500,14 +2510,8 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command")
-                or acp_command
-                or creds.get("command"),
-                override_acp_args=(
-                    task_acp_args
-                    if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
-                ),
+                override_acp_command=creds.get("command"),
+                override_acp_args=creds.get("args"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2537,7 +2541,11 @@ def delegate_task(
             completed_count = 0
             spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-            with ThreadPoolExecutor(max_workers=max_children) as executor:
+            # Daemon workers (tools.daemon_pool): the `with` block still joins
+            # normally, but if the parent is interrupted while a child is
+            # wedged, the abandoned worker must not block interpreter exit.
+            from tools.daemon_pool import DaemonThreadPoolExecutor
+            with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(
@@ -2798,6 +2806,26 @@ def delegate_task(
             return json.dumps(_sync_result, ensure_ascii=False)
 
         _session_key = get_current_session_key(default="")
+        _origin_ui_session_id = ""
+        try:
+            from gateway.session_context import get_session_env
+
+            _source = get_session_env("HERMES_SESSION_SOURCE", "")
+            _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
+            # In desktop/TUI, the routable session key is the durable
+            # AIAgent.session_id. Context compression can rotate that id during
+            # the same turn before the TUI-side session dict is re-anchored;
+            # if we capture the stale approval/session context key here, the
+            # async completion becomes an orphan and any desktop poller may
+            # consume it. Gateway chats are different: their session_key is the
+            # platform conversation key (agent:main:...), so keep it there.
+            if _source == "tui":
+                _agent_session_id = str(getattr(parent_agent, "session_id", "") or "")
+                if _agent_session_id:
+                    _session_key = _agent_session_id
+        except Exception:
+            _origin_ui_session_id = ""
+        _parent_session_id = getattr(parent_agent, "session_id", None)
         _child_agents = [c for (_, _, c) in children]
 
         # Detach every child from the parent's interrupt-propagation list — the
@@ -2838,6 +2866,8 @@ def delegate_task(
             role=top_role,
             model=creds["model"],
             session_key=_session_key,
+            origin_ui_session_id=_origin_ui_session_id,
+            parent_session_id=_parent_session_id,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),
@@ -2875,7 +2905,16 @@ def delegate_task(
             "batch synchronously instead.",
             dispatch.get("error", "rejected"),
         )
-        return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
+        _cap_result = _execute_and_aggregate()
+        if isinstance(_cap_result, dict):
+            _cap_result["note"] = (
+                "The background delegation pool was at capacity "
+                "(delegation.max_concurrent_children), so the subagent(s) ran "
+                "SYNCHRONOUSLY and the result is included above. Raise "
+                "delegation.max_concurrent_children in config.yaml to allow "
+                "more concurrent background delegations."
+            )
+        return json.dumps(_cap_result, ensure_ascii=False)
 
     # ----- Synchronous path -----
     return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
@@ -3091,26 +3130,40 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config from the active Hermes config.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Prefer the shared persistent loader because it follows the active
+    HERMES_HOME/profile. ``cli.CLI_CONFIG`` is a legacy fallback for entry
+    points that cannot import the shared loader; importing it first can return
+    an old default ``delegation`` block and hide user-set keys such as
+    ``max_concurrent_children``.
+
+    Uses ``load_config_readonly()``: every consumer of this dict is read-only
+    (``.get()`` lookups), and this runs on each ``get_definitions()`` schema
+    rebuild via ``_get_max_concurrent_children``, so skipping the defensive
+    deepcopy matters. Do NOT mutate the returned dict.
+
+    ``HERMES_IGNORE_USER_CONFIG=1`` (``hermes chat --ignore-user-config``) is
+    only honored by the legacy ``cli`` loader, not the shared one, so when the
+    flag is set we keep ``cli.CLI_CONFIG`` authoritative to preserve the
+    flag's contract of suppressing user config.yaml settings.
     """
+    prefer_legacy = os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1"
+    if not prefer_legacy:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            full = load_config_readonly()
+            cfg = full.get("delegation") or {}
+            if isinstance(cfg, dict):
+                return cfg
+        except Exception:
+            pass
     try:
         from cli import CLI_CONFIG
 
         cfg = CLI_CONFIG.get("delegation") or {}
-        if cfg:
-            return cfg
-    except Exception:
-        pass
-    try:
-        from hermes_cli.config import load_config
-
-        full = load_config()
-        return full.get("delegation") or {}
+        return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}
 
@@ -3274,30 +3327,6 @@ def _build_role_param_description() -> str:
     )
 
 
-# Known ACP-compatible CLIs that delegate_task can shell out to. Kept
-# narrow on purpose: only the ones agent/copilot_acp_client.py and friends
-# actually understand. Add new entries here when a new ACP CLI ships.
-_KNOWN_ACP_BINARIES: tuple[str, ...] = ("copilot", "claude", "codex")
-
-
-def _acp_binary_available() -> bool:
-    """True iff at least one known ACP CLI is on PATH.
-
-    Used to gate inclusion of ``acp_command`` / ``acp_args`` in the
-    delegate_task schema. On headless hosts (Railway / Fly / Docker /
-    fresh VPS) without any of these binaries, exposing the fields invites
-    the model to hallucinate ``acp_command="copilot"`` from the schema's
-    description, which used to crash subagent runs and take the gateway
-    down. Pruning the fields from the schema removes the temptation.
-
-    Not cached: ``shutil.which`` is cheap and we want the schema to react
-    to mid-session installs without forcing a process restart.
-    """
-    import shutil as _shutil
-
-    return any(_shutil.which(name) for name in _KNOWN_ACP_BINARIES)
-
-
 def _build_dynamic_schema_overrides() -> dict:
     """Return per-call schema overrides reflecting current config.
 
@@ -3314,24 +3343,6 @@ def _build_dynamic_schema_overrides() -> dict:
     }
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
     overrides_params["properties"]["role"]["description"] = _build_role_param_description()
-
-    # Prune ACP overrides from the schema when no known ACP CLI is on PATH.
-    # The runtime guard in _build_child_agent remains as defense-in-depth for
-    # internal callers / tests / future code paths that skip the schema layer.
-    if not _acp_binary_available():
-        overrides_params["properties"].pop("acp_command", None)
-        overrides_params["properties"].pop("acp_args", None)
-        tasks_schema = dict(overrides_params["properties"].get("tasks", {}))
-        if "items" in tasks_schema:
-            items = dict(tasks_schema["items"])
-            if "properties" in items:
-                items["properties"] = {
-                    k: v
-                    for k, v in items["properties"].items()
-                    if k not in ("acp_command", "acp_args")
-                }
-            tasks_schema["items"] = items
-            overrides_params["properties"]["tasks"] = tasks_schema
 
     return {
         "description": _build_top_level_description(),
@@ -3383,19 +3394,6 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "description": "Task-specific context",
                         },
-                        "acp_command": {
-                            "type": "string",
-                            "description": (
-                                "Per-task ACP command override (e.g. 'copilot'). "
-                                "Overrides the top-level acp_command for this task only. "
-                                "Do NOT set unless the user explicitly told you an ACP CLI is installed."
-                            ),
-                        },
-                        "acp_args": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Per-task ACP args override. Leave empty unless acp_command is set.",
-                        },
                         "role": {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
@@ -3426,28 +3424,6 @@ DELEGATE_TASK_SCHEMA = {
                     "compatibility."
                 ),
             },
-            "acp_command": {
-                "type": "string",
-                "description": (
-                    "Override ACP command for child agents (e.g. 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Requires an ACP-compatible CLI "
-                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
-                    "See agent/copilot_acp_client.py for the implementation. "
-                    "IMPORTANT: Do NOT set this unless the user has explicitly told you "
-                    "a specific ACP-compatible CLI is installed and configured. "
-                    "Leave empty to use the parent's default transport (Hermes subagents)."
-                ),
-            },
-            "acp_args": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. "
-                    "Leave empty unless acp_command is explicitly provided."
-                ),
-            },
         },
         "required": [],
     },
@@ -3474,6 +3450,28 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     return not is_subagent
 
 
+_MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
+
+
+def _strip_model_hidden_task_fields(tasks: Any) -> Any:
+    if not isinstance(tasks, list):
+        return tasks
+    stripped_tasks = []
+    changed = False
+    for task in tasks:
+        if not isinstance(task, dict):
+            stripped_tasks.append(task)
+            continue
+        stripped = {
+            key: value
+            for key, value in task.items()
+            if key not in _MODEL_HIDDEN_TASK_FIELDS
+        }
+        changed = changed or len(stripped) != len(task)
+        stripped_tasks.append(stripped)
+    return stripped_tasks if changed else tasks
+
+
 registry.register(
     name="delegate_task",
     toolset="delegation",
@@ -3481,10 +3479,8 @@ registry.register(
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"),
         context=args.get("context"),
-        tasks=args.get("tasks"),
+        tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
-        acp_command=args.get("acp_command"),
-        acp_args=args.get("acp_args"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),

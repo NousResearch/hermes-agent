@@ -590,7 +590,15 @@ class TestPersistUserMessageOverride:
 
         agent._persist_session(messages, [])
 
-        assert messages[0]["content"] == "Hello there"
+        # #48677: the override is applied ONLY to the persisted DB row, never to
+        # the live message dict used to build the API request (mutating it in
+        # place used to strip observed group-chat context off the live user
+        # message on the early crash-resilience persist). So the live content is
+        # left intact and the DB write carries the clean override text.
+        assert messages[0]["content"] == (
+            "[Voice input — respond concisely and conversationally, "
+            "2-3 sentences max. No code blocks or markdown.] Hello there"
+        )
         first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
         assert first_db_write["content"] == "Hello there"
 

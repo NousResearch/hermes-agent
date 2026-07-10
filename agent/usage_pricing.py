@@ -238,6 +238,54 @@ _UTC_NOW = lambda: datetime.now(timezone.utc)
 # Official docs snapshot entries. Models whose published pricing and cache
 # semantics are stable enough to encode exactly.
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
+    # ── OpenAI GPT-5.6 series (Sol/Terra/Luna) ───────────────────────────
+    # Announced in limited preview 2026-06-26; GA 2026-07-09 at the same
+    # rates (Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per 1M in/out). Cache
+    # writes are billed at 1.25x the uncached input rate; cache reads get the
+    # standard 90% discount (0.10x input, confirmed: Sol $0.50/M cached).
+    # Note: "Sol Fast mode" ($12.5/$75, up to 750 tok/s via Cerebras) is a
+    # separate serving tier, not covered by these entries. The "-pro"
+    # variants (high-effort modes, GA alongside base tiers) bill at the
+    # SAME per-token rates and are aliased onto these entries below the
+    # dict (they cost more per task by consuming more tokens, not by a
+    # higher rate — verified against OpenRouter's live pricing 2026-07-09).
+    # Source: https://openai.com/index/previewing-gpt-5-6-sol/
+    (
+        "openai",
+        "gpt-5.6-sol",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("30.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
+        pricing_version="openai-gpt-5.6-2026-07",
+    ),
+    (
+        "openai",
+        "gpt-5.6-terra",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.50"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.25"),
+        cache_write_cost_per_million=Decimal("3.125"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
+        pricing_version="openai-gpt-5.6-2026-07",
+    ),
+    (
+        "openai",
+        "gpt-5.6-luna",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("6.00"),
+        cache_read_cost_per_million=Decimal("0.10"),
+        cache_write_cost_per_million=Decimal("1.25"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
+        pricing_version="openai-gpt-5.6-2026-07",
+    ),
     # ── Anthropic Claude 4.8 ─────────────────────────────────────────────
     # Same $5/$25 base pricing as 4.6/4.7.  Fast-mode variant is a separate
     # model ID with 2x premium (vs the 6x premium on older Opus generations).
@@ -769,6 +817,15 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ),
 }
 
+# GPT-5.6 "-pro" high-effort variants bill at the same per-token rates as
+# their base tiers (more tokens per task, not a higher rate). Alias them
+# onto the base entries so the snapshot stays single-source.
+for _base_56 in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+    _OFFICIAL_DOCS_PRICING[("openai", f"{_base_56}-pro")] = _OFFICIAL_DOCS_PRICING[
+        ("openai", _base_56)
+    ]
+del _base_56
+
 
 def _to_decimal(value: Any) -> Optional[Decimal]:
     if value is None:
@@ -880,10 +937,19 @@ def resolve_billing_route(
         return BillingRoute(provider="nous", model=model, base_url=base_url or _NOUS_DEFAULT_BASE_URL, billing_mode="official_models_api")
     if provider_name == "anthropic":
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    if provider_name == "openai":
+    # "openai-api" is the picker/registry slug for direct api.openai.com; it
+    # bills identically to bare "openai", so normalize it here — otherwise the
+    # ("openai", <model>) _OFFICIAL_DOCS_PRICING keys are unreachable from the
+    # openai-api provider path.
+    if provider_name in {"openai", "openai-api"}:
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    # Vertex AI hosts the same Gemini models as Google AI Studio; price them
+    # off the gemini official-docs snapshot. Strip the "google/" vendor prefix
+    # the OpenAI-compat endpoint requires so the pricing key matches.
+    if provider_name == "vertex" or base_url_host_matches(base_url or "", "aiplatform.googleapis.com"):
+        return BillingRoute(provider="gemini", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
@@ -1207,9 +1273,22 @@ def normalize_usage(
         input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
     reasoning_tokens = 0
+    # Responses API shape: output_tokens_details.reasoning_tokens.
+    # Chat Completions shape (OpenAI, OpenRouter, DeepSeek, etc.):
+    # completion_tokens_details.reasoning_tokens. Reading only the former
+    # left reasoning_tokens=0 for every chat_completions reasoning model —
+    # hidden thinking was invisible in session accounting even though it
+    # dominates output spend on models like deepseek-v4-flash (measured:
+    # single calls burning 21K reasoning tokens to emit 500 visible tokens).
     output_details = getattr(response_usage, "output_tokens_details", None)
     if output_details:
         reasoning_tokens = _to_int(getattr(output_details, "reasoning_tokens", 0))
+    if not reasoning_tokens:
+        completion_details = getattr(response_usage, "completion_tokens_details", None)
+        if completion_details:
+            reasoning_tokens = _to_int(
+                getattr(completion_details, "reasoning_tokens", 0)
+            )
 
     return CanonicalUsage(
         input_tokens=input_tokens,

@@ -215,8 +215,52 @@ from agent.tool_dispatch_helpers import (
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
 
 
+# Internal flags that mark a message as ephemeral empty-response/prefill
+# recovery scaffolding: the synthetic assistant "(empty)" turn and user nudge
+# injected after an empty response, the terminal "(empty)" sentinel, and the
+# thinking-only prefill placeholder. These exist only to drive the next API
+# retry; the in-memory loop pops them before appending the real response.
+# Persistence must mirror that, otherwise an append-only flush can commit them
+# to the session store and a resumed session replays synthetic "(empty)"/nudge
+# turns as if they were genuine context.
+_EPHEMERAL_SCAFFOLDING_FLAGS = (
+    "_empty_recovery_synthetic",
+    "_empty_terminal_sentinel",
+    "_thinking_prefill",
+    # verify-on-stop and pre_verify nudges append a synthetic assistant
+    # "done" plus a synthetic user nudge to keep the agent going one more
+    # turn before it can claim completion. Those messages exist only to
+    # drive the verification loop; persisting them poisons the resumed
+    # transcript and breaks prompt-prefix cache reuse on later turns. (#55733)
+    "_verification_stop_synthetic",
+    "_pre_verify_synthetic",
+)
+
+
+def _is_ephemeral_scaffolding(msg: Any) -> bool:
+    """Return True when ``msg`` is internal recovery scaffolding that must never
+    be persisted to the durable transcript (SQLite session store or JSON log)."""
+    return isinstance(msg, dict) and any(
+        msg.get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS
+    )
+
 
 _MAX_TOOL_WORKERS = 8
+
+# Intrinsic marker stamped on a message dict once it has been written to the
+# SQLite session store.  Used by ``_flush_messages_to_session_db`` to decide
+# what is already durable.  An object-identity (``id(msg)``) dedup set cannot be
+# trusted across turns: once a flushed message dict is dropped from the live
+# list (e.g. by scaffolding rewind or in-place compaction) and garbage-
+# collected, CPython is free to hand its address to a brand-new assistant/tool
+# message, whose ``id()`` then collides with the stale entry and the real turn
+# is silently never persisted.  A marker bound to the dict itself cannot be
+# aliased that way.  The ``_`` prefix is mandatory: the wire sanitizers
+# (agent/transports/chat_completions.py, agent/chat_completion_helpers.py) strip
+# every top-level ``_``-prefixed key before the request leaves the process, so
+# this never reaches a strict OpenAI-compatible gateway.
+_DB_PERSISTED_MARKER = "_db_persisted"
+
 
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per
 # process, not once per AIAgent instantiation.  Without this, long-running
@@ -246,26 +290,20 @@ def _routermint_headers() -> dict:
     }
 
 
-def _pool_may_recover_from_rate_limit(
-    pool, *, provider: str | None = None, base_url: str | None = None
-) -> bool:
+def _pool_may_recover_from_rate_limit(pool) -> bool:
     """Decide whether to wait for credential-pool rotation instead of falling back.
 
     The existing pool-rotation path requires the pool to (1) exist and (2) have
     at least one entry not currently in exhaustion cooldown.  But rotation is
     only meaningful when the pool has more than one entry.
 
-    With a single-credential pool (common for Gemini OAuth, Vertex service
-    accounts, and any "one personal key" configuration), the primary entry
-    just 429'd and there is nothing to rotate to.  Waiting for the pool
-    cooldown to expire means retrying against the same exhausted quota — the
-    daily-quota 429 will recur immediately, and the retry budget is burned.
+    With a single-credential pool (common for Vertex service accounts and any
+    "one personal key" configuration), the primary entry just 429'd and there
+    is nothing to rotate to.  Waiting for the pool cooldown to expire means
+    retrying against the same exhausted quota — the daily-quota 429 will recur
+    immediately, and the retry budget is burned.
 
-    Additionally, Google CloudCode / Gemini CLI rate limits are ACCOUNT-level
-    throttles — even a multi-entry pool shares the same quota window, so
-    rotation won't recover.  Skip straight to the fallback for those (#13636).
-
-    In those cases we must fall back to the configured ``fallback_model``
+    In that case we must fall back to the configured ``fallback_model``
     instead.  Returns True only when rotation has somewhere to go.
 
     See issues #11314 and #13636.
@@ -273,10 +311,6 @@ def _pool_may_recover_from_rate_limit(
     if pool is None:
         return False
     if not pool.has_available():
-        return False
-    # CloudCode / Gemini CLI quotas are account-wide — all pool entries share
-    # the same throttle window, so rotation can't recover.  Prefer fallback.
-    if str(base_url or "").startswith("cloudcode-pa://"):
         return False
     return len(pool.entries()) > 1
 
@@ -567,6 +601,12 @@ class AIAgent:
         opening the default state DB instead of making the advertised
         ``session_search`` tool unusable.
         """
+        # Persistence-isolated forks (background review) must not lazily open the
+        # canonical state DB: doing so would re-arm _flush_messages_to_session_db
+        # to write the fork's harness turn into the user's real session. Recall
+        # degrades to None for them (they don't use session_search anyway).
+        if getattr(self, "_persist_disabled", False):
+            return None
         if self._session_db is not None:
             return self._session_db
         try:
@@ -580,6 +620,8 @@ class AIAgent:
 
     def _ensure_db_session(self) -> None:
         """Create session DB row on first use. Disables _session_db on failure."""
+        if getattr(self, "_persist_disabled", False):
+            return
         if self._session_db_created or not self._session_db:
             return
         source = _session_source_for_agent(self.platform)
@@ -718,6 +760,10 @@ class AIAgent:
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+
+        # Copilot x-initiator: True for the first API call of a user turn,
+        # False for tool-loop follow-ups (#3040).
+        self._is_user_initiated_turn = False
 
         # Context engine reset/transition (works for built-in compressor and plugins)
         self._transition_context_engine_session(
@@ -980,6 +1026,29 @@ class AIAgent:
         except Exception:
             pass
 
+    def _emit_pending_fallback_notice(self) -> None:
+        """Surface the one-shot fallback-switch notice on successful recovery.
+
+        A provider/model switch is a durable state change operators must see,
+        unlike transient retry chatter that ``_clear_status_buffer`` drops.
+        ``try_activate_fallback`` records the switch in
+        ``self._pending_fallback_notice``; this emits it exactly once via
+        ``_emit_status`` and then clears it, so a successful fallback still
+        produces one visible notice.  On terminal failure the buffered switch
+        line is flushed instead (and this notice discarded) — see
+        ``_flush_status_buffer`` — so the user always sees the switch once.
+        """
+        try:
+            notice = getattr(self, "_pending_fallback_notice", None)
+            if notice:
+                # Clear before emitting so a (swallowed) callback error can't
+                # leave the notice set for a stale re-emit on a later turn.
+                self._pending_fallback_notice = None
+                self._emit_status(notice)
+        except Exception:
+            # Never break the conversation loop on a notice hiccup.
+            pass
+
     def _flush_status_buffer(self) -> None:
         """Emit buffered retry messages — call on terminal failure.
 
@@ -987,6 +1056,10 @@ class AIAgent:
         was tried before the turn gave up.
         """
         try:
+            # The buffered trace already carries the fallback switch line, so
+            # drop any one-shot fallback notice to avoid a stale duplicate
+            # leaking into a later successful turn.
+            self._pending_fallback_notice = None
             buf = getattr(self, "_retry_status_buffer", None)
             if not buf:
                 return
@@ -1326,6 +1399,13 @@ class AIAgent:
         """Return True when the base URL targets OpenRouter."""
         return base_url_host_matches(self._base_url_lower, "openrouter.ai")
 
+    def _is_copilot_url(self) -> bool:
+        """Return True when the base URL targets GitHub Copilot or GitHub Models."""
+        return (
+            "api.githubcopilot.com" in self._base_url_lower
+            or "models.github.ai" in self._base_url_lower
+        )
+
     def _anthropic_prompt_cache_policy(
         self,
         *,
@@ -1657,9 +1737,17 @@ class AIAgent:
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
+
+        Trailing empty-response scaffolding is dropped from the live list in
+        place (it is ephemeral junk the real transcript should shed). The
+        persist user-message *override* is NOT applied here — it is resolved
+        inside ``_flush_messages_to_session_db`` and written only to the DB row,
+        never mutating the live message list used by the API call (#48677 is
+        thus closed for every persist caller, not just this one).
         """
+        # Scaffolding removal mutates the live list (desired — ephemeral
+        # retry/failure sentinels must not survive into the real transcript).
         self._drop_trailing_empty_response_scaffolding(messages)
-        self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
@@ -1725,14 +1813,44 @@ class AIAgent:
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
 
-        Uses per-session message identity tracking so repeated calls (from
-        multiple exit paths) only write truly new messages — preventing the
-        duplicate-write bug (#860) without relying on positional slices that
-        can drift after message-sequence repair.
+        Deduplicates via an intrinsic ``_DB_PERSISTED_MARKER`` stamped on each
+        written message dict, so repeated calls (from multiple exit paths) only
+        write truly new messages — preventing the duplicate-write bug (#860)
+        without relying on positional slices that can drift after
+        message-sequence repair, and without a retained ``id(msg)`` set that
+        CPython could alias onto a freed-then-reused address (#50372). The
+        ``_flushed_db_message_ids`` attribute is now only a one-shot seed
+        (translated to markers, then cleared each flush), not a persisted set.
+
+        Note: the marker is stamped on the live/shared conversation dict, which
+        correctly makes re-persistence idempotent across turns. No code path
+        edits a persisted message's content/role in place expecting a re-write
+        (in-place compaction resets the seed and re-diffs by identity).
         """
+        # Persistence-isolated agents (e.g. the background skill/memory review
+        # fork) must NEVER write into the canonical session store. The fork
+        # shares the parent's session_id for prompt-cache warmth, so any write
+        # here would land its harness turn ("Review the conversation above and
+        # update the skill library…") inside the user's real session history,
+        # where the next live turn re-reads it as an instruction and the agent
+        # "becomes" the curator. Hard-stop before any DB touch.
+        if getattr(self, "_persist_disabled", False):
+            return
         if not self._session_db:
             return
-        self._apply_persist_user_message_override(messages)
+        # Persist user-message override (#48677 chokepoint): historically this
+        # mutated the live `messages` list in place, which — on the early
+        # crash-resilience persist that runs BEFORE the API call is built —
+        # stripped observed group-chat context off the live user message and
+        # silently dropped it. Instead, resolve the override here and apply it
+        # ONLY to the value written to the DB (see the write loop below); the
+        # live dict is never mutated, so every caller (early persist, mid-loop
+        # flush, /resume, /branch) is protected uniformly. Timestamp override is
+        # metadata and is likewise applied only to the written row.
+        _ov_idx = getattr(self, "_persist_user_message_idx", None)
+        _ov_content = getattr(self, "_persist_user_message_override", None)
+        _ov_timestamp = getattr(self, "_persist_user_message_timestamp", None)
+        _ov_platform_id = getattr(self, "_persist_user_message_platform_id", None)
         try:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
@@ -1745,21 +1863,34 @@ class AIAgent:
             # larger than len(messages); the slice is then empty and delivered
             # assistant responses never reach state.db (#46053).
             #
-            # Track object identities instead. `messages` is a shallow copy of
-            # `conversation_history`, so history dicts are skipped by identity,
-            # and new dicts appended during this turn are written once even if
-            # repair compacts the list around them.
+            # Track persistence with an intrinsic per-message marker rather than
+            # id(msg). `messages` is a shallow copy of `conversation_history`, so
+            # history dicts are skipped by identity, and new dicts appended
+            # during this turn are written once even if repair compacts the list
+            # around them. Unlike an id()-keyed set, a marker bound to the dict
+            # cannot be aliased onto a freed-then-reused address, so a real turn
+            # can never be silently skipped (see _DB_PERSISTED_MARKER).
+            #
+            # `self._flushed_db_message_ids` is still honoured as a *one-shot*
+            # seed: external callers (gateway shutdown, tests) populate it with
+            # {id(m) for m in already_persisted} immediately before the flush,
+            # while those objects are alive — so the ids are valid at that
+            # instant. We translate the seed into durable markers and then clear
+            # the set, so stale ids can never accumulate across turns and alias a
+            # future message.
             current_session_id = getattr(self, "session_id", None)
             flushed_session_id = getattr(self, "_flushed_db_message_session_id", None)
             if flushed_session_id != current_session_id or self._last_flushed_db_idx == 0:
                 self._flushed_db_message_ids = set()
                 self._flushed_db_row_ids = {}
                 self._interrupt_close_repersisted_ids = set()
-                self._flushed_db_message_session_id = current_session_id
-            flushed_ids = getattr(self, "_flushed_db_message_ids", None)
-            if not isinstance(flushed_ids, set):
-                flushed_ids = set()
-                self._flushed_db_message_ids = flushed_ids
+                seed_ids = set()
+            else:
+                seed_ids = getattr(self, "_flushed_db_message_ids", None)
+                if not isinstance(seed_ids, set):
+                    seed_ids = set()
+            self._flushed_db_message_session_id = current_session_id
+            flushed_ids = set()
             flushed_row_ids = getattr(self, "_flushed_db_row_ids", None)
             if not isinstance(flushed_row_ids, dict):
                 flushed_row_ids = {}
@@ -1773,10 +1904,17 @@ class AIAgent:
                 if isinstance(item, dict)
             }
 
-            for msg in messages:
+            for _msg_idx, msg in enumerate(messages):
                 if not isinstance(msg, dict):
                     continue
                 msg_id = id(msg)
+                # Never write ephemeral recovery scaffolding to the session
+                # store. The flush is append-only (it only advances
+                # _last_flushed_db_idx via identity tracking), so a synthetic
+                # message committed by a mid-turn persist cannot be un-written
+                # when the end-of-turn drop removes it from the in-memory list.
+                if _is_ephemeral_scaffolding(msg):
+                    continue
                 if msg_id in flushed_ids:
                     # Already persisted by identity. One field can still change
                     # after the initial flush: close_interrupted_tool_sequence
@@ -1802,11 +1940,51 @@ class AIAgent:
                                     row_id, _e,
                                 )
                     continue
-                if msg_id in history_ids:
-                    flushed_ids.add(msg_id)
+                if msg.get(_DB_PERSISTED_MARKER):
+                    if (
+                        msg.get("finish_reason") == _INTERRUPT_CLOSE_FINISH_REASON
+                        and msg_id not in repersisted_ids
+                    ):
+                        row_id = msg.get("_db_persisted_row_id") or flushed_row_ids.get(msg_id)
+                        if row_id is not None:
+                            try:
+                                self._session_db.update_message_finish_reason(
+                                    self.session_id, row_id,
+                                    _INTERRUPT_CLOSE_FINISH_REASON,
+                                )
+                                repersisted_ids.add(msg_id)
+                            except Exception as _e:
+                                logger.warning(
+                                    "interrupt_close re-persist failed (row=%s): %s",
+                                    row_id, _e,
+                                )
+                    continue
+                # Already-durable messages: either carried over from the loaded
+                # history copy, or seeded by a caller. Stamp them so future
+                # flushes skip them without consulting any id() set again.
+                if id(msg) in history_ids or id(msg) in seed_ids:
+                    msg[_DB_PERSISTED_MARKER] = True
                     continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
+                _row_timestamp = msg.get("timestamp")
+                _row_platform_id = msg.get("platform_message_id")
+                # Apply the persist override to THIS row's written values only
+                # (never to the live dict). Match the original guard: text-only
+                # content is replaced; multimodal (list) content is left intact
+                # so image/audio blocks aren't clobbered by the text override.
+                if _ov_idx == _msg_idx and msg.get("role") == "user":
+                    if _ov_content is not None and not isinstance(content, list):
+                        content = _ov_content
+                    if _ov_timestamp is not None:
+                        _row_timestamp = _ov_timestamp
+                    # The interrupted-turn platform id (#48677 backfill dedupe):
+                    # stamp it on the WRITTEN row so a later
+                    # backfill-on-reconnect's has_platform_message_id sees the
+                    # turn is already persisted and skips re-processing it. The
+                    # live dict is never mutated (parity with content/timestamp).
+                    if _ov_platform_id is not None and not _row_platform_id:
+                        _row_platform_id = _ov_platform_id
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
@@ -1842,12 +2020,13 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
-                    timestamp=msg.get("timestamp"),
-                    platform_message_id=msg.get("platform_message_id"),
+                    timestamp=_row_timestamp,
+                    platform_message_id=_row_platform_id,
                 )
                 flushed_ids.add(msg_id)
                 if isinstance(_row_id, int):
                     flushed_row_ids[msg_id] = _row_id
+                    msg["_db_persisted_row_id"] = _row_id
                     # If this message was appended already carrying the flag,
                     # it is durably persisted — no later re-persist needed.
                     if msg.get("finish_reason") == _INTERRUPT_CLOSE_FINISH_REASON:
@@ -1863,6 +2042,11 @@ class AIAgent:
                         "interrupt_close message; in-place re-persist will be skipped",
                         _row_id,
                     )
+                msg[_DB_PERSISTED_MARKER] = True
+            # The intrinsic markers are now the sole source of truth. Reset the
+            # one-shot seed so no id() outlives this flush to alias a message
+            # allocated next turn at a recycled address.
+            self._flushed_db_message_ids = set()
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
@@ -2126,7 +2310,10 @@ class AIAgent:
         # widens exposure vs the old empty-body "HTTP 400" string).
         response = getattr(error, "response", None)
         if response is not None:
-            snippet = (getattr(response, "text", None) or "").strip()
+            try:
+                snippet = (getattr(response, "text", None) or "").strip()
+            except Exception:
+                snippet = ""
             if snippet:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
@@ -2541,6 +2728,10 @@ class AIAgent:
         try:
             cleaned = []
             for msg in messages:
+                # Mirror the SQLite flush: ephemeral recovery scaffolding is
+                # internal retry state, never durable transcript content.
+                if _is_ephemeral_scaffolding(msg):
+                    continue
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])
@@ -3499,13 +3690,36 @@ class AIAgent:
         The gateway creates a fresh AIAgent per message, so the in-memory
         TodoStore is empty. We scan the history for the most recent todo
         tool response and replay it to reconstruct the state.
+
+        Hydration is restricted to tool results that are paired with an
+        earlier assistant ``todo`` tool call. The gateway/API server accepts
+        caller-supplied ``conversation_history``, so a forged bare
+        ``role: tool`` message carrying a ``todos`` array must not be able to
+        seed the store without a matching canonical tool call
+        (GHSA-5g4g-6jrg-mw3g).
         """
+        from tools.todo_tool import MAX_TODO_RESULT_CHARS
+
         # Walk history backwards to find the most recent todo tool response
         last_todo_response = None
-        for msg in reversed(history):
+        for idx in range(len(history) - 1, -1, -1):
+            msg = history[idx]
             if msg.get("role") != "tool":
                 continue
             content = msg.get("content", "")
+            if not isinstance(content, str):
+                continue
+            # Only accept tool results paired with a prior assistant todo call.
+            if not self._tool_response_matches_todo_call(history, idx):
+                continue
+            if len(content) > MAX_TODO_RESULT_CHARS:
+                logger.warning(
+                    "Skipping oversized todo tool response during hydration: "
+                    "session=%s chars=%d",
+                    self.session_id or "none",
+                    len(content),
+                )
+                continue
             # Quick check: todo responses contain "todos" key
             if '"todos"' not in content:
                 continue
@@ -3516,13 +3730,60 @@ class AIAgent:
                     break
             except (json.JSONDecodeError, TypeError):
                 continue
-        
+
         if last_todo_response:
             # Replay the items into the store (replace mode)
             self._todo_store.write(last_todo_response, merge=False)
             if not self.quiet_mode:
                 self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
         _set_interrupt(False)
+
+    @classmethod
+    def _tool_response_matches_todo_call(
+        cls,
+        history: List[Dict[str, Any]],
+        tool_index: int,
+    ) -> bool:
+        """Return True when a tool result belongs to a prior assistant todo call.
+
+        Scans backwards from the tool result to the nearest assistant message
+        and confirms it issued a ``todo`` tool call whose id matches this
+        result's ``tool_call_id``. A ``user``/``system`` boundary (or a missing
+        id) means the result is unpaired and must not hydrate the store.
+        """
+        if tool_index < 0 or tool_index >= len(history):
+            return False
+        tool_msg = history[tool_index]
+        tool_call_id = tool_msg.get("tool_call_id")
+        if not tool_call_id:
+            return False
+
+        for prior_idx in range(tool_index - 1, -1, -1):
+            prior = history[prior_idx]
+            role = prior.get("role")
+            if role == "assistant":
+                return cls._assistant_has_todo_tool_call(prior, tool_call_id)
+            if role in {"user", "system"}:
+                return False
+        return False
+
+    @classmethod
+    def _assistant_has_todo_tool_call(
+        cls,
+        assistant_msg: Dict[str, Any],
+        tool_call_id: str,
+    ) -> bool:
+        """True when the assistant message issued a ``todo`` call with this id."""
+        tool_calls = assistant_msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return False
+
+        for tool_call in tool_calls:
+            if cls._get_tool_call_id_static(tool_call) != tool_call_id:
+                continue
+            if cls._get_tool_call_name_static(tool_call) == "todo":
+                return True
+        return False
 
     @property
     def is_interrupted(self) -> bool:
@@ -3794,29 +4055,71 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "") -> Any:
+    def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
+        """Build an httpx.Client with proactive idle-connection reaping.
+
+        Previously this method injected a custom ``httpx.HTTPTransport``
+        with ``socket_options`` (``SO_KEEPALIVE``, ``TCP_KEEPIDLE``, …) to
+        prevent CLOSE-WAIT accumulation on long-lived connections (#10324).
+
+        That approach broke streaming for providers behind reverse proxies
+        (OpenResty, Cloudflare, etc.) because the custom socket options
+        conflict with the proxy's chunked-transfer handling (#54049,
+        #12952).  It also stripped ``TCP_NODELAY``, stalling TLS handshakes
+        and SSE encoding.
+
+        The fix moves connection lifecycle management from the socket layer
+        to the HTTP pool layer: ``keepalive_expiry=20.0`` tells httpx to
+        close idle pooled connections *before* a reverse proxy's typical
+        30–60 s timeout drops them, preventing CLOSE-WAIT accumulation
+        without modifying socket options.  The default httpx transport
+        preserves OS TCP defaults (including ``TCP_NODELAY``).
+
+        ``verify`` carries per-provider ``ssl_ca_cert`` / ``ssl_verify`` and
+        ``HERMES_CA_BUNDLE`` settings.  It is passed on the client AND on
+        the plain no-proxy mounts (a mounted transport owns the SSL context
+        for its scheme).
+        """
         try:
             import httpx as _httpx
-            import socket as _socket
 
-            if "api.githubcopilot.com" in str(base_url or "").lower():
-                return _httpx.Client()
-
-            _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
-            if hasattr(_socket, "TCP_KEEPIDLE"):
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
-            elif hasattr(_socket, "TCP_KEEPALIVE"):
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
-            # When a custom transport is provided, httpx won't auto-read proxy
-            # from env vars (allow_env_proxies = trust_env and transport is None).
-            # Explicitly read proxy settings while still honoring NO_PROXY for
-            # loopback / local endpoints such as a locally hosted sub2api.
+            # Explicitly read proxy settings so requests route through
+            # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
             _proxy = _get_proxy_for_base_url(base_url)
+
+            # Proactive pool reaping: close idle connections at 20 s,
+            # before reverse proxies (30–60 s typical) send FIN and
+            # cause CLOSE-WAIT accumulation.
+            _limits = _httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=100,
+                keepalive_expiry=20.0,
+            )
+
+            # Timeouts: generous read=None for SSE streaming endpoints.
+            _timeout = _httpx.Timeout(
+                connect=15.0,
+                read=None,
+                write=15.0,
+                pool=10.0,
+            )
+
+            # When _proxy is None (NO_PROXY bypass or no proxy configured),
+            # mount plain transports to prevent httpx from reading env proxy
+            # vars and creating an HTTPProxy mount that would bypass our
+            # NO_PROXY resolution.
+            _mounts = {}
+            if _proxy is None:
+                _mounts = {
+                    "http://": _httpx.HTTPTransport(verify=verify),
+                    "https://": _httpx.HTTPTransport(verify=verify),
+                }
             return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                limits=_limits,
+                timeout=_timeout,
                 proxy=_proxy,
+                mounts=_mounts or None,
+                verify=verify,
             )
         except Exception:
             return None
@@ -4020,7 +4323,7 @@ class AIAgent:
         #
         # When an agent is using a non-singleton credential — e.g. a manual
         # pool entry (``hermes auth add xai-oauth``) whose tokens belong to
-        # a different account than the loopback_pkce singleton, or an agent
+        # a different account than the device_code singleton, or an agent
         # constructed with an explicit ``api_key=`` arg — force-refreshing
         # the singleton here and adopting its tokens silently re-routes the
         # rest of the conversation onto the singleton's account.  The
@@ -4122,6 +4425,43 @@ class AIAgent:
         if not self._replace_primary_openai_client(reason="nous_credential_refresh"):
             return False
 
+        return True
+
+    def _try_refresh_vertex_client_credentials(self) -> bool:
+        """Re-mint the Vertex OAuth2 access token and rebuild the OpenAI client.
+
+        Vertex tokens live ~1 hour. On a long-lived agent (gateway session) a
+        cached client's bearer token will expire mid-session, producing a 401.
+        This re-resolves credentials via the adapter (which refreshes the
+        underlying google-auth Credentials object when near expiry), swaps the
+        new token into the client kwargs, and rebuilds the primary OpenAI
+        client. Returns True when a usable token+base_url were obtained.
+        """
+        if self.api_mode != "chat_completions" or self.provider != "vertex":
+            return False
+
+        try:
+            from agent.vertex_adapter import get_vertex_config
+
+            token, base_url = get_vertex_config()
+        except Exception as exc:
+            logger.debug("Vertex credential refresh failed: %s", exc)
+            return False
+
+        if not isinstance(token, str) or not token.strip():
+            return False
+        if not isinstance(base_url, str) or not base_url.strip():
+            return False
+
+        self.api_key = token.strip()
+        self.base_url = base_url.strip().rstrip("/")
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+
+        if not self._replace_primary_openai_client(reason="vertex_credential_refresh"):
+            return False
+
+        logger.info("Vertex AI OAuth token refreshed")
         return True
 
     def _try_refresh_copilot_client_credentials(self) -> bool:
@@ -4255,6 +4595,22 @@ class AIAgent:
         # first construction.
         self._apply_user_default_headers()
 
+        # Per-provider extra HTTP headers (providers.<name>.extra_headers /
+        # custom_providers[].extra_headers) — applied last so the most
+        # specific config level survives credential swaps and rebuilds too.
+        # SECURITY: values may carry credentials — never log them.
+        if self.api_mode not in ("anthropic_messages", "bedrock_converse"):
+            try:
+                from hermes_cli.config import (
+                    apply_custom_provider_extra_headers_to_client_kwargs,
+                )
+
+                apply_custom_provider_extra_headers_to_client_kwargs(
+                    self._client_kwargs, base_url,
+                )
+            except Exception:
+                logger.debug("custom-provider extra_headers skipped", exc_info=True)
+
     def _apply_user_default_headers(self) -> None:
         """Merge user-configured request headers onto the OpenAI client.
 
@@ -4376,13 +4732,6 @@ class AIAgent:
         """Whether a rate-limit retry should wait for same-provider credentials."""
         pool = self._credential_pool
         if pool is None:
-            return False
-        if (
-            str(getattr(self, "base_url", "")).startswith("cloudcode-pa://")
-        ):
-            # CloudCode/Gemini quota windows are usually account-level throttles.
-            # Prefer the configured fallback immediately instead of waiting out
-            # Retry-After while a pooled OAuth credential may still appear usable.
             return False
         return pool.has_available()
 
@@ -4984,17 +5333,27 @@ class AIAgent:
             max_dimension=max_dimension,
         )
 
-    def _try_strip_image_parts_from_tool_messages(self, api_messages: list) -> bool:
+    def _try_strip_image_parts_from_tool_messages(
+        self,
+        api_messages: list,
+        *,
+        remember_model: bool = True,
+    ) -> bool:
         """Downgrade list-type tool messages to text summaries in-place.
 
         Recovery path for providers that reject list-type tool message content
         (e.g. Xiaomi MiMo's 400 "text is not set"; see issue #27344).  Walks
         ``api_messages`` for any ``role: "tool"`` message whose ``content`` is
         a list containing image parts, replaces the content with the existing
-        text part(s) (or a minimal placeholder if none survive), and records
-        the active (provider, model) in ``self._no_list_tool_content_models``
-        so subsequent ``_tool_result_content_for_active_model`` calls in this
-        session preemptively downgrade screenshots without a round-trip.
+        text part(s) (or a minimal placeholder if none survive), and by default
+        records the active (provider, model) in
+        ``self._no_list_tool_content_models`` so subsequent
+        ``_tool_result_content_for_active_model`` calls in this session
+        preemptively downgrade screenshots without a round-trip.
+
+        413 payload-size recovery passes ``remember_model=False`` because that
+        error means this request body was too large, not that the provider/model
+        rejects list-type tool content in general.
 
         Returns True when at least one tool message was downgraded — the
         caller (the 400 recovery branch in ``agent.conversation_loop``) uses
@@ -5004,15 +5363,16 @@ class AIAgent:
         if not isinstance(api_messages, list):
             return False
 
-        # Record (provider, model) so we don't relearn this lesson.
-        key = (
-            (getattr(self, "provider", "") or "").strip().lower(),
-            (getattr(self, "model", "") or "").strip(),
-        )
-        if not hasattr(self, "_no_list_tool_content_models"):
-            self._no_list_tool_content_models = set()
-        if key[1]:  # only record when we actually have a model id
-            self._no_list_tool_content_models.add(key)
+        if remember_model:
+            # Record (provider, model) so we don't relearn this lesson.
+            key = (
+                (getattr(self, "provider", "") or "").strip().lower(),
+                (getattr(self, "model", "") or "").strip(),
+            )
+            if not hasattr(self, "_no_list_tool_content_models"):
+                self._no_list_tool_content_models = set()
+            if key[1]:  # only record when we actually have a model id
+                self._no_list_tool_content_models.add(key)
 
         changed = False
         for msg in api_messages:
@@ -5076,7 +5436,7 @@ class AIAgent:
             "alibaba", "minimax", "minimax-cn",
             "opencode-go", "opencode-zen",
             "zai", "bedrock",
-            "xiaomi",
+            "xiaomi", "vertex",
         }:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
@@ -5087,6 +5447,9 @@ class AIAgent:
             or "opencode.ai/zen/" in base
             or "bigmodel.cn" in base
             or "xiaomimimo.com" in base
+            # Vertex AI OpenAI-compat endpoint — Gemini model ids keep dots
+            # (e.g. google/gemini-3.5-flash); the hyphenated form is wrong.
+            or "aiplatform.googleapis.com" in base
             # AWS Bedrock runtime endpoints — defense-in-depth when
             # ``provider`` is unset but ``base_url`` still names Bedrock.
             or "bedrock-runtime." in base
@@ -5199,7 +5562,7 @@ class AIAgent:
             "google/gemini-2",
             "google/gemma-4",
             "qwen/qwen3",
-            "tencent/hy3-preview",
+            "tencent/hy3",
             "xiaomi/",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
@@ -5523,7 +5886,10 @@ class AIAgent:
         New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
         invocation paths (concurrent, sequential, inline).
         """
-        from tools.delegate_tool import delegate_task as _delegate_task
+        from tools.delegate_tool import (
+            _strip_model_hidden_task_fields,
+            delegate_task as _delegate_task,
+        )
         # Delegations from the top-level MODEL always run in the background —
         # the model does not get to choose. delegate_task returns immediately
         # with a handle (one per task) and each subagent's result re-enters the
@@ -5539,11 +5905,8 @@ class AIAgent:
         return _delegate_task(
             goal=function_args.get("goal"),
             context=function_args.get("context"),
-            toolsets=function_args.get("toolsets"),
-            tasks=function_args.get("tasks"),
+            tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"),
-            acp_command=function_args.get("acp_command"),
-            acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
             background=(not _is_subagent),
             inherit_context=function_args.get("inherit_context"),

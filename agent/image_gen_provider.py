@@ -1,6 +1,6 @@
 """
 Image Generation Provider ABC
-=============================
+-----------------------------
 
 Defines the pluggable-backend interface for image generation. Providers register
 instances via ``PluginContext.register_image_gen_provider()``; the active one

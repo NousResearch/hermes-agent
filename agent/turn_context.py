@@ -186,9 +186,19 @@ def build_turn_context(
     # name and leaves the snapshot untouched on no-change).
     try:
         if not getattr(agent, "_skip_mcp_refresh", False):
-            from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
-            if has_registered_mcp_tools():
-                refresh_agent_mcp_tools(agent, quiet_mode=True)
+            # Import-cost gate: ``tools.mcp_tool`` pulls in the whole ``mcp``
+            # package (~0.4s measured) even when the user has zero MCP servers
+            # configured.  MCP tools can only be registered by code that has
+            # already imported ``tools.mcp_tool`` (discovery, /reload-mcp,
+            # late-binding refresh) — so if it isn't in sys.modules yet, there
+            # is nothing to refresh and the import can be skipped outright.
+            # This keeps the no-MCP first turn off the heavy import path
+            # without changing behavior for MCP users.
+            import sys as _sys
+            if "tools.mcp_tool" in _sys.modules:
+                from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
+                if has_registered_mcp_tools():
+                    refresh_agent_mcp_tools(agent, quiet_mode=True)
     except Exception:
         logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
 
@@ -279,6 +289,9 @@ def build_turn_context(
 
     # Track user turns for memory flush and periodic nudge logic.
     agent._user_turn_count += 1
+    # Copilot x-initiator: the first API call of this user turn is
+    # user-initiated; tool-loop follow-ups revert to "agent" (#3040).
+    agent._is_user_initiated_turn = True
 
     # Reset the streaming context scrubber at the top of each turn.
     scrubber = getattr(agent, "_stream_context_scrubber", None)
@@ -376,6 +389,20 @@ def build_turn_context(
         # request the calibrated path had just decided should fit (Greptile #111).
         if _last >= 0 and _calibrated > _last:
             _compressor.last_prompt_tokens = _calibrated
+        # Codex app-server threads are compacted by the codex agent itself;
+        # Hermes only initiates compaction in "hermes" mode (#36801).
+        _codex_native_auto = (
+            getattr(agent, "api_mode", None) == "codex_app_server"
+            and str(
+                getattr(
+                    agent,
+                    "codex_app_server_auto_compaction",
+                    "native",
+                )
+                or "native"
+            ).lower()
+            in {"native", "off"}
+        )
 
         # Upstream d153918f1: same-session compression-failure cooldown. If a
         # recent compression failed, skip the retry for the cooldown window even
@@ -392,6 +419,12 @@ def build_turn_context(
                 "(~%s seconds remaining, session %s)",
                 int(_compression_cooldown.get("remaining_seconds", 0.0)),
                 agent.session_id or "none",
+            )
+        elif _codex_native_auto:
+            logger.info(
+                "Skipping Hermes preflight compression for codex app-server "
+                "(mode=%s); Hermes will not start thread compaction here.",
+                getattr(agent, "codex_app_server_auto_compaction", "native"),
             )
         elif _compressor.should_compress_calibrated(_preflight_tokens):
             logger.info(
@@ -462,11 +495,37 @@ def build_turn_context(
             sender_id=getattr(agent, "_user_id", None) or "",
         )
         _ctx_parts: list[str] = []
+        # Spill oversized per-hook context to disk so a runaway plugin
+        # can't inflate every subsequent turn's prompt. Ported from
+        # openai/codex PR #21069 ("Spill large hook outputs from context").
+        try:
+            from tools.hook_output_spill import (
+                get_spill_config as _spill_cfg,
+                spill_if_oversized as _spill_if_oversized,
+            )
+            _spill_config_cached = _spill_cfg()
+        except Exception:
+            _spill_if_oversized = None  # type: ignore[assignment]
+            _spill_config_cached = None
         for r in _pre_results:
+            _piece: str = ""
             if isinstance(r, dict) and r.get("context"):
-                _ctx_parts.append(str(r["context"]))
+                _piece = str(r["context"])
             elif isinstance(r, str) and r.strip():
-                _ctx_parts.append(r)
+                _piece = r
+            else:
+                continue
+            if _spill_if_oversized is not None:
+                try:
+                    _piece = _spill_if_oversized(
+                        _piece,
+                        session_id=agent.session_id,
+                        source="plugin hook",
+                        config=_spill_config_cached,
+                    )
+                except Exception as _spill_exc:
+                    logger.warning("hook context spill failed: %s", _spill_exc)
+            _ctx_parts.append(_piece)
         if _ctx_parts:
             plugin_user_context = "\n\n".join(_ctx_parts)
     except Exception as exc:

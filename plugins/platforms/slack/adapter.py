@@ -427,6 +427,14 @@ class SlackAdapter(BasePlatformAdapter):
     # the prefix that works everywhere — instruction text must show it.
     typed_command_prefix = "!"
 
+    # Slack has both halves the ``in_channel`` continuable-cron surface needs:
+    # a flat-reply outbound gate (``reply_in_thread: false`` → ``_resolve_thread_ts``
+    # returns None for top-level channel messages) AND a whole-channel inbound
+    # session bucket keyed ``(platform, channel_id, None)`` (the same
+    # ``reply_in_thread: false`` path in ``_handle_slack_message``).  So a
+    # continuable cron delivered flat here continues in-context on a plain reply.
+    supports_inchannel_continuable = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
         self._app: Optional[Any] = None
@@ -1073,6 +1081,7 @@ class SlackAdapter(BasePlatformAdapter):
 
                 self._warn_if_missing_group_dm_scopes(auth_response, team_name)
                 self._warn_if_not_bot_token(auth_response, team_name)
+                self._warn_if_inchannel_without_flat_reply(team_name)
 
             # Register message event handler
             @self._app.event("message")
@@ -1561,6 +1570,62 @@ class SlackAdapter(BasePlatformAdapter):
         if raw is None:
             return True  # default: each DM thread is its own session
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _cron_continuable_surface(self) -> str:
+        """Resolve the continuable-cron delivery surface for this platform.
+
+        Values: ``"thread"`` (default — today's behaviour: a continuable cron
+        job opens a dedicated hidden thread and seeds it) or ``"in_channel"``
+        (deliver FLAT into the channel timeline; the shared-channel session
+        ``(slack, channel_id, None)`` is the continuation surface).  Set
+        ``platforms.slack.extra.cron_continuable_surface: in_channel`` in
+        config.yaml.  Pair with ``reply_in_thread: false`` so the user's reply
+        is answered flat in the channel and keyed to the same shared session —
+        see ``_warn_if_inchannel_without_flat_reply``.  Any unrecognised value
+        coerces to ``"thread"`` (fail safe).
+        """
+        raw = self.config.extra.get("cron_continuable_surface")
+        if raw is None:
+            return "thread"
+        val = str(raw).strip().lower()
+        return "in_channel" if val == "in_channel" else "thread"
+
+    def _warn_if_inchannel_without_flat_reply(self, team_name: str) -> None:
+        """Warn when ``in_channel`` is set without the required ``reply_in_thread: false`` pairing.
+
+        The two knobs are orthogonal (D4/D5): ``cron_continuable_surface:
+        in_channel`` skips thread creation on delivery, and ``reply_in_thread:
+        false`` makes the bot answer inbound channel messages flat and key them
+        to the whole-channel session ``(slack, channel_id, None)``.  For a
+        continuable in-channel cron to actually continue on a plain reply, BOTH
+        must hold: the seed lands in the shared-channel session, and the reply
+        must resolve to (and be answered in) that same flat session.
+
+        Enforcement is WARN, not hard-require (D5): the misconfiguration fails
+        SAFE — ``in_channel`` without ``reply_in_thread: false`` yields a
+        threaded continuation (≈ today's behaviour), never a dropped/orphaned
+        session — so a config-load rejection would be heavier than warranted
+        and would make the two knobs non-orthogonal.  Mirrors the existing
+        connect-time warning pattern (``_warn_if_missing_group_dm_scopes``,
+        ``_warn_if_not_bot_token``).
+        """
+        try:
+            if self._cron_continuable_surface() != "in_channel":
+                return
+            # reply_in_thread defaults True (legacy: reply in a thread).
+            if self.config.extra.get("reply_in_thread", True):
+                logger.warning(
+                    "[Slack] %s: cron_continuable_surface=in_channel is set "
+                    "WITHOUT reply_in_thread=false. A continuable in-channel "
+                    "cron job will deliver flat, but the bot will still reply "
+                    "to your continuation in a thread — so it falls back to a "
+                    "threaded continuation (\u2248 default behaviour), not the "
+                    "flat channel session you asked for. Set "
+                    "platforms.slack.extra.reply_in_thread: false to pair them.",
+                    team_name,
+                )
+        except Exception:
+            pass
 
     def _resolve_thread_ts(
         self,
@@ -2097,10 +2162,10 @@ class SlackAdapter(BasePlatformAdapter):
 
             async def _ssrf_redirect_guard(response):
                 """Re-check redirect targets so public URLs cannot bounce into private IPs."""
-                if response.is_redirect and response.next_request:
-                    redirect_url = str(response.next_request.url)
-                    if not is_safe_url(redirect_url):
-                        raise ValueError("Blocked redirect to private/internal address")
+                from tools.url_safety import redirect_target_from_response
+                redirect_url = redirect_target_from_response(response)
+                if redirect_url and not is_safe_url(redirect_url):
+                    raise ValueError("Blocked redirect to private/internal address")
 
             # Download the image first
             async with httpx.AsyncClient(
@@ -2696,6 +2761,15 @@ class SlackAdapter(BasePlatformAdapter):
         if not channel_type and channel_id.startswith("D"):
             channel_type = "im"
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
+        # A 1:1 IM is a private conversation with a single human — mention-exempt
+        # and safe to react to unconditionally, like any DM. An MPIM (group DM)
+        # is a SHARED surface: multiple humans can see and trigger the bot, so it
+        # must obey the same operator controls as a channel (allowed_channels /
+        # require_mention / strict_mention / free_response_channels) and must not
+        # get reaction noise on messages that don't address the bot. Only the 1:1
+        # case earns the DM exemptions; session/thread scoping below still treats
+        # both as DM-style persistent conversations.
+        is_one_to_one_dm = channel_type == "im"
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -2758,7 +2832,7 @@ class SlackAdapter(BasePlatformAdapter):
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
-        if not is_dm and bot_uid:
+        if not is_one_to_one_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)
             allowed_channels = self._slack_allowed_channels()
             if allowed_channels and channel_id not in allowed_channels:
@@ -3094,6 +3168,11 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_ts,
+            # Slack Workflow Builder / app posts arrive as
+            # subtype=bot_message with user=None; flag them so the
+            # gateway SLACK_ALLOW_BOTS bypass can authorize them
+            # (they carry no user_id to match against the allowlist).
+            is_bot=bool(event.get("bot_id")) or event.get("subtype") == "bot_message",
         )
 
         # Per-channel ephemeral prompt
@@ -3146,10 +3225,11 @@ class SlackAdapter(BasePlatformAdapter):
             auto_skill=_auto_skill,
         )
 
-        # Only react when bot is directly addressed (DM or @mention).
-        # In listen-all channels (require_mention=false), reacting to every
-        # casual message would be noisy.
-        _should_react = (is_dm or is_mentioned) and self._reactions_enabled()
+        # Only react when bot is directly addressed (1:1 DM or @mention).
+        # MPIMs are shared surfaces: reacting to every group-DM message (even
+        # when unmentioned) is visible noise to the whole group, so they must
+        # be @mentioned to earn a reaction — same as any channel.
+        _should_react = (is_one_to_one_dm or is_mentioned) and self._reactions_enabled()
         if _should_react:
             self._reacting_message_ids.add(ts)
 

@@ -227,6 +227,76 @@ class TestHTTP413Compression:
         mock_compress.assert_called_once()
         assert result["completed"] is True
 
+    def test_413_strips_vision_payloads_when_compression_cannot_reduce_messages(self, agent):
+        """If compression leaves image payloads behind, strip them and retry.
+
+        Browser vision tool results can contain base64 image parts. A 413 can
+        persist even after summarisation when the remaining recent tool result
+        still carries binary data; Hermes should evict the image payload and
+        keep the text/placeholder context instead of failing immediately.
+        """
+        err_413 = _make_413_error()
+        ok_resp = _mock_response(content="Recovered after image eviction", finish_reason="stop")
+        request_payloads = []
+
+        def _side_effect(**kwargs):
+            request_payloads.append(kwargs)
+            if len(request_payloads) == 1:
+                raise err_413
+            return ok_resp
+
+        agent.client.chat.completions.create.side_effect = _side_effect
+
+        image_part = {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64," + ("a" * 2000)},
+        }
+        prefill = [
+            {"role": "user", "content": "please inspect this page"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_vision",
+                        "type": "function",
+                        "function": {"name": "browser_vision", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_vision",
+                "name": "browser_vision",
+                "content": [
+                    {"type": "text", "text": "Screenshot of the dashboard"},
+                    image_part,
+                ],
+            },
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            # Simulate the bad production case: compression ran, but the
+            # recent vision tool message survived so message count did not drop.
+            mock_compress.side_effect = lambda msgs, *_a, **_k: (msgs, "compressed prompt")
+            result = agent.run_conversation("continue", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after image eviction"
+        assert len(request_payloads) == 2
+        first_tool = next(m for m in request_payloads[0]["messages"] if m.get("role") == "tool")
+        retried_tool = next(m for m in request_payloads[1]["messages"] if m.get("role") == "tool")
+        assert "Screenshot of the dashboard" in str(first_tool["content"])
+        assert "data:image" not in str(retried_tool["content"])
+        assert "Screenshot of the dashboard" in str(retried_tool["content"])
+        assert not getattr(agent, "_no_list_tool_content_models", set())
+
     def test_413_clears_conversation_history_on_persist(self, agent):
         """After 413-triggered compression, _persist_session must receive None history.
 

@@ -55,6 +55,7 @@ class TestFailoverReason:
             "auth", "auth_permanent", "billing", "rate_limit",
             "upstream_rate_limit",
             "overloaded", "server_error", "timeout",
+            "ssl_cert_verification",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
             "malformed_conversation",

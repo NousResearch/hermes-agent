@@ -218,7 +218,10 @@ def test_get_status_offloads_active_session_scan(monkeypatch):
             return []
 
     class _DB:
-        def list_sessions_rich(self, *, limit):
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def list_sessions_rich(self, *, limit, compact_rows=False):
             assert limit == 50
             db_threads.append(threading.get_ident())
             return [{"ended_at": None, "last_active": time.time()}]
@@ -237,6 +240,15 @@ def test_get_status_offloads_active_session_scan(monkeypatch):
     monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
     monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
     monkeypatch.setattr(hermes_state, "SessionDB", _DB)
+    # Upstream's _count_status_active_sessions early-returns 0 when the session
+    # DB file doesn't exist yet (avoids an OperationalError on a fresh install's
+    # read_only open). The function does `from hermes_state import DEFAULT_DB_PATH`,
+    # so patch that with a path that reports it exists to exercise the scan path.
+    import pathlib
+    class _ExistingPath(type(pathlib.Path())):
+        def exists(self):  # noqa: D401 — always-present sentinel for the test
+            return True
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", _ExistingPath("/tmp/hermes-test-state.db"))
 
     status = asyncio.run(web_server.get_status())
 

@@ -1,6 +1,6 @@
 """
 Basic GRPO Training Template
-=============================
+-----------------------------
 
 A minimal, production-ready template for GRPO training with TRL.
 Adapt this for your specific task by modifying:

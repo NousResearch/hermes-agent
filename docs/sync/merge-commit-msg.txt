@@ -1,0 +1,65 @@
+merge: upstream parity sync — NousResearch/main → fork/main (2026-07-10)
+
+Catch-up merge of upstream (frozen target caf557be) into the long-lived hard fork.
+Fork was 386 ahead / 1216 behind at merge-base 852c9b3cb. 56 conflict files,
+147 hunks (140 both-sides semantic + mem0 arch-split). All 386 fork lead-commits
+preserved; import-smoke + marker-clean verified before commit.
+
+Architectural ports & semantic reconciliations (full detail in docs/sync/review/):
+- plugins/memory/mem0: take-fork wholesale; removed upstream _backend/_setup refactor
+  shards + their tests (fork __init__ is the production superset). Upstream setup-wizard
+  refactor noted for deliberate follow-up, not reintroduced as orphan modules.
+- agent/auxiliary_client _resolve_task_provider_model: reconciled api_mode — first-class/
+  custom/auto keep upstream api_mode=None (downstream transport detection); plugin
+  providers keep the fork eager ProviderProfile.api_mode read.
+- agent/chat_completion_helpers: keep-both — fork relay/fallback route announce + audit
+  sink + x-hermes-lane pool headers preserved; added upstream unavailable-fallback skip.
+- tools/delegate_tool: fork inherit_context/boomerang kept; code_execution stays exempt
+  from subagent toolset stripping; took upstream ACP transport-field removal.
+- gateway/run.py, gateway/slash_commands.py: interleave — fork restart-loop/recovery gates,
+  compaction telemetry, branch-thread, usage cards preserved; upstream async session-store
+  calls used where hunk-local.
+- gateway/session.py: keep-both — fork durable reasoning/model identity + answerable
+  lookup; upstream model_override + rewrite_transcript success-return (clear undo only
+  after successful rewrite).
+- hermes_state.py: keep-both — fork gated effective_last_active denorm + backfill; upstream
+  MAX_FTS5_QUERY_CHARS, handoff index, search_query, compact_rows (denorm fast-path bypassed
+  when upstream-only search/compact options requested).
+- cron/scheduler.py: keep-both — fork per-job reasoning/fallback + loud alert; upstream
+  dispatch-claiming, credential-exfil guard, TG DM-topic probe, deferred teardown.
+- tui_gateway/server.py: reconciled fork client source attribution with upstream
+  platform_override; _make_agent accepts both, disabled reasoning reports "none".
+- run_agent.py: interleaved upstream intrinsic-persistence markers with fork interrupt-close
+  finish-reason re-persist; row ids attached to persisted dicts (resume discriminator no
+  longer depends on long-lived id() sets).
+- agent/model_metadata.py: keep-both — fork two-tier token breakdown + request telemetry;
+  upstream async context lookup + local-probe cache + bounded tool-token cache.
+- Desktop: upstream Electron TS migration/package shape; fork app-side media/project/composer
+  behavior preserved.
+
+Fork-critical features re-verified present post-merge: relay x-hermes-lane headers,
+messaging/moa toolsets + send_message/mixture_of_agents tools, code_execution exemption.
+
+Resolution by codex under docs/sync/RESOLUTION-SPEC-2026-07-10.md; certified (markers,
+import-smoke, feature-survival) by Apollo.
+
+POST-MERGE RECONCILIATION FIXES (STAGE-2 gates: 31 reds → 0; detail in
+docs/sync/review/stage2-reconciliation-fixes.md):
+- agent/agent_runtime_helpers.py: removed a stray set-era `known_tool_ids.discard()` the
+  set→Counter merge left behind (NameError broke all 16 message-sequence-repair tests).
+- cron/scheduler.py: added the upstream one-shot dispatch claim to _process_one_job (the
+  fork's tick path), not just run_one_job — a self-destructing one-shot could otherwise
+  re-fire forever on the built-in ticker.
+- tui_gateway/server.py: restored the fork's _sanitize_client_source guard on the untrusted
+  client `source` in _make_agent (the merge trusted it verbatim → hostile-label injection).
+- gateway/slash_commands.py: restored the fork's chat-only /compress `msgs` projection (the
+  merge took upstream's full-transcript filter → double-counted tool rows, broke both-axes
+  compress-feedback math).
+- tests updated to real upstream contracts the merge adopted: FailoverReason.ssl_cert_verification;
+  _notify_session_boundary platform arg; _notification_event_belongs_elsewhere sid arg;
+  list_sessions_rich compact_rows; _SlashWorker profile_home; config-sync persist_override;
+  _resolve_session_agent_runtime override stubs. No fork feature dropped, no test weakened.
+
+STAGE-2 pytest gates green (2267 passed; 1 pre-existing order-pollution flake that passes
+isolated). CI-gate traps + config-migration dry-run follow before deploy (deploy is a
+separate gated step, Ace's call).

@@ -1,3 +1,4 @@
+import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { $connection } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
@@ -157,4 +158,26 @@ export function mediaDisplayLabel(path: string): string {
   const kind = mediaKind(path)
 
   return `${kind[0].toUpperCase()}${kind.slice(1)}: ${escaped}`
+}
+
+// Remote-mode replacement for opening gateway-local file paths with file://.
+// The file lives on the gateway, so fetch it over the authenticated fs bridge
+// and hand the bytes to the local browser shell as a download.
+export async function downloadGatewayMediaFile(path: string): Promise<void> {
+  const dataUrl = await readDesktopFileDataUrl(filePathFromMediaPath(path))
+
+  if (!dataUrl) {
+    throw new Error('Gateway returned no file data')
+  }
+
+  const response = await fetch(dataUrl)
+  const blobUrl = URL.createObjectURL(await response.blob())
+  const anchor = document.createElement('a')
+  anchor.href = blobUrl
+  anchor.download = mediaName(path)
+  anchor.rel = 'noopener noreferrer'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000)
 }

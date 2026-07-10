@@ -4675,16 +4675,16 @@ For replica-table eval results, use our eval notebook above. For detailed eval r
 Mean Baseline Model Performance: 149.07% CER for this eval set!
 
 ```
-============================================================
+------------------------------------------------------------
 Baseline Model Performance
-============================================================
+------------------------------------------------------------
 Number of samples: 200
 Mean CER: 149.07%
 Median CER: 80.00%
 Std Dev: 310.39%
 Min CER: 0.00%
 Max CER: 3500.00%
-============================================================
+------------------------------------------------------------
 
  Best Predictions (Lowest CER):
 
@@ -4725,14 +4725,14 @@ With 60 steps, we reduced CER from 149.07% to 60.43% (89% CER improvement)
 
 <pre><code><strong>============================================================
 </strong>Fine-tuned Model Performance
-============================================================
+------------------------------------------------------------
 Number of samples: 200
 Mean CER: 60.43%
 Median CER: 50.00%
 Std Dev: 80.63%
 Min CER: 0.00%
 Max CER: 916.67%
-============================================================
+------------------------------------------------------------
 
  Best Predictions (Lowest CER):
 

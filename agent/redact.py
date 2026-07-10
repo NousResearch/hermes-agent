@@ -76,7 +76,8 @@ _PREFIX_PATTERNS = [
     r"ghu_[A-Za-z0-9]{10,}",            # GitHub user-to-server token
     r"ghs_[A-Za-z0-9]{10,}",            # GitHub server-to-server token
     r"ghr_[A-Za-z0-9]{10,}",            # GitHub refresh token
-    r"xox[baprs]-[A-Za-z0-9-]{10,}",    # Slack tokens
+    r"xapp-\d+-[A-Za-z0-9-]{10,}",      # Slack app-Level token
+    r"xox[baprs]-[A-Za-z0-9-]{10,}",    # Slack bot/app/user tokens
     r"AIza[A-Za-z0-9_-]{30,}",          # Google API keys
     r"pplx-[A-Za-z0-9]{10,}",           # Perplexity
     r"fal_[A-Za-z0-9_-]{10,}",          # Fal.ai
@@ -106,7 +107,9 @@ _PREFIX_PATTERNS = [
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
     r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
+    r"fw-[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
+    r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.
@@ -141,6 +144,14 @@ _ENV_ASSIGN_RE = re.compile(
 # The colon-form URL guard (skip when ``://`` present) lives at the call site.
 _SECRET_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential|auth)"
 _CFG_VALUE = r"(['\"]?)([^\s&]+?)\2(?=[\s&]|$)"
+
+# Programmatic env lookups (``os.getenv(...)``, ``os.environ[...]``,
+# ``os.environ.get(...)``, ``process.env.X``, ``$ENV{X}``) reference variable
+# *names*, not secret values. When one appears as the VALUE of a KEY=... match
+# it's a code snippet, not a leaked secret — skip redaction (issue #2852).
+_ENV_LOOKUP_VALUE_RE = re.compile(
+    r"^(?:os\.(?:getenv|environ)|process\.env|\$ENV\{)"
+)
 # Namespaced (dotted) key: the secret word may sit anywhere in a dotted path.
 _CFG_DOTTED_RE = re.compile(
     rf"((?:[A-Za-z0-9_\-]+\.)+[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*"
@@ -405,6 +416,31 @@ def _redact_url_userinfo(text: str) -> str:
     )
 
 
+def redact_cdp_url(value: object) -> str:
+    """Mask secrets in a CDP/browser endpoint URL before it is logged.
+
+    The global ``redact_sensitive_text`` deliberately passes web-URL query
+    params and ``user:pass@`` userinfo through unmasked (OAuth callbacks,
+    magic-link / pre-signed URLs the agent is meant to follow -- see the
+    web-URL note above). CDP discovery endpoints are NOT such a workflow:
+    their query-string tokens and userinfo passwords are pure credentials
+    that must never reach the logs. So for CDP URLs we opt INTO the two URL
+    redactors that the global pass leaves off.
+
+    This is the single source of truth for redacting a CDP URL that is passed
+    *directly* to a log or error message. Callers that instead need to redact an
+    exception whose text embeds the URL (e.g. a ``websockets`` connect error)
+    should route that through their own error-text helper, which delegates here
+    -- see ``tools.browser_supervisor._redact_cdp_error_text``.
+    """
+    text = redact_sensitive_text("" if value is None else str(value))
+    if not text:
+        return text
+    text = _redact_url_query_params(text)
+    text = _redact_url_userinfo(text)
+    return text
+
+
 def _redact_http_request_target_query_params(text: str) -> str:
     """Redact sensitive query params in HTTP access-log request targets."""
     def _sub(m: re.Match) -> str:
@@ -536,6 +572,11 @@ def redact_sensitive_text(
                 _bare = name.split()[-1] if name else name
                 if _bare in _GIT_IDENTITY_NAMES:
                     return m.group(0)
+                # Programmatic env lookups reference variable *names*, not
+                # secret values — masking them corrupts code snippets in
+                # prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
                 return f"{name}={quote}{_mask_token(value)}{quote}"
             text = _ENV_ASSIGN_RE.sub(_redact_env, text)
             # Lowercase/dotted config keys (issue #16413). Skip URLs entirely —
@@ -550,6 +591,11 @@ def redact_sensitive_text(
         if ":" in text and '"' in text:
             def _redact_json(m):
                 key, value = m.group(1), m.group(2)
+                # Same programmatic-env-lookup exception as _redact_env above
+                # (issue #2852): "apiKey": "os.getenv('X')" is a code snippet,
+                # not a leaked secret value.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
@@ -559,6 +605,11 @@ def redact_sensitive_text(
         if ":" in text and "://" not in text:
             def _redact_yaml(m):
                 key, sep, value = m.group(1), m.group(2), m.group(3)
+                # Same programmatic-env-lookup exception as _redact_env above
+                # (issue #2852): api_key: os.getenv('X') is a code snippet,
+                # not a leaked secret value.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
                 return f"{key}{sep}{_mask_token(value)}"
             text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)
 

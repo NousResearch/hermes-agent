@@ -515,6 +515,16 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             msg = msg[:17] + "..."
         return f"to {target}: \"{msg}\""
 
+    if tool_name == "skill_view":
+        name = _oneline(str(args.get("name") or ""))
+        file_path = args.get("file_path")
+        if file_path:
+            file_path = _oneline(str(file_path))
+            preview = f"{name} → {file_path}" if name else file_path
+        else:
+            preview = name
+        return _truncate_preview(preview, max_len) if preview else None
+
     key = primary_args.get(tool_name)
     if not key:
         for fallback_key in ("query", "text", "command", "path", "name", "prompt", "code", "goal"):
@@ -1384,7 +1394,11 @@ def get_cute_tool_message(
     if tool_name == "skills_list":
         return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
     if tool_name == "skill_view":
-        return _wrap(f"┊ 📚 skill     {_trunc(args.get('name', ''), 30)}  {dur}")
+        label = args.get("name", "")
+        file_path = args.get("file_path")
+        if file_path:
+            label = f"{label} → {file_path}" if label else str(file_path)
+        return _wrap(f"┊ 📚 skill     {_trunc(label, 44)}  {dur}")
     if tool_name == "image_generate":
         return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
     if tool_name == "text_to_speech":

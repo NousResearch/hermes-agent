@@ -666,7 +666,12 @@ class MemoryManager:
         with self._sync_executor_lock:
             if self._sync_executor is None:
                 try:
-                    self._sync_executor = ThreadPoolExecutor(
+                    # Daemon workers (see tools.daemon_pool): a provider wedged
+                    # on a network call must never block interpreter exit —
+                    # stdlib ThreadPoolExecutor's atexit hook would join it
+                    # unconditionally even after shutdown(wait=False).
+                    from tools.daemon_pool import DaemonThreadPoolExecutor
+                    self._sync_executor = DaemonThreadPoolExecutor(
                         max_workers=1,
                         thread_name_prefix="mem-sync",
                     )
@@ -792,6 +797,55 @@ class MemoryManager:
                     provider.name, e,
                     exc_info=True,
                 )
+
+    def commit_session_boundary_async(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        new_session_id: str,
+        parent_session_id: str = "",
+        reason: str = "new_session",
+    ) -> None:
+        """Queue old-session extraction + provider rebinding as ONE serialized task.
+
+        Session rotation (/new) must deliver ``on_session_end`` (end-of-session
+        extraction — an LLM-bound call that can take seconds) strictly BEFORE
+        ``on_session_switch`` (which rebinds provider-internal ``_session_id`` /
+        turn buffers to the new session). Running extraction inline blocked the
+        /new command for the whole LLM round-trip (#16454); running it on an
+        ad-hoc thread raced the inline switch — providers key off internal
+        state, so a late ``on_session_end`` ran against post-switch bindings
+        (transcript misattributed to the new session id, double-ingest of the
+        old turn buffer, new-session buffers cleared).
+
+        Submitting BOTH hooks as one task on the manager's single background
+        worker gives both properties at a single chokepoint: the caller returns
+        immediately, and the worker's FIFO order serializes end→switch against
+        every other provider write (per-turn ``sync_all``, prefetches), which
+        already share the same worker. If the executor is unavailable,
+        ``_submit_background`` degrades to inline execution — the pre-#16454
+        synchronous behavior, slow but correct.
+        """
+        if not self._providers:
+            return
+        snapshot = list(messages or [])
+
+        def _run() -> None:
+            try:
+                self.on_session_end(snapshot)
+            except Exception as e:  # pragma: no cover - on_session_end guards per-provider
+                logger.warning("Session-boundary extraction failed: %s", e)
+            try:
+                self.on_session_switch(
+                    new_session_id,
+                    parent_session_id=parent_session_id,
+                    reset=True,
+                    reason=reason,
+                )
+            except Exception as e:  # pragma: no cover - on_session_switch guards per-provider
+                logger.warning("Session-boundary switch failed: %s", e)
+
+        self._submit_background(_run)
 
     def on_session_switch(
         self,

@@ -123,6 +123,7 @@ gateway:
     not_enough:            "No hay suficiente conversación para comprimir (se necesitan al menos 4 mensajes)."
     no_provider:           "No hay proveedor configurado — no se puede comprimir."
     nothing_to_do:         "Aún no hay nada que comprimir (la transcripción sigue siendo todo contexto protegido)."
+    aggressive_unsupported: "--aggressive no es compatible; usa '/compress here [N]' para conservar solo los intercambios recientes, o /undo para eliminar turnos."
     focus_line:            "Enfoque: \"{topic}\""
     chat_size:             "Chat size: ~{before:,} → ~{after:,} tokens (excludes system, tools, tool results)"
     chat_size_unchanged:   "Chat size: ~{before:,} tokens (unchanged; excludes system, tools, tool results)"
@@ -147,6 +148,8 @@ gateway:
     no_pending:            "No hay ningún comando pendiente que denegar."
     denied_singular:       "❌ Comando denegado."
     denied_plural:         "❌ Comandos denegados ({count} comandos)."
+    denied_reason_singular: "❌ Comando denegado. Motivo transmitido al agente: \"{reason}\""
+    denied_reason_plural:  "❌ Comandos denegados ({count} comandos). Motivo transmitido al agente: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast solo está disponible para modelos de OpenAI que admiten Priority Processing."
@@ -190,6 +193,15 @@ gateway:
     subscribed_suffix:     "(suscrito — recibirás una notificación cuando {task_id} termine o se bloquee)"
     truncated_suffix:      "… (truncado; usa `hermes kanban …` en tu terminal para la salida completa)"
     no_output:             "(sin salida)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "No hay personalidades configuradas en `{path}/config.yaml`"
@@ -265,6 +277,7 @@ gateway:
     matrix_blocked_no_origin: "⚠️ Matrix /resume bloqueado: esta sesión con nombre no tiene sala de origen registrada, por lo que Hermes no la reanudará dentro de la sala actual por defecto. Usa `/resume --cross-room {name}` si quieres cruzar los límites de sala intencionadamente."
     matrix_blocked_other_room: "⚠️ Matrix /resume bloqueado: esa sesión pertenece a una sala de Matrix diferente ({room}). Usa `/resume --cross-room {name}` si quieres reanudarla aquí intencionadamente."
     matrix_cross_room_success: "⚠️ Reanudación entre salas: **{title}** reanudada dentro de la sala de Matrix **{room}**.\nLos próximos mensajes en esta sala usarán esa transcripción hasta `/reset` u otro `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "No se encontraron sesiones con nombre.\nUsa `/title Mi sesión` para nombrar la sesión actual y luego `/resume Mi sesión` para volver a ella."
     list_header:           "📋 **Sesiones con nombre**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -413,6 +426,7 @@ gateway:
     mode_new:              "⚙️ Progreso de herramientas: **NEW** — se muestra al cambiar de herramienta (longitud de vista previa: `display.tool_preview_length`, por defecto 40)."
     mode_all:              "⚙️ Progreso de herramientas: **ALL** — se muestra cada llamada a herramienta (longitud de vista previa: `display.tool_preview_length`, por defecto 40)."
     mode_verbose:          "⚙️ Progreso de herramientas: **VERBOSE** — cada llamada a herramienta con sus argumentos completos."
+    mode_log:              "⚙️ Progreso de herramientas: **LOG** — silencioso en el chat; las llamadas a herramientas se escriben en ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(guardado para **{platform}** — se aplica en el próximo mensaje)_"
     save_failed:           "_(no se pudo guardar en la configuración: {error})_"
 

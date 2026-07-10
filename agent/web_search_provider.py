@@ -1,6 +1,6 @@
 """
 Web Search Provider ABC
-=======================
+-----------------------
 
 Defines the pluggable-backend interface for web search and content extraction.
 Providers register instances via ``PluginContext.register_web_search_provider()``;
@@ -52,7 +52,33 @@ On failure (either capability)::
 from __future__ import annotations
 
 import abc
-from typing import Any, Dict, List
+import os
+from typing import Any, Dict, List, Optional
+
+
+def get_provider_env(name: str) -> str:
+    """Config-aware env lookup for web providers.
+
+    Resolves *name* via :func:`hermes_cli.config.get_env_value` (checks
+    ``os.environ`` first, then ``~/.hermes/.env``) so credentials set
+    through Hermes' config layer are visible even when they were never
+    exported into the process environment — gateway sessions, delegate
+    children, and subprocess agent runs (issue #40190). Falls back to a
+    bare ``os.getenv`` when the config module is unavailable (stripped
+    installs, early import contexts).
+
+    Returns the stripped value, or ``""`` when unset.
+    """
+    val: Optional[str] = None
+    try:
+        from hermes_cli.config import get_env_value
+
+        val = get_env_value(name)
+    except Exception:  # noqa: BLE001 — config layer optional here
+        val = None
+    if val is None:
+        val = os.getenv(name, "")
+    return (val or "").strip()
 
 
 # ---------------------------------------------------------------------------

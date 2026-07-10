@@ -161,6 +161,78 @@ class TestChatCompletionsBasic:
         ]
         assert transport.convert_messages(msgs) is msgs
 
+    def test_convert_messages_copy_on_write_for_dirty_history(self, transport):
+        """Dirty provider metadata should not force a full-history deepcopy."""
+        clean_tool_call = {
+            "id": "call_clean",
+            "type": "function",
+            "function": {"name": "safe", "arguments": "{}"},
+        }
+        msgs = [
+            {"role": "user", "content": "hi", "metadata": {"large": ["shared"]}},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [
+                    clean_tool_call,
+                    {
+                        "id": "call_dirty",
+                        "call_id": "call_dirty",
+                        "response_item_id": "fc_dirty",
+                        "extra_content": {"google": {"thought_signature": "SIG"}},
+                        "type": "function",
+                        "function": {"name": "t", "arguments": "{}"},
+                    },
+                ],
+            },
+        ]
+
+        result = transport.convert_messages(msgs, model="gpt-4o")
+
+        assert result is not msgs
+        assert result[0] is msgs[0]
+        assert result[1] is not msgs[1]
+        assert result[1]["tool_calls"] is not msgs[1]["tool_calls"]
+        assert result[1]["tool_calls"][0] is clean_tool_call
+        assert result[1]["tool_calls"][1] is not msgs[1]["tool_calls"][1]
+        assert "call_id" not in result[1]["tool_calls"][1]
+        assert "response_item_id" not in result[1]["tool_calls"][1]
+        assert "extra_content" not in result[1]["tool_calls"][1]
+        assert "call_id" in msgs[1]["tool_calls"][1]
+        assert "extra_content" in msgs[1]["tool_calls"][1]
+
+    def test_same_history_survives_strict_then_gemini_model_switch(self, transport):
+        """Strict cleanup must not remove Gemini replay metadata from history."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "call_id": "call_1",
+                        "response_item_id": "fc_1",
+                        "extra_content": {"google": {"thought_signature": "SIG_123"}},
+                        "type": "function",
+                        "function": {"name": "t", "arguments": "{}"},
+                    }
+                ],
+            }
+        ]
+
+        strict = transport.convert_messages(msgs, model="accounts/fireworks/models/llama")
+        gemini = transport.convert_messages(msgs, model="google/gemini-3-pro")
+
+        assert "extra_content" not in strict[0]["tool_calls"][0]
+        assert "call_id" not in strict[0]["tool_calls"][0]
+        assert "response_item_id" not in strict[0]["tool_calls"][0]
+        assert gemini[0]["tool_calls"][0]["extra_content"] == {
+            "google": {"thought_signature": "SIG_123"}
+        }
+        # The canonical history still has both provider-specific metadata sets.
+        assert msgs[0]["tool_calls"][0]["call_id"] == "call_1"
+        assert msgs[0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"] == "SIG_123"
+
 
 class TestChatCompletionsBuildKwargs:
 

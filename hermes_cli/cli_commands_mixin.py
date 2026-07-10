@@ -31,6 +31,7 @@ from hermes_constants import display_hermes_home, is_termux as _is_termux_enviro
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
     is_browser_debug_ready,
+    launch_chrome_debug,
     manual_chrome_debug_command,
 )
 
@@ -294,6 +295,43 @@ class CLICommandsMixin:
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
 
+    def _handle_journey_command(self, cmd_original: str) -> None:
+        """Handle /journey — the learning timeline (see `hermes journey`).
+
+        The read-only views (default + ``list``) render Rich color, which
+        patch_stdout would swallow as raw escapes; capture with forced ANSI and
+        re-emit through ``_cprint``. ``delete``/``edit`` are interactive
+        (confirm prompt / ``$EDITOR``) so they keep the real stdio.
+        """
+        import argparse
+        import io
+        import shlex
+        from contextlib import redirect_stdout
+
+        from cli import _cprint
+        from hermes_cli.journey import register_cli
+
+        parser = argparse.ArgumentParser(prog="/journey", add_help=False)
+        register_cli(parser)
+        rest = cmd_original.split(None, 1)
+        try:
+            args = parser.parse_args(shlex.split(rest[1]) if len(rest) > 1 else [])
+        except SystemExit:
+            return
+
+        interactive = getattr(args, "journey_action", None) in ("delete", "edit")
+        try:
+            if interactive:
+                args.func(args)
+                return
+            args.force_color = True
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                args.func(args)
+            _cprint(buf.getvalue().rstrip("\n"))
+        except Exception as exc:
+            _cprint(f"  /journey failed: {exc}")
+
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
 
@@ -533,7 +571,7 @@ class CLICommandsMixin:
         home = gw_config.get_home_channel(platform)
         if not home or not home.chat_id:
             _cprint(f"  No home channel configured for {platform_name}.")
-            _cprint(f"  Set one with /sethome on the destination chat first.")
+            _cprint("  Set one with /sethome on the destination chat first.")
             return True
 
         # Refuse mid-turn: an in-flight agent run would race with the
@@ -588,7 +626,7 @@ class CLICommandsMixin:
             return True
 
         _cprint(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).")
-        _cprint(f"  Waiting for the gateway to pick it up...")
+        _cprint("  Waiting for the gateway to pick it up...")
 
         # Poll-block on terminal state. Tick every 0.5s; bail at ~60s.
         import time as _time
@@ -712,6 +750,14 @@ class CLICommandsMixin:
             return
 
         old_session_id = self.session_id
+        # Flush un-persisted messages before ending the old session (#47202).
+        if self.agent:
+            try:
+                self.agent._flush_messages_to_session_db(
+                    self.conversation_history
+                )
+            except Exception:
+                pass
         # End current session
         try:
             self._session_db.end_session(self.session_id, "resumed_other")
@@ -850,6 +896,15 @@ class CLICommandsMixin:
 
         # Save the current session's state before branching
         parent_session_id = self.session_id
+
+        # Flush un-persisted messages before ending the old session (#47202).
+        if self.agent:
+            try:
+                self.agent._flush_messages_to_session_db(
+                    self.conversation_history
+                )
+            except Exception:
+                pass
 
         # End the old session
         try:
@@ -1796,8 +1851,8 @@ class CLICommandsMixin:
             elif cdp_url == _DEFAULT_CDP:
                 # Try to auto-launch a Chromium-family browser with remote debugging
                 print("   Chromium-family browser isn't running with remote debugging — attempting to launch...")
-                _launched = self._try_launch_chrome_debug(_port, _plat.system())
-                if _launched:
+                _launch = launch_chrome_debug(_port, _plat.system())
+                if _launch.launched:
                     # Wait for the DevTools discovery endpoint to come up
                     for _wait in range(10):
                         if is_browser_debug_ready(cdp_url, timeout=1.0):
@@ -1811,10 +1866,13 @@ class CLICommandsMixin:
                         print("     Try again in a few seconds — the debug instance may still be starting")
                 else:
                     print("   ⚠ Could not auto-launch a Chromium-family browser")
+                    _hint = _launch.hint
+                    if _hint:
+                        print(f"     {_hint}")
                     sys_name = _plat.system()
                     chrome_cmd = manual_chrome_debug_command(_port, sys_name)
                     if chrome_cmd:
-                        print(f"     Launch a Chromium-family browser manually:")
+                        print("     Launch a Chromium-family browser manually:")
                         print(f"     {chrome_cmd}")
                     else:
                         print("     No supported Chromium-family browser executable found in this environment")

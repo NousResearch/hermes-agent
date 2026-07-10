@@ -55,6 +55,16 @@ def _make_runner(history: list[dict[str, str]]):
     runner.session_store.update_session = MagicMock()
     runner.session_store._save = MagicMock()
     runner._session_db = None
+    # Merged runtime-resolution path (_resolve_session_agent_runtime) consults
+    # per-session /model overrides before falling back to _resolve_gateway_model.
+    # With no override present the tests' patched _resolve_gateway_model wins;
+    # stub the override machinery so the real GatewayRunner instance
+    # (object.__new__, no __init__) doesn't AttributeError / return a mock model.
+    runner._session_model_overrides = {}
+    runner._rehydrate_session_model_override = MagicMock(return_value=None)
+    runner._session_key_for_source = MagicMock(
+        return_value=build_session_key(_make_source())
+    )
     return runner
 
 

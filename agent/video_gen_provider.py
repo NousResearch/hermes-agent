@@ -1,6 +1,6 @@
 """
 Video Generation Provider ABC
-=============================
+-----------------------------
 
 Defines the pluggable-backend interface for video generation. Providers register
 instances via ``PluginContext.register_video_gen_provider()``; the active one

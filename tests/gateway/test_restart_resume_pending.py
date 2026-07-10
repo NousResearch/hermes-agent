@@ -1327,6 +1327,145 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
     assert runner._startup_restore_in_progress is False
 
 
+@pytest.mark.asyncio
+async def test_startup_restore_gate_releases_when_a_resume_turn_runs_long(monkeypatch):
+    """A single slow boot-resume turn must NOT hold the inbound gate shut.
+
+    Regression for the live incident (2026-07-10): after a restart, one
+    resumed session ran a 760s / 46-API-call turn.  Because
+    ``_finish_startup_restore`` awaited *every* boot-resume task to completion
+    before releasing ``_startup_restore_in_progress``, the whole gateway kept
+    QUEUEING inbound messages for EVERY channel for ~13 min — no channel could
+    be replied to (including #reply) until that one turn finished.
+
+    The fix bounds the wait: after
+    ``agent.gateway_startup_restore_drain_timeout`` seconds the gate releases,
+    the inbound queue drains, and the slow resume turn keeps running in the
+    background (NOT cancelled).  Duplicate-agent safety is preserved because the
+    resume slot is pre-claimed synchronously in
+    ``_schedule_resume_pending_sessions`` (asserted below), so a drained inbound
+    queues behind that slot rather than spawning a second agent.
+    """
+    # Tiny bound so the test is fast; exercises the real config→env bridge name.
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0.2")
+
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+
+    source = make_restart_source(chat_id="slow-restore-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:slow-restore-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+
+    never_finishes = asyncio.Event()  # deliberately never set → the slow turn
+    seen: list[str] = []
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        if event.internal:
+            seen.append("resume-start")
+            # A resume turn that runs longer than the drain bound.
+            task = asyncio.create_task(never_finishes.wait())
+            adapter._session_tasks[pending_entry.session_key] = task
+            return
+        seen.append(f"inbound:{event.text}")
+
+    adapter.handle_message = fake_handle_message
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+    assert scheduled == 1
+    # The resume slot is claimed SYNCHRONOUSLY — this is what makes an early
+    # drain safe (a drained inbound queues behind the slot, no duplicate agent).
+    assert runner._running_agents.get(pending_entry.session_key) is _AGENT_PENDING_SENTINEL
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    assert await runner._handle_message(inbound) is None
+    assert seen == ["resume-start"]
+    assert runner._startup_restore_queue == [inbound]
+
+    # The gate must RELEASE despite the resume turn never finishing — bounded by
+    # the drain timeout.  A generous asyncio timeout here fails loudly (rather
+    # than hanging the suite) if the bound regresses back to "wait forever".
+    await asyncio.wait_for(runner._finish_startup_restore(), timeout=5.0)
+
+    # Gate open, queued inbound replayed, flag cleared.
+    assert runner._startup_restore_in_progress is False
+    assert runner._startup_restore_queue == []
+    assert seen == ["resume-start", "inbound:hello"]
+
+    # The slow resume turn was NOT cancelled — it keeps running in the
+    # background (the whole point of asyncio.wait over wait_for/gather+timeout).
+    slow_task = adapter._session_tasks[pending_entry.session_key]
+    assert not slow_task.done()
+
+    # Cleanup: release the background turn so the test doesn't leak a task.
+    never_finishes.set()
+    await asyncio.sleep(0)
+    slow_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_background_resume_result_logs_late_failure_not_success_or_cancel():
+    """A boot-resume turn that outlives the startup-restore gate and later FAILS
+    must still be logged, not silently swallowed once it's discarded from
+    ``_background_tasks`` (Greptile P2). Success and cancellation are quiet.
+    """
+    from gateway.run import GatewayRunner
+
+    async def _boom():
+        raise RuntimeError("late resume failure")
+
+    async def _ok():
+        return "fine"
+
+    async def _blocks():
+        await asyncio.Event().wait()
+
+    # Failure => logged.
+    failed = asyncio.create_task(_boom())
+    try:
+        await failed
+    except RuntimeError:
+        pass
+    with patch("gateway.run.logger") as mock_logger:
+        GatewayRunner._log_background_resume_result(failed)
+        assert mock_logger.debug.call_count == 1
+
+    # Success => quiet.
+    ok = asyncio.create_task(_ok())
+    await ok
+    with patch("gateway.run.logger") as mock_logger:
+        GatewayRunner._log_background_resume_result(ok)
+        assert mock_logger.debug.call_count == 0
+
+    # Cancellation (shutdown) => quiet, and must not raise on .exception().
+    cancelled = asyncio.create_task(_blocks())
+    cancelled.cancel()
+    try:
+        await cancelled
+    except asyncio.CancelledError:
+        pass
+    with patch("gateway.run.logger") as mock_logger:
+        GatewayRunner._log_background_resume_result(cancelled)
+        assert mock_logger.debug.call_count == 0
+
+
 # ---------------------------------------------------------------------------
 # Shutdown banner wording
 # ---------------------------------------------------------------------------

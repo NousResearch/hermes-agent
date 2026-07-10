@@ -332,6 +332,30 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     return looks_like_gateway_runtime_command_line(cmdline)
 
 
+def _cmdline_is_bare_hermes_proctitle(command: str) -> bool:
+    """Return True when the live argv is exactly the stripped ``hermes`` proctitle.
+
+    ``main.py`` calls ``setproctitle("hermes")``, which replaces the whole
+    ``/proc/<pid>/cmdline`` with the single token ``hermes`` — erasing the
+    ``gateway run`` subcommand the liveness check normally looks for.  Only
+    that exact shape (one token whose basename is ``hermes``/``hermes.exe``)
+    qualifies; any other readable command line (``s6-supervise``, an unrelated
+    reused-PID process, a full ``hermes <subcommand>`` argv) must keep being
+    judged strictly on its own content.
+    """
+    if not command:
+        return False
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    tokens = [t.strip("\"'") for t in raw_tokens if t.strip("\"'")]
+    if len(tokens) != 1:
+        return False
+    basename = tokens[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return basename in ("hermes", "hermes.exe")
+
+
 def _profile_name_for_home(profile_home: Path) -> Optional[str]:
     """Return the profile id a HERMES_HOME directory represents, or None.
 
@@ -403,10 +427,11 @@ def _record_matches_live_gateway_pid(
     persisted record so cross-platform behavior is preserved.
     """
     live_cmdline = _read_process_cmdline(pid)
-    if live_cmdline and _gateway_command_subcommand(live_cmdline) is not None:
-        # The live argv still carries an explicit gateway subcommand (e.g.
-        # "gateway run") — trust it strictly so a reused PID now running some
-        # other command cannot masquerade as the gateway.
+    if live_cmdline and not _cmdline_is_bare_hermes_proctitle(live_cmdline):
+        # The live argv is readable and is NOT the stripped "hermes"
+        # proctitle — trust it strictly, so a reused PID now running some
+        # other command (s6-supervise, an unrelated daemon) cannot
+        # masquerade as the gateway no matter what the stale record says.
         if not looks_like_gateway_runtime_command_line(live_cmdline):
             return False
         if expected_home is not None and not _command_line_belongs_to_profile(
@@ -414,13 +439,14 @@ def _record_matches_live_gateway_pid(
         ):
             return False
         return True
-    # Otherwise the argv is unreadable, or it has been replaced by the bare
-    # "hermes" proctitle that main.py installs via setproctitle("hermes"), which
-    # erases the "gateway run" subcommand. The caller has already confirmed the
-    # PID exists and its start_time matches this record, so the process genuinely
-    # is the one that wrote it — defer to the persisted gateway identity rather
-    # than failing on the stripped argv (otherwise a systemd-run gateway whose
-    # proctitle is just "hermes" is misreported as offline in the dashboard).
+    # Otherwise the argv is unreadable (Windows/permission), or it has been
+    # replaced by the bare "hermes" proctitle that main.py installs via
+    # setproctitle("hermes"), which erases the "gateway run" subcommand. The
+    # callers have already confirmed the PID exists and its start_time matches
+    # this record, so the process genuinely is the one that wrote it — defer
+    # to the persisted gateway identity rather than failing on the stripped
+    # argv (otherwise a systemd-run gateway whose proctitle is just "hermes"
+    # is misreported as offline in the dashboard).
     return _record_looks_like_gateway(record)
 
 

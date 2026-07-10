@@ -37,8 +37,34 @@ __all__ = ["DaemonThreadPoolExecutor"]
 class DaemonThreadPoolExecutor(ThreadPoolExecutor):
     """ThreadPoolExecutor variant whose workers do not block process exit."""
 
+    def _worker_args(self, weakref_cb) -> tuple:
+        """Build the ``_worker`` target args for the running interpreter.
+
+        CPython 3.14 changed ``ThreadPoolExecutor._worker`` from
+        ``(executor_ref, work_queue, initializer, initargs)`` to
+        ``(executor_ref, ctx, work_queue)``, folding initializer/initargs
+        into a worker-context object built by ``_create_worker_context()``.
+        Feature-detect on that method — the probe is a no-op on 3.8–3.13,
+        where the attribute does not exist and the historical four-tuple is
+        used unchanged.
+        """
+        if hasattr(self, "_create_worker_context"):
+            # Python 3.14+: (executor_ref, ctx, work_queue).
+            return (
+                weakref.ref(self, weakref_cb),
+                self._create_worker_context(),
+                self._work_queue,
+            )
+        # Python 3.8–3.13: (executor_ref, work_queue, initializer, initargs).
+        return (
+            weakref.ref(self, weakref_cb),
+            self._work_queue,
+            self._initializer,
+            self._initargs,
+        )
+
     def _adjust_thread_count(self) -> None:
-        # Mirrors CPython's implementation (3.8–3.13) with two changes:
+        # Mirrors CPython's implementation with two changes:
         # daemon=True and no _threads_queues registration.
         if self._idle_semaphore.acquire(timeout=0):
             return
@@ -49,26 +75,10 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
             thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
-            if hasattr(self, "_create_worker_context"):
-                # Python 3.14+: _worker signature is (executor_ref, ctx, work_queue);
-                # the initializer/initargs are folded into a worker context object.
-                _args = (
-                    weakref.ref(self, weakref_cb),
-                    self._create_worker_context(),
-                    self._work_queue,
-                )
-            else:
-                # Python 3.8-3.13: _worker signature is (executor_ref, work_queue, initializer, initargs).
-                _args = (
-                    weakref.ref(self, weakref_cb),
-                    self._work_queue,
-                    self._initializer,
-                    self._initargs,
-                )
             t = threading.Thread(
                 name=thread_name,
                 target=_worker,
-                args=_args,
+                args=self._worker_args(weakref_cb),
                 daemon=True,
             )
             t.start()

@@ -622,6 +622,63 @@ class TestGatewayRuntimeStatus:
             == 139
         )
 
+    def test_runtime_status_running_pid_accepts_setproctitle_stripped_argv(self, monkeypatch):
+        """main.py installs setproctitle("hermes"), erasing the gateway
+        subcommand from the live argv.  With the PID and start_time already
+        matched against the record, the bare proctitle must defer to the
+        persisted gateway identity — otherwise a healthy systemd-run gateway
+        is misreported as offline in the dashboard."""
+        payload = {
+            "pid": 132,
+            "start_time": 123,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["/opt/hermes/.venv/bin/hermes", "gateway", "run", "--replace"],
+        }
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes")
+
+        assert status.get_runtime_status_running_pid(payload) == 132
+
+    def test_runtime_status_running_pid_stripped_argv_still_validates_record(self, monkeypatch):
+        """The stripped-proctitle fallback still judges the RECORD: a bare
+        "hermes" cmdline whose persisted argv is not a gateway runtime must
+        not be reported running."""
+        payload = {
+            "pid": 132,
+            "start_time": 123,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "kanban", "watch"],
+        }
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes")
+
+        assert status.get_runtime_status_running_pid(payload) is None
+
+    def test_runtime_status_running_pid_other_readable_cmdlines_stay_strict(self, monkeypatch):
+        """Only the exact stripped proctitle defers to the record — any other
+        readable non-gateway command line (a reused PID) keeps being rejected
+        even when the stale record argv looks like a gateway."""
+        payload = {
+            "pid": 132,
+            "start_time": 123,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["/opt/hermes/.venv/bin/hermes", "gateway", "run", "--replace"],
+        }
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+
+        for cmdline in ("sshd: worker [net]", "hermes kanban watch", "python3 tail.py"):
+            monkeypatch.setattr(status, "_read_process_cmdline", lambda pid, c=cmdline: c)
+            assert status.get_runtime_status_running_pid(payload) is None, cmdline
+
     def test_write_runtime_status_records_platform_failure(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -668,6 +725,32 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["state"] == "connected"
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
+
+
+class TestBareHermesProctitle:
+    """_cmdline_is_bare_hermes_proctitle() accepts exactly the stripped
+    setproctitle("hermes") shape and nothing else."""
+
+    def test_accepts_stripped_proctitle_shapes(self):
+        for cmdline in (
+            "hermes",
+            "/usr/local/bin/hermes",
+            "hermes.exe",
+            r'"C:\Program Files\Hermes\hermes.exe"',
+        ):
+            assert status._cmdline_is_bare_hermes_proctitle(cmdline) is True, cmdline
+
+    def test_rejects_everything_else(self):
+        for cmdline in (
+            "",
+            "hermes gateway run",
+            "hermes kanban watch",
+            "s6-supervise gateway-coder",
+            "hermes-gateway",  # dedicated entrypoint keeps its own strict path
+            "python -m hermes_cli.main gateway run",
+            "sshd: worker [net]",
+        ):
+            assert status._cmdline_is_bare_hermes_proctitle(cmdline) is False, cmdline
 
 
 class TestGetProcessStartTime:

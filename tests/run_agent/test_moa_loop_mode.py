@@ -577,10 +577,11 @@ def test_references_run_in_parallel(monkeypatch):
     assert out[0][1] == "resp-p1"
 
 
-def _ref_config(home):
+def _ref_config(home, *, fanout=None):
     home.mkdir()
+    fanout_line = f"\n      fanout: {fanout}" if fanout else ""
     (home / "config.yaml").write_text(
-        """
+        f"""
 moa:
   default_preset: review
   presets:
@@ -592,7 +593,7 @@ moa:
           model: anthropic/claude-opus-4.8
       aggregator:
         provider: openrouter
-        model: anthropic/claude-opus-4.8
+        model: anthropic/claude-opus-4.8{fanout_line}
 """.strip(),
         encoding="utf-8",
     )
@@ -640,7 +641,7 @@ def test_moa_facade_reruns_references_on_new_tool_result(monkeypatch, tmp_path):
     HIT (no re-run, no re-emit), so we don't fire on a pure no-op re-call.
     """
     home = tmp_path / ".hermes"
-    _ref_config(home)
+    _ref_config(home, fanout="per_iteration")
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     ref_runs = []

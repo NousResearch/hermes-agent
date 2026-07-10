@@ -407,8 +407,9 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
     """Action-oriented guidance for recovering from repeated tool failures."""
     common = (
         f"{tool_name} has failed {count} times this turn. This looks like a loop. "
-        "Do not switch to text-only replies; keep using tools, but diagnose before retrying. "
-        "First inspect the latest error/output and verify your assumptions. "
+        "Do not repeat the failing action. Inspect the latest error/output and verify "
+        "your assumptions. Make at most one diagnostic attempt; if it does not reveal "
+        "a materially different approach, stop and report the blocker. "
     )
     if tool_name == "terminal":
         return common + (

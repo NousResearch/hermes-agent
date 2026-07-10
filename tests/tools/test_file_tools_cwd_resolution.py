@@ -485,3 +485,18 @@ def test_preserved_cwd_does_not_override_non_owning_sessions_worktree(
     resolved_a = ft._resolve_path_for_task("target.py", task_id="sess-a")
     assert resolved_a == (wt_a / "target.py")
     assert not str(resolved_a).startswith(str(wt_b))
+
+@pytest.mark.skipif(os.name != "nt", reason="MSYS drive paths are Windows-specific")
+def test_msys_drive_path_resolves_to_real_windows_drive(monkeypatch):
+    from tools import file_tools as ft
+
+    monkeypatch.setattr(ft, "_uses_container_paths", lambda _task_id: False)
+    resolved = ft._resolve_path_for_task(
+        "/c/Users/OnyxB/Documents/ClockworkKraken/engine.py",
+        task_id="default",
+    )
+
+    assert str(resolved).lower() == (
+        r"c:\users\onyxb\documents\clockworkkraken\engine.py"
+    )
+    assert not str(resolved).lower().startswith(r"c:\c\users")

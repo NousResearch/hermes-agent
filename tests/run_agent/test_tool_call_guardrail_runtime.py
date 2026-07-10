@@ -177,8 +177,8 @@ def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
 
     content = messages[0]["content"]
     assert "same_tool_failure_warning" in content
-    assert "Do not switch to text-only replies" in content
-    assert "keep using tools" in content
+    assert "Do not repeat the failing action" in content
+    assert "stop and report the blocker" in content
     assert "pwd && ls -la" in content
     assert "absolute path" in content
     assert "different tool" in content

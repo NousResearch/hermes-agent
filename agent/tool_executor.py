@@ -13,6 +13,7 @@ extracted functions reach back through the ``run_agent`` module via
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import json
 import logging
 import os
@@ -72,6 +73,127 @@ _MAX_TOOL_WORKERS = 8
 # Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
 # guard does not preempt a slow-but-valid summarization attempt.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
+
+# Completed mutation/code calls no longer need to carry their entire source
+# payload through every later model request.  Keep enough context to identify
+# and audit the call, but replace very large string arguments with a stable
+# receipt before the assistant/tool pair is persisted and replayed.
+_RETAINED_TOOL_ARGUMENT_LIMIT = 12_000
+_RETAINED_TOOL_ARGUMENT_PREVIEW = 1_500
+_COMPACTABLE_TOOL_ARGUMENTS = {
+    "write_file": frozenset({"content"}),
+    "patch": frozenset({"patch", "old_string", "new_string"}),
+    "execute_code": frozenset({"code"}),
+}
+
+
+def _compact_completed_tool_call_arguments(
+    messages: list,
+    *,
+    tool_call_id: str,
+    tool_name: str,
+) -> int:
+    """Replace oversized completed tool arguments with compact receipts.
+
+    The full arguments remain available to the executor until this function is
+    called.  Afterwards the conversation only needs provenance plus a bounded
+    preview; retaining a 100 KB file body in the assistant tool-call message
+    makes every subsequent LLM request re-read it and repeatedly triggers
+    compression on long artifact tasks.
+
+    Returns the number of source characters removed.  Best-effort and mutates
+    only the matching canonical assistant message.
+    """
+    fields = _COMPACTABLE_TOOL_ARGUMENTS.get((tool_name or "").strip().lower())
+    if not fields or not tool_call_id:
+        return 0
+
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            if isinstance(call, dict):
+                call_id = call.get("id") or call.get("call_id")
+                function = call.get("function") or {}
+                raw_arguments = function.get("arguments") if isinstance(function, dict) else None
+            else:
+                call_id = getattr(call, "id", None) or getattr(call, "call_id", None)
+                function = getattr(call, "function", None)
+                raw_arguments = getattr(function, "arguments", None)
+            if call_id != tool_call_id or not isinstance(raw_arguments, str):
+                continue
+            if len(raw_arguments) <= _RETAINED_TOOL_ARGUMENT_LIMIT:
+                return 0
+            try:
+                parsed = json.loads(raw_arguments)
+            except (TypeError, ValueError):
+                return 0
+            if not isinstance(parsed, dict):
+                return 0
+
+            removed = 0
+            compacted_fields: list[str] = []
+            for field in fields:
+                value = parsed.get(field)
+                if not isinstance(value, str) or len(value) <= _RETAINED_TOOL_ARGUMENT_LIMIT:
+                    continue
+                digest = hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
+                preview = value[:_RETAINED_TOOL_ARGUMENT_PREVIEW]
+                tail = value[-_RETAINED_TOOL_ARGUMENT_PREVIEW:]
+                parsed[field] = (
+                    f"[completed tool payload compacted: {len(value)} chars; sha256={digest}]\n"
+                    f"--- beginning preview ---\n{preview}\n"
+                    f"--- ending preview ---\n{tail}"
+                )
+                removed += max(0, len(value) - len(parsed[field]))
+                compacted_fields.append(field)
+            if not compacted_fields:
+                return 0
+
+            compacted_arguments = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+            if isinstance(function, dict):
+                function["arguments"] = compacted_arguments
+            else:
+                try:
+                    function.arguments = compacted_arguments
+                except Exception:
+                    return 0
+            logger.info(
+                "Compacted completed %s tool payload fields=%s removed=%d chars",
+                tool_name,
+                ",".join(compacted_fields),
+                removed,
+            )
+            return removed
+    return 0
+
+
+def _sync_compacted_tool_call_to_session_db(
+    agent,
+    messages: list,
+    *,
+    tool_call_id: str,
+) -> None:
+    """Mirror an in-memory compacted call into its pre-execution DB row."""
+    session_db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    updater = getattr(session_db, "update_assistant_tool_calls", None)
+    if not callable(updater) or not session_id:
+        return
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        calls = message.get("tool_calls") or []
+        if any(
+            isinstance(call, dict)
+            and (call.get("id") == tool_call_id or call.get("call_id") == tool_call_id)
+            for call in calls
+        ):
+            try:
+                updater(session_id, tool_call_id, calls)
+            except Exception as exc:
+                logger.warning("Could not persist compacted tool-call receipt: %s", exc)
+            return
 
 
 def _resolve_concurrent_tool_timeout() -> float | None:
@@ -935,6 +1057,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
+        _removed_tool_payload = _compact_completed_tool_call_arguments(
+            messages,
+            tool_call_id=tc.id,
+            tool_name=name,
+        )
+        if _removed_tool_payload:
+            _sync_compacted_tool_call_to_session_db(
+                agent,
+                messages,
+                tool_call_id=tc.id,
+            )
         messages.append(make_tool_result_message(name, _tool_content, tc.id))
         _flush_session_db_after_tool_progress(
             agent,
@@ -1584,6 +1717,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
+        _removed_tool_payload = _compact_completed_tool_call_arguments(
+            messages,
+            tool_call_id=tool_call.id,
+            tool_name=function_name,
+        )
+        if _removed_tool_payload:
+            _sync_compacted_tool_call_to_session_db(
+                agent,
+                messages,
+                tool_call_id=tool_call.id,
+            )
         messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
         _flush_session_db_after_tool_progress(
             agent,

@@ -70,7 +70,9 @@ def _coerce_int_or_none(value: Any) -> int | None:
 def _coerce_fanout(value: Any) -> str:
     """Normalize the fan-out cadence; unknown values fall back to default."""
     mode = str(value or "").strip().lower()
-    return mode if mode in {"per_iteration", "user_turn"} else "per_iteration"
+    if mode == "first_turn":  # legacy/user-facing alias
+        mode = "user_turn"
+    return mode if mode in {"per_iteration", "user_turn"} else "user_turn"
 
 
 def _clean_slot(slot: Any) -> dict[str, str] | None:
@@ -100,7 +102,7 @@ def _default_preset() -> dict[str, Any]:
         "aggregator_temperature": None,
         "max_tokens": 4096,
         "reference_max_tokens": None,
-        "fanout": "per_iteration",
+        "fanout": "user_turn",
         "enabled": True,
     }
 
@@ -157,13 +159,32 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
+    policy_raw = raw.get("policy") if isinstance(raw.get("policy"), dict) else {}
+    policy_refs_raw = policy_raw.get("reference_models")
+    if isinstance(policy_refs_raw, dict):
+        policy_refs_raw = [policy_refs_raw]
+    policy_refs = [
+        cleaned for cleaned in (_clean_slot(item) for item in (policy_refs_raw or []))
+        if cleaned is not None
+    ]
+    policy_fanout = _coerce_fanout(policy_raw.get("fanout"))
+    policy_reference_max_tokens = _coerce_int_or_none(policy_raw.get("reference_max_tokens"))
+    enforce_policy = bool(policy_raw.get("enforce", False))
+
     presets_raw = raw.get("presets")
     presets: dict[str, dict[str, Any]] = {}
     if isinstance(presets_raw, dict):
         for name, preset in presets_raw.items():
             clean_name = str(name or "").strip()
             if clean_name:
-                presets[clean_name] = _normalize_preset(preset)
+                normalized = _normalize_preset(preset)
+                if enforce_policy:
+                    if policy_refs:
+                        normalized["reference_models"] = deepcopy(policy_refs)
+                    normalized["fanout"] = policy_fanout
+                    if policy_reference_max_tokens is not None:
+                        normalized["reference_max_tokens"] = policy_reference_max_tokens
+                presets[clean_name] = normalized
 
     # Legacy flat config becomes the default preset.
     if not presets:
@@ -184,6 +205,12 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "default_preset": default_name,
         "active_preset": active_name,
         "presets": presets,
+        "policy": {
+            "enforce": enforce_policy,
+            "reference_models": deepcopy(policy_refs),
+            "fanout": policy_fanout,
+            "reference_max_tokens": policy_reference_max_tokens,
+        },
         # Compatibility/flattened view for existing dashboard/desktop callers.
         "reference_models": deepcopy(active["reference_models"]),
         "aggregator": deepcopy(active["aggregator"]),
@@ -191,7 +218,7 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "aggregator_temperature": active["aggregator_temperature"],
         "max_tokens": active["max_tokens"],
         "reference_max_tokens": active.get("reference_max_tokens"),
-        "fanout": active.get("fanout", "per_iteration"),
+        "fanout": active.get("fanout", "user_turn"),
         "enabled": active["enabled"],
     }
 

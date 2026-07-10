@@ -42,6 +42,39 @@ def test_normalize_moa_config_preserves_named_presets():
     assert cfg["reference_models"] == [{"provider": "openai-codex", "model": "gpt-5.5"}]
 
 
+def test_enforced_policy_standardizes_all_current_and_future_presets():
+    cfg = normalize_moa_config({
+        "default_preset": "coding",
+        "policy": {
+            "enforce": True,
+            "fanout": "user_turn",
+            "reference_max_tokens": 1800,
+            "reference_models": [{"provider": "ref-gptoss", "model": "gpt-oss-20b"}],
+        },
+        "presets": {
+            "coding": {
+                "fanout": "per_iteration",
+                "reference_models": [{"provider": "cloud-a", "model": "a"}],
+            },
+            "personal": {
+                "fanout": "first_turn",
+                "reference_models": [{"provider": "cloud-b", "model": "b"}],
+            },
+        },
+    })
+    for preset in cfg["presets"].values():
+        assert preset["fanout"] == "user_turn"
+        assert preset["reference_max_tokens"] == 1800
+        assert preset["reference_models"] == [
+            {"provider": "ref-gptoss", "model": "gpt-oss-20b"}
+        ]
+
+
+def test_first_turn_alias_normalizes_to_user_turn():
+    cfg = normalize_moa_config({"presets": {"p": {"fanout": "first_turn"}}})
+    assert cfg["presets"]["p"]["fanout"] == "user_turn"
+
+
 def test_legacy_flat_config_becomes_default_preset():
     cfg = normalize_moa_config(
         {

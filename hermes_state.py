@@ -3547,6 +3547,53 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def update_assistant_tool_calls(
+        self,
+        session_id: str,
+        tool_call_id: str,
+        tool_calls: Any,
+    ) -> bool:
+        """Replace a persisted assistant tool-call block after execution.
+
+        Assistant tool calls are deliberately persisted before tools execute so
+        crash recovery can replay the exact request.  Once execution succeeds,
+        large source-bearing arguments may be compacted in memory; this method
+        mirrors that bounded representation into the active row so resuming the
+        session does not resurrect the original oversized payload.
+        """
+        if not session_id or not tool_call_id or not isinstance(tool_calls, list):
+            return False
+        serialized = json.dumps(tool_calls)
+
+        def _do(conn):
+            rows = conn.execute(
+                "SELECT id, tool_calls FROM messages "
+                "WHERE session_id = ? AND active = 1 AND role = 'assistant' "
+                "AND tool_calls IS NOT NULL ORDER BY id DESC",
+                (session_id,),
+            ).fetchall()
+            for row_id, existing_json in rows:
+                try:
+                    existing_calls = json.loads(existing_json)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(existing_calls, list):
+                    continue
+                if not any(
+                    isinstance(call, dict)
+                    and (call.get("id") == tool_call_id or call.get("call_id") == tool_call_id)
+                    for call in existing_calls
+                ):
+                    continue
+                conn.execute(
+                    "UPDATE messages SET tool_calls = ? WHERE id = ?",
+                    (serialized, row_id),
+                )
+                return True
+            return False
+
+        return bool(self._execute_write(_do))
+
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
 

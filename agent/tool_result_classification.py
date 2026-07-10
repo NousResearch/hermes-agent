@@ -19,6 +19,9 @@ def file_mutation_result_landed(tool_name: str, result: Any) -> bool:
         return False
     if not isinstance(data, dict) or data.get("error"):
         return False
+    lint = data.get("lint")
+    if isinstance(lint, dict) and lint.get("status") == "error":
+        return False
     if tool_name == "write_file":
         return "bytes_written" in data
     if tool_name == "patch":

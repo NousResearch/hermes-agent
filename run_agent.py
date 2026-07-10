@@ -4020,6 +4020,32 @@ class AIAgent:
             )
 
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
+        # MoA is an in-process virtual client, not an OpenAI SDK client.  Its
+        # initializer intentionally leaves ``_client_kwargs`` empty, so trying
+        # to rebuild it through OpenAI(**{}) after a dropped aggregator stream
+        # fails with "api_key client option must be set" and prevents transport
+        # recovery.  Recreate the facade directly and preserve its display hook.
+        if getattr(self, "provider", "") == "moa":
+            try:
+                from agent.moa_loop import MoAClient
+
+                old_client = getattr(self, "client", None)
+                completions = getattr(getattr(old_client, "chat", None), "completions", None)
+                callback = getattr(completions, "reference_callback", None)
+                self.client = MoAClient(
+                    getattr(self, "model", None) or "default",
+                    reference_callback=callback,
+                )
+                logger.info("MoA virtual client rebuilt (%s) %s", reason, self._client_log_context())
+                return True
+            except Exception as exc:
+                logger.warning(
+                    "Failed to rebuild MoA virtual client (%s) %s error=%s",
+                    reason,
+                    self._client_log_context(),
+                    exc,
+                )
+                return False
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:
@@ -4037,6 +4063,13 @@ class AIAgent:
         return True
 
     def _ensure_primary_openai_client(self, *, reason: str) -> Any:
+        if getattr(self, "provider", "") == "moa":
+            client = getattr(self, "client", None)
+            if client is not None:
+                return client
+            if not self._replace_primary_openai_client(reason=reason):
+                raise RuntimeError("Failed to recreate MoA virtual client")
+            return self.client
         with self._openai_client_lock():
             client = getattr(self, "client", None)
             if client is not None and not self._is_openai_client_closed(client):

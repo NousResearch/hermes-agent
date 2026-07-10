@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import posixpath
+import re
 import threading
 from pathlib import Path, PurePosixPath
 
@@ -428,6 +429,14 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
             return _normalize_without_host_deref(expanded)
         resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
         return _normalize_without_host_deref(resolved)
+    # Git Bash/MSYS tools commonly report Windows paths as /c/Users/... .
+    # pathlib on Windows interprets that as C:\c\Users\..., silently writing
+    # to a bogus drive-root directory.  File tools run on the host here, so
+    # canonicalize the unambiguous MSYS drive form before Path sees it.
+    if os.name == "nt" and re.match(r"^/[A-Za-z](?:/|$)", expanded):
+        drive = expanded[1].upper()
+        rest = expanded[2:].lstrip("/").replace("/", "\\")
+        expanded = f"{drive}:\\{rest}" if rest else f"{drive}:\\"
     p = Path(expanded)
     if p.is_absolute():
         return p.resolve()

@@ -1,5 +1,6 @@
 """Tests for hermes_cli.skin_engine — the data-driven skin/theme system."""
 
+import os
 import pytest
 
 
@@ -9,9 +10,19 @@ def reset_skin_state():
     from hermes_cli import skin_engine
     skin_engine._active_skin = None
     skin_engine._active_skin_name = "default"
+    skin_engine._system_dark_mode = None
+    # Stop any running monitor
+    if skin_engine._skin_monitor_thread is not None:
+        skin_engine.stop_skin_auto_switch_monitor()
+    skin_engine._skin_monitor_thread = None
+    skin_engine._skin_monitor_stop = None
+    skin_engine._skin_switch_event = None
     yield
     skin_engine._active_skin = None
     skin_engine._active_skin_name = "default"
+    skin_engine._system_dark_mode = None
+    if skin_engine._skin_monitor_thread is not None:
+        skin_engine.stop_skin_auto_switch_monitor()
 
 
 class TestSkinConfig:
@@ -388,3 +399,316 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
         assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"
+
+
+# =============================================================================
+# Auto-switch skin tests
+# =============================================================================
+
+
+_ENV_KEYS = ("COLORFGBG", "HERMES_TUI_THEME", "HERMES_LIGHT", "HERMES_TUI_LIGHT")
+
+
+@pytest.fixture()
+def clean_env():
+    """Remove all detection env vars and restore after test."""
+    saved = {k: os.environ.pop(k, None) for k in _ENV_KEYS}
+    yield
+    for k, v in saved.items():
+        if v is not None:
+            os.environ[k] = v
+        elif k in os.environ:
+            del os.environ[k]
+
+
+class TestDetectSystemDarkMode:
+    """Tests for _detect_system_dark_mode()."""
+
+    def test_returns_bool(self):
+        from hermes_cli.skin_engine import _detect_system_dark_mode
+        result = _detect_system_dark_mode()
+        assert isinstance(result, bool)
+
+    def test_detects_dark_via_defaults(self):
+        """When `defaults read` returns 'Dark', detects dark mode."""
+        import subprocess
+        orig_run = subprocess.run
+        def mock_run(cmd, **kwargs):
+            if isinstance(cmd, list) and "AppleInterfaceStyle" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="Dark\n", stderr="")
+            return orig_run(cmd, **kwargs)
+        subprocess.run = mock_run
+        try:
+            from hermes_cli.skin_engine import _detect_system_dark_mode
+            assert _detect_system_dark_mode() is True
+        finally:
+            subprocess.run = orig_run
+
+    def test_detects_light_via_defaults(self):
+        """When `defaults read` returns exit 1, detects light mode."""
+        import subprocess
+        orig_run = subprocess.run
+        def mock_run(cmd, **kwargs):
+            if isinstance(cmd, list) and "AppleInterfaceStyle" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="does not exist")
+            return orig_run(cmd, **kwargs)
+        subprocess.run = mock_run
+        try:
+            from hermes_cli.skin_engine import _detect_system_dark_mode
+            assert _detect_system_dark_mode() is False
+        finally:
+            subprocess.run = orig_run
+
+    def test_colorfgbg_light(self, clean_env):
+        """COLORFGBG with bg=15 means light mode."""
+        os.environ["COLORFGBG"] = "0;15"
+        import subprocess
+        orig_run = subprocess.run
+        subprocess.run = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("skip"))
+        try:
+            from hermes_cli.skin_engine import _detect_system_dark_mode
+            assert _detect_system_dark_mode() is False
+        finally:
+            subprocess.run = orig_run
+
+    def test_colorfgbg_dark(self, clean_env):
+        """COLORFGBG with bg=0 means dark mode."""
+        os.environ["COLORFGBG"] = "0;0"
+        import subprocess
+        orig_run = subprocess.run
+        subprocess.run = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("skip"))
+        try:
+            from hermes_cli.skin_engine import _detect_system_dark_mode
+            assert _detect_system_dark_mode() is True
+        finally:
+            subprocess.run = orig_run
+
+    def test_theme_env_dark(self, clean_env):
+        """HERMES_TUI_THEME=dark means dark mode."""
+        os.environ["HERMES_TUI_THEME"] = "dark"
+        import subprocess
+        orig_run = subprocess.run
+        subprocess.run = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("skip"))
+        try:
+            from hermes_cli.skin_engine import _detect_system_dark_mode
+            assert _detect_system_dark_mode() is True
+        finally:
+            subprocess.run = orig_run
+
+    def test_theme_env_light(self, clean_env):
+        """HERMES_TUI_THEME=light means light mode."""
+        os.environ["HERMES_TUI_THEME"] = "light"
+        import subprocess
+        orig_run = subprocess.run
+        subprocess.run = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("skip"))
+        try:
+            from hermes_cli.skin_engine import _detect_system_dark_mode
+            assert _detect_system_dark_mode() is False
+        finally:
+            subprocess.run = orig_run
+
+    def test_hermes_light_env(self, clean_env):
+        """HERMES_LIGHT=1 means light mode."""
+        os.environ["HERMES_LIGHT"] = "1"
+        import subprocess
+        orig_run = subprocess.run
+        subprocess.run = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("skip"))
+        try:
+            from hermes_cli.skin_engine import _detect_system_dark_mode
+            assert _detect_system_dark_mode() is False
+        finally:
+            subprocess.run = orig_run
+
+    def test_defaults_to_dark(self, clean_env):
+        """When no detection method works, defaults to dark."""
+        import subprocess
+        orig_run = subprocess.run
+        subprocess.run = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("nope"))
+        try:
+            from hermes_cli.skin_engine import _detect_system_dark_mode
+            assert _detect_system_dark_mode() is False  # defaults to dark
+        finally:
+            subprocess.run = orig_run
+
+
+class TestDoSkinSwitch:
+    """Tests for _do_skin_switch()."""
+
+    def test_switches_to_light_when_light_mode(self, monkeypatch):
+        """When system is light, switches to skin_light."""
+        monkeypatch.setattr("hermes_cli.skin_engine._detect_system_dark_mode", lambda: False)
+
+        from hermes_cli.skin_engine import _do_skin_switch, set_active_skin
+        set_active_skin("default")
+
+        config = {"display": {"skin_auto_switch": True, "skin_dark": "default", "skin_light": "daylight"}}
+        result = _do_skin_switch(config)
+        assert result is True
+        from hermes_cli.skin_engine import get_active_skin_name
+        assert get_active_skin_name() == "daylight"
+
+    def test_switches_to_dark_when_dark_mode(self, monkeypatch):
+        """When system is dark, switches to skin_dark."""
+        monkeypatch.setattr("hermes_cli.skin_engine._detect_system_dark_mode", lambda: True)
+
+        from hermes_cli.skin_engine import _do_skin_switch, set_active_skin
+        set_active_skin("daylight")
+
+        config = {"display": {"skin_auto_switch": True, "skin_dark": "default", "skin_light": "daylight"}}
+        result = _do_skin_switch(config)
+        assert result is True
+        from hermes_cli.skin_engine import get_active_skin_name
+        assert get_active_skin_name() == "default"
+
+    def test_no_switch_when_already_correct(self, monkeypatch):
+        """No switch when skin already matches system mode."""
+        monkeypatch.setattr("hermes_cli.skin_engine._detect_system_dark_mode", lambda: True)
+
+        from hermes_cli.skin_engine import _do_skin_switch, set_active_skin
+        set_active_skin("default")
+
+        config = {"display": {"skin_auto_switch": True, "skin_dark": "default", "skin_light": "daylight"}}
+        result = _do_skin_switch(config)
+        assert result is False
+        from hermes_cli.skin_engine import get_active_skin_name
+        assert get_active_skin_name() == "default"
+
+    def test_disabled_config_returns_false(self, monkeypatch):
+        """Returns False when skin_auto_switch is disabled."""
+        monkeypatch.setattr("hermes_cli.skin_engine._detect_system_dark_mode", lambda: False)
+
+        from hermes_cli.skin_engine import _do_skin_switch, set_active_skin
+        set_active_skin("default")
+
+        config = {"display": {"skin_auto_switch": False, "skin_dark": "default", "skin_light": "daylight"}}
+        result = _do_skin_switch(config)
+        assert result is False
+
+    def test_missing_config_returns_false(self):
+        """Returns False with empty/missing config."""
+        from hermes_cli.skin_engine import _do_skin_switch
+        assert _do_skin_switch({}) is False
+        assert _do_skin_switch({"display": None}) is False
+
+    def test_default_skin_names(self, monkeypatch):
+        """Uses default skin_dark/skin_light when not specified."""
+        monkeypatch.setattr("hermes_cli.skin_engine._detect_system_dark_mode", lambda: False)
+
+        from hermes_cli.skin_engine import _do_skin_switch, set_active_skin
+        set_active_skin("default")
+
+        config = {"display": {"skin_auto_switch": True}}
+        result = _do_skin_switch(config)
+        assert result is True
+        from hermes_cli.skin_engine import get_active_skin_name
+        assert get_active_skin_name() == "daylight"  # default skin_light
+
+
+class TestSkinMonitor:
+    """Tests for start/stop_skin_auto_switch_monitor."""
+
+    def test_start_creates_thread(self):
+        from hermes_cli.skin_engine import start_skin_auto_switch_monitor, _skin_monitor_thread
+        config = {"display": {"skin_auto_switch": True, "skin_dark": "default", "skin_light": "daylight"}}
+        start_skin_auto_switch_monitor(config)
+        import hermes_cli.skin_engine as se
+        assert se._skin_monitor_thread is not None
+        assert se._skin_monitor_thread.is_alive()
+        assert se._skin_monitor_thread.name == "skin-auto-switch"
+
+    def test_start_disabled_config_does_nothing(self):
+        from hermes_cli.skin_engine import start_skin_auto_switch_monitor
+        config = {"display": {"skin_auto_switch": False}}
+        start_skin_auto_switch_monitor(config)
+        import hermes_cli.skin_engine as se
+        assert se._skin_monitor_thread is None
+
+    def test_start_empty_config_does_nothing(self):
+        from hermes_cli.skin_engine import start_skin_auto_switch_monitor
+        start_skin_auto_switch_monitor({})
+        import hermes_cli.skin_engine as se
+        assert se._skin_monitor_thread is None
+
+    def test_stop_kills_thread(self):
+        from hermes_cli.skin_engine import start_skin_auto_switch_monitor, stop_skin_auto_switch_monitor
+        config = {"display": {"skin_auto_switch": True, "skin_dark": "default", "skin_light": "daylight"}}
+        start_skin_auto_switch_monitor(config)
+        import hermes_cli.skin_engine as se
+        assert se._skin_monitor_thread.is_alive()
+        stop_skin_auto_switch_monitor()
+        assert se._skin_monitor_thread is None
+
+    def test_start_is_idempotent(self):
+        from hermes_cli.skin_engine import start_skin_auto_switch_monitor
+        config = {"display": {"skin_auto_switch": True, "skin_dark": "default", "skin_light": "daylight"}}
+        start_skin_auto_switch_monitor(config)
+        import hermes_cli.skin_engine as se
+        t1 = se._skin_monitor_thread
+        start_skin_auto_switch_monitor(config)
+        t2 = se._skin_monitor_thread
+        assert t1 is t2  # same thread, not restarted
+
+
+class TestMaybeAutoSwitchSkin:
+    """Tests for maybe_auto_switch_skin()."""
+
+    def test_polling_fallback_when_no_monitor(self, monkeypatch):
+        """Without monitor thread, falls back to polling."""
+        monkeypatch.setattr("hermes_cli.skin_engine._detect_system_dark_mode", lambda: False)
+
+        from hermes_cli.skin_engine import maybe_auto_switch_skin, set_active_skin
+        set_active_skin("default")
+
+        config = {"display": {"skin_auto_switch": True, "skin_dark": "default", "skin_light": "daylight"}}
+        result = maybe_auto_switch_skin(config)
+        assert result is True
+        from hermes_cli.skin_engine import get_active_skin_name
+        assert get_active_skin_name() == "daylight"
+
+    def test_delegates_to_monitor_event(self, monkeypatch):
+        """When monitor is running, only acts on event signal."""
+        import threading
+        from hermes_cli.skin_engine import (
+            start_skin_auto_switch_monitor, stop_skin_auto_switch_monitor,
+            maybe_auto_switch_skin, set_active_skin,
+        )
+
+        set_active_skin("default")
+        config = {"display": {"skin_auto_switch": True, "skin_dark": "default", "skin_light": "daylight"}}
+        start_skin_auto_switch_monitor(config)
+
+        import hermes_cli.skin_engine as se
+
+        # No event set — should not switch
+        result = maybe_auto_switch_skin(config)
+        assert result is False
+
+        # Simulate notification setting the event
+        se._skin_switch_event.set()
+        monkeypatch.setattr("hermes_cli.skin_engine._detect_system_dark_mode", lambda: False)
+        result = maybe_auto_switch_skin(config)
+        assert result is True
+        from hermes_cli.skin_engine import get_active_skin_name
+        assert get_active_skin_name() == "daylight"
+
+        stop_skin_auto_switch_monitor()
+
+
+class TestMacOSNotificationCallback:
+    """Tests for _macos_theme_observer_callback."""
+
+    def test_callback_sets_event(self):
+        import threading
+        from hermes_cli.skin_engine import _macos_theme_observer_callback, _skin_switch_event
+        import hermes_cli.skin_engine as se
+
+        se._skin_switch_event = threading.Event()
+        _macos_theme_observer_callback(None)
+        assert se._skin_switch_event.is_set()
+
+    def test_callback_no_event_does_not_crash(self):
+        """Callback with _skin_switch_event=None should not crash."""
+        from hermes_cli.skin_engine import _macos_theme_observer_callback
+        import hermes_cli.skin_engine as se
+        se._skin_switch_event = None
+        _macos_theme_observer_callback(None)  # should not raise

@@ -5144,9 +5144,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             yolo_active = self._is_session_yolo_active()
 
             if width < 52:
+                _f_p = snapshot.get("provider", "")
+                _f_ml = snapshot["model_short"] + (" (" + _f_p + ")" if _f_p else "")
                 frags = [
                     ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
+                    ("class:status-bar-strong", _f_ml),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                 ]
@@ -5162,9 +5164,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     bg_subagent_count = snapshot.get("active_background_subagents", 0)
+                    _f_p2 = snapshot.get("provider", "")
+                    _f_ml2 = snapshot["model_short"] + (" (" + _f_p2 + ")" if _f_p2 else "")
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", _f_ml2),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]

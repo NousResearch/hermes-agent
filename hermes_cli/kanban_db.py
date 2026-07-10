@@ -2232,39 +2232,120 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
         raise
 
 
-def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
-    """Read the SQLite header page_count and compare against actual file size.
+# Re-stat backoff for the torn-extend tripwire. A deficit (file shorter than
+# the header page count) is almost always the benign mid-checkpoint window: a
+# PASSIVE checkpoint backfills page 1 — which carries the FINAL page count —
+# before the file-extending writes, so one commit that grows the DB by K pages
+# opens a benign deficit=K window (K>=2 is ordinary traffic: a ~3.5KB body
+# spills overflow pages; deficits up to 4 pages were measured on a healthy
+# busy board). Transients self-heal in microseconds; this schedule waits
+# ~15ms total before escalating, and costs nothing when no deficit is seen.
+_TORN_RESTAT_DELAYS_S = (0.0005, 0.001, 0.002, 0.004, 0.008)
 
-    Raises sqlite3.DatabaseError if the file is shorter than the header claims
-    (torn-extend corruption).
+
+def _header_and_file_pages(path: str, page_size: int) -> Optional[tuple[int, int]]:
+    """Freshly sample (header page_count, whole pages on disk) for ``path``.
+
+    Returns None when the file or its header can't be read — callers treat
+    that as "cannot judge, stand down".
+    """
+    try:
+        file_size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(28)
+            header_bytes = f.read(4)
+    except OSError:
+        return None
+    if len(header_bytes) < 4:
+        return None
+    return int.from_bytes(header_bytes, "big"), file_size // page_size
+
+
+def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
+    """Post-commit torn-extend tripwire: header page_count vs actual file size.
+
+    Raises sqlite3.DatabaseError only when the file is verifiably missing its
+    tail. A deficit must survive, in order:
+
+    1. a re-stat backoff — the mid-checkpoint page-1-first race self-heals in
+       microseconds, and a fixed tolerance cannot express it (a constant
+       1-page tolerance false-alarmed 79 times in 20s on a healthy board);
+    2. a PASSIVE WAL drain — a checkpoint killed mid-backfill leaves a
+       persistent deficit whose tail frames still live in the WAL, so the
+       right move is to finish the backfill (heal), not alarm;
+    3. a stability probe — two bracketing drains must both report the WAL
+       fully checkpointed with identical frame counters and an unmoved
+       header (any concurrent writer appends frames; any checkpointer moves
+       the header only by backfilling frames), proving no one is mid-flight
+       and nothing anywhere can supply the missing pages.
+
+    Every indeterminate state (busy checkpointer, partial backfill behind a
+    reader mark, concurrent header movement, unreadable file) returns
+    silently: the check runs after every write_txn, so a real truncation is
+    re-examined on the next commit and raises once the board quiesces.
     """
     try:
         row = conn.execute("PRAGMA database_list").fetchone()
         if row is None:
             return
-        path_str = row[2]  # column 2 is the file path; empty for in-memory DBs
-        if not path_str:
+        path = row[2]  # column 2 is the file path; empty for in-memory DBs
+        if not path:
             return  # in-memory or unnamed DB; skip
-        path = path_str
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-        file_size = os.path.getsize(path)
-        with open(path, "rb") as f:
-            f.seek(28)
-            header_bytes = f.read(4)
-        if len(header_bytes) < 4:
-            return  # can't read header; skip
-        header_page_count = int.from_bytes(header_bytes, "big")
-        if header_page_count == 0:
-            return  # new/empty DB; skip
-        actual_pages = file_size // page_size
-        if actual_pages < header_page_count:
-            raise sqlite3.DatabaseError(
-                f"torn-extend detected: page count mismatch on {path}: "
-                f"header claims {header_page_count} pages, "
-                f"file has {actual_pages} pages "
-                f"(missing {header_page_count - actual_pages} pages, "
-                f"file_size={file_size}, page_size={page_size})"
-            )
+        sample = _header_and_file_pages(path, page_size)
+        if sample is None:
+            return
+        header_pages, file_pages = sample
+        if header_pages == 0 or file_pages >= header_pages:
+            return  # healthy (or brand-new) — the hot path, no cost added
+        for delay in _TORN_RESTAT_DELAYS_S:
+            time.sleep(delay)
+            sample = _header_and_file_pages(path, page_size)
+            if sample is None:
+                return
+            header_pages, file_pages = sample
+            if header_pages == 0 or file_pages >= header_pages:
+                return  # transient checkpoint window — self-healed
+        # Deficit persisted through the backoff. If the WAL still holds the
+        # tail frames (checkpoint killed mid-backfill, or stalled behind a
+        # reader), draining it repairs the file; only a fully drained WAL
+        # that STILL leaves the file short proves the tail exists nowhere.
+        # Two full drains bracket the verdict: in WAL mode every mutation
+        # appends frames and a checkpoint can only move the header by
+        # backfilling frames, so identical (log, checkpointed) counters
+        # across both drains with an unmoved header prove nothing ran in
+        # between — the surviving deficit cannot be someone mid-flight.
+        first_drain = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        if first_drain is None or first_drain[0]:
+            return  # checkpoint lock contended — indeterminate this pass
+        if first_drain[1] != first_drain[2]:
+            return  # partial backfill (reader marks) — WAL may still hold the tail
+        sample = _header_and_file_pages(path, page_size)
+        if sample is None:
+            return
+        header_pages, file_pages = sample
+        if header_pages == 0 or file_pages >= header_pages:
+            return  # the drain healed it (killed-checkpoint case, repaired)
+        second_drain = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        if second_drain is None or second_drain[0]:
+            return
+        if second_drain[1] != second_drain[2]:
+            return
+        if (second_drain[1], second_drain[2]) != (first_drain[1], first_drain[2]):
+            return  # new frames arrived between drains — a writer is active
+        sample = _header_and_file_pages(path, page_size)
+        if sample is None:
+            return
+        final_header_pages, file_pages = sample
+        if final_header_pages == 0 or file_pages >= final_header_pages:
+            return
+        if final_header_pages != header_pages:
+            return  # header moved with no new frames — stand down, re-judged next commit
+        raise sqlite3.DatabaseError(
+            f"kanban torn-extend: {path} header claims {final_header_pages} "
+            f"pages but the file holds {file_pages}, and the fully "
+            f"checkpointed WAL cannot supply the missing tail"
+        )
     except sqlite3.DatabaseError:
         raise
     except Exception:

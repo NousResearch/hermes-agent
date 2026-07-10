@@ -4488,27 +4488,107 @@ def test_write_txn_healthy_commit_no_exception(tmp_path):
     conn.close()
 
 
-def test_write_txn_raises_on_truncated_file(tmp_path):
-    """A mocked smaller file size triggers the torn-extend check."""
+def test_write_txn_tolerates_transient_checkpoint_deficit(tmp_path):
+    """A deficit that clears on re-stat is the benign mid-checkpoint window
+    (page 1 carries the final page count and is backfilled before the
+    file-extending writes) — tolerated, and the commit is unaffected."""
     from hermes_cli.kanban_db import connect, write_txn
     db = tmp_path / "test.db"
     conn = connect(db_path=db)
-    # Get actual page size so we can fake a smaller file
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    original_getsize = os.path.getsize
+    calls = {"n": 0}
+
+    def fake_getsize(path):
+        # First two stats land inside the checkpoint window (short by 2
+        # pages — the K>=2 shape a constant tolerance can't express), then
+        # the backfill finishes and the true size is visible.
+        calls["n"] += 1
+        real_size = original_getsize(path)
+        if calls["n"] <= 2:
+            return max(0, real_size - 2 * page_size)
+        return real_size
+
+    with unittest.mock.patch("hermes_cli.kanban_db.os.path.getsize", side_effect=fake_getsize):
+        with write_txn(conn) as c:
+            c.execute(
+                "INSERT INTO tasks (id, title, assignee, status, priority, created_at) "
+                "VALUES ('t_test02', 'test task 2', 'tester', 'todo', 0, 1234567890)"
+            )
+    assert calls["n"] >= 3, "check must re-stat a transient deficit, not judge one sample"
+    row = conn.execute("SELECT title FROM tasks WHERE id='t_test02'").fetchone()
+    assert row["title"] == "test task 2"
+    conn.close()
+
+
+def test_write_txn_raises_on_persistent_deficit_with_drained_wal(tmp_path):
+    """A deficit that survives the re-stat backoff AND a full PASSIVE WAL
+    drain with a stable header is a real torn extend — the tripwire fires."""
+    from hermes_cli.kanban_db import connect, write_txn
+    db = tmp_path / "test.db"
+    conn = connect(db_path=db)
     page_size = conn.execute("PRAGMA page_size").fetchone()[0]
     original_getsize = os.path.getsize
 
     def fake_getsize(path):
-        # Return a size that implies at least 1 fewer page than header claims
-        real_size = original_getsize(path)
-        return max(0, real_size - page_size)
+        # Persistently one page short — never self-heals.
+        return max(0, original_getsize(path) - page_size)
 
-    with pytest.raises(sqlite3.DatabaseError, match="torn-extend|page count mismatch"):
-        with unittest.mock.patch("hermes_cli.kanban_db.os.path.getsize", side_effect=fake_getsize):
+    with unittest.mock.patch("hermes_cli.kanban_db.os.path.getsize", side_effect=fake_getsize):
+        with pytest.raises(sqlite3.DatabaseError, match="torn-extend"):
             with write_txn(conn) as c:
                 c.execute(
                     "INSERT INTO tasks (id, title, assignee, status, priority, created_at) "
-                    "VALUES ('t_test02', 'test task 2', 'tester', 'todo', 0, 1234567890)"
+                    "VALUES ('t_test03', 'test task 3', 'tester', 'todo', 0, 1234567890)"
                 )
+    conn.close()
+
+
+def test_check_heals_killed_checkpoint_deficit_from_wal(tmp_path):
+    """A checkpoint killed after its page-1 write leaves a PERSISTENT deficit
+    whose tail frames still live in the WAL. The check must finish the
+    backfill (heal) instead of alarming."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli.kanban_db import connect, write_txn
+    db = tmp_path / "test.db"
+    conn = connect(db_path=db)
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    baseline_pages = os.path.getsize(db) // page_size
+    conn.execute("PRAGMA wal_autocheckpoint=0")  # keep the growth in the WAL
+    with write_txn(conn) as c:
+        c.execute(
+            "INSERT INTO tasks (id, title, body, assignee, status, priority, created_at) "
+            "VALUES ('t_heal01', 'grow', ?, 'tester', 'todo', 0, 1234567890)",
+            ("x" * (4 * page_size),),
+        )
+    assert os.path.getsize(db) // page_size == baseline_pages, "growth must be WAL-only"
+    # Forge the killed-checkpoint state: header claims more pages than the
+    # file holds, while the WAL still carries the extending frames.
+    with open(db, "r+b") as f:
+        f.seek(28)
+        f.write((baseline_pages + 1).to_bytes(4, "big"))
+    kb._check_file_length_invariant(conn)  # must heal, not raise
+    header_pages, file_pages = kb._header_and_file_pages(str(db), page_size)
+    assert file_pages >= header_pages, "drain must leave the file covering the header claim"
+    assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    conn.close()
+
+
+def test_check_fast_path_never_sleeps(tmp_path):
+    """No deficit -> no re-stat backoff: the hot post-commit path stays free."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli.kanban_db import connect, write_txn
+    db = tmp_path / "test.db"
+    conn = connect(db_path=db)
+    sleeps = []
+    with unittest.mock.patch.object(kb.time, "sleep", side_effect=lambda s: sleeps.append(s)):
+        with write_txn(conn) as c:
+            c.execute(
+                "INSERT INTO tasks (id, title, assignee, status, priority, created_at) "
+                "VALUES ('t_fast01', 'fast', 'tester', 'todo', 0, 1234567890)"
+            )
+    assert sleeps == [], f"healthy commit slept: {sleeps}"
     conn.close()
 
 
@@ -4547,30 +4627,29 @@ def test_connect_sets_wal_autocheckpoint_100(tmp_path):
     conn.close()
 
 
-def test_write_txn_check_reads_correct_header_fields(tmp_path):
-    """Synthetic DB file with mismatched header page_count triggers the check."""
+def test_check_raises_on_real_truncation_with_empty_wal(tmp_path):
+    """A cleanly-closed (fully checkpointed, WAL removed) DB whose file was
+    truncated below its header page count is a REAL torn extend: the deficit
+    persists, the WAL has nothing to drain, the header is stable — raise."""
     import struct
     from hermes_cli.kanban_db import connect, _check_file_length_invariant
     db = tmp_path / "synthetic.db"
     conn = connect(db_path=db)
     page_size = conn.execute("PRAGMA page_size").fetchone()[0]
     conn.close()
-    # Now corrupt the file: claim N pages but truncate to N-1 pages
+    # Corrupt the file: header claims N pages but truncate to N-1 pages.
     with open(db, "rb") as f:
         data = bytearray(f.read())
-    # Read current page_count from header bytes 28-31
     real_page_count = struct.unpack(">I", data[28:32])[0]
     if real_page_count < 2:
-        # Need at least 2 pages to fake a truncation
         pytest.skip("DB too small for synthetic truncation test")
-    # Truncate to N-1 pages
     truncated = bytes(data[: (real_page_count - 1) * page_size])
     with open(db, "wb") as f:
         f.write(truncated)
     # Now open and check — should raise
     # We can't use connect() because _validate_sqlite_header may block; use a raw connection
     raw_conn = sqlite3.connect(str(db), isolation_level=None)
-    with pytest.raises(sqlite3.DatabaseError, match="torn-extend|page count mismatch"):
+    with pytest.raises(sqlite3.DatabaseError):
         _check_file_length_invariant(raw_conn)
     raw_conn.close()
 

@@ -258,8 +258,8 @@ A fix is not complete until all are true:
 
 - Gateway: fresh process on commit `8092c8b182`, active after restart.
 - Current old CLI/harness session: not trustworthy for rollout verification; it retained pre-patch runtime behavior and split state ownership.
-- Do not apply a third in-process identity patch before an independent audit identifies the complete ownership boundary.
-- The next implementation should be done in a fresh external harness/worktree, commit only the smallest verified slice, then roll out with a fresh-process receipt.
+- This audit-time instruction was superseded by the independently reviewed, narrow implementation receipt below; no broad third identity refactor was applied.
+- The implementation was performed in the local worktree after the read-only external audit, committed as a minimal verified slice, and still requires fresh-process rollout validation.
 
 ## Independent external audit receipt (verified)
 
@@ -281,3 +281,20 @@ The next coding pass must remain narrow and test-driven:
 3. Introduce a cancellation/shutdown signal shared with background-review work, check it before review spawn and immediately before any review skill/memory write, and prevent new compression work/rotation after interruption while always releasing any acquired lock.
 4. Do not remove verification, weaken freshness, or make the `post_turn` cleanup part of the behavioral fix.
 5. Run focused tests, the relevant wider suite, and a fresh-process verification before service rollout. No manual ledger reconciliation may be used as acceptance evidence.
+
+## Verified implementation receipt (2026-07-10)
+
+Implemented in commit `fd0afa376a` (`fix: stabilize verification identity and cancel review workers`). The scope remained limited to the audited ownership and lifecycle boundaries:
+
+- `agent_runtime_helpers.invoke_tool` captures the per-turn verification owner once and passes it to request middleware, block/post hooks, nested registry dispatch, and execution middleware.
+- `tool_executor` uses that owner for request/execution middleware and pre/post hook metadata in both sequential and concurrent paths. The normal `model_tools` dispatch already receives the owner from the executor; a direct regression proves it forwards the supplied session ID to execution middleware.
+- Background review now has registered cancellation tokens. Parent interrupt, runtime shutdown, and review-spawn preflight cancel active review agents; the existing executor interrupt checks prevent subsequent review tool calls from starting.
+- Compression checks interrupt/shutdown both before and after external memory pre-compression work. On cancellation it returns the original messages, skips session rotation/memory-session commit, and releases any acquired compression lock.
+
+Verification completed against the committed code before rollout:
+
+- `441 passed in 156.38s`: `tests/run_agent/test_run_agent.py`, `tests/run_agent/test_background_review_toolset_restriction.py`, and `tests/agent/test_compression_concurrent_fork.py`.
+- `70 passed in 8.94s`: `tests/agent/test_verification_evidence.py`, `tests/agent/test_verification_stop.py`, and `tests/agent/test_verification_stop_caching.py`.
+- `py_compile` passed for all modified runtime modules; `git diff --check` passed.
+
+This receipt does **not** claim a fresh gateway/CLI process rollout or a transport-level proof for the raw synthetic verification-nudge appearance. Those remain separate, live-environment acceptance checks; no manual verification-ledger reconciliation was used for this implementation acceptance.

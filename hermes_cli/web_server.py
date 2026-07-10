@@ -6823,7 +6823,7 @@ def _messaging_platform_payload(
         else {}
     )
     gateway_running = (
-        get_running_pid() is not None
+        get_running_pid_cached() is not None
         or get_runtime_status_running_pid(runtime) is not None
     )
     env_vars = []

@@ -2508,6 +2508,34 @@ class TestWebServerEndpoints:
             "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat"
         )
 
+    def test_messaging_platform_payload_uses_cached_pid_probe(self, monkeypatch):
+        """_messaging_platform_payload must use the cached PID probe, not the
+        raw one, to avoid fd leaks on high-frequency dashboard polling (#53484).
+        """
+        from hermes_cli import web_server as ws
+
+        raw_calls = {"count": 0}
+        cached_calls = {"count": 0}
+
+        def _fake_raw(*a, **kw):
+            raw_calls["count"] += 1
+            return None
+
+        def _fake_cached(*a, **kw):
+            cached_calls["count"] += 1
+            return None
+
+        monkeypatch.setattr(ws, "get_running_pid", _fake_raw)
+        monkeypatch.setattr(ws, "get_running_pid_cached", _fake_cached)
+
+        entry = next(
+            e for e in ws._messaging_platform_catalog() if e["id"] == "telegram"
+        )
+        ws._messaging_platform_payload(entry, {}, runtime=None)
+
+        assert raw_calls["count"] == 0
+        assert cached_calls["count"] == 1
+
     def test_messaging_catalog_covers_gateway_platforms(self):
         """Catalog is derived from the Platform enum, so every built-in shows up."""
         from gateway.config import Platform

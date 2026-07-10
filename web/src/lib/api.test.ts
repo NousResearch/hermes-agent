@@ -104,3 +104,43 @@ describe("api OAuth helpers", () => {
     }
   });
 });
+
+describe("api.getSessionMessages", () => {
+  it("requests the dedicated session messages endpoint", async () => {
+    vi.stubGlobal("window", {});
+
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ session_id: "session/one", messages: [] }), {
+        headers: { "Content-Type": "application/json" },
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getSessionMessages("session/one");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/session%2Fone/messages",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  it("keeps explicit profile scoping when loading session messages", async () => {
+    vi.stubGlobal("window", {});
+
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ session_id: "sid", messages: [] }), {
+        headers: { "Content-Type": "application/json" },
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getSessionMessages("sid", "worker");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/sid/messages?profile=worker",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+});

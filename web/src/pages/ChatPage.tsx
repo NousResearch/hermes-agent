@@ -23,6 +23,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
@@ -32,9 +33,10 @@ import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
+import { MessageList } from "@/components/SessionTranscript";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
-import { api } from "@/lib/api";
+import { api, type SessionMessage } from "@/lib/api";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
@@ -263,6 +265,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     scope: string;
     title: string | null;
   }>({ scope: "", title: null });
+  const [resumeTranscript, setResumeTranscript] = useState<{
+    sessionId: string;
+    profile: string;
+    messages: SessionMessage[] | null;
+    error: string | null;
+  } | null>(null);
   const { t } = useI18n();
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
@@ -338,6 +346,37 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       cancelled = true;
     };
   }, [resumeParam, scopedProfile, handleSessionTitleChange]);
+
+  useEffect(() => {
+    if (!resumeParam) return;
+
+    let cancelled = false;
+
+    api
+      .getSessionMessages(resumeParam, scopedProfile)
+      .then((resp) => {
+        if (cancelled) return;
+        setResumeTranscript({
+          sessionId: resumeParam,
+          profile: scopedProfile,
+          messages: resp.messages,
+          error: null,
+        });
+      })
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setResumeTranscript({
+          sessionId: resumeParam,
+          profile: scopedProfile,
+          messages: null,
+          error: err.message || "failed to load messages",
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resumeParam, scopedProfile]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -1380,6 +1419,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       portalRoot,
     );
 
+  const activeTranscript =
+    resumeTranscript?.sessionId === resumeParam &&
+    resumeTranscript.profile === scopedProfile
+      ? resumeTranscript
+      : null;
+  const transcriptLoading = Boolean(resumeParam && !activeTranscript);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
       <PluginSlot name="chat:top" />
@@ -1402,6 +1448,48 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
+          {resumeParam && (
+            <div className="mb-2 flex max-h-[min(36vh,24rem)] shrink-0 flex-col overflow-hidden rounded border border-white/10 bg-black/35 text-white/85">
+              <div className="flex min-h-8 items-center justify-between gap-2 border-b border-white/10 px-3 py-1.5">
+                <span className="text-display text-[0.6875rem] tracking-wider text-white/60">
+                  {t.sessions.history}
+                </span>
+                {transcriptLoading ? (
+                  <Spinner className="text-sm text-white/60" />
+                ) : activeTranscript?.messages ? (
+                  <span className="font-mono-ui text-[0.6875rem] text-white/45">
+                    {activeTranscript.messages.length} {t.common.msgs}
+                  </span>
+                ) : null}
+              </div>
+              <div className="min-h-0 overflow-y-auto p-2">
+                {transcriptLoading && (
+                  <div className="flex items-center justify-center py-6 text-xs text-white/60">
+                    <Spinner className="text-sm" />
+                  </div>
+                )}
+                {activeTranscript?.error && (
+                  <p className="py-4 text-center text-xs text-destructive">
+                    {activeTranscript.error}
+                  </p>
+                )}
+                {activeTranscript?.messages &&
+                  activeTranscript.messages.length === 0 && (
+                    <p className="py-4 text-center text-xs text-white/50">
+                      {t.sessions.noMessages}
+                    </p>
+                  )}
+                {activeTranscript?.messages &&
+                  activeTranscript.messages.length > 0 && (
+                    <MessageList
+                      messages={activeTranscript.messages}
+                      className="flex flex-col gap-2 pr-1"
+                    />
+                  )}
+              </div>
+            </div>
+          )}
+
           <div
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"

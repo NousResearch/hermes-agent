@@ -77,9 +77,15 @@ def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
     include the exact opt-back-out command.
     """
     model = str(autoraise.get("model") or "gpt-5.4/5.5").strip().lower().rsplit("/", 1)[-1]
-    # gpt-5.3-codex-spark has a native 128K window; the gpt-5.4/5.5/5.6 family
-    # is capped at 272K by the Codex OAuth backend.
-    cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
+    # Codex OAuth exposes route-specific windows that differ from the direct
+    # OpenAI API. Keep the notice aligned with the same model families used by
+    # the context resolver and compaction override.
+    if model.startswith("gpt-5.3-codex-spark"):
+        cap = "128K"
+    elif model.startswith("gpt-5.6"):
+        cap = "372K"
+    else:
+        cap = "272K"
     from_pct = int(round(autoraise["from"] * 100))
     to_pct = int(round(autoraise["to"] * 100))
     return (
@@ -101,8 +107,9 @@ def _resolve_compression_threshold(
 
     Returns ``(effective_threshold, autoraise_notice)``. ``autoraise_notice`` is
     ``{"model": <slug>, "from": <old>, "to": <new>}`` only when a Codex
-    autoraise (gpt-5.4/5.5 272K family or gpt-5.3-codex-spark) actually raises
-    the threshold, otherwise ``None``.
+    autoraise (gpt-5.4/5.5 at 85%, gpt-5.6 at 95%, or
+    gpt-5.3-codex-spark at 70%) actually raises the threshold, otherwise
+    ``None``.
 
     The Codex overrides are *autoraises*: they must never LOWER a higher
     user-configured threshold. A user who already set ``compression.threshold``
@@ -1506,8 +1513,8 @@ def init_agent(
         _compression_cfg = {}
     compression_threshold = float(_compression_cfg.get("threshold", 0.50))
     # Per-model/route compaction-threshold override. Codex gpt-5.4 / gpt-5.5
-    # raise to 85% (the Codex backend caps both families at 272K, so the
-    # default 50% would compact at ~136K — half the usable context). Gated by
+    # raise to 85% of their 272K windows; gpt-5.6 raises to 95% of its 372K
+    # window, matching Codex's 353.4K effective boundary. Gated by
     # an opt-out config flag so the user can fall back to the global threshold;
     # when the override fires we stash a one-time notification (replayed on the
     # first turn) that tells the user what changed and how to revert. The
@@ -1524,6 +1531,7 @@ def init_agent(
         from agent.auxiliary_client import (
             _compression_threshold_for_model as _cthresh_fn,
             _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
+            _is_codex_gpt56 as _is_codex_gpt56_fn,
             _is_codex_spark as _is_codex_spark_fn,
         )
         _model_cthresh = _cthresh_fn(
@@ -1531,11 +1539,11 @@ def init_agent(
             agent.provider,
             allow_codex_gpt55_autoraise=_codex_gpt55_autoraise,
         )
-        # The Codex autoraises (gpt-5.4/5.5 272K family and gpt-5.3-codex-spark)
-        # apply only when they RAISE (never lower a user's higher global
-        # threshold). The notice is populated only when it actually fires, and
-        # carries the model slug so the banner names the right family. Arcee
-        # Trinity keeps its long-standing unconditional behaviour.
+        # The Codex autoraises apply only when they RAISE (never lower a user's
+        # higher global threshold). The notice is populated only when it
+        # actually fires, and carries the model slug so the banner names the
+        # right family. Arcee Trinity keeps its long-standing unconditional
+        # behaviour.
         compression_threshold, agent._compression_threshold_autoraised = (
             _resolve_compression_threshold(
                 compression_threshold,
@@ -1543,6 +1551,7 @@ def init_agent(
                 model=agent.model,
                 is_codex_autoraise=(
                     _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider)
+                    or _is_codex_gpt56_fn(agent.model, agent.provider)
                     or _is_codex_spark_fn(agent.model, agent.provider)
                 ),
             )

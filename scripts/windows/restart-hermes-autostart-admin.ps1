@@ -219,7 +219,7 @@ try {
     Register-HermesBootTask `
         -TaskName "HermesMemoryGraphBootAutoStart" `
         -Description "Boot auto-start Obsidian memory-graph Go HTTP server (:8765)" `
-        -PowerShellCommand "$envPrefix& '$MemoryGraphScript' -NoWatchdog" `
+        -PowerShellCommand "$envPrefix& '$MemoryGraphScript'" `
         -WorkingDirectory $RepoRoot `
         -DelaySeconds 55
 
@@ -261,7 +261,7 @@ try {
     Register-HermesLogonTask `
         -TaskName "HermesMemoryGraphAutoStart" `
         -Description "Logon auto-start Obsidian memory-graph Go HTTP server (:8765)" `
-        -PowerShellCommand "$envPrefix& '$MemoryGraphScript' -NoWatchdog" `
+        -PowerShellCommand "$envPrefix& '$MemoryGraphScript'" `
         -WorkingDirectory $RepoRoot `
         -DelaySeconds 78
 

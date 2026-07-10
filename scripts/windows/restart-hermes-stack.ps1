@@ -84,7 +84,7 @@ if ($StartLlama) {
 if (-not $SkipTunnels) {
     if (Test-Path -LiteralPath $MemoryGraphScript) {
         Write-Step "Ensuring Obsidian memory-graph server (:8765)"
-        & $MemoryGraphScript -NoWatchdog
+        & $MemoryGraphScript
     }
 
     if (Test-Path -LiteralPath $RepoTailscaleScript) {

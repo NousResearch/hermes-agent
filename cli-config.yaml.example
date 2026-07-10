@@ -326,6 +326,10 @@ terminal:
   #   "allowlist" - HTTP(S) only, routed through a domain-filtered proxy on an
   #                 internal network; raw/non-proxied egress has no route out.
   # Any other value fails closed to "off" (a typo never grants full network).
+  # Scope: this controls Hermes' Docker terminal backend only. The Codex
+  # app-server runtime executes in Codex's own sandbox and is not covered by
+  # this Docker allowlist; use Codex's network policy or `/codex-runtime auto`
+  # when this allowlist is a required boundary.
   container_network: "on"
   # Domains reachable in "allowlist" mode (no scheme/path; leading "*." wildcard ok;
   # IP literals must match exactly). Empty list + allowlist mode = deny-all.

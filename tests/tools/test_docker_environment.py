@@ -388,14 +388,14 @@ def test_legacy_network_false_cuts_network(monkeypatch):
     assert "--network=none" in _run_args_str(calls)
 
 
-def test_network_mode_overrides_legacy_bool(monkeypatch):
-    """Explicit network_mode='on' wins even if legacy network=False is passed."""
+def test_legacy_network_false_remains_hard_deny(monkeypatch):
+    """A historical docker_network=false must not be weakened by new defaults."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _mock_subprocess_run(monkeypatch)
 
     _make_dummy_env(network=False, network_mode="on")
 
-    assert "--network=none" not in _run_args_str(calls)
+    assert "--network=none" in _run_args_str(calls)
 
 
 def test_allowlist_mode_uses_proxy_network_and_env(monkeypatch):
@@ -436,6 +436,8 @@ def test_resolve_network_mode():
     """_resolve_network_mode precedence and fail-closed behavior."""
     assert docker_env._resolve_network_mode(None, True) == "on"
     assert docker_env._resolve_network_mode(None, False) == "off"
+    assert docker_env._resolve_network_mode("on", False) == "off"
+    assert docker_env._resolve_network_mode("allowlist", False) == "off"
     assert docker_env._resolve_network_mode("off", True) == "off"
     assert docker_env._resolve_network_mode("ALLOWLIST", True) == "allowlist"
     # A typo in an egress-control setting must never grant full network.

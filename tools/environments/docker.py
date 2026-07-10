@@ -105,14 +105,16 @@ _VALID_NETWORK_MODES = ("on", "off", "allowlist")
 def _resolve_network_mode(network_mode: Optional[str], network: bool) -> str:
     """Resolve the effective egress mode.
 
-    ``network_mode`` (``"on"`` | ``"off"`` | ``"allowlist"``) takes precedence.
-    When it is None/empty, fall back to the legacy ``network`` bool
-    (``True`` -> ``"on"``, ``False`` -> ``"off"``). Unknown values fail CLOSED to
-    ``"off"`` — a typo in an egress-control setting must never silently grant
-    full network access.
+    The legacy ``network=False`` remains a hard deny even when a newer
+    ``network_mode`` value is also present. During config migration both keys
+    can be populated from defaults, and a historical deny must never be
+    weakened to ``on``. Otherwise ``network_mode`` selects ``"on"`` |
+    ``"off"`` | ``"allowlist"``. Unknown values fail CLOSED.
     """
+    if not network:
+        return "off"
     if network_mode is None or network_mode == "":
-        return "on" if network else "off"
+        return "on"
     mode = str(network_mode).strip().lower()
     if mode not in _VALID_NETWORK_MODES:
         logger.error(

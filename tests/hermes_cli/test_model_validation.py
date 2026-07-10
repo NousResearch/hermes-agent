@@ -4,6 +4,9 @@ import json
 import urllib.error
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from hermes_cli import models as hermes_models
 from hermes_cli.models import (
     azure_foundry_model_api_mode,
     copilot_model_api_mode,
@@ -585,6 +588,15 @@ class TestAzureFoundryModelApiMode:
 
 
 class TestEnsureLmStudioModelLoaded:
+    @pytest.fixture(autouse=True)
+    def _reset_lmstudio_ownership(self):
+        registry = getattr(hermes_models, "_lmstudio_owned_instances", None)
+        if registry is not None:
+            registry.clear()
+        yield
+        if registry is not None:
+            registry.clear()
+
     class _Resp:
         def __init__(self, body=b"{}"):
             self._body = body
@@ -770,6 +782,195 @@ class TestEnsureLmStudioModelLoaded:
             "model": "qwen/qwen3.6-35b-a3b",
             "echo_load_config": True,
         }
+
+    def test_owned_instance_unloaded_even_with_sibling_instance(self):
+        calls = []
+        first = [
+            {"key": "old/model", "type": "llm"},
+            {"key": "qwen/qwen3.6-35b-a3b", "type": "llm"},
+        ]
+        second = [
+            {"key": "qwen/qwen3.6-35b-a3b", "type": "llm"},
+            {
+                "key": "old/model",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "old/model", "config": {"context_length": 128000}},
+                    {"id": "old/model:2", "config": {"context_length": 128000}},
+                ],
+            },
+        ]
+        load_responses = [
+            {"instance_id": "old/model", "load_config": {"context_length": 128000}},
+            {"load_config": {"context_length": 128000}},
+        ]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([first, second], load_responses, calls),
+        ):
+            first_result = ensure_lmstudio_model_loaded(
+                "old/model",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+            )
+            second_result = ensure_lmstudio_model_loaded(
+                "qwen/qwen3.6-35b-a3b",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+                previous_model="old/model",
+            )
+
+        assert first_result == 128000
+        assert second_result == 128000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == [
+            "models",
+            "load",
+            "models",
+            "unload",
+            "load",
+        ]
+        assert calls[3][1] == {"instance_id": "old/model"}
+        assert calls[4][1] == {
+            "model": "qwen/qwen3.6-35b-a3b",
+            "echo_load_config": True,
+        }
+
+    def test_forced_resize_only_touches_instance_hermes_loaded(self):
+        calls = []
+        initial = [{"key": "qwen/qwen3.6-35b-a3b", "type": "llm"}]
+        load_responses = [
+            {
+                "instance_id": "qwen/qwen3.6-35b-a3b",
+                "load_config": {"context_length": 4096},
+            },
+            {"load_config": {"context_length": 64000}},
+        ]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], load_responses, calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "qwen/qwen3.6-35b-a3b",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+            )
+
+        assert result == 64000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == [
+            "models",
+            "load",
+            "unload",
+            "load",
+        ]
+        assert calls[2][1] == {"instance_id": "qwen/qwen3.6-35b-a3b"}
+        assert calls[3][1] == {
+            "model": "qwen/qwen3.6-35b-a3b",
+            "echo_load_config": True,
+            "context_length": 64000,
+        }
+
+    def test_unload_policy_never_keeps_too_small_target_instance(self):
+        calls = []
+        initial = [
+            {
+                "key": "qwen/qwen3.6-35b-a3b",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "qwen/qwen3.6-35b-a3b", "config": {"context_length": 8000}}
+                ],
+            }
+        ]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], [], calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "qwen/qwen3.6-35b-a3b",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+                unload_policy="never",
+            )
+
+        assert result == 8000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models"]
+
+    def test_unload_policy_never_still_resizes_own_fresh_instance(self):
+        calls = []
+        initial = [{"key": "qwen/qwen3.6-35b-a3b", "type": "llm"}]
+        refreshed = [
+            {
+                "key": "qwen/qwen3.6-35b-a3b",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "qwen/qwen3.6-35b-a3b", "config": {"context_length": 4096}}
+                ],
+            }
+        ]
+        load_responses = [
+            {
+                "instance_id": "qwen/qwen3.6-35b-a3b",
+                "load_config": {"context_length": 4096},
+            },
+            {"load_config": {"context_length": 64000}},
+        ]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial, refreshed], load_responses, calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "qwen/qwen3.6-35b-a3b",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+                unload_policy="never",
+            )
+
+        assert result == 64000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == [
+            "models",
+            "load",
+            "unload",
+            "load",
+        ]
+        assert calls[2][1] == {"instance_id": "qwen/qwen3.6-35b-a3b"}
+
+    def test_target_with_multiple_small_instances_is_not_reloaded(self):
+        calls = []
+        initial = [
+            {
+                "key": "qwen/qwen3.6-35b-a3b",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "qwen/qwen3.6-35b-a3b", "config": {"context_length": 8000}},
+                    {
+                        "id": "qwen/qwen3.6-35b-a3b:2",
+                        "config": {"context_length": 16000},
+                    },
+                ],
+            }
+        ]
+
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            self._fake_urlopen([initial], [], calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "qwen/qwen3.6-35b-a3b",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+            )
+
+        assert result == 16000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models"]
 
     def test_previous_model_qwen_alias_does_not_match_unrelated_suffix(self):
         calls = []

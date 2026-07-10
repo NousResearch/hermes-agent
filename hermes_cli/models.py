@@ -36,6 +36,12 @@ LMSTUDIO_UNLOAD_POLICIES = {
     LMSTUDIO_UNLOAD_POLICY_NEVER,
 }
 
+# Instance IDs of LM Studio models this process loaded itself, keyed by
+# (server root, catalog model key). In-memory only: a persisted claim could
+# collide with a later user-loaded instance that reuses the bare model key
+# as its instance id.
+_lmstudio_owned_instances: dict[tuple[str, str], str] = {}
+
 
 def normalize_lmstudio_unload_policy(value: Any) -> str:
     """Normalize the LM Studio model-switch unload policy.
@@ -3235,6 +3241,15 @@ def ensure_lmstudio_model_loaded(
     def model_key(entry: dict) -> str:
         return str(entry.get("key") or entry.get("id") or "").strip()
 
+    def owned_instance_id(model_id: str) -> Optional[str]:
+        return _lmstudio_owned_instances.get((server_root, model_id))
+
+    def record_owned_instance(model_id: str, instance_id: str) -> None:
+        _lmstudio_owned_instances[(server_root, model_id)] = instance_id
+
+    def drop_owned_instance(model_id: str) -> None:
+        _lmstudio_owned_instances.pop((server_root, model_id), None)
+
     def unload_instance(instance_id: str) -> None:
         body = json.dumps({"instance_id": instance_id}).encode()
         unload_headers = dict(headers)
@@ -3292,6 +3307,10 @@ def ensure_lmstudio_model_loaded(
         if raw:
             try:
                 parsed = json.loads(raw.decode("utf-8"))
+                if isinstance(parsed, dict):
+                    echoed_instance = str(parsed.get("instance_id") or "").strip()
+                    if echoed_instance:
+                        record_owned_instance(model_id, echoed_instance)
                 load_config = parsed.get("load_config") if isinstance(parsed, dict) else None
                 loaded_ctx = load_config.get("context_length") if isinstance(load_config, dict) else None
                 if isinstance(loaded_ctx, int) and loaded_ctx > 0:
@@ -3383,19 +3402,36 @@ def ensure_lmstudio_model_loaded(
                     if _lmstudio_namespace_embedded_matches(raw, previous_model_key)
                 ]
                 previous_matches = embedded_matches if len(embedded_matches) == 1 else []
+        owned_unload_keys: list[str] = []
         for raw in previous_matches:
             instance_ids = loaded_instance_ids(raw)
-            if len(instance_ids) > 1:
+            entry_key = model_key(raw)
+            owned = owned_instance_id(entry_key)
+            if owned and owned not in instance_ids:
+                # The instance this process loaded is gone (LM Studio restart
+                # or a manual unload) — the ownership claim is stale.
+                drop_owned_instance(entry_key)
+                owned = None
+            if owned:
+                # Hermes loaded this exact instance earlier in the session, so
+                # it can be evicted precisely even when sibling instances of
+                # the same model are resident.
+                entry_unload_ids = [owned]
+                owned_unload_keys.append(entry_key)
+            elif len(instance_ids) > 1:
                 # ``previous_model`` names a catalog model, not an LM Studio
-                # instance. With several resident instances of that model,
-                # Hermes cannot tell which one it was serving — leave them
-                # all loaded rather than evicting one the user loaded.
+                # instance. With several resident instances of that model and
+                # no ownership claim, Hermes cannot tell which one it was
+                # serving — leave them all loaded rather than evicting one
+                # the user loaded.
                 continue
-            previous_loaded_ids.extend(instance_ids)
-            if instance_ids:
+            else:
+                entry_unload_ids = instance_ids
+            previous_loaded_ids.extend(entry_unload_ids)
+            if entry_unload_ids:
                 contexts_for_restore = loaded_contexts(raw)
                 restore_candidates.append((
-                    model_key(raw),
+                    entry_key,
                     max(contexts_for_restore) if contexts_for_restore else None,
                 ))
         unique_previous_loaded_ids = list(dict.fromkeys(previous_loaded_ids))
@@ -3404,6 +3440,8 @@ def ensure_lmstudio_model_loaded(
         ):
             return None
         unloaded_previous_model = bool(unique_previous_loaded_ids)
+        for entry_key in owned_unload_keys:
+            drop_owned_instance(entry_key)
 
     contexts = loaded_contexts(target_entry)
     if contexts and max(contexts) >= target_context_length:
@@ -3411,8 +3449,20 @@ def ensure_lmstudio_model_loaded(
 
     previous_target_ctx = max(contexts) if contexts else None
     target_loaded_ids = loaded_instance_ids(target_entry)
-    if target_loaded_ids and not unload_instances(target_loaded_ids, strict=True):
-        return previous_target_ctx
+    if target_loaded_ids:
+        if unload_policy == LMSTUDIO_UNLOAD_POLICY_NEVER:
+            # ``never`` means Hermes doesn't evict resident models even to
+            # win a bigger context window — run with what's loaded.
+            return previous_target_ctx
+        if len(target_loaded_ids) > 1:
+            # Same ambiguity as the previous-model guard: several resident
+            # copies and only a name to go on. Evicting them all could take
+            # out instances other clients are using; run with the largest
+            # resident window instead.
+            return previous_target_ctx
+        if not unload_instances(target_loaded_ids, strict=True):
+            return previous_target_ctx
+        drop_owned_instance(target_model_id)
 
     loaded_ctx = load_model(target_model_id, None)
     if loaded_ctx is None and target_loaded_ids:
@@ -3424,13 +3474,27 @@ def ensure_lmstudio_model_loaded(
         return loaded_ctx
 
     if loaded_ctx is not None and loaded_ctx < target_context_length:
-        refreshed = fetch_models()
-        if refreshed:
-            refreshed_target = find_target(refreshed)
-            if refreshed_target:
-                refreshed_target_ids = loaded_instance_ids(refreshed_target)
-                if refreshed_target_ids and not unload_instances(refreshed_target_ids, strict=True):
-                    return loaded_ctx
+        resize_ids: list[str] = []
+        owned_target = owned_instance_id(target_model_id)
+        if owned_target:
+            # The load echo told us exactly which instance we created — resize
+            # that one and leave any concurrently loaded siblings alone.
+            resize_ids = [owned_target]
+        elif unload_policy == LMSTUDIO_UNLOAD_POLICY_ALWAYS:
+            refreshed = fetch_models()
+            if refreshed:
+                refreshed_target = find_target(refreshed)
+                if refreshed_target:
+                    resize_ids = loaded_instance_ids(refreshed_target)
+        else:
+            # ``never`` without an ownership claim (no instance id in the load
+            # echo): resizing would mean guessing at instances Hermes may not
+            # have loaded. Keep the window that resolved.
+            return loaded_ctx
+        if resize_ids and not unload_instances(resize_ids, strict=True):
+            return loaded_ctx
+        if resize_ids:
+            drop_owned_instance(target_model_id)
         forced_ctx = load_model(target_model_id, target_context_length)
         if forced_ctx is None:
             # Forced reload failed (e.g. not enough VRAM at the larger

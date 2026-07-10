@@ -28,6 +28,23 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
+_SENSITIVE_CDP_METHODS = frozenset({
+    "Browser.grantPermissions",
+    "Browser.resetPermissions",
+    "Browser.setPermission",
+    "Network.clearBrowserCache",
+    "Network.clearBrowserCookies",
+    "Network.deleteCookies",
+    "Network.getAllCookies",
+    "Network.getCookies",
+    "Network.setCookie",
+    "Network.setCookies",
+    "Storage.clearCookies",
+    "Storage.clearDataForOrigin",
+    "Storage.getCookies",
+    "Storage.setCookies",
+})
+
 _CDP_PRIVATE_PAGE_ALLOWED_METHODS = {
     # Browser/target inspection does not read the current page body, cookies,
     # DOM, storage, or screenshots. Keep these working so the model can list
@@ -110,6 +127,43 @@ def _resolve_cdp_endpoint() -> str:
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("browser_cdp: failed to resolve CDP endpoint: %s", exc)
         return ""
+
+
+def _cdp_sensitive_methods_allowed() -> bool:
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+        raw = browser_cfg.get("allow_sensitive_cdp_methods", False)
+    except Exception as exc:
+        logger.debug("browser_cdp: failed to read sensitive-method policy: %s", exc)
+        raw = False
+
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "allow", "allowed"}
+
+
+def _is_sensitive_cdp_method(method: str) -> bool:
+    return method in _SENSITIVE_CDP_METHODS
+
+
+def _sensitive_cdp_error(method: str) -> str:
+    return tool_error(
+        (
+            f"CDP method {method!r} is blocked by default because it can read "
+            "browser credentials, mutate storage, or change permissions. "
+            "Dedicated browser tools should be used for ordinary page work. "
+            "If this raw CDP access is intentionally trusted, set "
+            "browser.allow_sensitive_cdp_methods: true in config.yaml."
+        ),
+        method=method,
+        cdp_docs=CDP_DOCS_URL,
+        sensitive_method=True,
+    )
 
 
 def _private_page_guard_error(blocked_url: str, method: str) -> str:
@@ -420,6 +474,15 @@ def browser_cdp(
         JSON string ``{"success": True, "method": ..., "result": {...}}`` on
         success, or ``{"error": "..."}`` on failure.
     """
+    if not method or not isinstance(method, str):
+        return tool_error(
+            "'method' is required (e.g. 'Target.getTargets')",
+            cdp_docs=CDP_DOCS_URL,
+        )
+
+    if _is_sensitive_cdp_method(method) and not _cdp_sensitive_methods_allowed():
+        return _sensitive_cdp_error(method)
+
     effective_task_id = task_id or "default"
 
     # --- Route iframe-scoped calls through the supervisor ---------------

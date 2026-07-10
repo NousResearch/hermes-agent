@@ -2586,10 +2586,14 @@ def run_job(
         Tuple of (success, full_output_doc, final_response, error_message)
     """
     with _cron_profile_context(job):
-        return _run_job_unscoped(job)
+        return _run_job_unscoped(
+            job, defer_agent_teardown=defer_agent_teardown
+        )
 
 
-def _run_job_unscoped(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def _run_job_unscoped(
+    job: dict, *, defer_agent_teardown: Optional[list] = None
+) -> tuple[bool, str, str, Optional[str]]:
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 

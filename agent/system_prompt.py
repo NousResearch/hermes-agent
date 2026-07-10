@@ -93,6 +93,42 @@ def _resolve_platform_hint(agent: Any, platform_key: str, default_hint: str) -> 
     return base
 
 
+def _model_needs_portable_memory_packet(agent: Any) -> bool:
+    model = (getattr(agent, "model", "") or "").lower()
+    provider = (getattr(agent, "provider", "") or "").lower()
+    return any(
+        token in model or token in provider
+        for token in ("grok", "llama", "local", "qwen", "ollama")
+    )
+
+
+def _build_portable_memory_packet(agent: Any) -> str:
+    if not getattr(agent, "_portable_memory_packet_enabled", True):
+        return ""
+
+    parts: List[str] = []
+    memory_store = getattr(agent, "_memory_store", None)
+    if memory_store:
+        for label in ("memory", "user"):
+            try:
+                packet = memory_store.build_memory_packet(label, portable=True)
+                block = json.dumps(packet, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                block = ""
+            if block and block.strip():
+                parts.append(f"{label}: {block.strip().replace(chr(10), ' ')}")
+
+    if not parts:
+        return ""
+
+    return (
+        "# Portable memory packet\n"
+        "Use this as the durable cross-model handoff when the provider is local or Grok.\n"
+        "Treat it as evidence-backed memory, not raw conversation.\n\n"
+        + "\n".join(f"- {line}" for line in parts)
+    )
+
+
 _TUI_EMBEDDED_PANE_CLARIFIER = (
     " You're in its embedded terminal pane, beside the GUI chat — the user can "
     "select your output (Option-drag on macOS, Shift-drag elsewhere) and press "

@@ -1261,6 +1261,13 @@ _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
 
 
+def _normalize_docker_host_cwd(cwd: str) -> str:
+    expanded = os.path.expanduser(cwd)
+    if expanded.startswith(("/Users/", "/home/")):
+        return expanded
+    return os.path.abspath(expanded)
+
+
 def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
     """Return True when *cwd* is a tilde path that the remote SSH shell must
     expand itself, so the Hermes host/container must NOT ``expanduser`` it.

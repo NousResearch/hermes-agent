@@ -46,6 +46,7 @@ import httpx
 from hermes_cli.config import (
     get_hermes_home,
     get_config_path,
+    get_env_value_prefer_dotenv,
     read_raw_config,
     require_readable_config_before_write,
 )

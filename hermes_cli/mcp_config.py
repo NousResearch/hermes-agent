@@ -825,15 +825,22 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
     # window (300s in mcp_oauth) plus headroom — matching the GUI re-auth
     # path in web_server.py so CLI and dashboard behave identically.
     try:
+        preregistered_client = _has_preregistered_oauth_client(server_config)
+        if preregistered_client:
+            _force_oauth_login(name, server_config)
+
         _login_connect_timeout = server_config.get("connect_timeout")
         try:
             _login_connect_timeout = float(_login_connect_timeout)
         except (TypeError, ValueError):
             _login_connect_timeout = 0.0
         _login_connect_timeout = max(_login_connect_timeout, 315.0)
-        tools = _probe_single_server(
-            name, server_config, connect_timeout=_login_connect_timeout
-        )
+        if preregistered_client:
+            tools = _probe_single_server(name, server_config)
+        else:
+            tools = _probe_single_server(
+                name, server_config, connect_timeout=_login_connect_timeout
+            )
         # A clean probe is NOT proof of authentication. Some MCP servers
         # (notably Google's official Drive server) serve initialize +
         # tools/list WITHOUT auth, so the probe lists tools even when the

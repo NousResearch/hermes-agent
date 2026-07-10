@@ -195,9 +195,9 @@ class Settings:
     idea_count: int
     provider: str
     model: str
-    mcp_notebook_id: str
-    nlm_profile: str
-    cli_ref: str
+    mcp_notebook_id: str = ""
+    nlm_profile: str = ""
+    cli_ref: str = ""
 
 
 def bind_llm_factory(factory: Callable[[], Any]) -> None:

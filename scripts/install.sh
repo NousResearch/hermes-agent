@@ -1309,7 +1309,7 @@ setup_venv() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Creating virtual environment with Termux Python..."
 
-        if [ -d "venv" ]; then
+        if [ -e "venv" ] || [ -L "venv" ]; then
             log_info "Virtual environment already exists, recreating..."
             rm -rf venv
         fi
@@ -1321,7 +1321,7 @@ setup_venv() {
 
     log_info "Creating virtual environment with Python $PYTHON_VERSION..."
 
-    if [ -d "venv" ]; then
+    if [ -e "venv" ] || [ -L "venv" ]; then
         log_info "Virtual environment already exists, recreating..."
         rm -rf venv
     fi
@@ -3066,8 +3066,16 @@ run_stage_protocol() {
     # frame below. Without this, a failed --stage would terminate the process
     # before emitting the frame and the Rust/Electron parser would see "no
     # result frame" instead of a clean {ok:false} contract response.
+    #
+    # `set -e` is re-enabled *inside* the subshell: the outer `set +e` (needed so
+    # the parent survives a helper's `exit 1`) otherwise also turns errexit OFF
+    # inside, and every stage helper (setup_venv, install_deps, clone_repo, …) was
+    # written for the monolithic errexit-ON flow and relies on it to abort on a
+    # failed command. Without the inner `set -e`, a hard failure mid-helper (e.g.
+    # `uv venv` failing) is swallowed, the helper prints its success line, and the
+    # stage wrongly reports exit 0 / {ok:true}. See #61828.
     set +e
-    ( run_stage_body "$stage" )
+    ( set -e; run_stage_body "$stage" )
     local code=$?
     set -e
 

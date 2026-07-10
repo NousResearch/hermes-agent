@@ -131,7 +131,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "concurrently": "^10.0.3",
     "cross-env": "^10.1.0",
-    "electron": "40.10.2",
+    "electron": "41.4.0",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.28.1",
     "eslint": "^9.39.4",
@@ -150,7 +150,7 @@
     "wait-on": "^9.0.5"
   },
   "build": {
-    "electronVersion": "40.10.2",
+    "electronVersion": "41.4.0",
     "appId": "com.nousresearch.hermes",
     "productName": "Hermes",
     "executableName": "Hermes",

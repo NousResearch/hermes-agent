@@ -1074,6 +1074,25 @@ def test_review_runtime_strips_blank_aux_credentials(curator_env):
     assert binding.explicit_base_url is None
 
 
+def test_review_runtime_carries_auxiliary_extra_body(curator_env):
+    curator = curator_env["curator"]
+    cfg = {
+        "auxiliary": {
+            "curator": {
+                "provider": "custom",
+                "model": "local-mini",
+                "extra_body": {"slot_flag": "slot-value"},
+            },
+        },
+    }
+
+    binding = curator._resolve_review_runtime(cfg)
+
+    assert binding.request_overrides == {
+        "extra_body": {"slot_flag": "slot-value"}
+    }
+
+
 def test_review_runtime_ignores_auxiliary_credentials_when_using_main(curator_env):
     """Falling through to main model must not pick up stray auxiliary.curator secrets."""
     curator = curator_env["curator"]
@@ -1324,3 +1343,102 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
     assert meta.get("error") is None, meta.get("error")
     assert captured["kwargs"]["credential_pool"] is fake_pool
     assert captured["kwargs"]["request_overrides"] == fake_overrides
+
+
+def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "model": "real-model-id",
+            "api_key": "test-key",
+            "base_url": "https://gateway.example/v1",
+            "api_mode": "chat_completions",
+            "max_output_tokens": 1234,
+        },
+    )
+
+    class _StubAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    result = curator._run_llm_review("review")
+
+    assert result["error"] is None
+    assert captured["model"] == "real-model-id"
+    assert captured["max_tokens"] == 1234
+
+
+def test_review_fork_merges_slot_extra_body_over_runtime(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "auxiliary": {
+                "curator": {
+                    "provider": "custom:gateway",
+                    "model": "gateway",
+                    "extra_body": {"shared": "slot", "slot_only": True},
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "api_key": "test-key",
+            "base_url": "https://gateway.example/v1",
+            "api_mode": "chat_completions",
+            "request_overrides": {
+                "extra_body": {"shared": "runtime", "runtime_only": True},
+                "service_tier": "priority",
+            },
+        },
+    )
+
+    class _StubAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    result = curator._run_llm_review("review")
+
+    assert result["error"] is None
+    assert captured["request_overrides"] == {
+        "extra_body": {
+            "shared": "slot",
+            "runtime_only": True,
+            "slot_only": True,
+        },
+        "service_tier": "priority",
+    }

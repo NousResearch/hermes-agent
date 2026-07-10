@@ -46,6 +46,7 @@ import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+from urllib.parse import urlsplit, urlunsplit
 
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
@@ -786,6 +787,32 @@ def _git_repo_from_remote(git_remote: str) -> str:
     return "/".join(parts[:2])
 
 
+def _sanitize_git_remote_for_routing(git_remote: str) -> str:
+    """Remove URL userinfo while preserving host/path signals for routing."""
+    remote = str(git_remote or "").strip()
+    if not remote:
+        return ""
+    try:
+        parsed = urlsplit(remote)
+    except ValueError:
+        return remote
+    if not parsed.scheme or not parsed.netloc or "@" not in parsed.netloc:
+        return remote
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return remote
+    netloc = hostname
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return urlunsplit(
+        (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+
+
 def _safe_git_output(workspace_path: str, *args: str) -> str:
     if not workspace_path:
         return ""
@@ -896,6 +923,7 @@ def _extract_hindsight_routing_context(
     resolved_remote = str(git_remote or "").strip() or _safe_git_output(
         workspace_path, "remote", "get-url", "origin"
     )
+    resolved_remote = _sanitize_git_remote_for_routing(resolved_remote)
     resolved_branch = str(git_branch or "").strip() or _safe_git_output(
         workspace_path, "branch", "--show-current"
     )
@@ -1866,9 +1894,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_identity = str(kwargs.get("agent_identity") or "").strip()
         self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
         self._agent_workspace_path = str(kwargs.get("agent_workspace_path") or kwargs.get("workspace_path") or "").strip()
-        self._agent_git_remote = str(
+        self._agent_git_remote = _sanitize_git_remote_for_routing(
             kwargs.get("agent_git_remote") or kwargs.get("git_remote") or ""
-        ).strip()
+        )
         if self._agent_workspace_path:
             routing_context = _extract_hindsight_routing_context(
                 workspace=self._agent_workspace,
@@ -1881,8 +1909,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 cache_root=get_hermes_home() / "cache",
                 registry_version=str(self._config.get("bank_registry_version") or ""),
             )
-            if not self._agent_git_remote:
-                self._agent_git_remote = routing_context.git_remote
+            self._agent_git_remote = routing_context.git_remote
         self._turn_index = 0
         self._session_turns = []
         self._last_retained_turn_count = 0

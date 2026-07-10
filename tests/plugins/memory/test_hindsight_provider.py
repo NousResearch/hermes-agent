@@ -2269,6 +2269,48 @@ class TestBankRouting:
         assert fourth.cache_hit is False
         assert fourth.git_repo == ""
 
+    def test_extract_routing_context_strips_credentials_from_git_remote_cache(self, tmp_path):
+        workspace = tmp_path / "private"
+        workspace.mkdir()
+        cache_root = tmp_path / "profile" / "cache"
+
+        context = _extract_hindsight_routing_context(
+            workspace="private",
+            workspace_path=str(workspace),
+            profile="frontdesk",
+            platform="cli",
+            user="",
+            session="s1",
+            git_remote="https://credential-user:ghp_secret123@github.com/acme/private.git",
+            cache_root=cache_root,
+            registry_version="v1",
+        )
+
+        assert context.git_remote == "https://github.com/acme/private.git"
+        assert context.git_repo == "acme/private"
+
+        cache_files = list((cache_root / "hindsight" / "project-context").glob("*.json"))
+        assert len(cache_files) == 1
+        cached = json.loads(cache_files[0].read_text(encoding="utf-8"))
+        cached_text = json.dumps(cached)
+        assert cached["git_remote"] == "https://github.com/acme/private.git"
+        assert cached["git_repo"] == "acme/private"
+        assert "credential-user" not in cached_text
+        assert "ghp_secret123" not in cached_text
+
+        candidates = _generate_hindsight_bank_candidates(
+            [
+                {
+                    "id": "private-bank",
+                    "match": {"git_repo_glob": "acme/*"},
+                    "retain_policy": {"enabled": True},
+                }
+            ],
+            context,
+        )
+
+        assert [candidate.bank_id for candidate in candidates] == ["private-bank"]
+
     def test_bank_registry_generates_deterministic_candidates(self):
         context = _extract_hindsight_routing_context(
             workspace="rigplane-pro",

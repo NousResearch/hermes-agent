@@ -58,7 +58,7 @@ Minimal cacheable context:
 - `workspace_path`
 - `workspace`
 - `repo_name`
-- `git_remote`
+- sanitized `git_remote` with URL userinfo stripped before caching
 - normalized `git_repo` (`owner/repo` for GitHub remotes)
 - `git_branch`
 - active `profile`
@@ -83,6 +83,8 @@ Invalidation inputs:
 Security:
 
 - Do not cache env vars, tokens, credential files, raw logs, or conversation transcript text.
+- Do not cache credentialed raw remotes; `https://user:token@github.com/acme/private.git`
+  is cached as `https://github.com/acme/private.git`.
 - Project-local cache is out of scope for the first slice.
 
 ## Deterministic candidate generation
@@ -115,11 +117,12 @@ Policy:
 
 1. Add pure dataclasses/helpers in the Hindsight provider module:
    - `HindsightRoutingContext`
-   - `HindsightBankRegistryEntry`
    - `HindsightBankCandidate`
    - `_extract_hindsight_routing_context(...)`
-   - `_load_cached_hindsight_routing_context(...)` / `_write_cached_hindsight_routing_context(...)`
+   - `_context_from_cache(...)` / `_write_context_cache(...)`
    - `_generate_hindsight_bank_candidates(...)`
+   - Registry entries remain config dictionaries in this slice rather than
+     materialized `HindsightBankRegistryEntry` objects.
 2. Add tests for:
    - context extraction from a temporary git repo and profile cache reuse/invalidation;
    - registry candidate generation from `git_repo_glob`/`repo_name_glob`;

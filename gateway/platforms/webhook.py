@@ -764,6 +764,15 @@ class WebhookAdapter(BasePlatformAdapter):
         )
         if profile and isinstance(profile, str):
             source.profile = profile
+        # bvh_route_model_pin: optional per-route model/provider pin rides the
+        # source into the gateway's per-turn model resolution (run.py); the
+        # session /model override still wins. Inert when the route sets none.
+        _route_model = route_config.get("model")
+        if _route_model and isinstance(_route_model, str):
+            source.route_model = _route_model
+        _route_provider = route_config.get("provider")
+        if _route_provider and isinstance(_route_provider, str):
+            source.route_provider = _route_provider
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,

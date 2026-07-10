@@ -3839,6 +3839,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if ch_runtime_model and not ch.model:
                         model = ch_runtime_model
 
+        # bvh_route_model_pin: per-route pin set by the webhook platform on the
+        # source. Applied after channel_overrides; the session /model override
+        # below still wins (documented priority preserved).
+        _route_model = getattr(source, "route_model", None) if source is not None else None
+        _route_provider = getattr(source, "route_provider", None) if source is not None else None
+        if _route_provider:
+            runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(_route_provider)
+            _rt_model = runtime_kwargs.pop("model", None)
+            if _rt_model and not _route_model:
+                model = _rt_model
+        if _route_model:
+            model = _route_model
+
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs

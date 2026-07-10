@@ -224,6 +224,10 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     Before this fix, deepseek-v4-pro sessions showed as unknown cost
     in hermes insights because the _OFFICIAL_DOCS_PRICING table had no
     entry for that model.  See #24218.
+
+    Rates below are the official DeepSeek published prices:
+    https://api-docs.deepseek.com/quick_start/pricing
+    (V4-Pro: $0.435 input / $0.87 output / $0.003625 cache-hit per 1M).
     """
     entry = get_pricing_entry(
         "deepseek-v4-pro",
@@ -233,9 +237,24 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert entry is not None
     assert entry.input_cost_per_million is not None
     assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == 1.74
-    assert float(entry.output_cost_per_million) == 3.48
-    assert float(entry.cache_read_cost_per_million) == 0.0145
+    assert float(entry.input_cost_per_million) == 0.435
+    assert float(entry.output_cost_per_million) == 0.87
+    assert float(entry.cache_read_cost_per_million) == 0.003625
+
+
+def test_deepseek_v4_flash_pricing_entry_exists():
+    """deepseek-v4-flash must also carry a pricing entry.
+
+    It is a common default/fallback model; without an entry its sessions
+    price as ``unknown``.  Official rates: $0.14 input / $0.28 output /
+    $0.0028 cache-hit per 1M.
+    """
+    entry = get_pricing_entry("deepseek-v4-flash", provider="deepseek")
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.14
+    assert float(entry.output_cost_per_million) == 0.28
+    assert float(entry.cache_read_cost_per_million) == 0.0028
 
 
 def test_deepseek_v4_pro_estimate_usage_cost():
@@ -248,8 +267,8 @@ def test_deepseek_v4_pro_estimate_usage_cost():
 
     assert result.status == "estimated"
     assert result.amount_usd is not None
-    # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
-    assert float(result.amount_usd) == 3.48
+    # 1M input × $0.435/M + 500K output × $0.87/M = $0.435 + $0.435 = $0.87
+    assert float(result.amount_usd) == 0.87
 
 
 def test_bedrock_claude_rows_all_carry_cache_pricing():

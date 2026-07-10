@@ -6807,6 +6807,79 @@ def _is_patched_fleet_maintainer() -> bool:
     return False
 
 
+def _write_patched_main_conflict_handoff(
+    git_cmd: list[str], cwd: Path, *, merge_stderr: str = ""
+) -> Path:
+    """Abort a conflicted live merge and write a prompt for a fresh session."""
+    conflicts_result = subprocess.run(
+        git_cmd + ["diff", "--name-only", "--diff-filter=U"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    conflicts = [
+        line.strip()
+        for line in (conflicts_result.stdout or "").splitlines()
+        if line.strip()
+    ]
+
+    abort = subprocess.run(
+        git_cmd + ["merge", "--abort"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if abort.returncode != 0:
+        subprocess.run(
+            git_cmd + ["reset", "--merge"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    from datetime import datetime
+    from hermes_constants import get_hermes_home
+
+    handoff_dir = get_hermes_home() / "tmp" / "update-conflict-handoffs"
+    handoff_dir.mkdir(parents=True, exist_ok=True)
+    handoff_path = handoff_dir / f"patched-main-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+    conflict_lines = "\n".join(f"- `{path}`" for path in conflicts) or "- (conflict list unavailable)"
+    error_lines = (merge_stderr or "").strip().splitlines()
+    error_summary = error_lines[0] if error_lines else "git merge reported conflicts"
+    prompt = f"""# Resolve Hermes patched-main update conflicts
+
+Work in `{cwd}`. The live merge was aborted cleanly, so the active Hermes install is still on its pre-update `patched-main` commit.
+
+The attempted `git merge --no-edit upstream/main` failed with:
+
+`{error_summary}`
+
+Conflicted paths observed:
+
+{conflict_lines}
+
+## Mission
+
+Integrate current `upstream/main` into `patched-main` while preserving Kamell's intentional native Hermes behavior and preferring upstream whenever it is equivalent or clearly better.
+
+1. Inspect `git status --short --branch`, remotes, ancestry, and `git log --no-merges upstream/main..patched-main` before editing.
+2. Search prior Hermes sessions for the intent behind each relevant fork commit. Ask Kamell concise clarification questions when the correct behavior is genuinely ambiguous.
+3. Create a temporary worktree and branch from `patched-main`. Re-run `git merge --no-edit upstream/main` there. Never resolve in the live checkout.
+4. Resolve within the merge commit. Do not reset/rebase away shared history, replace the branch with upstream, or take one side wholesale across unrelated files.
+5. Keep upstream architecture and new features where they supersede fork code. Adapt still-needed custom behavior to the current architecture and preserve focused tests.
+6. Run syntax checks plus focused tests for every conflicted subsystem, then broader updater/delegation/CLI tests when those surfaces are involved.
+7. Verify no unmerged paths remain, `upstream/main` is an ancestor of the candidate, and the custom feature commits/behavior still exist.
+8. Present the resolved choices and test evidence before pushing. After approval, push `HEAD:patched-main`, then fast-forward the live checkout.
+
+Do not run `hermes update` recursively from the resolver session.
+"""
+    handoff_path.write_text(prompt, encoding="utf-8")
+    return handoff_path
+
+
 def _sync_patched_main_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
     """Maintainer-only: refresh origin/main and merge upstream into patched-main."""
     if not _has_upstream_remote(git_cmd, cwd):
@@ -6866,18 +6939,16 @@ def _sync_patched_main_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
         print("  x Could not merge upstream/main into patched-main.")
         if merge.stderr.strip():
             print(f"    {merge.stderr.strip().splitlines()[0]}")
-        try:
-            from hermes_cli.update_conflict_resolver import run_patched_main_conflict_resolver
-
-            if run_patched_main_conflict_resolver(
-                git_cmd,
-                cwd,
-                merge_stderr=merge.stderr or "",
-            ):
-                return True
-        except Exception as exc:
-            print(f"    Auto-resolver failed before it could run cleanly: {exc}")
-        print("    Resolve conflicts manually, then push origin patched-main.")
+        handoff_path = _write_patched_main_conflict_handoff(
+            git_cmd,
+            cwd,
+            merge_stderr=merge.stderr or "",
+        )
+        print("  ✓ Aborted the live merge; the active install remains clean")
+        print("  → Start a fresh Hermes session with this conflict-resolution prompt:")
+        print(f"    {handoff_path}")
+        print()
+        print(handoff_path.read_text(encoding="utf-8"))
         sys.exit(1)
 
     after = subprocess.run(

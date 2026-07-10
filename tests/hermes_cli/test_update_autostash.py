@@ -645,6 +645,38 @@ def test_cmd_update_preserves_patched_main_branch(monkeypatch, tmp_path, capsys)
     assert "Staying on patched-main" in out
 
 
+def test_patched_main_conflict_writes_handoff_and_aborts_live_merge(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "diff", "--name-only", "--diff-filter=U"]:
+            return SimpleNamespace(stdout="cli.py\ngateway/run.py\n", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--abort"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    handoff = hermes_main._write_patched_main_conflict_handoff(
+        ["git"],
+        tmp_path / "repo",
+        merge_stderr="CONFLICT (content): Merge conflict in cli.py",
+    )
+
+    assert calls[-1] == ["git", "merge", "--abort"]
+    assert handoff.is_file()
+    prompt = handoff.read_text(encoding="utf-8")
+    assert "`cli.py`" in prompt
+    assert "`gateway/run.py`" in prompt
+    assert "Search prior Hermes sessions" in prompt
+    assert "Ask Kamell" in prompt
+    assert "temporary worktree" in prompt
+    assert "Do not reset/rebase away shared history" in prompt
+    assert "Do not run `hermes update` recursively" in prompt
+
+
 def test_cmd_update_patched_main_maintainer_syncs_upstream_and_pushes(monkeypatch, tmp_path, capsys):
     """Maintainer mode refreshes fork main and patched-main before consumers pull."""
     _setup_update_mocks(monkeypatch, tmp_path)

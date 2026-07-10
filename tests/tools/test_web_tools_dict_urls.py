@@ -94,3 +94,17 @@ async def test_web_extract_reports_invalid_items_without_dispatching_them(extrac
         "Invalid URL item at index 3: expected a URL string or an object "
         "with a string 'url' or 'href' field",
     ]
+
+
+def test_web_extract_registry_dispatch_accepts_search_result_objects(
+    extract_provider,
+):
+    """The model-facing registry path preserves object URLs through dispatch."""
+    raw = web_tools.registry.dispatch("web_extract", {
+        "urls": [{"url": "https://example.net/from-registry", "title": "R"}],
+    })
+    assert isinstance(raw, str)
+    result = json.loads(raw)
+
+    assert extract_provider.received_urls == ["https://example.net/from-registry"]
+    assert result["results"][0]["url"] == "https://example.net/from-registry"

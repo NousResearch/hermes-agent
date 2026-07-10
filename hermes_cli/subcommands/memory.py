@@ -159,4 +159,26 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     _project_set.add_argument("--by", required=True, dest="updated_by", help="Who curated (human authority)")
     _project_set.add_argument("--last-verified", dest="last_verified", default="", help="Informational only")
     _project_set.add_argument("--verified-by", dest="verified_by", default="", help="Informational only")
+    # Phase 7: `hermes memory remember` — human-curated L1 memory (propose/accept).
+    # Additive; reuses MemoryAPI. Hermes drafts PROPOSED notes; a human accept
+    # (--by) makes them established. Curated identity files are never touched.
+    _remember_parser = memory_sub.add_parser(
+        "remember",
+        help="Curated L1 memory (propose / accept / list)",
+    )
+    _remember_sub = _remember_parser.add_subparsers(dest="remember_command")
+    _remember_draft = _remember_sub.add_parser(
+        "draft", help="Create a PROPOSED memory (non-authoritative suggestion)"
+    )
+    _remember_draft.add_argument("content", help="The memory text to record")
+    _remember_draft.add_argument("--topic", default="", help="Topic slug for the file name")
+    _remember_draft.add_argument("--proposed-by", dest="proposed_by", default="hermes")
+    _remember_accept = _remember_sub.add_parser(
+        "accept", help="Approve a PROPOSED memory — requires --by (human authority)"
+    )
+    _remember_accept.add_argument("remember_id", help="Global id, e.g. remember/<slug>")
+    _remember_accept.add_argument("--by", required=True, dest="approved_by", help="Who approved (human authority)")
+    _remember_list = _remember_sub.add_parser("list", help="List L1 memories")
+    _remember_list.add_argument("--status", default=None, choices=["proposed", "accepted"])
+    _remember_list.add_argument("--json", dest="json_output", action="store_true")
     memory_parser.set_defaults(func=cmd_memory)

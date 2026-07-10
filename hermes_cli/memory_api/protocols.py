@@ -174,6 +174,34 @@ class DecisionRecord:
     approved_at: str = ""          # ISO timestamp of accept()
 
 
+@dataclass
+class RememberRecord:
+    """A human-curated L1 memory (Phase 7 / Intent.REMEMBER).
+
+    Authority model (approved option B): Hermes MAY draft a PROPOSED memory
+    (non-authoritative suggestion artifact) — it is written to a staging
+    markdown file and is NEVER surfaced as established memory until a human
+    approves it (status -> accepted). The curated identity files
+    (MEMORY.md / USER.md / SOUL.md / IDENTITY.md) are never touched by a
+    draft; an accepted record is kept in its own accepted/ store, not merged
+    into the curated files.
+
+    Full provenance (§17.5 parallel): who drafted, who approved, and when.
+    """
+
+    id: str                       # global id, e.g. 'remember/<slug>'
+    slug: str                     # filesystem slug (topic-derived)
+    content: str                  # the markdown body / note
+    status: str = "proposed"      # proposed | accepted
+    layer: str = "L1"
+    topic: str = ""
+    source: str = ""              # absolute path to the markdown file
+    proposed_by: str = ""         # who drafted (hermes | joe)
+    created_at: str = ""          # ISO timestamp of draft
+    approved_by: str = ""         # set on accept()
+    approved_at: str = ""         # ISO timestamp of accept()
+
+
 class CapabilityStatus(str, Enum):
     """Lifecycle state of a provider/capability, for graceful degradation."""
 

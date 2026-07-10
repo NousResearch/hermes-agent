@@ -12691,6 +12691,8 @@ def cmd_memory(args):
         _cmd_memory_decision(args)
     elif sub == "project":
         _cmd_memory_project(args)
+    elif sub == "remember":
+        _cmd_memory_remember(args)
     elif sub == "status":
         _cmd_memory_status(args)
     else:
@@ -12953,6 +12955,62 @@ def _cmd_memory_project(args):
         return
 
     print("  Unknown project subcommand.\n")
+
+
+def _cmd_memory_remember(args):
+    """Handle ``hermes memory remember [draft|accept|list]`` (Layer 1).
+
+    Hermes drafts PROPOSED memories; only a human ``accept --by <you>`` makes
+    them established. The curated identity files (MEMORY.md / USER.md) are
+    never touched. All writes require explicit human action.
+    """
+    from hermes_cli.memory_api import MemoryAPI
+
+    api = MemoryAPI()
+    cmd = getattr(args, "remember_command", None)
+
+    if cmd == "draft":
+        rec = api.draft_remember(
+            args.content,
+            topic=getattr(args, "topic", ""),
+            proposed_by=getattr(args, "proposed_by", "hermes"),
+        )
+        print(f"  • Drafted {rec.id} (status={rec.status}, proposed_by={rec.proposed_by})")
+        print(f"    {rec.source}")
+        print("    Not authoritative until accepted: hermes memory remember accept "
+              f"{rec.id} --by <you>\n")
+        return
+
+    if cmd == "accept":
+        rec = api.accept_remember(args.remember_id, approved_by=args.approved_by)
+        print(f"  ✓ Accepted {rec.id} (status={rec.status}, by={rec.approved_by})")
+        print(f"    {rec.source}\n")
+        return
+
+    if cmd in (None, "list"):
+        status = getattr(args, "status", None)
+        recs = api.list_remember(status=status)
+        if getattr(args, "json_output", False):
+            import json as _json
+
+            print(_json.dumps(
+                [r.__dict__ if hasattr(r, "__dict__") else r for r in recs],
+                indent=2, default=str,
+            ))
+            return
+        if not recs:
+            print("  No L1 memories.\n")
+            return
+        print(f"  {len(recs)} L1 memory(ies):\n")
+        for r in recs:
+            print(f"  ◆ {r.id}  [{r.status}]")
+            print(f"    {r.content}")
+            if r.approved_by:
+                print(f"    approved_by={r.approved_by} @ {r.approved_at}")
+            print()
+        return
+
+    print("  Unknown remember subcommand.\n")
 
 
 def _slug_safe(project: str) -> str:

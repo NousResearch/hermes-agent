@@ -148,6 +148,12 @@ class MemoryRouter:
     def remember(self, content: str, *, layer: str, **meta: Any) -> RouteResult:
         return self.route(Intent.REMEMBER, "remember", content=content, layer=layer, **meta)
 
+    def draft_remember(self, content: str, *, topic: str = "", proposed_by: str = "hermes", **meta: Any) -> RouteResult:
+        return self.route(Intent.REMEMBER, "draft", content=content, topic=topic, proposed_by=proposed_by, **meta)
+
+    def accept_remember(self, id: str, *, approved_by: str, **meta: Any) -> RouteResult:
+        return self.route(Intent.REMEMBER, "accept", id=id, approved_by=approved_by, **meta)
+
     def capability_status(self) -> dict[str, str]:
         """Snapshot of every registered capability's readiness (graceful degrad.)."""
         return {c.name: ("available" if c.available else "unavailable") for c in self.registry.list()}

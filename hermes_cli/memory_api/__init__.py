@@ -40,11 +40,13 @@ from .protocols import (
     MemoryResult,
     NextAction,
     ProjectState,
+    RememberRecord,
     SearchResultLike,
 )
 from .providers import IndexMemoryProvider
 from .adr import AdrProvider
 from .project import ProjectProvider
+from .remember import RememberProvider
 
 __all__ = [
     "MemoryAPI",

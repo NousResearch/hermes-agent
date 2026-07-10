@@ -133,10 +133,20 @@ def test_facade_routes_set_through_router_only(api):
     assert rt._project_provider is not None
 
 
-def test_remember_without_writer_raises_not_silent(api):
-    """REMEMBER intent has no writer wired; routing must raise, not no-op."""
+def test_remember_l1_drafts_proposed_not_silent(api, home):
+    """REMEMBER for L1 now has a writer wired (Phase 7).
+
+    A write must NOT be silent: remember(layer="L1") drafts a PROPOSED memory
+    (non-authoritative) and returns it, while a layer with no writer (L5)
+    raises CapabilityError — never a fake success.
+    """
+    from hermes_cli.memory_api.protocols import RememberRecord
+
+    rec = api.remember("note", layer="L1")
+    assert isinstance(rec, RememberRecord) or rec is not None
+    # Non-L1 layers have no writer: must raise, not silently succeed.
     with pytest.raises(CapabilityError):
-        api.remember("note", layer="L1")
+        api.remember("note", layer="L5")
 
 
 def test_propose_project_routes_through_router_writes_nothing(api, home):

@@ -33,9 +33,11 @@ from hermes_cli.memory_api.protocols import (
     MemoryResult,
     ProjectState,
     NextAction,
+    RememberRecord,
 )
 from hermes_cli.memory_router.provenance import SearchResult
 from hermes_cli.memory_router.router import MemoryRouter
+from hermes_cli.memory_router.intents import Intent
 
 
 class MemoryAPI:
@@ -155,17 +157,29 @@ class MemoryAPI:
     def remember(self, content: str, *, layer: str, **meta: Any) -> MemoryResult:
         """Persist a memory. Routes through the Router's REMEMBER intent.
 
-        Today no L1 writer is wired, so the Router returns an unavailable
-        capability and this raises CapabilityError — never a silent no-op.
+        Only the L1 layer has a writable provider; a write to any other layer
+        raises CapabilityError — never a silent no-op. For L1, this creates a
+        PROPOSED (non-authoritative) memory; accept it via
+        :meth:`accept_remember` to make it established.
         """
+        if layer != "L1":
+            raise CapabilityError("remember", "no writable provider for this layer", layer=layer)
         res = self._router.remember(content, layer=layer, **meta)
         if not res.ok:
             raise CapabilityError("remember", "no writable provider for this layer", layer=layer)
         raw = res.results
         if isinstance(raw, list) and raw:
             raw = raw[0]
-        if hasattr(raw, "source_file"):
-            return MemoryResult.from_search_result(raw, provider="router", intent="remember")
+        if isinstance(raw, RememberRecord):
+            return MemoryResult(
+                source=raw.source,
+                provider="remember",
+                layer=raw.layer,
+                retrieval_method="draft",
+                content=raw.content,
+                intent="remember",
+                extra={"id": raw.id, "status": raw.status, "topic": raw.topic},
+            )
         raise CapabilityError("remember", "write returned no result", layer=layer)
 
     def project(self, project: Optional[str] = None) -> Optional[ProjectState]:
@@ -344,6 +358,66 @@ class MemoryAPI:
             if isinstance(r, DecisionRecord):
                 return r
         raise CapabilityError("accept_decision", "ADR accept returned no record", layer="L4", provider="adr")
+
+    # -- write operations (human-gated authority), all routed via Router ---  # noqa: E501
+    def draft_remember(
+        self,
+        content: str,
+        *,
+        topic: str = "",
+        layer: str = "L1",
+        proposed_by: str = "hermes",
+    ) -> "RememberRecord":
+        """Hermes-autonomous write: creates a PROPOSED L1 memory (non-authoritative).
+
+        Routed through the Router's REMEMBER intent (method="draft"). The
+        curated identity files are never touched; the draft is written to a
+        staging markdown file and is NOT surfaced as established memory until
+        a human calls :meth:`accept_remember`.
+        """
+        res = self._router.route(Intent.REMEMBER, "draft", content=content, topic=topic, proposed_by=proposed_by, layer=layer)
+        raw = res.results
+        if isinstance(raw, RememberRecord):
+            return raw
+        for r in raw or []:
+            if isinstance(r, RememberRecord):
+                return r
+        raise CapabilityError("draft_remember", "remember draft returned no record", layer="L1", provider="remember")
+
+    def accept_remember(self, id: str, *, approved_by: str) -> "RememberRecord":
+        """Human-gated authority transition. REQUIRES approved_by.
+
+        Flips a PROPOSED memory to accepted and relocates it to the accepted/
+        store. Routed through the Router's REMEMBER intent (method="accept").
+        """
+        res = self._router.route(Intent.REMEMBER, "accept", id=id, approved_by=approved_by, layer="L1")
+        raw = res.results
+        if isinstance(raw, RememberRecord):
+            return raw
+        for r in raw or []:
+            if isinstance(r, RememberRecord):
+                return r
+        raise CapabilityError("accept_remember", "remember accept returned no record", layer="L1", provider="remember")
+
+    def list_remember(self, *, status: Optional[str] = None) -> list["RememberRecord"]:
+        """List L1 memories, optionally filtered by status (proposed|accepted)."""
+        res = self._router.route(Intent.REMEMBER, "list", status=status, layer="L1")
+        raw = res.results
+        if isinstance(raw, list):
+            return [r for r in raw if isinstance(r, RememberRecord)]
+        return []
+
+    def remember_established(self) -> list["RememberRecord"]:
+        """Return ONLY accepted (human-approved) L1 memories — the trust boundary.
+
+        Proposed drafts are excluded by construction. This is what callers
+        should treat as established memory.
+        """
+        res = self._router.route(Intent.REMEMBER, "established", layer="L1")
+        raw = res.results
+        if isinstance(raw, list):
+            return [r for r in raw if isinstance(r, RememberRecord)]
+        return []
 
     # -- internals -------------------------------------------------------
     def _normalize(self, results: Iterable[Any], *, provider: str, intent: Optional[str]) -> list[MemoryResult]:

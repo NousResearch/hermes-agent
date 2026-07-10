@@ -7249,10 +7249,15 @@ class TelegramAdapter(BasePlatformAdapter):
         - the chat passes the ``allowed_chats`` whitelist (when set), or
           ``guest_mode`` is enabled and the bot is explicitly mentioned
         - the chat is explicitly allowlisted in ``free_response_chats``
-        - ``require_mention`` is disabled
         - the message replies to the bot
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
+
+        Group/supergroup messages without any of the above triggers are
+        always rejected regardless of the ``require_mention`` setting.
+        In Telegram groups, ``require_mention=False`` no longer bypasses
+        the mention/reply gate — unaddressed group chatter is
+        observation-only when the observe feature is enabled.
 
         When ``allowed_chats`` is non-empty, it remains a hard gate except for
         the narrow ``guest_mode`` bypass: group/supergroup messages that
@@ -7317,15 +7322,30 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         if chat_id_str in self._telegram_free_response_chats():
             return True
-        if not self._telegram_require_mention():
-            return True
+        # Group/supergroup messages always require an explicit trigger
+        # (bot @mention, reply-to-bot, or wake-word pattern) regardless of
+        # the ``require_mention`` setting.  In Telegram groups,
+        # ``require_mention=False`` is effectively superseded by this guard
+        # so that unaddressed group chatter cannot enter the private-gateway
+        # / model / memory pipeline.
         if self._is_reply_to_bot(message):
             return True
         # When guest_mode is True, _is_guest_mention already called
         # _message_mentions_bot above — skip the redundant second call.
         if not self._telegram_guest_mode() and self._message_mentions_bot(message):
             return True
-        return self._message_matches_mention_patterns(message)
+        matched_pattern = self._message_matches_mention_patterns(message)
+        if matched_pattern:
+            return True
+        logger.info(
+            "[%s] Telegram route decision: route=ignored reason=mention_required "
+            "chat_type=%s bot_mention=%s reply_to_bot=%s",
+            self.name,
+            str(getattr(getattr(message, "chat", None), "type", "unknown")),
+            self._message_mentions_bot(message),
+            self._is_reply_to_bot(message),
+        )
+        return False
 
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups.

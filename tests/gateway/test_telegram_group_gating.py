@@ -150,10 +150,21 @@ def _bot_command_entity(text, command):
     return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
 
 
-def test_group_messages_can_be_opened_via_config():
+def test_group_messages_require_explicit_trigger_even_when_mention_not_required():
+    """Even with ``require_mention=False``, group messages need an explicit
+    trigger (mention, reply-to-bot, wake-word, or free_response_chats).
+    Unaddressed group chatter is always observation-only."""
     adapter = _make_adapter(require_mention=False)
 
-    assert adapter._should_process_message(_group_message("hello everyone")) is True
+    # Unmentioned, unreplied message is still rejected.
+    assert adapter._should_process_message(_group_message("hello everyone")) is False
+    # Explicit @mention passes.
+    text = "hi @hermes_bot"
+    assert adapter._should_process_message(
+        _group_message(text, entities=[_mention_entity(text)])
+    ) is True
+    # Reply to bot passes.
+    assert adapter._should_process_message(_group_message("hello", reply_to_bot=True)) is True
 
 
 def test_unmentioned_group_messages_can_be_observed_without_dispatching():
@@ -465,9 +476,18 @@ def test_group_messages_can_require_direct_trigger_via_config():
         _group_message("/status", entities=[_bot_command_entity("/status", "/status")]),
         is_command=True,
     ) is False
-    # And commands still pass unconditionally when require_mention is disabled
+    # And commands require explicit mention even when require_mention is disabled.
+    # Bare ``/status`` without @botname is rejected (group gate always applies).
     adapter_no_mention = _make_adapter(require_mention=False)
-    assert adapter_no_mention._should_process_message(_group_message("/status"), is_command=True) is True
+    assert adapter_no_mention._should_process_message(_group_message("/status"), is_command=True) is False
+    # But ``/status@hermes_bot`` with a ``bot_command`` entity still passes.
+    assert adapter_no_mention._should_process_message(
+        _group_message(
+            "/status@hermes_bot",
+            entities=[_bot_command_entity("/status@hermes_bot", "/status@hermes_bot")],
+        ),
+        is_command=True,
+    ) is True
 
 
 def test_explicit_multi_bot_mentions_route_only_to_named_bots():
@@ -601,7 +621,7 @@ def test_ignored_threads_drop_group_messages_before_other_gates():
 def test_allowed_topics_drop_other_forum_topics_before_other_gates():
     adapter = _make_adapter(require_mention=False, allowed_chats=["-100"], allowed_topics=["8"])
 
-    assert adapter._should_process_message(_group_message("hello", chat_id=-100, thread_id=8)) is True
+    assert adapter._should_process_message(_group_message("hello @hermes_bot", chat_id=-100, thread_id=8, entities=[_mention_entity("hello @hermes_bot")])) is True
     assert adapter._should_process_message(_group_message("hello", chat_id=-100, thread_id=11)) is False
     assert adapter._should_process_message(
         _group_message("hi @hermes_bot", chat_id=-100, thread_id=11, entities=[_mention_entity("hi @hermes_bot")])
@@ -617,7 +637,7 @@ def test_allowed_topics_do_not_filter_dms():
 def test_allowed_topics_treat_missing_thread_as_general_topic():
     adapter = _make_adapter(require_mention=False, allowed_topics=["1"])
 
-    assert adapter._should_process_message(_group_message("hello", thread_id=None)) is True
+    assert adapter._should_process_message(_group_message("hello @hermes_bot", thread_id=None, entities=[_mention_entity("hello @hermes_bot")])) is True
     assert adapter._should_process_message(_group_message("hello", thread_id=8)) is False
 
 
@@ -662,15 +682,21 @@ def test_gating_ignores_non_forum_reply_anchor_thread_id():
     assert adapter._should_process_message(reply_anchor) is True
 
     # allowed_topics: reply anchor 55 normalizes to General ("1"), so a group
-    # that only allows topic "1" still processes the reply.
+    # that only allows topic "1" still processes the reply.  The message needs
+    # reply_to_bot to pass the mention gate (free_response_chats was removed).
     adapter2 = _make_adapter(require_mention=False, allowed_chats=["-200"], allowed_topics=["1"])
-    assert adapter2._should_process_message(reply_anchor) is True
+    reply_anchor_2 = _forum_message(
+        chat_id=-200, thread_id=55, is_topic_message=False, is_forum=False, chat_type="group"
+    )
+    reply_anchor_2.reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999), message_id=10, text="prev", caption=None)
+    assert adapter2._should_process_message(reply_anchor_2) is True
 
 
 def test_gating_forum_general_topic_normalizes_to_one():
     """Forum General-topic messages (thread_id=None) gate as topic "1"."""
     adapter = _make_adapter(require_mention=False, allowed_chats=["-100"], allowed_topics=["1"])
     general = _forum_message(chat_id=-100, thread_id=None, is_topic_message=False, is_forum=True)
+    general.reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999), message_id=10, text="prev", caption=None)
     assert adapter._should_process_message(general) is True
 
     adapter2 = _make_adapter(require_mention=False, allowed_chats=["-100"], allowed_topics=["8"])
@@ -704,7 +730,8 @@ def test_bot_self_messages_are_ignored_in_dm_and_group():
     adapter = _make_adapter(require_mention=False)
 
     # Control: a real user in the same group IS processed.
-    assert adapter._should_process_message(_group_message("hi", chat_id=-100)) is True
+    text = "hi @hermes_bot"
+    assert adapter._should_process_message(_group_message(text, chat_id=-100, entities=[_mention_entity(text)])) is True
 
     # The exact reported symptom: a bot-authored DM-topic watcher echo.
     self_dm = _group_message(
@@ -720,17 +747,22 @@ def test_bot_self_messages_are_ignored_in_dm_and_group():
     assert adapter._should_process_message(self_group) is False
 
 
-def test_other_bots_are_still_processed():
-    """A different bot's message must not be over-filtered.
+def test_other_bot_unmentioned_messages_are_rejected():
+    """A different bot's unmentioned message is rejected like any other.
 
-    Distinguishes the self-id guard from a blanket ``from_user.is_bot`` check,
-    which would incorrectly drop unrelated bots (weather, music, etc.) sharing
-    the same chat.
+    The self-id guard only drops the bot's own messages — unrelated bots
+    (weather, music, etc.) sharing the same chat are not over-filtered by
+    that guard, but they still must pass the mention gate.
     """
     adapter = _make_adapter(require_mention=False)
     other_bot = _group_message("weather update", chat_id=-100, from_user_id=555)
     other_bot.from_user = SimpleNamespace(id=555, is_bot=True)
-    assert adapter._should_process_message(other_bot) is True
+    # Unmentioned — rejected (mention gate applies to all senders).
+    assert adapter._should_process_message(other_bot) is False
+    # Mentioned — passes the mention gate (not filtered by self-id guard).
+    other_bot_mentioned = _group_message("weather @hermes_bot", chat_id=-100, from_user_id=555, entities=[_mention_entity("weather @hermes_bot")])
+    other_bot_mentioned.from_user = SimpleNamespace(id=555, is_bot=True)
+    assert adapter._should_process_message(other_bot_mentioned) is True
 
 
 def test_self_message_guard_skips_observe_path():
@@ -749,7 +781,7 @@ def test_missing_from_user_does_not_crash():
     adapter = _make_adapter(require_mention=False)
     anon = _group_message("channel post", chat_id=-100)
     anon.from_user = None
-    assert adapter._should_process_message(anon) is True
+    assert adapter._should_process_message(anon) is False  # no crash; no from_user → no mention
 
 
 def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
@@ -884,7 +916,8 @@ def test_dm_allow_from_is_enforced_by_gateway_authorization_not_trigger_gate():
 def test_group_allow_from_is_enforced_by_gateway_authorization_not_trigger_gate():
     adapter = _make_adapter(group_allow_from=["111"])
 
-    assert adapter._should_process_message(_group_message("hello", from_user_id=333)) is True
+    text = "hello @hermes_bot"
+    assert adapter._should_process_message(_group_message(text, from_user_id=333, entities=[_mention_entity(text)])) is True
 
 
 def test_top_level_require_mention_bridges_to_telegram(monkeypatch, tmp_path):
@@ -1070,9 +1103,11 @@ def test_triggered_location_message_uses_shared_session_in_observe_mode():
             observe_unmentioned_group_messages=True,
         )
         adapter.handle_message = AsyncMock()
+        loc_msg = _group_location_message()
+        loc_msg.reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999), message_id=10, text="prev", caption=None)
         update = SimpleNamespace(
             update_id=2002,
-            message=_group_location_message(),
+            message=loc_msg,
             effective_message=None,
         )
 
@@ -1125,9 +1160,11 @@ def test_triggered_voice_message_uses_shared_session_in_observe_mode():
             observe_unmentioned_group_messages=True,
         )
         adapter.handle_message = AsyncMock()
+        voice_msg = _group_voice_message(caption="check this audio")
+        voice_msg.reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999), message_id=10, text="prev", caption=None)
         update = SimpleNamespace(
             update_id=3002,
-            message=_group_voice_message(caption="check this audio"),
+            message=voice_msg,
             effective_message=None,
         )
 
@@ -1147,7 +1184,10 @@ def test_triggered_voice_message_uses_shared_session_in_observe_mode():
 
 def test_text_reply_to_photo_caches_referenced_media(monkeypatch, tmp_path):
     async def _run():
-        adapter = _make_adapter(require_mention=False)
+        # free_response_chats bypasses the mention gate without triggering the
+        # group-QA handler (which intercepts mention/reply messages before the
+        # normal text path).  This keeps the test focused on photo caching.
+        adapter = _make_adapter(free_response_chats=["-100"])
         adapter.handle_message = AsyncMock()
         cached_path = tmp_path / "reply_photo.png"
         monkeypatch.setattr(
@@ -1345,3 +1385,116 @@ def test_unmentioned_unsupported_document_observed_and_cached(monkeypatch):
         assert "program.exe" in message["content"]
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Regression: trusted group routing boundary (bug fix)
+# ---------------------------------------------------------------------------
+
+def test_mention_required_ignored_unmentioned_supergroup():
+    """A. Allowed supergroup, no mention, no reply → ignored.
+
+    The message must NOT reach private_gateway, model, memory, tool,
+    send, or session activity.
+    """
+    adapter = _make_adapter(
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+    )
+    msg = _group_message("just chatting in the group", chat_id=-100)
+    assert adapter._should_process_message(msg) is False
+
+
+def test_mention_required_bot_mention_routes_to_private_gateway():
+    """B. Allowed supergroup with bot @mention → accepted."""
+    adapter = _make_adapter(
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+    )
+    text = "hey @hermes_bot what's up"
+    msg = _group_message(text, chat_id=-100, entities=[_mention_entity(text)])
+    assert adapter._should_process_message(msg) is True
+
+
+def test_mention_required_reply_to_bot_routes_to_private_gateway():
+    """C. Allowed supergroup with reply-to-bot → accepted."""
+    adapter = _make_adapter(
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+    )
+    msg = _group_message("answering your question", chat_id=-100, reply_to_bot=True)
+    assert adapter._should_process_message(msg) is True
+
+
+def test_mention_required_private_dm_unchanged():
+    """D. Private DM → always accepted (no mention required)."""
+    adapter = _make_adapter()
+    msg = _dm_message("hello from DM")
+    assert adapter._should_process_message(msg) is True
+
+
+def test_mention_required_other_user_mention_ignored():
+    """E. Group message mentioning a different user (not the bot) → ignored."""
+    adapter = _make_adapter(
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+    )
+    text = "hey @someone_else check this out"
+    entities = [SimpleNamespace(type="mention", offset=4, length=13)]
+    msg = _group_message(text, chat_id=-100, entities=entities)
+    assert adapter._should_process_message(msg) is False
+
+
+def test_mention_required_unauthorized_user_unchanged():
+    """F. Unauthorized user → auth layer rejects (not trigger gate)."""
+    adapter = _make_adapter(
+        allow_from=["222"],
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+    )
+    msg = _group_message("hello", chat_id=-100, from_user_id=333)
+    # With a mention, trigger gate passes (auth layer is separate)
+    text = "hi @hermes_bot"
+    msg_mentioned = _group_message(text, chat_id=-100, from_user_id=333, entities=[_mention_entity(text)])
+    assert adapter._should_process_message(msg_mentioned) is True
+    # Without mention, trigger gate rejects
+    assert adapter._should_process_message(msg) is False
+
+
+def test_mention_required_unmentioned_then_mentioned():
+    """G. Unmentioned message does not affect subsequent mention."""
+    adapter = _make_adapter(
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+    )
+    # First: unmentioned → rejected
+    msg1 = _group_message("random chatter", chat_id=-100)
+    assert adapter._should_process_message(msg1) is False
+
+    # Second: mentioned → accepted
+    text2 = "hey @hermes_bot help me"
+    msg2 = _group_message(text2, chat_id=-100, entities=[_mention_entity(text2)])
+    assert adapter._should_process_message(msg2) is True
+
+
+def test_mention_required_log_contract(caplog):
+    """Log contract: unmentioned group message produces one terminal route log."""
+    import logging
+    adapter = _make_adapter(
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+    )
+    msg = _group_message("side conversation", chat_id=-100)
+
+    with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+        result = adapter._should_process_message(msg)
+
+    assert result is False
+    route_logs = [r for r in caplog.records if "Telegram route decision" in r.message]
+    assert len(route_logs) == 1
+    log = route_logs[0]
+    assert "route=ignored" in log.message
+    assert "reason=mention_required" in log.message
+    assert "chat_type=group" in log.message
+    assert "bot_mention=False" in log.message
+    assert "reply_to_bot=False" in log.message

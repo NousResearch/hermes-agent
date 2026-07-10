@@ -1,6 +1,9 @@
 """Regression tests for iteration-limit exit normalization (#61631)."""
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
 
 from agent.turn_finalizer import finalize_turn
 
@@ -75,7 +78,14 @@ class _LimitAgent:
         pass
 
 
-def _finalize(agent, *, final_response, exit_reason, api_call_count=60):
+def _finalize(
+    agent,
+    *,
+    final_response,
+    exit_reason,
+    api_call_count=60,
+    pending_continuation_response=None,
+):
     return finalize_turn(
         agent,
         final_response=final_response,
@@ -90,28 +100,39 @@ def _finalize(agent, *, final_response, exit_reason, api_call_count=60):
         original_user_message="task",
         _should_review_memory=False,
         _turn_exit_reason=exit_reason,
+        _pending_continuation_response=pending_continuation_response,
     )
 
 
-def test_stale_final_response_unknown_normalizes_for_cron_delivery(monkeypatch):
-    """verify-on-stop can leave a composed answer with exit reason ``unknown``."""
+def test_pending_verify_response_is_preserved_for_cron_delivery(monkeypatch):
+    """A held-back verification response survives last-turn exhaustion."""
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     agent = _LimitAgent()
     report = "complete cron report body"
 
-    result = _finalize(agent, final_response=report, exit_reason="unknown")
+    result = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="unknown",
+        pending_continuation_response=report,
+    )
 
     assert result["final_response"] == report
     assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
     assert agent._handle_max_iterations_called is False
 
 
-def test_stale_final_response_budget_exhausted_normalizes(monkeypatch):
+def test_pending_pre_verify_response_is_preserved_on_budget_exhaustion(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     agent = _LimitAgent()
     report = "budget exhausted but complete"
 
-    result = _finalize(agent, final_response=report, exit_reason="budget_exhausted")
+    result = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="budget_exhausted",
+        pending_continuation_response=report,
+    )
 
     assert result["final_response"] == report
     assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
@@ -132,3 +153,49 @@ def test_text_response_exit_not_rewritten_at_iteration_limit(monkeypatch):
 
     assert result["turn_exit_reason"] == exit_reason
     assert agent._handle_max_iterations_called is False
+
+
+@pytest.mark.parametrize(
+    "exit_reason",
+    [
+        "error_near_max_iterations(boom)",
+        "guardrail_halt",
+        "partial_stream_recovery",
+        "fallback_prior_turn_content",
+        "empty_response_exhausted",
+    ],
+)
+def test_unrelated_non_success_response_is_not_reclassified(monkeypatch, exit_reason):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+
+    result = _finalize(
+        agent,
+        final_response="diagnostic or partial content",
+        exit_reason=exit_reason,
+    )
+
+    assert result["turn_exit_reason"] == exit_reason
+    assert result["completed"] is False
+    assert agent._handle_max_iterations_called is False
+
+
+def test_pending_response_records_kanban_timeout(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db._record_task_failure", record)
+    agent = _LimitAgent()
+
+    result = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="unknown",
+        pending_continuation_response="composed report",
+    )
+
+    assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
+    record.assert_called_once()
+    assert record.call_args.kwargs["outcome"] == "timed_out"

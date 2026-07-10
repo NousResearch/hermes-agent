@@ -58,6 +58,11 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.model_routing import (
+    classify_task_context,
+    fallback_chain_signature,
+    get_route_override,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -3891,12 +3896,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
+        Uses the session's primary model/provider unless config.yaml
+        ``routing.<context>`` selects a task-specific provider/model. If
+        `/fast` is enabled and the model supports Priority Processing /
+        Anthropic fast mode, attach `request_overrides` so the API call is
+        marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.runtime_provider import resolve_runtime_provider
 
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
@@ -3908,6 +3915,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
+        config = _load_gateway_config()
+        task_context = classify_task_context(config, user_message)
+        route_override = get_route_override(config, task_context)
+        if route_override:
+            model = route_override.get("model") or model
+            provider = route_override.get("provider") or runtime["provider"]
+            if (
+                provider != runtime["provider"]
+                or route_override.get("model")
+                or route_override.get("base_url")
+                or route_override.get("api_key")
+            ):
+                resolved = resolve_runtime_provider(
+                    requested=provider,
+                    target_model=model or None,
+                    explicit_base_url=route_override.get("base_url"),
+                    explicit_api_key=route_override.get("api_key"),
+                )
+                runtime.update(
+                    {
+                        "api_key": resolved.get("api_key"),
+                        "base_url": resolved.get("base_url"),
+                        "provider": resolved.get("provider"),
+                        "api_mode": resolved.get("api_mode"),
+                        "command": resolved.get("command"),
+                        "args": list(resolved.get("args") or []),
+                        "credential_pool": resolved.get("credential_pool"),
+                    }
+                )
+        fallback_model = get_fallback_chain(config, task_context=task_context) or None
         route = {
             "model": model,
             "runtime": runtime,
@@ -3918,7 +3955,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                fallback_chain_signature(fallback_model),
             ),
+            "fallback_model": fallback_model,
         }
 
         service_tier = getattr(self, "_service_tier", None)
@@ -13361,9 +13400,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     session_db=getattr(self._session_db, "_db", self._session_db),
-                    # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
+                if turn_route.get("fallback_model"):
+                    self._apply_fallback_chain_to_agent(
+                        agent, turn_route["fallback_model"],
+                    )
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
@@ -18084,12 +18126,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
+            _cache_keys = dict(self._extract_cache_busting_config(user_config) or ())
+            _cache_keys["model_routing.fallback_chain"] = fallback_chain_signature(
+                turn_route.get("fallback_model")
+            )
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys=_cache_keys,
                 user_id=getattr(source, "user_id", None),
                 user_id_alt=getattr(source, "user_id_alt", None),
             )
@@ -18193,7 +18239,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # serialization (_running_agents) keeps this safe post-lock.
             if reused_cached_agent and agent is not None:
                 self._apply_fallback_chain_to_agent(
-                    agent, self._refresh_fallback_model(),
+                    agent,
+                    turn_route.get("fallback_model") or self._refresh_fallback_model(),
                 )
 
             # Lock released — now schedule cleanup of any cross-process-evicted
@@ -18248,9 +18295,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
                     session_db=getattr(self._session_db, "_db", self._session_db),
-                    # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
+                if turn_route.get("fallback_model"):
+                    self._apply_fallback_chain_to_agent(
+                        agent, turn_route["fallback_model"],
+                    )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         # Record the session_id the snapshot was taken for

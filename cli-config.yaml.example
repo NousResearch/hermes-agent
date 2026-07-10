@@ -165,6 +165,49 @@ model:
 #   # data_collection: "deny"
 
 # =============================================================================
+# Model Routing and Fallback Tiers (optional)
+# =============================================================================
+# Route simple chat and tool-heavy turns to different model/provider pairs.
+# Automatic chat/tool_use classification only turns on when both routing.chat
+# and routing.tool_use are configured. You can pin a context with
+# routing.context: "chat" or "tool_use".
+#
+# routing:
+#   chat:
+#     provider: "openrouter"
+#     model: "meta-llama/llama-3.3-8b-instruct"
+#     tier: "cheap"
+#   tool_use:
+#     provider: "anthropic"
+#     model: "claude-sonnet-4.6"
+#     tier: "mid"
+#
+# Select a tier for the whole profile/session without task routing:
+#
+# model:
+#   tier: "mid"
+#
+# fallback_tiers replace the top-level fallback_providers chain when the
+# selected route or model profile names a tier.
+#
+# fallback_tiers:
+#   cheap:
+#     - provider: "openrouter"
+#       model: "openai/gpt-5-nano"
+#     - provider: "anthropic"
+#       model: "claude-haiku-4.5"
+#   mid:
+#     - provider: "anthropic"
+#       model: "claude-sonnet-4.6"
+#     - provider: "openai-codex"
+#       model: "gpt-5"
+#   hard:
+#     - provider: "anthropic"
+#       model: "claude-opus-4.6"
+#     - provider: "openai-codex"
+#       model: "gpt-5"
+
+# =============================================================================
 # OpenRouter Response Caching (only applies when using OpenRouter)
 # =============================================================================
 # Cache identical API responses at the OpenRouter edge for free instant replays.

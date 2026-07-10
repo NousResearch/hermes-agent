@@ -174,12 +174,21 @@ class CLIAgentSetupMixin:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
-        Always uses the session's primary model/provider.  If the user has
-        toggled `/fast` on and the current model supports Priority
+        Uses the session's primary model/provider unless config.yaml
+        ``routing.<context>`` selects a task-specific provider/model. If the
+        user has toggled `/fast` on and the current model supports Priority
         Processing / Anthropic fast mode, attach `request_overrides` so the
         API call is marked accordingly.
         """
+        from cli import CLI_CONFIG
+        from hermes_cli.fallback_config import get_fallback_chain
+        from hermes_cli.model_routing import (
+            classify_task_context,
+            fallback_chain_signature,
+            get_route_override,
+        )
         from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.runtime_provider import resolve_runtime_provider
 
         runtime = {
             "api_key": self.api_key,
@@ -190,17 +199,54 @@ class CLIAgentSetupMixin:
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
         }
+        model = self.model
+        task_context = classify_task_context(CLI_CONFIG, user_message)
+        route_override = get_route_override(CLI_CONFIG, task_context)
+        if route_override:
+            model = route_override.get("model") or model
+            provider = route_override.get("provider") or runtime["provider"]
+            if (
+                provider != runtime["provider"]
+                or route_override.get("model")
+                or route_override.get("base_url")
+                or route_override.get("api_key")
+            ):
+                resolved = resolve_runtime_provider(
+                    requested=provider,
+                    target_model=model or None,
+                    explicit_base_url=route_override.get("base_url"),
+                    explicit_api_key=route_override.get("api_key"),
+                )
+                runtime.update(
+                    {
+                        "api_key": resolved.get("api_key"),
+                        "base_url": resolved.get("base_url"),
+                        "provider": resolved.get("provider"),
+                        "api_mode": resolved.get("api_mode"),
+                        "command": resolved.get("command"),
+                        "args": list(resolved.get("args") or []),
+                        "credential_pool": resolved.get("credential_pool"),
+                    }
+                )
+
+        fallback_model = get_fallback_chain(
+            CLI_CONFIG,
+            task_context=task_context,
+        ) or None
+        fallback_sig = fallback_chain_signature(fallback_model)
         route = {
-            "model": self.model,
+            "model": model,
             "runtime": runtime,
             "signature": (
-                self.model,
+                model,
                 runtime["provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                fallback_sig,
             ),
+            "fallback_model": fallback_model,
         }
 
         service_tier = getattr(self, "service_tier", None)
@@ -215,7 +261,7 @@ class CLIAgentSetupMixin:
         route["request_overrides"] = overrides
         return route
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None, fallback_model_override=None) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
@@ -224,6 +270,7 @@ class CLIAgentSetupMixin:
             bool: True if successful, False otherwise
         """
         from cli import AIAgent, ChatConsole, _DIM, _RST, _accent_hex, _cprint, _prepare_deferred_agent_startup, logger
+        from hermes_cli.model_routing import fallback_chain_signature
         if self.agent is not None:
             return True
 
@@ -374,7 +421,7 @@ class CLIAgentSetupMixin:
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),
 
-                fallback_model=self._fallback_model,
+                fallback_model=fallback_model_override if fallback_model_override is not None else self._fallback_model,
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
@@ -423,6 +470,9 @@ class CLIAgentSetupMixin:
                 runtime.get("api_mode"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
+                fallback_chain_signature(
+                    fallback_model_override if fallback_model_override is not None else self._fallback_model
+                ),
             )
 
             # Force-create DB row on /title intent, then apply title.

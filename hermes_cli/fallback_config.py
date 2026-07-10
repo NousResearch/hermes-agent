@@ -48,16 +48,71 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
-def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
+def _configured_tier(config: dict[str, Any], explicit_tier: str | None = None) -> str:
+    if explicit_tier:
+        return explicit_tier.strip()
+
+    model_cfg = config.get("model") or {}
+    if isinstance(model_cfg, dict):
+        tier = str(model_cfg.get("tier") or "").strip()
+        if tier:
+            return tier
+
+    agent_cfg = config.get("agent") or {}
+    if isinstance(agent_cfg, dict):
+        tier = str(agent_cfg.get("tier") or "").strip()
+        if tier:
+            return tier
+
+    return ""
+
+
+def _routing_entry(config: dict[str, Any], task_context: str | None) -> dict[str, Any]:
+    if not task_context:
+        return {}
+    routing = config.get("routing") or {}
+    if not isinstance(routing, dict):
+        return {}
+    entry = routing.get(task_context) or {}
+    return entry if isinstance(entry, dict) else {}
+
+
+def get_fallback_chain(
+    config: dict[str, Any] | None,
+    *,
+    tier: str | None = None,
+    task_context: str | None = None,
+) -> list[dict[str, Any]]:
     """Return the effective fallback chain merged across old and new config keys.
 
     ``fallback_providers`` remains the primary source of truth and keeps its
     order. Legacy ``fallback_model`` entries are appended afterwards unless
     they target the same provider/model/base_url route as an earlier entry.
+    When ``model.tier`` / ``agent.tier`` or an explicit ``tier`` is configured,
+    ``fallback_tiers.<tier>`` replaces the global chain. ``routing.<context>``
+    may also provide ``fallback_providers`` or ``tier`` for task-specific
+    routing.
     The returned list always contains fresh dict copies.
     """
 
     config = config or {}
+    route = _routing_entry(config, task_context)
+    route_chain = _iter_fallback_entries(
+        route.get("fallback_providers") or route.get("fallback_model")
+    )
+    if route_chain:
+        return route_chain
+
+    selected_tier = _configured_tier(
+        config,
+        explicit_tier=(tier or str(route.get("tier") or route.get("fallback_tier") or "")),
+    )
+    fallback_tiers = config.get("fallback_tiers") or {}
+    if selected_tier and isinstance(fallback_tiers, dict):
+        tier_chain = _iter_fallback_entries(fallback_tiers.get(selected_tier))
+        if tier_chain:
+            return tier_chain
+
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
 

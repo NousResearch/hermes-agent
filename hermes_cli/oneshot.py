@@ -306,6 +306,7 @@ def _run_agent(
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
+    from hermes_cli.model_routing import classify_task_context, get_route_override
     from hermes_cli.models import detect_provider_for_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
@@ -366,10 +367,18 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
+    task_context = classify_task_context(cfg, prompt)
+    route_override = get_route_override(cfg, task_context)
+    if route_override:
+        effective_model = route_override.get("model") or effective_model
+        effective_provider = route_override.get("provider") or effective_provider
+        explicit_base_url_from_alias = route_override.get("base_url") or explicit_base_url_from_alias
+
     runtime = resolve_runtime_provider(
         requested=effective_provider,
         target_model=effective_model or None,
         explicit_base_url=explicit_base_url_from_alias,
+        explicit_api_key=route_override.get("api_key") if route_override else None,
     )
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
@@ -382,7 +391,7 @@ def _run_agent(
     session_db = _create_session_db_for_oneshot()
     # Read the effective fallback chain from profile config so oneshot workers
     # honour the same merge semantics as interactive CLI and gateway sessions.
-    _fb = get_fallback_chain(cfg)
+    _fb = get_fallback_chain(cfg, task_context=task_context)
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),

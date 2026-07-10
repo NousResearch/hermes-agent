@@ -1821,6 +1821,12 @@ DEFAULT_CONFIG = {
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        # Auto-switch skin when the system color mode (dark/light) changes.
+        # When enabled, Hermes detects the terminal background color via
+        # OSC 11 and switches between skin_dark and skin_light automatically.
+        "skin_auto_switch": False,
+        "skin_dark": "default",   # Skin to use when system is in dark mode
+        "skin_light": "daylight", # Skin to use when system is in light mode
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent
         # responses, log lines, tool outputs, or slash-command descriptions.

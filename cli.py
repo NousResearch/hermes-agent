@@ -468,6 +468,9 @@ def load_cli_config() -> Dict[str, Any]:
             "persist_prompts": True,
 
             "skin": "default",
+            "skin_auto_switch": False,
+            "skin_dark": "default",
+            "skin_light": "daylight",
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
@@ -749,6 +752,13 @@ try:
     init_skin_from_config(CLI_CONFIG)
 except Exception:
     pass  # Skin engine is optional — default skin used if unavailable
+
+# Start skin auto-switch monitor if enabled (real-time dark/light detection)
+try:
+    from hermes_cli.skin_engine import start_skin_auto_switch_monitor
+    start_skin_auto_switch_monitor(CLI_CONFIG)
+except Exception:
+    pass
 
 # Initialize tool preview length from config
 try:
@@ -15164,6 +15174,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
                             self._check_config_mcp_changes()
+                            # Auto-switch skin when system dark/light mode changes
+                            try:
+                                from hermes_cli.skin_engine import maybe_auto_switch_skin
+                                if maybe_auto_switch_skin(self.config):
+                                    _ACCENT.reset()
+                                    self._apply_tui_skin_style()
+                            except Exception:
+                                pass
                             # Check for background process notifications (completions
                             # and watch pattern matches) while agent is idle.
                             try:

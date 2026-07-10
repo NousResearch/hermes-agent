@@ -803,8 +803,238 @@ def init_skin_from_config(config: dict) -> None:
 
 
 # =============================================================================
-# Convenience helpers for CLI modules
+# Auto-switch skin based on system color mode (dark/light)
 # =============================================================================
+
+_system_dark_mode: Optional[bool] = None  # Track last known system mode
+_skin_switch_event: Any = None  # threading.Event to signal main thread
+_skin_monitor_thread: Any = None  # Background monitor thread
+_skin_monitor_stop: Any = None  # threading.Event to stop monitor
+
+
+def _detect_system_dark_mode() -> bool:
+    """Detect whether the system/terminal is in dark mode.
+
+    Returns True for dark mode, False for light mode.
+    On macOS, uses `defaults read -g AppleInterfaceStyle` (authoritative).
+    Falls back to env vars on other platforms.
+    """
+    import os
+    import sys
+
+    # 1. macOS system appearance (authoritative, instant)
+    if sys.platform == "darwin":
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode == 0 and "Dark" in result.stdout:
+                return True
+            if result.returncode == 0:
+                return False
+        except Exception:
+            pass
+
+    # 2. COLORFGBG env var
+    cfgbg = (os.environ.get("COLORFGBG") or "").strip()
+    if cfgbg:
+        last = cfgbg.split(";")[-1] if ";" in cfgbg else cfgbg
+        if last.isdigit():
+            bg = int(last)
+            if bg in {7, 15}:
+                return False  # light
+            if 0 <= bg < 16:
+                return True   # dark
+
+    # 3. Theme hint env vars
+    theme = (os.environ.get("HERMES_TUI_THEME") or "").strip().lower()
+    if theme == "dark":
+        return True
+    if theme == "light":
+        return False
+
+    for var in ("HERMES_LIGHT", "HERMES_TUI_LIGHT"):
+        v = (os.environ.get(var) or "").strip().lower()
+        if v in ("1", "true", "on", "yes", "y"):
+            return False  # light
+        if v in ("0", "false", "off", "no", "n"):
+            return True   # dark
+
+    return False  # default to dark (matches Hermes legacy)
+
+
+def _do_skin_switch(config: dict) -> bool:
+    """Perform the actual skin switch if needed. Returns True if switched."""
+    display = config.get("display") or {}
+    if not isinstance(display, dict):
+        return False
+    if not display.get("skin_auto_switch", False):
+        return False
+
+    skin_dark = (display.get("skin_dark") or "default").strip()
+    skin_light = (display.get("skin_light") or "daylight").strip()
+
+    is_dark = _detect_system_dark_mode()
+    target_skin = skin_dark if is_dark else skin_light
+
+    global _system_dark_mode
+    if _system_dark_mode == is_dark and _active_skin_name == target_skin:
+        return False  # already correct
+
+    _system_dark_mode = is_dark
+    if _active_skin_name != target_skin:
+        set_active_skin(target_skin)
+        return True
+
+    return False
+
+
+def _macos_theme_observer_callback(notification) -> None:
+    """Called by NSDistributedNotificationCenter when macOS theme changes.
+
+    Runs on the notification center's thread. Signals the main thread
+    to perform the skin switch.
+    """
+    if _skin_switch_event is not None:
+        _skin_switch_event.set()
+
+
+def _skin_monitor_loop(config: dict) -> None:
+    """Background thread that monitors for dark/light mode changes.
+
+    On macOS: listens for AppleInterfaceThemeChangedNotification via
+    NSDistributedNotificationCenter (instant, zero-polling).
+
+    On other platforms: polls every 2 seconds as fallback.
+    """
+    import sys
+    stop = _skin_monitor_stop
+    if stop is None:
+        return
+
+    if sys.platform == "darwin":
+        try:
+            from Foundation import NSDistributedNotificationCenter
+            from AppKit import NSApplication
+
+            center = NSDistributedNotificationCenter.defaultCenter()
+
+            # Create observer object — must be a proper NSObject subclass
+            class ThemeObserver:
+                pass
+
+            observer = ThemeObserver.alloc().init()
+            # Use objc method to register
+            import objc
+            objc.classAddMethod(
+                ThemeObserver,
+                'themeChanged:',
+                _macos_theme_observer_callback,
+                b'v@:@'
+            )
+
+            center.addObserver_selector_name_object_(
+                observer,
+                'themeChanged:',
+                'AppleInterfaceThemeChangedNotification',
+                None
+            )
+
+            logger.debug("Skin monitor: listening for macOS theme notifications")
+
+            # Run loop to receive notifications
+            while not stop.is_set():
+                # Process notifications for up to 1 second
+                from Foundation import NSDate, NSRunLoop, NSDefaultRunLoopMode
+                loop = NSRunLoop.currentRunLoop()
+                date = NSDate.dateWithTimeIntervalSinceNow_(1.0)
+                loop.runUntilDate_(date)
+
+                # Check if there's a pending skin switch
+                if _skin_switch_event is not None and _skin_switch_event.is_set():
+                    _skin_switch_event.clear()
+                    if _do_skin_switch(config):
+                        logger.debug("Skin monitor: switched skin via notification")
+
+            center.removeObserver_(observer)
+            return
+        except Exception as e:
+            logger.debug("Skin monitor: macOS notification unavailable (%s), falling back to polling", e)
+
+    # Fallback: poll every 2 seconds
+    logger.debug("Skin monitor: using polling fallback (2s interval)")
+    while not stop.is_set():
+        if stop.wait(timeout=2.0):
+            break
+        if _do_skin_switch(config):
+            logger.debug("Skin monitor: switched skin via polling")
+
+
+def start_skin_auto_switch_monitor(config: dict) -> None:
+    """Start the background skin auto-switch monitor.
+
+    On macOS, listens for system theme change notifications (real-time).
+    On other platforms, polls every 2 seconds.
+
+    Safe to call multiple times — only starts once.
+    """
+    global _skin_monitor_thread, _skin_monitor_stop, _skin_switch_event
+
+    display = config.get("display") or {}
+    if not isinstance(display, dict):
+        return
+    if not display.get("skin_auto_switch", False):
+        return
+
+    # Already running?
+    if _skin_monitor_thread is not None and _skin_monitor_thread.is_alive():
+        return
+
+    import threading
+    _skin_switch_event = threading.Event()
+    _skin_monitor_stop = threading.Event()
+    _skin_monitor_thread = threading.Thread(
+        target=_skin_monitor_loop,
+        args=(config,),
+        daemon=True,
+        name="skin-auto-switch"
+    )
+    _skin_monitor_thread.start()
+
+    # Do initial detection
+    _do_skin_switch(config)
+    logger.debug("Skin auto-switch monitor started")
+
+
+def stop_skin_auto_switch_monitor() -> None:
+    """Stop the background skin auto-switch monitor."""
+    global _skin_monitor_thread, _skin_monitor_stop
+    if _skin_monitor_stop is not None:
+        _skin_monitor_stop.set()
+    if _skin_monitor_thread is not None:
+        _skin_monitor_thread.join(timeout=3.0)
+        _skin_monitor_thread = None
+
+
+def maybe_auto_switch_skin(config: dict) -> bool:
+    """Check system color mode and switch skin if auto-switch is enabled.
+
+    Called from the CLI idle loop. When the macOS notification monitor is
+    running, it only checks if a notification signaled a pending switch.
+    Without the monitor, it polls directly.
+
+    Returns True if the skin was switched, False otherwise.
+    """
+    # If the monitor thread is running, check if it signaled a switch
+    if _skin_monitor_thread is not None and _skin_monitor_thread.is_alive():
+        if _skin_switch_event is not None and _skin_switch_event.is_set():
+            _skin_switch_event.clear()
+            return _do_skin_switch(config)
+        return False
+
+    return _do_skin_switch(config)
 
 
 def get_active_prompt_symbol(fallback: str = "❯") -> str:

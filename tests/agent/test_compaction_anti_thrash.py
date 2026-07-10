@@ -14,8 +14,15 @@ Two defects made it dead code:
    next turn compacts again, forever.
 
 Together these made a mis-sized context window present as a hung CLI rather than a
-warning. Effectiveness is now scored against the goal: did the prompt get under the
-threshold?
+warning. Effectiveness is now scored against the goal -- did the prompt get under the
+threshold? -- and the check is made in ``should_compress()`` against the caller's own
+token count on both sides.
+
+That last detail matters. An analytic ``floor = current_tokens - rough_estimate(messages)``
+looks equivalent and is not: it silently absorbs the skew between the rough estimator and
+the provider's real tokenizer, reports it as incompressible overhead, and disables
+compaction on a perfectly healthy session. ``test_no_false_positive_under_tokenizer_skew``
+pins that.
 """
 import pytest
 
@@ -80,7 +87,8 @@ class TestFutilityGuard:
         """Incompressible floor >= threshold -> shrinking messages cannot help."""
         cc = _compressor(threshold_tokens=24_576)
         msgs = _messages(14)
-        # Full prompt is far above threshold and dominated by system + tools.
+        # Full prompt is far above threshold and dominated by system + tools,
+        # so it never drops no matter how much the message list shrinks.
         real_prompt_tokens = 33_564
 
         fired = 0
@@ -105,6 +113,43 @@ class TestFutilityGuard:
 
         assert len(out) < before, "a long transcript must still compact"
         assert cc._last_compression_savings_pct > 10
+        assert cc._ineffective_compression_count == 0
+
+    def test_no_false_positive_under_tokenizer_skew(self):
+        """The provider's real count exceeds the rough estimate; that is not a floor.
+
+        An analytic `floor = real_prompt - rough_estimate` misreads tokenizer skew
+        as incompressible overhead and disables compaction on a healthy session.
+        The check must compare the caller's own measure on both sides.
+        """
+        from agent.context_compressor import estimate_messages_tokens_rough
+
+        skew, floor = 1.6, 30_000
+        cc = _compressor(threshold_tokens=150_000)
+        msgs = _messages(160, size=2500)
+
+        real_prompt = floor + int(skew * estimate_messages_tokens_rough(msgs))
+        assert cc.should_compress(real_prompt)
+        msgs = cc.compress(msgs, current_tokens=real_prompt)
+        real_prompt = floor + int(skew * estimate_messages_tokens_rough(msgs))
+
+        assert real_prompt < cc.threshold_tokens, "compaction really did clear it"
+        assert not cc.should_compress(real_prompt)
+        assert cc._ineffective_compression_count == 0, (
+            "tokenizer skew must not be mistaken for an incompressible floor"
+        )
+
+    def test_counter_resets_once_the_prompt_fits_again(self):
+        """One failed pass must not permanently disable compaction."""
+        cc = _compressor(threshold_tokens=24_576)
+        msgs = _messages(14)
+
+        cc.should_compress(33_564)
+        cc.compress(msgs, current_tokens=33_564)
+        cc.should_compress(33_564)                 # still over -> 1 strike
+        assert cc._ineffective_compression_count == 1
+
+        cc.should_compress(1_000)                  # now under -> forgiven
         assert cc._ineffective_compression_count == 0
 
 

@@ -177,14 +177,14 @@ class TestBusyInputMode:
 
 
 class TestPromptToolkitTerminalCompatibility:
-    def test_lf_enter_binds_to_submit_handler_posix(self):
-        """Some thin PTYs deliver Enter as LF/c-j instead of CR/enter.
+    def test_lf_enter_binding_respects_multiline_shortcuts(self):
+        """Ctrl+J is reserved by default, with legacy LF-submit available as an opt-out.
 
-        On a bare local POSIX TTY (no SSH/WSL/WT/Ghostty) we keep c-j → submit so
-        Enter works on thin PTYs (docker exec, certain ssh configurations).
-        On Windows, WSL, SSH sessions, Windows Terminal, and Ghostty we leave c-j
-        unbound here so it can be used as the Ctrl+Enter newline keystroke
-        without conflicting with submit. See issue #22379.
+        Some thin POSIX PTYs deliver plain Enter as LF/c-j instead of CR/enter.
+        The default keeps c-j free for multiline input; disabling multiline
+        shortcuts restores c-j → submit on bare local POSIX terminals. Windows,
+        WSL, SSH sessions, Windows Terminal, and Ghostty always reserve c-j for
+        the Ctrl+Enter/Ctrl+J newline binding. See issue #22379.
         """
         import sys as _sys
         import os as _os
@@ -196,12 +196,23 @@ class TestPromptToolkitTerminalCompatibility:
         def submit_handler(event):
             return None
 
-        # Bare local POSIX (no SSH/WSL markers): both enter and c-j submit.
+        # Default: Enter submits while c-j stays free for the newline binding.
         with _patch.object(_sys, "platform", "linux"), \
              _patch.dict(_os.environ, {}, clear=True), \
              _patch("builtins.open", side_effect=OSError("no /proc")):
             kb = KeyBindings()
             _bind_prompt_submit_keys(kb, submit_handler)
+            bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+            assert bindings[("c-m",)] is submit_handler
+            assert ("c-j",) not in bindings
+
+            # Legacy opt-out: bare POSIX LF/c-j submits for thin PTYs.
+            kb = KeyBindings()
+            _bind_prompt_submit_keys(
+                kb,
+                submit_handler,
+                multiline_shortcuts_enabled=False,
+            )
             bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
             assert bindings[("c-m",)] is submit_handler
             assert bindings[("c-j",)] is submit_handler

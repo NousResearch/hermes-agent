@@ -1,19 +1,18 @@
 /**
- * ReasoningPicker — sets the main model's reasoning effort from the dashboard
- * Chat sidebar, mirroring the desktop app's composer effort radio.
+ * ReasoningPicker — sets the main model's reasoning effort and optional
+ * Codex reasoning mode from the dashboard Chat sidebar.
  *
  * The dashboard previously only showed a read-only "Reasoning" capability
  * badge (see ModelInfoCard) with no way to actually choose the effort level —
  * unlike the desktop app, which exposes a radio in its model menu. This closes
  * that parity gap.
  *
- * Storage: the effort persists to config.yaml at `agent.reasoning_effort`
- * (the same key the TUI's `/reasoning <level>` command and the desktop radio
- * write). We read the whole config and write it back — the established
- * single-key pattern on the dashboard (see ConfigPage) — so the value lands in
- * the config the agent boots a fresh chat from. As with the model picker, the
- * running chat session adopts the change on the next `/new` or page reload;
- * we surface that hint rather than forcing a reload here.
+ * Storage: effort persists at `agent.reasoning_effort`; Codex mode persists at
+ * `agent.reasoning_mode`. We read the whole config and write it back — the
+ * established single-key pattern on the dashboard (see ConfigPage) — so the
+ * value lands in the config a fresh chat boots from. The running chat adopts a
+ * change on the next `/new` or page reload; we surface that hint rather than
+ * forcing a reload here.
  *
  * Profile scoping: the sidebar passes the chat profile explicitly, so this
  * reads/writes the same config the chat PTY was launched from.
@@ -26,8 +25,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import {
   EFFORT_OPTIONS,
+  MODE_OPTIONS,
   normalizeEffort,
+  normalizeMode,
   VALID_EFFORTS,
+  VALID_MODES,
 } from "@/lib/reasoning-effort";
 
 interface ReasoningPickerProps {
@@ -38,18 +40,24 @@ interface ReasoningPickerProps {
   profile?: string;
   /** Bumped after the model picker saves, to re-read config in lockstep. */
   refreshKey?: number;
+  /** Show the Codex-only reasoning mode control (`standard`/`pro`). */
+  showMode?: boolean;
   /** Called after a successful change so the sidebar can show an "apply on
    *  /new or reload" notice, matching the model-switch UX. */
   onChanged?: (effort: string) => void;
+  onModeChanged?: (mode: string) => void;
 }
 
 export function ReasoningPicker({
   currentModel,
   profile,
   refreshKey = 0,
+  showMode = false,
   onChanged,
+  onModeChanged,
 }: ReasoningPickerProps) {
   const [effort, setEffort] = useState("medium");
+  const [mode, setMode] = useState("standard");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const lastFetchKeyRef = useRef("");
@@ -63,6 +71,7 @@ export function ReasoningPicker({
       .then((cfg) => {
         const agent = (cfg?.agent as Record<string, unknown> | undefined) ?? {};
         setEffort(normalizeEffort(agent.reasoning_effort));
+        setMode(normalizeMode(agent.reasoning_mode));
         setLoaded(true);
       })
       .catch(() => {
@@ -102,24 +111,80 @@ export function ReasoningPicker({
     [effort, onChanged, profile],
   );
 
+  const onModeSelect = useCallback(
+    (next: string) => {
+      if (!showMode || !VALID_MODES.has(next) || next === mode) return;
+      const prev = mode;
+      setMode(next); // optimistic
+      setSaving(true);
+      void api
+        .getConfig(profile)
+        .then((cfg) => {
+          const base = (cfg ?? {}) as Record<string, unknown>;
+          const agent =
+            base.agent && typeof base.agent === "object"
+              ? { ...(base.agent as Record<string, unknown>) }
+              : {};
+          agent.reasoning_mode = next;
+          return api.saveConfig({ ...base, agent }, profile);
+        })
+        .then(() => {
+          onModeChanged?.(next);
+        })
+        .catch(() => {
+          setMode(prev); // revert on failure
+        })
+        .finally(() => setSaving(false));
+    },
+    [mode, onModeChanged, profile, showMode],
+  );
+
   return (
-    <div className="flex items-center gap-2 px-3 py-2 text-xs">
-      <div className="flex items-center gap-1.5 text-text-tertiary">
-        <Brain className="h-3.5 w-3.5" />
-        <span className="text-display tracking-wider">reasoning</span>
+    <div
+      className={
+        showMode
+          ? "flex flex-col gap-2 px-3 py-2 text-xs"
+          : "flex items-center gap-2 px-3 py-2 text-xs"
+      }
+    >
+      <div className={showMode ? "flex items-center gap-2" : "contents"}>
+        <div className="flex items-center gap-1.5 text-text-tertiary">
+          <Brain className="h-3.5 w-3.5" />
+          <span className="text-display tracking-wider">reasoning</span>
+        </div>
+        <Select
+          className="ml-auto min-w-0"
+          disabled={!loaded || saving}
+          onValueChange={onSelect}
+          value={effort}
+        >
+          {EFFORT_OPTIONS.map((opt) => (
+            <SelectOption key={opt.value} value={opt.value}>
+              {opt.label}
+            </SelectOption>
+          ))}
+        </Select>
       </div>
-      <Select
-        className="ml-auto min-w-0"
-        disabled={!loaded || saving}
-        onValueChange={onSelect}
-        value={effort}
-      >
-        {EFFORT_OPTIONS.map((opt) => (
-          <SelectOption key={opt.value} value={opt.value}>
-            {opt.label}
-          </SelectOption>
-        ))}
-      </Select>
+
+      {showMode && (
+        <div className="flex items-center gap-2 pl-5">
+          <span className="text-display tracking-wider text-text-tertiary">
+            mode
+          </span>
+          <Select
+            className="ml-auto min-w-0"
+            disabled={!loaded || saving}
+            onValueChange={onModeSelect}
+            value={mode}
+          >
+            {MODE_OPTIONS.map((option) => (
+              <SelectOption key={option.value} value={option.value}>
+                {option.label}
+              </SelectOption>
+            ))}
+          </Select>
+        </div>
+      )}
     </div>
   );
 }

@@ -33,6 +33,7 @@ import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, buildWsUrl } from "@/lib/api";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
+import { isCodexProvider } from "@/lib/reasoning-effort";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -107,6 +108,7 @@ export function ChatSidebar({
   // this card stays scoped to the PTY even if the global dashboard switcher
   // changes while the chat is open.
   const [effectiveModel, setEffectiveModel] = useState("");
+  const [effectiveProvider, setEffectiveProvider] = useState("");
   // Whether the effective model supports reasoning effort — gates the
   // ReasoningPicker. Read from the same `/api/model/info` capabilities the
   // (currently unused) ModelInfoCard surfaces, so the dashboard exposes a
@@ -129,6 +131,7 @@ export function ChatSidebar({
       .getModelInfo(profile)
       .then((r) => {
         if (r?.model) setEffectiveModel(String(r.model));
+        setEffectiveProvider(String(r?.provider ?? ""));
         setSupportsReasoning(!!r?.capabilities?.supports_reasoning);
         // Bump so ReasoningPicker re-reads the saved effort for the new model.
         setModelRefreshKey((k) => k + 1);
@@ -348,9 +351,15 @@ export function ChatSidebar({
             currentModel={modelName}
             profile={profile}
             refreshKey={modelRefreshKey}
+            showMode={isCodexProvider(effectiveProvider)}
             onChanged={(effort) =>
               setModelNotice(
                 `Reasoning effort set to ${effort}. Run /new or refresh the page to apply it to this chat.`,
+              )
+            }
+            onModeChanged={(mode) =>
+              setModelNotice(
+                `Reasoning mode set to ${mode}. Run /new or refresh the page to apply it to this chat.`,
               )
             }
           />

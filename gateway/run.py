@@ -4789,11 +4789,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:
-        """Load reasoning effort from config.yaml.
+        """Load reasoning effort and Codex-only mode from config.yaml.
 
         Reads agent.reasoning_effort from config.yaml. Valid: "none",
         "minimal", "low", "medium", "high", "xhigh". Returns None to use
-        default (medium).
+        default (medium). agent.reasoning_mode ("standard"/"pro") is applied
+        only when model.provider is openai-codex.
         """
         from hermes_constants import parse_reasoning_effort
         cfg = _load_gateway_runtime_config()
@@ -4804,6 +4805,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         result = parse_reasoning_effort(effort)
         if effort and str(effort).strip() and result is None:
             logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
+
+        provider = str(cfg_get(cfg, "model", "provider", default="") or "").strip().lower()
+        mode = str(cfg_get(cfg, "agent", "reasoning_mode", default="") or "").strip().lower()
+        if provider == "openai-codex" and mode in {"standard", "pro"}:
+            result = dict(result) if isinstance(result, dict) else {"enabled": True}
+            result["mode"] = mode
         return result
 
     @staticmethod

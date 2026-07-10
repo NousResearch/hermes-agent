@@ -1,8 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   EFFORT_OPTIONS,
+  MODE_OPTIONS,
   VALID_EFFORTS,
+  VALID_MODES,
+  isCodexProvider,
   normalizeEffort,
+  normalizeMode,
 } from "./reasoning-effort";
 
 describe("normalizeEffort", () => {
@@ -44,5 +48,39 @@ describe("EFFORT_OPTIONS", () => {
     for (const level of ["none", "minimal", "low", "medium", "high", "xhigh"]) {
       expect(values.has(level)).toBe(true);
     }
+  });
+});
+
+describe("normalizeMode", () => {
+  it("accepts standard and pro case-insensitively", () => {
+    expect(normalizeMode("standard")).toBe("standard");
+    expect(normalizeMode(" PRO ")).toBe("pro");
+  });
+
+  it("falls back to standard for empty or unknown values", () => {
+    expect(normalizeMode("")).toBe("standard");
+    expect(normalizeMode(null)).toBe("standard");
+    expect(normalizeMode("turbo")).toBe("standard");
+  });
+});
+
+describe("MODE_OPTIONS", () => {
+  it("contains exactly the supported Codex modes", () => {
+    expect(MODE_OPTIONS.map((option) => option.value)).toEqual([
+      "standard",
+      "pro",
+    ]);
+    for (const option of MODE_OPTIONS) {
+      expect(VALID_MODES.has(option.value)).toBe(true);
+    }
+  });
+});
+
+describe("isCodexProvider", () => {
+  it("matches only the openai-codex provider", () => {
+    expect(isCodexProvider("openai-codex")).toBe(true);
+    expect(isCodexProvider(" OpenAI-Codex ")).toBe(true);
+    expect(isCodexProvider("openai")).toBe(false);
+    expect(isCodexProvider("")).toBe(false);
   });
 });

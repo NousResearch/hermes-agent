@@ -118,3 +118,30 @@ def test_gateway_runtime_loaders_expand_env_var_templates(
     loader = getattr(gateway_run.GatewayRunner, loader_name)
 
     assert loader() == expected
+
+
+@pytest.mark.parametrize(
+    ("provider", "mode", "expected"),
+    [
+        (
+            "openai-codex",
+            "pro",
+            {"enabled": True, "effort": "high", "mode": "pro"},
+        ),
+        ("openai", "pro", {"enabled": True, "effort": "high"}),
+        ("openai-codex", "turbo", {"enabled": True, "effort": "high"}),
+    ],
+)
+def test_gateway_reasoning_mode_is_validated_and_codex_scoped(
+    gateway_home, provider, mode, expected
+):
+    _write_config(
+        gateway_home,
+        "model:\n"
+        f"  provider: {provider}\n"
+        "agent:\n"
+        "  reasoning_effort: high\n"
+        f"  reasoning_mode: {mode}\n",
+    )
+
+    assert gateway_run.GatewayRunner._load_reasoning_config() == expected

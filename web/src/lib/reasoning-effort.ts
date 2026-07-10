@@ -34,3 +34,29 @@ export function normalizeEffort(raw: unknown): string {
   if (!value) return "medium";
   return VALID_EFFORTS.has(value) ? value : "medium";
 }
+
+export type ReasoningMode = "standard" | "pro";
+
+export interface ModeOption {
+  value: ReasoningMode;
+  label: string;
+}
+
+export const MODE_OPTIONS: ReadonlyArray<ModeOption> = [
+  { value: "standard", label: "Standard" },
+  { value: "pro", label: "Pro" },
+];
+
+export const VALID_MODES: ReadonlySet<string> = new Set(
+  MODE_OPTIONS.map((option) => option.value),
+);
+
+/** Normalize a raw `agent.reasoning_mode` value to the provider default. */
+export function normalizeMode(raw: unknown): ReasoningMode {
+  const value = String(raw ?? "").trim().toLowerCase();
+  return VALID_MODES.has(value) ? (value as ReasoningMode) : "standard";
+}
+
+export function isCodexProvider(provider: unknown): boolean {
+  return String(provider ?? "").trim().toLowerCase() === "openai-codex";
+}

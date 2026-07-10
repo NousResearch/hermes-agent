@@ -152,8 +152,9 @@ class ResponsesApiTransport(ProviderTransport):
         issuer_kind = self._resolve_issuer_kind(params)
         self._last_issuer_kind = issuer_kind
 
-        # Resolve reasoning effort
+        # Resolve reasoning effort and the Codex-only reasoning mode.
         reasoning_effort = "medium"
+        reasoning_mode = ""
         reasoning_enabled = True
         reasoning_config = params.get("reasoning_config")
         if reasoning_config and isinstance(reasoning_config, dict):
@@ -161,6 +162,9 @@ class ResponsesApiTransport(ProviderTransport):
                 reasoning_enabled = False
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
+            mode = str(reasoning_config.get("mode", "") or "").strip().lower()
+            if mode in {"standard", "pro"}:
+                reasoning_mode = mode
 
         _effort_clamp = {"minimal": "low"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
@@ -285,7 +289,10 @@ class ResponsesApiTransport(ProviderTransport):
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
             else:
-                kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                reasoning_payload = {"effort": reasoning_effort, "summary": "auto"}
+                if is_codex_backend and reasoning_mode:
+                    reasoning_payload["mode"] = reasoning_mode
+                kwargs["reasoning"] = reasoning_payload
                 kwargs["include"] = (
                     ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
                 )

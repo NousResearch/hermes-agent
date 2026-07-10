@@ -75,6 +75,36 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("reasoning", {}).get("effort") == "high"
 
+    @pytest.mark.parametrize("mode", ["standard", "pro"])
+    def test_reasoning_mode_is_sent_only_to_codex_backend(self, transport, mode):
+        messages = [{"role": "user", "content": "Hi"}]
+        reasoning_config = {"effort": "high", "mode": mode}
+
+        codex_kwargs = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=messages,
+            tools=[],
+            is_codex_backend=True,
+            reasoning_config=reasoning_config,
+        )
+        non_codex_kwargs = transport.build_kwargs(
+            model="gpt-5.6",
+            messages=messages,
+            tools=[],
+            is_codex_backend=False,
+            reasoning_config=reasoning_config,
+        )
+
+        assert codex_kwargs["reasoning"] == {
+            "effort": "high",
+            "summary": "auto",
+            "mode": mode,
+        }
+        assert non_codex_kwargs["reasoning"] == {
+            "effort": "high",
+            "summary": "auto",
+        }
+
     def test_reasoning_disabled(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

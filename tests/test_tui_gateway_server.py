@@ -17,6 +17,44 @@ from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
 
 
+@pytest.mark.parametrize(
+    ("provider", "mode", "expected"),
+    [
+        (
+            "openai-codex",
+            "standard",
+            {"enabled": True, "effort": "high", "mode": "standard"},
+        ),
+        ("openai", "pro", {"enabled": True, "effort": "high"}),
+        ("openai-codex", "turbo", {"enabled": True, "effort": "high"}),
+    ],
+)
+def test_tui_reasoning_mode_is_validated_and_codex_scoped(
+    tmp_path, provider, mode, expected
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n"
+        f"  provider: {provider}\n"
+        "agent:\n"
+        "  reasoning_effort: high\n"
+        f"  reasoning_mode: {mode}\n",
+        encoding="utf-8",
+    )
+    token = set_hermes_home_override(home)
+    try:
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        assert server._load_reasoning_config() == expected
+    finally:
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        reset_hermes_home_override(token)
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

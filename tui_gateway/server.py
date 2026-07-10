@@ -2531,12 +2531,22 @@ def _display_mouse_tracking(display: dict) -> str:
 def _load_reasoning_config() -> dict | None:
     from hermes_constants import parse_reasoning_effort
 
+    cfg = _load_cfg()
+    agent_cfg = cfg.get("agent") or {}
     # Pass the raw value through — ``or ""`` would coerce a YAML boolean
     # False (``reasoning_effort: false``/``off``/``no``) to "", silently
     # re-enabling thinking for users who explicitly turned it off.
-    return parse_reasoning_effort(
-        (_load_cfg().get("agent") or {}).get("reasoning_effort", "")
-    )
+    result = parse_reasoning_effort(agent_cfg.get("reasoning_effort", ""))
+
+    model_cfg = cfg.get("model") or {}
+    provider = ""
+    if isinstance(model_cfg, dict):
+        provider = str(model_cfg.get("provider", "") or "").strip().lower()
+    mode = str(agent_cfg.get("reasoning_mode", "") or "").strip().lower()
+    if provider == "openai-codex" and mode in {"standard", "pro"}:
+        result = dict(result) if isinstance(result, dict) else {"enabled": True}
+        result["mode"] = mode
+    return result
 
 
 def _load_service_tier() -> str | None:

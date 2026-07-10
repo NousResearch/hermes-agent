@@ -153,11 +153,24 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
         : new ResizeObserver(() => {
             scheduleMeasure()
           })
+    const positionObserver =
+      typeof MutationObserver === 'undefined'
+        ? null
+        : new MutationObserver(() => {
+            scheduleMeasure()
+          })
 
     if (measure()) {
       scheduleMeasure()
     }
     observer?.observe(slot)
+    for (let node: HTMLElement | null = slot; node; node = node.parentElement) {
+      positionObserver?.observe(node, {
+        attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'data-state'],
+        attributes: true,
+        childList: true
+      })
+    }
     window.addEventListener('resize', scheduleMeasure)
     window.addEventListener('scroll', scheduleMeasure, true)
     pauseController = createRendererLoopPauseController(handleVisibilityChange)
@@ -166,6 +179,7 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
       stopped = true
       cancelFrame()
       observer?.disconnect()
+      positionObserver?.disconnect()
       window.removeEventListener('resize', scheduleMeasure)
       window.removeEventListener('scroll', scheduleMeasure, true)
       pauseController?.dispose()

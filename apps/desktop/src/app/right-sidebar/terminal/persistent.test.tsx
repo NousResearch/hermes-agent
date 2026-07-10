@@ -13,6 +13,7 @@ vi.mock('./workspace', () => ({
 }))
 
 let resizeObserverCallback: ResizeObserverCallback | null = null
+let mutationObserverCallback: MutationCallback | null = null
 let root: Root | null = null
 let container: HTMLDivElement | null = null
 let windowStateCallback: ((payload: { isMinimized?: boolean; isVisible?: boolean }) => void) | null = null
@@ -125,6 +126,7 @@ describe('PersistentTerminal rect tracking', () => {
     setVisibility(false)
     installWindowStateBridge()
     resizeObserverCallback = null
+    mutationObserverCallback = null
     vi.stubGlobal(
       'ResizeObserver',
       class {
@@ -136,6 +138,18 @@ describe('PersistentTerminal rect tracking', () => {
         observe = vi.fn()
         unobserve = vi.fn()
       } as unknown as typeof ResizeObserver
+    )
+    vi.stubGlobal(
+      'MutationObserver',
+      class {
+        constructor(callback: MutationCallback) {
+          mutationObserverCallback = callback
+        }
+
+        disconnect = vi.fn()
+        observe = vi.fn()
+        takeRecords = vi.fn(() => [])
+      } as unknown as typeof MutationObserver
     )
   })
 
@@ -181,6 +195,43 @@ describe('PersistentTerminal rect tracking', () => {
     })
 
     expect(raf.request).toHaveBeenCalledTimes(3)
+    expect(raf.pending()).toBe(0)
+  })
+
+  it('remeasures when layout moves the slot without resizing it', () => {
+    const raf = installRaf()
+    let currentRect = rect(10, 20, 200, 100)
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => currentRect)
+
+    render(<Harness />)
+
+    act(() => {
+      raf.runNext()
+    })
+
+    const overlay = container!.lastElementChild as HTMLElement
+    expect(overlay.style.top).toBe('10px')
+    expect(overlay.style.left).toBe('20px')
+    expect(raf.pending()).toBe(0)
+
+    currentRect = rect(32, 48, 200, 100)
+    act(() => {
+      mutationObserverCallback?.([], {} as MutationObserver)
+    })
+
+    expect(raf.request).toHaveBeenCalledTimes(2)
+
+    act(() => {
+      raf.runNext()
+    })
+
+    expect(overlay.style.top).toBe('32px')
+    expect(overlay.style.left).toBe('48px')
+
+    act(() => {
+      raf.runNext()
+    })
+
     expect(raf.pending()).toBe(0)
   })
 

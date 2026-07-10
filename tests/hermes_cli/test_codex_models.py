@@ -173,11 +173,55 @@ def test_get_codex_model_capabilities_preserves_transport_metadata(tmp_path, mon
 
     assert capabilities.slug == "gpt-5.6-luna"
     assert capabilities.use_responses_lite is True
-    # Older cache files omit the explicit preference; Lite models retain the
-    # WebSocket-first behavior as a compatibility fallback.
-    assert capabilities.prefer_websockets is None
+    # The known-model fallback fills metadata omitted by an older cache.
+    assert capabilities.prefer_websockets is True
     assert capabilities.should_use_websocket is True
     assert capabilities.minimal_client_version == "0.144.0"
+
+
+def test_known_lite_capability_survives_legacy_cache_entry(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "models_cache.json").write_text(
+        json.dumps({"models": [{"slug": "gpt-5.6-luna"}]})
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    capabilities = get_codex_model_capabilities("gpt-5.6-luna")
+
+    assert capabilities.use_responses_lite is True
+    assert capabilities.prefer_websockets is True
+    assert capabilities.should_use_websocket is True
+    assert capabilities.minimal_client_version == "0.144.0"
+
+
+def test_complete_local_capabilities_skip_live_catalog_fetch(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "models_cache.json").write_text(
+        json.dumps({
+            "models": [
+                {
+                    "slug": "gpt-local-lite",
+                    "use_responses_lite": True,
+                    "prefer_websockets": False,
+                }
+            ]
+        })
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_model_entries_from_api",
+        lambda access_token: (_ for _ in ()).throw(AssertionError("unexpected fetch")),
+    )
+
+    capabilities = get_codex_model_capabilities(
+        "gpt-local-lite",
+        access_token="a.b.c",
+    )
+
+    assert capabilities.use_responses_lite is True
+    assert capabilities.should_use_websocket is False
 
 
 def test_get_codex_model_capabilities_prefers_live_transport_metadata(monkeypatch, tmp_path):

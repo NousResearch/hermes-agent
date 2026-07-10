@@ -191,6 +191,9 @@ def build_codex_websocket_request(
     # response.create frame.  Preserve caller metadata while adding the exact
     # marker used by the first-party transport.
     if use_responses_lite:
+        from agent.codex_runtime import _prepare_responses_lite_request_kwargs
+
+        payload = _prepare_responses_lite_request_kwargs(payload)
         client_metadata = payload.get("client_metadata")
         if isinstance(client_metadata, dict):
             client_metadata = dict(client_metadata)
@@ -198,15 +201,6 @@ def build_codex_websocket_request(
             client_metadata = {}
         client_metadata[CODEX_RESPONSES_LITE_CLIENT_METADATA_KEY] = "true"
         payload["client_metadata"] = client_metadata
-
-        # The Lite backend rejects the frame unless reasoning context is
-        # explicitly replayed across all turns. Keep any existing reasoning
-        # controls and add the required context selector.
-        reasoning = payload.get("reasoning")
-        reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
-        reasoning["context"] = "all_turns"
-        payload["reasoning"] = reasoning
-        payload["parallel_tool_calls"] = False
 
     # The upstream wire shape is a tagged ``response.create`` frame whose
     # remaining fields are the regular Responses request body.

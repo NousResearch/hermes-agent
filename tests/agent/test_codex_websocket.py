@@ -46,6 +46,7 @@ def test_build_websocket_request_matches_response_create_shape():
             "model": "gpt-5.6-luna",
             "instructions": "Be concise.",
             "input": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "function", "name": "terminal"}],
             "store": False,
             "parallel_tool_calls": True,
             "stream": True,
@@ -61,6 +62,20 @@ def test_build_websocket_request_matches_response_create_shape():
     assert request["model"] == "gpt-5.6-luna"
     assert request["reasoning"] == {"context": "all_turns"}
     assert request["parallel_tool_calls"] is False
+    assert "instructions" not in request
+    assert "tools" not in request
+    assert request["input"][:2] == [
+        {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [{"type": "function", "name": "terminal"}],
+        },
+        {
+            "type": "message",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "Be concise."}],
+        },
+    ]
     assert request["client_metadata"] == {
         "source": "test",
         CODEX_RESPONSES_LITE_CLIENT_METADATA_KEY: "true",
@@ -68,6 +83,25 @@ def test_build_websocket_request_matches_response_create_shape():
     assert "extra_headers" not in request
     assert "extra_body" not in request
     assert "timeout" not in request
+
+
+def test_build_websocket_request_does_not_duplicate_prepared_lite_input():
+    request = build_codex_websocket_request(
+        {
+            "model": "gpt-5.6-luna",
+            "instructions": "Be concise.",
+            "input": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "function", "name": "terminal"}],
+        },
+        use_responses_lite=True,
+    )
+
+    rebuilt = build_codex_websocket_request(request, use_responses_lite=True)
+
+    assert rebuilt["input"] == request["input"]
+    assert rebuilt["input"][0]["type"] == "additional_tools"
+    assert rebuilt["input"][1]["role"] == "developer"
+    assert rebuilt["input"][2] == {"role": "user", "content": "hello"}
 
 
 def test_build_websocket_headers_include_codex_transport_markers(monkeypatch):

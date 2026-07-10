@@ -78,13 +78,22 @@ class CodexModelCapabilities:
 # manually configured model usable during a transient catalog/cache miss.
 _KNOWN_CODEX_TRANSPORT_CAPABILITIES: Dict[str, CodexModelCapabilities] = {
     "gpt-5.6-sol": CodexModelCapabilities(
-        slug="gpt-5.6-sol", use_responses_lite=True, prefer_websockets=True,
+        slug="gpt-5.6-sol",
+        use_responses_lite=True,
+        prefer_websockets=True,
+        minimal_client_version="0.144.0",
     ),
     "gpt-5.6-terra": CodexModelCapabilities(
-        slug="gpt-5.6-terra", use_responses_lite=True, prefer_websockets=True,
+        slug="gpt-5.6-terra",
+        use_responses_lite=True,
+        prefer_websockets=True,
+        minimal_client_version="0.144.0",
     ),
     "gpt-5.6-luna": CodexModelCapabilities(
-        slug="gpt-5.6-luna", use_responses_lite=True, prefer_websockets=True,
+        slug="gpt-5.6-luna",
+        use_responses_lite=True,
+        prefer_websockets=True,
+        minimal_client_version="0.144.0",
     ),
 }
 
@@ -338,10 +347,10 @@ def get_codex_model_capabilities(
 ) -> CodexModelCapabilities:
     """Resolve transport capabilities for one Codex model.
 
-    The local Codex cache is the fast path.  When the caller has a JWT-like
-    OAuth token, refresh the catalog as well so newly introduced fields such as
-    ``prefer_websockets`` are not lost on older local cache formats.  Failure
-    to refresh is deliberately non-fatal: the HTTP path remains available.
+    The local Codex cache is the fast path.  When it lacks Lite capability
+    metadata and the caller has a JWT-like OAuth token, refresh the catalog so
+    newly introduced fields are available. Failure to refresh is deliberately
+    non-fatal: known-model metadata and the HTTP path remain available.
     """
     requested = str(model or "").strip()
     slug = requested.rsplit("/", 1)[-1]
@@ -357,7 +366,14 @@ def get_codex_model_capabilities(
     # Access tokens from the Codex OAuth flow are JWTs.  Avoid a live catalog
     # request for synthetic/test tokens and for ordinary API-key providers.
     live_entries: List[Dict[str, Any]] = []
-    if isinstance(access_token, str) and access_token.count(".") >= 2:
+    local_has_lite_metadata = isinstance(
+        (local_entry or {}).get("use_responses_lite"), bool
+    )
+    if (
+        not local_has_lite_metadata
+        and isinstance(access_token, str)
+        and access_token.count(".") >= 2
+    ):
         token_key = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
         now = time.monotonic()
         cached_live = _CODEX_LIVE_MODEL_ENTRY_CACHE.get(token_key)
@@ -371,13 +387,16 @@ def get_codex_model_capabilities(
         None,
     )
 
-    if local_entry is None and live_entry is None:
-        return _KNOWN_CODEX_TRANSPORT_CAPABILITIES.get(
-            slug,
-            CodexModelCapabilities(slug=slug),
-        )
-
-    entry = dict(local_entry or {})
+    known = _KNOWN_CODEX_TRANSPORT_CAPABILITIES.get(slug)
+    entry: Dict[str, Any] = {"slug": slug}
+    if known is not None:
+        entry.update({
+            "use_responses_lite": known.use_responses_lite,
+            "prefer_websockets": known.prefer_websockets,
+            "minimal_client_version": known.minimal_client_version,
+        })
+    if local_entry:
+        entry.update(local_entry)
     if live_entry:
         entry.update(live_entry)
     return _capabilities_from_entry(entry)

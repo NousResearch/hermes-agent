@@ -887,6 +887,96 @@ def _codex_model_capabilities(agent):
     return capabilities
 
 
+def _clone_responses_lite_input(value: Any) -> Any:
+    """Clone and normalize Responses input for Lite image constraints."""
+    if isinstance(value, dict):
+        is_input_image = value.get("type") == "input_image"
+        if is_input_image:
+            image_url = value.get("image_url")
+            if isinstance(image_url, str):
+                scheme = image_url.partition(":")[0].lower()
+                if scheme in {"http", "https"}:
+                    return {
+                        "type": "input_text",
+                        "text": (
+                            "image content omitted because remote image URLs "
+                            "are not supported"
+                        ),
+                    }
+                detail = value.get("detail")
+                if image_url[:5].lower() == "data:" and (
+                    isinstance(detail, str) and detail.lower() == "low"
+                ):
+                    return {
+                        "type": "input_text",
+                        "text": (
+                            "image content omitted because detail 'low' is not "
+                            "supported; use 'high', 'original', or 'auto'"
+                        ),
+                    }
+        return {
+            key: _clone_responses_lite_input(item)
+            for key, item in value.items()
+            if not (is_input_image and key == "detail")
+        }
+    if isinstance(value, list):
+        return [_clone_responses_lite_input(item) for item in value]
+    return value
+
+
+def _prepare_responses_lite_request_kwargs(api_kwargs: dict) -> dict:
+    """Return an idempotently Lite-shaped copy of Responses request kwargs."""
+    request_kwargs = dict(api_kwargs)
+
+    reasoning = request_kwargs.get("reasoning")
+    reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
+    reasoning["context"] = "all_turns"
+    request_kwargs["reasoning"] = reasoning
+    request_kwargs["parallel_tool_calls"] = False
+
+    raw_tools = request_kwargs.pop("tools", None)
+    tools = list(raw_tools) if isinstance(raw_tools, list) else []
+    input_items = request_kwargs.get("input")
+    if isinstance(input_items, list):
+        input_items = _clone_responses_lite_input(input_items)
+    elif isinstance(input_items, str):
+        input_items = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": input_items}],
+            }
+        ]
+    elif isinstance(input_items, dict):
+        input_items = [_clone_responses_lite_input(input_items)]
+    else:
+        input_items = []
+
+    already_prepared = bool(
+        input_items
+        and isinstance(input_items[0], dict)
+        and input_items[0].get("type") == "additional_tools"
+    )
+    instructions = request_kwargs.pop("instructions", None)
+    if not already_prepared:
+        prefix = [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": tools,
+            }
+        ]
+        if isinstance(instructions, str) and instructions:
+            prefix.append({
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": instructions}],
+            })
+        input_items = prefix + input_items
+    request_kwargs["input"] = input_items
+    return request_kwargs
+
+
 def _prepare_codex_request_kwargs(agent, api_kwargs: dict, capabilities) -> dict:
     """Add model-specific Lite routing without mutating conversation kwargs."""
     request_kwargs = dict(api_kwargs)
@@ -900,18 +990,11 @@ def _prepare_codex_request_kwargs(agent, api_kwargs: dict, capabilities) -> dict
         headers = request_kwargs.setdefault("extra_headers", {})
         headers["X-OpenAI-Internal-Codex-Responses-Lite"] = "true"
 
-        # Responses Lite requires the complete reasoning context to be sent
-        # on every turn. Preserve the caller's effort/summary values while
-        # forcing the Lite-specific context contract.
-        reasoning = request_kwargs.get("reasoning")
-        reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
-        reasoning["context"] = "all_turns"
-        request_kwargs["reasoning"] = reasoning
-
-        # Responses Lite does not support parallel tool calls. The normal
-        # Codex transport enables this whenever tools are present, so make
-        # the Lite override explicit at the final request boundary.
-        request_kwargs["parallel_tool_calls"] = False
+        # Lite carries both the static instructions and client-executed tool
+        # schemas as developer input items rather than top-level request
+        # fields. This matches the first-party Codex request contract and
+        # keeps the same payload shape on HTTP and WebSocket transports.
+        request_kwargs = _prepare_responses_lite_request_kwargs(request_kwargs)
     return request_kwargs
 
 

@@ -41,6 +41,22 @@ class TestCredentialFingerprint:
                 self.bot_token = "alt-token"
         assert GatewayRunner._adapter_credential_fingerprint(_AltAdapter()) is not None
 
+    def test_reads_photon_project_secret(self):
+        class _PhotonAdapter:
+            def __init__(self, secret):
+                self._project_secret = secret
+
+        fp1 = GatewayRunner._adapter_credential_fingerprint(
+            _PhotonAdapter("shared-project-secret")
+        )
+        fp2 = GatewayRunner._adapter_credential_fingerprint(
+            _PhotonAdapter("shared-project-secret")
+        )
+
+        assert fp1 == fp2
+        assert fp1 is not None
+        assert "shared-project-secret" not in fp1
+
     def test_reads_platform_config_token(self):
         class _Config:
             token = "config-token"
@@ -718,8 +734,10 @@ class TestSecondaryProfileConfigHandling:
         assert connect_calls == [(relay, Platform.RELAY)]
 
     @pytest.mark.asyncio
-    async def test_secondary_same_config_token_is_refused(self, monkeypatch):
-        """Adapters that keep their token on config still trip the mux guard."""
+    async def test_secondary_same_config_token_is_refused_without_disconnect(
+        self, monkeypatch
+    ):
+        """A never-connected duplicate must not disturb shared live state."""
         from gateway.config import GatewayConfig, Platform, PlatformConfig
 
         class _ConfigTokenAdapter:
@@ -762,7 +780,7 @@ class TestSecondaryProfileConfigHandling:
         )
 
         assert connected == 0
-        assert duplicate.disconnected is True
+        assert duplicate.disconnected is False
         assert runner._profile_adapters["reviewer"] == {}
 
     def test_port_binding_set_covers_known_listeners(self):

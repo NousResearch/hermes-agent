@@ -155,6 +155,29 @@ describe('external link helpers', () => {
     })
   })
 
+  it('treats not-found fetched titles as unusable', async () => {
+    const bridge = vi.fn().mockResolvedValue('Page not found - Kinkolino Forgejo')
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+    await expect(fetchLinkTitle('https://forgejo.home.example/homelab/homelab-ops/issues/101')).resolves.toBe('')
+    expect(bridge).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps explicit fallback labels ahead of fetched page titles', async () => {
+    const bridge = vi.fn().mockResolvedValue('Kinkolino Forgejo')
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+    const url = 'https://forgejo.home.example/homelab/homelab-ops/issues/101'
+
+    render(<PrettyLink fallbackLabel="FJ #101" href={url} />)
+
+    const link = screen.getByTitle(url)
+    await waitFor(() => {
+      expect(link.textContent).toContain('FJ #101')
+    })
+    expect(bridge).not.toHaveBeenCalled()
+  })
+
   it('normalizes scheme-less links before opening', () => {
     installDesktopBridge()
 

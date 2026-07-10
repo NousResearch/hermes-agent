@@ -495,27 +495,56 @@ class TestReadShape:
         db._conn.commit()
 
         calls = []
-        original_get_messages = db.get_messages
+        original_window = db.get_message_head_tail_window
 
-        def spy_get_messages(session_id, include_inactive=False, limit=None, offset=0):
-            calls.append((session_id, include_inactive, limit, offset))
-            return original_get_messages(
+        def spy_window(session_id, head=20, tail=10, include_inactive=False):
+            calls.append((session_id, head, tail, include_inactive))
+            return original_window(
                 session_id,
+                head=head,
+                tail=tail,
                 include_inactive=include_inactive,
-                limit=limit,
-                offset=offset,
             )
 
-        monkeypatch.setattr(db, "get_messages", spy_get_messages)
+        monkeypatch.setattr(db, "get_message_head_tail_window", spy_window)
 
         result = json.loads(session_search(session_id="s_big", db=db))
 
         assert result["message_count"] == 50
         assert result["truncated"] is True
-        assert calls == [
-            ("s_big", False, 20, 0),
-            ("s_big", False, 10, 40),
-        ]
+        assert [m["content"] for m in result["messages"][:3]] == ["m0", "m1", "m2"]
+        assert [m["content"] for m in result["messages"][-3:]] == ["m47", "m48", "m49"]
+        assert calls == [("s_big", 20, 10, False)]
+
+    def test_read_large_session_uses_one_active_snapshot(self, db, monkeypatch):
+        db.create_session("s_big", source="cli")
+        for i in range(50):
+            db.append_message("s_big", role="user" if i % 2 == 0 else "assistant", content=f"m{i}")
+        db._conn.commit()
+
+        original_count = db.message_count
+
+        def count_then_change_active_set(session_id, include_inactive=True):
+            total = original_count(session_id, include_inactive=include_inactive)
+            db._conn.execute(
+                "UPDATE messages SET active = 0 "
+                "WHERE session_id = ? AND id NOT IN ("
+                "  SELECT id FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 5"
+                ")",
+                (session_id, session_id),
+            )
+            db._conn.commit()
+            return total
+
+        monkeypatch.setattr(db, "message_count", count_then_change_active_set)
+
+        result = json.loads(session_search(session_id="s_big", db=db))
+
+        assert result["message_count"] == 50
+        assert result["truncated"] is True
+        assert len(result["messages"]) == 30
+        assert [m["content"] for m in result["messages"][:2]] == ["m0", "m1"]
+        assert [m["content"] for m in result["messages"][-2:]] == ["m48", "m49"]
 
 
 # =========================================================================

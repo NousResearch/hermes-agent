@@ -3794,6 +3794,60 @@ class SessionDB:
             result.append(msg)
         return result
 
+    def get_message_head_tail_window(
+        self,
+        session_id: str,
+        head: int = 20,
+        tail: int = 10,
+        include_inactive: bool = False,
+    ) -> Tuple[int, List[Dict[str, Any]]]:
+        """Return active count plus first ``head`` and last ``tail`` messages.
+
+        The count and selected rows are read by one SQLite statement, so callers
+        cannot observe ``message_count`` from one active transcript snapshot and
+        rows from another after rewind/compaction changes the active set.
+        """
+        head = max(0, int(head or 0))
+        tail = max(0, int(tail or 0))
+        active_clause = "" if include_inactive else " AND active = 1"
+        sql = (
+            "WITH ordered AS ("
+            "  SELECT messages.*, "
+            "         ROW_NUMBER() OVER (ORDER BY id) AS __rn, "
+            "         COUNT(*) OVER () AS __total "
+            "  FROM messages "
+            "  WHERE session_id = ?"
+            f"{active_clause}"
+            ") "
+            "SELECT * FROM ordered "
+            "WHERE __total <= ? OR __rn <= ? OR __rn > (__total - ?) "
+            "ORDER BY id"
+        )
+        with self._lock:
+            rows = self._conn.execute(
+                sql,
+                (session_id, head + tail, head, tail),
+            ).fetchall()
+
+        total = int(rows[0]["__total"]) if rows else 0
+        result = []
+        for row in rows:
+            msg = dict(row)
+            msg.pop("__rn", None)
+            msg.pop("__total", None)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
+            if msg.get("tool_calls"):
+                try:
+                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Failed to deserialize tool_calls in get_message_head_tail_window, falling back to []"
+                    )
+                    msg["tool_calls"] = []
+            result.append(msg)
+        return total, result
+
     def get_messages_around(
         self,
         session_id: str,

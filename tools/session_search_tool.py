@@ -225,16 +225,19 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
         return tool_error(f"session_id not found: {session_id}", success=False)
 
     try:
-        total = db.message_count(session_id, include_inactive=False)
-        truncated = total > head + tail
-        if truncated:
-            head_rows = db.get_messages(session_id, limit=head)
-            tail_rows = db.get_messages(session_id, limit=tail, offset=max(total - tail, 0))
-            rows = head_rows + tail_rows
-        else:
-            rows = db.get_messages(session_id, limit=total)
+        total, rows = db.get_message_head_tail_window(
+            session_id,
+            head=head,
+            tail=tail,
+            include_inactive=False,
+        )
     except Exception as e:
-        logging.error("get_messages failed for %s: %s", session_id, e, exc_info=True)
+        logging.error(
+            "get_message_head_tail_window failed for %s: %s",
+            session_id,
+            e,
+            exc_info=True,
+        )
         return tool_error(f"failed to load session: {e}", success=False)
 
     window = [_shape_message(m) for m in rows]

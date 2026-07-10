@@ -30,8 +30,8 @@ jobs:
 
   check:
     name: Typecheck & Test
-    runs-on: ubuntu-latest
     needs: workspaces
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         package: ${{ fromJson(needs.workspaces.outputs.packages) }}
@@ -47,3 +47,4 @@ jobs:
           # --ignore-scripts: TS & tests don't need native deps
           command: npm ci --ignore-scripts
       - run: npm run --prefix ${{ matrix.package }} check
+      - run: npm run --prefix ${{ matrix.package }} fix

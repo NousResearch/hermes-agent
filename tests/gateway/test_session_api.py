@@ -189,6 +189,134 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
 
 
 @pytest.mark.asyncio
+async def test_session_messages_hide_compaction_handoff_and_deduplicate_snapshot(
+    adapter, session_db
+):
+    """The user-facing transcript stays continuous across rotating compaction."""
+    from agent.context_compressor import SUMMARY_PREFIX
+
+    root_id = session_db.create_session("display-root", "api_server")
+    session_db.append_message(root_id, "user", "Build the feature")
+    session_db.append_message(root_id, "assistant", "Working on it")
+    session_db.end_session(root_id, "compression")
+
+    tip_id = session_db.create_session(
+        "display-tip", "api_server", parent_session_id=root_id
+    )
+    session_db.append_message(tip_id, "user", f"{SUMMARY_PREFIX}\ninternal handoff")
+    # A preserved tail row copied into the compacted child must not appear twice.
+    session_db.append_message(tip_id, "assistant", "Working on it")
+    session_db.append_message(tip_id, "assistant", "Finished and verified")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{root_id}/messages")
+        assert response.status == 200
+        payload = await response.json()
+
+    assert [m["content"] for m in payload["data"]] == [
+        "Build the feature",
+        "Working on it",
+        "Finished and verified",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_messages_include_archived_turns_after_in_place_compaction(
+    adapter, session_db
+):
+    """Model-context compaction must not erase the visible chat transcript."""
+    from agent.context_compressor import SUMMARY_PREFIX
+
+    session_id = session_db.create_session("display-in-place", "api_server")
+    session_db.append_message(session_id, "user", "Original request")
+    session_db.append_message(session_id, "assistant", "Original visible answer")
+    session_db.archive_and_compact(
+        session_id,
+        [
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\ninternal handoff"},
+            {"role": "assistant", "content": "Original visible answer"},
+        ],
+    )
+    session_db.append_message(session_id, "assistant", "Continuation after compaction")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert response.status == 200
+        payload = await response.json()
+
+    assert [m["content"] for m in payload["data"]] == [
+        "Original request",
+        "Original visible answer",
+        "Continuation after compaction",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_messages_preserve_legitimate_repeated_turns(adapter, session_db):
+    """Snapshot removal must not become global content deduplication."""
+    from agent.context_compressor import SUMMARY_PREFIX
+
+    session_id = session_db.create_session("display-repeats", "api_server")
+    for role, content in [
+        ("user", "repeat"),
+        ("assistant", "ack"),
+        ("user", "repeat"),
+        ("assistant", "ack"),
+    ]:
+        session_db.append_message(session_id, role, content)
+    session_db.archive_and_compact(
+        session_id,
+        [{"role": "user", "content": f"{SUMMARY_PREFIX}\ninternal handoff"}],
+    )
+    session_db.append_message(session_id, "user", "repeat")
+    session_db.append_message(session_id, "assistant", "ack")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert response.status == 200
+        payload = await response.json()
+
+    assert [(m["role"], m["content"]) for m in payload["data"]] == [
+        ("user", "repeat"),
+        ("assistant", "ack"),
+        ("user", "repeat"),
+        ("assistant", "ack"),
+        ("user", "repeat"),
+        ("assistant", "ack"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_messages_sanitize_internal_context_fences(adapter, session_db):
+    session_id = session_db.create_session("display-sanitized", "api_server")
+    session_db.append_message(
+        session_id,
+        "assistant",
+        "<memory-context>PRIVATE INTERNAL MEMORY</memory-context>Visible answer",
+    )
+    session_db.append_message(
+        session_id,
+        "tool",
+        "<memory-context>PRIVATE TOOL MEMORY</memory-context>Visible tool output",
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert response.status == 200
+        payload = await response.json()
+
+    rendered = "\n".join(str(message.get("content") or "") for message in payload["data"])
+    assert "PRIVATE INTERNAL MEMORY" not in rendered
+    assert "PRIVATE TOOL MEMORY" not in rendered
+    assert "Visible answer" in rendered
+    assert "Visible tool output" in rendered
+
+
+@pytest.mark.asyncio
 async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, session_db):
     source_id = session_db.create_session("source-session", "api_server", model="test-model")
     session_db.set_session_title(source_id, "Original")

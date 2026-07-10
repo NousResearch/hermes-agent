@@ -1819,9 +1819,9 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = self._ensure_session_db()
         resolved_id = db.resolve_resume_session_id(session_id)
-        messages = db.get_messages_as_conversation(resolved_id, include_ancestors=True)
-        # Strip tool-call fields the WebUI doesn't need and get_messages_as_conversation
-        # includes for model replay. Keep role, content, finish_reason, reasoning_content.
+        messages = db.get_messages_for_display(resolved_id, include_ancestors=True)
+        # Strip tool-call fields the WebUI doesn't need and the display loader
+        # preserves from durable rows. Keep role, content, finish_reason, reasoning_content.
         display_messages = []
         for m in messages:
             msg = {"role": m["role"], "content": m.get("content", "")}

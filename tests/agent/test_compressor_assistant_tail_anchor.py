@@ -479,6 +479,86 @@ class TestCompactionRollupReproduction:
             f"{len(reply_rows)}"
         )
 
+    def test_active_user_at_head_boundary_survives_mid_turn_compaction(
+        self, compressor
+    ):
+        """Compaction during a long tool run must keep the request that started it.
+
+        With ``protect_first_n=2`` the active user lands exactly at the first
+        compressible index.  The old causal-coupling guard moved the cut beyond
+        that user and the first tool group, so the resumed model saw only a
+        handoff summary and often stopped, returned a fragment, or waited for a
+        repeated prompt.
+        """
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            COMPRESSED_SUMMARY_METADATA_KEY,
+        )
+
+        c = compressor
+        c.tail_token_budget = 10
+        active_request = "Finish the implementation, verify it, and report the result."
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "older question"},
+            {"role": "assistant", "content": "older answer"},
+            {"role": "user", "content": active_request},
+        ]
+        for i in range(2):
+            call_id = f"call-{i}"
+            messages.extend([
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": call_id,
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "content": f"tool output {i} " + ("x" * 200),
+                    "tool_call_id": call_id,
+                },
+            ])
+
+        with patch.object(
+            c,
+            "_generate_summary",
+            return_value=f"{SUMMARY_PREFIX}\nwork completed so far",
+        ):
+            result = c.compress(messages, current_tokens=90_000)
+
+        assert any(
+            m.get(COMPRESSED_SUMMARY_METADATA_KEY) for m in result
+        ), "test fixture did not trigger compaction"
+        active_rows = [
+            m for m in result
+            if m.get("role") == "user" and m.get("content") == active_request
+        ]
+        assert len(active_rows) == 1, (
+            "Mid-turn compaction lost the active user request, so the agent no "
+            "longer knows what work to continue after the summary handoff."
+        )
+
+        tool_call_ids = {
+            tc["id"]
+            for message in result
+            for tc in (message.get("tool_calls") or [])
+        }
+        tool_result_ids = {
+            message.get("tool_call_id")
+            for message in result
+            if message.get("role") == "tool"
+        }
+        assert tool_call_ids == tool_result_ids
+        assert all(
+            left.get("role") != right.get("role")
+            for left, right in zip(result, result[1:])
+            if left.get("role") in {"user", "assistant"}
+            and right.get("role") in {"user", "assistant"}
+        ), "Compaction introduced adjacent same-role chat messages"
+
 
 # ---------------------------------------------------------------------------
 # Source guardrail

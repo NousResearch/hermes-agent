@@ -765,8 +765,48 @@ def _close_session_by_id_and_delete(sid: str) -> dict:
 
     delete_id = _session_lookup_key(session, fallback="")
     can_delete = bool(delete_id and delete_id != sid)
+
+    # Resolve gateway ownership BEFORE teardown so a resumed messaging-source
+    # session (telegram/discord/…) is torn down as a plain view close
+    # (tui_close), not marked with delete intent (tui_delete). The TUI is only
+    # a viewer for gateway-owned history; deleting it would destroy
+    # gateway-owned state and trigger the #60609 Groundhog-Day routing loop.
+    # Match the guard in _finalize_session (L624-645).
+    gateway_owned = False
+    if can_delete:
+        db = _get_db()
+        if db is None:
+            session["_sid"] = sid
+            _teardown_session(session, end_reason="tui_close")
+            return {
+                "closed": True,
+                "deleted": False,
+                "deleted_session_id": delete_id,
+                "delete_error": f"state.db unavailable: {_db_error or 'unknown error'}",
+            }
+        try:
+            row = db.get_session(delete_id) or {}
+            source = row.get("source", "")
+        except Exception as exc:
+            # Fail closed: if ownership can't be confirmed, refuse the durable
+            # delete rather than risk destroying gateway-owned history.
+            session["_sid"] = sid
+            _teardown_session(session, end_reason="tui_close")
+            return {
+                "closed": True,
+                "deleted": False,
+                "deleted_session_id": delete_id,
+                "delete_error": f"cannot verify session ownership: {exc}",
+            }
+        gateway_owned = _is_gateway_owned_source(source)
+    else:
+        db = None
+
     session["_sid"] = sid
-    _teardown_session(session, end_reason="tui_delete" if can_delete else "tui_close")
+    _teardown_session(
+        session,
+        end_reason="tui_close" if (not can_delete or gateway_owned) else "tui_delete",
+    )
 
     # The short runtime sid is never a safe durable SessionDB deletion key.
     if not can_delete:
@@ -776,26 +816,7 @@ def _close_session_by_id_and_delete(sid: str) -> dict:
             "delete_error": "no durable session id available for deletion",
         }
 
-    db = _get_db()
-    if db is None:
-        return {
-            "closed": True,
-            "deleted": False,
-            "deleted_session_id": delete_id,
-            "delete_error": f"state.db unavailable: {_db_error or 'unknown error'}",
-        }
-
-    # The TUI only owns lifecycle for non-gateway sessions. A resumed
-    # messaging-source session (telegram/discord/…) is a VIEW of history the
-    # gateway still owns; deleting it here would destroy gateway-owned state
-    # and trigger the #60609 Groundhog-Day routing loop. Match the guard in
-    # _finalize_session (see L624-645) before any durable mutation.
-    try:
-        row = db.get_session(delete_id) or {}
-        source = row.get("source", "")
-    except Exception:
-        source = ""
-    if _is_gateway_owned_source(source):
+    if gateway_owned:
         return {
             "closed": True,
             "deleted": False,
@@ -803,6 +824,9 @@ def _close_session_by_id_and_delete(sid: str) -> dict:
             "delete_error": "session is gateway-owned; the TUI is a viewer and cannot delete it",
         }
 
+    # can_delete is True and gateway_owned is False here, so db was resolved
+    # above (non-None). The not-can_delete and gateway_owned paths returned.
+    assert db is not None
     try:
         deleted = bool(
             db.delete_session(delete_id, sessions_dir=get_hermes_home() / "sessions")

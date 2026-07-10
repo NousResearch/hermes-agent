@@ -890,6 +890,56 @@ def test_classify_worker_exit_recognizes_rate_limit_sentinel(kanban_home):
     assert _kb._classify_worker_exit(pid + 1) == ("nonzero_exit", 1)
 
 
+class _FakeProc:
+    """Minimal Popen stand-in exposing poll() with a preset returncode."""
+
+    def __init__(self, returncode):
+        self._rc = returncode
+
+    def poll(self):
+        return self._rc
+
+
+def test_classify_worker_exit_prefers_retained_handle(kanban_home, monkeypatch):
+    """A retained Popen handle recovers the exit status even when the manual
+    waitpid registry never saw it — the busy-board race where CPython's own
+    subprocess finalizer reaped the child first. Regression for the
+    false-crash misclassification (2026-07-09)."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_worker_handles", {}, raising=False)
+
+    # Registry empty (finalizer ate the status) but handle present.
+    _kb._worker_handles[41000] = _FakeProc(0)
+    assert _kb._classify_worker_exit(41000) == ("clean_exit", 0)
+    # Handle is consumed once classified (no leak).
+    assert 41000 not in _kb._worker_handles
+
+    _kb._worker_handles[41001] = _FakeProc(7)
+    assert _kb._classify_worker_exit(41001) == ("nonzero_exit", 7)
+
+    _kb._worker_handles[41002] = _FakeProc(-9)  # Popen encodes SIGKILL as -9
+    assert _kb._classify_worker_exit(41002) == ("signaled", 9)
+
+    _kb._worker_handles[41003] = _FakeProc(_kb.KANBAN_RATE_LIMIT_EXIT_CODE)
+    assert _kb._classify_worker_exit(41003)[0] == "rate_limited"
+
+
+def test_classify_worker_exit_handle_still_running_falls_through(
+    kanban_home,
+    monkeypatch,
+):
+    """A retained handle whose child is still running (poll()->None) must not
+    be treated as an exit; fall through to the waitpid registry / unknown."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_worker_handles", {}, raising=False)
+    _kb._worker_handles[42000] = _FakeProc(None)  # still alive
+    assert _kb._classify_worker_exit(42000) == ("unknown", None)
+    # Handle retained (child not done yet).
+    assert 42000 in _kb._worker_handles
+
+
 def test_rate_limit_exit_requeues_without_counting_failure(
     kanban_home, monkeypatch,
 ):

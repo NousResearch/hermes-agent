@@ -5758,6 +5758,38 @@ _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
 
+# Live worker Popen handles, keyed by pid. Kept so the dispatcher can read
+# the exit status via ``Popen.poll()`` even when CPython's own subprocess
+# finalizer reaps the child first. Without this, a busy board loses exit
+# statuses: each new ``Popen()`` runs ``subprocess._cleanup()``, which
+# ``waitpid``-reaps prior dead workers before the manual reap loop
+# (``reap_worker_zombies``) can — so their status never reaches
+# ``_recent_worker_exits`` and ``_classify_worker_exit`` returns "unknown",
+# misrouting clean protocol-violation exits into the generic crash path.
+# Cooperating with subprocess (read the returncode it records) fixes this;
+# fighting it (suppressing its reaper) is fragile. Only meaningful in the
+# long-lived gateway dispatcher; a one-shot CLI dispatch can't retain handles
+# across invocations and falls back to the waitpid registry as before.
+_WORKER_HANDLES_MAX = 4096
+_worker_handles: "dict[int, subprocess.Popen]" = {}
+
+
+def _register_worker_handle(pid: int, proc: "subprocess.Popen") -> None:
+    """Retain a spawned worker's Popen so its exit status survives GC.
+
+    Bounded: if the registry exceeds the cap, drop already-exited handles
+    first (poll() is non-blocking), then oldest live ones as a last resort.
+    """
+    if not pid or pid <= 0:
+        return
+    _worker_handles[int(pid)] = proc
+    if len(_worker_handles) > _WORKER_HANDLES_MAX:
+        for _pid, _proc in list(_worker_handles.items()):
+            if _proc.poll() is not None:
+                _worker_handles.pop(_pid, None)
+        while len(_worker_handles) > _WORKER_HANDLES_MAX:
+            _worker_handles.pop(next(iter(_worker_handles)), None)
+
 
 def _record_worker_exit(pid: int, raw_status: int) -> None:
     """Record a reaped child's exit status for later classification.
@@ -5806,6 +5838,25 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     ``nonzero_exit``) or the signal number (for ``signaled``), or ``None``
     for ``unknown``.
     """
+    # Preferred path: read the returncode from the retained Popen handle.
+    # ``poll()`` is non-blocking and returns the status subprocess recorded
+    # even if its own finalizer reaped the child before our manual reaper
+    # could. Popen encodes a signal death as a negative returncode.
+    proc = _worker_handles.get(int(pid))
+    if proc is not None:
+        rc = proc.poll()
+        if rc is not None:
+            _worker_handles.pop(int(pid), None)
+            if rc == 0:
+                return ("clean_exit", 0)
+            if rc == KANBAN_RATE_LIMIT_EXIT_CODE:
+                return ("rate_limited", rc)
+            if rc < 0:
+                return ("signaled", -rc)
+            return ("nonzero_exit", rc)
+        # Handle present but child still running — let the caller's
+        # ``_pid_alive`` gate decide; fall through to the waitpid registry.
+
     entry = _recent_worker_exits.get(int(pid))
     if entry is None:
         return ("unknown", None)
@@ -7853,9 +7904,15 @@ def _default_spawn(
         )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
-    # handle is kept alive by the child's inheritance.  The parent's
-    # reference goes out of scope and is GC'd, but the OS-level FD stays
-    # open in the child until the child exits.
+    # handle is kept alive by the child's inheritance.  The OS-level FD
+    # stays open in the child until the child exits.
+    #
+    # Retain the Popen handle so the dispatcher can read the exit status via
+    # poll() later. Dropping it (the old behavior) let CPython's subprocess
+    # finalizer reap the child on GC and consume its status before the
+    # manual reaper saw it — see _register_worker_handle for the full
+    # rationale. The handle is popped when its exit is classified.
+    _register_worker_handle(proc.pid, proc)
     return proc.pid
 
 

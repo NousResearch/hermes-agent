@@ -4007,6 +4007,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         model = override.get("model")
         return model.strip() if isinstance(model, str) and model.strip() else None
 
+    def _resolve_session_router_pin(
+        self, session_id: Optional[str], session_key: Optional[str]
+    ) -> Tuple[Optional[str], Optional[int]]:
+        """Return the session-stable model, preferring an explicit `/model`."""
+        pinned_model, message_count = self._get_pinned_session_router_model(session_id)
+        explicit_model = self._get_explicit_session_model_override(session_key)
+        # A direct /model command is deliberate user intent. It may
+        # intentionally replace the persisted router choice; route/cache
+        # rebuilding is appropriate for that explicit session action.
+        return explicit_model or pinned_model, message_count
+
     def _get_pinned_session_router_model(
         self, session_id: Optional[str]
     ) -> Tuple[Optional[str], Optional[int]]:
@@ -18138,13 +18149,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Session rows record the actual model selected for the first turn.
             # Reuse it on later turns (including cache eviction/restart) instead
             # of reclassifying follow-ups and rebuilding a new system prompt.
-            _pinned_router_model, _current_msg_count = (
-                self._get_pinned_session_router_model(session_id)
+            _pinned_router_model, _current_msg_count = self._resolve_session_router_pin(
+                session_id, session_key
             )
-            if _pinned_router_model is None:
-                _pinned_router_model = self._get_explicit_session_model_override(
-                    session_key
-                )
 
             turn_route = self._resolve_turn_agent_config(
                 message,

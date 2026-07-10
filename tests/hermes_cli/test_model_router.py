@@ -171,3 +171,24 @@ def test_gateway_router_preserves_explicit_model_override():
     assert gateway_run.GatewayRunner._get_explicit_session_model_override(
         runner, "session-1"
     ) == "custom-explicit-model"
+
+
+def test_gateway_router_explicit_override_beats_persisted_route():
+    import gateway.run as gateway_run
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._session_db = SimpleNamespace(
+        get_session=lambda session_id: {
+            "id": session_id,
+            "model": "gpt-5.6-luna",
+            "message_count": 2,
+        }
+    )
+    runner._session_model_overrides = {
+        "session-1": {"model": "custom-explicit-model"}
+    }
+
+    assert runner._resolve_session_router_pin("db-session", "session-1") == (
+        "custom-explicit-model",
+        2,
+    )

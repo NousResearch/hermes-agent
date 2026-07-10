@@ -13,7 +13,10 @@
     "tauri:build": "tauri build",
     "tauri:build:debug": "tauri build --debug",
     "typecheck": "tsc -p . --noEmit",
-    "check": "npm run typecheck"
+    "check": "npm run typecheck",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "fix": "npm run lint:fix"
   },
   "dependencies": {
     "@nous-research/ui": "0.16.0",
@@ -38,11 +41,19 @@
     "tw-shimmer": "^0.4.11"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
+    "eslint": "^9.39.4",
+    "eslint-plugin-perfectionist": "^5.9.0",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-unused-imports": "^4.4.1",
+    "globals": "^17.4.0",
     "typescript": "^6.0.3",
+    "typescript-eslint": "^8.56.1",
     "vite": "^8.0.16"
   }
 }

@@ -1,5 +1,7 @@
 """Regression tests for dashboard cron job profile routing."""
 
+from concurrent.futures import ThreadPoolExecutor
+import json
 from queue import Empty, SimpleQueue
 import threading
 
@@ -34,7 +36,7 @@ def _drain_queue(q):
             return values
 
 
-def test_call_cron_for_profile_routes_storage_and_restores_globals(isolated_profiles):
+def test_call_cron_for_profile_routes_storage_without_mutating_globals(isolated_profiles):
     from cron import jobs as cron_jobs
     from hermes_cli import web_server
 
@@ -60,6 +62,91 @@ def test_call_cron_for_profile_routes_storage_and_restores_globals(isolated_prof
     assert cron_jobs.CRON_DIR == old_cron_dir
     assert cron_jobs.JOBS_FILE == old_jobs_file
     assert cron_jobs.OUTPUT_DIR == old_output_dir
+
+
+def test_profile_call_cannot_retarget_ticker_store_mid_write(
+    isolated_profiles,
+    monkeypatch,
+):
+    """A dashboard profile call must not redirect a concurrent ticker save."""
+    from cron import jobs as cron_jobs
+    from hermes_cli import web_server
+
+    default_cron = isolated_profiles["default"] / "cron"
+    worker_cron = isolated_profiles["worker_alpha"] / "cron"
+    default_file = default_cron / "jobs.json"
+    worker_file = worker_cron / "jobs.json"
+    default_job = {
+        "id": "default-job",
+        "name": "default job",
+        "schedule": {"kind": "interval", "minutes": 60},
+        "next_run_at": "2026-07-09T00:00:00+00:00",
+    }
+    worker_job = {
+        "id": "worker-job",
+        "name": "worker job",
+        "schedule": {"kind": "interval", "minutes": 60},
+        "next_run_at": "2026-07-09T00:00:00+00:00",
+    }
+    default_file.write_text(json.dumps({"jobs": [default_job]}), encoding="utf-8")
+    worker_file.write_text(json.dumps({"jobs": [worker_job]}), encoding="utf-8")
+
+    monkeypatch.setattr(cron_jobs, "CRON_DIR", default_cron)
+    monkeypatch.setattr(cron_jobs, "JOBS_FILE", default_file)
+    monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", default_cron / "output")
+    monkeypatch.setattr(
+        cron_jobs,
+        "compute_next_run",
+        lambda _schedule, _last_run_at=None: "2026-07-10T00:00:00+00:00",
+    )
+
+    ticker_loaded = threading.Event()
+    release_ticker = threading.Event()
+    profile_entered = threading.Event()
+    ticker_done = threading.Event()
+    ticker_thread = threading.local()
+    original_load_jobs = cron_jobs.load_jobs
+
+    def blocking_load_jobs():
+        loaded = original_load_jobs()
+        if getattr(ticker_thread, "active", False):
+            ticker_loaded.set()
+            assert release_ticker.wait(5), "profile call did not enter in time"
+        return loaded
+
+    def hold_profile_call():
+        profile_entered.set()
+        assert ticker_done.wait(5), "ticker did not finish in time"
+        return True
+
+    def run_ticker_write():
+        ticker_thread.active = True
+        try:
+            return cron_jobs.advance_next_run("default-job")
+        finally:
+            ticker_done.set()
+
+    monkeypatch.setattr(cron_jobs, "load_jobs", blocking_load_jobs)
+    monkeypatch.setattr(cron_jobs, "_hold_profile_call", hold_profile_call, raising=False)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ticker_future = pool.submit(run_ticker_write)
+        assert ticker_loaded.wait(5), "ticker did not load the default store"
+        profile_future = pool.submit(
+            web_server._call_cron_for_profile,
+            "worker_alpha",
+            "_hold_profile_call",
+        )
+        assert profile_entered.wait(5), "profile call did not retarget its store"
+        release_ticker.set()
+        assert ticker_future.result(timeout=5) is True
+        assert profile_future.result(timeout=5) is True
+
+    default_saved = json.loads(default_file.read_text(encoding="utf-8"))["jobs"]
+    worker_saved = json.loads(worker_file.read_text(encoding="utf-8"))["jobs"]
+    assert [job["id"] for job in default_saved] == ["default-job"]
+    assert default_saved[0]["next_run_at"] == "2026-07-10T00:00:00+00:00"
+    assert [job["id"] for job in worker_saved] == ["worker-job"]
 
 
 @pytest.mark.asyncio

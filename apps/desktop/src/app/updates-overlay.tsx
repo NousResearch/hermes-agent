@@ -80,11 +80,13 @@ export function UpdatesOverlay() {
 
     setUpdateOverlayOpen(next)
 
-    if (
-      !next &&
-      (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
-    ) {
+    if (!next) {
       resetUpdateApplyState()
+      if (isBackend) {
+        $backendUpdateStatus.set(null)
+      } else {
+        $updateStatus.set(null)
+      }
     }
   }
 

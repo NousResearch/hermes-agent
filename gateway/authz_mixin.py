@@ -246,6 +246,50 @@ class GatewayAuthorizationMixin:
             return any(str(item).strip() for item in sender_allow)
         return False
 
+    def _adapter_group_has_explicit_access_rule(
+        self,
+        platform: Optional[Platform],
+        chat_id: Optional[str],
+        *,
+        profile: Optional[str] = None,
+    ) -> bool:
+        """Whether an exact chat ID has an active config-driven access rule.
+
+        An explicit ``group_rules.<chat_id>`` entry is itself a chat allowlist:
+        ``policy: open`` opens only that named chat, not every group or DM. The
+        adapter enforces the rule before dispatch, so a message reaching the
+        gateway has already passed any sender allowlist, blacklist, or admin
+        restriction attached to it.
+        """
+        if not platform or not chat_id:
+            return False
+        adapter = self._authorization_adapter(platform, profile)
+        rules = getattr(adapter, "_group_rules", None) if adapter is not None else None
+        if rules is None:
+            config = getattr(self, "config", None)
+            platform_cfg = (
+                config.platforms.get(platform)
+                if config is not None and hasattr(config, "platforms")
+                else None
+            )
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                rules = extra.get("group_rules")
+        if not isinstance(rules, dict):
+            return False
+
+        rule = rules.get(str(chat_id))
+        if isinstance(rule, dict):
+            policy = rule.get("policy", "open")
+        else:
+            policy = getattr(rule, "policy", None)
+        return str(policy or "").strip().lower() in {
+            "open",
+            "allowlist",
+            "blacklist",
+            "admin_only",
+        }
+
     def _pairing_store_for(self, source: "SessionSource"):
         """Pick the per-profile PairingStore for a source, falling back to global.
 
@@ -341,6 +385,21 @@ class GatewayAuthorizationMixin:
                     }
                     if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
                         return True
+
+            # Config-driven per-group rules are also explicit chat-scoped
+            # authorization. Trust them only for adapters that enforce their own
+            # intake policy and only for an exact active rule; a top-level/default
+            # ``group_policy: open`` remains insufficient and still falls through
+            # to the normal fail-closed user allowlist checks below.
+            if self._adapter_enforces_own_access_policy(
+                source.platform,
+                profile=source.profile,
+            ) and self._adapter_group_has_explicit_access_rule(
+                source.platform,
+                source.chat_id,
+                profile=source.profile,
+            ):
+                return True
 
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         # Checked before the no-user-id guard below: some platforms deliver

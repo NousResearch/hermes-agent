@@ -1434,6 +1434,11 @@ class FeishuAdapter(BasePlatformAdapter):
     # is almost certain.
     _SPLIT_THRESHOLD = 4000
 
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Feishu gates group access at intake through ``group_rules``."""
+        return True
+
     # =========================================================================
     # Lifecycle — init / settings / connect / disconnect
     # =========================================================================

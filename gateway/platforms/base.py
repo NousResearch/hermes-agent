@@ -2412,22 +2412,26 @@ class BasePlatformAdapter(ABC):
     def enforces_own_access_policy(self) -> bool:
         """Whether this adapter gates inbound access before dispatch.
 
-        Some adapters (WeCom, Weixin, Yuanbao, QQBot, WhatsApp) implement a
+        Some adapters (WeCom, Weixin, Yuanbao, QQBot, WhatsApp, Feishu) implement a
         documented config-driven access surface — ``dm_policy`` / ``group_policy`` /
-        ``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra`` — and
+        ``allow_from`` / ``group_allow_from`` / ``group_rules`` in
+        ``PlatformConfig.extra`` — and
         enforce it at intake: a message is dropped inside the adapter and never
         reaches the gateway unless it already passed that policy.
 
         The gateway's env-based allowlist check runs *after* the adapter. When
         no env allowlist is configured, the gateway consults this flag so it can
-        honor a config-only ``dm_policy: allowlist`` / ``allow_from`` (which the
-        adapter already enforced) instead of double-denying it. Crucially, the
+        honor a config-only ``dm_policy: allowlist`` / ``allow_from`` or exact
+        per-group rule (which the adapter already enforced) instead of
+        double-denying it. Crucially, the
         flag alone is NOT "already authorized": these adapters default
         ``dm_policy`` / ``group_policy`` to ``"open"``, which forwards every
         sender, so the gateway trusts the adapter only when its effective policy
         for the chat type is an actual ``"allowlist"`` restriction — never for
         ``"open"`` (that would be the network-exposed fail-open SECURITY.md §2.6
-        forbids). Open access still requires an explicit
+        forbids). An exact ``group_rules.<chat_id>`` entry is different: the
+        named chat is itself an explicit allowlist boundary. Broad open access
+        still requires an explicit
         ``{PLATFORM}_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOW_ALL_USERS`` opt-in.
 
         Adapters that own their access policy override this to return ``True``.

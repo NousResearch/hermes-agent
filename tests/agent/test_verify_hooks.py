@@ -7,6 +7,8 @@ The `pre_verify` user-hook aggregation lives in `hermes_cli.plugins`
 
 from __future__ import annotations
 
+import logging
+
 from agent import verify_hooks
 
 
@@ -31,6 +33,26 @@ class TestMaxVerifyNudges:
             verify_hooks.max_verify_nudges({"agent": {"max_verify_nudges": "x"}})
             == verify_hooks.DEFAULT_MAX_VERIFY_NUDGES
         )
+
+    def test_config_load_failure_falls_back_and_logs_debug(self, monkeypatch, caplog):
+        import hermes_cli.config as config_mod
+
+        def fail_load_config():
+            raise RuntimeError("c2 verify-hooks fixture")
+
+        monkeypatch.setattr(config_mod, "load_config", fail_load_config)
+
+        with caplog.at_level(logging.DEBUG, logger="agent.verify_hooks"):
+            assert verify_hooks.max_verify_nudges(None) == verify_hooks.DEFAULT_MAX_VERIFY_NUDGES
+
+        records = [
+            record
+            for record in caplog.records
+            if record.name == "agent.verify_hooks"
+        ]
+        assert len(records) == 1
+        assert records[0].levelno == logging.DEBUG
+        assert "using verification defaults" in records[0].getMessage()
 
 
 class TestCodingVerifyGuidance:

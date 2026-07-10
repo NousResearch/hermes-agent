@@ -67,7 +67,11 @@ Config file: `~/.hermes/hindsight/config.json`
 
 ### Multi-bank routing
 
-Hindsight banks are hard isolation boundaries: every retain/recall operation targets one bank. When `bank_routing` is configured, Hermes acts as the client-side orchestrator: it resolves matching routes from stable startup context, recalls from every recall-enabled route, and retains the same rich JSON turn payload to every retain-enabled route. Tags remain deterministic scope labels inside a bank.
+Hindsight banks are hard isolation boundaries: every retain/recall/reflect operation targets one bank, and banks do not share data. Hindsight does not provide an implicit cross-bank query; any multi-bank behavior must be orchestrated by the client.
+
+When `bank_routing` is configured, Hermes is that client-side orchestrator: it resolves matching routes from stable startup context, recalls from every recall-enabled route, and retains the same rich JSON turn payload to every retain-enabled route. Each routed call is still an ordinary single-bank Hindsight call.
+
+Tags are deterministic scope/filter labels **inside** a bank, not a replacement for bank isolation. Use bank routing when data belongs in separate memory banks (for example `global-user` versus `infra`), and use tags when you need recall scopes within a bank (for example `project:common-memory`, `domain:memory`, or `scope:global`). Strict tag matching modes (`any_strict` / `all_strict`) exclude untagged memories; non-strict modes can include untagged memories per Hindsight semantics.
 
 If no route matches, Hermes falls back to `bank_id_template` / `bank_id`, preserving the legacy single-bank behavior. Explicit tools (`hindsight_retain`, `hindsight_recall`, `hindsight_reflect`) still target the primary resolved route; use Hindsight MCP per-bank endpoints for explicit ad-hoc operations against other banks.
 

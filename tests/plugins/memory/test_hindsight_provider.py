@@ -913,6 +913,37 @@ class TestPrefetch:
         assert "- infra memory" in p._prefetch_result
         assert "- global-user memory" in p._prefetch_result
 
+    def test_queue_prefetch_skips_when_routing_resolves_no_recall_routes(self, provider_with_config):
+        p = provider_with_config(
+            bank_id="global-user",
+            bank_routing={
+                "include_fallback": False,
+                "rules": [
+                    {
+                        "name": "other-project",
+                        "workspace_path_prefix": "/repo/other",
+                        "bank_id": "other-bank",
+                    }
+                ],
+            },
+        )
+        p.initialize(
+            session_id="test-session",
+            hermes_home="unused",
+            platform="cli",
+            agent_workspace="project",
+            agent_workspace_path="/repo/project",
+        )
+        p._client = _make_mock_client()
+
+        assert p._hindsight_routes == []
+
+        p.queue_prefetch("project context")
+
+        assert p._prefetch_thread is None
+        p._client.arecall.assert_not_called()
+        assert p.prefetch("project context") == ""
+
 
 # ---------------------------------------------------------------------------
 # sync_turn tests
@@ -1053,8 +1084,8 @@ class TestSyncTurn:
     def test_sync_turn_appends_only_delta_when_append_supported(self, provider_with_config, monkeypatch):
         """On append-capable APIs each retain ships only the new turns, not the whole session."""
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.5.6",
+            "plugins.memory.hindsight._fetch_hindsight_version_info",
+            lambda *a, **kw: {"version": "0.5.6"},
         )
         from plugins.memory.hindsight import _append_capability_cache, _append_capability_lock
         # Clear before AND after: the capability cache is module-global and keyed
@@ -1404,6 +1435,40 @@ class TestSessionSwitchBufferFlush:
         provider._client.aretain_batch.assert_not_called()
         assert provider._session_id == "new-sid"
 
+    def test_switch_flush_skips_when_routing_resolves_no_retain_routes(self, provider_with_config):
+        p = provider_with_config(
+            retain_every_n_turns=3,
+            bank_routing={
+                "include_fallback": False,
+                "rules": [
+                    {
+                        "name": "other-project",
+                        "workspace_path_prefix": "/repo/other",
+                        "bank_id": "other-bank",
+                    }
+                ],
+            },
+        )
+        p.initialize(
+            session_id="old-sid",
+            hermes_home="unused",
+            platform="cli",
+            agent_workspace="project",
+            agent_workspace_path="/repo/project",
+        )
+        p._client = _make_mock_client()
+
+        assert p._hindsight_routes == []
+        p.sync_turn("buffered user", "buffered assistant")
+        p._client.aretain_batch.assert_not_called()
+
+        p.on_session_switch("new-sid")
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_not_called()
+        assert p._session_id == "new-sid"
+        assert p._session_turns == []
+
     def test_prefetch_result_cleared_on_switch(self, provider):
         """Stale recall text from the old session must not leak into the
         next session's first prefetch read."""
@@ -1511,7 +1576,7 @@ class TestUpdateModeAppendCapability:
         per-process unique doc_id and NOT pass update_mode."""
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            "plugins.memory.hindsight._fetch_hindsight_version_info",
             lambda *a, **kw: None,
         )
         old_doc = provider._document_id
@@ -1528,8 +1593,8 @@ class TestUpdateModeAppendCapability:
         """API on >=0.5.0 — retain uses stable session_id and sets update_mode='append'."""
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.5.6",
+            "plugins.memory.hindsight._fetch_hindsight_version_info",
+            lambda *a, **kw: {"version": "0.5.6"},
         )
         provider.sync_turn("hello", "hi")
         provider._retain_queue.join()
@@ -1547,10 +1612,10 @@ class TestUpdateModeAppendCapability:
 
         def _spy(*a, **kw):
             calls["n"] += 1
-            return "0.5.6"
+            return {"version": "0.5.6"}
 
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version", _spy
+            "plugins.memory.hindsight._fetch_hindsight_version_info", _spy
         )
         provider.sync_turn("a", "b")
         provider._retain_queue.join()
@@ -1563,8 +1628,8 @@ class TestUpdateModeAppendCapability:
         import logging
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.4.22",
+            "plugins.memory.hindsight._fetch_hindsight_version_info",
+            lambda *a, **kw: {"version": "0.4.22"},
         )
         with caplog.at_level(logging.WARNING, logger="plugins.memory.hindsight"):
             provider.sync_turn("a", "b")
@@ -1584,8 +1649,8 @@ class TestUpdateModeAppendCapability:
         in the OLD session's stable document, not a per-process id."""
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.5.6",
+            "plugins.memory.hindsight._fetch_hindsight_version_info",
+            lambda *a, **kw: {"version": "0.5.6"},
         )
         p = provider_with_config(retain_every_n_turns=3, retain_async=False)
         p.sync_turn("turn1-user", "turn1-asst")
@@ -1987,6 +2052,59 @@ class TestBankRouting:
         assert global_route.recall_tags == ["scope:global", "source:hermes"]
         assert global_route.recall_tags_match == "all_strict"
         assert global_route.recall_types == ["observation", "world"]
+
+    def test_route_resolution_treats_include_global_false_string_as_false(self):
+        config = {
+            "bank_routing": {
+                "recall": {
+                    "include_global": "false",
+                    "global_bank_id": "global-user",
+                },
+                "rules": [{"name": "project", "bank_id": "project-bank"}],
+            },
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="fallback-bank",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/repo/project",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        assert [route.bank_id for route in routes] == ["project-bank"]
+
+    def test_route_resolution_treats_include_fallback_false_string_as_false(self):
+        config = {
+            "bank_routing": {
+                "include_fallback": "false",
+                "rules": [
+                    {
+                        "name": "other-project",
+                        "workspace_path_prefix": "/repo/other",
+                        "bank_id": "other-bank",
+                    }
+                ],
+            },
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="fallback-bank",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/repo/project",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        assert routes == []
 
 
 # ---------------------------------------------------------------------------

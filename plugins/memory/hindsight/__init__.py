@@ -780,7 +780,7 @@ def _resolve_hindsight_routes(
             recall_types=_normalize_recall_types(recall_types, default_recall_types),
         ))
 
-    if not routes and routing.get("include_fallback", True):
+    if not routes and _config_bool(routing.get("include_fallback"), True):
         routes.append(HindsightBankRoute(
             name="fallback",
             bank_id=fallback_bank,
@@ -792,7 +792,7 @@ def _resolve_hindsight_routes(
 
     raw_recall_cfg = routing.get("recall")
     recall_cfg: dict[str, Any] = raw_recall_cfg if isinstance(raw_recall_cfg, dict) else {}
-    if recall_cfg.get("include_global"):
+    if _config_bool(recall_cfg.get("include_global"), False):
         global_bank = str(recall_cfg.get("global_bank_id") or fallback_bank).strip()
         if global_bank and all(route.bank_id != _sanitize_bank_segment(global_bank) for route in routes):
             global_types = recall_cfg.get("global_types")
@@ -1709,12 +1709,13 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
 
+        recall_routes = [route for route in self._hindsight_routes if route.recall]
+        if not recall_routes:
+            logger.debug("Prefetch: skipped (no recall routes)")
+            return
+
         def _run():
             try:
-                recall_routes = [route for route in self._hindsight_routes if route.recall]
-                if not recall_routes:
-                    recall_routes = [HindsightBankRoute(name="fallback", bank_id=self._bank_id)]
-
                 sections: list[str] = []
                 for route in recall_routes:
                     try:
@@ -2084,8 +2085,6 @@ class HindsightMemoryProvider(MemoryProvider):
             old_retain_routes = [
                 route for route in getattr(self, "_hindsight_routes", []) if route.retain
             ]
-            if not old_retain_routes:
-                old_retain_routes = [HindsightBankRoute(name="fallback", bank_id=self._bank_id)]
             old_metadata = self._build_metadata(
                 message_count=len(old_turns) * 2,
                 turn_index=old_turn_index,

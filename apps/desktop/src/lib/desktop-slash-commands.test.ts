@@ -11,6 +11,9 @@ import {
   isPickerCommand,
   resolveDesktopCommand
 } from './desktop-slash-commands'
+// `vite.config.ts` hoists `.ts` ahead of `.js` in `resolve.extensions` so
+// vitest loads this test's source — the repo also ships compiled `.js`
+// mirrors under `src/` and the default resolver prefers those otherwise.
 
 describe('desktop slash command curation', () => {
   it('keeps core desktop chat commands in suggestions', () => {
@@ -205,9 +208,80 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/new')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/reset')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/resume')?.surface).toEqual({ kind: 'picker', picker: 'session' })
-    expect(resolveDesktopCommand('/usage')?.surface).toEqual({ kind: 'exec' })
+    expect(resolveDesktopCommand('/usage')?.surface.kind).toBe('rpc')
     expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
     // Skill / quick commands aren't in the registry.
     expect(resolveDesktopCommand('/gif-search')).toBeNull()
+  })
+
+  it('routes commands with dedicated gateway RPCs to the rpc surface', () => {
+    const rpcNames = [
+      '/agents',
+      '/compress',
+      '/save',
+      '/status',
+      '/steer',
+      '/stop',
+      '/usage'
+    ] as const
+
+    const expected = {
+      '/agents': 'agents.list',
+      '/compress': 'session.compress',
+      '/save': 'session.save',
+      '/status': 'session.status',
+      '/steer': 'session.steer',
+      '/stop': 'process.stop',
+      '/usage': 'session.usage'
+    } as const
+
+    for (const name of rpcNames) {
+      // The eslint `no-loop-func` rule trips on closures over `name`; this is
+      // the idiomatic rewrite for vitest's `it.each`-less form.
+      const surface = resolveDesktopCommand(name)?.surface
+      expect(surface?.kind).toBe('rpc')
+      if (surface?.kind !== 'rpc') continue
+      expect(surface.rpc).toBe(expected[name])
+
+      const params = surface.buildParams({ arg: 'topic A', command: name, name: name.slice(1), sessionId: 's-1' })
+
+      // process.stop doesn't take a session_id — kills ALL background
+      // processes. Other commands must echo the active session id so the
+      // gateway's `_sess_nowait` can find the right agent.
+      if (name === '/stop') {
+        expect(params).not.toHaveProperty('session_id')
+      } else {
+        expect(params.session_id).toBe('s-1')
+      }
+      // Compress threads the typed arg through as `focus_topic`; steer does
+      // the same as `text`. Other commands ignore the arg completely.
+      if (name === '/compress') {
+        expect(params.focus_topic).toBe('topic A')
+      } else if (name === '/steer') {
+        expect(params.text).toBe('topic A')
+      }
+    }
+  })
+
+  it('keeps /process.stop free of session_id (the RPC ignores it)', () => {
+    const surface = resolveDesktopCommand('/stop')?.surface
+    expect(surface?.kind).toBe('rpc')
+    if (surface?.kind !== 'rpc') return
+
+    const params = surface.buildParams({ arg: '', command: '/stop', name: 'stop', sessionId: 's-1' })
+    expect(params).toEqual({})
+    // session_id is intentionally not passed — process.stop kills ALL
+    // background processes regardless of session (see tui_gateway L11405).
+  })
+
+  it('still routes commands without dedicated RPCs through exec()', () => {
+    // These DO NOT have first-class @method handlers in tui_gateway/server.py;
+    // they must keep flowing through slash.exec / command.dispatch because
+    // /background fires WS events, /debug and /version render text, etc.
+    const execNames = ['/background', '/debug', '/goal', '/personality', '/queue', '/retry', '/rollback', '/tools', '/undo', '/version']
+
+    for (const name of execNames) {
+      expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
+    }
   })
 })

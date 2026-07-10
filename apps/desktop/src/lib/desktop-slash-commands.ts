@@ -55,16 +55,37 @@ export type DesktopUnavailableReason = 'advanced' | 'messaging' | 'settings' | '
  * - `action`     → handled by a local client handler (new chat, branch, …)
  * - `picker`     → opens an overlay (`/model`, `/resume`); a typed arg is
  *                  resolved by that picker instead of falling through
+ * - `rpc`        → dedicated gateway RPC named on the surface. The dispatcher
+ *                  calls it directly with the params built by `buildParams`,
+ *                  bypassing `slash.exec` / `command.dispatch`. Reserved for
+ *                  commands that have a first-class RPC handler in
+ *                  `tui_gateway/server.py` (e.g. `/compress` → session.compress).
  * - `exec`       → runs on the backend via slash.exec / command.dispatch and
- *                  renders its text output inline
+ *                  renders its text output inline. Only commands WITHOUT a
+ *                  dedicated RPC should stay here (skills, quick commands,
+ *                  plugins, and legacy commands handled inline by
+ *                  command.dispatch).
  * - `unavailable`→ a known command with genuinely no desktop UI (terminal-only,
  *                  messaging-only, …); shows a reason instead of executing
  */
 export type DesktopCommandSurface =
   | { kind: 'action'; action: DesktopActionId }
   | { kind: 'picker'; picker: DesktopPickerId }
+  | { kind: 'rpc'; rpc: string; buildParams: (ctx: SlashCommandBuildCtx) => Record<string, unknown> }
   | { kind: 'exec' }
   | { kind: 'unavailable'; reason: DesktopUnavailableReason }
+
+/**
+ * Inputs a `buildParams` function receives. The dispatcher passes session id,
+ * the typed arg, and the canonical command name so handlers can construct
+ * the exact JSON the gateway method expects.
+ */
+export interface SlashCommandBuildCtx {
+  arg: string
+  command: string
+  name: string
+  sessionId: string
+}
 
 export interface DesktopCommandSpec {
   /** Canonical command, leading slash included (e.g. `/resume`). */
@@ -91,6 +112,20 @@ const exec = (): DesktopCommandSurface => ({ kind: 'exec' })
 const action = (id: DesktopActionId): DesktopCommandSurface => ({ kind: 'action', action: id })
 const picker = (id: DesktopPickerId): DesktopCommandSurface => ({ kind: 'picker', picker: id })
 const unavailable = (reason: DesktopUnavailableReason): DesktopCommandSurface => ({ kind: 'unavailable', reason })
+
+/**
+ * Route a command directly to its dedicated gateway RPC. Prefer this over
+ * `exec()` whenever `tui_gateway/server.py` exposes a `@method(...)` for the
+ * command — bypassing `slash.exec` keeps the path short and the response
+ * structured.
+ *
+ * The dispatcher calls `requestGateway(surface.rpc, surface.buildParams(ctx))`
+ * and then runs `renderRpcResult` to format the response.
+ */
+const rpc = (
+  rpcName: string,
+  buildParams: (ctx: SlashCommandBuildCtx) => Record<string, unknown>
+): DesktopCommandSurface => ({ kind: 'rpc', rpc: rpcName, buildParams })
 
 /**
  * THE source of truth for desktop slash commands. Everything below — execution
@@ -145,35 +180,36 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     name: '/agents',
     description: 'Show active desktop sessions and running tasks',
     aliases: ['/tasks'],
-    surface: exec()
+    surface: rpc('agents.list', ctx => ({ session_id: ctx.sessionId }))
   },
   { name: '/background', description: 'Run a prompt in the background', aliases: ['/bg', '/btw'], surface: exec() },
-  { name: '/compress', description: 'Compress this conversation context', surface: exec() },
+  // /compress has a dedicated `session.compress` RPC on the gateway. Routing
+  // it through `exec()` (slash.exec → command.dispatch) used to fall through
+  // to `not a quick/plugin/skill command: compress` because command.dispatch
+  // has no inline branch for `compress`. Bypass that path entirely.
+  { name: '/compress', description: 'Compress this conversation context', surface: rpc('session.compress', ctx => ({ session_id: ctx.sessionId, focus_topic: ctx.arg.trim() })) },
   { name: '/debug', description: 'Create a debug report', surface: exec() },
   { name: '/goal', description: 'Manage the standing goal for this session', surface: exec() },
   { name: '/personality', description: 'Switch personality for this session', surface: exec(), args: true },
   {
     name: '/pet',
-    description: 'Toggle or adopt a petdex mascot (/pet, /pet list, /pet boba)',
     surface: action('pet'),
     args: true
   },
   {
     name: '/hatch',
-    description: 'Generate a new pet (opens the pet generator)',
-    aliases: ['/generate-pet'],
     surface: action('hatch')
   },
   { name: '/queue', description: 'Queue a prompt for the next turn', aliases: ['/q'], surface: exec() },
   { name: '/retry', description: 'Retry the last user message', surface: exec() },
   { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: exec() },
-  { name: '/save', description: 'Save the current transcript to JSON', surface: exec() },
-  { name: '/status', description: 'Show current session status', surface: exec() },
-  { name: '/steer', description: 'Steer the current run after the next tool call', surface: exec() },
-  { name: '/stop', description: 'Stop running background processes', surface: exec() },
+  { name: '/save', description: 'Save the current transcript to JSON', surface: rpc('session.save', ctx => ({ session_id: ctx.sessionId })) },
+  { name: '/status', description: 'Show current session status', surface: rpc('session.status', ctx => ({ session_id: ctx.sessionId })) },
+  { name: '/steer', description: 'Steer the current run after the next tool call', surface: rpc('session.steer', ctx => ({ session_id: ctx.sessionId, text: ctx.arg.trim() })) },
+  { name: '/stop', description: 'Stop running background processes', surface: rpc('process.stop', () => ({})) },
   { name: '/tools', description: 'List or toggle tools available to the agent', surface: exec(), args: true },
   { name: '/undo', description: 'Remove the last user/assistant exchange', surface: exec() },
-  { name: '/usage', description: 'Show token usage for this session', surface: exec() },
+  { name: '/usage', description: 'Show token usage for this session', surface: rpc('session.usage', ctx => ({ session_id: ctx.sessionId })) },
   { name: '/version', description: 'Show Hermes Agent version', surface: exec() },
 
   // No desktop surface, but carry an alias (underscore spelling variants).

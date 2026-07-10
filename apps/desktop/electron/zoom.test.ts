@@ -5,9 +5,19 @@
  */
 
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
-import { clampZoomLevel, percentToZoomLevel, ZOOM_STORAGE_KEY, zoomLevelToPercent } from './zoom'
+import {
+  clampZoomLevel,
+  installZoomReassertOnWindowEvents,
+  percentToZoomLevel,
+  ZOOM_REASSERT_WINDOW_EVENTS,
+  ZOOM_STORAGE_KEY,
+  zoomLevelToPercent
+} from './zoom'
 
 test('storage key stays stable so persisted zoom survives upgrades', () => {
   assert.equal(ZOOM_STORAGE_KEY, 'hermes:desktop:zoomLevel')
@@ -52,4 +62,64 @@ test('conversion is monotonic across the preset range', () => {
 test('extreme percentages clamp to the level bounds', () => {
   assert.equal(percentToZoomLevel(1), -9)
   assert.equal(percentToZoomLevel(1_000_000), 9)
+})
+
+test('installZoomReassertOnWindowEvents wires show and restore', () => {
+  const handlers = new Map()
+  const win = {
+    isDestroyed: () => false,
+    on(event, listener) {
+      handlers.set(event, listener)
+    }
+  }
+  let calls = 0
+  installZoomReassertOnWindowEvents(win, () => {
+    calls += 1
+  })
+
+  assert.deepEqual([...handlers.keys()], [...ZOOM_REASSERT_WINDOW_EVENTS])
+  handlers.get('show')()
+  handlers.get('restore')()
+  assert.equal(calls, 2)
+})
+
+test('installZoomReassertOnWindowEvents skips destroyed windows', () => {
+  const handlers = new Map()
+  let destroyed = false
+  const win = {
+    isDestroyed: () => destroyed,
+    on(event, listener) {
+      handlers.set(event, listener)
+    }
+  }
+  let calls = 0
+  installZoomReassertOnWindowEvents(win, () => {
+    calls += 1
+  })
+  destroyed = true
+  handlers.get('show')()
+  assert.equal(calls, 0)
+})
+
+// Source assertion (see windows-child-process.test.ts for the established
+// pattern): wireCommonWindowHandlers lives in the electron main entry with heavy
+// Electron deps, so we assert the wiring contract against source rather than
+// booting a BrowserWindow. Locks in that the pet overlay opts OUT of global UI
+// zoom while chat windows keep it — the whole reason this fix is scoped.
+test('pet overlay opts out of global UI zoom; chat windows keep it', () => {
+  const electronDir = path.dirname(fileURLToPath(import.meta.url))
+  const source = fs.readFileSync(path.join(electronDir, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
+
+  // The shared helper gates all zoom wiring behind an opt-out flag.
+  assert.match(source, /function wireCommonWindowHandlers\(win, \{ zoom = true \}/)
+
+  // The pet overlay window is the only caller that disables zoom.
+  assert.match(source, /wireCommonWindowHandlers\(win, \{ zoom: false \}\)/)
+
+  // Zoom restore now flows through the shared helper, so createWindow must not
+  // reassert it directly (that would double-fire and drift from session windows).
+  const finishLoad = source.indexOf("mainWindow.webContents.once('did-finish-load'")
+  assert.notEqual(finishLoad, -1, 'missing mainWindow did-finish-load handler')
+  const snippet = source.slice(finishLoad, finishLoad + 300)
+  assert.doesNotMatch(snippet, /restorePersistedZoomLevel\(mainWindow\)/)
 })

@@ -196,6 +196,32 @@ def test_build_models_payload_returns_expected_shape():
     assert payload["providers"][1:] == rows
 
 
+def test_build_models_payload_explicit_only_keeps_moa_presets():
+    """Regression: PR #37a4cf900 added an explicit_only filter to desktop
+    chat pickers and hard-dropped the ``moa`` virtual provider. MoA presets are
+    user-authored config (named presets from the MoA settings panel), so they
+    must remain selectable in explicit-only pickers — the same way user-defined
+    providers are — instead of being hidden like ambient auto-seeded credentials
+    (e.g. GitHub CLI -> Copilot). Verifies the chat model menu still lists the
+    Mixture of Agents provider and its presets.
+    """
+    rows = [
+        {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+        {"slug": "moa", "name": "Mixture of Agents", "models": ["default",
+         "Free MOA Gemini build"], "total_models": 2, "is_current": False,
+         "is_user_defined": False, "source": "virtual"},
+    ]
+    ctx = _empty_ctx(provider="openrouter", model="m1", base_url="")
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx, explicit_only=True)
+    moa_rows = [r for r in payload["providers"] if r["slug"] == "moa"]
+    assert moa_rows, "moa virtual provider must survive explicit_only filter"
+    assert isinstance(moa_rows[0].get("models"), list) and moa_rows[0]["models"], \
+        "moa row must surface at least one preset in explicit-only pickers"
+
+
 def test_build_models_payload_does_not_call_provider_model_ids():
     """``build_models_payload`` is a thin shape adapter — it delegates the
     actual curation to ``list_authenticated_providers`` (which DOES call
@@ -410,6 +436,7 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
         payload = build_models_payload(ctx, explicit_only=True)
 
     assert [row["slug"] for row in payload["providers"]] == [
+        "moa",
         "openai-codex",
         "gemini",
         "custom:lab",

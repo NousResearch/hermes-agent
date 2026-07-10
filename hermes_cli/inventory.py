@@ -339,8 +339,12 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             continue
         if slug == "moa":
             # MoA is a virtual routing mode, not an independently configured
-            # provider. Hide it from explicit-only pickers unless it is the
-            # current provider (handled above).
+            # provider. But its presets are user-authored config (named presets
+            # created via the MoA settings panel), so they are "explicit" in the
+            # user's intent — surface them in explicit-only pickers the same way
+            # user-defined providers are, rather than hiding them like ambient
+            # auto-seeded credentials (e.g. GitHub CLI -> Copilot).
+            kept.append(row)
             continue
         if is_provider_explicitly_configured(slug):
             kept.append(row)

@@ -14309,15 +14309,25 @@ def _(rid, params: dict) -> dict:
     except ImportError:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
+        session_id = params.get("session_id") or ""
+        session = _sessions.get(session_id) if session_id else None
+        if session_id and session is None:
+            return _err(rid, 4001, "session not found")
+
+        from agent.redact import redact_sensitive_text
+        from tools.environments.local import _sanitize_subprocess_env
+
+        cwd = str(params.get("cwd") or _session_cwd(session) or os.getcwd())
+        sanitized_env = _sanitize_subprocess_env(os.environ.copy())
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
-            stdin=subprocess.DEVNULL,
+            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=cwd,
+            stdin=subprocess.DEVNULL, env=sanitized_env,
         )
         return _ok(
             rid,
             {
-                "stdout": r.stdout[-4000:],
-                "stderr": r.stderr[-2000:],
+                "stdout": redact_sensitive_text(r.stdout or "", force=True)[-4000:],
+                "stderr": redact_sensitive_text(r.stderr or "", force=True)[-2000:],
                 "code": r.returncode,
             },
         )

@@ -21,7 +21,7 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
-import { $busy, $connection, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { $busy, $connection, $currentCwd, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
@@ -57,6 +57,12 @@ import {
 interface HandoffResult {
   ok: boolean
   error?: string
+}
+
+interface ShellExecResponse {
+  code: number
+  stderr: string
+  stdout: string
 }
 
 /**
@@ -200,9 +206,10 @@ export function usePromptActions({
 }: PromptActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+  const shellBusyRef = useRef(false)
 
   const appendSessionTextMessage = useCallback(
-    (sessionId: string, role: ChatMessage['role'], text: string) => {
+    (sessionId: string, role: ChatMessage['role'], text: string, storedSessionId = selectedStoredSessionIdRef.current) => {
       // Strip ANSI: slash-command output from the backend worker carries SGR
       // color codes (e.g. "Unknown command" in red). The ESC byte is invisible
       // in the chat panel, so without this the `[1;31m…[0m` payload leaks as
@@ -226,7 +233,7 @@ export function usePromptActions({
             }
           ]
         }),
-        selectedStoredSessionIdRef.current
+        storedSessionId
       )
     },
     [selectedStoredSessionIdRef, updateSessionState]
@@ -461,10 +468,120 @@ export function usePromptActions({
     submitPromptText
   })
 
+  const executeDirectShellCommand = useCallback(
+    async (command: string) => {
+      if (busyRef.current || shellBusyRef.current) {
+        return false
+      }
+
+      shellBusyRef.current = true
+      let sessionId = activeSessionIdRef.current
+      let storedSessionId = selectedStoredSessionIdRef.current
+
+      try {
+        const resumeSession = async (storedSessionId: string): Promise<null | string> => {
+          await resumeStoredSession(storedSessionId)
+
+          return activeSessionIdRef.current
+        }
+
+        if (!sessionId && storedSessionId) {
+          sessionId = await resumeSession(storedSessionId).catch(() => null)
+        }
+
+        if (!sessionId) {
+          sessionId = await createBackendSessionForSend(`!${command}`)
+        }
+
+        if (!sessionId) {
+          return false
+        }
+
+        storedSessionId = selectedStoredSessionIdRef.current
+
+        const cwd = $currentCwd.get().trim()
+
+        const run = (runtimeSessionId: string) =>
+          requestGateway<ShellExecResponse>('shell.exec', {
+            command,
+            ...(cwd ? { cwd } : {}),
+            session_id: runtimeSessionId
+          })
+
+        let result: ShellExecResponse
+
+        try {
+          result = await run(sessionId)
+        } catch (err) {
+          if (
+            !isSessionNotFoundError(err) ||
+            !storedSessionId ||
+            selectedStoredSessionIdRef.current !== storedSessionId
+          ) {
+            throw err
+          }
+
+          const resumedSessionId = await resumeSession(storedSessionId)
+
+          if (!resumedSessionId) {
+            throw err
+          }
+
+          sessionId = resumedSessionId
+          result = await run(sessionId)
+        }
+
+        const parts = [
+          `$ ${command}`,
+          `stdout:\n${result.stdout || '(no output)'}`,
+          `stderr:\n${result.stderr || '(no output)'}`,
+          `Exit status: ${result.code}`
+        ]
+
+        appendSessionTextMessage(sessionId, 'system', parts.join('\n\n'), storedSessionId)
+
+        return true
+      } catch (err) {
+        if (sessionId) {
+          appendSessionTextMessage(
+            sessionId,
+            'system',
+            `$ ${command}\n\nError: ${inlineErrorMessage(err, 'shell command failed')}`,
+            storedSessionId
+          )
+        }
+
+        return true
+      } finally {
+        shellBusyRef.current = false
+      }
+    },
+    [
+      activeSessionIdRef,
+      appendSessionTextMessage,
+      busyRef,
+      createBackendSessionForSend,
+      requestGateway,
+      resumeStoredSession,
+      selectedStoredSessionIdRef
+    ]
+  )
+
   const submitText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
+      if (shellBusyRef.current) {
+        return false
+      }
+
       const visibleText = rawText.trim()
       const attachments = options?.attachments ?? $composerAttachments.get()
+      const directShellCommand = visibleText.startsWith('!') ? visibleText.slice(1).trim() : ''
+
+      // Never discard attachments implicitly: a bang-prefixed message with
+      // files remains a normal prompt so the regular attachment pipeline owns it.
+      if (!attachments.length && directShellCommand) {
+        return await executeDirectShellCommand(directShellCommand)
+      }
 
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
         triggerHaptic('selection')
@@ -475,7 +592,7 @@ export function usePromptActions({
 
       return await submitPromptText(rawText, options)
     },
-    [executeSlashCommand, submitPromptText]
+    [executeDirectShellCommand, executeSlashCommand, submitPromptText]
   )
 
   const transcribeVoiceAudio = useCallback(

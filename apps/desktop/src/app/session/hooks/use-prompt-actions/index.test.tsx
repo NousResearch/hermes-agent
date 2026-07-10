@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
-import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
+import { $busy, $connection, $currentCwd, $messages, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
@@ -46,6 +46,7 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 interface HarnessHandle {
   cancelRun: () => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
+  selectStoredSession: (storedSessionId: null | string) => void
   steerPrompt: (text: string) => Promise<boolean>
   submitText: (text: string, options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }) => Promise<boolean>
 }
@@ -56,9 +57,11 @@ function Harness({
   getRouteToken,
   onReady,
   onSeedState,
+  onUpdateSessionBinding,
   openMemoryGraph,
   refreshSessions,
   requestGateway,
+  resumedSessionId,
   resumeStoredSession,
   seedMessages,
   selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
@@ -71,9 +74,11 @@ function Harness({
   getRouteToken?: () => string
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
+  onUpdateSessionBinding?: (runtimeSessionId: string, storedSessionId?: null | string) => void
   openMemoryGraph?: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  resumedSessionId?: string
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   seedMessages?: unknown[]
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
@@ -109,15 +114,19 @@ function Harness({
     openMemoryGraph: openMemoryGraph ?? (() => undefined),
     refreshSessions,
     requestGateway,
-    resumeStoredSession: resumeStoredSession ?? (() => undefined),
+    resumeStoredSession: async storedId => {
+      await resumeStoredSession?.(storedId)
+      activeSessionIdRef.current = resumedSessionId ?? RUNTIME_SESSION_ID
+    },
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,
-    updateSessionState: (_sessionId, updater) => {
+    updateSessionState: (runtimeSessionId, updater, boundStoredSessionId) => {
       // Seed with interrupted:true so we can prove a fresh submit clears it.
       const next = updater(stateRef.current) as unknown as Record<string, unknown>
       stateRef.current = next as never
       onSeedState?.(next)
+      onUpdateSessionBinding?.(runtimeSessionId, boundStoredSessionId)
 
       return next as never
     }
@@ -127,10 +136,20 @@ function Harness({
     onReady({
       cancelRun: actions.cancelRun,
       restoreToMessage: actions.restoreToMessage,
+      selectStoredSession: storedId => {
+        selectedStoredSessionIdRef.current = storedId
+      },
       steerPrompt: actions.steerPrompt,
       submitText: actions.submitText
     })
-  }, [actions.cancelRun, actions.restoreToMessage, actions.steerPrompt, actions.submitText, onReady])
+  }, [
+    actions.cancelRun,
+    actions.restoreToMessage,
+    actions.steerPrompt,
+    actions.submitText,
+    onReady,
+    selectedStoredSessionIdRef
+  ])
 
   return null
 }
@@ -353,6 +372,240 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     expect($composerDraft.get()).toBe('/ pasted context that must not vanish')
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  })
+})
+
+describe('usePromptActions direct shell commands', () => {
+  afterEach(() => {
+    cleanup()
+    $currentCwd.set('')
+    vi.restoreAllMocks()
+  })
+
+  it('leaves a bare bang as a normal prompt instead of executing a shell command', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('!')
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: RUNTIME_SESSION_ID, text: '!' },
+      1_800_000
+    )
+    expect(requestGateway).not.toHaveBeenCalledWith('shell.exec', expect.anything())
+  })
+
+  it('runs a bang command through shell.exec in the active project and renders its result without prompting the model', async () => {
+    $currentCwd.set('/active/worktree')
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'shell.exec') {
+        return { code: 7, stderr: 'warning', stdout: 'branch-a' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('! git branch --show-current')
+
+    expect(calls).toEqual([
+      {
+        method: 'shell.exec',
+        params: {
+          command: 'git branch --show-current',
+          cwd: '/active/worktree',
+          session_id: RUNTIME_SESSION_ID
+        }
+      }
+    ])
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    expect(renderedText).toContain('$ git branch --show-current')
+    expect(renderedText).toContain('stdout:\nbranch-a')
+    expect(renderedText).toContain('stderr:\nwarning')
+    expect(renderedText).toContain('Exit status: 7')
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+  })
+
+  it('keeps bang-prefixed messages with attachments on the normal prompt path', async () => {
+    const attachment: ComposerAttachment = {
+      id: 'file:notes',
+      kind: 'file',
+      label: 'notes.txt',
+      refText: '@file:`/tmp/notes.txt`'
+    }
+
+    const requestGateway = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('! summarize this file', { attachments: [attachment] })
+
+    expect(requestGateway.mock.calls.map(call => call[0])).toEqual(['prompt.submit'])
+    expect(requestGateway).not.toHaveBeenCalledWith('shell.exec', expect.anything())
+  })
+
+  it('resumes the selected stored session before running a command without a live runtime id', async () => {
+    const createBackendSessionForSend = vi.fn(async () => 'unexpected-new-session')
+    const resumeStoredSession = vi.fn()
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return { code: 0, stderr: '', stdout: '/repo\n' } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumedSessionId="resumed-runtime"
+        resumeStoredSession={resumeStoredSession}
+        storedSessionId="stored-session"
+      />
+    )
+
+    await handle!.submitText('!pwd')
+
+    expect(calls.map(call => call.method)).toEqual(['shell.exec'])
+    expect(calls[0]?.params?.session_id).toBe('resumed-runtime')
+    expect(resumeStoredSession).toHaveBeenCalledWith('stored-session')
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+  })
+
+  it('resumes and retries once when shell.exec rejects a stale runtime session', async () => {
+    let shellAttempts = 0
+    const calls: string[] = []
+    const resumeStoredSession = vi.fn()
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+      shellAttempts += 1
+
+      if (shellAttempts === 1) {
+        throw new Error('session not found')
+      }
+
+      return { code: 0, stderr: '', stdout: 'ok\n' } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumedSessionId="fresh-runtime"
+        resumeStoredSession={resumeStoredSession}
+      />
+    )
+
+    await handle!.submitText('!pwd')
+
+    expect(calls).toEqual(['shell.exec', 'shell.exec'])
+    expect(resumeStoredSession).toHaveBeenCalledWith(RUNTIME_SESSION_ID)
+  })
+
+  it('does not resume a different session after selection changes during stale-runtime recovery', async () => {
+    let rejectShell: ((reason: Error) => void) | undefined
+    const bindings: Array<[string, null | string | undefined]> = []
+    const resumeStoredSession = vi.fn()
+
+    const requestGateway = vi.fn(
+      async () =>
+        await new Promise<never>((_resolve, reject) => {
+          rejectShell = reject
+        })
+    )
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onUpdateSessionBinding={(runtimeId, storedId) => bindings.push([runtimeId, storedId])}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={resumeStoredSession}
+        storedSessionId="stored-a"
+      />
+    )
+
+    const pending = handle!.submitText('!pwd')
+    await Promise.resolve()
+    handle!.selectStoredSession('stored-b')
+    rejectShell?.(new Error('session not found'))
+
+    expect(await pending).toBe(true)
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect(resumeStoredSession).not.toHaveBeenCalled()
+    expect(bindings.at(-1)).toEqual([RUNTIME_SESSION_ID, 'stored-a'])
+  })
+
+  it('rejects a second submission while a shell command is still in flight', async () => {
+    let finishShell: ((value: { code: number; stderr: string; stdout: string }) => void) | undefined
+    const bindings: Array<[string, null | string | undefined]> = []
+
+    const requestGateway = async <T,>(_method: string, _params?: Record<string, unknown>): Promise<T> =>
+      (await new Promise<{ code: number; stderr: string; stdout: string }>(resolve => {
+        finishShell = resolve
+      })) as T
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onUpdateSessionBinding={(runtimeId, storedId) => bindings.push([runtimeId, storedId])}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId="stored-a"
+      />
+    )
+
+    const first = handle!.submitText('!sleep 1')
+    await Promise.resolve()
+
+    expect(await handle!.submitText('normal prompt')).toBe(false)
+    handle!.selectStoredSession('stored-b')
+
+    finishShell?.({ code: 0, stderr: '', stdout: 'done\n' })
+    expect(await first).toBe(true)
+    expect(bindings.at(-1)).toEqual([RUNTIME_SESSION_ID, 'stored-a'])
   })
 })
 

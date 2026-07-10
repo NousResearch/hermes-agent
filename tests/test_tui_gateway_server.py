@@ -481,6 +481,70 @@ def test_dispatch_rejects_non_object_params():
     }
 
 
+def test_shell_exec_uses_requested_project_cwd_without_local_path_validation(monkeypatch):
+    remote_project_cwd = "/remote-host/worktree"
+    calls: list[tuple[str, dict]] = []
+
+    def fake_run(command: str, **kwargs):
+        calls.append((command, kwargs))
+        return types.SimpleNamespace(returncode=0, stderr="", stdout="ready\n")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    response = server.handle_request(
+        {
+            "id": "shell-cwd",
+            "method": "shell.exec",
+            "params": {"command": "echo ready", "cwd": remote_project_cwd},
+        }
+    )
+
+    assert response is not None
+    assert response["result"] == {"code": 0, "stderr": "", "stdout": "ready\n"}
+    assert calls[0][0] == "echo ready"
+    assert calls[0][1]["cwd"] == remote_project_cwd
+    assert calls[0][1]["timeout"] == 30
+
+
+def test_shell_exec_rejects_unknown_runtime_session():
+    response = server.handle_request(
+        {
+            "id": "shell-stale-session",
+            "method": "shell.exec",
+            "params": {"command": "pwd", "session_id": "missing-runtime-session"},
+        }
+    )
+
+    assert response is not None
+    assert response["error"] == {"code": 4001, "message": "session not found"}
+
+
+def test_shell_exec_sanitizes_child_env_and_redacts_output(monkeypatch):
+    secret = "sk-proj-shell-secret-sentinel-value-1234567890"
+    calls: list[dict] = []
+
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+
+    def fake_run(_command: str, **kwargs):
+        calls.append(kwargs)
+        return types.SimpleNamespace(returncode=0, stderr=f"err:{secret}", stdout=f"out:{secret}")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    response = server.handle_request(
+        {
+            "id": "shell-secret-boundary",
+            "method": "shell.exec",
+            "params": {"command": "printenv OPENAI_API_KEY"},
+        }
+    )
+
+    assert response is not None
+    assert "OPENAI_API_KEY" not in calls[0]["env"]
+    assert secret not in response["result"]["stdout"]
+    assert secret not in response["result"]["stderr"]
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,

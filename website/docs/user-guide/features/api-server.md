@@ -346,8 +346,9 @@ curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
 
 `POST /api/sessions/{id}/chat` accepts an optional `Idempotency-Key` header (1–200 printable ASCII characters, no whitespace). Because a session-chat turn can run real tools (terminal, APIs, messaging), a blind retry after a timeout or gateway crash could repeat side effects. With a key, the turn runs under a durable **at-most-once** contract:
 
-- The key is reserved in a crash-safe SQLite receipt (`api_idempotency.db` in the profile's Hermes home, owner-only permissions) **before** the agent is constructed. If the reservation cannot be durably written, the turn does not run.
-- The receipt fingerprints the target session, the normalized message, `X-Hermes-Session-Key`, and any `system_message`/`instructions` — reusing a key with a different payload is rejected.
+- The key is reserved in a crash-safe SQLite receipt (`api_idempotency.db` in the profile's Hermes home) **before** the agent is constructed. If the reservation cannot be durably written, the turn does not run.
+- The receipt fingerprints the target session **incarnation** (its persisted creation identity — a deleted-and-recreated session with the same textual ID is a different incarnation), the normalized message, `X-Hermes-Session-Key`, and any `system_message`/`instructions`. Reusing a key with a different payload — or against a recreated session — is rejected; the old session's response can never replay into the new one.
+- On POSIX, owner-only (`0600`) permissions on the receipt database and its SQLite sidecars are **enforced and verified**; if they cannot be, keyed requests fail closed instead of storing responses in a non-private file. (Windows/NTFS has no POSIX mode semantics; this gate applies on POSIX only.)
 - Requests without the header behave exactly as before and never touch the receipt store.
 
 Responses:
@@ -356,13 +357,16 @@ Responses:
 |-----------|----------|
 | First execution | `200` + `X-Hermes-Idempotency: recorded` |
 | Concurrent duplicate (same process, turn still running) | Waits for the in-flight turn, then `200` + `X-Hermes-Idempotency: coalesced` — the agent runs once |
-| Retry after completion | Stored response replayed byte-for-byte, `X-Hermes-Idempotency: replayed`, zero agent invocations (replay window: `retention_hours`, default 24h) |
-| Same key, different payload | `409` with code `idempotency_conflict` |
+| Retry after completion (payload retained) | Stored response replayed byte-for-byte, `X-Hermes-Idempotency: replayed`, zero agent invocations |
+| Retry after the replay payload expired (`retention_hours` elapsed, or the response exceeded the persistence byte cap) | `409` with code `idempotency_response_expired` — the turn already executed and is **never re-executed** under this key; read the session transcript for the outcome |
+| Same key, different payload — or same textual session ID after delete/recreate | `409` with code `idempotency_conflict` |
 | Reserved turn found after a gateway restart (outcome unknown) | `409` with code `idempotency_state_uncertain` — **never re-executed automatically** |
-| Receipt store unavailable/corrupt | `503` with code `idempotency_store_unavailable`, no agent execution |
+| Receipt store unavailable/corrupt/at capacity/permissions unenforceable | `503` with code `idempotency_store_unavailable`, no agent execution |
 | Key sent to `/chat/stream` | `400` with code `idempotency_not_supported` (the streaming endpoint has no replayable single response, so it rejects keys instead of advertising a false guarantee) |
 
-The `idempotency_state_uncertain` hold is deliberate: after an ambiguous crash the gateway cannot know whether tools already ran, and operator reconciliation beats duplicated side effects. Inspect the session transcript (`GET /api/sessions/{id}/messages`), then retry with a **new** key once reconciled. Completed receipts are pruned after `retention_hours`; ambiguous `running` receipts are never auto-evicted.
+**Execution evidence never expires automatically — only replay payloads do.** After `retention_hours`, a completed receipt's response bytes are dropped but the receipt itself survives as a compact tombstone, so an aged retry gets `idempotency_response_expired` rather than silently executing the turn a second time. Responses larger than the persistence cap (1 MiB) are still returned to the original caller but are terminalized without replay bytes — same `idempotency_response_expired` on retry. The store is capacity-bounded: when full, requests for **new** keys fail closed (`503`) rather than evicting evidence; existing keys are still served.
+
+The `idempotency_state_uncertain` hold is deliberate: after an ambiguous crash the gateway cannot know whether tools already ran, and operator reconciliation beats duplicated side effects. Inspect the session transcript (`GET /api/sessions/{id}/messages`), then retry with a **new** key once reconciled. Cleanup is explicit only: `running` receipts are never auto-evicted, and the store's `release()` is compare-and-swap on the exact receipt an operator inspected (fingerprint + owner) — intended solely for dead-owner reconciliation — while `purge_completed()` lets an operator reclaim capacity from terminal receipts older than every client retry window. A completion is likewise compare-and-swap: a stale execution can never overwrite a receipt that was released and re-reserved after it.
 
 `Idempotency-Key` on this endpoint requires `API_SERVER_KEY` to be configured (receipts replay stored responses, so unauthenticated callers must not be able to create or probe them). `/v1/capabilities` advertises support via `"session_chat_idempotency": true`.
 
@@ -371,7 +375,7 @@ The `idempotency_state_uncertain` hold is deliberate: after an ambiguous crash t
 gateway:
   api_server:
     idempotency:
-      retention_hours: 24   # replay window for completed receipts
+      retention_hours: 24   # replay-payload window; execution evidence never auto-expires
 ```
 
 ## Skills and toolsets discovery

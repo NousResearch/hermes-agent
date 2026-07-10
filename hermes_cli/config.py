@@ -2962,12 +2962,15 @@ DEFAULT_CONFIG = {
             # Durable Idempotency-Key receipts for
             # POST /api/sessions/{id}/chat (gateway/platforms/api_idempotency.py).
             "idempotency": {
-                # How long completed receipts stay replayable. Must exceed
-                # the longest client retry window; floored at 1 hour.
-                # Receipts still reserved as `running` (ambiguous turns left
-                # by a crash/restart) are NEVER auto-evicted regardless of
-                # age — they hold the key closed until an operator
-                # reconciles the session.
+                # How long a completed turn's replay PAYLOAD stays available.
+                # Must exceed the longest client retry window; floored at 1
+                # hour. Execution evidence never auto-expires: after this
+                # window the receipt survives as a payload-less tombstone and
+                # retries of the same key return idempotency_response_expired
+                # instead of executing a second time. Receipts still reserved
+                # as `running` (ambiguous turns left by a crash/restart) are
+                # NEVER auto-evicted regardless of age — they hold the key
+                # closed until an operator reconciles the session.
                 "retention_hours": 24,
             },
         },

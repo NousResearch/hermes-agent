@@ -5,11 +5,18 @@ Behavior under test (see gateway/platforms/api_idempotency.py):
 - the key is durably reserved (``running``) before any agent execution
 - concurrent duplicates coalesce onto a single agent run
 - completed turns replay byte-identically with zero agent invocations
-- key reuse with a different payload is a 409 conflict
+- terminal evidence never expires: after replay-payload retention (or the
+  persistence byte cap) the receipt survives as a tombstone and retries
+  return ``idempotency_response_expired`` — never a second execution
+- receipts bind the session *incarnation*, so a deleted-and-recreated
+  session ID can never replay the old session's response
+- ``complete()``/``release()`` are compare-and-swap on the reservation's
+  fingerprint + owner, so stale executions/releases cannot touch a
+  replacement receipt
 - a ``running`` receipt from a dead/other process is 409 uncertain and is
   never re-executed automatically (at-most-once across restart)
-- store open/write/corruption failures fail closed for keyed requests only
-- retention/eviction never drops ``running`` receipts
+- store open/write/corruption/permission/capacity failures fail closed for
+  keyed requests only
 - unkeyed requests keep the exact legacy behavior and never touch the store
 
 The autouse ``_hermetic_environment`` fixture points HERMES_HOME at a
@@ -20,10 +27,12 @@ agent itself is faked.
 
 import asyncio
 import json
+import os
 import sqlite3
 import stat
 import sys
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -37,7 +46,11 @@ from gateway.platforms.api_idempotency import (
     DurableIdempotencyStore,
     IdempotencyStoreUnavailable,
 )
-from gateway.platforms.api_server import APIServerAdapter, _session_chat_fingerprint
+from gateway.platforms.api_server import (
+    APIServerAdapter,
+    _session_chat_fingerprint,
+    _session_incarnation,
+)
 from hermes_constants import get_hermes_home
 from hermes_state import SessionDB
 
@@ -73,6 +86,8 @@ AUTH = {"Authorization": "Bearer sk-test"}
 def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application()
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_post("/api/sessions", adapter._handle_create_session)
+    app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
     return app
@@ -84,6 +99,10 @@ def _store_path():
 
 def _mock_turn(session_id, text="fresh answer"):
     return AsyncMock(return_value=({"final_response": text, "session_id": session_id}, {"total_tokens": 3}))
+
+
+def _incarnation(session_db, session_id):
+    return _session_incarnation(session_db.get_session(session_id))
 
 
 def _receipt(adapter, session_id, key, scope=SESSION_CHAT_SCOPE):
@@ -100,27 +119,51 @@ def _receipt(adapter, session_id, key, scope=SESSION_CHAT_SCOPE):
         store.close()
 
 
+class _FailingCommitConn:
+    """Wrap a sqlite connection so commits fail like a dying disk."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def execute(self, *a, **kw):
+        return self._real.execute(*a, **kw)
+
+    def commit(self):
+        raise sqlite3.OperationalError("simulated disk I/O error")
+
+    def rollback(self):
+        return self._real.rollback()
+
+    def close(self):
+        return self._real.close()
+
+
 # ---------------------------------------------------------------------------
-# Store-level: durable state machine, restart semantics, retention, failure
+# Store-level: durable state machine, restart semantics, tombstones, CAS,
+# capacity, privacy gate
 # ---------------------------------------------------------------------------
 
 
 class TestDurableIdempotencyStore:
-    def _reserve(self, store, key="key-1", fp="fp-1", session_id="sess", principal="prin"):
+    def _reserve(self, store, key="key-1", fp="fp-1", session_id="sess",
+                 principal="prin", incarnation="inc-1"):
         return store.reserve(
             scope=SESSION_CHAT_SCOPE,
             principal=principal,
             session_id=session_id,
+            session_incarnation=incarnation,
             idempotency_key=key,
             fingerprint=fp,
         )
 
-    def _complete(self, store, key="key-1", body='{"ok": true}', session_id="sess", principal="prin"):
+    def _complete(self, store, key="key-1", fp="fp-1", body='{"ok": true}',
+                  session_id="sess", principal="prin"):
         return store.complete(
             scope=SESSION_CHAT_SCOPE,
             principal=principal,
             session_id=session_id,
             idempotency_key=key,
+            fingerprint=fp,
             response_body=body,
             response_headers={"X-Hermes-Session-Id": session_id},
             response_status=200,
@@ -145,8 +188,16 @@ class TestDurableIdempotencyStore:
         store = DurableIdempotencyStore(tmp_path / "idem.db")
         self._reserve(store, fp="fp-a")
         assert self._reserve(store, fp="fp-b").kind == "conflict"
-        self._complete(store)
+        self._complete(store, fp="fp-a")
         assert self._reserve(store, fp="fp-b").kind == "conflict"
+
+    def test_different_session_incarnation_conflicts(self, tmp_path):
+        """Same textual session ID, new incarnation → never classified as
+        the old receipt, even with an identical fingerprint string."""
+        store = DurableIdempotencyStore(tmp_path / "idem.db")
+        self._reserve(store, incarnation="inc-1")
+        self._complete(store)
+        assert self._reserve(store, incarnation="inc-2").kind == "conflict"
 
     def test_restart_running_is_uncertain_and_completed_replays(self, tmp_path):
         """A new store instance (process restart) must fail closed on
@@ -164,64 +215,74 @@ class TestDurableIdempotencyStore:
         assert replay.kind == "replay"
         assert replay.response_body == '{"answer": 42}'
 
-    def test_release_allows_reconciled_key_to_reserve_again(self, tmp_path):
-        first = DurableIdempotencyStore(tmp_path / "idem.db")
-        self._reserve(first)
-        first.close()
-        restarted = DurableIdempotencyStore(tmp_path / "idem.db")
-        assert self._reserve(restarted).kind == "uncertain"
-        assert restarted.release(
-            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="key-1"
-        ) is True
-        assert self._reserve(restarted).kind == "reserved"
+    # -- terminal-evidence permanence (review finding 1) -------------------
 
-    def test_retention_prunes_completed_but_never_running(self, tmp_path):
+    def test_expired_replay_payload_becomes_tombstone_never_fresh(self, tmp_path):
+        """The at-most-once regression: aging a completed receipt past
+        retention must expire the *payload only* — a retry with the same
+        key/fingerprint gets ``response_expired``, never a fresh reservation
+        (which would execute the turn a second time)."""
         store = DurableIdempotencyStore(tmp_path / "idem.db", retention_hours=1)
-        self._reserve(store, key="old-completed")
-        self._complete(store, key="old-completed")
-        self._reserve(store, key="fresh-completed")
-        self._complete(store, key="fresh-completed")
-        self._reserve(store, key="ancient-running")
-        ancient = time.time() - 365 * 24 * 3600
+        self._reserve(store, key="aged")
+        self._complete(store, key="aged")
         store._conn.execute(
-            "UPDATE idempotency_receipts SET completed_at=? WHERE idempotency_key='old-completed'",
-            (ancient,),
+            "UPDATE idempotency_receipts SET completed_at=? WHERE idempotency_key='aged'",
+            (time.time() - 25 * 3600,),
         )
+        store._conn.commit()
+
+        decision = self._reserve(store, key="aged")
+
+        assert decision.kind == "response_expired"
+        receipt = store.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="aged"
+        )
+        assert receipt is not None  # evidence survives
+        assert receipt["state"] == "completed"
+        assert receipt["response_body"] is None  # payload expired
+        assert receipt["fingerprint"] == "fp-1"
+        # And it stays that way on further retries.
+        assert self._reserve(store, key="aged").kind == "response_expired"
+        assert self._reserve(store, key="aged", fp="fp-other").kind == "conflict"
+
+    def test_retention_never_touches_running_receipts(self, tmp_path):
+        store = DurableIdempotencyStore(tmp_path / "idem.db", retention_hours=1)
+        self._reserve(store, key="ancient-running")
         store._conn.execute(
             "UPDATE idempotency_receipts SET created_at=? WHERE idempotency_key='ancient-running'",
-            (ancient,),
+            (time.time() - 365 * 24 * 3600,),
         )
         store._conn.commit()
 
-        self._reserve(store, key="trigger-prune")  # prune runs inside reserve
+        self._reserve(store, key="trigger-expiry-pass")
 
-        assert self._reserve(store, key="old-completed").kind == "reserved"  # pruned → key free again
-        assert self._reserve(store, key="fresh-completed").kind == "replay"
-        # The ancient running receipt still holds its key closed.
         assert self._reserve(store, key="ancient-running").kind == "in_progress_local"
-
-    def test_size_cap_evicts_oldest_completed_but_never_running(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(api_idempotency, "MAX_COMPLETED_RECEIPTS", 2)
-        store = DurableIdempotencyStore(tmp_path / "idem.db")
-        self._reserve(store, key="running-guard")
-        store._conn.execute(
-            "UPDATE idempotency_receipts SET created_at=? WHERE idempotency_key='running-guard'",
-            (time.time() - 9999,),
+        receipt = store.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess",
+            idempotency_key="ancient-running",
         )
-        store._conn.commit()
-        for i in range(4):
-            self._reserve(store, key=f"done-{i}")
-            self._complete(store, key=f"done-{i}")
-        # The size bound is enforced opportunistically on reservation, so a
-        # completion can transiently sit at cap+1 — any subsequent reserve
-        # restores the bound.
-        self._reserve(store, key="prune-trigger")
+        assert receipt["state"] == "running"
 
-        assert store.count_receipts(state="completed") <= 2
-        assert store.count_receipts(state="running") == 2  # guard + trigger survive
-        # Newest completed receipts survive; the running receipt is intact.
-        assert self._reserve(store, key="done-3").kind == "replay"
-        assert self._reserve(store, key="running-guard").kind == "in_progress_local"
+    def test_capacity_fails_closed_for_new_keys_only(self, tmp_path, monkeypatch):
+        """At capacity, NEW keys are refused (no eviction of evidence);
+        keys that already have receipts are still classified normally."""
+        monkeypatch.setattr(api_idempotency, "MAX_TOTAL_RECEIPTS", 2)
+        store = DurableIdempotencyStore(tmp_path / "idem.db")
+        self._reserve(store, key="existing-1")
+        self._complete(store, key="existing-1", body='{"kept": 1}')
+        self._reserve(store, key="existing-2")
+
+        with pytest.raises(IdempotencyStoreUnavailable):
+            self._reserve(store, key="brand-new")
+
+        assert store.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess",
+            idempotency_key="brand-new",
+        ) is None
+        # Evidence intact and still served at capacity.
+        assert store.count_receipts() == 2
+        assert self._reserve(store, key="existing-1").kind == "replay"
+        assert self._reserve(store, key="existing-2").kind == "in_progress_local"
 
     def test_running_capacity_guard_fails_closed(self, tmp_path, monkeypatch):
         monkeypatch.setattr(api_idempotency, "MAX_ACTIVE_RUNNING_RECEIPTS", 2)
@@ -230,10 +291,209 @@ class TestDurableIdempotencyStore:
         self._reserve(store, key="r2")
         with pytest.raises(IdempotencyStoreUnavailable):
             self._reserve(store, key="r3")
-        # The guard refused before writing: r3 never reserved.
         assert store.get_receipt(
             scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="r3"
         ) is None
+
+    def test_purge_completed_is_explicit_and_spares_running_and_fresh(self, tmp_path):
+        store = DurableIdempotencyStore(tmp_path / "idem.db", retention_hours=1)
+        self._reserve(store, key="old-done")
+        self._complete(store, key="old-done")
+        self._reserve(store, key="fresh-done")
+        self._complete(store, key="fresh-done")
+        self._reserve(store, key="old-running")
+        ancient = time.time() - 100 * 3600
+        store._conn.execute(
+            "UPDATE idempotency_receipts SET completed_at=? WHERE idempotency_key='old-done'",
+            (ancient,),
+        )
+        store._conn.execute(
+            "UPDATE idempotency_receipts SET created_at=? WHERE idempotency_key='old-running'",
+            (ancient,),
+        )
+        store._conn.commit()
+
+        with pytest.raises(ValueError):
+            store.purge_completed(older_than_hours=0.5)  # below replay retention
+
+        removed = store.purge_completed(older_than_hours=48)
+
+        assert removed == 1
+        assert store.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="old-done"
+        ) is None
+        assert self._reserve(store, key="fresh-done").kind == "replay"
+        assert self._reserve(store, key="old-running").kind == "in_progress_local"
+
+    # -- compare-and-complete / compare-and-release (review finding 3) -----
+
+    def test_stale_complete_cannot_poison_replacement_receipt(self, tmp_path):
+        """Exact review repro: owner A reserves fp_old; the reconciler
+        releases; owner B reserves fp_new; A's late completion must NOT
+        write the old reply into B's receipt."""
+        path = tmp_path / "idem.db"
+        owner_a = DurableIdempotencyStore(path)
+        assert self._reserve(owner_a, fp="fp-old").kind == "reserved"
+
+        # Reconciler (a different process) inspects and releases A's
+        # dead-owner receipt via CAS on the inspected values.
+        reconciler = DurableIdempotencyStore(path)
+        inspected = reconciler.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="key-1"
+        )
+        assert reconciler.release(
+            scope=SESSION_CHAT_SCOPE,
+            principal="prin",
+            session_id="sess",
+            idempotency_key="key-1",
+            fingerprint=inspected["fingerprint"],
+            owner_instance_id=inspected["owner_instance_id"],
+        ) is True
+
+        owner_b = DurableIdempotencyStore(path)
+        assert self._reserve(owner_b, fp="fp-new").kind == "reserved"
+
+        # A finishes late and tries to complete its long-gone reservation.
+        assert self._complete(owner_a, fp="fp-old", body='{"stale": "OLD"}') is False
+
+        poisoned = owner_b.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="key-1"
+        )
+        assert poisoned["state"] == "running"  # B's reservation untouched
+        assert poisoned["fingerprint"] == "fp-new"
+        assert poisoned["owner_instance_id"] == owner_b.instance_id
+        assert poisoned["response_body"] is None
+
+        # B completes normally and its own reply replays.
+        assert self._complete(owner_b, fp="fp-new", body='{"fresh": "NEW"}') is True
+        replay = self._reserve(owner_b, fp="fp-new")
+        assert replay.kind == "replay"
+        assert replay.response_body == '{"fresh": "NEW"}'
+
+    def test_stale_release_returns_false(self, tmp_path):
+        """A release() computed from an outdated inspection must not delete
+        the key's replacement receipt."""
+        path = tmp_path / "idem.db"
+        owner_a = DurableIdempotencyStore(path)
+        self._reserve(owner_a, fp="fp-old")
+        stale_inspection = owner_a.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="key-1"
+        )
+        # Legitimate reconciliation + re-reservation by a new owner.
+        assert owner_a.release(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess",
+            idempotency_key="key-1",
+            fingerprint=stale_inspection["fingerprint"],
+            owner_instance_id=stale_inspection["owner_instance_id"],
+        ) is True
+        owner_b = DurableIdempotencyStore(path)
+        self._reserve(owner_b, fp="fp-new")
+
+        # Replaying the OLD inspection against the NEW receipt: no match.
+        assert owner_a.release(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess",
+            idempotency_key="key-1",
+            fingerprint=stale_inspection["fingerprint"],
+            owner_instance_id=stale_inspection["owner_instance_id"],
+        ) is False
+        survivor = owner_b.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="key-1"
+        )
+        assert survivor is not None
+        assert survivor["fingerprint"] == "fp-new"
+
+    def test_release_then_reserve_after_reconciliation(self, tmp_path):
+        first = DurableIdempotencyStore(tmp_path / "idem.db")
+        self._reserve(first)
+        first.close()
+        restarted = DurableIdempotencyStore(tmp_path / "idem.db")
+        assert self._reserve(restarted).kind == "uncertain"
+        inspected = restarted.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="key-1"
+        )
+        assert restarted.release(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess",
+            idempotency_key="key-1",
+            fingerprint=inspected["fingerprint"],
+            owner_instance_id=inspected["owner_instance_id"],
+        ) is True
+        assert self._reserve(restarted).kind == "reserved"
+
+    # -- persisted-response byte cap (review finding 5) ---------------------
+
+    def test_oversized_response_terminalizes_without_replay(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(api_idempotency, "MAX_PERSISTED_RESPONSE_BYTES", 64)
+        store = DurableIdempotencyStore(tmp_path / "idem.db")
+        self._reserve(store)
+        big_body = json.dumps({"content": "x" * 500})
+
+        assert self._complete(store, body=big_body) is False  # no replay persisted
+
+        receipt = store.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="key-1"
+        )
+        assert receipt["state"] == "completed"  # terminal evidence
+        assert receipt["response_body"] is None  # no oversized bytes stored
+        assert self._reserve(store).kind == "response_expired"  # never re-executes
+
+    # -- privacy enforcement gate (review finding 4) ------------------------
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX mode enforcement only")
+    def test_chmod_denied_fails_closed_on_open(self, tmp_path, monkeypatch):
+        """Exact review repro: permission enforcement failure must raise,
+        not proceed with a non-private response-bearing DB."""
+        def _denied(self, mode):
+            raise PermissionError("chmod denied by policy")
+
+        monkeypatch.setattr(Path, "chmod", _denied)
+        with pytest.raises(IdempotencyStoreUnavailable):
+            DurableIdempotencyStore(tmp_path / "idem.db")
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX mode enforcement only")
+    def test_chmod_denied_after_open_fails_closed_on_reserve(self, tmp_path, monkeypatch):
+        store = DurableIdempotencyStore(tmp_path / "idem.db")
+
+        def _denied(self, mode):
+            raise PermissionError("chmod denied by policy")
+
+        monkeypatch.setattr(Path, "chmod", _denied)
+        with pytest.raises(IdempotencyStoreUnavailable):
+            self._reserve(store)
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX mode enforcement only")
+    def test_privacy_failure_at_completion_drops_payload_not_evidence(self, tmp_path, monkeypatch):
+        store = DurableIdempotencyStore(tmp_path / "idem.db")
+        self._reserve(store)
+
+        def _broken(self=store):
+            raise IdempotencyStoreUnavailable("simulated unenforceable permissions")
+
+        monkeypatch.setattr(store, "_enforce_owner_only_permissions", _broken)
+
+        assert self._complete(store, body='{"secret": "reply"}') is False
+
+        receipt = store.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="key-1"
+        )
+        assert receipt["state"] == "completed"
+        assert receipt["response_body"] is None  # reply bytes never written
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX file modes are not enforced on NTFS")
+    def test_store_and_sidecars_owner_only_under_permissive_umask(self, tmp_path):
+        old_umask = os.umask(0o000)
+        try:
+            path = tmp_path / "idem.db"
+            store = DurableIdempotencyStore(path)
+            self._reserve(store)
+            self._complete(store)
+        finally:
+            os.umask(old_umask)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        for sidecar in (Path(f"{path}-wal"), Path(f"{path}-shm")):
+            if sidecar.exists():
+                assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600, sidecar
+
+    # -- failure modes -------------------------------------------------------
 
     def test_open_failure_raises_unavailable(self, tmp_path):
         blocker = tmp_path / "not-a-dir"
@@ -249,28 +509,10 @@ class TestDurableIdempotencyStore:
 
     def test_reserve_commit_failure_raises_unavailable(self, tmp_path):
         store = DurableIdempotencyStore(tmp_path / "idem.db")
-
-        class FailingCommitConn:
-            def __init__(self, real):
-                self._real = real
-
-            def execute(self, *a, **kw):
-                return self._real.execute(*a, **kw)
-
-            def commit(self):
-                raise sqlite3.OperationalError("simulated disk I/O error")
-
-            def rollback(self):
-                return self._real.rollback()
-
-            def close(self):
-                return self._real.close()
-
         real_conn = store._conn
-        store._conn = FailingCommitConn(real_conn)
+        store._conn = _FailingCommitConn(real_conn)
         with pytest.raises(IdempotencyStoreUnavailable):
             self._reserve(store)
-        # The failed reservation was rolled back — nothing durable exists.
         store._conn = real_conn
         assert store.get_receipt(
             scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="key-1"
@@ -279,25 +521,8 @@ class TestDurableIdempotencyStore:
     def test_complete_failure_keeps_receipt_running(self, tmp_path):
         store = DurableIdempotencyStore(tmp_path / "idem.db")
         self._reserve(store)
-
-        class FailingCommitConn:
-            def __init__(self, real):
-                self._real = real
-
-            def execute(self, *a, **kw):
-                return self._real.execute(*a, **kw)
-
-            def commit(self):
-                raise sqlite3.OperationalError("simulated disk I/O error")
-
-            def rollback(self):
-                return self._real.rollback()
-
-            def close(self):
-                return self._real.close()
-
         real_conn = store._conn
-        store._conn = FailingCommitConn(real_conn)
+        store._conn = _FailingCommitConn(real_conn)
         assert self._complete(store) is False
         store._conn = real_conn
         receipt = store.get_receipt(
@@ -305,18 +530,46 @@ class TestDurableIdempotencyStore:
         )
         assert receipt["state"] == "running"
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX file modes are not enforced on NTFS")
-    def test_store_created_owner_only_under_permissive_umask(self, tmp_path):
-        import os
+    # -- schema migration ----------------------------------------------------
 
-        old_umask = os.umask(0o000)
-        try:
-            path = tmp_path / "idem.db"
-            store = DurableIdempotencyStore(path)
-            self._reserve(store)
-        finally:
-            os.umask(old_umask)
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    def test_pre_incarnation_schema_migrates_and_old_rows_never_replay(self, tmp_path):
+        """Stores created before the incarnation column are ALTERed in place;
+        their rows (incarnation='') can never match a real incarnation, so
+        the worst case for a pre-migration receipt is a safe conflict."""
+        path = tmp_path / "idem.db"
+        conn = sqlite3.connect(str(path))
+        conn.execute(
+            """CREATE TABLE idempotency_receipts (
+                scope TEXT NOT NULL,
+                principal_hash TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('running', 'completed')),
+                owner_instance_id TEXT NOT NULL,
+                response_body TEXT,
+                response_headers TEXT,
+                response_status INTEGER,
+                created_at REAL NOT NULL,
+                completed_at REAL,
+                PRIMARY KEY (scope, principal_hash, session_id, idempotency_key)
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO idempotency_receipts VALUES"
+            " (?, 'prin', 'sess', 'key-1', 'fp-1', 'completed', 'dead-owner',"
+            "  '{\"old\": true}', '{}', 200, ?, ?)",
+            (SESSION_CHAT_SCOPE, time.time(), time.time()),
+        )
+        conn.commit()
+        conn.close()
+
+        store = DurableIdempotencyStore(path)
+        receipt = store.get_receipt(
+            scope=SESSION_CHAT_SCOPE, principal="prin", session_id="sess", idempotency_key="key-1"
+        )
+        assert receipt["session_incarnation"] == ""  # row preserved
+        assert self._reserve(store, fp="fp-1", incarnation="inc-real").kind == "conflict"
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +601,7 @@ async def test_first_keyed_request_records_durable_receipt(auth_adapter, session
     assert receipt is not None
     assert receipt["state"] == "completed"
     assert json.loads(receipt["response_body"]) == payload
+    assert receipt["session_incarnation"] == _incarnation(session_db, session_id)
 
 
 @pytest.mark.asyncio
@@ -508,12 +762,224 @@ async def test_normalized_multimodal_fingerprint_is_stable(auth_adapter, session
 
 
 @pytest.mark.asyncio
+async def test_deleted_and_recreated_session_never_replays_old_receipt(auth_adapter, session_db):
+    """Exact review repro, via the real endpoints: complete a keyed turn,
+    DELETE the session, recreate the same textual ID, resend the same
+    key/payload — the recreated session must never receive the old
+    session's stored reply (and the agent must not silently run either)."""
+    app = _create_session_app(auth_adapter)
+    calls = []
+
+    async def fake_run(**kwargs):
+        calls.append(kwargs["session_id"])
+        return (
+            {"final_response": f"execution-{len(calls)}", "session_id": kwargs["session_id"]},
+            {"total_tokens": 1},
+        )
+
+    with patch.object(auth_adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            create = await cli.post("/api/sessions", json={"id": "reused-id"}, headers=AUTH)
+            assert create.status == 201, await create.text()
+            first_incarnation = _incarnation(session_db, "reused-id")
+
+            first = await cli.post(
+                "/api/sessions/reused-id/chat",
+                json={"message": "same payload"},
+                headers={**AUTH, "Idempotency-Key": "same-key"},
+            )
+            assert first.status == 200
+            first_payload = await first.json()
+            assert first_payload["message"]["content"] == "execution-1"
+
+            # Sanity: same incarnation still replays.
+            replay = await cli.post(
+                "/api/sessions/reused-id/chat",
+                json={"message": "same payload"},
+                headers={**AUTH, "Idempotency-Key": "same-key"},
+            )
+            assert replay.headers["X-Hermes-Idempotency"] == "replayed"
+
+            deleted = await cli.delete("/api/sessions/reused-id", headers=AUTH)
+            assert deleted.status == 200
+            recreated = await cli.post("/api/sessions", json={"id": "reused-id"}, headers=AUTH)
+            assert recreated.status == 201, await recreated.text()
+            second_incarnation = _incarnation(session_db, "reused-id")
+            assert second_incarnation != first_incarnation  # new incarnation
+
+            retry = await cli.post(
+                "/api/sessions/reused-id/chat",
+                json={"message": "same payload"},
+                headers={**AUTH, "Idempotency-Key": "same-key"},
+            )
+            retry_body = await retry.json()
+
+    assert retry.status == 409
+    assert retry_body["error"]["code"] == "idempotency_conflict"
+    assert "execution-1" not in json.dumps(retry_body)  # no stale replay
+    assert calls == ["reused-id"]  # exactly one execution ever
+
+
+@pytest.mark.asyncio
+async def test_expired_retention_retry_never_executes_again(auth_adapter, session_db):
+    """Exact review repro: age completed_at past the retention window and
+    resend the identical request — pre-fix this reserved fresh and ran the
+    agent a second time; now it must be a labeled 409 with zero reruns."""
+    session_id = session_db.create_session("aged-session", "api_server")
+    app = _create_session_app(auth_adapter)
+    calls = []
+
+    async def fake_run(**kwargs):
+        calls.append(1)
+        return (
+            {"final_response": f"execution-{len(calls)}", "session_id": session_id},
+            {"total_tokens": 1},
+        )
+
+    with patch.object(auth_adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "age me"},
+                headers={**AUTH, "Idempotency-Key": "aged-key"},
+            )
+            assert first.status == 200
+            assert (await first.json())["message"]["content"] == "execution-1"
+
+            store = auth_adapter._ensure_idempotency_store()
+            store._conn.execute(
+                "UPDATE idempotency_receipts SET completed_at=? WHERE idempotency_key='aged-key'",
+                (time.time() - 25 * 3600,),  # past the default 24h retention
+            )
+            store._conn.commit()
+
+            retry = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "age me"},
+                headers={**AUTH, "Idempotency-Key": "aged-key"},
+            )
+            retry_body = await retry.json()
+
+    assert retry.status == 409
+    assert retry_body["error"]["code"] == "idempotency_response_expired"
+    assert len(calls) == 1  # the turn never executed a second time
+    receipt = _receipt(auth_adapter, session_id, "aged-key")
+    assert receipt["state"] == "completed"  # tombstone evidence survives
+    assert receipt["response_body"] is None
+
+
+@pytest.mark.asyncio
+async def test_oversized_response_returns_live_but_never_replays(auth_adapter, session_db, monkeypatch):
+    monkeypatch.setattr(api_idempotency, "MAX_PERSISTED_RESPONSE_BYTES", 128)
+    session_id = session_db.create_session("big-session", "api_server")
+    big_text = "B" * 1000
+    mock_run = _mock_turn(session_id, text=big_text)
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "make it big"},
+                headers={**AUTH, "Idempotency-Key": "big-key"},
+            )
+            first_payload = await first.json()
+            retry = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "make it big"},
+                headers={**AUTH, "Idempotency-Key": "big-key"},
+            )
+            retry_body = await retry.json()
+
+    assert first.status == 200  # the original caller still gets the reply
+    assert first.headers["X-Hermes-Idempotency"] == "recorded"
+    assert first_payload["message"]["content"] == big_text
+    assert retry.status == 409
+    assert retry_body["error"]["code"] == "idempotency_response_expired"
+    mock_run.assert_awaited_once()  # never executed twice
+    receipt = _receipt(auth_adapter, session_id, "big-key")
+    assert receipt["state"] == "completed"
+    assert receipt["response_body"] is None  # oversized bytes never persisted
+
+
+@pytest.mark.asyncio
+async def test_capacity_fails_closed_for_new_keys_but_serves_existing(auth_adapter, session_db, monkeypatch):
+    monkeypatch.setattr(api_idempotency, "MAX_TOTAL_RECEIPTS", 1)
+    session_id = session_db.create_session("cap-session", "api_server")
+    mock_run = _mock_turn(session_id)
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "fills the store"},
+                headers={**AUTH, "Idempotency-Key": "cap-key-1"},
+            )
+            assert first.status == 200
+            new_key = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "another"},
+                headers={**AUTH, "Idempotency-Key": "cap-key-2"},
+            )
+            new_key_body = await new_key.json()
+            replay = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "fills the store"},
+                headers={**AUTH, "Idempotency-Key": "cap-key-1"},
+            )
+
+    assert new_key.status == 503
+    assert new_key_body["error"]["code"] == "idempotency_store_unavailable"
+    # Never suggest bypassing the contract to get past the failure.
+    assert "without idempotency-key" not in new_key_body["error"]["message"].lower()
+    assert "bypass" not in new_key_body["error"]["message"].lower()
+    assert replay.status == 200  # evidence still served at capacity
+    assert replay.headers["X-Hermes-Idempotency"] == "replayed"
+    mock_run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode enforcement only")
+async def test_chmod_denied_fails_closed_with_zero_executions(auth_adapter, session_db, monkeypatch):
+    """Exact review repro: under a permissive umask with chmod denied, the
+    keyed path must refuse to run rather than store replies in a
+    group/world-readable DB."""
+    session_id = session_db.create_session("privacy-session", "api_server")
+
+    def _denied(self, mode):
+        raise PermissionError("chmod denied by policy")
+
+    monkeypatch.setattr(Path, "chmod", _denied)
+    mock_run = _mock_turn(session_id)
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            keyed = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "private"},
+                headers={**AUTH, "Idempotency-Key": "privacy-key"},
+            )
+            keyed_body = await keyed.json()
+            unkeyed = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "legacy"},
+                headers=AUTH,
+            )
+
+    assert keyed.status == 503
+    assert keyed_body["error"]["code"] == "idempotency_store_unavailable"
+    assert unkeyed.status == 200  # unkeyed traffic unaffected
+    mock_run.assert_awaited_once()  # only the unkeyed request ran
+
+
+@pytest.mark.asyncio
 async def test_restart_with_running_receipt_is_uncertain_and_never_reruns(auth_adapter, session_db):
     """A ``running`` receipt persisted by a dead process must hold the key
     closed: deterministic 409 idempotency_state_uncertain, zero agent calls."""
     session_id = session_db.create_session("restart-session", "api_server")
+    incarnation = _incarnation(session_db, session_id)
     fingerprint = _session_chat_fingerprint(
         session_id=session_id,
+        session_incarnation=incarnation,
         gateway_session_key=None,
         user_message="retry me",
         system_prompt=None,
@@ -523,6 +989,7 @@ async def test_restart_with_running_receipt_is_uncertain_and_never_reruns(auth_a
         scope=SESSION_CHAT_SCOPE,
         principal=auth_adapter._idempotency_principal_scope(),
         session_id=session_id,
+        session_incarnation=incarnation,
         idempotency_key="orphaned-key",
         fingerprint=fingerprint,
     )
@@ -548,8 +1015,10 @@ async def test_restart_with_running_receipt_is_uncertain_and_never_reruns(auth_a
 @pytest.mark.asyncio
 async def test_restart_with_completed_receipt_replays(auth_adapter, session_db):
     session_id = session_db.create_session("restart-replay-session", "api_server")
+    incarnation = _incarnation(session_db, session_id)
     fingerprint = _session_chat_fingerprint(
         session_id=session_id,
+        session_incarnation=incarnation,
         gateway_session_key=None,
         user_message="what happened?",
         system_prompt=None,
@@ -566,6 +1035,7 @@ async def test_restart_with_completed_receipt_replays(auth_adapter, session_db):
         scope=SESSION_CHAT_SCOPE,
         principal=principal,
         session_id=session_id,
+        session_incarnation=incarnation,
         idempotency_key="pre-restart-key",
         fingerprint=fingerprint,
     )
@@ -574,6 +1044,7 @@ async def test_restart_with_completed_receipt_replays(auth_adapter, session_db):
         principal=principal,
         session_id=session_id,
         idempotency_key="pre-restart-key",
+        fingerprint=fingerprint,
         response_body=stored_body,
         response_headers={"X-Hermes-Session-Id": session_id},
         response_status=200,
@@ -601,24 +1072,7 @@ async def test_restart_with_completed_receipt_replays(auth_adapter, session_db):
 async def test_reservation_write_failure_prevents_agent_invocation(auth_adapter, session_db):
     session_id = session_db.create_session("commit-fail-session", "api_server")
     store = auth_adapter._ensure_idempotency_store()
-
-    class FailingCommitConn:
-        def __init__(self, real):
-            self._real = real
-
-        def execute(self, *a, **kw):
-            return self._real.execute(*a, **kw)
-
-        def commit(self):
-            raise sqlite3.OperationalError("simulated fsync failure")
-
-        def rollback(self):
-            return self._real.rollback()
-
-        def close(self):
-            return self._real.close()
-
-    store._conn = FailingCommitConn(store._conn)
+    store._conn = _FailingCommitConn(store._conn)
     mock_run = _mock_turn(session_id)
     app = _create_session_app(auth_adapter)
     with patch.object(auth_adapter, "_run_agent", mock_run):
@@ -658,6 +1112,7 @@ async def test_corrupt_store_fails_closed_for_keyed_and_leaves_unkeyed_green(aut
 
     assert keyed.status == 503
     assert keyed_body["error"]["code"] == "idempotency_store_unavailable"
+    assert "without idempotency-key" not in keyed_body["error"]["message"].lower()
     assert unkeyed.status == 200  # legacy path untouched by the broken store
     mock_run.assert_awaited_once()  # only the unkeyed request ran
 
@@ -701,8 +1156,10 @@ async def test_unauthenticated_requests_cannot_create_or_probe_receipts(auth_ada
 
             # Plant a completed receipt, then verify an unauthenticated
             # request cannot replay (probe) it.
+            incarnation = _incarnation(session_db, session_id)
             fingerprint = _session_chat_fingerprint(
                 session_id=session_id,
+                session_incarnation=incarnation,
                 gateway_session_key=None,
                 user_message="hello",
                 system_prompt=None,
@@ -713,6 +1170,7 @@ async def test_unauthenticated_requests_cannot_create_or_probe_receipts(auth_ada
                 scope=SESSION_CHAT_SCOPE,
                 principal=principal,
                 session_id=session_id,
+                session_incarnation=incarnation,
                 idempotency_key="probe-key",
                 fingerprint=fingerprint,
             )
@@ -721,6 +1179,7 @@ async def test_unauthenticated_requests_cannot_create_or_probe_receipts(auth_ada
                 principal=principal,
                 session_id=session_id,
                 idempotency_key="probe-key",
+                fingerprint=fingerprint,
                 response_body='{"secret": "stored response"}',
                 response_headers={},
                 response_status=200,
@@ -813,9 +1272,10 @@ async def test_streaming_endpoint_rejects_idempotency_keys_explicitly(auth_adapt
 @pytest.mark.asyncio
 async def test_agent_failure_holds_receipt_and_retry_fails_closed(auth_adapter, session_db):
     """If the reserved turn dies mid-execution, tools may already have run:
-    the receipt must stay ``running`` and a retry must not re-execute."""
+    the receipt must stay ``running``, a retry must not re-execute, and the
+    HTTP error must not reflect internal exception text."""
     session_id = session_db.create_session("failed-turn-session", "api_server")
-    mock_run = AsyncMock(side_effect=RuntimeError("provider exploded"))
+    mock_run = AsyncMock(side_effect=RuntimeError("provider exploded sk-secret-123"))
     app = _create_session_app(auth_adapter)
     with patch.object(auth_adapter, "_run_agent", mock_run):
         async with TestClient(TestServer(app)) as cli:
@@ -824,6 +1284,7 @@ async def test_agent_failure_holds_receipt_and_retry_fails_closed(auth_adapter, 
                 json={"message": "dangerous turn"},
                 headers={**AUTH, "Idempotency-Key": "failed-key"},
             )
+            first_body = await first.json()
             retry = await cli.post(
                 f"/api/sessions/{session_id}/chat",
                 json={"message": "dangerous turn"},
@@ -832,6 +1293,10 @@ async def test_agent_failure_holds_receipt_and_retry_fails_closed(auth_adapter, 
             retry_body = await retry.json()
 
     assert first.status == 500
+    assert first_body["error"]["code"] == "agent_error"
+    # Generic body: internal exception text is not reflected to the caller.
+    assert "provider exploded" not in json.dumps(first_body)
+    assert "sk-secret-123" not in json.dumps(first_body)
     assert retry.status == 409
     assert retry_body["error"]["code"] == "idempotency_state_uncertain"
     assert mock_run.await_count == 1
@@ -931,3 +1396,4 @@ async def test_e2e_real_store_real_executor_roundtrip(auth_adapter, session_db, 
     receipt = _receipt(auth_adapter, session_id, "e2e-key")
     assert receipt["state"] == "completed"
     assert receipt["response_body"] == first_body
+    assert receipt["session_incarnation"] == _incarnation(session_db, session_id)

@@ -774,23 +774,27 @@ _IDEMPOTENCY_KEY_RE = re.compile(r"^[\x21-\x7e]{1,200}$")
 def _session_chat_fingerprint(
     *,
     session_id: str,
+    session_incarnation: str,
     gateway_session_key: Optional[str],
     user_message: Any,
     system_prompt: Optional[str],
 ) -> str:
     """Canonical fingerprint of everything that shapes a session-chat turn.
 
-    Binds the route, the target session, the caller's memory scope
-    (``X-Hermes-Session-Key``), the *normalized* user message (so two wire
-    encodings of the same content — e.g. ``input_text`` vs ``text`` parts —
-    fingerprint identically), and any ephemeral system/instructions input.
-    The authenticated principal is bound separately in the receipt's storage
-    key (see ``_idempotency_principal_scope``).
+    Binds the route, the target session *incarnation* (creation identity,
+    not just the reusable textual ID — see ``_session_incarnation``), the
+    caller's memory scope (``X-Hermes-Session-Key``), the *normalized* user
+    message (so two wire encodings of the same content — e.g. ``input_text``
+    vs ``text`` parts — fingerprint identically), and any ephemeral
+    system/instructions input.  The authenticated principal is bound
+    separately in the receipt's storage key (see
+    ``_idempotency_principal_scope``).
     """
     material = json.dumps(
         {
             "route": SESSION_CHAT_SCOPE,
             "session_id": session_id,
+            "session_incarnation": session_incarnation,
             "session_key": gateway_session_key or "",
             "message": user_message,
             "system": system_prompt or "",
@@ -800,6 +804,29 @@ def _session_chat_fingerprint(
         separators=(",", ":"),
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _session_incarnation(session: Any) -> Optional[str]:
+    """Immutable creation identity of a persisted session row.
+
+    Derived from ``sessions.started_at``, which ``_insert_session_row``
+    writes exactly once at INSERT time and never updates (the upsert's
+    ``ON CONFLICT`` clause backfills other columns only).  Deleting a
+    session and recreating the same textual ID therefore produces a new
+    ``time.time()`` value — a new incarnation — so idempotency receipts
+    minted against the old session can never replay into the new one.
+    ``repr(float(...))`` round-trips the full IEEE-754 double, so no
+    precision is lost between SQLite and the receipt.
+
+    Returns None when the record has no usable creation identity (schema
+    guarantees ``started_at NOT NULL``, so this is purely defensive) —
+    keyed callers must fail closed rather than bind evidence to nothing.
+    """
+    started_at = session.get("started_at") if isinstance(session, dict) else None
+    try:
+        return repr(float(started_at))
+    except (TypeError, ValueError):
+        return None
 
 
 def _derive_chat_session_id(
@@ -1301,8 +1328,8 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(
             _openai_error(
                 "Idempotency store unavailable; refusing to run the turn "
-                "without a durable receipt. Retry later or retry without "
-                "Idempotency-Key to bypass the durable contract.",
+                "without a durable receipt. Retry later, after the operator "
+                "restores the receipt store.",
                 err_type="server_error",
                 code="idempotency_store_unavailable",
             ),
@@ -2064,7 +2091,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
+        session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
         body, err = await self._read_json_body(request)
@@ -2090,6 +2117,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return await self._handle_session_chat_idempotent(
             idempotency_key=idempotency_key,
             session_id=session_id,
+            session=session,
             user_message=user_message,
             system_prompt=system_prompt,
             gateway_session_key=gateway_session_key,
@@ -2139,6 +2167,7 @@ class APIServerAdapter(BasePlatformAdapter):
         *,
         idempotency_key: str,
         session_id: str,
+        session: Dict[str, Any],
         user_message: Any,
         system_prompt: Optional[str],
         gateway_session_key: Optional[str],
@@ -2151,18 +2180,33 @@ class APIServerAdapter(BasePlatformAdapter):
         * live duplicate (same process) → coalesces with the in-flight turn,
           200, ``X-Hermes-Idempotency: coalesced``
         * replay of completed    → stored body, ``X-Hermes-Idempotency: replayed``
-        * same key, different fingerprint → 409 ``idempotency_conflict``
+        * completed but replay payload expired (retention age / byte cap) →
+          409 ``idempotency_response_expired`` — the turn already executed
+          and is never re-executed under this key
+        * same key, different fingerprint or different session incarnation
+          (deleted/recreated session ID) → 409 ``idempotency_conflict``
         * persisted ``running`` from a restarted/other process → 409
           ``idempotency_state_uncertain`` — never auto-re-executed
-        * store unavailable/corrupt → 503 ``idempotency_store_unavailable``,
-          no agent execution
+        * store unavailable/corrupt/at-capacity/permissions-unenforceable →
+          503 ``idempotency_store_unavailable``, no agent execution
         """
         invalid = self._validate_idempotency_key_header(idempotency_key)
         if invalid is not None:
             return invalid
 
+        session_incarnation = _session_incarnation(session)
+        if session_incarnation is None:
+            # No usable creation identity to bind evidence to (defensive —
+            # the sessions schema guarantees started_at).  Fail closed
+            # rather than mint a receipt that a recreated session could match.
+            return self._idempotency_store_unavailable_response(
+                IdempotencyStoreUnavailable(
+                    f"session {session_id} has no usable creation identity"
+                )
+            )
         fingerprint = _session_chat_fingerprint(
             session_id=session_id,
+            session_incarnation=session_incarnation,
             gateway_session_key=gateway_session_key,
             user_message=user_message,
             system_prompt=system_prompt,
@@ -2186,6 +2230,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     scope=SESSION_CHAT_SCOPE,
                     principal=principal,
                     session_id=session_id,
+                    session_incarnation=session_incarnation,
                     idempotency_key=idempotency_key,
                     fingerprint=fingerprint,
                 )
@@ -2195,9 +2240,22 @@ class APIServerAdapter(BasePlatformAdapter):
             if decision.kind == "conflict":
                 return web.json_response(
                     _openai_error(
-                        "Idempotency-Key was already used for this session "
-                        "with a different request payload.",
+                        "Idempotency-Key was already used with a different "
+                        "request payload or against a different incarnation "
+                        "of this session ID.",
                         code="idempotency_conflict",
+                    ),
+                    status=409,
+                )
+            if decision.kind == "response_expired":
+                return web.json_response(
+                    _openai_error(
+                        "The turn recorded for this Idempotency-Key already "
+                        "executed, but its replay payload is no longer "
+                        "retained. It will not be re-executed under this "
+                        "key. Read the session transcript for the outcome, "
+                        "or send a new turn with a new key.",
+                        code="idempotency_response_expired",
                     ),
                     status=409,
                 )
@@ -2221,6 +2279,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         principal=principal,
                         session_id=session_id,
                         idempotency_key=idempotency_key,
+                        fingerprint=fingerprint,
                         user_message=user_message,
                         system_prompt=system_prompt,
                         gateway_session_key=gateway_session_key,
@@ -2266,11 +2325,20 @@ class APIServerAdapter(BasePlatformAdapter):
             # The reserved turn failed mid-execution.  The receipt stays
             # ``running`` on purpose: tools may already have run, so a retry
             # with the same key must fail closed as uncertain, not re-execute.
+            # The HTTP body stays generic — agent/provider exception text is
+            # not reflected to the caller; the redacted cause goes to the log.
             logger.error(
-                "[api_server] idempotent session chat turn failed: %s", exc, exc_info=True
+                "[api_server] idempotent session chat turn failed (session=%s): %s",
+                session_id,
+                _redact_api_error_text(exc),
+                exc_info=True,
             )
             return web.json_response(
-                _openai_error(f"Internal server error: {exc}", err_type="server_error"),
+                _openai_error(
+                    "Internal server error while executing the idempotent turn.",
+                    err_type="server_error",
+                    code="agent_error",
+                ),
                 status=500,
             )
 
@@ -2289,6 +2357,7 @@ class APIServerAdapter(BasePlatformAdapter):
         principal: str,
         session_id: str,
         idempotency_key: str,
+        fingerprint: str,
         user_message: Any,
         system_prompt: Optional[str],
         gateway_session_key: Optional[str],
@@ -2298,9 +2367,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Returns ``(body_text, headers)`` where *body_text* is the exact JSON
         the live caller receives — the same bytes ``complete()`` persists, so
-        replays are byte-identical.  ``complete()`` never raises; if the
-        completed write fails the response is still delivered and the receipt
-        stays ``running`` (later retries fail closed as uncertain).
+        replays are byte-identical.  ``complete()`` never raises and is
+        compare-and-swap on this reservation's fingerprint + owner instance,
+        so a stale execution cannot overwrite a receipt an operator has since
+        released and a new request re-reserved.  If the completed write
+        fails, the response is still delivered and the receipt stays
+        ``running`` (later retries fail closed as uncertain); if the payload
+        exceeds the persistence byte cap, the receipt is terminalized without
+        replay bytes (later retries get ``idempotency_response_expired``).
         """
         payload, headers = await self._execute_session_chat_turn(
             session_id=session_id,
@@ -2315,6 +2389,7 @@ class APIServerAdapter(BasePlatformAdapter):
             principal=principal,
             session_id=session_id,
             idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
             response_body=body_text,
             response_headers=headers,
             response_status=200,

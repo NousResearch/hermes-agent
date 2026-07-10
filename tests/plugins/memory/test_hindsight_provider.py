@@ -21,6 +21,8 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _extract_hindsight_routing_context,
+    _generate_hindsight_bank_candidates,
     _load_config,
     _build_embedded_profile_env,
     _normalize_observation_scopes,
@@ -2196,6 +2198,160 @@ class TestBankRouting:
         )
 
         assert routes == []
+
+    def test_extract_routing_context_caches_git_identity(self, tmp_path):
+        workspace = tmp_path / "rigplane-pro"
+        workspace.mkdir()
+        (workspace / "AGENTS.md").write_text("# proprietary project\n")
+        os.system(f"git -C {workspace} init -q")
+        os.system(f"git -C {workspace} remote add origin git@github.com:rigplane/rigplane-pro.git")
+        os.system(f"git -C {workspace} checkout -b feature/test >/dev/null 2>&1")
+
+        cache_root = tmp_path / "profile" / "cache"
+        first = _extract_hindsight_routing_context(
+            workspace="rigplane-pro",
+            workspace_path=str(workspace),
+            profile="frontdesk",
+            platform="cli",
+            user="",
+            session="s1",
+            cache_root=cache_root,
+            registry_version="v1",
+        )
+        assert first.repo_name == "rigplane-pro"
+        assert first.git_remote == "git@github.com:rigplane/rigplane-pro.git"
+        assert first.git_repo == "rigplane/rigplane-pro"
+        assert first.git_branch == "feature/test"
+        assert first.cache_hit is False
+
+        os.system(f"git -C {workspace} checkout -b feature/changed >/dev/null 2>&1")
+        second = _extract_hindsight_routing_context(
+            workspace="rigplane-pro",
+            workspace_path=str(workspace),
+            profile="frontdesk",
+            platform="cli",
+            user="",
+            session="s1",
+            cache_root=cache_root,
+            registry_version="v1",
+        )
+        assert second.cache_hit is False
+        assert second.git_branch == "feature/changed"
+
+        # Removing .git proves the third call is served from the profile cache
+        # when the safe invalidation fields still match and live git signals
+        # are unavailable.
+        os.system(f"rm -rf {workspace / '.git'}")
+        third = _extract_hindsight_routing_context(
+            workspace="rigplane-pro",
+            workspace_path=str(workspace),
+            profile="frontdesk",
+            platform="cli",
+            user="",
+            session="s1",
+            cache_root=cache_root,
+            registry_version="v1",
+        )
+        assert third.cache_hit is True
+        assert third.git_repo == "rigplane/rigplane-pro"
+
+        (workspace / "AGENTS.md").write_text("# changed marker\n")
+        fourth = _extract_hindsight_routing_context(
+            workspace="rigplane-pro",
+            workspace_path=str(workspace),
+            profile="frontdesk",
+            platform="cli",
+            user="",
+            session="s1",
+            cache_root=cache_root,
+            registry_version="v1",
+        )
+        assert fourth.cache_hit is False
+        assert fourth.git_repo == ""
+
+    def test_bank_registry_generates_deterministic_candidates(self):
+        context = _extract_hindsight_routing_context(
+            workspace="rigplane-pro",
+            workspace_path="/work/rigplane-pro",
+            profile="frontdesk",
+            platform="cli",
+            user="",
+            session="s1",
+            git_remote="git@github.com:rigplane/rigplane-pro.git",
+            registry_version="v1",
+        )
+        candidates = _generate_hindsight_bank_candidates(
+            [
+                {
+                    "id": "global-user",
+                    "display_name": "Global user",
+                    "recall_policy": {"enabled": True, "tags": ["scope:global"]},
+                    "retain_policy": {"enabled": False},
+                    "match": {"profile": "frontdesk"},
+                },
+                {
+                    "id": "hindsight-product-rigplane",
+                    "display_name": "RigPlane product",
+                    "recall_policy": {
+                        "enabled": True,
+                        "tags": ["project:rigplane"],
+                        "tags_match": "all_strict",
+                    },
+                    "retain_policy": {"enabled": True, "tags": ["project:rigplane"]},
+                    "match": {"git_repo_glob": "rigplane/rigplane-*", "repo_name_glob": "rigplane-*"},
+                    "allowed_profiles": ["frontdesk"],
+                    "allowed_platforms": ["cli"],
+                },
+                {
+                    "id": "scratch",
+                    "match": {"git_repo_glob": "other/*"},
+                    "retain_policy": {"enabled": True},
+                },
+            ],
+            context,
+        )
+
+        assert [candidate.bank_id for candidate in candidates] == [
+            "hindsight-product-rigplane",
+            "global-user",
+        ]
+        assert candidates[0].retain is True
+        assert candidates[0].recall_tags == ["project:rigplane"]
+        assert candidates[0].recall_tags_match == "all_strict"
+        assert candidates[1].recall is True
+        assert candidates[1].retain is False
+        assert any("git_repo_glob" in reason for reason in candidates[0].reasons)
+
+    def test_bank_registry_routes_apply_when_no_bank_routing_configured(self):
+        config = {
+            "bank_registry_version": "v1",
+            "bank_registry": [
+                {
+                    "id": "hindsight-product-rigplane",
+                    "display_name": "RigPlane product",
+                    "recall_policy": {"enabled": True, "types": ["observation"]},
+                    "retain_policy": {"enabled": True, "tags": ["project:rigplane"]},
+                    "match": {"git_repo_glob": "rigplane/rigplane-*"},
+                }
+            ],
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="global-user",
+            bank_id_template="",
+            profile="frontdesk",
+            workspace="rigplane-pro",
+            workspace_path="/work/rigplane-pro",
+            platform="cli",
+            user="",
+            session="s1",
+            git_remote="https://github.com/rigplane/rigplane-pro.git",
+        )
+
+        assert [route.bank_id for route in routes] == ["hindsight-product-rigplane"]
+        assert routes[0].retain_tags == ["project:rigplane"]
+        assert routes[0].recall_types == ["observation"]
 
 
 # ---------------------------------------------------------------------------

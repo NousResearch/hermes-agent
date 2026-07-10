@@ -33,15 +33,17 @@ from __future__ import annotations
 import asyncio
 import atexit
 import fnmatch
+import hashlib
 import importlib
 import json
 import logging
 import os
 import queue
+import subprocess
 import sys
 import threading
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -660,6 +662,51 @@ class HindsightBankRoute:
     recall_types: list[str] | None = None
 
 
+@dataclass(frozen=True)
+class HindsightRoutingContext:
+    """Safe structured context used for deterministic bank routing."""
+
+    workspace: str = ""
+    workspace_path: str = ""
+    repo_name: str = ""
+    git_remote: str = ""
+    git_repo: str = ""
+    git_branch: str = ""
+    profile: str = ""
+    platform: str = ""
+    user: str = ""
+    session: str = ""
+    registry_version: str = ""
+    marker_fingerprint: str = ""
+    cache_hit: bool = False
+
+
+@dataclass(frozen=True)
+class HindsightBankCandidate:
+    """Registry-derived candidate bank before it becomes a route."""
+
+    name: str
+    bank_id: str
+    recall: bool = True
+    retain: bool = False
+    retain_tags: list[str] = field(default_factory=list)
+    recall_tags: list[str] = field(default_factory=list)
+    recall_tags_match: str = "any"
+    recall_types: list[str] | None = None
+    reasons: list[str] = field(default_factory=list)
+    specificity: int = 0
+
+
+_ROUTING_MARKER_FILES = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+)
+
+
 def _merge_tags(*values: Any) -> list[str]:
     merged: list[str] = []
     for value in values:
@@ -739,6 +786,151 @@ def _git_repo_from_remote(git_remote: str) -> str:
     return "/".join(parts[:2])
 
 
+def _safe_git_output(workspace_path: str, *args: str) -> str:
+    if not workspace_path:
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "-C", workspace_path, *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _routing_marker_fingerprint(workspace_path: str) -> str:
+    """Hash non-secret project identity markers for cache invalidation."""
+    from pathlib import Path
+
+    if not workspace_path:
+        return ""
+    root = Path(workspace_path)
+    parts: list[str] = []
+    for name in _ROUTING_MARKER_FILES:
+        path = root / name
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        except Exception:
+            continue
+        parts.append(f"{name}:{stat.st_size}:{stat.st_mtime_ns}:{digest}")
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest() if parts else ""
+
+
+def _routing_context_cache_path(cache_root: Any, *, profile: str, workspace_path: str):
+    from pathlib import Path
+
+    if not cache_root:
+        return None
+    key = hashlib.sha256(
+        f"{profile}\0{workspace_path}".encode("utf-8", errors="replace")
+    ).hexdigest()
+    return Path(cache_root) / "hindsight" / "project-context" / f"{key}.json"
+
+
+def _context_from_cache(path: Any, *, registry_version: str, workspace_path: str,
+                        marker_fingerprint: str, git_remote: str = "",
+                        git_branch: str = "") -> HindsightRoutingContext | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if data.get("registry_version") != registry_version:
+        return None
+    if data.get("workspace_path") != workspace_path:
+        return None
+    if data.get("marker_fingerprint") != marker_fingerprint:
+        return None
+    if git_remote and data.get("git_remote") != git_remote:
+        return None
+    if git_branch and data.get("git_branch") != git_branch:
+        return None
+    allowed = set(HindsightRoutingContext.__dataclass_fields__)
+    filtered = {key: value for key, value in data.items() if key in allowed}
+    filtered["cache_hit"] = True
+    try:
+        return HindsightRoutingContext(**filtered)
+    except TypeError:
+        return None
+
+
+def _write_context_cache(path: Any, context: HindsightRoutingContext) -> None:
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = asdict(context)
+        data["cache_hit"] = False
+        path.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+        logger.debug("Failed to write Hindsight routing context cache: %s", exc)
+
+
+def _extract_hindsight_routing_context(
+    *,
+    workspace: str = "",
+    workspace_path: str = "",
+    profile: str = "",
+    platform: str = "",
+    user: str = "",
+    session: str = "",
+    git_remote: str = "",
+    git_branch: str = "",
+    cache_root: Any = None,
+    registry_version: str = "",
+) -> HindsightRoutingContext:
+    """Extract and optionally cache non-secret project identity signals."""
+    workspace_path = str(workspace_path or "").rstrip("/")
+    repo_name = _repo_name_from_workspace_path(workspace_path) or str(workspace or "")
+    marker_fingerprint = _routing_marker_fingerprint(workspace_path)
+    resolved_remote = str(git_remote or "").strip() or _safe_git_output(
+        workspace_path, "remote", "get-url", "origin"
+    )
+    resolved_branch = str(git_branch or "").strip() or _safe_git_output(
+        workspace_path, "branch", "--show-current"
+    )
+    cache_path = _routing_context_cache_path(
+        cache_root, profile=str(profile or ""), workspace_path=workspace_path
+    )
+    cached = _context_from_cache(
+        cache_path,
+        registry_version=str(registry_version or ""),
+        workspace_path=workspace_path,
+        marker_fingerprint=marker_fingerprint,
+        git_remote=resolved_remote,
+        git_branch=resolved_branch,
+    )
+    if cached is not None:
+        return cached
+    context = HindsightRoutingContext(
+        workspace=str(workspace or ""),
+        workspace_path=workspace_path,
+        repo_name=repo_name,
+        git_remote=resolved_remote,
+        git_repo=_git_repo_from_remote(resolved_remote),
+        git_branch=resolved_branch,
+        profile=str(profile or ""),
+        platform=str(platform or ""),
+        user=str(user or ""),
+        session=str(session or ""),
+        registry_version=str(registry_version or ""),
+        marker_fingerprint=marker_fingerprint,
+        cache_hit=False,
+    )
+    _write_context_cache(cache_path, context)
+    return context
+
+
 def _route_matches(rule: dict[str, Any], *, profile: str, workspace: str,
                    workspace_path: str, platform: str, user: str,
                    git_remote: str = "") -> bool:
@@ -793,6 +985,119 @@ def _route_specificity(rule: dict[str, Any]) -> int:
     return max((len(candidate) for candidate in candidates), default=0)
 
 
+def _policy_enabled(policy: Any, default: bool) -> bool:
+    if isinstance(policy, dict):
+        return _config_bool(policy.get("enabled"), default)
+    return default
+
+
+def _allowed_by_registry_scope(entry: dict[str, Any], context: HindsightRoutingContext) -> bool:
+    for key, actual in (
+        ("allowed_profiles", context.profile),
+        ("allowed_workspaces", context.workspace),
+        ("allowed_platforms", context.platform),
+        ("allowed_users", context.user),
+    ):
+        values = _normalize_match_patterns(entry.get(key))
+        if values and not _matches_any_glob(actual, values):
+            return False
+    return True
+
+
+def _candidate_reasons(match: dict[str, Any], context: HindsightRoutingContext) -> list[str]:
+    reasons: list[str] = []
+    values = {
+        "workspace_path_prefix": context.workspace_path,
+        "workspace_path_glob": context.workspace_path,
+        "workspace": context.workspace,
+        "workspace_glob": context.workspace,
+        "repo_name_glob": context.repo_name,
+        "git_remote_glob": context.git_remote,
+        "git_repo_glob": context.git_repo,
+        "profile": context.profile,
+        "platform": context.platform,
+        "user": context.user,
+    }
+    for key, actual in values.items():
+        if key in match:
+            reasons.append(f"{key} matched {actual!r}")
+    return reasons
+
+
+def _generate_hindsight_bank_candidates(
+    registry: Any,
+    context: HindsightRoutingContext,
+    *,
+    default_recall_types: list[str] | None = None,
+) -> list[HindsightBankCandidate]:
+    """Generate deterministic bank candidates from registry entries."""
+    if isinstance(registry, dict):
+        entries = list(registry.values())
+    elif isinstance(registry, list):
+        entries = registry
+    else:
+        return []
+
+    candidates: list[tuple[int, int, HindsightBankCandidate]] = []
+    for index, raw in enumerate(entries):
+        if not isinstance(raw, dict):
+            continue
+        bank_id = str(raw.get("id") or raw.get("bank_id") or "").strip()
+        if not bank_id:
+            continue
+        raw_match = raw.get("match")
+        match: dict[str, Any] = raw_match if isinstance(raw_match, dict) else {}
+        if not _allowed_by_registry_scope(raw, context):
+            continue
+        if not _route_matches(
+            match,
+            profile=context.profile,
+            workspace=context.workspace,
+            workspace_path=context.workspace_path,
+            platform=context.platform,
+            user=context.user,
+            git_remote=context.git_remote,
+        ):
+            continue
+        raw_recall_policy = raw.get("recall_policy")
+        recall_policy: dict[str, Any] = (
+            raw_recall_policy if isinstance(raw_recall_policy, dict) else {}
+        )
+        raw_retain_policy = raw.get("retain_policy")
+        retain_policy: dict[str, Any] = (
+            raw_retain_policy if isinstance(raw_retain_policy, dict) else {}
+        )
+        recall = _policy_enabled(recall_policy, True)
+        retain = _policy_enabled(retain_policy, False)
+        if not recall and not retain:
+            continue
+        recall_types = None
+        if recall:
+            recall_types = _normalize_recall_types(
+                recall_policy.get("types") or recall_policy.get("recall_types"),
+                default_recall_types,
+            )
+        specificity = _route_specificity(match)
+        candidates.append((
+            -specificity,
+            index,
+            HindsightBankCandidate(
+                name=str(raw.get("display_name") or raw.get("name") or bank_id),
+                bank_id=_sanitize_bank_segment(bank_id),
+                recall=recall,
+                retain=retain,
+                retain_tags=_normalize_retain_tags(retain_policy.get("tags")),
+                recall_tags=_normalize_retain_tags(recall_policy.get("tags")),
+                recall_tags_match=str(recall_policy.get("tags_match") or "any"),
+                recall_types=recall_types,
+                reasons=_candidate_reasons(match, context),
+                specificity=specificity,
+            ),
+        ))
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return [candidate for _, _, candidate in candidates]
+
+
 def _resolve_hindsight_routes(
     config: dict[str, Any],
     *,
@@ -822,6 +1127,37 @@ def _resolve_hindsight_routes(
     default_recall_types = _normalize_recall_types(config.get("recall_types"))
     routing = config.get("bank_routing")
     if not isinstance(routing, dict):
+        registry = config.get("bank_registry")
+        if isinstance(registry, (dict, list)):
+            registry_context = _extract_hindsight_routing_context(
+                workspace=workspace,
+                workspace_path=workspace_path,
+                profile=profile,
+                platform=platform,
+                user=user,
+                session=session,
+                git_remote=git_remote,
+                registry_version=str(config.get("bank_registry_version") or ""),
+            )
+            candidates = _generate_hindsight_bank_candidates(
+                registry,
+                registry_context,
+                default_recall_types=default_recall_types,
+            )
+            if candidates:
+                return [
+                    HindsightBankRoute(
+                        name=candidate.name,
+                        bank_id=candidate.bank_id,
+                        recall=candidate.recall,
+                        retain=candidate.retain,
+                        retain_tags=_merge_tags(default_retain_tags, candidate.retain_tags),
+                        recall_tags=_merge_tags(default_recall_tags, candidate.recall_tags),
+                        recall_tags_match=candidate.recall_tags_match or default_recall_tags_match,
+                        recall_types=candidate.recall_types or default_recall_types,
+                    )
+                    for candidate in candidates
+                ]
         return [
             HindsightBankRoute(
                 name="fallback",
@@ -1533,6 +1869,20 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_git_remote = str(
             kwargs.get("agent_git_remote") or kwargs.get("git_remote") or ""
         ).strip()
+        if self._agent_workspace_path:
+            routing_context = _extract_hindsight_routing_context(
+                workspace=self._agent_workspace,
+                workspace_path=self._agent_workspace_path,
+                profile=self._agent_identity,
+                platform=self._platform,
+                user=self._user_id,
+                session=self._session_id,
+                git_remote=self._agent_git_remote,
+                cache_root=get_hermes_home() / "cache",
+                registry_version=str(self._config.get("bank_registry_version") or ""),
+            )
+            if not self._agent_git_remote:
+                self._agent_git_remote = routing_context.git_remote
         self._turn_index = 0
         self._session_turns = []
         self._last_retained_turn_count = 0

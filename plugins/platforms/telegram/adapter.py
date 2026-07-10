@@ -2948,8 +2948,16 @@ class TelegramAdapter(BasePlatformAdapter):
                         logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name, scope_err)
                 # Forum topics don't inherit AllGroupChats — Telegram resolves
                 # commands via BotCommandScopeChat(chat_id) for forum groups.
-                # Lazy registration happens in _ensure_forum_commands on first
-                # message from a forum topic (see _handle_text_message).
+                # Proactively (re)register the per-chat scope for forum groups
+                # declared in config so their menus refresh on every reconnect,
+                # at parity with the global scopes above. Without this a forum
+                # group's menu drifts out of sync whenever the command set
+                # changes (e.g. a plugin or skill is added) until the lazy,
+                # message-gated _ensure_forum_commands happens to re-fire — which
+                # in a mention-gated group may not happen for a long time. Forum
+                # groups not present in config are still covered lazily on first
+                # message (see _handle_text_message).
+                await self._register_configured_forum_command_scopes(bot_commands)
                 if hidden_count:
                     logger.info(
                         "[%s] Telegram menu: %d commands registered, %d hidden (over %d limit). Use /commands for full list.",
@@ -7453,12 +7461,75 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(message)
 
+    def _configured_forum_chat_ids(self) -> set[int]:
+        """Return forum-supergroup chat IDs declared under
+        ``platforms.telegram.extra.group_topics``.
+
+        Accepts both supported shapes — the list form
+        ``[{"chat_id": "-100...", "topics": [...]}]`` and the legacy mapping
+        ``{"-100...": [...]}`` — mirroring the ``group_topics`` parsing used
+        elsewhere in this adapter. These are known forum groups whose per-chat
+        command scope can be registered proactively at connect time instead of
+        waiting for the lazy first-message path.
+        """
+        raw = self.config.extra.get("group_topics", [])
+        if isinstance(raw, dict):
+            candidates = list(raw.keys())
+        elif isinstance(raw, list):
+            candidates = [e.get("chat_id") for e in raw if isinstance(e, dict)]
+        else:
+            candidates = []
+        chat_ids: set[int] = set()
+        for cid in candidates:
+            if cid is None:
+                continue
+            try:
+                chat_ids.add(int(cid))
+            except (TypeError, ValueError):
+                continue
+        return chat_ids
+
+    async def _register_configured_forum_command_scopes(self, bot_commands) -> None:
+        """Proactively (re)register the per-chat command scope for every forum
+        group declared in config.
+
+        Forum topics resolve their command menu only via
+        ``BotCommandScopeChat(chat_id)`` and do NOT inherit AllGroupChats, so
+        the global-scope refresh in :meth:`_run_post_connect_housekeeping` never
+        reaches them. Pushing the same command list here on every reconnect
+        keeps forum menus in sync with the rest of the bot; the lazy
+        :meth:`_ensure_forum_commands` remains the fallback for forum groups not
+        present in config. Non-fatal per chat.
+        """
+        if not self._bot:
+            return
+        from telegram import BotCommandScopeChat
+        for chat_id in self._configured_forum_chat_ids():
+            try:
+                await self._bot.set_my_commands(
+                    bot_commands, scope=BotCommandScopeChat(chat_id=chat_id)
+                )
+                self._forum_command_registered.add(chat_id)
+                logger.info(
+                    "[%s] set_my_commands OK for forum chat %s (%d cmds)",
+                    self.name, chat_id, len(bot_commands),
+                )
+            except Exception as scope_err:
+                logger.warning(
+                    "[%s] set_my_commands FAILED for forum chat %s: %s",
+                    self.name, chat_id, scope_err,
+                )
+
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups.
 
         Forum topics don't inherit AllGroupChats scope — Telegram resolves
         via BotCommandScopeChat(chat_id).  Register on first message so the
         command menu works in topic views.
+
+        This is the fallback for forum groups not declared in config;
+        configured forum groups are refreshed proactively on every reconnect
+        by :meth:`_register_configured_forum_command_scopes`.
         """
         async with self._forum_lock:
             try:

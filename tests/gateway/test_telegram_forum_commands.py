@@ -116,3 +116,76 @@ async def test_ensure_forum_commands_race_safety():
 
     # The lock should make this exactly 1 call, not 2.
     assert adapter._bot.set_my_commands.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Proactive per-chat scope refresh for configured forum groups (#<issue>)
+# ---------------------------------------------------------------------------
+
+
+def test_configured_forum_chat_ids_list_shape():
+    adapter = _make_test_adapter()
+    adapter.config.extra["group_topics"] = [
+        {"chat_id": "-1001", "topics": [{"thread_id": 3, "name": "A"}]},
+        {"chat_id": -1002, "topics": []},
+        {"no_chat_id": True},  # ignored
+    ]
+    assert adapter._configured_forum_chat_ids() == {-1001, -1002}
+
+
+def test_configured_forum_chat_ids_dict_shape():
+    adapter = _make_test_adapter()
+    adapter.config.extra["group_topics"] = {
+        "-1001": [{"thread_id": 3}],
+        "-1002": [],
+        "not-an-int": [],  # ignored (unparseable)
+    }
+    assert adapter._configured_forum_chat_ids() == {-1001, -1002}
+
+
+def test_configured_forum_chat_ids_absent():
+    adapter = _make_test_adapter()
+    assert adapter._configured_forum_chat_ids() == set()
+
+
+@pytest.mark.asyncio
+async def test_register_configured_forum_scopes_pushes_per_chat():
+    """Configured forum groups get their per-chat command scope set at connect
+    time — without waiting for a message — so their menus stay in sync with the
+    global scopes when the command set changes."""
+    adapter = _make_test_adapter()
+    adapter.config.extra["group_topics"] = [
+        {"chat_id": "-1001", "topics": []},
+        {"chat_id": "-1002", "topics": []},
+    ]
+    # Opaque sentinel list; the adapter must pass it through to set_my_commands
+    # verbatim (the exact command objects are built by the caller).
+    bot_commands = [object(), object()]
+
+    # ``telegram`` is a sys.modules mock here (see conftest); track the chat_id
+    # passed to BotCommandScopeChat so assertions see an int, not a bare mock.
+    with patch("telegram.BotCommandScopeChat") as MockScope:
+        def _make_scope(chat_id):
+            s = MagicMock()
+            s.chat_id = chat_id
+            return s
+        MockScope.side_effect = _make_scope
+        await adapter._register_configured_forum_command_scopes(bot_commands)
+
+    # One set_my_commands per configured forum chat, each carrying the full
+    # command list under a chat-scoped BotCommandScopeChat.
+    assert adapter._bot.set_my_commands.await_count == 2
+    scoped_chat_ids = set()
+    for call in adapter._bot.set_my_commands.await_args_list:
+        assert call.args[0] is bot_commands
+        scoped_chat_ids.add(call.kwargs["scope"].chat_id)
+    assert scoped_chat_ids == {-1001, -1002}
+    # Registering here suppresses redundant lazy registration later.
+    assert adapter._forum_command_registered == {-1001, -1002}
+
+
+@pytest.mark.asyncio
+async def test_register_configured_forum_scopes_noop_without_config():
+    adapter = _make_test_adapter()
+    await adapter._register_configured_forum_command_scopes([])
+    adapter._bot.set_my_commands.assert_not_called()

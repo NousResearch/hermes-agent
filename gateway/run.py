@@ -7164,7 +7164,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
         return redelivered
 
-    def _schedule_resume_pending_sessions(self, platform=None) -> int:
+    async def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
         ``resume_pending`` already preserves the transcript AND the existing
@@ -7189,16 +7189,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         window = _auto_continue_freshness_window()
         try:
-            with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
-                self.session_store._ensure_loaded_locked()  # noqa: SLF001
-                candidates = [
-                    entry for entry in self.session_store._entries.values()  # noqa: SLF001
-                    if entry.resume_pending
-                    and not entry.suspended
-                    and entry.origin is not None
-                    and entry.resume_reason in self._AUTO_RESUME_REASONS
-                    and (platform is None or entry.origin.platform == platform)
-                ]
+            await self.async_session_store._ensure_loaded()
+            candidates = [
+                entry for entry in list(self.session_store._entries.values())  # noqa: SLF001
+                if entry.resume_pending
+                and not entry.suspended
+                and entry.origin is not None
+                and entry.resume_reason in self._AUTO_RESUME_REASONS
+                and (platform is None or entry.origin.platform == platform)
+            ]
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0
@@ -7226,11 +7225,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         now = datetime.now()
         scheduled = 0
         for entry in candidates:
-            effective_session_id = self._effective_resume_session_id(entry)
+            effective_session_id = await self._effective_resume_session_id(entry)
             entry_session_id = str(getattr(entry, "session_id", "") or "")
             history = None
             try:
-                history = self.session_store.load_transcript(effective_session_id)
+                history = await self.async_session_store.load_transcript(effective_session_id)
                 if not isinstance(history, list):
                     history = None
             except Exception as exc:
@@ -7246,7 +7245,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     entry.session_key,
                 )
                 try:
-                    self.session_store.clear_resume_pending(entry.session_key)
+                    await self.async_session_store.clear_resume_pending(entry.session_key)
                 except Exception as exc:
                     logger.debug(
                         "clear stale resume_pending failed for %s: %s",
@@ -7262,7 +7261,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if (
                 effective_session_id != entry_session_id
-                and not self._has_resume_transcript(effective_session_id)
+                and not await self._has_resume_transcript(effective_session_id)
             ):
                 logger.info(
                     "Skipping auto-resume for %s: no transcript messages in %s",
@@ -7270,7 +7269,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     effective_session_id or "<unknown>",
                 )
                 try:
-                    self.session_store.clear_resume_pending(entry.session_key)
+                    await self.async_session_store.clear_resume_pending(entry.session_key)
                 except Exception as exc:
                     logger.debug(
                         "clear stale resume_pending failed for %s: %s",
@@ -7278,14 +7277,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         exc,
                     )
                 continue
-            if self._resume_pending_completed_after_marker(entry, effective_session_id):
+            if await self._resume_pending_completed_after_marker(entry, effective_session_id):
                 logger.info(
                     "Skipping auto-resume for %s: transcript already has a "
                     "completed assistant reply after resume marker",
                     entry.session_key,
                 )
                 try:
-                    self.session_store.clear_resume_pending(entry.session_key)
+                    await self.async_session_store.clear_resume_pending(entry.session_key)
                 except Exception:
                     logger.debug(
                         "clear_resume_pending after completed auto-resume skip failed for %s",
@@ -7391,7 +7390,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         return scheduled
 
-    def _resume_pending_completed_after_marker(self, entry, session_id: Optional[str]) -> bool:
+    async def _resume_pending_completed_after_marker(self, entry, session_id: Optional[str]) -> bool:
         """Return True when the transcript already completed after resume marking.
 
         Shutdown/restart marks active sessions as ``resume_pending`` before the
@@ -7411,7 +7410,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if marker is None:
             return False
         try:
-            messages = session_db.get_messages(session_id)
+            messages = await session_db.get_messages(session_id)
         except Exception:
             logger.debug(
                 "Could not inspect transcript completion for startup auto-resume",
@@ -7449,7 +7448,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 saw_visible_assistant_after_marker = True
         return saw_visible_assistant_since_user or saw_visible_assistant_after_marker
 
-    def _effective_resume_session_id(self, entry) -> str:
+    async def _effective_resume_session_id(self, entry) -> str:
         """Return the transcript session id an auto-resume would actually use."""
         session_id = str(getattr(entry, "session_id", "") or "")
         source = getattr(entry, "origin", None)
@@ -7463,7 +7462,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and getattr(source, "thread_id", None)
         ):
             try:
-                binding = session_db.get_telegram_topic_binding(
+                binding = await session_db.get_telegram_topic_binding(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
                 )
@@ -7474,7 +7473,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Failed to resolve Telegram topic resume binding", exc_info=True)
         return session_id
 
-    def _has_resume_transcript(self, session_id: str) -> bool:
+    async def _has_resume_transcript(self, session_id: str) -> bool:
         """True when there is persisted conversation state worth auto-resuming."""
         if not session_id:
             return False
@@ -7482,7 +7481,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if session_db is None:
             return True
         try:
-            return bool(session_db.message_count(session_id))
+            return bool(await session_db.message_count(session_id))
         except Exception:
             logger.debug(
                 "Could not count transcript messages for startup auto-resume",
@@ -8192,7 +8191,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # that session) is strictly cheaper and more correct than re-running
         # the whole turn.
         await self._redeliver_pending_obligations()
-        self._schedule_resume_pending_sessions()
+        await self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
@@ -8903,7 +8902,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # auto-resume scoped to this platform so recovery
                         # doesn't silently wait for a manual user message.
                         try:
-                            self._schedule_resume_pending_sessions(platform=platform)
+                            await self._schedule_resume_pending_sessions(platform=platform)
                         except Exception:
                             logger.debug(
                                 "resume-pending reschedule after %s reconnect failed",

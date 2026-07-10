@@ -1053,7 +1053,7 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 1
@@ -1095,7 +1095,7 @@ async def test_startup_auto_resume_includes_crash_recovery():
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 1
@@ -1125,7 +1125,7 @@ async def test_startup_auto_resume_skips_stale_entries():
     runner.session_store._entries = {stale_entry.session_key: stale_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
@@ -1167,7 +1167,7 @@ async def test_startup_auto_resume_skips_suspended_and_originless():
     }
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
@@ -1198,7 +1198,7 @@ async def test_startup_auto_resume_skips_disallowed_reasons():
     runner.session_store._entries = {other_entry.session_key: other_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
@@ -1234,7 +1234,7 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 0
@@ -1273,7 +1273,7 @@ async def test_startup_auto_resume_fails_closed_on_auth_error():
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 0
@@ -1302,7 +1302,7 @@ async def test_startup_auto_resume_skips_when_adapter_unavailable():
     runner.adapters = {}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
@@ -1338,12 +1338,12 @@ async def test_reconnect_reschedules_pending_after_late_platform_connect():
 
     # Platform was not connected at gateway startup → session skipped.
     runner.adapters = {}
-    assert runner._schedule_resume_pending_sessions() == 0
+    assert await runner._schedule_resume_pending_sessions() == 0
     adapter.handle_message.assert_not_called()
 
     # Platform reconnects → its pending session is retried.
     runner.adapters = {Platform.TELEGRAM: adapter}
-    scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
+    scheduled = await runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
     await asyncio.sleep(0)
 
     assert scheduled == 1
@@ -1396,7 +1396,7 @@ async def test_reconnect_reschedule_is_platform_scoped():
     adapter.handle_message = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
 
-    scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
+    scheduled = await runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
     await asyncio.sleep(0)
 
     # Only the telegram session is resumed; the discord session waits for its
@@ -1430,7 +1430,7 @@ async def test_auto_resume_skips_sessions_with_running_agent():
     runner._running_agents = {pending_entry.session_key: object()}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
+    scheduled = await runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
@@ -1491,7 +1491,7 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
 
     adapter.handle_message = fake_handle_message
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     inbound = MessageEvent(
@@ -1785,7 +1785,7 @@ async def test_auto_resume_sets_sentinel_before_task_execution():
 
     adapter.handle_message = _slow_handle
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 1
     # The sentinel must be set immediately — before the task starts executing.
@@ -1827,7 +1827,7 @@ async def test_auto_resume_sentinel_cleaned_on_task_failure():
 
     adapter.handle_message = _failing_handle
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     assert scheduled == 1
 
     # Sentinel is set immediately.
@@ -1923,7 +1923,7 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
     )
     adapter._run_processing_hook = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     assert scheduled == 1
     # Pre-claim must be visible immediately.
     assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
@@ -2009,7 +2009,7 @@ async def test_startup_auto_resume_uses_last_user_message_id_as_reply_anchor():
     ])
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 1
@@ -2050,7 +2050,7 @@ async def test_startup_auto_resume_clears_stale_origin_reply_anchor_when_no_user
     ])
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 1
@@ -2084,13 +2084,12 @@ async def test_startup_auto_resume_skips_empty_bound_dm_topic_transcript():
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     runner.session_store.clear_resume_pending = MagicMock(return_value=True)
     runner._session_db = MagicMock()
-    runner._session_db.get_telegram_topic_binding.return_value = {
-        "session_id": "bound-empty-session",
-    }
-    runner._session_db.message_count.return_value = 0
+    runner._session_db.get_telegram_topic_binding = AsyncMock(return_value={        "session_id": "bound-empty-session",
+    })
+    runner._session_db.message_count = AsyncMock(return_value=0)
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
@@ -2129,13 +2128,12 @@ async def test_startup_auto_resume_uses_bound_dm_topic_transcript_when_present()
         {"role": "tool", "content": "partial", "timestamp": time.time() - 2},
     ])
     runner._session_db = MagicMock()
-    runner._session_db.get_telegram_topic_binding.return_value = {
-        "session_id": "bound-session",
-    }
-    runner._session_db.message_count.return_value = 3
+    runner._session_db.get_telegram_topic_binding = AsyncMock(return_value={        "session_id": "bound-session",
+    })
+    runner._session_db.message_count = AsyncMock(return_value=3)
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 1
@@ -2178,10 +2176,9 @@ async def test_startup_auto_resume_skips_completed_reply_after_marker():
         },
     ])
     runner._session_db = MagicMock()
-    runner._session_db.get_telegram_topic_binding.return_value = None
-    runner._session_db.message_count.return_value = 2
-    runner._session_db.get_messages.return_value = [
-        {
+    runner._session_db.get_telegram_topic_binding = AsyncMock(return_value=None)
+    runner._session_db.message_count = AsyncMock(return_value=2)
+    runner._session_db.get_messages = AsyncMock(return_value=[        {
             "role": "user",
             "content": "question",
             "timestamp": (marker - timedelta(seconds=5)).timestamp(),
@@ -2191,10 +2188,10 @@ async def test_startup_auto_resume_skips_completed_reply_after_marker():
             "content": "completed answer",
             "timestamp": (marker + timedelta(seconds=1)).timestamp(),
         },
-    ]
+    ])
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
     runner._session_db.get_messages.assert_called_once_with("sid")
@@ -2236,10 +2233,9 @@ async def test_startup_auto_resume_keeps_unfinished_tool_tail_after_marker():
         },
     ])
     runner._session_db = MagicMock()
-    runner._session_db.get_telegram_topic_binding.return_value = None
-    runner._session_db.message_count.return_value = 2
-    runner._session_db.get_messages.return_value = [
-        {
+    runner._session_db.get_telegram_topic_binding = AsyncMock(return_value=None)
+    runner._session_db.message_count = AsyncMock(return_value=2)
+    runner._session_db.get_messages = AsyncMock(return_value=[        {
             "role": "assistant",
             "content": None,
             "tool_calls": [{"id": "c1"}],
@@ -2250,10 +2246,10 @@ async def test_startup_auto_resume_keeps_unfinished_tool_tail_after_marker():
             "content": '{"output": "[Command interrupted]", "exit_code": 130}',
             "timestamp": (marker + timedelta(seconds=1)).timestamp(),
         },
-    ]
+    ])
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 1
@@ -2299,10 +2295,9 @@ async def test_startup_auto_resume_skips_visible_reply_even_with_later_tool_tail
         },
     ])
     runner._session_db = MagicMock()
-    runner._session_db.get_telegram_topic_binding.return_value = None
-    runner._session_db.message_count.return_value = 3
-    runner._session_db.get_messages.return_value = [
-        {
+    runner._session_db.get_telegram_topic_binding = AsyncMock(return_value=None)
+    runner._session_db.message_count = AsyncMock(return_value=3)
+    runner._session_db.get_messages = AsyncMock(return_value=[        {
             "role": "user",
             "content": "",
             "timestamp": (marker + timedelta(milliseconds=100)).timestamp(),
@@ -2317,10 +2312,10 @@ async def test_startup_auto_resume_skips_visible_reply_even_with_later_tool_tail
             "content": '{"output": "service status"}',
             "timestamp": (marker + timedelta(milliseconds=300)).timestamp(),
         },
-    ]
+    ])
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
     runner.session_store.clear_resume_pending.assert_called_once_with(session_key)
@@ -2361,10 +2356,9 @@ async def test_startup_auto_resume_skips_visible_tail_even_when_marker_is_newer(
         },
     ])
     runner._session_db = MagicMock()
-    runner._session_db.get_telegram_topic_binding.return_value = None
-    runner._session_db.message_count.return_value = 2
-    runner._session_db.get_messages.return_value = [
-        {
+    runner._session_db.get_telegram_topic_binding = AsyncMock(return_value=None)
+    runner._session_db.message_count = AsyncMock(return_value=2)
+    runner._session_db.get_messages = AsyncMock(return_value=[        {
             "role": "user",
             "content": "",
             "timestamp": (marker - timedelta(seconds=3)).timestamp(),
@@ -2374,10 +2368,10 @@ async def test_startup_auto_resume_skips_visible_tail_even_when_marker_is_newer(
             "content": "already answered",
             "timestamp": (marker - timedelta(milliseconds=200)).timestamp(),
         },
-    ]
+    ])
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
     runner.session_store.clear_resume_pending.assert_called_once_with(session_key)

@@ -40,6 +40,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
+from cron.governance import append_governance_audit, evaluate_cron_governance_policy
 
 logger = logging.getLogger(__name__)
 
@@ -1854,6 +1855,17 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+def _cron_governance_enforced() -> bool:
+    """Return whether the migrated cron governance policy is active."""
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        return False
+    cron_cfg = cfg.get("cron") if isinstance(cfg, dict) else None
+    governance_cfg = cron_cfg.get("governance") if isinstance(cron_cfg, dict) else None
+    return bool(governance_cfg and governance_cfg.get("enforce") is True)
+
+
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.
@@ -1888,6 +1900,21 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
     try:
         due_jobs = get_due_jobs()
+        if _cron_governance_enforced():
+            governed_due_jobs = []
+            governance_audit_path = get_hermes_home() / "cron" / "governance_audit.jsonl"
+            for job in due_jobs:
+                decision = evaluate_cron_governance_policy(job)
+                append_governance_audit(governance_audit_path, job, decision)
+                if decision.allow:
+                    governed_due_jobs.append(job)
+                else:
+                    logger.warning(
+                        "Cron job '%s' blocked by governance policy: %s",
+                        job.get("id", "unknown"),
+                        decision.code,
+                    )
+            due_jobs = governed_due_jobs
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))

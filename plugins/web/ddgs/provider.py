@@ -12,12 +12,47 @@ whether the package is importable; the plugin still registers either way so
 
 from __future__ import annotations
 
+import concurrent.futures as _cf
 import logging
 from typing import Any, Dict
 
 from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
+
+# Overall wall-clock cap for a single ddgs search. The DDGS constructor's
+# ``timeout`` only bounds individual HTTP requests; ddgs's multi-engine retry
+# loop has no overall cap, so a slow/rate-limited DuckDuckGo response can hang
+# the (single, shared) agent loop indefinitely and block every platform
+# (#36776). Enforce a hard cap here via a worker thread.
+_SEARCH_TIMEOUT_SECS = 30
+
+
+def _run_ddgs_search(query: str, safe_limit: int) -> list[dict[str, Any]]:
+    """Run the blocking ddgs query and return normalized hits.
+
+    Module-level (not a closure) so tests can patch it directly without
+    spawning a real multi-second worker thread. ``DDGS(timeout=...)`` bounds
+    each individual HTTP request; the overall wall-clock cap is enforced by
+    the caller via a future timeout.
+    """
+    from ddgs import DDGS  # type: ignore
+
+    results: list[dict[str, Any]] = []
+    with DDGS(timeout=10) as client:
+        for i, hit in enumerate(client.text(query, max_results=safe_limit)):
+            if i >= safe_limit:
+                break
+            url = str(hit.get("href") or hit.get("url") or "")
+            results.append(
+                {
+                    "title": str(hit.get("title", "")),
+                    "url": url,
+                    "description": str(hit.get("body", "")),
+                    "position": i + 1,
+                }
+            )
+    return results
 
 
 class DDGSWebSearchProvider(WebSearchProvider):
@@ -57,9 +92,14 @@ class DDGSWebSearchProvider(WebSearchProvider):
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a DuckDuckGo search and return normalized results."""
+        """Execute a DuckDuckGo search and return normalized results.
+
+        The synchronous ``ddgs`` call is run in a worker thread with a hard
+        wall-clock timeout (``_SEARCH_TIMEOUT_SECS``) so a hung search cannot
+        block the shared agent loop indefinitely (#36776).
+        """
         try:
-            from ddgs import DDGS  # type: ignore
+            import ddgs  # type: ignore  # noqa: F401 — availability probe
         except ImportError:
             return {
                 "success": False,
@@ -70,24 +110,38 @@ class DDGSWebSearchProvider(WebSearchProvider):
         # in case the package ignores the hint.
         safe_limit = max(1, int(limit))
 
+        # A fresh single-worker pool per call (rather than a module-level one)
+        # is intentional: on timeout the blocking ddgs call cannot be cancelled
+        # and keeps running, so a shared pool would serialise every later search
+        # behind that hung worker. A per-call pool isolates each search from a
+        # previously-hung one.
+        pool = _cf.ThreadPoolExecutor(max_workers=1)
         try:
-            web_results = []
-            with DDGS() as client:
-                for i, hit in enumerate(client.text(query, max_results=safe_limit)):
-                    if i >= safe_limit:
-                        break
-                    url = str(hit.get("href") or hit.get("url") or "")
-                    web_results.append(
-                        {
-                            "title": str(hit.get("title", "")),
-                            "url": url,
-                            "description": str(hit.get("body", "")),
-                            "position": i + 1,
-                        }
-                    )
+            future = pool.submit(_run_ddgs_search, query, safe_limit)
+            try:
+                web_results = future.result(timeout=_SEARCH_TIMEOUT_SECS)
+            except _cf.TimeoutError:
+                logger.warning(
+                    "DDGS search timed out after %ds for query: %r",
+                    _SEARCH_TIMEOUT_SECS, query,
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"DuckDuckGo search timed out after {_SEARCH_TIMEOUT_SECS}s — "
+                        "DuckDuckGo may be rate-limiting or slow. Try again later "
+                        "or switch to a different search provider."
+                    ),
+                }
         except Exception as exc:  # noqa: BLE001 — ddgs raises its own exceptions
             logger.warning("DDGS search error: %s", exc)
             return {"success": False, "error": f"DuckDuckGo search failed: {exc}"}
+        finally:
+            # Return immediately without joining the worker. On timeout the
+            # already-running ddgs call can't be cancelled (cancel_futures only
+            # affects not-yet-started work), so the worker runs to completion
+            # on its own; it writes nothing shared, so leaking it is safe.
+            pool.shutdown(wait=False, cancel_futures=True)
 
         logger.info("DDGS search '%s': %d results (limit %d)", query, len(web_results), limit)
         return {"success": True, "data": {"web": web_results}}

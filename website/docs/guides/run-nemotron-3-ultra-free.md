@@ -20,7 +20,7 @@ The simplest path: a one-click installer with a guided, point-and-click setup. N
 
 ### 1. Download and install
 
-[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) for macOS or Windows, then open it. On first launch it finishes setting itself up (usually under a minute).
+[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/) for macOS or Windows, then open it. On first launch it finishes setting itself up (usually under a minute).
 
 ### 2. Connect Nous Portal
 
@@ -42,12 +42,20 @@ Click **Start chatting**. That's it — you're talking to Nemotron 3 Ultra, free
 
 ## Option B — Command line
 
-Prefer the terminal? You'll need macOS, Linux, or Windows via [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) with `curl` installed (`curl` is preinstalled on most systems).
+Prefer the terminal?
 
 ### 1. Install Hermes Agent
 
+On macOS/Linux/WSL2/Android, run
+
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```
+
+On Windows, run
+
+```powershell
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
 Prefer to review first? Download [`install.sh`](https://hermes-agent.nousresearch.com/install.sh), inspect it, then run it.
@@ -105,7 +113,7 @@ Already set up with another model?
 
 - **Don't see the model in the list?** Make sure you finished the Nous Portal connection and that you're on the **Free** plan. In the CLI, `hermes portal info` confirms you're logged in and routing through Nous.
 - **Picked the wrong variant?** Re-select `nvidia/nemotron-3-ultra:free` — the `:free` suffix is required to stay on the no-cost tier.
-- **Browser didn't open / you're on a remote host (CLI)?** See [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) for port-forwarding and manual-paste workarounds.
+- **Browser didn't open / you're on a remote host (CLI)?** See [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) for port-forwarding workarounds.
 
 ## See also
 

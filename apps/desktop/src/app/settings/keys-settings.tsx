@@ -1,5 +1,6 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import type { EnvVarInfo } from '@/types/hermes'
 
 import { CredentialKeyCard, credentialPlaceholder, credentialRowLabel } from './credential-key-ui'
@@ -27,7 +28,13 @@ const VIEW_CATEGORIES: Record<KeysView, readonly string[]> = {
 }
 
 export function KeysSettings({ view }: KeysSettingsProps) {
+  const { t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
+  const [openKey, setOpenKey] = useState<null | string>(null)
+
+  useEffect(() => {
+    setOpenKey(null)
+  }, [view])
 
   const groups = useMemo(() => {
     if (!vars) {
@@ -46,7 +53,7 @@ export function KeysSettings({ view }: KeysSettingsProps) {
   }, [vars])
 
   if (!vars) {
-    return <LoadingState label="Loading API keys and credentials..." />
+    return <LoadingState label={t.settings.keys.loading} />
   }
 
   const visible = groups.filter(g => g.category === view)
@@ -54,15 +61,18 @@ export function KeysSettings({ view }: KeysSettingsProps) {
   return (
     <SettingsContent>
       {visible.map(group => (
-        <div className="grid gap-1" key={group.category}>
+        <div className="grid gap-2" key={group.category}>
           {group.entries.map(([key, info]: [string, EnvVarInfo]) => {
             const label = credentialRowLabel(key, info)
 
             return (
               <CredentialKeyCard
+                expanded={openKey === key}
                 info={info}
                 key={key}
                 label={label}
+                onExpand={() => setOpenKey(key)}
+                onToggle={() => setOpenKey(prev => (prev === key ? null : key))}
                 placeholder={credentialPlaceholder(key, info, label)}
                 rowProps={rowProps}
                 varKey={key}
@@ -74,7 +84,7 @@ export function KeysSettings({ view }: KeysSettingsProps) {
 
       {visible.length === 0 && (
         <div className="rounded-lg border border-dashed border-(--ui-stroke-tertiary) px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
-          Nothing configured in this category yet.
+          {t.settings.keys.empty}
         </div>
       )}
     </SettingsContent>

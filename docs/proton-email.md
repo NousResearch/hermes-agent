@@ -33,14 +33,6 @@ send_message(to=..., subject=..., body=...)
 If none of those methods exists, Hermes can ingest Proton messages but email
 send attempts fail explicitly instead of pretending to send.
 
-Outbound Proton sends are policy-gated. `thomas@lfglabs.dev` is allowed by
-default; add more owners with `EMAIL_ALLOWED_RECIPIENTS`, `EMAIL_ALLOWED_USERS`,
-or `EMAIL_ALLOWED_DOMAINS`. Unknown recipients are rejected unless
-`EMAIL_ALLOW_UNKNOWN_RECIPIENTS=true` is set deliberately. Attachments passed
-through `MEDIA:/path` are sent only from approved roots and are blocked for
-secret-like filenames, unsafe extensions/MIME types, oversized totals, or paths
-outside the allowed roots.
-
 ## Behavior
 
 - Trusted senders listed in `EMAIL_ALLOWED_USERS` create real Hermes

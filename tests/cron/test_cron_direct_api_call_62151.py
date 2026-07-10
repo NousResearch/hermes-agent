@@ -21,6 +21,7 @@ def _make_agent(*, platform="cron"):
     agent = MagicMock()
     agent.platform = platform
     agent.api_mode = "chat_completions"
+    agent._interrupt_requested = False
     agent._touch_activity = MagicMock()
     agent._create_request_openai_client = MagicMock()
     agent._close_request_openai_client = MagicMock()

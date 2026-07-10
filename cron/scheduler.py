@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from datetime import datetime
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -2010,7 +2011,9 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(
+    script_path: str, *, cwd: str | Path | None = None
+) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2036,6 +2039,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        cwd: Optional subprocess working directory.  This never changes the
+            scheduler process cwd, so independent script jobs can run safely
+            in parallel.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2065,6 +2071,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script not found: {path}"
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
+
+    subprocess_cwd = Path(cwd).expanduser().resolve() if cwd else path.parent
+    if not subprocess_cwd.is_dir():
+        return False, f"Script working directory is not a directory: {subprocess_cwd}"
 
     script_timeout = _get_script_timeout()
 
@@ -2101,7 +2111,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=script_timeout,
-            cwd=str(path.parent),
+            cwd=str(subprocess_cwd),
             env=_sanitize_subprocess_env(os.environ.copy()),
             **popen_kwargs,
         )
@@ -2527,26 +2537,17 @@ def run_job(
             logger.error("Job '%s': %s", job_id, err)
             return False, "", "", err
 
-        # Apply workdir if configured — lets scripts use predictable relative
-        # paths. For no_agent jobs this is just the subprocess cwd (not an
-        # agent TERMINAL_CWD bridge).
+        # A no-agent workdir is subprocess-local.  Never call os.chdir() here:
+        # process-global cwd mutation would force unrelated script jobs through
+        # the sequential pool and can starve high-frequency watchdogs.
         _job_workdir = (job.get("workdir") or "").strip() or None
-        _prior_cwd = None
-        if _job_workdir and Path(_job_workdir).is_dir():
-            _prior_cwd = os.getcwd()
-            try:
-                os.chdir(_job_workdir)
-            except OSError:
-                _prior_cwd = None
-
-        try:
-            ok, output = _run_job_script(script_path)
-        finally:
-            if _prior_cwd is not None:
-                try:
-                    os.chdir(_prior_cwd)
-                except OSError:
-                    pass
+        if _job_workdir and not Path(_job_workdir).is_dir():
+            logger.warning(
+                "Cron job '%s' workdir no longer exists; using the script directory",
+                job_name,
+            )
+            _job_workdir = None
+        ok, output = _run_job_script(script_path, cwd=_job_workdir)
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -3346,6 +3347,37 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+def _dispatch_metadata(job: dict) -> dict[str, object]:
+    started = _hermes_now()
+    scheduled_at = job.get("scheduled_at") or job.get("next_run_at")
+    lag_seconds: float | None = None
+    if scheduled_at:
+        try:
+            scheduled_dt = datetime.fromisoformat(str(scheduled_at).replace("Z", "+00:00"))
+            if scheduled_dt.tzinfo is None:
+                scheduled_dt = scheduled_dt.replace(tzinfo=started.tzinfo)
+            lag_seconds = max(0.0, (started - scheduled_dt.astimezone(started.tzinfo)).total_seconds())
+        except (TypeError, ValueError):
+            lag_seconds = None
+    return {
+        "scheduled_at": scheduled_at,
+        "dispatch_started_at": started.isoformat(),
+        "dispatch_lag_seconds": lag_seconds,
+    }
+
+
+def _annotate_dispatch_metadata(output: str, metadata: dict[str, object]) -> str:
+    lines = [
+        f"**Scheduled At:** {metadata.get('scheduled_at') or 'unknown'}",
+        f"**Dispatch Started At:** {metadata['dispatch_started_at']}",
+        f"**Dispatch Lag Seconds:** {metadata.get('dispatch_lag_seconds') if metadata.get('dispatch_lag_seconds') is not None else 'unknown'}",
+    ]
+    if output.startswith("# Cron Job:"):
+        first, separator, rest = output.partition("\n")
+        return f"{first}\n\n" + "\n".join(lines) + (f"\n{rest}" if separator else "\n")
+    return "\n".join(lines) + "\n\n" + output
+
+
 def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
@@ -3375,6 +3407,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 job.get("name", job["id"]),
             )
             return True  # not an error — already handled/removed
+
+        dispatch_metadata = _dispatch_metadata(job)
+        logger.info(
+            "Job '%s' dispatch scheduled_at=%s dispatch_started_at=%s dispatch_lag_seconds=%s",
+            job.get("name", job["id"]),
+            dispatch_metadata["scheduled_at"],
+            dispatch_metadata["dispatch_started_at"],
+            dispatch_metadata["dispatch_lag_seconds"],
+        )
 
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
@@ -3424,6 +3465,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # swallow the error and leak the agent's subprocesses/clients (#10200).
         delivery_error = None
         try:
+            output = _annotate_dispatch_metadata(output, dispatch_metadata)
             output_file = save_job_output(job["id"], output)
             if verbose:
                 logger.info("Output saved to: %s", output_file)
@@ -3557,6 +3599,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         # bumping next_run_at forward so the grace window never expires.
         # mark_job_run() overwrites next_run_at on completion.
         for job in due_jobs:
+            job.setdefault("scheduled_at", job.get("next_run_at"))
             advance_next_run(job["id"])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
@@ -3593,14 +3636,23 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             body."""
             return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
-        # Partition due jobs: those with a per-job workdir mutate
+        # Partition due jobs: agent jobs with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
-        # they queue on the single-thread sequential pool to run one at a time.
+        # they queue on the single-thread sequential pool.  no_agent jobs pass
+        # workdir directly to subprocess.run(cwd=...) and are safe to parallelize.
         # That alone only keeps workdir jobs from overlapping EACH OTHER;
         # run_job's _terminal_cwd_lock is what additionally stops a concurrently
         # firing workdir-less parallel-pool job from observing the override.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        sequential_jobs = [
+            j
+            for j in due_jobs
+            if (j.get("workdir") or "").strip() and not j.get("no_agent")
+        ]
+        parallel_jobs = [
+            j
+            for j in due_jobs
+            if not ((j.get("workdir") or "").strip() and not j.get("no_agent"))
+        ]
 
         _results: list = []
         _all_futures: list = []

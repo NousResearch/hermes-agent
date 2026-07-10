@@ -986,7 +986,7 @@ def _(home, kb):
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from plugins.kanban.dashboard.plugin_api import router as kanban_router
+    from plugins.kanban.dashboard.plugin_api import _dashboard_router as kanban_router
     app = FastAPI()
     app.include_router(kanban_router, prefix="/api/plugins/kanban")
     client = TestClient(app)

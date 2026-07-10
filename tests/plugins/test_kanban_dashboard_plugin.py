@@ -1,6 +1,6 @@
 """Tests for the Kanban dashboard plugin backend (plugins/kanban/dashboard/plugin_api.py).
 
-The plugin mounts as /api/plugins/kanban/ inside the dashboard's FastAPI app,
+The rich dashboard routes mount as /api/plugins/kanban/dashboard/ inside the app,
 but here we attach its router to a bare FastAPI instance so we can test the
 REST surface without spinning up the whole dashboard.
 """
@@ -38,7 +38,7 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod._dashboard_router
 
 
 @pytest.fixture

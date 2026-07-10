@@ -1,6 +1,8 @@
 """Kanban dashboard plugin — backend API routes.
 
-Mounted at /api/plugins/kanban/ by the dashboard plugin system.
+The sanitized integration API is mounted at ``/api/plugins/kanban``.  These
+operator-dashboard routes are retained under ``/api/plugins/kanban/dashboard``
+because they intentionally expose richer, session-authenticated UI state.
 
 This layer is intentionally thin: every handler is a small wrapper around
 ``hermes_cli.kanban_db`` or a direct SQL query. Writes use the same code
@@ -2452,3 +2454,14 @@ async def stream_events(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
+
+
+# Keep the rich dashboard surface isolated from the safe-by-default external
+# contract. Both routers still call the same kanban_db module and therefore
+# share one schema and one set of state-transition rules.
+_dashboard_router = router
+from hermes_cli.kanban_api import router as _integration_router  # noqa: E402
+
+router = APIRouter()
+router.include_router(_integration_router)
+router.include_router(_dashboard_router, prefix="/dashboard")

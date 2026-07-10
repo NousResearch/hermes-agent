@@ -39,7 +39,7 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod._dashboard_router
 
 
 @pytest.fixture

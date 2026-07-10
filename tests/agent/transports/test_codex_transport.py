@@ -112,6 +112,29 @@ class TestCodexBuildKwargs:
         )
         assert kw1["prompt_cache_key"] == kw2["prompt_cache_key"]
 
+    def test_long_caller_cache_key_is_bounded_after_request_overrides(self, transport):
+        """External session bridges may override prompt_cache_key with their full
+        namespaced session key. Bound that final provider-facing value to OpenAI's
+        64-character limit without changing the caller's session identifier."""
+        long_key = (
+            "paperclip:company:f4188af0-bfc1-4a44-9c3e-fb6aff1106d3:"
+            "agent:2baeddd2-ea8b-4467-8381-2901e3cf3f5a:"
+            "issue:44192c5a-d50b-4281-b30c-f77457d62481"
+        )
+        assert len(long_key) == 140
+
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id=long_key,
+            request_overrides={"prompt_cache_key": long_key},
+        )
+
+        assert kw["prompt_cache_key"].startswith("pck_")
+        assert len(kw["prompt_cache_key"]) <= 64
+        assert kw["prompt_cache_key"] != long_key
+
     def test_github_responses_no_cache_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -164,6 +187,21 @@ class TestCodexBuildKwargs:
         assert eb.get("prompt_cache_key") == "caller-override"
         assert eb.get("other_field") == 42
 
+    def test_xai_long_caller_cache_key_is_bounded(self, transport):
+        long_key = "paperclip:" + "x" * 130
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id=long_key,
+            is_xai_responses=True,
+            request_overrides={"extra_body": {"prompt_cache_key": long_key}},
+        )
+
+        cache_key = kw["extra_body"]["prompt_cache_key"]
+        assert cache_key.startswith("pck_")
+        assert len(cache_key) <= 64
+
     def test_max_tokens(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -197,6 +235,23 @@ class TestCodexBuildKwargs:
         headers = kw.get("extra_headers", {})
         assert headers.get("session_id") == "conv-codex-1"
         assert headers.get("x-client-request-id") == "conv-codex-1"
+
+    def test_codex_backend_bounds_long_cache_scope_headers(self, transport):
+        """The ChatGPT backend treats cache-scope headers as prompt cache keys,
+        so external namespaced session IDs must be bounded at this boundary too."""
+        long_session_id = "paperclip:" + "x" * 130
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id=long_session_id,
+            is_codex_backend=True,
+        )
+
+        headers = kw["extra_headers"]
+        assert headers["session_id"].startswith("pck_")
+        assert headers["x-client-request-id"] == headers["session_id"]
+        assert len(headers["session_id"]) <= 64
 
     def test_codex_backend_no_headers_without_session_id(self, transport):
         messages = [{"role": "user", "content": "Hi"}]

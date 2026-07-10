@@ -13,6 +13,24 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
 
+def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
+    """Return a provider-safe cache key without changing session identity.
+
+    OpenAI limits ``prompt_cache_key`` to 64 characters. External gateways may
+    supply longer namespaced session identifiers through request overrides, so
+    hash only oversized values at the final provider boundary.
+    """
+    if value is None:
+        return None
+    key = str(value).strip()
+    if not key:
+        return None
+    if len(key) <= 64:
+        return key
+    digest = hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:60]
+    return f"pck_{digest}"
+
+
 def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]]) -> Optional[str]:
     """Content-address the prompt cache key from the static request prefix.
 
@@ -296,6 +314,17 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
 
+        # Request overrides are intentionally merged last, but an external
+        # gateway can use that surface to supply a full namespaced session ID
+        # as ``prompt_cache_key``. Normalize the final provider-facing value so
+        # OpenAI's 64-character limit cannot reject otherwise valid sessions.
+        if "prompt_cache_key" in kwargs:
+            bounded_cache_key = _bounded_prompt_cache_key(kwargs["prompt_cache_key"])
+            if bounded_cache_key:
+                kwargs["prompt_cache_key"] = bounded_cache_key
+            else:
+                kwargs.pop("prompt_cache_key", None)
+
         # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
         # supported: service_tier") — hit when ``/fast`` priority-processing
         # mode lingers from a prior model in the same session, or when a
@@ -329,7 +358,7 @@ class ResponsesApiTransport(ProviderTransport):
             # remain high.  Send session_id / x-client-request-id as HTTP
             # headers while keeping ``prompt_cache_key`` in the body for
             # standard OpenAI routing as a belt-and-braces fallback.
-            cache_scope_id = str(session_id or "").strip()
+            cache_scope_id = _bounded_prompt_cache_key(session_id)
             if cache_scope_id:
                 existing_extra_headers = kwargs.get("extra_headers")
                 merged_extra_headers: Dict[str, str] = {}
@@ -373,6 +402,17 @@ class ResponsesApiTransport(ProviderTransport):
                 merged_extra_body.update(existing_extra_body)
             merged_extra_body.setdefault("prompt_cache_key", cache_key)
             kwargs["extra_body"] = merged_extra_body
+
+        # xAI carries the cache key inside extra_body rather than as a typed
+        # top-level argument. Apply the same final-boundary normalization after
+        # merging caller overrides so long external session keys are safe there too.
+        extra_body = kwargs.get("extra_body")
+        if isinstance(extra_body, dict) and "prompt_cache_key" in extra_body:
+            bounded_cache_key = _bounded_prompt_cache_key(extra_body["prompt_cache_key"])
+            if bounded_cache_key:
+                extra_body["prompt_cache_key"] = bounded_cache_key
+            else:
+                extra_body.pop("prompt_cache_key", None)
 
         return kwargs
 

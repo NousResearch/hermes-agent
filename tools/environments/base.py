@@ -43,6 +43,14 @@ if _DEBUG_INTERRUPT:
 # long-running _wait_for_process loops can report liveness to the gateway.
 _activity_callback_local = threading.local()
 
+# Credential environment variable prefixes that should be filtered from
+# terminal snapshots to prevent persisting secrets to disk.
+_CREDENTIAL_ENV_FILTER_PATTERN = (
+    r'^(declare -x (AWS_|BWS_|BITWARDEN_|OPENAI_|ANTHROPIC_|GOOGLE_|GCP_|'
+    r'DEEPSEEK_|MISTRAL_|GROQ_|TOGETHER_|PERPLEXITY_|COHERE_|FIREWORKS_|'
+    r'XAI_|HELICONE_|PARALLEL_|FIRECRAWL_|MODAL_)|.*(API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)=)'
+)
+
 
 def set_activity_callback(cb: Callable[[str], None] | None) -> None:
     """Register a callback that _wait_for_process fires periodically."""
@@ -395,8 +403,8 @@ class BaseEnvironment(ABC):
         # with ``$BASHPID`` left outside the quotes so it still expands.
         _snap_tmp = f"{shlex.quote(self._snapshot_path)}.tmp.${{BASHPID}}"
         bootstrap = (
-            f"umask 077\n"
-            f"export -p > {_snap_tmp}\n"
+            f"umask 077\\n"
+            f"export -p | grep -vE '{_CREDENTIAL_ENV_FILTER_PATTERN}' > {_snap_tmp}\\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
             # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
@@ -511,9 +519,10 @@ class BaseEnvironment(ABC):
         # Chain mv on the export succeeding so a failed/partial dump never
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
+        # Filter credential-bearing env vars before persisting to disk.
         if self._snapshot_ready:
             parts.append(
-                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"{{ export -p | grep -vE '{_CREDENTIAL_ENV_FILTER_PATTERN}' > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )
 

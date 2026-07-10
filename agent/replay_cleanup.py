@@ -74,13 +74,27 @@ def strip_interrupted_tool_tails(
                     )
                     for call in calls
                 ):
+                    call_names = {
+                        str(call.get("id") or call.get("call_id") or ""): str(
+                            (call.get("function") or {}).get("name") or ""
+                        )
+                        for call in calls
+                    }
                     cleaned.append(msg)
                     for tool_result in tool_results:
+                        if not is_interrupted_tool_result(tool_result.get("content", "")):
+                            cleaned.append(tool_result)
+                            continue
                         recovered = dict(tool_result)
-                        recovered["effect_disposition"] = "unknown"
+                        name = call_names.get(str(tool_result.get("tool_call_id") or ""), "")
+                        recovered["effect_disposition"] = (
+                            "unknown" if tool_may_have_side_effect(name) else "none"
+                        )
                         recovered["content"] = (
                             "[Orphan recovery: interrupted side-effecting tool may have "
                             "executed; its effect is UNKNOWN. Inspect state before retrying.]"
+                            if recovered["effect_disposition"] == "unknown"
+                            else "[Orphan recovery: interrupted read-only tool did not complete.]"
                         )
                         cleaned.append(recovered)
                     i = j

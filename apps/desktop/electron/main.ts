@@ -49,6 +49,7 @@ import {
   normAuthMode,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
+  routeProfileForApiRequest,
   resolveAuthMode,
   resolveTestWsUrl,
   tokenPreview
@@ -7850,17 +7851,33 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   const tornDownProfile = await prepareProfileDeleteRequest(request)
 
   const profile = request?.profile
+  const useGlobalRemote = globalRemoteActive()
+  const useProfileRemote = profileHasRemoteOverride(profile)
   // After tearing down a backend for profile deletion, route to the primary
   // backend instead of spawning a fresh pool backend.  A freshly spawned
   // backend calls ensure_hermes_home() which recreates the profile directory,
   // defeating the deletion and leaving a zombie process.
-  const routeProfile = resolveRouteProfile(tornDownProfile, profile)
+  //
+  // For ordinary local-profile REST calls, also stay on the primary dashboard:
+  // the backend serves local profiles through ?profile=. Spawning an isolated
+  // per-profile dashboard here made Hermes One launch multiple backend servers
+  // during startup as soon as the renderer refreshed profile-scoped settings.
+  // Per-profile remotes and app-global remote mode still resolve through the
+  // profile route so they hit the correct host/descriptor.
+  const routeProfile = resolveRouteProfile(
+    tornDownProfile,
+    routeProfileForApiRequest(profile, {
+      globalRemote: useGlobalRemote,
+      profileRemoteOverride: useProfileRemote
+    })
+  )
   const connection = await ensureBackend(routeProfile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
   const requestPath = pathWithGlobalRemoteProfile(request.path, profile, {
-    globalRemote: globalRemoteActive(),
-    profileRemoteOverride: profileHasRemoteOverride(profile)
+    globalRemote: useGlobalRemote,
+    localPrimary: !routeProfile && !tornDownProfile,
+    profileRemoteOverride: useProfileRemote
   })
 
   const url = `${connection.baseUrl}${requestPath}`

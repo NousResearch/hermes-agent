@@ -31,6 +31,7 @@ import {
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  routeProfileForApiRequest,
   tokenPreview
 } from './connection-config'
 
@@ -172,6 +173,17 @@ test('pathWithGlobalRemoteProfile skips local and per-profile remote override pa
   )
 })
 
+test('pathWithGlobalRemoteProfile appends local-primary profile scope', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/config', 'iris', {
+      globalRemote: false,
+      localPrimary: true,
+      profileRemoteOverride: false
+    }),
+    '/api/config?profile=iris'
+  )
+})
+
 test('pathWithGlobalRemoteProfile skips empty profile/path safely', () => {
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info', '', {
@@ -187,6 +199,40 @@ test('pathWithGlobalRemoteProfile skips empty profile/path safely', () => {
     }),
     ''
   )
+})
+
+// --- routeProfileForApiRequest ---
+
+test('routeProfileForApiRequest keeps local profile REST on the primary backend', () => {
+  assert.equal(
+    routeProfileForApiRequest('iris', {
+      globalRemote: false,
+      profileRemoteOverride: false
+    }),
+    null
+  )
+})
+
+test('routeProfileForApiRequest routes remote profile scopes through profile descriptors', () => {
+  assert.equal(
+    routeProfileForApiRequest('iris', {
+      globalRemote: false,
+      profileRemoteOverride: true
+    }),
+    'iris'
+  )
+  assert.equal(
+    routeProfileForApiRequest('iris', {
+      globalRemote: true,
+      profileRemoteOverride: false
+    }),
+    'iris'
+  )
+})
+
+test('routeProfileForApiRequest ignores empty profile scopes', () => {
+  assert.equal(routeProfileForApiRequest('', { globalRemote: true }), null)
+  assert.equal(routeProfileForApiRequest(null, { profileRemoteOverride: true }), null)
 })
 
 // --- normalizeRemoteBaseUrl ---

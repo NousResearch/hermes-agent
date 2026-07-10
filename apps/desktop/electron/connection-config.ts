@@ -197,15 +197,34 @@ function profileRemoteOverride(config, profile) {
 }
 
 /**
- * In global-remote mode one backend serves every Desktop profile, so REST calls
- * that are scoped by renderer-side `request.profile` must carry that scope as a
- * query parameter. Local pooled backends and per-profile remote overrides do not
- * need this: they already run against a backend scoped to the target profile.
+ * Decide whether a profile-scoped REST request must resolve a profile backend.
+ * Per-profile remotes are real separate hosts, and app-global remote mode may
+ * need a cached remote descriptor per active profile. Local profiles should NOT
+ * spawn a pooled backend for ordinary REST: the primary dashboard can serve
+ * local profiles through the `?profile=` query param.
+ */
+function routeProfileForApiRequest(
+  profile,
+  opts: { globalRemote?: boolean; profileRemoteOverride?: boolean } = {},
+) {
+  const scopedProfile = connectionScopeKey(profile)
+  if (!scopedProfile) {
+    return null
+  }
+
+  return opts.globalRemote || opts.profileRemoteOverride ? scopedProfile : null
+}
+
+/**
+ * Add renderer-side `request.profile` to a REST path when the selected backend
+ * is not already scoped to that profile. This covers app-global remote mode and
+ * local profiles served through the primary dashboard. Per-profile remote
+ * overrides are already profile-scoped, so sending `?profile=` there would ask
+ * the remote host for a profile name it may not have.
  */
 function pathWithGlobalRemoteProfile(path, profile, opts: any = {}) {
   const scopedProfile = connectionScopeKey(profile)
-
-  if (!scopedProfile || !opts.globalRemote || opts.profileRemoteOverride) {
+  if (!scopedProfile || opts.profileRemoteOverride || (!opts.globalRemote && !opts.localPrimary)) {
     return path
   }
 
@@ -346,5 +365,6 @@ export {
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  routeProfileForApiRequest,
   tokenPreview
 }

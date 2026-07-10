@@ -1933,8 +1933,19 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             resp = client.get(f"{server_url}/v1/models/{model}")
             if resp.status_code == 200:
                 data = resp.json()
-                # vLLM returns max_model_len
-                ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
+                # Read genuine context-WINDOW fields only. `max_tokens` is
+                # excluded on purpose: on an Anthropic-style /v1/models/{id}
+                # passthrough it is the max *output* tokens (e.g. 128000 for a
+                # 1M-context model), NOT the context window — reading it here
+                # collapses the window and triggers premature auto-compaction.
+                # `max_input_tokens` IS the input/context ceiling, so it's kept.
+                ctx = (
+                    data.get("max_model_len")
+                    or data.get("context_length")
+                    or data.get("context_window")
+                    or data.get("max_input_tokens")
+                    or data.get("max_position_embeddings")
+                )
                 if ctx and isinstance(ctx, (int, float)):
                     return int(ctx)
 
@@ -1946,7 +1957,14 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                 models_list = data.get("data", [])
                 for m in models_list:
                     if _model_id_matches(m.get("id", ""), model):
-                        ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
+                        # Context-window fields only (see the max_tokens note above).
+                        ctx = (
+                            m.get("max_model_len")
+                            or m.get("context_length")
+                            or m.get("context_window")
+                            or m.get("max_input_tokens")
+                            or m.get("max_position_embeddings")
+                        )
                         if ctx and isinstance(ctx, (int, float)):
                             return int(ctx)
     except Exception:

@@ -564,6 +564,12 @@ _ACTIVE_TASK_MAX_CHARS = 1400
 # high for small/light tails, but using all 20 as a hard floor here would bring
 # back the old large-tool-output case where nothing can be compacted.
 _MAX_TAIL_MESSAGE_FLOOR = 8
+# Default cap for the compaction tail message floor.  ``protect_last_n`` is
+# honored up to this cap; the cap avoids preserving a whole run of bulky
+# tool outputs on every compaction.  Overridable via
+# ``compression.max_tail_message_floor`` in config.yaml (#45259 hardened the
+# floor from 3 to ``min(protect_last_n, 8)``; this makes the 8 configurable).
+_DEFAULT_MAX_TAIL_MESSAGE_FLOOR = 8
 # Under context pressure (protected-tail tool bodies alone exceed the soft
 # tail budget), demote large completed tool/file outputs even inside the
 # protected region — but always keep this many trailing messages verbatim so
@@ -1874,7 +1880,8 @@ class ContextCompressor(ContextEngine):
         proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096,
         min_tail_user_messages: int = 1,
-    ):
+        max_tail_message_floor: int = 0,
+    ) -> None:
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
@@ -1943,6 +1950,13 @@ class ContextCompressor(ContextEngine):
         # When False (default = historical behavior), insert a
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
+        # Configurable cap for the tail message floor (see
+        # _find_tail_cut_by_tokens).  0 = use the module-level default
+        # (_DEFAULT_MAX_TAIL_MESSAGE_FLOOR = 8), preserving backward
+        # compatibility.  Set higher (e.g. 20) to keep more recent
+        # messages verbatim during compaction at the cost of a smaller
+        # summarization window when tool outputs are bulky.
+        self.max_tail_message_floor = max(0, int(max_tail_message_floor or 0))
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -4294,6 +4308,13 @@ This compaction should PRIORITISE preserving all information related to the focu
                 return 0
         return self.protect_first_n
 
+    @property
+    def _effective_max_tail_message_floor(self) -> int:
+        """Resolved tail-floor cap: config override or module default."""
+        if self.max_tail_message_floor > 0:
+            return self.max_tail_message_floor
+        return _DEFAULT_MAX_TAIL_MESSAGE_FLOOR
+
     def _protect_head_size(self, messages: List[Dict[str, Any]]) -> int:
         """Total count of head messages to protect.
 
@@ -4666,7 +4687,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # ``protect_last_n`` remains a minimum up to the cap; the cap avoids
         # preserving a whole run of bulky tool outputs on every compaction.
         available_tail = max(0, n - head_end - 1)
-        min_tail_floor = max(3, min(self.protect_last_n, _MAX_TAIL_MESSAGE_FLOOR))
+        min_tail_floor = max(3, min(self.protect_last_n, self._effective_max_tail_message_floor))
         # Leave at least two non-head messages available to summarize on short
         # transcripts; otherwise compression can replace a tiny middle with a
         # summary and save no messages at all.

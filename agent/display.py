@@ -1451,8 +1451,9 @@ def get_cute_tool_message(
         return _get_cute_tool_message(tool_name, args, duration, result=result)
     except Exception as exc:  # noqa: BLE001 — display must never abort a turn
         logger.debug("Tool completion label failed for %s: %s", tool_name, exc)
-        safe_name = str(tool_name or "tool")[:9]
-        return f"┊ ⚡ {safe_name:9} completed  {duration:.1f}s"
+        safe_name = tool_name[:9] if isinstance(tool_name, str) and tool_name else "tool"
+        safe_duration = f"{duration:.1f}s" if isinstance(duration, (int, float)) else "done"
+        return f"┊ ⚡ {safe_name:9} completed  {safe_duration}"
 
 
 # =========================================================================

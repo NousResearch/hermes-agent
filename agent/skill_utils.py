@@ -402,13 +402,13 @@ def _normalize_string_set(values) -> Set[str]:
 
 # ── External skills directories ──────────────────────────────────────────
 
-# (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by
-# mtime_ns so a config.yaml edit mid-run is picked up automatically;
+# (config_path_str, mtime_ns, expanded_entries) -> resolved external dirs list.
+# Config edits and environment-backed path changes are picked up automatically;
 # otherwise every call would re-read + re-YAML-parse the 15KB config,
 # which becomes the dominant cost of ``hermes`` startup when ~120 skills
 # each trigger a category lookup during banner construction (10+ seconds
 # of pure waste).
-_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
+_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int, Tuple[str, ...]], List[Path]] = {}
 
 
 def _external_dirs_cache_clear() -> None:
@@ -424,28 +424,22 @@ def get_external_skills_dirs() -> List[Path]:
     path.  Only directories that actually exist are returned.  Duplicates and
     paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
 
-    Cached in-process, keyed on ``config.yaml`` mtime — the function is
-    called once per skill during banner / tool-registry scans, and YAML
-    parsing a non-trivial config dominates ``hermes`` cold-start time
-    when the cache is absent.
+    Cached in-process, keyed on ``config.yaml`` mtime and the expanded entries
+    — the function is called once per skill during banner / tool-registry
+    scans, and YAML parsing a non-trivial config dominates ``hermes``
+    cold-start time when the cache is absent.
     """
     config_path = get_config_path()
     if not config_path.exists():
         return []
 
-    # Cache key: (absolute path, mtime_ns).  stat() is ~2us vs ~85ms for
-    # the full YAML parse, so the fast path is nearly free.
+    # stat() is ~2us vs ~85ms for the full YAML parse.  The raw config helper
+    # below has its own mtime-keyed cache, so reading it here is still cheap.
     try:
         stat = config_path.stat()
-        cache_key: Tuple[str, int] = (str(config_path), stat.st_mtime_ns)
+        config_cache_key: Tuple[str, int] = (str(config_path), stat.st_mtime_ns)
     except OSError:
-        cache_key = None  # type: ignore[assignment]
-
-    if cache_key is not None:
-        cached = _EXTERNAL_DIRS_CACHE.get(cache_key)
-        if cached is not None:
-            # Return a copy so callers can't mutate the cached list.
-            return list(cached)
+        config_cache_key = None  # type: ignore[assignment]
 
     parsed = _load_raw_config()
     if not parsed:
@@ -457,14 +451,26 @@ def get_external_skills_dirs() -> List[Path]:
 
     raw_dirs = skills_cfg.get("external_dirs")
     if not raw_dirs:
-        result: List[Path] = []
-        if cache_key is not None:
-            _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
-        return result
+        return []
     if isinstance(raw_dirs, str):
         raw_dirs = [raw_dirs]
     if not isinstance(raw_dirs, list):
         return []
+
+    normalized_entries = tuple(str(entry).strip() for entry in raw_dirs)
+    expansion_signature = tuple(
+        os.path.expanduser(os.path.expandvars(entry)) for entry in normalized_entries
+    )
+    cache_key = (
+        (*config_cache_key, expansion_signature)
+        if config_cache_key is not None
+        else None
+    )
+    if cache_key is not None:
+        cached = _EXTERNAL_DIRS_CACHE.get(cache_key)
+        if cached is not None:
+            # Return a copy so callers can't mutate the cached list.
+            return list(cached)
 
     from hermes_constants import get_hermes_home
 
@@ -473,12 +479,9 @@ def get_external_skills_dirs() -> List[Path]:
     seen: Set[Path] = set()
     result = []
 
-    for entry in raw_dirs:
-        entry = str(entry).strip()
+    for entry, expanded in zip(normalized_entries, expansion_signature):
         if not entry:
             continue
-        # Expand ~ and environment variables
-        expanded = os.path.expanduser(os.path.expandvars(entry))
         p = Path(expanded)
         # Resolve relative paths against HERMES_HOME, not cwd
         if not p.is_absolute():

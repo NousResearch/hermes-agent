@@ -447,7 +447,9 @@ def test_ultrafast_version_skips_container_mode_marker(
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.delenv("HERMES_DEV", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setattr(main_mod, "_is_container_startup_environment_fast", lambda: False)
+    monkeypatch.setattr(
+        main_mod._startup_fast, "is_container_startup_environment", lambda: False
+    )
     monkeypatch.setattr(sys, "argv", ["hermes", "--version"])
 
     assert main_mod._try_ultrafast_version() is False
@@ -464,7 +466,9 @@ def test_ultrafast_version_skips_root_hermes_home_with_active_profile(
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.delenv("HERMES_DEV", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setattr(main_mod, "_is_container_startup_environment_fast", lambda: False)
+    monkeypatch.setattr(
+        main_mod._startup_fast, "is_container_startup_environment", lambda: False
+    )
     monkeypatch.setattr(sys, "argv", ["hermes", "--version"])
 
     assert main_mod._try_ultrafast_version() is False

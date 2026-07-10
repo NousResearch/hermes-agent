@@ -64,21 +64,22 @@ except ModuleNotFoundError:
 import os
 import sys
 
+# ── Startup fast-path bootstrap ─────────────────────────────────────────
+# Two lines of inline path math so ``python hermes_cli/main.py`` (script
+# mode — sys.path[0] is hermes_cli/, not the repo root) can import the
+# canonical helpers; everything else lives in hermes_cli._startup_fast.
+_bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _bootstrap_root not in sys.path:
+    sys.path.insert(0, _bootstrap_root)
+from hermes_cli import _startup_fast  # noqa: E402
+
 
 def _project_root_str_fast() -> str:
-    return os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+    return _startup_fast.project_root_str()
 
 
 def _ensure_project_root_on_path_fast() -> None:
-    project_root = _project_root_str_fast()
-    normalized_root = os.path.normcase(os.path.realpath(project_root))
-    sys.path[:] = [
-        entry
-        for entry in sys.path
-        if not entry
-        or os.path.normcase(os.path.realpath(entry)) != normalized_root
-    ]
-    sys.path.insert(0, project_root)
+    _startup_fast.ensure_project_root_on_path()
 
 
 def _set_process_title() -> None:
@@ -225,120 +226,41 @@ _suppress_mouse_residue_early()
 
 def _is_termux_startup_environment_fast() -> bool:
     """Tiny Termux check for pre-import startup shortcuts."""
-    prefix = os.environ.get("PREFIX", "")
-    return bool(
-        os.environ.get("TERMUX_VERSION")
-        or "com.termux/files/usr" in prefix
-        or prefix.startswith("/data/data/com.termux/")
-    )
+    return _startup_fast.is_termux_env()
 
 
 def _is_termux_fast_version_argv(argv: list[str]) -> bool:
-    return argv in (["--version"], ["-V"], ["version"])
+    return _startup_fast.is_termux_fast_version_argv(argv)
 
 
 def _is_global_fast_version_argv(argv: list[str]) -> bool:
-    return argv in (["--version"], ["-V"])
+    return _startup_fast.is_global_fast_version_argv(argv)
 
 
 def _is_container_startup_environment_fast() -> bool:
-    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
-        return True
-    try:
-        with open("/proc/1/cgroup", encoding="utf-8") as handle:
-            cgroup = handle.read()
-    except OSError:
-        return False
-    return "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup
+    return _startup_fast.is_container_startup_environment()
 
 
 def _active_profile_may_override_home_fast(hermes_root: str) -> bool:
-    active_profile = os.path.join(hermes_root, "active_profile")
-    try:
-        if os.path.exists(active_profile):
-            with open(active_profile, encoding="utf-8") as handle:
-                active = handle.read().strip()
-            return bool(active and active != "default")
-    except (OSError, UnicodeDecodeError):
-        pass
-    return False
+    return _startup_fast.active_profile_may_override_home(hermes_root)
 
 
 def _container_mode_may_be_active_fast() -> bool:
-    if os.environ.get("HERMES_DEV") == "1":
-        return False
-    if _is_container_startup_environment_fast():
-        return False
-
-    hermes_home = os.environ.get("HERMES_HOME", "").strip()
-    if hermes_home:
-        if os.path.exists(os.path.join(hermes_home, ".container-mode")):
-            return True
-        parent_name = os.path.basename(os.path.dirname(os.path.normpath(hermes_home)))
-        return (
-            parent_name != "profiles"
-            and _active_profile_may_override_home_fast(hermes_home)
-        )
-
-    default_home = os.path.join(os.path.expanduser("~"), ".hermes")
-    if _active_profile_may_override_home_fast(default_home):
-        return True
-    return os.path.exists(os.path.join(default_home, ".container-mode"))
+    return _startup_fast.container_mode_may_be_active()
 
 
 def _read_openai_version_fast() -> str | None:
     """Read OpenAI SDK version without importing ``importlib.metadata``."""
-    for base in sys.path:
-        if not base:
-            base = os.getcwd()
-        version_file = os.path.join(base, "openai", "_version.py")
-        try:
-            with open(version_file, encoding="utf-8") as handle:
-                for line in handle:
-                    stripped = line.strip()
-                    if not stripped.startswith("__version__"):
-                        continue
-                    _key, _sep, value = stripped.partition("=")
-                    value = value.split("#", 1)[0].strip().strip("\"'")
-                    return value or None
-        except OSError:
-            continue
-    return None
+    return _startup_fast.read_openai_version()
 
 
 def _print_fast_version_info() -> None:
-    from hermes_cli import __release_date__, __version__
-
-    print(f"Hermes Agent v{__version__} ({__release_date__})")
-    # PROJECT_ROOT (module constant) is defined AFTER the ultrafast exit —
-    # referencing it here NameErrors (live bug on main since eb4040242 broke
-    # the Termux fast path). Compute it locally.
-    print(f"Install directory: {_project_root_str_fast()}")
-
-    print(f"Python: {sys.version.split()[0]}")
-
-    openai_version = _read_openai_version_fast()
-    print(f"OpenAI SDK: {openai_version}" if openai_version else "OpenAI SDK: Not installed")
+    _startup_fast.print_fast_version_info()
 
 
 def _try_ultrafast_version() -> bool:
     """Handle ``hermes --version`` before config/logging imports."""
-    is_termux = _is_termux_startup_environment_fast()
-    if (
-        is_termux
-        and os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1"
-    ):
-        return False
-    if is_termux:
-        if not _is_termux_fast_version_argv(sys.argv[1:]):
-            return False
-    elif not _is_global_fast_version_argv(sys.argv[1:]):
-        return False
-    elif _container_mode_may_be_active_fast():
-        return False
-
-    _print_fast_version_info()
-    return True
+    return _startup_fast.try_fast_version()
 
 
 def _try_termux_ultrafast_version() -> bool:

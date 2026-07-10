@@ -327,6 +327,19 @@ def test_trigger_ready_when_rejects_malformed_condition_at_deploy_time():
         validate_graph(spec)
 
 
+def test_trigger_dedupe_key_rejects_malformed_path_at_deploy_time():
+    raw = _minimal_spec()
+    raw["triggers"] = [{
+        "type": "manual",
+        "id": "manual",
+        "intake": {"dedupe_key": "input.id"},
+    }]
+    spec = WorkflowSpec.model_validate(raw)
+
+    with pytest.raises(ValueError, match="trigger 'manual' dedupe_key"):
+        validate_graph(spec)
+
+
 def test_switch_when_rejects_malformed_condition_at_deploy_time():
     raw = _minimal_spec()
     raw["nodes"] = {

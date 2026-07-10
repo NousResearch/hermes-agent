@@ -881,7 +881,9 @@ def test_agent_task_structured_prompt_remains_supported_and_pretty_printed(tmp_p
     with kb.connect() as kconn:
         body = kb.list_tasks(kconn)[0].body or ""
 
-    assert '"task": "Handle workflow prompts"' in body
+    assert "workflow_untrusted_value" in body
+    assert 'source=\\"input.topic\\"' in body
+    assert "workflow prompts" in body
     assert "\n  " in body
 
 
@@ -1692,6 +1694,33 @@ def test_fire_due_schedules_drops_stale_disabled_schedule(tmp_path, monkeypatch)
         ).fetchone()[0]
         executions = conn.execute("SELECT count(*) FROM workflow_executions").fetchone()[0]
     assert remaining == 0
+    assert executions == 0
+
+
+def test_ready_feed_item_for_disabled_definition_is_terminalized(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    spec = WorkflowSpec.model_validate({
+        "id": "disabled_feed_demo",
+        "name": "Disabled Feed Demo",
+        "version": 1,
+        "triggers": [{"type": "manual", "id": "kickoff", "intake": {"mode": "continuous"}}],
+        "nodes": {"start": {"type": "pass"}},
+    })
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        feed = wfdb.open_input_feed(conn, spec.id, trigger_id="kickoff", now=1)
+        item = wfdb.enqueue_input_item(conn, feed.feed_id, {}, now=2)
+        conn.execute("UPDATE workflow_definitions SET enabled = 0 WHERE workflow_id = ?", (spec.id,))
+
+    assert workflows_dispatcher.tick(limit=1, now=100) == 1
+    assert workflows_dispatcher.tick(limit=1, now=101) == 0
+
+    with wfdb.connect() as conn:
+        item = wfdb.get_input_item(conn, item.item_id)
+        executions = conn.execute("SELECT count(*) FROM workflow_executions").fetchone()[0]
+    assert item.status == "failed"
+    assert item.execution_id is None
     assert executions == 0
 
 

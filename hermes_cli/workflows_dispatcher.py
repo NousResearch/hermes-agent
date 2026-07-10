@@ -208,15 +208,20 @@ def _start_ready_feed_items(conn: sqlite3.Connection, *, now: int, limit: int) -
             item = wfdb.claim_next_ready_input_item(conn)
             if item is None:
                 break
-            execution_id = wfdb.start_execution(
-                conn,
-                item.workflow_id,
-                input_data=item.input,
-                trigger_type="input_feed",
-                trigger_id=item.trigger_id,
-                version=item.version,
-                now=now,
-            )
+            try:
+                execution_id = wfdb.start_execution(
+                    conn,
+                    item.workflow_id,
+                    input_data=item.input,
+                    trigger_type="input_feed",
+                    trigger_id=item.trigger_id,
+                    version=item.version,
+                    now=now,
+                )
+            except (KeyError, ValueError):
+                wfdb.mark_input_item_terminal(conn, item.item_id, "failed", now=now)
+                started += 1
+                continue
             wfdb.mark_input_item_running(conn, item.item_id, execution_id, now=now)
         started += 1
     return started

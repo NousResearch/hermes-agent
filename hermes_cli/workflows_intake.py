@@ -47,7 +47,10 @@ def evaluate_intake(trigger: TriggerSpec, input_data: dict[str, Any]) -> IntakeE
             if field.max_bytes is not None and len(value.encode("utf-8")) > field.max_bytes:
                 messages.append(f"{name} must be at most {field.max_bytes} bytes")
                 field_ok = False
-        if field.kind in {"number", "integer"} and not isinstance(value, bool):
+        if field.kind in {"number", "integer"} and isinstance(value, bool):
+            messages.append(f"{name} must be a number")
+            field_ok = False
+        elif field.kind in {"number", "integer"}:
             try:
                 number = float(value)
             except (TypeError, ValueError):
@@ -70,7 +73,7 @@ def evaluate_intake(trigger: TriggerSpec, input_data: dict[str, Any]) -> IntakeE
     if ready_when:
         try:
             ready = eval_condition(ready_when, {"input": input_data})
-        except ValueError as exc:
+        except Exception as exc:
             ready = False
             messages.append(f"ready_when invalid: {exc}")
         criteria["ready_when"] = ready

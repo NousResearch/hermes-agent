@@ -267,9 +267,7 @@ def _input_item_to_dict(item: wfdb.WorkflowInputItem) -> dict[str, Any]:
 
 
 def _input_from_payload(payload: Any) -> dict[str, Any]:
-    if payload in (None, ""):
-        return {}
-    payload = _yaml_or_object(payload, what="run request")
+    payload = _object_payload(payload, what="run request")
     if "input_json" in payload:
         raw_input = payload["input_json"]
         if raw_input is None or raw_input == "":

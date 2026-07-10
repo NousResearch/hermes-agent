@@ -20,3 +20,7 @@ def test_redact_sensitive_leaves_scalars_and_safe_keys() -> None:
         "topic": "ui dogfood",
         "score": 0.95,
     }
+
+
+def test_redact_sensitive_keeps_safe_diagnostic_text_readable() -> None:
+    assert redact_sensitive("token count exceeded while parsing") == "token count exceeded while parsing"

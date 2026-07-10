@@ -66,6 +66,40 @@ def test_evaluate_intake_enforces_numeric_min_and_max():
     assert ok.status == "queued"
 
 
+def test_evaluate_intake_rejects_boolean_for_numeric_fields():
+    from hermes_cli.workflows_intake import evaluate_intake
+
+    result = evaluate_intake(
+        _trigger({"score": {"kind": "number", "required": True, "min": 0}}),
+        {"score": True},
+    )
+
+    assert result.ready is False
+    assert result.status == "needs_input"
+    assert result.messages == ["score must be a number"]
+
+
+def test_evaluate_intake_handles_ready_when_runtime_errors(monkeypatch):
+    import hermes_cli.workflows_intake as intake
+
+    def raise_runtime_error(_condition, _data):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(intake, "eval_condition", raise_runtime_error)
+
+    result = intake.evaluate_intake(
+        _trigger(
+            {"brief": {"kind": "text", "required": True}},
+            {"ready_when": {"op": "exists", "path": "$.input.brief"}},
+        ),
+        {"brief": "ship it"},
+    )
+
+    assert result.ready is False
+    assert result.status == "needs_input"
+    assert result.messages == ["ready_when invalid: boom"]
+
+
 def test_evaluate_intake_ready_when_uses_workflow_conditions():
     from hermes_cli.workflows_intake import evaluate_intake
 

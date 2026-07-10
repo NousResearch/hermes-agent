@@ -42,7 +42,7 @@ def _stringify_prompt_value(value: Any) -> str:
 
 def _untrusted_value_block(source: str, value: Any) -> str:
     safe_source = html.escape(source, quote=True)
-    text = _stringify_prompt_value(_redact_prompt_value(value, source=source))
+    text = html.escape(_stringify_prompt_value(_redact_prompt_value(value, source=source)), quote=False)
     return (
         f'<workflow_untrusted_value source="{safe_source}">\n'
         f"{text}\n"
@@ -68,16 +68,18 @@ def render_prompt_text(
     return _INLINE_TEMPLATE_RE.sub(replace, text)
 
 
-def _render_prompt_value(value: Any, context: dict[str, Any]) -> Any:
+def _render_prompt_value(value: Any, context: dict[str, Any], *, wrap_untrusted_values: bool = False) -> Any:
     if isinstance(value, str):
         rendered = render_template(value, context)
         if not isinstance(rendered, str) or rendered != value:
-            return rendered
-        return render_prompt_text(value, context)
+            match = _INLINE_TEMPLATE_RE.fullmatch(value.strip())
+            source = match.group(1).strip() if match else value
+            return _untrusted_value_block(source, rendered) if wrap_untrusted_values else rendered
+        return render_prompt_text(value, context, wrap_untrusted_values=wrap_untrusted_values)
     if isinstance(value, list):
-        return [_render_prompt_value(item, context) for item in value]
+        return [_render_prompt_value(item, context, wrap_untrusted_values=wrap_untrusted_values) for item in value]
     if isinstance(value, dict):
-        return {key: _render_prompt_value(item, context) for key, item in value.items()}
+        return {key: _render_prompt_value(item, context, wrap_untrusted_values=wrap_untrusted_values) for key, item in value.items()}
     return value
 
 
@@ -93,7 +95,7 @@ def render_agent_prompt(prompt: Any, context: dict[str, Any]) -> str:
     if isinstance(prompt, str):
         body = render_prompt_text(prompt, context, wrap_untrusted_values=True).strip()
     else:
-        rendered = _redact_prompt_value(_render_prompt_value(prompt, context))
+        rendered = _redact_prompt_value(_render_prompt_value(prompt, context, wrap_untrusted_values=True))
         if isinstance(rendered, str):
             body = rendered.strip()
         else:

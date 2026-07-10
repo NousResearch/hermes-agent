@@ -355,6 +355,13 @@ def _validate_condition_context(condition: Any, *, where: str) -> None:
         raise ValueError(f"{where}: {exc}") from exc
 
 
+def _validate_path_string(path: str, *, where: str) -> None:
+    try:
+        validate_condition_shape({"op": "exists", "path": path})
+    except ValueError as exc:
+        raise ValueError(f"{where}: {exc}") from exc
+
+
 def _cycle_path(spec: WorkflowSpec) -> list[str] | None:
     adjacency: dict[str, list[str]] = {node_id: [] for node_id in spec.nodes}
     for edge in spec.edges:
@@ -407,6 +414,11 @@ def validate_graph(spec: WorkflowSpec) -> None:
             _validate_condition_context(
                 trigger.intake.ready_when,
                 where=f"trigger {trigger_label!r} ready_when",
+            )
+        if trigger.intake.dedupe_key:
+            _validate_path_string(
+                trigger.intake.dedupe_key,
+                where=f"trigger {trigger_label!r} dedupe_key",
             )
         expr = trigger.cron or trigger.schedule or trigger.expr
         if trigger.type == "schedule":

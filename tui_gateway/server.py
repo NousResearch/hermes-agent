@@ -3666,6 +3666,19 @@ def _on_tool_progress(
         # the stable tool id and args. Emitting another id-less progress row
         # here makes the desktop live view diverge from hydrated history.
         return
+    if event_type == "tool.output_risk" and name:
+        metadata = _kwargs.get("risk_metadata")
+        if not isinstance(metadata, dict):
+            return
+        payload: dict[str, object] = {
+            "tool_id": str(_kwargs.get("tool_call_id") or ""),
+            "name": str(name),
+            "risk": str(metadata.get("risk") or "low"),
+            "findings": [str(item) for item in metadata.get("findings", [])],
+            "redacted": bool(metadata.get("redacted", False)),
+        }
+        _emit("tool.output_risk", sid, payload)
+        return
     if event_type == "reasoning.available" and preview:
         payload: dict[str, object] = {"text": str(preview)}
         if _session_verbose(sid):

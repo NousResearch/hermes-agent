@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-agent"
-version = "0.16.0"
+version = "0.18.2"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -87,6 +87,9 @@ dependencies = [
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
+  # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
+  # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
+  "cryptography==46.0.7",  # CVE-2026-39892, CVE-2026-34073
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -106,6 +109,11 @@ dependencies = [
   "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
   "uvicorn[standard]>=0.24.0,<1",
+  # Streaming multipart uploads for the dashboard file manager (NS-501).
+  # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
+  # by fastapi itself, so the dashboard's multipart upload endpoint would 500
+  # without an explicit dependency here (and in the `web` extra below).
+  "python-multipart>=0.0.9,<1",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
   # Image resize recovery for the vision tools. Pillow shrinks oversized images
@@ -116,6 +124,20 @@ dependencies = [
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
   "Pillow==12.2.0",
+  # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
+  # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
+  # Windows whenever any other process holds an append-mode handle on
+  # ``agent.log`` (always the case in Hermes — TUI, gateway, ``hy_memory``
+  # server, MCP servers, and on-demand CLI commands all log from separate
+  # processes), pinning ``agent.log`` at the 5 MiB threshold and spamming
+  # stderr on every emit (see #44873). ``concurrent-log-handler`` wraps the
+  # rename in a cross-process file lock (via ``portalocker``: pywin32 on
+  # Windows) so only one process rotates at a time. ``hermes_logging.py``
+  # aliases it ONLY on Windows — POSIX renames an open file fine, so stdlib
+  # already works there and managed-mode perms depend on its exact lifecycle.
+  # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
+  # / pywin32 tree) ships only where it's actually used.
+  "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -136,10 +158,10 @@ modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
 dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
-messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.4", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]  # aiohttp: CVE-2026-34513/34518/34519/34520/34525
+messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]  # aiohttp 3.14.1: CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
-slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.4"]
-matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
+slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.14.1"]
+matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
 # replacement for stdlib xml.etree.ElementTree) to block billion-laughs
@@ -162,6 +184,13 @@ pty = [
   # without pulling in extra packages.
 ]
 honcho = ["honcho-ai==2.0.1"]
+# Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
+# (memory.supermemory / memory.mem0) at first use. Exact pins MUST match the
+# LAZY_DEPS pins (enforced by tests/test_project_metadata.py). Deliberately
+# excluded from [all] like honcho/hindsight so a quarantined upstream release
+# can't break fresh installs.
+supermemory = ["supermemory==3.50.0"]
+mem0 = ["mem0ai==2.0.10"]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list) since the byte/pixel shrink paths are on
 # the default vision-embed path and the mid-session lazy install deadlocked the
@@ -177,9 +206,9 @@ vision = []
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
 mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
 nemo-relay = ["nemo-relay==0.3"]
-homeassistant = ["aiohttp==3.13.4"]
-sms = ["aiohttp==3.13.4"]
-teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"]
+homeassistant = ["aiohttp==3.14.1"]
+sms = ["aiohttp==3.14.1"]
+teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
@@ -196,6 +225,7 @@ acp = ["agent-client-protocol==0.9.0"]
 # installs (see [all] policy comment below).
 mistral = ["mistralai==2.4.8"]
 bedrock = ["boto3==1.42.89"]
+vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
@@ -219,7 +249,7 @@ termux-all = [
   "hermes-agent[web]",
 ]
 dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
-feishu = ["lark-oapi==1.5.3", "qrcode==7.4.2"]
+feishu = ["lark-oapi==1.6.8", "qrcode==7.4.2"]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
   # Sheets, Docs).  Declared here so packagers (Nix, Homebrew) ship them with
@@ -239,7 +269,7 @@ youtube = [
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 # starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1"]
+web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1", "python-multipart==0.0.27"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every

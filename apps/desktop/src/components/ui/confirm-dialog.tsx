@@ -3,7 +3,14 @@ import { useEffect, useState } from 'react'
 
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 
@@ -19,6 +26,8 @@ interface ConfirmDialogProps {
   doneLabel?: string
   cancelLabel?: string
   destructive?: boolean
+  /** Close as soon as onConfirm resolves — for optimistic actions that finish in the background. */
+  dismissOnConfirm?: boolean
 }
 
 // Shared confirmation dialog: Enter confirms (from anywhere in the dialog),
@@ -34,7 +43,8 @@ export function ConfirmDialog({
   busyLabel,
   doneLabel,
   cancelLabel,
-  destructive = false
+  destructive = false,
+  dismissOnConfirm = false
 }: ConfirmDialogProps) {
   const { t } = useI18n()
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
@@ -57,8 +67,20 @@ export function ConfirmDialog({
       return
     }
 
-    setStatus('saving')
     setError(null)
+
+    if (dismissOnConfirm) {
+      try {
+        await onConfirm()
+        onClose()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t.errors.genericFailure)
+      }
+
+      return
+    }
+
+    setStatus('saving')
 
     try {
       await onConfirm()
@@ -100,7 +122,12 @@ export function ConfirmDialog({
             {resolvedCancelLabel}
           </Button>
           <Button disabled={busy} onClick={() => void run()} variant={destructive ? 'destructive' : 'default'}>
-            <ActionStatus busy={resolvedBusyLabel} done={resolvedDoneLabel} idle={resolvedConfirmLabel} state={status} />
+            <ActionStatus
+              busy={resolvedBusyLabel}
+              done={resolvedDoneLabel}
+              idle={resolvedConfirmLabel}
+              state={status}
+            />
           </Button>
         </DialogFooter>
       </DialogContent>

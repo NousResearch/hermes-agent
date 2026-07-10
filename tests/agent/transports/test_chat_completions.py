@@ -104,6 +104,31 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[2]["tool_name"] == "execute_code"
 
+    def test_convert_messages_strips_timestamp(self, transport):
+        """Internal per-message ``timestamp`` metadata (stamped by
+        ``_apply_persist_user_message_override`` to preserve platform event
+        time without embedding it in content, and persisted to the SQLite
+        store) is not part of the OpenAI Chat Completions schema. Strict
+        providers like Mistral / Fireworks-backed endpoints reject it with
+        HTTP 422 'Extra inputs are not permitted, field: messages[N].timestamp'.
+        Regression test for #47868.
+        """
+        msgs = [
+            {"role": "user", "content": "hi", "timestamp": 1781976577.0},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "timestamp" not in result[0]
+        assert result[0]["content"] == "hi"
+        assert result[0]["role"] == "user"
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[0]["timestamp"] == 1781976577.0
+
+    def test_convert_messages_no_copy_without_timestamp(self, transport):
+        """A timestamp-free message list needs no sanitize pass and is
+        returned by identity (preserves the deepcopy-on-demand contract)."""
+        msgs = [{"role": "user", "content": "hi"}]
+        assert transport.convert_messages(msgs) is msgs
+
     def test_convert_messages_strips_internal_scaffolding_markers(self, transport):
         """Hermes-internal ``_``-prefixed markers must never reach the wire.
 
@@ -135,6 +160,78 @@ class TestChatCompletionsBasic:
             {"role": "assistant", "content": "hello"},
         ]
         assert transport.convert_messages(msgs) is msgs
+
+    def test_convert_messages_copy_on_write_for_dirty_history(self, transport):
+        """Dirty provider metadata should not force a full-history deepcopy."""
+        clean_tool_call = {
+            "id": "call_clean",
+            "type": "function",
+            "function": {"name": "safe", "arguments": "{}"},
+        }
+        msgs = [
+            {"role": "user", "content": "hi", "metadata": {"large": ["shared"]}},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [
+                    clean_tool_call,
+                    {
+                        "id": "call_dirty",
+                        "call_id": "call_dirty",
+                        "response_item_id": "fc_dirty",
+                        "extra_content": {"google": {"thought_signature": "SIG"}},
+                        "type": "function",
+                        "function": {"name": "t", "arguments": "{}"},
+                    },
+                ],
+            },
+        ]
+
+        result = transport.convert_messages(msgs, model="gpt-4o")
+
+        assert result is not msgs
+        assert result[0] is msgs[0]
+        assert result[1] is not msgs[1]
+        assert result[1]["tool_calls"] is not msgs[1]["tool_calls"]
+        assert result[1]["tool_calls"][0] is clean_tool_call
+        assert result[1]["tool_calls"][1] is not msgs[1]["tool_calls"][1]
+        assert "call_id" not in result[1]["tool_calls"][1]
+        assert "response_item_id" not in result[1]["tool_calls"][1]
+        assert "extra_content" not in result[1]["tool_calls"][1]
+        assert "call_id" in msgs[1]["tool_calls"][1]
+        assert "extra_content" in msgs[1]["tool_calls"][1]
+
+    def test_same_history_survives_strict_then_gemini_model_switch(self, transport):
+        """Strict cleanup must not remove Gemini replay metadata from history."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "call_id": "call_1",
+                        "response_item_id": "fc_1",
+                        "extra_content": {"google": {"thought_signature": "SIG_123"}},
+                        "type": "function",
+                        "function": {"name": "t", "arguments": "{}"},
+                    }
+                ],
+            }
+        ]
+
+        strict = transport.convert_messages(msgs, model="accounts/fireworks/models/llama")
+        gemini = transport.convert_messages(msgs, model="google/gemini-3-pro")
+
+        assert "extra_content" not in strict[0]["tool_calls"][0]
+        assert "call_id" not in strict[0]["tool_calls"][0]
+        assert "response_item_id" not in strict[0]["tool_calls"][0]
+        assert gemini[0]["tool_calls"][0]["extra_content"] == {
+            "google": {"thought_signature": "SIG_123"}
+        }
+        # The canonical history still has both provider-specific metadata sets.
+        assert msgs[0]["tool_calls"][0]["call_id"] == "call_1"
+        assert msgs[0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"] == "SIG_123"
 
 
 class TestChatCompletionsBuildKwargs:
@@ -378,20 +475,6 @@ class TestChatCompletionsBuildKwargs:
             reasoning_config={"enabled": True, "effort": "xhigh"},
         )
         assert kw["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_level"] == "high"
-
-    def test_google_gemini_cli_keeps_top_level_thinking_config(self, transport):
-        msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gemini-3-flash-preview",
-            messages=msgs,
-            provider_name="google-gemini-cli",
-            reasoning_config={"enabled": True, "effort": "high"},
-        )
-        assert kw["extra_body"]["thinking_config"] == {
-            "includeThoughts": True,
-            "thinkingLevel": "high",
-        }
-        assert "google" not in kw["extra_body"]
 
     def test_gemini_flash_minimal_clamps_to_low(self, transport):
         # Gemini 3 Flash documents low/medium/high; "minimal" isn't accepted,

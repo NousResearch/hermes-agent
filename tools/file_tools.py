@@ -5,8 +5,9 @@ import errno
 import json
 import logging
 import os
+import posixpath
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
@@ -22,6 +23,29 @@ logger = logging.getLogger(__name__)
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
+
+
+def _expand_tilde(path: str) -> str:
+    """Expand ``~`` using the effective profile home when available.
+
+    In-process file tools share the gateway process's HOME, which may differ
+    from the profile-specific HOME that interactive CLI sessions use.  This
+    mirrors ``hermes_constants.get_subprocess_home()`` so that ``~`` resolves
+    consistently regardless of whether the tool runs interactively or inside a
+    gateway-driven cron job (#48552).
+    """
+    if not path or "~" not in path:
+        return path
+    try:
+        from hermes_constants import get_subprocess_home
+
+        home = get_subprocess_home()
+    except Exception:
+        home = None
+    if home and (path == "~" or path.startswith("~/")):
+        return home if path == "~" else os.path.join(home, path[2:])
+    return os.path.expanduser(path)
+
 
 # ---------------------------------------------------------------------------
 # Read-size guard: cap the character count returned to the model.
@@ -58,6 +82,51 @@ def _get_max_read_chars() -> int:
     _max_read_chars_cached = _DEFAULT_MAX_READ_CHARS
     return _max_read_chars_cached
 
+
+def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bool]:
+    """Trim line-numbered ``read_file`` content to fit a char budget.
+
+    Ported in spirit from nearai/ironclaw#5029 (dual line/byte cap on
+    ``read_file``). Where hermes previously hard-rejected an oversized read
+    (forcing the model to guess a smaller ``limit`` and burn a round-trip
+    returning nothing), this trims the content to the last *complete line*
+    that fits within ``max_chars`` and reports how many lines were kept so
+    the caller can offer a ``next_offset`` continuation.
+
+    ``content`` is the gutter-rendered text (``LINE_NUM|CONTENT`` joined by
+    ``\\n``). Individual lines are already clamped to ``get_max_line_length()``
+    upstream, so a single line never blows the whole budget on its own; the
+    overflow this handles is the *accumulation* of many lines under the
+    line-count limit (logs, wide CSV rows, minified data).
+
+    Returns ``(kept_text, lines_kept, truncated)``. When ``content`` already
+    fits, returns it unchanged with ``truncated=False``. If not even the
+    first line fits, that single line is clamped on a code-point boundary
+    (Python ``str`` slicing never splits a code point) so the read never
+    returns empty and the cursor can still advance.
+    """
+    if len(content) <= max_chars:
+        return content, (content.count("\n") + 1 if content else 0), False
+
+    lines = content.split("\n")
+    kept: list[str] = []
+    running = 0
+    for line in lines:
+        # +1 for the "\n" that rejoins this line to the previous one.
+        addition = len(line) + (1 if kept else 0)
+        if running + addition > max_chars:
+            break
+        kept.append(line)
+        running += addition
+
+    if not kept:
+        # First line alone exceeds the budget. Clamp on a code-point
+        # boundary rather than emitting nothing.
+        kept.append(lines[0][:max_chars])
+
+    return "\n".join(kept), len(kept), True
+
+
 # If the total file size exceeds this AND the caller didn't specify a narrow
 # range (limit <= 200), we include a hint encouraging targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000  # 512 KB
@@ -78,7 +147,7 @@ _BLOCKED_DEVICE_PATHS = frozenset({
 })
 
 
-def _resolve_path(filepath: str, task_id: str = "default") -> Path:
+def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
     instead of the main repository root.
     """
@@ -94,6 +163,62 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
 # (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
 # sessions get the same protection. See references/worktree-cwd-discipline.md.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona"})
+
+
+def _terminal_env_type_for_task(task_id: str = "default") -> str:
+    """Best-effort terminal backend type for path-resolution decisions."""
+    try:
+        from tools.terminal_tool import (
+            _active_environments,
+            _env_lock,
+            _get_env_config,
+            _resolve_container_task_id,
+        )
+
+        try:
+            container_key = _resolve_container_task_id(task_id)
+        except Exception:
+            container_key = task_id
+        with _env_lock:
+            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+        if env is not None:
+            name = env.__class__.__name__.lower()
+            if "local" in name:
+                return "local"
+            if "ssh" in name:
+                return "ssh"
+            if "docker" in name:
+                return "docker"
+            if "singularity" in name:
+                return "singularity"
+            if "modal" in name:
+                return "modal"
+            if "daytona" in name:
+                return "daytona"
+        cfg = _get_env_config()
+        return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
+    except Exception:
+        return str(os.getenv("TERMINAL_ENV") or "local").lower()
+
+
+def _uses_container_paths(task_id: str = "default") -> bool:
+    try:
+        from tools.terminal_tool import _CONTAINER_BACKENDS
+        container_backends = _CONTAINER_BACKENDS
+    except Exception:
+        container_backends = _CONTAINER_PATH_BACKENDS_FALLBACK
+    return _terminal_env_type_for_task(task_id) in container_backends
+
+
+def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
+    """Normalize path syntax without following host symlinks.
+
+    Container backends use paths that are meaningful inside the sandbox. Calling
+    ``Path.resolve()`` on the host can dereference a host-side symlink such as
+    ``/workspace`` and rewrite the path before Docker sees it.
+    """
+    return PurePosixPath(posixpath.normpath(str(path)))
 
 
 def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
@@ -107,7 +232,7 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
     raw = str(raw or "").strip()
     if raw.lower() in _TERMINAL_CWD_SENTINELS:
         return None
-    expanded = os.path.expanduser(raw)
+    expanded = _expand_tilde(raw)
     if not os.path.isabs(expanded):
         return None
     return expanded
@@ -143,6 +268,30 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     return _sentinel_free_abs_cwd(overrides.get("cwd"))
 
 
+def _live_cwd_if_owned(env, task_id: str) -> str | None:
+    """The env's live cwd, but only when THIS session owns it.
+
+    The terminal env is shared (collapsed to the ``"default"`` container), so its
+    ``cwd`` tracks the LAST session that ran a command. With two worktree
+    sessions open, trusting it blindly routes one session's edits into the other
+    session's checkout (the wrong-worktree-patch bug). ``terminal_tool`` stamps
+    ``env.cwd_owner`` with the session that last drove the env; return its cwd
+    only when that owner matches the resolving session, else ``None`` so the
+    caller falls through to this session's own registered cwd override. Unknown
+    owner / ``default`` keys keep the prior behavior (single-session / CLI).
+    """
+    if env is None:
+        return None
+    live = getattr(env, "cwd", None)
+    if not live:
+        return None
+    owner = str(getattr(env, "cwd_owner", "") or "")
+    tid = str(task_id or "")
+    if owner and tid and owner != "default" and tid != "default" and owner != tid:
+        return None
+    return live
+
+
 def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     """Return the task's live terminal cwd for bookkeeping when available."""
     try:
@@ -154,19 +303,25 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     with _file_ops_lock:
         cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
     if cached is not None:
-        live_cwd = getattr(getattr(cached, "env", None), "cwd", None) or getattr(
-            cached, "cwd", None
-        )
+        env = getattr(cached, "env", None)
+        live_cwd = _live_cwd_if_owned(env, task_id)
         if live_cwd:
+            _remember_last_known_cwd(container_key, live_cwd)
             return live_cwd
+        # Legacy: a cache entry carrying its own cwd with no env to own it.
+        if env is None and getattr(cached, "cwd", None):
+            legacy_cwd = getattr(cached, "cwd", None)
+            _remember_last_known_cwd(container_key, legacy_cwd)
+            return legacy_cwd
 
     try:
         from tools.terminal_tool import _active_environments, _env_lock
 
         with _env_lock:
             env = _active_environments.get(container_key) or _active_environments.get(task_id)
-            live_cwd = getattr(env, "cwd", None) if env is not None else None
+        live_cwd = _live_cwd_if_owned(env, task_id)
         if live_cwd:
+            _remember_last_known_cwd(container_key, live_cwd)
             return live_cwd
     except Exception:
         pass
@@ -191,13 +346,33 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     live = _get_live_tracking_cwd(task_id)
     if live:
         return live
+    # A session-specific registered override (TUI/Desktop/ACP workspace cwd)
+    # is more authoritative than the shared last-known anchor: it is keyed by
+    # the raw session id, so when two worktree sessions share the single
+    # "default" terminal env, a NON-owning session must resolve against its OWN
+    # registered worktree — never the other session's leftover cwd. (Checked
+    # before _last_known_cwd, which is keyed by the shared container id.)
     registered = _registered_task_cwd_override(task_id)
     if registered:
         return registered
+    # When the terminal env was cleaned up mid-conversation, the live cwd is
+    # gone but the directory the agent navigated to is still recorded in the
+    # durable _last_known_cwd registry. Prefer it over the config/process
+    # fallback so a relative-path write resolved BEFORE the env is rebuilt
+    # still lands in the user's directory (root cause of #26211: write happens
+    # via _resolve_path_for_task -> here, which runs before _get_file_ops
+    # rebuilds the env). Keyed by the resolved container id, same as the save.
+    preserved = _last_known_cwd_for(task_id)
+    if preserved:
+        return preserved
     return _configured_terminal_cwd()
 
 
-def _resolve_base_dir(task_id: str = "default") -> Path:
+def _resolve_base_dir(
+    task_id: str = "default",
+    *,
+    container_paths: bool | None = None,
+) -> Path | PurePosixPath:
     """Return the ABSOLUTE base directory for resolving relative paths.
 
     Resolution order:
@@ -221,10 +396,17 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     the process cwd only as a last resort, deterministically.
     """
     root = _authoritative_workspace_root(task_id)
+    if container_paths is None:
+        container_paths = _uses_container_paths(task_id)
     if root:
-        base = Path(root).expanduser()
+        base_text = _expand_tilde(root)
     else:
-        base = Path(os.getcwd())
+        base_text = os.getcwd()
+    if container_paths:
+        if not posixpath.isabs(base_text):
+            base_text = posixpath.join(os.getcwd(), base_text)
+        return _normalize_without_host_deref(base_text)
+    base = Path(base_text)
     if not base.is_absolute():
         # Last-resort anchoring: a live cwd should already be absolute, but if a
         # terminal backend ever reports a relative cwd, anchor it to the process
@@ -233,16 +415,24 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     return base.resolve()
 
 
-def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
+def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory.
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
-    p = Path(filepath).expanduser()
+    container_paths = _uses_container_paths(task_id)
+    expanded = _expand_tilde(filepath)
+    if container_paths:
+        if posixpath.isabs(expanded):
+            return _normalize_without_host_deref(expanded)
+        resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
+        return _normalize_without_host_deref(resolved)
+    p = Path(expanded)
     if p.is_absolute():
         return p.resolve()
-    return (_resolve_base_dir(task_id) / p).resolve()
+    resolved = _resolve_base_dir(task_id, container_paths=False) / p
+    return resolved.resolve()
 
 
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
@@ -261,12 +451,15 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     (no ``cd`` run yet) is warned on the very first write.
     """
     try:
-        if Path(filepath).expanduser().is_absolute():
+        if Path(_expand_tilde(filepath)).is_absolute():
             return None
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
             return None  # No authoritative workspace root to compare against.
-        root = Path(workspace_root).expanduser().resolve()
+        if _uses_container_paths(task_id):
+            root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
+        else:
+            root = Path(_expand_tilde(workspace_root)).resolve()
         # Is `resolved` inside `root`?
         try:
             resolved.relative_to(root)
@@ -285,7 +478,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
-    normalized = os.path.expanduser(path)
+    normalized = os.path.normpath(_expand_tilde(path))
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
@@ -293,32 +486,119 @@ def _is_blocked_device_path(path: str) -> bool:
         ("/fd/0", "/fd/1", "/fd/2")
     ):
         return True
-    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps can leak secrets,
-    # command-line args, and memory layout from the host process (issue #4427)
+    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps (and the maps variants
+    # smaps, smaps_rollup, numa_maps) can leak secrets, command-line args, and
+    # memory layout (ASLR bypass) from the host process (issue #4427).
+    # /proc/*/mem exposes raw process memory; block it as defense-in-depth even
+    # though it requires address knowledge to exploit usefully.
+    # /proc/*/auxv leaks AT_RANDOM (stack canary seed) plus AT_BASE/AT_PHDR
+    # load addresses — an ASLR oracle on par with maps. /proc/*/pagemap exposes
+    # virtual->physical translation. Both are blocked alongside the maps family.
+    # endswith matches both /proc/<pid>/X and /proc/<pid>/task/<tid>/X.
     if normalized.startswith("/proc/") and normalized.endswith(
-        ("/environ", "/cmdline", "/maps")
+        (
+            "/environ",
+            "/cmdline",
+            "/maps",
+            "/smaps",
+            "/smaps_rollup",
+            "/numa_maps",
+            "/mem",
+            "/auxv",
+            "/pagemap",
+        )
     ):
         return True
     return False
 
 
-def _is_blocked_device(filepath: str) -> bool:
+def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
 
     Check the literal path first so aliases like /dev/stdin are caught before
-    they resolve to terminal-specific paths. Then check the resolved path so a
-    workspace symlink to /dev/zero cannot bypass the guard.
+    they resolve to terminal-specific paths. Then check each symlink hop before
+    the final resolved path so aliases to devices cannot bypass the guard.
     """
-    normalized = os.path.expanduser(filepath)
+    expanded = _expand_tilde(filepath)
+    if base_dir is not None and not os.path.isabs(expanded):
+        expanded = os.path.join(os.fspath(base_dir), expanded)
+    normalized = os.path.normpath(expanded)
     if _is_blocked_device_path(normalized):
         return True
+
+    seen: set[str] = set()
+    current = normalized
+    for _ in range(20):
+        try:
+            target = os.readlink(current)
+        except OSError:
+            break
+        if not os.path.isabs(target):
+            target = os.path.join(os.path.dirname(current), target)
+        target = os.path.normpath(target)
+        if _is_blocked_device_path(target):
+            return True
+        if target in seen:
+            break
+        seen.add(target)
+        current = target
+
     try:
-        resolved = os.path.realpath(normalized)
+        resolved = os.path.normpath(os.path.realpath(normalized))
     except (OSError, ValueError):
         return False
-    if resolved != normalized and _is_blocked_device_path(resolved):
+    if _is_blocked_device_path(resolved):
         return True
     return False
+
+
+def _search_result_read_block_error(path: str, task_id: str = "default") -> str | None:
+    """Return the read-safety error for a search result path.
+
+    Search backends may return paths relative to the task cwd, while
+    ``get_read_block_error`` expects an already-resolved path when the task cwd
+    can differ from the Python process cwd. Mirror ``read_file_tool``'s path
+    resolution before applying the shared read guard.
+    """
+    try:
+        resolved = _resolve_path_for_task(path, task_id)
+    except (OSError, ValueError, RuntimeError):
+        return get_read_block_error(path)
+    return get_read_block_error(str(resolved))
+
+
+def _filter_read_blocked_search_results(result, task_id: str = "default") -> int:
+    """Remove credential/cache/env paths from a SearchResult in-place."""
+    omitted = 0
+
+    if hasattr(result, "matches") and result.matches:
+        allowed_matches = []
+        for match in result.matches:
+            if _search_result_read_block_error(match.path, task_id):
+                omitted += 1
+                continue
+            allowed_matches.append(match)
+        result.matches = allowed_matches
+
+    if hasattr(result, "files") and result.files:
+        allowed_files = []
+        for file_path in result.files:
+            if _search_result_read_block_error(file_path, task_id):
+                omitted += 1
+                continue
+            allowed_files.append(file_path)
+        result.files = allowed_files
+
+    if hasattr(result, "counts") and result.counts:
+        allowed_counts = {}
+        for file_path, count in result.counts.items():
+            if _search_result_read_block_error(file_path, task_id):
+                omitted += 1
+                continue
+            allowed_counts[file_path] = count
+        result.counts = allowed_counts
+
+    return omitted
 
 
 # Paths that file tools should refuse to write to without going through the
@@ -344,7 +624,7 @@ def _get_hermes_config_resolved() -> str | None:
         _hermes_config_resolved = str(get_config_path().resolve())
     except Exception:
         try:
-            _hermes_config_resolved = str(Path("~/.hermes/config.yaml").expanduser().resolve())
+            _hermes_config_resolved = str(Path(_expand_tilde("~/.hermes/config.yaml")).resolve())
         except Exception:
             _hermes_config_resolved = None
     return _hermes_config_resolved
@@ -356,7 +636,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
-    normalized = os.path.normpath(os.path.expanduser(filepath))
+    normalized = os.path.normpath(_expand_tilde(filepath))
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
@@ -421,7 +701,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
 
     Three detectors run in order:
 
-    * cross-profile (#TBD) — writes that hit another profile's
+    * cross-profile — writes that hit another profile's
       ``skills/plugins/cron/memories`` directory.
     * sandbox-mirror (#32049) — writes that hit the
       ``…/sandboxes/<backend>/<task>/home/.hermes/…`` mirror created by a
@@ -485,6 +765,45 @@ def _is_expected_write_exception(exc: Exception) -> bool:
 
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
+# Per-task last-known CWD — preserved across env re-creation so
+# relative-path file writes land in the right directory after the
+# terminal environment is cleaned up and rebuilt (root cause of #26211).
+_last_known_cwd: dict = {}
+
+
+def _remember_last_known_cwd(task_id: str, cwd: str | None) -> None:
+    """Mirror a live terminal cwd into the durable ``_last_known_cwd`` registry.
+
+    Belt-and-suspenders for #26211: the cleanup thread can pop BOTH
+    ``_file_ops_cache`` and ``_active_environments`` before ``_get_file_ops``
+    reaches its stale-cache detection branch, in which case the old cwd is
+    never saved and the rebuilt env falls back to the config default — exactly
+    the silent-misplacement bug. By recording the cwd on every successful live
+    read (which happens on every relative-path file resolution while the env is
+    alive), the durable anchor no longer depends on the cleanup-detection
+    branch firing, so it survives recreation regardless of pop ordering.
+    """
+    if not cwd:
+        return
+    with _file_ops_lock:
+        if _last_known_cwd.get(task_id) != cwd:
+            _last_known_cwd[task_id] = cwd
+
+
+def _last_known_cwd_for(task_id: str = "default") -> str | None:
+    """Read the durable last-known cwd for *task_id*, container-key aware.
+
+    The registry is keyed by the resolved container id (the same key used by
+    the save sites in ``_get_file_ops`` / ``_get_live_tracking_cwd``), so look
+    up the resolved key first and fall back to the raw task id.
+    """
+    try:
+        from tools.terminal_tool import _resolve_container_task_id
+        container_key = _resolve_container_task_id(task_id)
+    except Exception:
+        container_key = task_id
+    with _file_ops_lock:
+        return _last_known_cwd.get(container_key) or _last_known_cwd.get(task_id)
 
 # Track files read per task to detect re-read loops and deduplicate reads.
 # Per task_id we store:
@@ -639,6 +958,49 @@ def _is_internal_file_status_text(content: str) -> bool:
     return False
 
 
+def _looks_like_read_file_line_numbered_content(content: str) -> bool:
+    """Return True for content dominated by read_file's ``LINE_NUM|CONTENT`` display.
+
+    ``read_file`` intentionally returns line-numbered text to the model. If
+    that display format is echoed into ``write_file``, config/source files are
+    silently corrupted with prefixes like `` 1|``.  We reject writes where the
+    non-empty lines are mostly consecutive read_file-style numbered lines, while
+    allowing sparse literal pipe content such as a single ``1|value`` line.
+    """
+    if not isinstance(content, str):
+        return False
+
+    lines = [line for line in content.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+
+    numbered: list[int] = []
+    for line in lines:
+        stripped = line.lstrip()
+        prefix, sep, _rest = stripped.partition("|")
+        if sep and prefix.isdigit():
+            numbered.append(int(prefix))
+
+    if len(numbered) < 2:
+        return False
+    if len(numbered) / len(lines) < 0.6:
+        return False
+
+    consecutive_pairs = sum(
+        1 for prev, current in zip(numbered, numbered[1:])
+        if current == prev + 1
+    )
+    return consecutive_pairs >= len(numbered) - 1
+
+
+def _is_internal_file_tool_content(content: str) -> bool:
+    """Return True when content is file-tool display text, not intended file bytes."""
+    return (
+        _is_internal_file_status_text(content)
+        or _looks_like_read_file_line_numbered_content(content)
+    )
+
+
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     """Get or create ShellFileOperations for a terminal environment.
 
@@ -660,6 +1022,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _creation_locks,
         _creation_locks_lock,
         _resolve_container_task_id,
+        _is_unusable_container_cwd,
+        _CONTAINER_BACKENDS,
     )
     import time
 
@@ -676,7 +1040,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 _last_activity[task_id] = time.time()
                 return cached
             else:
-                # Environment was cleaned up -- invalidate stale cache entry
+                # Environment was cleaned up -- preserve the old cwd before
+                # invalidating the stale cache entry (fixes #26211: silent
+                # file-creation failures in long-running conversations).
+                old_cwd = getattr(cached, "cwd", None)
+                if old_cwd:
+                    with _file_ops_lock:
+                        _last_known_cwd[task_id] = old_cwd
                 with _file_ops_lock:
                     _file_ops_cache.pop(task_id, None)
 
@@ -714,7 +1084,27 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             else:
                 image = ""
 
-            cwd = overrides.get("cwd") or config["cwd"]
+            cwd = overrides.get("cwd") or _last_known_cwd.get(task_id) or config["cwd"]
+            # Re-apply the container cwd guard that _get_env_config() already
+            # ran on config["cwd"] (see #50636).  A per-task cwd override
+            # registered by the gateway/TUI/ACP for workspace tracking is a
+            # raw host path (e.g. a Desktop session's /Users/<me>/workspace or
+            # C:\\Users\\<me>). On a container backend that reaches
+            # ``docker run -w <host-path>`` and the container starts in a
+            # directory that doesn't exist inside the sandbox, so search_files
+            # and friends silently return empty results (#54447).  Sanitize it
+            # back to the already-validated config["cwd"] so the override can't
+            # bypass the guard.  Valid in-container override paths (RL/benchmark
+            # sandboxes that set cwd to /workspace, /root, etc.) are absolute
+            # non-host paths and pass through untouched.
+            if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+                if cwd != config["cwd"]:
+                    logger.info(
+                        "Ignoring host/relative cwd override %r for %s backend "
+                        "(won't exist in sandbox). Using %r instead.",
+                        cwd, env_type, config["cwd"],
+                    )
+                cwd = config["cwd"]
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
@@ -728,6 +1118,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
                     "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                    "docker_network": config.get("docker_network", True),
                 }
 
             ssh_config = None
@@ -789,7 +1180,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
         # blocking on input).  Pure path check — no I/O.
-        if _is_blocked_device(path):
+        device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+        if _is_blocked_device(path, base_dir=device_base):
             return json.dumps({
                 "error": (
                     f"Cannot read '{path}': this is a device file that would "
@@ -830,19 +1222,32 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 content_len = len(result_dict["content"])
                 max_chars = _get_max_read_chars()
                 if content_len > max_chars:
-                    return json.dumps({
-                        "error": (
-                            f"Read produced {content_len:,} characters which exceeds "
-                            f"the safety limit ({max_chars:,} chars). "
-                            "Use offset and limit to read a smaller range. "
-                            f"The document has {total_lines} lines of extracted text."
-                        ),
-                        "path": path,
-                        "total_lines": total_lines,
-                        "file_size": result_dict["file_size"],
-                    }, ensure_ascii=False)
+                    # Graceful char-budget truncation (nearai/ironclaw#5029):
+                    # trim to the last complete line that fits and offer a
+                    # next_offset rather than rejecting the whole extraction.
+                    trimmed, lines_kept, _ = _truncate_to_char_budget(
+                        result_dict["content"], max_chars
+                    )
+                    next_offset = offset + lines_kept
+                    shown_end = offset + lines_kept - 1
+                    result_dict["content"] = trimmed
+                    result_dict["truncated"] = True
+                    result_dict["truncated_by"] = "bytes"
+                    result_dict["next_offset"] = next_offset
+                    result_dict["hint"] = (
+                        f"Output truncated at the {max_chars:,}-char read budget "
+                        f"after {lines_kept} line(s) (showing lines {offset}-"
+                        f"{shown_end} of {total_lines}). Use offset={next_offset} "
+                        "to continue."
+                    )
+                    if len(trimmed.split("\n", 1)[0]) >= max_chars:
+                        result_dict["hint"] += (
+                            " Note: the first line alone exceeded the budget and "
+                            "was clamped mid-line; its remainder is not "
+                            "retrievable via offset."
+                        )
                 if result_dict["content"]:
-                    result_dict["content"] = redact_sensitive_text(result_dict["content"], code_file=True)
+                    result_dict["content"] = redact_sensitive_text(result_dict["content"], file_read=True)
                 return json.dumps(result_dict, ensure_ascii=False)
 
         # ── Binary file guard ─────────────────────────────────────────
@@ -943,22 +1348,40 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
         if content_len > max_chars:
+            # Graceful char-budget truncation (ported from nearai/ironclaw#5029).
+            # Instead of rejecting the whole read — which forces the model to
+            # guess a smaller `limit` and wastes a round-trip returning nothing
+            # — trim to the last complete line that fits and offer a
+            # `next_offset` so the model can paginate forward. This rescues the
+            # "few but very long lines" case (logs, wide CSVs, minified data)
+            # that sails past the line-count `limit` but blows the char budget.
             total_lines = result_dict.get("total_lines", "unknown")
-            return json.dumps({
-                "error": (
-                    f"Read produced {content_len:,} characters which exceeds "
-                    f"the safety limit ({max_chars:,} chars). "
-                    "Use offset and limit to read a smaller range. "
-                    f"The file has {total_lines} lines total."
-                ),
-                "path": path,
-                "total_lines": total_lines,
-                "file_size": file_size,
-            }, ensure_ascii=False)
+            trimmed, lines_kept, _ = _truncate_to_char_budget(
+                result.content or "", max_chars
+            )
+            next_offset = offset + lines_kept
+            shown_end = offset + lines_kept - 1
+            result.content = trimmed
+            result_dict["content"] = trimmed
+            result_dict["truncated"] = True
+            result_dict["truncated_by"] = "bytes"
+            result_dict["next_offset"] = next_offset
+            result_dict["hint"] = (
+                f"Output truncated at the {max_chars:,}-char read budget after "
+                f"{lines_kept} line(s) (showing lines {offset}-{shown_end} of "
+                f"{total_lines}). Use offset={next_offset} to continue."
+            )
+            if len(trimmed.split("\n", 1)[0]) >= max_chars:
+                result_dict["hint"] += (
+                    " Note: the first line alone exceeded the budget and was "
+                    "clamped mid-line; its remainder is not retrievable via "
+                    "offset."
+                )
+            content_len = len(trimmed)
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
-            result.content = redact_sensitive_text(result.content, code_file=True)
+            result.content = redact_sensitive_text(result.content, file_read=True)
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -1178,8 +1601,43 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     return None
 
 
+def _mark_verification_stale(
+    task_id: str,
+    resolved_paths: list[str],
+    session_id: str | None = None,
+) -> None:
+    """Best-effort note that successful edits made prior verification stale."""
+    paths = [p for p in resolved_paths if p]
+    if not paths:
+        return
+    try:
+        from agent.coding_context import project_facts_for
+        from agent.verification_evidence import mark_workspace_edited
+
+        cwd = None
+        for path in paths:
+            try:
+                candidate = str(Path(path).parent)
+            except Exception:
+                continue
+            if project_facts_for(candidate):
+                cwd = candidate
+                break
+        if cwd is None:
+            cwd = _authoritative_workspace_root(task_id)
+        if cwd is None:
+            try:
+                cwd = str(Path(paths[0]).parent)
+            except Exception:
+                cwd = None
+        mark_workspace_edited(session_id=session_id or task_id, cwd=cwd, paths=paths)
+    except Exception:
+        logger.debug("verification stale marker failed", exc_info=True)
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default",
-                    cross_profile: bool = False) -> str:
+                    cross_profile: bool = False,
+                    session_id: str | None = None) -> str:
     """Write content to a file.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard. The
@@ -1195,10 +1653,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
             return tool_error(cross_warning)
-    if _is_internal_file_status_text(content):
+    if _is_internal_file_tool_content(content):
         return tool_error(
-            "Refusing to write internal read_file status text as file content. "
-            "Re-read the file or reconstruct the intended file contents before writing."
+            "Refusing to write internal read_file display text as file content. "
+            "Strip read_file line-number prefixes or reconstruct the intended "
+            "file contents before writing."
         )
     try:
         # Resolve once for the registry lock + stale check.  Failures here
@@ -1216,6 +1675,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             result_dict = result.to_dict()
             if stale_warning:
                 result_dict["_warning"] = stale_warning
+            if not result_dict.get("error"):
+                _mark_verification_stale(task_id, [path], session_id=session_id)
             _update_read_timestamp(path, task_id)
             return json.dumps(result_dict, ensure_ascii=False)
 
@@ -1242,6 +1703,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             result_dict["resolved_path"] = _resolved
             if not result_dict.get("error"):
                 result_dict["files_modified"] = [_resolved]
+                _mark_verification_stale(task_id, [_resolved], session_id=session_id)
             # Refresh stamps after the successful write so consecutive
             # writes by this task don't trigger false staleness warnings.
             _update_read_timestamp(path, task_id)
@@ -1258,7 +1720,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
-               task_id: str = "default", cross_profile: bool = False) -> str:
+               task_id: str = "default", cross_profile: bool = False,
+               session_id: str | None = None) -> str:
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard for
@@ -1272,8 +1735,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     if mode == "patch" and patch:
         import re as _re
         from tools.path_security import has_traversal_component
-        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            v4a_path = _m.group(1).strip()
+        def _reject_v4a_traversal(v4a_path: str) -> str | None:
             # V4A path headers come from patch CONTENT, not the explicit
             # ``path=`` arg — so they're more attacker-influenceable (skill
             # content, web extract, prompt injection). Reject ``..`` traversal
@@ -1286,9 +1748,31 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 return tool_error(
                     f"V4A patch header contains '..' traversal: {v4a_path!r}. "
                     "Use the agent's cwd-relative path (no '..') or an absolute "
-                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
+                    "path in '*** Update File:' / '*** Add File:' / "
+                    "'*** Delete File:' / '*** Move File:' headers."
                 )
+            return None
+
+        # ``\s*`` (not ``\s+``) after ``***`` matches patch_parser leniency:
+        # it accepts ``***Update File:`` with no space after the asterisks
+        # (patch_parser.py uses ``\*\*\*\s*Update\s+File:``). Requiring a space
+        # here let a no-space header parse + apply while skipping this check.
+        for _m in _re.finditer(r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
+            v4a_path = _m.group(1).strip()
+            _err = _reject_v4a_traversal(v4a_path)
+            if _err:
+                return _err
             _paths_to_check.append(v4a_path)
+        # ``*** Move File: src -> dst`` is a valid V4A op (patch_parser.py:114)
+        # but was never extracted, so a Move targeting /etc/crontab skipped the
+        # sensitive-path pre-check. Check BOTH endpoints, and run them through
+        # the same ``..`` traversal rejection as the other headers.
+        for _m in _re.finditer(r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$', patch, _re.MULTILINE):
+            for v4a_path in (_m.group(1).strip(), _m.group(2).strip()):
+                _err = _reject_v4a_traversal(v4a_path)
+                if _err:
+                    return _err
+                _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
@@ -1376,6 +1860,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 result_dict["files_modified"] = _resolved_modified
                 if len(_resolved_modified) == 1:
                     result_dict["resolved_path"] = _resolved_modified[0]
+                _mark_verification_stale(task_id, _resolved_modified, session_id=session_id)
                 for _p in _paths_to_check:
                     _update_read_timestamp(_p, task_id)
                     _r = _path_to_resolved.get(_p)
@@ -1469,16 +1954,31 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "already_searched": count,
             }, ensure_ascii=False)
 
+        try:
+            resolved_path = _resolve_path_for_task(path, task_id)
+        except (OSError, ValueError, RuntimeError):
+            resolved_path = None
+        block_error = get_read_block_error(str(resolved_path) if resolved_path else path)
+        if block_error:
+            return json.dumps({"error": block_error}, ensure_ascii=False)
+
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
+        omitted = _filter_read_blocked_search_results(result, task_id)
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
-                    m.content = redact_sensitive_text(m.content, code_file=True)
-        result_dict = result.to_dict()
+                    m.content = redact_sensitive_text(m.content, file_read=True)
+        result_dict = result.to_dict(densify=True)
+
+        if omitted:
+            result_dict["_omitted"] = (
+                f"{omitted} result(s) omitted because they target credential, "
+                "token, cache, or secret-bearing environment files."
+            )
 
         if count >= 3:
             result_dict["_warning"] = (
@@ -1512,7 +2012,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1641,6 +2141,7 @@ def _handle_write_file(args, **kw):
     return write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
+        session_id=kw.get("session_id"),
     )
 
 
@@ -1651,6 +2152,7 @@ def _handle_patch(args, **kw):
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
+        session_id=kw.get("session_id"),
     )
 
 

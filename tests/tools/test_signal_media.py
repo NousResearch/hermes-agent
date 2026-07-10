@@ -164,13 +164,23 @@ class TestSendSignalMediaWarningMessages:
         if not hasattr(httpx, 'Proxy') or not hasattr(httpx, 'URL'):
             pytest.skip("httpx type annotations incompatible with telegram library")
         from tools.send_message_tool import _send_to_platform
+        from hermes_cli.plugins import discover_plugins
+        from gateway.platform_registry import platform_registry
 
         config = MagicMock()
         config.platforms = {Platform.SLACK: MagicMock(enabled=True)}
         config.get_home_channel.return_value = None
 
-        # Mock _send_slack so it succeeds -> then warning gets attached to result
-        with patch("tools.send_message_tool._send_slack", new=AsyncMock(return_value={"success": True})):
+        # Slack migrated to a bundled plugin (#41112) — delivery now flows
+        # through the registry's standalone_sender_fn instead of the old
+        # tools.send_message_tool._send_slack helper. Patch the registry entry's
+        # sender so the slack send succeeds and the media-omitted warning (which
+        # must mention signal) gets attached to the result.
+        discover_plugins()
+        slack_entry = platform_registry.get("slack")
+        original_sender = slack_entry.standalone_sender_fn
+        slack_entry.standalone_sender_fn = AsyncMock(return_value={"success": True})
+        try:
             result = asyncio.run(
                 _send_to_platform(
                     Platform.SLACK,
@@ -180,6 +190,8 @@ class TestSendSignalMediaWarningMessages:
                     media_files=[("/tmp/test.png", False)]
                 )
             )
+        finally:
+            slack_entry.standalone_sender_fn = original_sender
 
         assert result.get("warnings") is not None
         # Check that the warning mentions signal as supported

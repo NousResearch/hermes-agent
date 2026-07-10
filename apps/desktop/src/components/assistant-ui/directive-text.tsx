@@ -159,7 +159,12 @@ export const DIRECTIVE_CHIP_CLASS =
 const CANONICAL_DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/g
 
 const HERMES_DIRECTIVE_RE = new RegExp(
-  '@(file|folder|url|image|tool|line|terminal|session):(' + '`[^`\\n]+`' + '|"[^"\\n]+"' + "|'[^'\\n]+'" + '|\\S+' + ')',
+  '@(file|folder|url|image|tool|line|terminal|session):(' +
+    '`[^`\\n]+`' +
+    '|"[^"\\n]+"' +
+    "|'[^'\\n]+'" +
+    '|\\S+' +
+    ')',
   'g'
 )
 
@@ -398,9 +403,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
     // Remote gateway: the image lives on the gateway's disk, not ours — fetch
     // it over the authenticated API. Local: read it straight off this disk.
     const load =
-      window.hermesDesktop && isRemoteGateway()
-        ? gatewayMediaDataUrl(id)
-        : window.hermesDesktop?.readFileDataUrl(id)
+      window.hermesDesktop && isRemoteGateway() ? gatewayMediaDataUrl(id) : window.hermesDesktop?.readFileDataUrl(id)
 
     void Promise.resolve(load)
       .then(url => alive && url && setSrc(url))

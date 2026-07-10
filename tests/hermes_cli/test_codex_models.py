@@ -1,7 +1,11 @@
 import json
 from unittest.mock import patch
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_cli.codex_models import (
+    DEFAULT_CODEX_MODELS,
+    get_codex_model_capabilities,
+    get_codex_model_ids,
+)
 
 
 def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
@@ -111,6 +115,91 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
     assert "gpt-5.5" in models
     assert "gpt-5.3-codex-spark" in models
     assert "gpt-5-internal" not in models
+
+
+def test_fetch_from_api_uses_codex_client_version(monkeypatch):
+    import sys
+    from hermes_cli import codex_models
+
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"models": [{"slug": "gpt-5.6-luna"}]}
+
+    class _FakeHttpx:
+        @staticmethod
+        def get(url, headers=None, timeout=None):
+            captured.update(url=url, headers=headers, timeout=timeout)
+            return _FakeResp()
+
+    monkeypatch.setattr(codex_models, "_codex_client_version", lambda: "0.144.1")
+    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
+
+    entries = codex_models._fetch_model_entries_from_api("tok")
+
+    assert entries[0]["slug"] == "gpt-5.6-luna"
+    assert "client_version=0.144.1" in captured["url"]
+    assert captured["headers"]["version"] == "0.144.1"
+    assert captured["headers"]["User-Agent"].startswith("codex_cli_rs/0.144.1")
+
+
+def test_get_codex_model_capabilities_preserves_transport_metadata(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "models_cache.json").write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "slug": "gpt-5.6-luna",
+                        "use_responses_lite": True,
+                        "minimal_client_version": "0.144.0",
+                    },
+                    {
+                        "slug": "gpt-hidden",
+                        "visibility": "hidden",
+                        "use_responses_lite": True,
+                    },
+                ]
+            }
+        )
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    capabilities = get_codex_model_capabilities("openai/gpt-5.6-luna")
+
+    assert capabilities.slug == "gpt-5.6-luna"
+    assert capabilities.use_responses_lite is True
+    # Older cache files omit the explicit preference; Lite models retain the
+    # WebSocket-first behavior as a compatibility fallback.
+    assert capabilities.prefer_websockets is None
+    assert capabilities.should_use_websocket is True
+    assert capabilities.minimal_client_version == "0.144.0"
+
+
+def test_get_codex_model_capabilities_prefers_live_transport_metadata(monkeypatch, tmp_path):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_model_entries_from_api",
+        lambda access_token: [
+            {
+                "slug": "gpt-5.6-luna",
+                "use_responses_lite": True,
+                "prefer_websockets": False,
+            }
+        ],
+    )
+
+    capabilities = get_codex_model_capabilities("gpt-5.6-luna", access_token="a.b.c")
+
+    assert capabilities.use_responses_lite is True
+    assert capabilities.prefer_websockets is False
+    assert capabilities.should_use_websocket is False
 
 
 def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):

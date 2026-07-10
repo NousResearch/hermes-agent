@@ -545,11 +545,10 @@ def run_codex_app_server_turn(
 #
 # We sidestep the whole class of failure by going one level lower:
 # ``client.responses.create(stream=True)`` returns the raw AsyncIterable of
-# SSE events, and we assemble the final response object purely from
-# ``response.output_item.done`` events as they arrive.  We never read
-# ``response.completed.response.output`` for content reconstruction, so the
-# backend can return ``null``, ``[]``, a string, or omit the field entirely
-# and we don't care.
+# SSE events, and we assemble the final response object from output-item
+# events as they arrive. If a Lite response omits those events, we fall back
+# to a valid list in ``response.completed.response.output``; null, ``[]``, a
+# string, or an omitted field remains harmless.
 #
 # This mirrors what the OpenClaw TS implementation does for the same backend
 # and is structurally immune to the bug class rather than patched.
@@ -577,6 +576,17 @@ def _item_field(item: Any, name: str, default: Any = None) -> Any:
     if value is None and isinstance(item, dict):
         value = item.get(name, default)
     return value if value is not None else default
+
+
+def _coerce_response_value(value: Any) -> Any:
+    """Convert raw WebSocket JSON objects into SDK-like response objects."""
+    if isinstance(value, dict):
+        return SimpleNamespace(
+            **{key: _coerce_response_value(item) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return [_coerce_response_value(item) for item in value]
+    return value
 
 
 def _raise_stream_error(event: Any) -> None:
@@ -609,10 +619,10 @@ def _consume_codex_event_stream(
     The returned object is a ``SimpleNamespace`` shaped like the SDK's typed
     ``Response`` for the fields downstream code actually reads:
 
-    * ``output``: list of output items, assembled from ``response.output_item.done``.
-      For tool-call turns this contains the function_call items; for plain-text
-      turns it contains a synthesized ``message`` item built from streamed deltas
-      if no message item was emitted directly.
+    * ``output``: list of output items, assembled from
+      ``response.output_item.done`` or, when those are absent, the terminal
+      response output. For plain-text turns this can be a synthesized
+      ``message`` item built from streamed or terminal text.
     * ``output_text``: assembled text from ``response.output_text.delta`` deltas.
     * ``usage``: copied from the terminal event's ``response.usage`` (when present).
     * ``status``: ``completed`` / ``incomplete`` / ``failed`` (or ``completed`` if
@@ -622,9 +632,9 @@ def _consume_codex_event_stream(
     * ``error``: passed through for ``response.failed`` frames.
     * ``model``: from kwargs (the wire model name is not authoritative).
 
-    Critically, we never read ``response.output`` from the terminal event for
-    content reconstruction — only ``usage``, ``status``, ``id``.  That field
-    being ``null`` / ``[]`` / missing is fine.
+    A terminal ``response.output`` value is used only as a guarded fallback
+    when no output items were observed during the stream. ``null`` / ``[]`` /
+    missing values are fine.
 
     Callbacks:
 
@@ -647,6 +657,8 @@ def _consume_codex_event_stream(
     terminal_response_id: str = None
     terminal_incomplete_details: Any = None
     terminal_error: Any = None
+    terminal_output_items: List[Any] = []
+    terminal_output_text: str = ""
     saw_terminal = False
 
     for event in event_iter:
@@ -736,13 +748,21 @@ def _consume_codex_event_stream(
         if event_type == "response.output_item.done":
             done_item = _event_field(event, "item")
             if done_item is not None:
-                collected_output_items.append(done_item)
+                collected_output_items.append(_coerce_response_value(done_item))
             continue
 
         if event_type in _TERMINAL_EVENT_TYPES:
             saw_terminal = True
             resp_obj = _event_field(event, "response")
             if resp_obj is not None:
+                raw_output = _event_field(resp_obj, "output")
+                if isinstance(raw_output, list) and raw_output:
+                    terminal_output_items = [
+                        _coerce_response_value(item) for item in raw_output
+                    ]
+                raw_output_text = _event_field(resp_obj, "output_text", "")
+                if isinstance(raw_output_text, str):
+                    terminal_output_text = raw_output_text
                 terminal_usage = getattr(resp_obj, "usage", None)
                 if terminal_usage is None and isinstance(resp_obj, dict):
                     terminal_usage = resp_obj.get("usage")
@@ -777,6 +797,11 @@ def _consume_codex_event_stream(
     # a single message item so downstream normalization has something to work with.
     if collected_output_items:
         output = list(collected_output_items)
+    elif terminal_output_items:
+        # Some Lite responses omit output_item.done and only include the
+        # completed items on response.completed.response.output. Use that as
+        # a fallback; null/empty terminal output remains harmless.
+        output = list(terminal_output_items)
     elif collected_text_deltas and not has_tool_calls:
         assembled = "".join(collected_text_deltas)
         output = [SimpleNamespace(
@@ -784,6 +809,13 @@ def _consume_codex_event_stream(
             role="assistant",
             status="completed",
             content=[SimpleNamespace(type="output_text", text=assembled)],
+        )]
+    elif terminal_output_text.strip() and not has_tool_calls:
+        output = [SimpleNamespace(
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text=terminal_output_text)],
         )]
     else:
         output = []
@@ -799,7 +831,7 @@ def _consume_codex_event_stream(
             "Codex Responses stream did not emit a terminal response"
         )
 
-    assembled_text = "".join(collected_text_deltas)
+    assembled_text = "".join(collected_text_deltas) or terminal_output_text
 
     final = SimpleNamespace(
         output=output,
@@ -814,19 +846,95 @@ def _consume_codex_event_stream(
     return final
 
 
+def _is_native_codex_backend(agent) -> bool:
+    """Return True only for the ChatGPT OAuth Codex backend."""
+    base_url_lower = str(getattr(agent, "_base_url_lower", "") or "").lower()
+    hostname = str(getattr(agent, "_base_url_hostname", "") or "").lower()
+    base_url = str(getattr(agent, "base_url", "") or "").lower()
+    return (
+        getattr(agent, "provider", None) == "openai-codex"
+        or (hostname == "chatgpt.com" and "/backend-api/codex" in base_url_lower)
+        or ("chatgpt.com/backend-api/codex" in base_url)
+    )
+
+
+def _codex_model_capabilities(agent):
+    """Resolve and cache model-level Codex transport metadata on the agent."""
+    model = str(getattr(agent, "model", "") or "").strip()
+    cached_model = getattr(agent, "_codex_capabilities_model", None)
+    cached = getattr(agent, "_codex_model_capabilities", None)
+    if cached is not None and cached_model == model:
+        return cached
+
+    from hermes_cli.codex_models import get_codex_model_capabilities
+
+    access_token = getattr(agent, "api_key", None)
+    try:
+        capabilities = get_codex_model_capabilities(model, access_token=access_token)
+    except Exception as exc:
+        logger.debug("Codex model capability lookup failed for %s: %s", model, exc)
+        capabilities = None
+    if capabilities is None:
+        # Keep the runtime safe if metadata is malformed or unavailable.
+        capabilities = SimpleNamespace(
+            slug=model,
+            use_responses_lite=False,
+            prefer_websockets=None,
+            should_use_websocket=False,
+        )
+    setattr(agent, "_codex_capabilities_model", model)
+    setattr(agent, "_codex_model_capabilities", capabilities)
+    return capabilities
+
+
+def _prepare_codex_request_kwargs(agent, api_kwargs: dict, capabilities) -> dict:
+    """Add model-specific Lite routing without mutating conversation kwargs."""
+    request_kwargs = dict(api_kwargs)
+    existing_headers = api_kwargs.get("extra_headers")
+    if isinstance(existing_headers, dict):
+        request_kwargs["extra_headers"] = dict(existing_headers)
+
+    if _is_native_codex_backend(agent) and bool(
+        getattr(capabilities, "use_responses_lite", False)
+    ):
+        headers = request_kwargs.setdefault("extra_headers", {})
+        headers["X-OpenAI-Internal-Codex-Responses-Lite"] = "true"
+
+        # Responses Lite requires the complete reasoning context to be sent
+        # on every turn. Preserve the caller's effort/summary values while
+        # forcing the Lite-specific context contract.
+        reasoning = request_kwargs.get("reasoning")
+        reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
+        reasoning["context"] = "all_turns"
+        request_kwargs["reasoning"] = reasoning
+
+        # Responses Lite does not support parallel tool calls. The normal
+        # Codex transport enables this whenever tools are present, so make
+        # the Lite override explicit at the final request boundary.
+        request_kwargs["parallel_tool_calls"] = False
+    return request_kwargs
+
+
+def _codex_transport_for_request(agent, capabilities) -> str:
+    """Choose the native Codex transport from the model capability metadata."""
+    if not _is_native_codex_backend(agent):
+        return "http"
+    if bool(getattr(capabilities, "should_use_websocket", False)):
+        return "websocket"
+    return "http"
+
+
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """Execute one streaming Responses API request and return the final response.
 
-    Uses ``responses.create(stream=True)`` (low-level raw event iteration)
-    rather than the high-level ``responses.stream(...)`` helper.  This makes
-    us structurally immune to backend drift in the ``response.completed``
-    payload shape — we never let the SDK reconstruct a typed object from
-    the terminal event's ``output`` field.
+    Uses the model-advertised Codex WebSocket transport when available and
+    falls back to ``responses.create(stream=True)`` (low-level raw event
+    iteration) before any response event has been observed.  Both paths feed
+    the same event consumer, keeping the runtime immune to backend drift in
+    the ``response.completed`` payload shape.
     """
     import httpx as _httpx
 
-    active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
-    max_stream_retries = 1
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
 
@@ -845,11 +953,54 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _interrupt_check() -> bool:
         return bool(agent._interrupt_requested)
 
+    capabilities = _codex_model_capabilities(agent)
+    request_kwargs = _prepare_codex_request_kwargs(agent, api_kwargs, capabilities)
+    transport = _codex_transport_for_request(agent, capabilities)
+
+    if transport == "websocket":
+        from agent.codex_websocket import CodexWebSocketError, run_codex_websocket
+
+        try:
+            logger.debug(
+                "Using Codex Responses WebSocket transport (model=%s, lite=%s). %s",
+                request_kwargs.get("model"),
+                bool(getattr(capabilities, "use_responses_lite", False)),
+                agent._client_log_context(),
+            )
+            return run_codex_websocket(
+                agent,
+                request_kwargs,
+                use_responses_lite=bool(getattr(capabilities, "use_responses_lite", False)),
+                on_text_delta=_on_text_delta,
+                on_reasoning_delta=_on_reasoning_delta,
+                on_first_delta=on_first_delta,
+                on_event=_on_event,
+                interrupt_check=_interrupt_check,
+            )
+        except CodexWebSocketError as exc:
+            # Once a response.create frame has been sent, a silent socket
+            # failure may still represent an in-flight request.  Only fall
+            # back when the handshake/request was never sent, or when the
+            # server explicitly rejected the request before starting output.
+            if not exc.safe_to_fallback:
+                raise
+            logger.warning(
+                "Codex Responses WebSocket unavailable before first event; "
+                "falling back to HTTP/SSE. model=%s status=%s error=%s. %s",
+                request_kwargs.get("model"),
+                exc.status_code,
+                exc,
+                agent._client_log_context(),
+            )
+
+    active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
+    max_stream_retries = 1
+
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
 
-        stream_kwargs = dict(api_kwargs)
+        stream_kwargs = dict(request_kwargs)
         stream_kwargs["stream"] = True
 
         try:

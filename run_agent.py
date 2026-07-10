@@ -4148,6 +4148,16 @@ class AIAgent:
         """
         if client is None:
             return
+        # The native Codex subscription path may be using a request-local
+        # WebSocket rather than the OpenAI SDK's httpx client.  Watchdog and
+        # interrupt callers still arrive here, so close that socket as part of
+        # the same cross-thread abort path.
+        try:
+            from agent.codex_websocket import close_active_codex_websocket
+
+            close_active_codex_websocket(self)
+        except Exception:
+            logger.debug("Codex WebSocket abort hook failed", exc_info=True)
         try:
             shutdown_count = self._force_close_tcp_sockets(client)
             logger.info(

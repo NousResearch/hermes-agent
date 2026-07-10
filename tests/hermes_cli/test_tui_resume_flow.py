@@ -359,7 +359,17 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
     monkeypatch.setattr(
         sys,
         "argv",
-        ["hermes", "-z", "hello", "--model", "gpt-test", "--provider", "openai"],
+        [
+            "hermes",
+            "-z",
+            "hello",
+            "--model",
+            "gpt-test",
+            "--provider",
+            "openai",
+            "--usage-file",
+            "usage.json",
+        ],
     )
     monkeypatch.setattr(
         main_mod, "_prepare_agent_startup", lambda args: prepared.append(args.command)
@@ -390,7 +400,7 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
         "model": "gpt-test",
         "provider": "openai",
         "toolsets": None,
-        "usage_file": None,
+        "usage_file": "usage.json",
     }
 
 

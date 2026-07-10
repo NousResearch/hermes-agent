@@ -1636,6 +1636,14 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "language": "",
         },
+        "honcho_query_rewrite": {
+            "provider": "auto",    # fast/cheap model recommended
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 8,
+            "extra_body": {},
+        },
         "tts_audio_tags": {
             "provider": "auto",
             "model": "",

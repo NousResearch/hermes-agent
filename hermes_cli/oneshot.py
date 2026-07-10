@@ -446,18 +446,24 @@ def _run_agent(
         # CPython then abandons those threads at Py_FinalizeEx and tears the
         # interpreter down around them, producing SIGABRT (exit 134) with no
         # Python traceback. The ``finally`` below handles the normal path;
-        # register a direct atexit hook as a fallback for exit paths that
-        # skip it.
+        # register a guarded atexit hook as a fallback for exit paths that
+        # skip it. The shared once-flag keeps the two paths idempotent —
+        # whichever fires first wins, the other becomes a no-op.
         import atexit as _atexit
 
-        def _shutdown_oneshot_and_exit() -> None:
+        _memory_shutdown_done = [False]
+
+        def _shutdown_oneshot_memory_provider() -> None:
+            if _memory_shutdown_done[0]:
+                return
+            _memory_shutdown_done[0] = True
             try:
                 if hasattr(agent, "shutdown_memory_provider"):
                     agent.shutdown_memory_provider()
             except Exception:
-                pass
+                logging.debug("oneshot memory/context cleanup failed", exc_info=True)
 
-        _atexit.register(_shutdown_oneshot_and_exit)
+        _atexit.register(_shutdown_oneshot_memory_provider)
 
         result = agent.run_conversation(prompt)
         return (result.get("final_response") or "", result)

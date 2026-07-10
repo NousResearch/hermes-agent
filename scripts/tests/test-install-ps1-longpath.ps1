@@ -95,16 +95,48 @@ if (-not $normAst) {
 Write-Host ""
 Write-Host "-- Normalize-ProfileEnvVars --"
 
-# A long, non-short path must survive the call unchanged (no spurious mutation).
-$env:HermesTest_TMP = "C:\Users\Renombrado\AppData\Local\Temp"
-Normalize-ProfileEnvVars
-Assert-Equal -Expected "C:\Users\Renombrado\AppData\Local\Temp" -Actual $env:HermesTest_TMP -Label "long profile path unchanged by normalization" -ea Stop
+# Snapshot and restore the actual process variables: Normalize-ProfileEnvVars
+# deliberately reads these five names, not arbitrary test-prefixed values.
+$targetVars = @('TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE')
+$originalValues = @{}
+foreach ($var in $targetVars) {
+    $originalValues[$var] = [Environment]::GetEnvironmentVariable($var, 'Process')
+}
+$unrelatedOriginal = [Environment]::GetEnvironmentVariable('HermesTest_MARKER', 'Process')
 
-# The function must enumerate the documented set of profile-rooted vars without
-# error and without touching unrelated vars.
-$env:HermesTest_MARKER = "untouched"
-Normalize-ProfileEnvVars
-Assert-Equal -Expected "untouched" -Actual $env:HermesTest_MARKER -Label "unrelated env var left untouched"
+try {
+    # Deterministic test double: do not depend on Windows COM/PInvoke or the
+    # host's actual 8.3 aliases. Every target input must be transformed.
+    function ConvertTo-LongPath {
+        param([string]$Path)
+        return "long::$Path"
+    }
+
+    foreach ($var in $targetVars) {
+        Set-Item -Path "Env:$var" -Value "short::$var"
+    }
+    $env:HermesTest_MARKER = 'untouched'
+
+    Normalize-ProfileEnvVars
+
+    foreach ($var in $targetVars) {
+        Assert-Equal -Expected "long::short::$var" -Actual [Environment]::GetEnvironmentVariable($var, 'Process') -Label "$var normalized"
+    }
+    Assert-Equal -Expected 'untouched' -Actual $env:HermesTest_MARKER -Label 'unrelated env var left untouched'
+} finally {
+    foreach ($var in $targetVars) {
+        if ($null -eq $originalValues[$var]) {
+            Remove-Item -Path "Env:$var" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -Path "Env:$var" -Value $originalValues[$var]
+        }
+    }
+    if ($null -eq $unrelatedOriginal) {
+        Remove-Item -Path 'Env:HermesTest_MARKER' -ErrorAction SilentlyContinue
+    } else {
+        $env:HermesTest_MARKER = $unrelatedOriginal
+    }
+}
 
 # --- Summary ---
 Write-Host ""

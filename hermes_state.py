@@ -253,26 +253,25 @@ def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
 def _strip_background_review_harness(
     messages: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Drop background-review harness messages and the curator-mode assistant
-    reply that immediately followed each one.
+    """Drop a polluted background-review turn through its terminal reply.
 
-    Walk the list once; when a harness user/system message is found, skip it and
-    also skip the next message if it is the assistant turn that answered it.
-    Everything else passes through untouched and in order.
+    Older curator forks could persist a complete assistant/tool chain under the
+    real session id. Once a harness is found, discard every assistant/tool row
+    until the next genuine user/system turn starts.
     """
     if not messages:
         return messages
     out: List[Dict[str, Any]] = []
-    skip_next_assistant = False
+    in_review_turn = False
     for msg in messages:
         if _is_background_review_harness_message(msg):
-            skip_next_assistant = True
+            in_review_turn = True
             continue
-        if skip_next_assistant:
-            skip_next_assistant = False
-            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                # The curator-mode reply to the harness prompt — drop it.
+        if in_review_turn:
+            role = msg.get("role") if isinstance(msg, dict) else None
+            if role not in {"user", "system"}:
                 continue
+            in_review_turn = False
         out.append(msg)
     return out
 
@@ -818,7 +817,8 @@ CREATE TABLE IF NOT EXISTS messages (
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
-    compacted INTEGER NOT NULL DEFAULT 0
+    compacted INTEGER NOT NULL DEFAULT 0,
+    context_snapshot INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -4188,6 +4188,7 @@ class SessionDB:
         observed: bool = False,
         effect_disposition: Optional[str] = None,
         timestamp: Any = None,
+        context_snapshot: bool = False,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -4239,8 +4240,9 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active,
+                   context_snapshot)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -4260,6 +4262,7 @@ class SessionDB:
                     platform_message_id,
                     1 if observed else 0,
                     1,
+                    1 if context_snapshot else 0,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -4332,8 +4335,9 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active,
+                   context_snapshot)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -4353,6 +4357,7 @@ class SessionDB:
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
                     1,
+                    1 if (msg.get("_context_snapshot") or msg.get("context_snapshot")) else 0,
                 ),
             )
             inserted += 1
@@ -4464,8 +4469,12 @@ class SessionDB:
                 "WHERE session_id = ? AND active = 1",
                 (session_id,),
             )
+            snapshot_messages = [
+                {**message, "_context_snapshot": True}
+                for message in compacted_messages
+            ]
             inserted, tool_calls_total = self._insert_message_rows(
-                conn, session_id, compacted_messages
+                conn, session_id, snapshot_messages
             )
             # message_count / tool_call_count reflect the LIVE (active) set —
             # the archived rows are still on disk but not part of the live count.
@@ -4850,7 +4859,8 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
+                "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+                "timestamp, context_snapshot "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
                 # append_message stamps rows with time.time(), which is not
@@ -4893,6 +4903,8 @@ class SessionDB:
                 msg["message_id"] = row["platform_message_id"]
             if row["observed"]:
                 msg["observed"] = True
+            if row["context_snapshot"]:
+                msg["_context_snapshot"] = True
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
@@ -4965,6 +4977,113 @@ class SessionDB:
         """
         chain = self._session_lineage_root_to_tip(session_id)
         return (chain[0] if chain and chain[0] else session_id)
+
+    def get_messages_for_display(
+        self, session_id: str, include_ancestors: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Return the durable user-visible transcript, not the model context.
+
+        New compaction snapshots carry ``context_snapshot=1`` and are excluded
+        structurally.  A conservative boundary-overlap fallback handles legacy
+        rotation/in-place rows created before that marker existed without
+        globally deduplicating legitimate repeated messages.
+        """
+        from agent.context_compressor import ContextCompressor
+
+        session_ids = (
+            self._session_lineage_root_to_tip(session_id)
+            if include_ancestors
+            else [session_id]
+        )
+        display: List[Dict[str, Any]] = []
+
+        def _signature(msg: Dict[str, Any]) -> str:
+            content = msg.get("content")
+            if isinstance(content, str):
+                content = sanitize_context(content).strip()
+            return json.dumps(
+                {
+                    "role": msg.get("role"),
+                    "content": content,
+                    "tool_call_id": msg.get("tool_call_id"),
+                    "tool_calls": msg.get("tool_calls"),
+                    "tool_name": msg.get("tool_name"),
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            )
+
+        def _append_sanitized(rows: List[Dict[str, Any]]) -> None:
+            for raw in rows:
+                row = dict(raw)
+                content = row.get("content")
+                if isinstance(content, str):
+                    row["content"] = sanitize_context(content).strip()
+                display.append(row)
+
+        def _prefix_overlap(left: List[Dict[str, Any]], right: List[Dict[str, Any]]) -> int:
+            size = min(len(left), len(right))
+            matched = 0
+            while matched < size and _signature(left[matched]) == _signature(right[matched]):
+                matched += 1
+            return matched
+
+        def _tail_overlap(rows: List[Dict[str, Any]]) -> int:
+            max_overlap = min(len(rows), len(display))
+            for size in range(max_overlap, 0, -1):
+                if (
+                    [_signature(row) for row in rows[:size]]
+                    == [_signature(row) for row in display[-size:]]
+                ):
+                    return size
+            return 0
+
+        for lineage_id in session_ids:
+            rows = [
+                row for row in self.get_messages(lineage_id, include_inactive=True)
+                if (row.get("active", 1) or row.get("compacted", 0))
+                and not row.get("context_snapshot")
+            ]
+
+            # Legacy snapshots predate context_snapshot. Split on each handoff
+            # summary, then remove only the copied head/tail overlaps at segment
+            # boundaries. Marked snapshots were already removed above, so mixed
+            # pre-marker/post-marker sessions still retain their real turns.
+            segments: List[List[Dict[str, Any]]] = [[]]
+            for row in rows:
+                if ContextCompressor._is_context_summary_content(row.get("content")):
+                    segments.append([])
+                else:
+                    segments[-1].append(row)
+
+            if len(segments) == 1:
+                _append_sanitized(segments[0])
+                continue
+
+            for index, segment in enumerate(segments):
+                candidate = list(segment)
+                if index == 0:
+                    candidate = candidate[_prefix_overlap(candidate, display):]
+                else:
+                    candidate = candidate[_tail_overlap(candidate):]
+
+                # A snapshot's protected head sits immediately before the next
+                # summary. Remove the longest proper suffix matching the visible
+                # transcript prefix, including the same-session first generation.
+                if index < len(segments) - 1 and candidate:
+                    reference = display + candidate
+                    max_suffix = min(len(candidate) - 1, len(reference))
+                    for size in range(max_suffix, 0, -1):
+                        if (
+                            [_signature(row) for row in candidate[-size:]]
+                            == [_signature(row) for row in reference[:size]]
+                        ):
+                            candidate = candidate[:-size]
+                            break
+                _append_sanitized(candidate)
+
+        return _strip_background_review_harness(display)
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
         if not session_id:

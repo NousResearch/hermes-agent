@@ -1722,13 +1722,35 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             if agent.provider in {"opencode-go", "opencode-zen"}
             else 20.0
         )
+        # #61461 second timeout: reasoning models on opencode-go (deepseek-v4)
+        # spend ~65–77s in reasoning before the first visible content token.
+        # GPT-5 on the same endpoint needs 30–80s (#54056).  The OpenAI SDK
+        # ignores a top-level ``timeout=`` arg when a custom ``http_client`` is
+        # supplied, so raising ``timeout`` in config.yaml alone does nothing —
+        # the read timeout must be baked into the client's own ``httpx.Timeout``.
+        # Honor the user's ``request_timeout_seconds`` when configured, fall
+        # back to 600 s for opencode-go/zen (covers the worst-case ~77s window
+        # with headroom).  Other providers keep read=None (unbounded).
+        _request_timeout = None
+        if agent.provider in {"opencode-go", "opencode-zen"}:
+            _request_timeout = get_provider_request_timeout(
+                agent.provider, agent.model
+            ) or 600.0
         keepalive_http = agent._build_keepalive_http_client(
             client_kwargs.get("base_url", ""),
             verify=httpx_verify,
             keepalive_expiry=_keepalive_expiry,
+            request_timeout=_request_timeout,
         )
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
+            # Mirror the request timeout into the SDK-level ``timeout``, too,
+            # so callers that use ``agent._client_kwargs`` without an injectable
+            # ``http_client`` still see the raised ceiling.  When ``http_client``
+            # IS supplied the SDK ignores this, but the client's own timeout
+            # (set above) already carries the same value → correct either way.
+            if _request_timeout is not None and "timeout" not in client_kwargs:
+                client_kwargs["timeout"] = _request_timeout
     # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop,
     # which honors Retry-After and applies adaptive/jittered backoff. The OpenAI
     # SDK default (max_retries=2) uses its own 1-2s backoff that ignores

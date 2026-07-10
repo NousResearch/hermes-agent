@@ -974,6 +974,7 @@ def skill_view(
     file_path: str = None,
     task_id: str = None,
     preprocess: bool = True,
+    _skip_dedup: bool = False,
 ) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
@@ -1008,19 +1009,22 @@ def skill_view(
 
         # Per-turn dedup: if this exact (name, file_path) was already loaded
         # during the current turn, skip re-reading and re-processing the file.
+        # Internal loaders (e.g. _load_skill_payload) pass _skip_dedup=True
+        # because they need the full payload every time.
         _dedup_key = (name, file_path)
-        if _dedup_key in _loaded_skill_keys:
-            return json.dumps(
-                {
-                    "success": True,
-                    "name": name,
-                    "content": None,
-                    "already_loaded": True,
-                    "note": "This skill was already loaded during the current turn.",
-                },
-                ensure_ascii=False,
-            )
-        _loaded_skill_keys.add(_dedup_key)
+        if not _skip_dedup:
+            if _dedup_key in _loaded_skill_keys:
+                return json.dumps(
+                    {
+                        "success": True,
+                        "name": name,
+                        "content": None,
+                        "already_loaded": True,
+                        "note": "This skill was already loaded during the current turn.",
+                    },
+                    ensure_ascii=False,
+                )
+            _loaded_skill_keys.add(_dedup_key)
 
         local_category_name: str | None = None
         # ── Qualified name dispatch (plugin skills) ──────────────────

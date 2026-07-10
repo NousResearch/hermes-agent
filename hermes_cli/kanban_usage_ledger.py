@@ -658,8 +658,27 @@ def _record_kanban_usage_at_boundary(
     resolved_index = api_call_index
     if resolved_index is None:
         if call_kind == "auxiliary":
+            # Per-(board, task, run) identity. Prefer process-local counter
+            # for fast consecutive calls; seed from the DB max so retries /
+            # fresh processes do not overwrite index 0.
             key = (_board, _kanban_task, _run_id)
-            idx = _aux_call_indices.get(key, 0)
+            if key not in _aux_call_indices:
+                next_idx = 0
+                try:
+                    row = conn.execute(
+                        "SELECT COALESCE(MAX(api_call_index), -1) FROM run_usage "
+                        "WHERE board = ? AND task_id = ? AND run_id = ? "
+                        "AND call_kind = 'auxiliary'",
+                        (_board, _kanban_task, _run_id),
+                    ).fetchone()
+                    if row is not None and row[0] is not None:
+                        next_idx = int(row[0]) + 1
+                except Exception:
+                    # Table missing / conn closed: start at 0; safe_record
+                    # will swallow write failures without breaking callers.
+                    next_idx = 0
+                _aux_call_indices[key] = next_idx
+            idx = _aux_call_indices[key]
             _aux_call_indices[key] = idx + 1
             resolved_index = idx
         else:

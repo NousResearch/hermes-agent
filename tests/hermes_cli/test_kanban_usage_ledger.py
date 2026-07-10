@@ -2179,3 +2179,359 @@ class TestCodexRuntimeBoundary:
         assert result.get("failed") is not True
         assert result.get("completed") is True
         assert ledger.query_usage(isolated_kanban) == []
+
+
+class TestAuxiliaryRuntimeBoundary:
+    """R4E: real auxiliary response/runtime usage boundary (not helper-only).
+
+    Exercises agent.auxiliary_client.call_llm → _validate_llm_response with a
+    monkeypatched no-network client against a temp Kanban DB.
+    """
+
+    @staticmethod
+    def _openai_style_response(
+        *,
+        prompt_tokens=111,
+        completion_tokens=22,
+        model="aux-test-model",
+        content="aux-ok",
+        include_usage=True,
+    ):
+        from types import SimpleNamespace
+
+        usage = None
+        if include_usage:
+            # Real OpenAI chat.completions usage shape (prompt/completion).
+            usage = SimpleNamespace(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            )
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    index=0,
+                    message=SimpleNamespace(content=content, tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=usage,
+            model=model,
+        )
+
+    def _install_fake_client(self, monkeypatch, response_fn):
+        """Monkeypatch call_llm client resolution; no network."""
+        from types import SimpleNamespace
+        import agent.auxiliary_client as aux
+
+        class _Completions:
+            def create(self, **kwargs):
+                return response_fn()
+
+        class _Chat:
+            def __init__(self):
+                self.completions = _Completions()
+
+        class _Client:
+            def __init__(self):
+                self.chat = _Chat()
+                self.base_url = "http://127.0.0.1:9/v1"
+
+        def fake_get_cached_client(*a, **k):
+            return _Client(), "aux-test-model"
+
+        monkeypatch.setattr(aux, "_get_cached_client", fake_get_cached_client)
+        # Avoid vision/auto resolution side paths.
+        monkeypatch.setattr(
+            aux,
+            "_resolve_task_provider_model",
+            lambda task, provider, model, base_url, api_key: (
+                provider or "openrouter",
+                model or "aux-test-model",
+                "http://127.0.0.1:9/v1",
+                "test-key",
+                None,
+            ),
+        )
+        return aux
+
+    def test_single_aux_api_call_persists_one_usage_event(
+        self, isolated_kanban, monkeypatch
+    ):
+        """One successful auxiliary call with usage → one auxiliary ledger row."""
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_r4e_single")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "obs-board")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "31")
+        monkeypatch.setenv("HERMES_PROFILE", "builder-grok")
+        # Reset process-local aux counter between tests.
+        ledger._aux_call_indices.clear()
+
+        aux = self._install_fake_client(
+            monkeypatch,
+            lambda: self._openai_style_response(prompt_tokens=111, completion_tokens=22),
+        )
+        response = aux.call_llm(
+            task="title_generation",
+            provider="openrouter",
+            model="aux-test-model",
+            messages=[{"role": "user", "content": "hello r4e"}],
+        )
+        assert response is not None
+        assert response.choices[0].message.content == "aux-ok"
+
+        rows = ledger.query_usage(
+            isolated_kanban,
+            board="obs-board",
+            task_id="t_r4e_single",
+            run_id=31,
+            call_kind="auxiliary",
+        )
+        assert len(rows) == 1, f"expected 1 auxiliary event, got {rows!r}"
+        row = rows[0]
+        assert row["board"] == "obs-board"
+        assert row["task_id"] == "t_r4e_single"
+        assert row["run_id"] == 31
+        assert row["profile"] == "builder-grok"
+        assert row["call_kind"] == "auxiliary"
+        assert row["api_call_index"] == 0
+        assert row["model"] == "aux-test-model"
+        # OpenAI prompt/completion usage must map into canonical buckets.
+        assert row["input_tokens"] == 111
+        assert row["output_tokens"] == 22
+        assert row["token_source"] == "incomplete"
+        # Unobserved aux_* and cost stay NULL (missing != fabricated zero).
+        assert row["aux_input_tokens"] is None
+        assert row["aux_output_tokens"] is None
+        assert row["cost_usd"] is None
+
+    def test_two_aux_api_calls_get_distinct_stable_indices(
+        self, isolated_kanban, monkeypatch
+    ):
+        """Two observable auxiliary calls → distinct events at indices 0 and 1."""
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_r4e_multi")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "8")
+        monkeypatch.setenv("HERMES_PROFILE", "builder-grok")
+        ledger._aux_call_indices.clear()
+
+        calls = {"n": 0}
+
+        def response_fn():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return self._openai_style_response(
+                    prompt_tokens=100, completion_tokens=10, content="first"
+                )
+            return self._openai_style_response(
+                prompt_tokens=200, completion_tokens=30, content="second"
+            )
+
+        aux = self._install_fake_client(monkeypatch, response_fn)
+        r1 = aux.call_llm(
+            task="session_search",
+            provider="openrouter",
+            model="aux-test-model",
+            messages=[{"role": "user", "content": "one"}],
+        )
+        r2 = aux.call_llm(
+            task="session_search",
+            provider="openrouter",
+            model="aux-test-model",
+            messages=[{"role": "user", "content": "two"}],
+        )
+        assert r1.choices[0].message.content == "first"
+        assert r2.choices[0].message.content == "second"
+        assert calls["n"] == 2
+
+        rows = ledger.query_usage(
+            isolated_kanban,
+            task_id="t_r4e_multi",
+            run_id=8,
+            call_kind="auxiliary",
+        )
+        assert len(rows) == 2, f"expected 2 auxiliary events, got {rows!r}"
+        indices = sorted(r["api_call_index"] for r in rows)
+        assert indices == [0, 1], f"stable indices expected [0,1], got {indices}"
+        by_idx = {r["api_call_index"]: r for r in rows}
+        assert by_idx[0]["input_tokens"] == 100
+        assert by_idx[0]["output_tokens"] == 10
+        assert by_idx[1]["input_tokens"] == 200
+        assert by_idx[1]["output_tokens"] == 30
+        # Second call must not overwrite index 0.
+        assert by_idx[0]["input_tokens"] != by_idx[1]["input_tokens"]
+
+    def test_aux_index_safe_after_counter_reset(
+        self, isolated_kanban, monkeypatch
+    ):
+        """Counter identity survives process-local state loss (retry / re-import).
+
+        If the in-memory aux counter is cleared (new process, fresh import) but
+        the DB already has index 0 for this run, the next call must allocate 1
+        rather than overwrite 0.
+        """
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_r4e_retry")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "12")
+        monkeypatch.setenv("HERMES_PROFILE", "builder-grok")
+        ledger._aux_call_indices.clear()
+
+        aux = self._install_fake_client(
+            monkeypatch,
+            lambda: self._openai_style_response(prompt_tokens=50, completion_tokens=5),
+        )
+        aux.call_llm(
+            task="skills_hub",
+            provider="openrouter",
+            model="aux-test-model",
+            messages=[{"role": "user", "content": "first"}],
+        )
+        # Simulate process restart / re-import: forget local counter only.
+        ledger._aux_call_indices.clear()
+
+        aux = self._install_fake_client(
+            monkeypatch,
+            lambda: self._openai_style_response(prompt_tokens=90, completion_tokens=9),
+        )
+        aux.call_llm(
+            task="skills_hub",
+            provider="openrouter",
+            model="aux-test-model",
+            messages=[{"role": "user", "content": "retry"}],
+        )
+
+        rows = ledger.query_usage(
+            isolated_kanban,
+            task_id="t_r4e_retry",
+            run_id=12,
+            call_kind="auxiliary",
+        )
+        assert len(rows) == 2, f"expected 2 events after retry, got {rows!r}"
+        indices = sorted(r["api_call_index"] for r in rows)
+        assert indices == [0, 1], f"must not overwrite index 0, got {indices}"
+        by_idx = {r["api_call_index"]: r for r in rows}
+        assert by_idx[0]["input_tokens"] == 50
+        assert by_idx[1]["input_tokens"] == 90
+
+    def test_aux_index_does_not_leak_across_runs(
+        self, isolated_kanban, monkeypatch
+    ):
+        """Different run_id starts auxiliary indices at 0 again."""
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_r4e_runs")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_PROFILE", "builder-grok")
+        ledger._aux_call_indices.clear()
+
+        aux = self._install_fake_client(
+            monkeypatch,
+            lambda: self._openai_style_response(prompt_tokens=10, completion_tokens=1),
+        )
+
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "100")
+        aux.call_llm(
+            task="mcp",
+            provider="openrouter",
+            model="aux-test-model",
+            messages=[{"role": "user", "content": "run100"}],
+        )
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "101")
+        aux.call_llm(
+            task="mcp",
+            provider="openrouter",
+            model="aux-test-model",
+            messages=[{"role": "user", "content": "run101"}],
+        )
+
+        r100 = ledger.query_usage(
+            isolated_kanban, task_id="t_r4e_runs", run_id=100, call_kind="auxiliary"
+        )
+        r101 = ledger.query_usage(
+            isolated_kanban, task_id="t_r4e_runs", run_id=101, call_kind="auxiliary"
+        )
+        assert len(r100) == 1 and r100[0]["api_call_index"] == 0
+        assert len(r101) == 1 and r101[0]["api_call_index"] == 0
+
+    def test_ledger_failure_does_not_break_auxiliary_call(
+        self, isolated_kanban, monkeypatch, caplog
+    ):
+        """Persistence errors are fail-safe and diagnosable."""
+        import logging
+        from hermes_cli import kanban_db as kdb
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_r4e_failsafe")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "19")
+        monkeypatch.setenv("HERMES_PROFILE", "builder-grok")
+        ledger._aux_call_indices.clear()
+
+        def _boom():
+            raise RuntimeError("simulated ledger connect failure")
+
+        monkeypatch.setattr(kdb, "connect", _boom)
+        aux = self._install_fake_client(
+            monkeypatch,
+            lambda: self._openai_style_response(prompt_tokens=1, completion_tokens=1),
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            response = aux.call_llm(
+                task="title_generation",
+                provider="openrouter",
+                model="aux-test-model",
+                messages=[{"role": "user", "content": "still works"}],
+            )
+        assert response is not None
+        assert response.choices[0].message.content == "aux-ok"
+        # No rows written (connect always failed).
+        rows = ledger.query_usage(isolated_kanban, task_id="t_r4e_failsafe")
+        assert rows == []
+        # Diagnosable trail (debug log with context).
+        joined = " ".join(r.message for r in caplog.records)
+        assert "Kanban" in joined or "ledger" in joined.lower() or "usage" in joined.lower()
+
+    def test_no_kanban_env_skips_aux_ledger_write(
+        self, isolated_kanban, monkeypatch
+    ):
+        """Outside a Kanban worker the auxiliary path is a no-op for the ledger."""
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+        ledger._aux_call_indices.clear()
+
+        aux = self._install_fake_client(
+            monkeypatch,
+            lambda: self._openai_style_response(prompt_tokens=5, completion_tokens=2),
+        )
+        response = aux.call_llm(
+            task="title_generation",
+            provider="openrouter",
+            model="aux-test-model",
+            messages=[{"role": "user", "content": "no kanban"}],
+        )
+        assert response is not None
+        assert ledger.query_usage(isolated_kanban) == []
+
+    def test_unobserved_usage_does_not_fabricate_authoritative_tokens(
+        self, isolated_kanban, monkeypatch
+    ):
+        """Response without usage is not recorded as observed zeros."""
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_r4e_unobs")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "44")
+        monkeypatch.setenv("HERMES_PROFILE", "builder-grok")
+        ledger._aux_call_indices.clear()
+
+        aux = self._install_fake_client(
+            monkeypatch,
+            lambda: self._openai_style_response(include_usage=False),
+        )
+        response = aux.call_llm(
+            task="title_generation",
+            provider="openrouter",
+            model="aux-test-model",
+            messages=[{"role": "user", "content": "no usage"}],
+        )
+        assert response is not None
+        # Unobserved → no fabricated auxiliary usage event with zeros.
+        rows = ledger.query_usage(
+            isolated_kanban, task_id="t_r4e_unobs", call_kind="auxiliary"
+        )
+        assert rows == [], f"unobserved usage must not invent events, got {rows!r}"

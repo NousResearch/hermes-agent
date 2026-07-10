@@ -6847,48 +6847,76 @@ def _validate_llm_response(
         ) from exc
 
     # ── Kanban usage ledger (HERMES-OBS-001) ────────────────
-    # Record observable auxiliary usage. Best-effort: token
-    # observation is often incomplete (caching, reasoning, etc.).
-    _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
-    if _kanban_task:
-        try:
-            _usage = getattr(response, "usage", None)
-            if _usage is not None:
-                from hermes_cli import kanban_db as _kb
-                from hermes_cli.kanban_usage_ledger import (
-                    safe_record_from_canonical_usage,
-                )
-                _kb_conn = _kb.connect()
-                try:
-                    _board = os.environ.get("HERMES_KANBAN_BOARD", "default")
-                    _run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
-                    _run_id = int(_run_id_raw) if _run_id_raw else 0
-                    _model = getattr(response, "model", None) or "unknown"
-                    safe_record_from_canonical_usage(
-                        _kb_conn,
-                        board=_board,
-                        task_id=_kanban_task,
-                        run_id=_run_id,
-                        call_kind="auxiliary",
-                        api_call_index=0,
-                        provider="aux",
-                        model=_model,
-                        canonical_usage={
-                            "input_tokens": getattr(_usage, "input_tokens", 0) or 0,
-                            "output_tokens": getattr(_usage, "output_tokens", 0) or 0,
-                            "cache_read_tokens": getattr(_usage, "cache_read_tokens", 0) or 0,
-                            "cache_write_tokens": getattr(_usage, "cache_write_tokens", 0) or 0,
-                            "reasoning_tokens": getattr(_usage, "reasoning_tokens", 0) or 0,
-                        },
-                        token_source="incomplete",
-                    )
-                finally:
+    # Persist one distinct auxiliary usage event per observable
+    # auxiliary API call when running as a Kanban worker. Fail-safe:
+    # ledger write failures must never break auxiliary execution.
+    # Token observation is often incomplete (caching, reasoning, etc.).
+    try:
+        _usage = getattr(response, "usage", None)
+        if _usage is not None:
+            from hermes_cli import kanban_db as _kb
+            from hermes_cli.kanban_usage_ledger import (
+                _record_kanban_usage_at_boundary,
+            )
+
+            def _usage_int(*names: str) -> int:
+                for name in names:
+                    if isinstance(_usage, dict):
+                        raw = _usage.get(name)
+                    else:
+                        raw = getattr(_usage, name, None)
+                    if raw is None:
+                        continue
                     try:
-                        _kb_conn.close()
-                    except Exception:
-                        pass
-        except Exception:
-            pass  # Fail-safe: never break auxiliary execution
+                        return int(raw) or 0
+                    except (TypeError, ValueError):
+                        continue
+                return 0
+
+            _kb_conn = _kb.connect()
+            try:
+                _model = getattr(response, "model", None) or "unknown"
+                # Prefer resolved provider attached by call_llm when present;
+                # fall back to a stable "aux" marker for adapter paths.
+                _provider = (
+                    getattr(response, "_hermes_aux_provider", None)
+                    or getattr(response, "provider", None)
+                    or "aux"
+                )
+                _record_kanban_usage_at_boundary(
+                    _kb_conn,
+                    call_kind="auxiliary",
+                    # Omit api_call_index → ledger auto-assigns a distinct
+                    # stable per-run index (DB-seeded; no overwrite of 0).
+                    provider=str(_provider),
+                    model=_model,
+                    canonical_usage={
+                        # OpenAI chat: prompt/completion; Anthropic-style:
+                        # input/output. Accept both without inventing values.
+                        "input_tokens": _usage_int("input_tokens", "prompt_tokens"),
+                        "output_tokens": _usage_int(
+                            "output_tokens", "completion_tokens"
+                        ),
+                        "cache_read_tokens": _usage_int(
+                            "cache_read_tokens", "cached_tokens"
+                        ),
+                        "cache_write_tokens": _usage_int("cache_write_tokens"),
+                        "reasoning_tokens": _usage_int("reasoning_tokens"),
+                    },
+                    token_source="incomplete",
+                    # cost left None → unobserved stays NULL, never fabricated.
+                )
+            finally:
+                try:
+                    _kb_conn.close()
+                except Exception:
+                    pass
+    except Exception:
+        logger.debug(
+            "Kanban usage ledger write failed (task=%s auxiliary):",
+            os.environ.get("HERMES_KANBAN_TASK"),
+            exc_info=True,
+        )
 
     return response
 

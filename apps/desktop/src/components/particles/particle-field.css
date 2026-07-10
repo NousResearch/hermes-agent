@@ -1,0 +1,126 @@
+/* ── Particle field ─────────────────────────────────────────────────────────
+   Reusable float-up emitter. Three nested layers, each owning ONE transform so
+   they never fight:
+     .particle          — full-height track: vertical rise + fade (linear)
+     .particle__sway    — horizontal weave + bank/tilt on its OWN period
+                          (ease-in-out, alternating), so the path desyncs from
+                          the rise and never repeats — the organic-motion trick
+     .particle__glyph   — one-shot springy pop-in scale
+   The track is full-height and anchored at the field bottom, so the rise's
+   `translateY(-rise%)` measures against the field height, not the glyph's. All
+   tuning arrives as inline `--particle-*` custom properties. */
+.particle-field {
+  pointer-events: none;
+  overflow: visible;
+}
+
+.particle {
+  position: absolute;
+  inset-block: 0;
+  left: var(--particle-left);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: var(--particle-size);
+  margin-left: calc(var(--particle-size) / -2);
+  will-change: transform, opacity;
+  animation: particle-rise var(--particle-duration) linear var(--particle-delay) both;
+}
+
+.particle__sway {
+  display: block;
+  will-change: transform;
+  animation: particle-sway var(--particle-sway-duration) ease-in-out var(--particle-sway-delay)
+    infinite alternate;
+}
+
+.particle__glyph {
+  display: block;
+  width: var(--particle-size);
+  color: var(--particle-color);
+  will-change: transform;
+  animation: particle-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1) var(--particle-delay) both;
+}
+
+.particle__glyph > svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Rise: straight up the field, holds opacity through most of the climb, fades
+   near the top. */
+@keyframes particle-rise {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0);
+  }
+
+  6% {
+    opacity: 1;
+    transform: translate3d(0, calc(var(--particle-rise) * -0.06%), 0);
+  }
+
+  70% {
+    opacity: 1;
+    transform: translate3d(0, calc(var(--particle-rise) * -0.7%), 0);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(0, calc(var(--particle-rise) * -1%), 0);
+  }
+}
+
+/* Sway + bank: swings left↔right and tilts INTO the direction of travel, like a
+   leaf on a breeze. Runs on its own clock. */
+@keyframes particle-sway {
+  from {
+    transform: translateX(calc(var(--particle-sway) * -1)) rotate(calc(var(--particle-bank) * -1));
+  }
+
+  to {
+    transform: translateX(var(--particle-sway)) rotate(var(--particle-bank));
+  }
+}
+
+/* Pop: a springy scale-in overshoot (the bezier is a spring, not a path wobble). */
+@keyframes particle-pop {
+  0% {
+    transform: scale(0.3);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .particle {
+    inset-block: auto 0;
+    height: var(--particle-size);
+    animation: particle-flash 650ms ease-out var(--particle-delay) both;
+  }
+
+  .particle__sway,
+  .particle__glyph {
+    animation: none;
+  }
+
+  @keyframes particle-flash {
+    0% {
+      opacity: 0;
+      transform: translate3d(0, 0, 0) scale(0.6);
+    }
+
+    20% {
+      opacity: 1;
+      transform: translate3d(0, -0.5rem, 0) scale(1.1);
+    }
+
+    100% {
+      opacity: 0;
+      transform: translate3d(0, -1rem, 0) scale(1);
+    }
+  }
+}

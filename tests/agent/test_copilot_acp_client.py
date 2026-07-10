@@ -226,6 +226,53 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertIn("error", response)
         self.assertFalse(target.exists())
 
+    def test_write_text_file_writes_utf8(self) -> None:
+        """Non-ASCII content must persist as UTF-8, not the system locale
+        (cp1252/GBK on Windows would raise UnicodeEncodeError)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "note.md"
+            payload = "# Заголовок ✅\nステータス: 完了\n"
+
+            response = self._dispatch(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 6,
+                    "method": "fs/write_text_file",
+                    "params": {"path": str(target), "content": payload},
+                },
+                cwd=str(root),
+            )
+
+            self.assertNotIn("error", response)
+            # Decode as UTF-8 and normalise platform newline translation
+            # (text-mode write turns \n into \r\n on Windows) — the point is
+            # that the non-ASCII bytes survived, not the line ending.
+            written = target.read_bytes().decode("utf-8").replace("\r\n", "\n")
+            self.assertEqual(written, payload)
+
+    def test_read_text_file_reads_utf8(self) -> None:
+        """A UTF-8 file with non-ASCII content must decode regardless of the
+        host locale."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            src = root / "src.txt"
+            payload = "переменная = '完了' # ✅\n"
+            src.write_bytes(payload.encode("utf-8"))
+
+            response = self._dispatch(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "fs/read_text_file",
+                    "params": {"path": str(src)},
+                },
+                cwd=str(root),
+            )
+
+            content = ((response.get("result") or {}).get("content") or "")
+            self.assertEqual(content, payload)
+
     def test_write_text_file_respects_safe_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

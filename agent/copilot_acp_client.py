@@ -703,7 +703,11 @@ class CopilotACPClient:
                 if block_error:
                     raise PermissionError(block_error)
                 try:
-                    content = path.read_text()
+                    # Force UTF-8: read_text() with no encoding falls back to
+                    # the system locale (cp1252/GBK on Windows) and raises
+                    # UnicodeDecodeError on any non-ASCII source/doc the peer
+                    # asked to read. The codebase treats all text files as UTF-8.
+                    content = path.read_text(encoding="utf-8")
                 except FileNotFoundError:
                     content = ""
                 line = params.get("line")
@@ -732,7 +736,13 @@ class CopilotACPClient:
                         f"Write denied: '{path}' is a protected system/credential file."
                     )
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(str(params.get("content") or ""))
+                # Force UTF-8: write_text() with no encoding falls back to the
+                # system locale (cp1252/GBK on Windows) and raises
+                # UnicodeEncodeError on any non-ASCII content the peer asked to
+                # write (unicode in source, docs, emoji, CJK).
+                path.write_text(
+                    str(params.get("content") or ""), encoding="utf-8"
+                )
                 response = {
                     "jsonrpc": "2.0",
                     "id": message_id,

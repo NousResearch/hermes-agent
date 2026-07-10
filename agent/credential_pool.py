@@ -824,6 +824,45 @@ class CredentialPool:
             logger.debug("Failed to sync xAI OAuth entry from auth.json: %s", exc)
         return entry
 
+    def _sync_xai_oauth_entry_from_pool_store(
+        self, entry: PooledCredential
+    ) -> PooledCredential:
+        """Adopt a token pair rotated by another pool instance.
+
+        Direct xAI integrations load a fresh ``CredentialPool`` for each
+        request. Their in-memory locks therefore cannot protect xAI's
+        single-use refresh token across concurrent requests or processes.
+        This helper is called while the shared auth-store lock is held and
+        re-reads the exact persisted row before a refresh POST is attempted.
+        """
+        if self.provider != "xai-oauth":
+            return entry
+        try:
+            persisted = next(
+                (
+                    payload
+                    for payload in read_credential_pool(self.provider)
+                    if isinstance(payload, dict) and payload.get("id") == entry.id
+                ),
+                None,
+            )
+            if not isinstance(persisted, dict):
+                return entry
+            stored = PooledCredential.from_dict(self.provider, persisted)
+            if (
+                stored.access_token != entry.access_token
+                or stored.refresh_token != entry.refresh_token
+            ):
+                logger.debug(
+                    "Pool entry %s: adopting xAI OAuth tokens rotated by another pool instance",
+                    entry.id,
+                )
+                self._replace_entry(entry, stored)
+                return stored
+        except Exception as exc:
+            logger.debug("Failed to sync xAI OAuth entry from credential pool: %s", exc)
+        return entry
+
     def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Nous pool entry from auth.json if tokens differ.
 
@@ -1040,6 +1079,22 @@ class CredentialPool:
                     if not force and not self._entry_needs_refresh(entry):
                         return entry
                 return self._refresh_entry_impl(entry, force=force)
+        if self.provider == "xai-oauth":
+            refresh_timeout_seconds = auth_mod.env_float(
+                "HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20
+            )
+            lock_timeout = max(
+                float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
+                float(refresh_timeout_seconds) + 5.0,
+            )
+            with _auth_store_lock(timeout_seconds=lock_timeout):
+                synced = self._sync_xai_oauth_entry_from_pool_store(entry)
+                if (
+                    synced.access_token != entry.access_token
+                    or synced.refresh_token != entry.refresh_token
+                ):
+                    return synced
+                return self._refresh_entry_impl(synced, force=force)
         return self._refresh_entry_impl(entry, force=force)
 
     def _refresh_entry_impl(
@@ -1538,8 +1593,8 @@ class CredentialPool:
             self._persist(removed_ids=entries_to_prune)
         return available
 
-    def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._available_entries(clear_expired=True, refresh=True)
+    def _select_unlocked(self, *, refresh: bool = True) -> Optional[PooledCredential]:
+        available = self._available_entries(clear_expired=True, refresh=refresh)
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
@@ -1666,6 +1721,35 @@ class CredentialPool:
 
     def try_refresh_current(self) -> Optional[PooledCredential]:
         with self._lock:
+            return self._try_refresh_current_unlocked()
+
+    def try_refresh_matching(
+        self, api_key_hint: Optional[str] = None
+    ) -> Optional[PooledCredential]:
+        """Force-refresh the entry that supplied ``api_key_hint``.
+
+        Direct provider integrations may reload the pool after a request has
+        already failed, so they cannot rely on ``current_id`` identifying the
+        issuing credential. With no hint, select an entry without first doing
+        the normal proactive refresh; the forced refresh below must consume a
+        rotating refresh token exactly once.
+        """
+        with self._lock:
+            entry = None
+            if api_key_hint:
+                entry = next(
+                    (
+                        candidate
+                        for candidate in self._entries
+                        if candidate.runtime_api_key == api_key_hint
+                    ),
+                    None,
+                )
+            else:
+                entry = self.current() or self._select_unlocked(refresh=False)
+            if entry is None:
+                return None
+            self._current_id = entry.id
             return self._try_refresh_current_unlocked()
 
     def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:

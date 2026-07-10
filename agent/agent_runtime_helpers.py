@@ -3126,21 +3126,20 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
 
 
 
-def force_close_tcp_sockets(client: Any) -> int:
-    """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.
+def force_close_tcp_sockets(client: Any, *, release_fds: bool = False) -> int:
+    """Abort in-flight TCP I/O by shutting down pool sockets.
 
     When a provider drops a connection mid-stream — or the user issues an
     interrupt — we want to unblock httpx's reader/writer immediately rather
     than waiting for the kernel's per-connection timeout. ``shutdown(SHUT_RDWR)``
     achieves that: it sends FIN, breaks any pending ``recv``/``send`` with EOF
-    or ``EPIPE``, but does NOT release the file descriptor.
+    or ``EPIPE``.
 
-    Historically this helper also called ``socket.close()`` so the FD got
-    released immediately, but that's unsafe when (as is the case for both the
-    interrupt-abort path and stale-call kill path) the helper runs on a
-    different thread than the one driving the request:
+    By default (``release_fds=False``) this helper does **not** call
+    ``socket.close()`` / release the FD. That default is load-bearing for
+    cross-thread abort paths (#29507):
 
-      * The Python ``socket.socket`` we close here is the SAME object held by
+      * The Python ``socket.socket`` we close is the SAME object held by
         httpx's pool, so closing it via Python sets its ``_fd`` to -1 and
         future operations on that Python object fail safely.
       * BUT the SSL wrapper (``ssl.SSLSocket``'s underlying OpenSSL ``BIO``)
@@ -3152,15 +3151,20 @@ def force_close_tcp_sockets(client: Any) -> int:
         wrong file (issue #29507: 24-byte TLS application-data record
         clobbering SQLite header bytes 5..28).
 
-    The fix is to let the owning thread own the close. ``shutdown()`` from any
-    thread is FD-safe; ``close()`` is not. The httpx connection's own close
-    path — which runs from the worker thread when it unwinds — will release
-    the FD via the same ``socket.socket`` object, and because Python's socket
-    close atomically swaps ``_fd`` to -1 *before* issuing ``os.close``, there
-    is no FD-aliasing window when only one thread closes.
+    ``shutdown()`` from any thread is FD-safe; ``close()`` is not when a
+    stranger thread still has the BIO holding the raw FD.
 
-    Returns the number of sockets shut down. (Field kept as
-    ``tcp_force_closed=N`` in the log line for backwards-compatible parsing.)
+    When the **owning** thread is disposing of a client that is no longer
+    shared (``_close_openai_client`` after replace / request-complete), pass
+    ``release_fds=True``. httpx's own ``client.close()`` does not reliably
+    ``os.close()`` sockets that were already ``shutdown()``'d, so without an
+    explicit ``sock.close()`` those FDs stay in kernel CLOSED state forever
+    and accumulate under long-lived gateways (issue #61979 — ~1 CLOSED fd
+    per ~6 minutes through a local proxy path).
+
+    Returns the number of sockets shut down (and optionally closed). Field
+    kept as ``tcp_force_closed=N`` in log lines for backwards-compatible
+    parsing.
     """
     import socket as _socket
 
@@ -3172,7 +3176,13 @@ def force_close_tcp_sockets(client: Any) -> int:
             except OSError:
                 # Already shut down / not connected / FD invalid — all benign.
                 pass
-            # IMPORTANT (#29507): do NOT call sock.close() here. See docstring.
+            # IMPORTANT (#29507): never release FDs from stranger-thread
+            # abort paths. Only the owning-thread close path may opt in.
+            if release_fds:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
             shutdown_count += 1
     except Exception as exc:
         _ra().logger.debug("Force-close TCP sockets sweep error: %s", exc)

@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
 import type { ModelOptionProvider } from '@/types/hermes'
+import { $gateway } from './gateway'
 
 const STORAGE_KEY = 'hermes.desktop.visible-models'
 
@@ -68,6 +69,70 @@ export function collapseModelFamilies(models: readonly string[]): ModelFamily[] 
   return families
 }
 
+// ── Backend persistence ──────────────────────────────────────────────
+// Model visibility preferences are persisted on the backend so they survive
+// cache clears, origin changes, and Electron userData resets.
+
+/** Try to load visibility keys from the backend. Returns null on failure. */
+async function loadVisibleFromBackend(): Promise<Set<string> | null> {
+  const gateway = $gateway.get()
+  if (!gateway) return null
+  try {
+    const result = await gateway.request<{ keys: string[] }>('model_visibility.get')
+    if (result && Array.isArray(result.keys)) {
+      return new Set(result.keys.filter((x): x is string => typeof x === 'string'))
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** Persist visibility keys to the backend. Best-effort; localStorage fallback still works. */
+async function saveVisibleToBackend(keys: Set<string>): Promise<void> {
+  const gateway = $gateway.get()
+  if (!gateway) return
+  try {
+    await gateway.request('model_visibility.set', { keys: [...keys] })
+  } catch {
+    // Best-effort
+  }
+}
+
+/** Migrate existing localStorage data to the backend. Returns the migrated
+ *  set, or null if there was nothing to migrate. */
+function migrateFromLocalStorage(): Set<string> | null {
+  const raw = storedString(STORAGE_KEY)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? new Set(parsed.filter((x): x is string => typeof x === 'string')) : null
+  } catch {
+    return null
+  }
+}
+
+/** Call once after gateway boot to sync visibility preferences: load from
+ *  backend, migrate localStorage if needed, store into the atom. */
+export async function syncVisibleModels(): Promise<void> {
+  const backend = await loadVisibleFromBackend()
+  if (backend !== null) {
+    $visibleModels.set(backend)
+    // Keep localStorage in sync for offline resilience
+    persistString(STORAGE_KEY, JSON.stringify([...backend]))
+    return
+  }
+
+  const local = loadVisible()
+  if (local !== null) {
+    // Migrate localStorage data to backend (fire-and-forget)
+    saveVisibleToBackend(local)
+    return
+  }
+
+  // Neither has data — keep the null sentinel (curated defaults apply)
+}
+
 function loadVisible(): Set<string> | null {
   const raw = storedString(STORAGE_KEY)
 
@@ -93,6 +158,8 @@ export const $modelVisibilityOpen = atom(false)
 export function setVisibleModels(keys: Set<string>): void {
   $visibleModels.set(new Set(keys))
   persistString(STORAGE_KEY, JSON.stringify([...keys]))
+  // Fire-and-forget backend persist for durability across storage contexts
+  saveVisibleToBackend(keys)
 }
 
 export function setModelVisibilityOpen(open: boolean): void {

@@ -23,6 +23,7 @@ import {
   setPrimaryGateway,
   touchSecondaryGateways
 } from '@/store/gateway'
+import { syncVisibleModels } from '@/store/model-visibility'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
@@ -395,6 +396,7 @@ export function useGatewayBoot({
           progress: 99
         })
         await callbacksRef.current.refreshSessions()
+        await syncVisibleModels()
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {

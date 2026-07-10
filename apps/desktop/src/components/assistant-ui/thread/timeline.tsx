@@ -190,7 +190,9 @@ export const ThreadTimeline: FC = () => {
       const top = viewport.getBoundingClientRect().top
 
       const offsets = entries.map(entry => {
-        const node = viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(entry.id)}"]`)
+        const node = Array.from(viewport.querySelectorAll<HTMLElement>('[data-message-id]')).find(
+          candidate => candidate.dataset.messageId === entry.id
+        )
 
         return node ? node.getBoundingClientRect().top - top : null
       })

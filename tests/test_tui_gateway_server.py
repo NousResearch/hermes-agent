@@ -230,9 +230,24 @@ def test_completion_cwd_explicit_workspace_still_honored_for_profile(monkeypatch
 
     monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(launch_ws)}})
     monkeypatch.setattr(server, "_profile_home", lambda name: profile_home if name else None)
-    # Client explicitly chose a workspace lane that differs from the launch dir.
+    # Client explicitly chose a workspace lane.
     assert (
-        server._completion_cwd({"profile": "dev", "cwd": str(explicit)}) == str(explicit)
+        server._completion_cwd({"profile": "dev", "cwd": str(explicit), "cwd_explicit": True}) == str(explicit)
+    )
+
+
+def test_completion_cwd_explicit_launch_workspace_is_honored_for_profile(monkeypatch, tmp_path):
+    """An explicit selection equal to the launch workspace is not inherited (#52589)."""
+    launch_ws = tmp_path / "workspace"
+    launch_ws.mkdir()
+    profile_ws = tmp_path / "workspace" / "products"
+    profile_ws.mkdir()
+    profile_home = _write_profile_cfg(tmp_path / "home-dev", str(profile_ws))
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(launch_ws)}})
+    monkeypatch.setattr(server, "_profile_home", lambda name: profile_home if name else None)
+    assert (
+        server._completion_cwd({"profile": "dev", "cwd": str(launch_ws), "cwd_explicit": True}) == str(launch_ws)
     )
 
 
@@ -285,7 +300,7 @@ def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):
     home = _write_profile_cfg(tmp_path / "home-c", str(profile_b))
 
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
-    result = server._completion_cwd({"cwd": str(explicit), "profile": "ef-design"})
+    result = server._completion_cwd({"cwd": str(explicit), "cwd_explicit": True, "profile": "ef-design"})
     assert result == str(explicit)
 
 

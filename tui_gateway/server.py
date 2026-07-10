@@ -1515,9 +1515,8 @@ def _resolve_completion_cwd(params: dict) -> str:
     rather than the desktop's inherited app-global default. The desktop seeds a
     plain new chat's cwd from its app-global workspace (the launch profile's
     directory), which must NOT override a named profile's configured workspace
-    (#52589). A path that differs from the launch profile's own directory is
-    treated as an explicit choice and is honored, so clicking a worktree lane
-    still opens that specific folder for the named profile.
+    (#52589). Desktop carries explicit-vs-inherited cwd provenance so an
+    intentional selection is honoured even when it equals the launch workspace.
     """
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
@@ -1525,18 +1524,10 @@ def _resolve_completion_cwd(params: dict) -> str:
 
     if profile_home is not None and client_cwd:
         profile_cwd = _profile_configured_cwd(profile_home)
-        if profile_cwd:
-            launch_cwd = _launch_configured_cwd() or os.environ.get("TERMINAL_CWD")
-            if launch_cwd:
-                client_abs = os.path.abspath(os.path.expanduser(str(client_cwd).strip()))
-                launch_abs = os.path.abspath(os.path.expanduser(str(launch_cwd).strip()))
-                # Client sent the launch profile's inherited default workspace
-                # (the desktop's app-global dir), not an explicit per-session
-                # choice → honor the named profile's terminal.cwd instead.
-                if client_abs == launch_abs:
-                    return profile_cwd
-            # else: launch profile has no configured workspace, so the client cwd
-            # is an explicit choice (e.g. a workspace lane) → fall through.
+        # The Desktop sends provenance because an inherited launch workspace can
+        # equal a deliberate user selection; path equality cannot tell them apart.
+        if profile_cwd and not params.get("cwd_explicit", False):
+            return profile_cwd
 
     # Default chain: explicit client cwd → named profile config → launch config
     # → env var → process cwd.

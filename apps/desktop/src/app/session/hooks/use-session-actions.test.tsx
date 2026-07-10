@@ -9,6 +9,7 @@ import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import {
   $activeSessionId,
   $currentCwd,
+  $currentCwdExplicit,
   $messages,
   $resumeFailedSessionId,
   setActiveSessionId,
@@ -98,6 +99,7 @@ async function createWith(profileSetup: () => void): Promise<Record<string, unkn
   })
 
   $currentCwd.set('')
+  $currentCwdExplicit.set(false)
   profileSetup()
 
   let create: ((preview?: string | null) => Promise<string | null>) | null = null
@@ -114,6 +116,7 @@ describe('createBackendSessionForSend profile routing', () => {
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
     $currentCwd.set('')
+    $currentCwdExplicit.set(false)
     vi.restoreAllMocks()
   })
 
@@ -159,7 +162,16 @@ describe('createBackendSessionForSend profile routing', () => {
       $currentCwd.set('/remote/worktree')
     })
 
-    expect(params).toMatchObject({ cwd: '/remote/worktree' })
+    expect(params).toMatchObject({ cwd: '/remote/worktree', cwd_explicit: false })
+  })
+
+  it('marks an explicitly selected workspace so the gateway preserves it', async () => {
+    const params = await createWith(() => {
+      $currentCwd.set('/remote/launch-workspace')
+      $currentCwdExplicit.set(true)
+    })
+
+    expect(params).toMatchObject({ cwd: '/remote/launch-workspace', cwd_explicit: true })
   })
 })
 

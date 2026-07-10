@@ -270,6 +270,11 @@ export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
 // reflection of the truth the gateway reports rather than its own store.
 export const $yoloActive = atom(false)
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
+// True only when the user deliberately chose the current cwd for the next
+// session. This provenance matters in global-remote mode: an inherited launch
+// workspace may equal a user's explicit selection, so path equality alone is
+// insufficient (#52589).
+export const $currentCwdExplicit = atom(false)
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
   calls: 0,
@@ -337,6 +342,8 @@ export const setCurrentCwd = (next: Updater<string>) => {
   updateAtom($currentCwd, next)
   persistString(workspaceCwdKey(), $currentCwd.get().trim() || null)
 }
+
+export const setCurrentCwdExplicit = (next: Updater<boolean>) => updateAtom($currentCwdExplicit, next)
 
 export const workspaceCwdForNewSession = (): string => {
   if ($connection.get()?.mode === 'remote') {

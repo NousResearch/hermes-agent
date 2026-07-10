@@ -13,6 +13,7 @@ import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalize
 import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
 import {
   $currentCwd,
+  $currentCwdExplicit,
   $currentFastMode,
   $currentModel,
   $currentProvider,
@@ -26,6 +27,7 @@ import {
   setBusy,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentCwdExplicit,
   setCurrentServiceTier,
   setCurrentUsage,
   setFreshDraftReady,
@@ -137,6 +139,7 @@ export function useSessionActions({
       // a project → detached. So cmd-n "knows" the project instead of inheriting
       // whatever linked worktree the last session drifted into.
       setCurrentCwd(resolveNewSessionCwd())
+      setCurrentCwdExplicit(false)
       setCurrentBranch('')
       // Never clear the composer here — ChatBar's per-thread draft swap owns it.
       setFreshDraftReady(true)
@@ -177,7 +180,7 @@ export function useSessionActions({
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           source: 'desktop',
-          ...(cwd && { cwd }),
+          ...(cwd && { cwd, cwd_explicit: $currentCwdExplicit.get() }),
           ...(newChatProfile ? { profile: newChatProfile } : {}),
           ...(uiModel ? { model: uiModel, ...(uiProvider ? { provider: uiProvider } : {}) } : {}),
           ...(uiEffort ? { reasoning_effort: uiEffort } : {}),

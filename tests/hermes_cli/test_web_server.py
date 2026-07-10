@@ -5419,6 +5419,29 @@ class TestDiscoverUserThemes:
         assert "bad" not in names  # malformed YAML
         assert len(results) == 1  # only the valid one
 
+    def test_ignores_transient_profile_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        themes_dir = tmp_path / "dashboard-themes"
+        themes_dir.mkdir()
+        (themes_dir / "mine.yaml").write_text("name: mine\n")
+
+        other = tmp_path / "other-profile"
+        other.mkdir()
+
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_cli import web_server
+
+        token = set_hermes_home_override(str(other))
+        try:
+            results = web_server._discover_user_themes()
+        finally:
+            reset_hermes_home_override(token)
+
+        assert [r["name"] for r in results] == ["mine"]
+
 
 class TestNormaliseThemeExtensions:
     """Tests for the extended normaliser fields (assets, customCSS,
@@ -6034,6 +6057,34 @@ class TestDashboardPluginManifestExtensions:
         assert entry["tab"]["override"] == "/"
         assert entry["tab"]["hidden"] is True
         assert entry["slots"] == ["sidebar", "header-left"]
+
+    def test_user_plugins_ignore_profile_home_override(self, tmp_path, monkeypatch):
+        """Regression: user dashboard extensions are a dashboard-owned asset
+        (like theme YAML), so they must stay visible after a context-local
+        HERMES_HOME override scopes a request to another profile."""
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        launch_home = tmp_path / "launch"
+        launch_home.mkdir()
+        self._write_plugin(launch_home, "skin-home", {
+            "name": "skin-home",
+            "label": "Skin Home",
+            "tab": {"path": "/skin-home"},
+            "entry": "dist/index.js",
+        })
+        other = tmp_path / "other-profile"
+        other.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(launch_home))
+        from hermes_cli import web_server
+        token = set_hermes_home_override(str(other))
+        try:
+            plugins = web_server._discover_dashboard_plugins()
+        finally:
+            reset_hermes_home_override(token)
+        assert any(p["name"] == "skin-home" for p in plugins)
 
     def test_override_requires_leading_slash(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

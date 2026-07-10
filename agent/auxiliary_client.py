@@ -822,13 +822,31 @@ _ANTHROPIC_COMPATIBLE_HOSTS = frozenset({
 
 
 def _is_anthropic_compatible_host(url: str) -> bool:
-    """Return True if ``url``'s hostname is an Anthropic endpoint we trust for aux calls."""
+    """Return True if ``url`` is an Anthropic endpoint we trust for aux calls.
+
+    Trust the native Anthropic hosts, plus Anthropic-compatible gateways that
+    expose the native Messages protocol under a ``/anthropic`` path suffix
+    (MiniMax, Zhipu GLM, LiteLLM-style relays, self-hosted proxies). That suffix
+    is the same convention ``runtime_provider._detect_api_mode_for_url`` uses to
+    route ``provider: anthropic`` on the primary path, and ``_wrap_if_needed``
+    uses to pick the Anthropic wire transport — without this, ``_try_anthropic``
+    discards a configured ``model.base_url`` for auxiliary and fallback calls and
+    forces ``https://api.anthropic.com``, so those calls diverge from the main
+    agent's endpoint (and fail when the gateway, not Anthropic, holds auth).
+
+    A bare non-Anthropic base_url (e.g. a stale ``openrouter.ai/api/v1`` left on
+    ``provider: anthropic``) still returns False — the guard #52608 added.
+    """
     if not url:
         return False
     try:
         from urllib.parse import urlparse
-        host = (urlparse(url).hostname or "").strip().lower().rstrip(".")
-        return host in _ANTHROPIC_COMPATIBLE_HOSTS
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").strip().lower().rstrip(".")
+        if host in _ANTHROPIC_COMPATIBLE_HOSTS:
+            return True
+        path = (parsed.path or "").rstrip("/").lower()
+        return path.endswith("/anthropic") or path.endswith("/anthropic/v1")
     except Exception:
         return False
 

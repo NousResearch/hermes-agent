@@ -1118,9 +1118,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if codex_items:
         msg["codex_reasoning_items"] = codex_items
 
-    # Codex Responses API: preserve exact assistant message items (with
-    # id/phase) so follow-up turns can replay structured items instead of
-    # flattening to plain text. This is required for prefix cache hits.
+    # Codex Responses API: preserve replayable output items. Normal turns carry
+    # exact assistant message items (id/phase) for prefix-cache continuity;
+    # Multi-agent turns carry the complete ordered output list so hosted actions,
+    # agent messages, and agent-attributed function calls survive continuation.
     codex_message_items = getattr(assistant_message, "codex_message_items", None)
     if codex_message_items:
         msg["codex_message_items"] = codex_message_items

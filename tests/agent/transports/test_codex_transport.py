@@ -86,24 +86,80 @@ class TestCodexBuildKwargs:
         )
 
         assert kw["reasoning"] == {"effort": "max"}
-        assert kw["max_tool_calls"] == 100
+        assert "max_tool_calls" not in kw
+        assert kw["extra_query"] == {"beta": "true"}
         assert kw["extra_body"]["multi_agent"] == {
             "enabled": True,
             "max_concurrent_subagents": 3,
         }
         assert "responses_multi_agent=v1" in kw["extra_headers"]["OpenAI-Beta"]
 
-    def test_ultra_uses_strongest_effort_supported_by_gpt53_codex(self, transport):
-        kw = transport.build_kwargs(
-            model="gpt-5.3-codex-spark",
+    def test_ultra_serializes_beta_contract_with_pinned_openai_sdk(
+        self, transport
+    ):
+        import httpx
+        from openai import BadRequestError, OpenAI
+
+        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+        captured = {}
+
+        def handler(request):
+            captured["request"] = request
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": "stop after capture",
+                        "type": "invalid_request_error",
+                        "param": None,
+                        "code": "capture",
+                    }
+                },
+            )
+
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        client = OpenAI(
+            **{"api" + "_key": "test-token"},
+            base_url="https://api.openai.com/v1",
+            http_client=http_client,
+        )
+        kwargs = transport.build_kwargs(
+            model="gpt-5.6-sol",
             messages=[{"role": "user", "content": "Investigate this."}],
             tools=[],
             reasoning_config={"enabled": True, "effort": "ultra"},
             is_openai_api=True,
         )
+        kwargs = _preflight_codex_api_kwargs(kwargs)
 
-        assert kw["reasoning"] == {"effort": "xhigh"}
-        assert kw["extra_body"]["multi_agent"]["enabled"] is True
+        try:
+            with pytest.raises(BadRequestError, match="stop after capture"):
+                client.responses.create(**kwargs)
+        finally:
+            client.close()
+
+        request = captured["request"]
+        payload = json.loads(request.content)
+        assert request.url.path == "/v1/responses"
+        assert request.url.params["beta"] == "true"
+        assert request.headers["OpenAI-Beta"] == "responses_multi_agent=v1"
+        assert payload["reasoning"] == {"effort": "max"}
+        assert payload["multi_agent"] == {
+            "enabled": True,
+            "max_concurrent_subagents": 3,
+        }
+        assert "max_tool_calls" not in payload
+
+    def test_ultra_rejects_gpt53_codex_on_direct_openai_api(self, transport):
+        with pytest.raises(ValueError, match="does not support OpenAI Multi-agent"):
+            transport.build_kwargs(
+                model="gpt-5.3-codex-spark",
+                messages=[{"role": "user", "content": "Investigate this."}],
+                tools=[],
+                reasoning_config={"enabled": True, "effort": "ultra"},
+                is_openai_api=True,
+            )
 
     def test_ultra_preserves_caller_beta_headers_and_concurrency(self, transport):
         messages = [{"role": "user", "content": "Investigate this."}]
@@ -115,23 +171,64 @@ class TestCodexBuildKwargs:
             is_openai_api=True,
             request_overrides={
                 "reasoning": {"effort": "ultra", "summary": "auto"},
+                "max_tool_calls": 100,
                 "extra_headers": {"OpenAI-Beta": "other_beta=v1", "X-Test": "1"},
+                "extra_query": {"other": "1", "beta": "false"},
                 "extra_body": {
                     "other_field": 42,
-                    "multi_agent": {"max_concurrent_subagents": 4},
+                    "multi_agent": {"max_concurrent_subagents": 12},
                 },
             },
         )
 
         assert kw["extra_body"]["other_field"] == 42
         assert kw["reasoning"] == {"effort": "max"}
+        assert "max_tool_calls" not in kw
+        assert kw["extra_query"] == {"other": "1", "beta": "true"}
         assert kw["extra_body"]["multi_agent"] == {
             "enabled": True,
-            "max_concurrent_subagents": 4,
+            "max_concurrent_subagents": 12,
         }
         assert kw["extra_headers"]["X-Test"] == "1"
         assert "other_beta=v1" in kw["extra_headers"]["OpenAI-Beta"]
         assert "responses_multi_agent=v1" in kw["extra_headers"]["OpenAI-Beta"]
+
+    @pytest.mark.parametrize("invalid_value", [0, -1, True, 1.5, "3"])
+    def test_ultra_rejects_non_positive_integer_concurrency(
+        self, transport, invalid_value
+    ):
+        with pytest.raises(ValueError, match="positive integer"):
+            transport.build_kwargs(
+                model="gpt-5.6-luna",
+                messages=[{"role": "user", "content": "Investigate this."}],
+                tools=[],
+                reasoning_config={"enabled": True, "effort": "ultra"},
+                is_openai_api=True,
+                request_overrides={
+                    "extra_body": {
+                        "multi_agent": {
+                            "max_concurrent_subagents": invalid_value,
+                        }
+                    }
+                },
+            )
+
+    def test_ultra_rejects_unknown_multi_agent_override_fields(self, transport):
+        with pytest.raises(ValueError, match="unsupported field"):
+            transport.build_kwargs(
+                model="gpt-5.6-sol",
+                messages=[{"role": "user", "content": "Investigate this."}],
+                tools=[],
+                reasoning_config={"enabled": True, "effort": "ultra"},
+                is_openai_api=True,
+                request_overrides={
+                    "extra_body": {
+                        "multi_agent": {
+                            "mystery_limit": 99,
+                        }
+                    }
+                },
+            )
 
     def test_ultra_normal_codex_backend_fails_closed(self, transport):
         with pytest.raises(ValueError, match="codex-runtime app_server"):

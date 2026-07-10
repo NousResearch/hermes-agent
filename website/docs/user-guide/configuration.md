@@ -1276,7 +1276,7 @@ Control how much "thinking" the model does before responding:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # empty = medium. Standard: none, minimal, low, medium, high, xhigh
+  reasoning_effort: ""   # empty = medium. Standard: none, minimal, low, medium, high, xhigh, max
                            # ultra = OpenAI hosted Multi-agent mode (see below)
 ```
 
@@ -1308,12 +1308,13 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 `/reasoning ultra` enables OpenAI's hosted Multi-agent mode instead of sending a
 literal `reasoning.effort: ultra` value. Hermes supports it through two routes:
 
-- **Direct OpenAI API:** for supported `gpt-5.6-*` and `gpt-5.3-codex-*`
-  models, Hermes
-  sends the model's strongest supported reasoning effort, enables `multi_agent`
-  with three concurrent hosted subagents, and adds the
-  `responses_multi_agent=v1` beta header. The hosted tool-call budget defaults
-  to OpenAI's recommended `100` and can be lowered with `request_overrides`.
+- **Direct OpenAI API:** for `gpt-5.6`, `gpt-5.6-sol`,
+  `gpt-5.6-terra`, and `gpt-5.6-luna`, Hermes sends `reasoning.effort: max`,
+  enables `multi_agent` with the recommended default of three concurrent hosted
+  subagents, and adds the `responses_multi_agent=v1` beta header plus the beta
+  query parameter. A positive `max_concurrent_subagents` override is preserved;
+  OpenAI documents no fixed upper bound. Hermes removes `reasoning.summary` and
+  `max_tool_calls` because Multi-agent does not support either field.
 - **ChatGPT/Codex subscription:** enable the optional
   [Codex app-server runtime](features/codex-app-server-runtime.md), then select
   Ultra. Hermes verifies that the live Codex `model/list` response advertises

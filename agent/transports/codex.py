@@ -48,7 +48,9 @@ def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]])
 
 _OPENAI_MULTI_AGENT_MODEL_EFFORTS = {
     "gpt-5.6": "max",
-    "gpt-5.3-codex": "xhigh",
+    "gpt-5.6-sol": "max",
+    "gpt-5.6-terra": "max",
+    "gpt-5.6-luna": "max",
 }
 _OPENAI_MULTI_AGENT_BETA = "responses_multi_agent=v1"
 
@@ -58,10 +60,7 @@ def _openai_multi_agent_effort(model: str) -> Optional[str]:
     normalized = str(model or "").strip().lower()
     if normalized.startswith("openai/"):
         normalized = normalized.split("/", 1)[1]
-    for prefix, effort in _OPENAI_MULTI_AGENT_MODEL_EFFORTS.items():
-        if normalized == prefix or normalized.startswith(f"{prefix}-"):
-            return effort
-    return None
+    return _OPENAI_MULTI_AGENT_MODEL_EFFORTS.get(normalized)
 
 
 def _merge_openai_beta_header(existing: Any, required: str) -> str:
@@ -210,7 +209,7 @@ class ResponsesApiTransport(ProviderTransport):
             if ultra_wire_effort is None:
                 raise ValueError(
                     f"Model {model!r} does not support OpenAI Multi-agent mode. "
-                    "Use a gpt-5.6 or gpt-5.3-codex model."
+                    "Use gpt-5.6, gpt-5.6-sol, gpt-5.6-terra, or gpt-5.6-luna."
                 )
             # `ultra` is a product mode, not a valid Responses reasoning effort.
             # The direct API contract uses hosted Multi-agent plus the model's
@@ -357,28 +356,37 @@ class ResponsesApiTransport(ProviderTransport):
             # stale/custom override cannot accidentally send literal `ultra`,
             # re-enable the unsupported reasoning summary, or disable delegation.
             kwargs["reasoning"] = {"effort": reasoning_effort}
-            # OpenAI recommends a higher hosted-tool budget for Multi-agent;
-            # preserve an explicit caller override when one is supplied.
-            kwargs.setdefault("max_tool_calls", 100)
+            # Multi-agent rejects max_tool_calls, including caller overrides.
+            kwargs.pop("max_tool_calls", None)
 
             existing_extra_body = kwargs.get("extra_body")
             merged_extra_body: Dict[str, Any] = {}
             if isinstance(existing_extra_body, dict):
                 merged_extra_body.update(existing_extra_body)
+            elif existing_extra_body is not None:
+                raise ValueError("OpenAI Multi-agent extra_body must be an object.")
             existing_multi_agent = merged_extra_body.get("multi_agent")
             multi_agent: Dict[str, Any] = {}
             if isinstance(existing_multi_agent, dict):
                 multi_agent.update(existing_multi_agent)
             elif existing_multi_agent is not None:
                 raise ValueError("OpenAI Multi-agent configuration must be an object.")
+            unknown_multi_agent_fields = sorted(
+                set(multi_agent) - {"enabled", "max_concurrent_subagents"}
+            )
+            if unknown_multi_agent_fields:
+                raise ValueError(
+                    "OpenAI Multi-agent configuration has unsupported field(s): "
+                    + ", ".join(unknown_multi_agent_fields)
+                )
             max_subagents = multi_agent.get("max_concurrent_subagents", 3)
             if (
                 not isinstance(max_subagents, int)
                 or isinstance(max_subagents, bool)
-                or not 1 <= max_subagents <= 4
+                or max_subagents <= 0
             ):
                 raise ValueError(
-                    "OpenAI Multi-agent max_concurrent_subagents must be an integer from 1 to 4."
+                    "OpenAI Multi-agent max_concurrent_subagents must be a positive integer."
                 )
             multi_agent["enabled"] = True
             multi_agent["max_concurrent_subagents"] = max_subagents
@@ -395,6 +403,8 @@ class ResponsesApiTransport(ProviderTransport):
                         if key and value is not None
                     }
                 )
+            elif existing_extra_headers is not None:
+                raise ValueError("OpenAI Multi-agent extra_headers must be an object.")
             beta_key = next(
                 (key for key in merged_extra_headers if key.lower() == "openai-beta"),
                 "OpenAI-Beta",
@@ -404,6 +414,18 @@ class ResponsesApiTransport(ProviderTransport):
                 _OPENAI_MULTI_AGENT_BETA,
             )
             kwargs["extra_headers"] = merged_extra_headers
+
+            # openai>=2.45's beta Responses SDK posts to /responses?beta=true.
+            # Hermes pins openai==2.24, so mirror that route through the stable
+            # client's extra_query escape hatch while preserving caller params.
+            existing_extra_query = kwargs.get("extra_query")
+            merged_extra_query: Dict[str, Any] = {}
+            if isinstance(existing_extra_query, dict):
+                merged_extra_query.update(existing_extra_query)
+            elif existing_extra_query is not None:
+                raise ValueError("OpenAI Multi-agent extra_query must be an object.")
+            merged_extra_query["beta"] = "true"
+            kwargs["extra_query"] = merged_extra_query
 
         # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
         # supported: service_tier") — hit when ``/fast`` priority-processing

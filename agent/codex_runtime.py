@@ -591,6 +591,20 @@ def _item_field(item: Any, name: str, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+def _event_agent_name(event: Any, item: Any = None) -> str | None:
+    """Return agent attribution from an SSE event or its nested item."""
+    for source in (event, item):
+        if source is None:
+            continue
+        agent = _event_field(source, "agent")
+        if agent is None:
+            continue
+        agent_name = _item_field(agent, "agent_name")
+        if isinstance(agent_name, str) and agent_name.strip():
+            return agent_name.strip()
+    return None
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
 
@@ -654,6 +668,8 @@ def _consume_codex_event_stream(
     has_tool_calls = False
     first_delta_fired = False
     active_message_phase: str | None = None
+    active_message_agent: str | None = None
+    message_meta_by_output_index: dict[Any, tuple[str | None, str | None]] = {}
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
@@ -698,15 +714,35 @@ def _consume_codex_event_stream(
             if item_type == "message":
                 phase = _item_field(item, "phase", None)
                 active_message_phase = phase.strip().lower() if isinstance(phase, str) else None
+                active_message_agent = _event_agent_name(event, item)
+                output_index = _event_field(event, "output_index")
+                if output_index is not None:
+                    message_meta_by_output_index[output_index] = (
+                        active_message_phase,
+                        active_message_agent,
+                    )
             else:
                 active_message_phase = None
+                active_message_agent = None
             if "function_call" in str(item_type):
                 has_tool_calls = True
             continue
 
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
             delta_text = _event_field(event, "delta", "")
-            is_commentary_delta = active_message_phase in {"commentary", "analysis"}
+            output_index = _event_field(event, "output_index")
+            message_phase, message_agent = message_meta_by_output_index.get(
+                output_index,
+                (active_message_phase, active_message_agent),
+            )
+            event_agent = _event_agent_name(event)
+            if event_agent is not None:
+                message_agent = event_agent
+            if message_agent not in {None, "/root"}:
+                # Subagent text is replay/diagnostic state. Only /root renders
+                # user-facing output.
+                continue
+            is_commentary_delta = message_phase in {"commentary", "analysis"}
             if delta_text and is_commentary_delta:
                 # Commentary streams through the reasoning channel, not the
                 # visible answer stream (and stays out of output_text).

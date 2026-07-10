@@ -195,8 +195,9 @@ Hermes queries the live `model/list` capability catalog before each model's
 first Ultra turn and forwards both the selected model and `effort: ultra` to
 `turn/start`. If the model is absent from the catalog or does not advertise
 Ultra, the turn fails closed with the advertised levels instead of silently
-using a lower setting. The selected model is re-evaluated on every Ultra turn,
-without restarting the app-server session.
+using a lower setting. Capabilities are cached per model for the lifetime of the
+app-server subprocess; switching models consults that model's cached or freshly
+queried entry without restarting the session.
 
 This is **Codex-hosted delegation**, not Hermes' `delegate_task` tool. The latter
 still requires Hermes' default runtime, as described in

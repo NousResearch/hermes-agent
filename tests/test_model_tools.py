@@ -3,6 +3,7 @@
 import json
 from unittest.mock import ANY, call, patch
 
+import yaml
 
 from model_tools import (
     handle_function_call,
@@ -290,6 +291,43 @@ class TestPreToolCallBlocking:
 
         result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
         assert result == {"ok": True}
+
+    def test_missing_required_policy_blocks_at_dispatch_boundary(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "plugins": {
+                        "entries": {
+                            "required_guard": {
+                                "required_pre_tool_call": {
+                                    "tools": ["read_file"]
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", plugins_mod.PluginManager())
+        monkeypatch.setattr(
+            "model_tools.registry.dispatch",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("protected tool must not dispatch")
+            ),
+        )
+
+        result = json.loads(
+            handle_function_call("read_file", {"path": "test.txt"}, task_id="t1")
+        )
+
+        assert "required_guard" in result["error"]
 
     def test_skip_flag_prevents_double_fire(self, monkeypatch):
         """When skip_pre_tool_call_hook=True, the hook does not fire again.

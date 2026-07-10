@@ -1023,6 +1023,201 @@ class TestResolvePreToolBlock:
         msg = resolve_pre_tool_block("terminal", {})
         assert msg is not None and "gate failed" in msg  # fail-closed
 
+    @staticmethod
+    def _configure_required_policy(home, plugin_id, tools):
+        config_path = home / "config.yaml"
+        config = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+        config = config or {}
+        plugins = config.setdefault("plugins", {})
+        plugins.setdefault("enabled", [])
+        plugins.setdefault("entries", {})[plugin_id] = {
+            "required_pre_tool_call": {"tools": tools}
+        }
+        config_path.write_text(yaml.safe_dump(config))
+
+    def test_required_policy_callback_exception_blocks_with_sanitized_reason(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins",
+            "required_guard",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: (_ for _ in ()).throw(RuntimeError("secret detail")))'
+            ),
+        )
+        self._configure_required_policy(home, "required_guard", ["terminal"])
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        manager.discover_and_load()
+
+        message = plugins_mod.resolve_pre_tool_block("terminal", {"command": "pwd"})
+
+        assert message is not None
+        assert "required_guard" in message
+        assert "secret detail" not in message
+
+    def test_missing_required_policy_plugin_blocks(self, tmp_path, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        self._configure_required_policy(home, "missing_guard", ["github_*"])
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        manager.discover_and_load()
+
+        message = plugins_mod.resolve_pre_tool_block("github_merge", {})
+
+        assert message is not None
+        assert "missing_guard" in message
+
+    def test_required_policy_malformed_result_blocks_but_unprotected_tool_allows(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins",
+            "malformed_guard",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "maybe"})'
+            ),
+        )
+        self._configure_required_policy(home, "malformed_guard", ["terminal"])
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        manager.discover_and_load()
+
+        assert plugins_mod.resolve_pre_tool_block("terminal", {}) is not None
+        assert plugins_mod.resolve_pre_tool_block("read_file", {}) is None
+
+    def test_required_policy_explicit_allow_permits_matching_tool(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins",
+            "allow_guard",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "allow"})'
+            ),
+        )
+        self._configure_required_policy(home, "allow_guard", ["github_*"])
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        manager.discover_and_load()
+
+        assert plugins_mod.resolve_pre_tool_block("github_merge", {}) is None
+
+    def test_required_policy_approve_uses_fail_closed_gate(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins",
+            "approval_guard",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "approve", "message": "review"})'
+            ),
+        )
+        self._configure_required_policy(home, "approval_guard", ["terminal"])
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        manager.discover_and_load()
+        monkeypatch.setattr(
+            "tools.approval.request_tool_approval",
+            lambda *args, **kwargs: {"approved": False, "message": "denied"},
+        )
+
+        assert plugins_mod.resolve_pre_tool_block("terminal", {}) == "denied"
+
+    def test_required_policy_plugin_load_failure_blocks(self, tmp_path, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins",
+            "broken_guard",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "allow"}); '
+                'raise RuntimeError("load secret")'
+            ),
+        )
+        self._configure_required_policy(home, "broken_guard", ["terminal"])
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        manager.discover_and_load()
+
+        message = plugins_mod.resolve_pre_tool_block("terminal", {})
+
+        assert message is not None
+        assert "broken_guard" in message
+        assert "load secret" not in message
+
+    def test_required_policy_resolver_crash_fails_closed_only_for_protected_tool(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        self._configure_required_policy(home, "guard", ["terminal"])
+        monkeypatch.setattr(
+            plugins_mod,
+            "_resolve_pre_tool_block",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("secret")),
+        )
+
+        message = plugins_mod.resolve_pre_tool_block("terminal", {})
+        assert message is not None
+        assert "secret" not in message
+        with pytest.raises(RuntimeError, match="secret"):
+            plugins_mod.resolve_pre_tool_block("read_file", {})
+
+    def test_malformed_required_policy_configuration_fails_closed(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        config = {
+            "plugins": {
+                "entries": {
+                    "guard": {
+                        "required_pre_tool_call": {"tools": "terminal"}
+                    }
+                }
+            }
+        }
+        (home / "config.yaml").write_text(yaml.safe_dump(config))
+
+        message = plugins_mod.resolve_pre_tool_block("read_file", {})
+
+        assert message is not None
+        assert "invalid configuration" in message
+
 
 class TestGetPreVerifyContinueMessage:
     """`pre_verify` directive aggregation — mirrors the pre_tool_call block path."""

@@ -60,6 +60,7 @@ from hermes_cli.config import (
     get_config_path,
     get_env_path,
     get_hermes_home,
+    get_process_hermes_home,
     load_config,
     load_env,
     read_raw_config,
@@ -15760,8 +15761,12 @@ def _discover_user_themes() -> list:
     Returns a list of fully-normalised theme definitions ready to ship
     to the frontend, so the client can apply them without a secondary
     round-trip or a built-in stub.
+
+    Uses the dashboard process launch home, not ``get_hermes_home()``, so a
+    transient profile override from embedded chat does not hide themes that
+    live under the server's own ``HERMES_HOME``.
     """
-    themes_dir = get_hermes_home() / "dashboard-themes"
+    themes_dir = get_process_hermes_home() / "dashboard-themes"
     if not themes_dir.is_dir():
         return []
     result = []
@@ -15922,8 +15927,12 @@ def _discover_dashboard_plugins() -> list:
 
     from hermes_cli.plugins import get_bundled_plugins_dir
     bundled_root = get_bundled_plugins_dir()
+    # User dashboard plugins are a dashboard-owned asset (same category as
+    # theme YAML): resolve them from the process launch home so they don't
+    # vanish when a request is scoped to another profile via a context-local
+    # HERMES_HOME override (e.g. embedded /chat under --open-profile).
     search_dirs = [
-        (get_hermes_home() / "plugins", "user"),
+        (get_process_hermes_home() / "plugins", "user"),
         (bundled_root / "memory", "bundled"),
         (bundled_root, "bundled"),
     ]

@@ -941,6 +941,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     if cached is not None:
         return cached or None
 
+    env = None
     try:
         # Import locally: tools/ imports are heavy and only relevant when a
         # non-local backend is actually configured.
@@ -991,7 +992,10 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "docker_env": config.get("docker_env", {}),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 "docker_extra_args": config.get("docker_extra_args", []),
-                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                # A prompt probe is disposable infrastructure, not a user
+                # terminal session. Never let it reuse or leave behind the
+                # profile's long-lived Docker container.
+                "docker_persist_across_processes": False,
                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
             }
 
@@ -1026,6 +1030,15 @@ def _probe_remote_backend(env_type: str) -> str | None:
         logger.debug("Backend probe failed: %s", e)
         _BACKEND_PROBE_CACHE[cache_key] = ""
         return None
+    finally:
+        if env is not None:
+            try:
+                env.cleanup()
+                wait_for_cleanup = getattr(env, "wait_for_cleanup", None)
+                if callable(wait_for_cleanup):
+                    wait_for_cleanup(timeout=30)
+            except Exception as e:
+                logger.debug("Backend probe cleanup failed: %s", e)
 
     # Parse key=value lines back into a tidy summary.
     parsed: dict[str, str] = {}

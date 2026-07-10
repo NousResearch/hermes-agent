@@ -1270,6 +1270,9 @@ class TestEnvironmentHints:
         _pb._clear_backend_probe_cache()
 
         class _FakeEnv:
+            cleaned = False
+            waited = False
+
             def execute(self, cmd, timeout=None):
                 return {
                     "returncode": 0,
@@ -1279,11 +1282,20 @@ class TestEnvironmentHints:
                     ),
                 }
 
+            def cleanup(self):
+                self.cleaned = True
+
+            def wait_for_cleanup(self, timeout):
+                self.waited = True
+                return True
+
         created = {}
 
         def _fake_create_environment(*, env_type, **kwargs):
             created["env_type"] = env_type
-            return _FakeEnv()
+            created["container_config"] = kwargs["container_config"]
+            created["env"] = _FakeEnv()
+            return created["env"]
 
         # Patch the REAL factory in tools.terminal_tool — the probe imports it
         # locally, so the import itself must succeed (the bug was here).
@@ -1295,6 +1307,9 @@ class TestEnvironmentHints:
         assert line is not None
         assert "Linux 6.8.0" in line
         assert "root" in line
+        assert created["container_config"]["docker_persist_across_processes"] is False
+        assert created["env"].cleaned is True
+        assert created["env"].waited is True
 
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""
@@ -1644,5 +1659,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

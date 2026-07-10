@@ -68,6 +68,7 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_SHUTDOWN_CLEANUP_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
@@ -3431,6 +3432,79 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 return max(0.0, timeout)
         return _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+
+    def _shutdown_cleanup_timeout_secs(self) -> float:
+        """Return the per-step timeout for late shutdown cleanup hooks."""
+        raw = os.getenv("HERMES_GATEWAY_SHUTDOWN_CLEANUP_TIMEOUT", "").strip()
+        if raw:
+            try:
+                timeout = float(raw)
+            except ValueError:
+                logger.warning(
+                    "Ignoring invalid HERMES_GATEWAY_SHUTDOWN_CLEANUP_TIMEOUT=%r",
+                    raw,
+                )
+            else:
+                return max(0.0, timeout)
+        return _SHUTDOWN_CLEANUP_TIMEOUT_SECS_DEFAULT
+
+    async def _run_bounded_shutdown_step(
+        self,
+        label: str,
+        func: Callable[[], Any],
+        *,
+        timeout: Optional[float] = None,
+    ) -> bool:
+        """Run a synchronous late-shutdown step without letting it wedge exit.
+
+        This is for best-effort cleanup after adapters are already down. The
+        worker is daemonized so a timed-out cleanup cannot keep the Python
+        process alive after the gateway has decided to exit.
+        """
+        timeout = self._shutdown_cleanup_timeout_secs() if timeout is None else timeout
+        if timeout <= 0:
+            try:
+                func()
+            except Exception as exc:
+                logger.debug("Shutdown phase %s failed: %s", label, exc)
+            return True
+
+        loop = asyncio.get_running_loop()
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+
+        def _runner() -> None:
+            try:
+                result = func()
+            except BaseException as exc:  # noqa: BLE001 - report best-effort failures
+                fut.set_exception(exc)
+            else:
+                fut.set_result(result)
+
+        thread = threading.Thread(
+            target=_runner,
+            name=f"hermes-shutdown-{label}",
+            daemon=True,
+        )
+        thread.start()
+
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(asyncio.wrap_future(fut, loop=loop)),
+                timeout,
+            )
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Shutdown phase %s exceeded %.1fs; continuing shutdown so the "
+                "gateway process can exit. The daemon cleanup thread may still "
+                "finish in the background. (#58666)",
+                label,
+                timeout,
+            )
+            return False
+        except Exception as exc:
+            logger.debug("Shutdown phase %s failed: %s", label, exc)
+            return True
 
     def _platform_connect_timeout_secs(self) -> float:
         """Return the per-platform connect timeout used during startup/retry."""
@@ -8322,9 +8396,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # where drain succeeded without interrupt, and (b) anything
             # that got respawned between the earlier call and adapter
             # disconnect (defense in depth; safe to call repeatedly).
-            _kill_tool_subprocesses("final-cleanup")
+            final_cleanup_done = await GatewayRunner._run_bounded_shutdown_step(
+                self,
+                "final-cleanup",
+                lambda: _kill_tool_subprocesses("final-cleanup"),
+                timeout=GatewayRunner._shutdown_cleanup_timeout_secs(self),
+            )
             logger.info(
-                "Shutdown phase: final-cleanup tool kill done at +%.2fs",
+                "Shutdown phase: final-cleanup tool kill %s at +%.2fs",
+                "done" if final_cleanup_done else "timed out",
                 _phase_elapsed(),
             )
 

@@ -4723,6 +4723,61 @@ class BasePlatformAdapter(ABC):
 
         await self._drain_pending_after_session_command(session_key, command_guard)
 
+    @staticmethod
+    def _resolve_intake_binding(hook_results):
+        """Return one unambiguous session binding from intake hook results."""
+        from gateway.session import SessionBinding
+
+        bindings = []
+        for result in hook_results or []:
+            candidate = result
+            if isinstance(result, dict) and "session_binding" in result:
+                candidate = result.get("session_binding")
+            if candidate is None:
+                continue
+            if isinstance(candidate, SessionBinding):
+                bindings.append(candidate)
+                continue
+            try:
+                binding = SessionBinding.from_dict(candidate)
+            except Exception:
+                binding = None
+            if binding is not None:
+                bindings.append(binding)
+
+        distinct = {(binding.namespace, binding.key) for binding in bindings}
+        if len(distinct) == 1:
+            return bindings[0]
+        if len(distinct) > 1:
+            logger.warning(
+                "%d distinct session bindings at intake (%s) — refusing all",
+                len(distinct),
+                sorted(distinct),
+            )
+        return None
+
+    def _apply_session_binding(self, event: MessageEvent) -> None:
+        """Resolve a plugin-provided session binding before session key routing."""
+        if getattr(event, "_session_binding_resolution_attempted", False):
+            return
+        setattr(event, "_session_binding_resolution_attempted", True)
+        if getattr(event.source, "session_binding", None) is not None:
+            return
+        try:
+            from hermes_cli.plugins import invoke_hook
+
+            binding = self._resolve_intake_binding(
+                invoke_hook(
+                    "pre_session_binding",
+                    event=event,
+                    gateway=getattr(self, "gateway_runner", None),
+                )
+            )
+            if binding is not None:
+                event.source.session_binding = binding
+        except Exception as exc:
+            logger.warning("[%s] Session binding resolution failed: %s", self.name, exc)
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -4741,6 +4796,7 @@ class BasePlatformAdapter(ABC):
         # downstream delivery all agree on the same lane.
         # Offloaded: the sync hook must not block the loop.
         await asyncio.to_thread(self._apply_topic_recovery, event)
+        self._apply_session_binding(event)
 
         # Derive the active-session guard key the SAME way the session store
         # does, so the guard, the runner, and the store all agree. Routing

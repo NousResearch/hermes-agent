@@ -12,7 +12,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionBinding, SessionSource, build_session_key
 
 
 class StubAdapter(BasePlatformAdapter):
@@ -123,6 +123,71 @@ class TestInterruptKeyConsistency:
 
         # Text follow-ups queue silently and do not interrupt the active turn.
         assert adapter._active_sessions[session_key].is_set() is False
+
+    @pytest.mark.asyncio
+    async def test_stop_resolves_session_binding_before_active_session_guard(self, monkeypatch):
+        adapter = StubAdapter()
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
+
+        source = _source("-1001234", "group", thread_id="75911")
+        binding = SessionBinding(namespace="gh-review", key="pull-request-7816")
+        bound_source = _source("-1001234", "group", thread_id="75911")
+        bound_source.session_binding = binding
+        bound_session_key = build_session_key(bound_source)
+        adapter._active_sessions[bound_session_key] = asyncio.Event()
+
+        dispatched = []
+        started = []
+
+        async def dispatch_active_session_command(event, session_key, command):
+            dispatched.append((session_key, command))
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda name, **kwargs: [{"session_binding": binding}]
+            if name == "pre_session_binding"
+            else [],
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_dispatch_active_session_command",
+            dispatch_active_session_command,
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_start_session_processing",
+            lambda event, session_key: started.append(session_key),
+        )
+
+        event = MessageEvent(text="/stop", source=source, message_id="2")
+        await adapter.handle_message(event)
+
+        assert event.source.session_binding == binding
+        assert dispatched == [(bound_session_key, "stop")]
+        assert started == []
+
+    @pytest.mark.asyncio
+    async def test_unbound_event_resolves_session_binding_once(self, monkeypatch):
+        adapter = StubAdapter()
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
+        event = MessageEvent(
+            text="hello",
+            source=_source("-1001234", "group", thread_id="75911"),
+            message_id="2",
+        )
+        hook_calls = []
+
+        def invoke_hook(name, **kwargs):
+            hook_calls.append(name)
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
+        monkeypatch.setattr(adapter, "_start_session_processing", lambda event, session_key: None)
+
+        adapter._apply_session_binding(event)
+        await adapter.handle_message(event)
+
+        assert hook_calls == ["pre_session_binding"]
 
     @pytest.mark.asyncio
     async def test_photo_followup_is_queued_without_interrupt(self):

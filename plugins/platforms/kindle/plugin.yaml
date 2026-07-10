@@ -1,0 +1,32 @@
+name: kindle-platform
+label: Kindle Scribe
+kind: platform
+version: 1.0.0
+description: >
+  Kindle Scribe gateway adapter for Hermes Agent. Bridges the handwriting
+  notebook (the diary bridge) into the gateway as a platform, so handwritten
+  notes reach the full agent (MoA + tools + memory) — like the Telegram/Discord
+  bots. The adapter runs a localhost ingest server the diary POSTs to; the
+  agent's reply is returned to the Kindle.
+author: Nous Research
+optional_env:
+  - name: KINDLE_INGEST_TOKEN
+    description: "Shared secret the diary bridge must present (unless KINDLE_INSECURE)"
+    prompt: "Kindle ingest token"
+    password: true
+  - name: KINDLE_INSECURE
+    description: "Skip token auth — localhost dev only (true/false)"
+    prompt: "Insecure mode? (true/false)"
+    password: false
+  - name: KINDLE_ALLOWED_USERS
+    description: "Comma-separated user ids allowed to use the channel"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: KINDLE_ALLOW_ALL_USERS
+    description: "Allow any user to talk to the channel (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: KINDLE_INGEST_PORT
+    description: "Port the ingest server binds (default 8793)"
+    prompt: "Ingest port"
+    password: false

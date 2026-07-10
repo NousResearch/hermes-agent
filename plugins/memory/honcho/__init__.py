@@ -594,29 +594,41 @@ class HonchoMemoryProvider(MemoryProvider):
             return True
         return not (self._init_thread and self._init_thread.is_alive())
 
+    def _inject_enabled(self, flag: str) -> bool:
+        """Per-layer injection gate from config; no config means inject (legacy)."""
+        if self._config is None:
+            return True
+        return getattr(self._config, flag, True)
+
     def _format_first_turn_context(self, ctx: dict) -> str:
-        """Format the prefetch context dict into a readable system prompt block."""
+        """Format the prefetch context dict into a readable system prompt block.
+
+        Each layer is gated by the ``inject`` config object (cards-first
+        hygiene): curated peer cards stay authoritative while noisy raw
+        representations can be suppressed from automatic injection without
+        touching the underlying Honcho data.
+        """
         parts = []
 
         # Session summary — session-scoped context, placed first for relevance
         summary = ctx.get("summary", "")
-        if summary:
+        if summary and self._inject_enabled("inject_session_summary"):
             parts.append(f"## Session Summary\n{summary}")
 
         rep = ctx.get("representation", "")
-        if rep:
+        if rep and self._inject_enabled("inject_user_representation"):
             parts.append(f"## User Representation\n{rep}")
 
         card = ctx.get("card", "")
-        if card:
+        if card and self._inject_enabled("inject_user_card"):
             parts.append(f"## User Peer Card\n{card}")
 
         ai_rep = ctx.get("ai_representation", "")
-        if ai_rep:
+        if ai_rep and self._inject_enabled("inject_ai_representation"):
             parts.append(f"## AI Self-Representation\n{ai_rep}")
 
         ai_card = ctx.get("ai_card", "")
-        if ai_card:
+        if ai_card and self._inject_enabled("inject_ai_card"):
             parts.append(f"## AI Identity Card\n{ai_card}")
 
         if not parts:

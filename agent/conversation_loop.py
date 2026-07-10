@@ -1072,6 +1072,13 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
+        # Keep the exact outbound replay history available to fallback
+        # activation. Native Gemini fallback targets require provider-issued
+        # thought signatures on replayed assistant function-call parts, so the
+        # fallback selector must be able to see whether current tool calls are
+        # Gemini-compatible before switching providers.
+        agent._last_api_messages_for_fallback = api_messages
+
         # Calculate approximate request size for logging and pressure checks.
         # estimate_messages_tokens_rough(api_messages) includes the system
         # prompt copy but not the tool schema payload, which is sent as a

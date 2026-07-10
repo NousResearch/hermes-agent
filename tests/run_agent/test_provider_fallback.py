@@ -334,3 +334,57 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+
+# ── Gemini thought-signature fallback guard ────────────────────────────────
+
+
+class TestGeminiFallbackToolHistoryGuard:
+    def test_skips_gemini_after_unsigned_tool_calls_and_uses_next_fallback(self):
+        fbs = [
+            {"provider": "gemini", "model": "gemini-3.1-flash-lite"},
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "anthropic"
+        agent.model = "claude-opus-4"
+        agent._last_api_messages_for_fallback = [
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }],
+            }
+        ]
+
+        called = []
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            called.append((provider, model))
+            return _mock_client(), model
+
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+            with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
+                ok = agent._try_activate_fallback()
+
+        assert ok is True
+        assert called == [("openrouter", "anthropic/claude-sonnet-4")]
+
+    def test_allows_gemini_before_tool_history(self):
+        agent = _make_agent(fallback_model={"provider": "gemini", "model": "gemini-3.1-flash-lite"})
+        agent.provider = "openrouter"
+        agent.model = "anthropic/claude-sonnet-4"
+        agent._last_api_messages_for_fallback = []
+
+        called = []
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            called.append((provider, model))
+            return _mock_client(), model
+
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+            with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
+                ok = agent._try_activate_fallback()
+
+        assert ok is True
+        assert called == [("gemini", "gemini-3.1-flash-lite")]

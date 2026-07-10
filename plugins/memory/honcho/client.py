@@ -327,14 +327,9 @@ _OBSERVATION_PRESETS = {
 
 def _resolve_observation(
     mode: str,
-    observation_obj: dict | None,
+    observation_obj: Any,
 ) -> dict:
-    """Resolve per-peer observation booleans.
-
-    Config forms:
-      String shorthand:  ``"observationMode": "directional"``
-      Granular object:   ``"observation": {"user": {"observeMe": true, "observeOthers": true},
-                                           "ai": {"observeMe": true, "observeOthers": false}}``
+    """Resolve directional observation booleans from legacy mode + object.
 
     Granular fields override preset defaults.
     """
@@ -353,7 +348,25 @@ def _resolve_observation(
     }
 
 
+def _resolve_injection(inject_obj: Any) -> dict:
+    """Resolve per-layer context injection booleans.
 
+    Config form, all keys optional and defaulting true:
+    ``"inject": {"sessionSummary": true, "userRepresentation": true,
+    "userCard": true, "aiRepresentation": false, "aiCard": true}``.
+
+    This controls *what* prefetched Honcho context layers are injected into the
+    prompt. Raw data remains available through Honcho tools/CLI.
+    """
+    if not isinstance(inject_obj, dict):
+        inject_obj = {}
+    return {
+        "inject_session_summary": _resolve_bool(inject_obj.get("sessionSummary"), default=True),
+        "inject_user_representation": _resolve_bool(inject_obj.get("userRepresentation"), default=True),
+        "inject_user_card": _resolve_bool(inject_obj.get("userCard"), default=True),
+        "inject_ai_representation": _resolve_bool(inject_obj.get("aiRepresentation"), default=True),
+        "inject_ai_card": _resolve_bool(inject_obj.get("aiCard"), default=True),
+    }
 
 
 @dataclass
@@ -450,6 +463,14 @@ class HonchoClientConfig:
     user_observe_others: bool = True
     ai_observe_me: bool = True
     ai_observe_others: bool = True
+    # Per-layer prompt-injection gating for prefetched context. Defaults keep
+    # every layer injected (legacy behavior); explicit false suppresses noisy
+    # raw layers while leaving data available via tools/CLI.
+    inject_session_summary: bool = True
+    inject_user_representation: bool = True
+    inject_user_card: bool = True
+    inject_ai_representation: bool = True
+    inject_ai_card: bool = True
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
@@ -726,6 +747,12 @@ class HonchoClientConfig:
                     or ("unified" if _explicitly_configured else "directional")
                 ),
                 host_block.get("observation") or raw.get("observation"),
+            ),
+            # Explicit key presence (not truthiness) so host-level
+            # ``"inject": {}`` means "host explicitly set, all defaults"
+            # rather than falling through to a root-level object.
+            **_resolve_injection(
+                host_block["inject"] if "inject" in host_block else raw.get("inject")
             ),
             session_strategy=session_strategy,
             session_peer_prefix=session_peer_prefix,

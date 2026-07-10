@@ -1531,6 +1531,43 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
 
 
 
+def _fallback_entry_incompatible_with_current_tool_history(agent, fb: dict) -> Optional[str]:
+    """Return a skip reason when a fallback cannot replay current tool history.
+
+    Native Gemini endpoints require Gemini-issued ``thought_signature`` metadata
+    (stored on tool calls as ``extra_content``) when replaying assistant
+    function-call parts. If the primary provider was not Gemini, existing tool
+    calls do not have those signatures, so switching into Gemini mid-transcript
+    produces a deterministic HTTP 400. Skip that fallback and try the next one.
+    """
+    fb_provider = (fb.get("provider") or "").strip().lower()
+    fb_model = (fb.get("model") or "").strip().lower()
+    fb_base_url = (fb.get("base_url") or fb.get("baseUrl") or "").strip()
+    is_gemini_target = (
+        fb_provider == "gemini"
+        or fb_provider == "google"
+        or "gemini" in fb_model
+        or is_native_gemini_base_url(fb_base_url)
+    )
+    if not is_gemini_target:
+        return None
+
+    messages = getattr(agent, "_last_api_messages_for_fallback", None) or []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        tool_calls = msg.get("tool_calls") or []
+        if not isinstance(tool_calls, list):
+            continue
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            if tool_call.get("extra_content") is None:
+                return "gemini_thought_signature_missing_after_non_gemini_tool_calls"
+    return None
+
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -1583,6 +1620,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback(reason)  # skip invalid, try next
+
+    transcript_skip_reason = _fallback_entry_incompatible_with_current_tool_history(agent, fb)
+    if transcript_skip_reason:
+        logger.warning(
+            "Fallback skip: %s/%s is incompatible with current tool-call history (%s)",
+            fb_provider,
+            fb_model,
+            transcript_skip_reason,
+        )
+        return agent._try_activate_fallback(reason)
 
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:

@@ -8950,7 +8950,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     else:
                         self._console_print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
                 elif qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
+                    target = (qcmd.get("target") or "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
                         user_args = cmd_original[len(base_cmd):].strip()

@@ -89,6 +89,16 @@ class TestCLIQuickCommands:
         args = cli.console.print.call_args[0][0]
         assert "no target defined" in args.lower()
 
+    def test_alias_null_target_shows_error(self):
+        """A YAML ``target:`` with no value parses as None, not "" — the
+        config key is PRESENT, so ``qcmd.get("target", "")`` returns None
+        (the default only applies when the key is ABSENT). Must not crash."""
+        cli = self._make_cli({"broken": {"type": "alias", "target": None}})
+        cli.process_command("/broken")
+        cli.console.print.assert_called_once()
+        args = cli.console.print.call_args[0][0]
+        assert "no target defined" in args.lower()
+
     def test_unsupported_type_shows_error(self):
         cli = self._make_cli({"bad": {"type": "prompt", "command": "echo hi"}})
         cli.process_command("/bad")

@@ -440,6 +440,48 @@ def _handle_send(args):
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
+    routed_to_session_owner = False
+    if not chat_id:
+        # Agent-initiated send with no explicit chat_id. BEFORE falling back to
+        # the configured home channel, prefer the OWNER of the current gateway
+        # session when we're operating inside one on THIS platform.
+        #
+        # Rationale: the home channel is a single global /sethome target. In a
+        # multi-operator deployment, defaulting a bare send from an operator's
+        # session to that home delivers one operator's messages/files to another
+        # (typically whoever ran /sethome) — a cross-operator confidentiality
+        # leak. The session owner's chat_id is the operator we are actually
+        # talking to. Mirrors the cron origin-routing in tools/cronjob_tools.py
+        # (HERMES_SESSION_PLATFORM / HERMES_SESSION_CHAT_ID). These contextvars
+        # are set per gateway message (gateway/run.py) and are task-local, so
+        # they survive context-compression rollovers within the same turn.
+        from gateway.session_context import get_session_env
+        session_platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+        if session_platform == platform_name:
+            session_chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+            if session_chat_id:
+                chat_id = session_chat_id
+                routed_to_session_owner = True
+                # Defensive: an explicit caller thread wins. Today _parse_target_ref
+                # only yields a thread_id alongside a chat_id (never a bare thread),
+                # so thread_id is None here; the guard documents the intent and stays
+                # correct if that ever changes.
+                if thread_id is None:
+                    session_thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip()
+                    thread_id = session_thread_id or None
+            else:
+                # In a gateway session on this platform but the owner chat is
+                # unknown (e.g. a context-compression continuation that lost its
+                # chat context). FAIL CLOSED — do NOT fall back to the home
+                # channel: that is exactly the cross-operator leak vector. The
+                # agent must address an explicit target or say nothing.
+                return json.dumps({
+                    "error": f"Cannot resolve a delivery target on {platform_name}: this is an "
+                    f"operator session but its owner chat is unknown, and defaulting to the global "
+                    f"home channel could deliver to the wrong operator. Specify an explicit target "
+                    f"with '{platform_name}:CHAT_ID'."
+                })
+
     if not chat_id:
         home = config.get_home_channel(platform)
         if not home and platform_name == "weixin":
@@ -501,6 +543,12 @@ def _handle_send(args):
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+        elif routed_to_session_owner and isinstance(result, dict) and result.get("success"):
+            result["note"] = (
+                f"Sent to the current {platform_name} session owner (chat_id: {chat_id}); "
+                "no explicit target was given, so it was routed to the operator you are talking to "
+                "rather than the global home channel."
+            )
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:

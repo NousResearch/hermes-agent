@@ -597,6 +597,133 @@ class TestSendMessageTool:
         assert "access_token=***" in result["error"]
 
 
+class TestSendMessageSessionOwnerRouting:
+    """C1 (2026-07-10) — a bare (no explicit chat_id) send from inside a gateway
+    session routes to the SESSION OWNER, never the global /sethome home channel.
+
+    In a multi-operator deployment, defaulting an operator session's output to
+    the single home channel delivers one operator's messages/files to whoever
+    ran /sethome (a cross-operator confidentiality leak). Fail-closed when the
+    owner is unknown; the home channel remains the default only for genuine
+    CLI/ad-hoc/cron sends with no session context, and for deliberate
+    cross-platform sends.
+    """
+
+    @staticmethod
+    def _config_with_home(home_chat_id):
+        config, _ = _make_config()
+        config.get_home_channel = lambda _platform: SimpleNamespace(chat_id=home_chat_id, name="Home")
+        return config
+
+    @staticmethod
+    def _send(target, message, *, config, session_env):
+        def _get_session_env(name, default=""):
+            return session_env.get(name, default)
+
+        send_mock = AsyncMock(return_value={"success": True})
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("gateway.session_context.get_session_env", side_effect=_get_session_env), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool({"action": "send", "target": target, "message": message})
+            )
+        return result, send_mock
+
+    def test_bare_send_routes_to_session_owner_not_home(self):
+        """In a telegram operator session, target='telegram' goes to the operator's
+        chat, NOT the founder /sethome home channel (the exact 2026-07-09 leak)."""
+        config = self._config_with_home("322794917")  # founder home
+        result, send_mock = self._send(
+            "telegram",
+            "here are your charts",
+            config=config,
+            session_env={"HERMES_SESSION_PLATFORM": "telegram", "HERMES_SESSION_CHAT_ID": "443861071"},
+        )
+        assert result["success"] is True
+        send_mock.assert_awaited_once()
+        assert send_mock.await_args.args[2] == "443861071"  # session owner, not 322794917
+        assert "322794917" not in json.dumps(result)
+        assert "session owner" in result.get("note", "")
+
+    def test_bare_send_carries_session_thread_id(self):
+        config = self._config_with_home("322794917")
+        result, send_mock = self._send(
+            "telegram",
+            "hi",
+            config=config,
+            session_env={
+                "HERMES_SESSION_PLATFORM": "telegram",
+                "HERMES_SESSION_CHAT_ID": "443861071",
+                "HERMES_SESSION_THREAD_ID": "17585",
+            },
+        )
+        assert result["success"] is True
+        assert send_mock.await_args.kwargs["thread_id"] == "17585"
+
+    def test_unknown_owner_fails_closed_no_home_fallback(self):
+        """In a session on this platform but the owner chat is unknown → do NOT
+        fall back to home; return an error and send nothing (leak invariant)."""
+        config = self._config_with_home("322794917")
+        result, send_mock = self._send(
+            "telegram",
+            "leak test",
+            config=config,
+            session_env={"HERMES_SESSION_PLATFORM": "telegram", "HERMES_SESSION_CHAT_ID": ""},
+        )
+        assert "error" in result
+        assert "322794917" not in json.dumps(result)  # never routed to home
+        send_mock.assert_not_awaited()
+
+    def test_cli_ad_hoc_still_uses_home(self):
+        """No gateway session (CLI/cron) → the home channel is the intended default."""
+        config = self._config_with_home("home-chat")
+        result, send_mock = self._send(
+            "telegram",
+            "cron report",
+            config=config,
+            session_env={},  # no HERMES_SESSION_PLATFORM → not a gateway session
+        )
+        assert result["success"] is True
+        send_mock.assert_awaited_once()
+        assert send_mock.await_args.args[2] == "home-chat"
+        assert "home channel" in result.get("note", "")
+
+    def test_cross_platform_send_in_session_uses_target_home(self):
+        """A telegram-session agent addressing a DIFFERENT platform (bare 'slack')
+        is a deliberate cross-platform send → target's home, not fail-closed."""
+        slack_cfg = SimpleNamespace(enabled=True, token="xoxb", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.SLACK: slack_cfg},
+            get_home_channel=lambda _platform: SimpleNamespace(chat_id="C-slack-home", name="Home"),
+        )
+        result, send_mock = self._send(
+            "slack",
+            "cross-post",
+            config=config,
+            session_env={"HERMES_SESSION_PLATFORM": "telegram", "HERMES_SESSION_CHAT_ID": "443861071"},
+        )
+        assert result["success"] is True
+        assert send_mock.await_args.args[2] == "C-slack-home"
+        # cross-platform send is NOT session-owner routing: no "session owner" note
+        assert "session owner" not in result.get("note", "")
+
+    def test_explicit_target_bypasses_session_owner_logic(self):
+        """An explicit chat_id is used verbatim — session-owner routing only
+        applies when no chat_id was given."""
+        config = self._config_with_home("322794917")
+        result, send_mock = self._send(
+            "telegram:12345",
+            "hi",
+            config=config,
+            session_env={"HERMES_SESSION_PLATFORM": "telegram", "HERMES_SESSION_CHAT_ID": "443861071"},
+        )
+        assert result["success"] is True
+        assert send_mock.await_args.args[2] == "12345"
+
+
 class TestSendTelegramMediaDelivery:
     def test_sends_photo_with_caption_for_media_tag(self, tmp_path, monkeypatch):
         # A single captionable image + short text now rides as the photo's

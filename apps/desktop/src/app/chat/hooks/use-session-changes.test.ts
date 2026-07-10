@@ -19,6 +19,7 @@ import {
 } from './use-session-changes'
 
 const SID = 'session-1'
+const STORED_SID = '20260101_000000_stored1'
 type TestGatewayRequest = (method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>
 
 function message(id: string, role: ChatMessage['role'] = 'user'): ChatMessage {
@@ -62,6 +63,7 @@ interface HarnessProps {
   onState?: (state: ClientSessionState) => void
   requestGateway: TestGatewayRequest
   statusSnapshot?: StatusResponse | null
+  storedSessionId?: string | null
 }
 
 function Harness({
@@ -71,7 +73,8 @@ function Harness({
   initialMessages = [message('4')],
   onState,
   requestGateway,
-  statusSnapshot = status()
+  statusSnapshot = status(),
+  storedSessionId = STORED_SID
 }: HarnessProps) {
   const state: ClientSessionState = {
     awaitingResponse: false,
@@ -106,6 +109,7 @@ function Harness({
       timeoutMs?: number
     ) => Promise<T>,
     statusSnapshot,
+    storedSessionId,
     updateSessionState: (_sessionId, updater) => {
       const next = updater(state)
       onState?.(next)
@@ -174,9 +178,42 @@ describe('useSessionChanges B1', () => {
 
     expect(requestGateway).toHaveBeenCalledTimes(1)
     expect(requestGateway).toHaveBeenCalledWith('session.changes', {
-      session_id: SID,
+      session_id: STORED_SID,
       since_message_id: 4
     })
+  })
+
+  it('puts the STORED session id on the wire, never the runtime id (4044 contract)', async () => {
+    const requestGateway = vi.fn(async () => ({ messages: [], last_id: 4 }))
+
+    render(createElement(Harness, { requestGateway }))
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_500)
+      await Promise.resolve()
+    })
+
+    expect(requestGateway).toHaveBeenCalled()
+    for (const call of requestGateway.mock.calls as unknown[][]) {
+      if (call[0] !== 'session.changes') continue
+      expect((call[1] as { session_id: string }).session_id).toBe(STORED_SID)
+      expect((call[1] as { session_id: string }).session_id).not.toBe(SID)
+    }
+  })
+
+  it('falls back to the runtime id only when no stored id exists yet', async () => {
+    const requestGateway = vi.fn(async () => ({ messages: [], last_id: 4 }))
+
+    render(createElement(Harness, { requestGateway, storedSessionId: null }))
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_500)
+      await Promise.resolve()
+    })
+
+    const changesCalls = requestGateway.mock.calls.filter(call => (call as unknown[])[0] === 'session.changes')
+    expect(changesCalls.length).toBeGreaterThan(0)
+    expect(((changesCalls[0] as unknown[])[1] as { session_id: string }).session_id).toBe(SID)
   })
 
   it('stops quietly on feature-disabled errors without advancing the cursor', async () => {

@@ -592,6 +592,7 @@ export function DesktopController() {
     messages,
     requestGateway,
     statusSnapshot,
+    storedSessionId: selectedStoredSessionId,
     updateSessionState
   })
 

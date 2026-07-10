@@ -32,6 +32,9 @@ export interface UseSessionChangesArgs {
   messages: ChatMessage[]
   requestGateway: GatewayRequest
   statusSnapshot: StatusResponse | null
+  /** STORED state.db id for the active session — the id session.changes
+   *  resolves on the wire (the runtime id 4044s). */
+  storedSessionId?: string | null
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -261,6 +264,7 @@ export function useSessionChanges({
   messages,
   requestGateway,
   statusSnapshot,
+  storedSessionId,
   updateSessionState
 }: UseSessionChangesArgs) {
   const supported = sessionChangesSupported(statusSnapshot)
@@ -274,11 +278,17 @@ export function useSessionChanges({
   const inFlightRef = useRef(false)
   const lastFrameAtRef = useRef(Date.now())
   const sessionIdRef = useRef(activeSessionId)
+  // session.changes takes the STORED state.db id, not the live registry id
+  // (same contract the RC-1 ship-gate probe hit server-side): polling with the
+  // runtime id 4044s quietly and nothing ever renders. Track both — the stored
+  // id goes on the wire; the runtime id keys the client session state.
+  const storedSessionIdRef = useRef(storedSessionId ?? null)
   const wasBusyRef = useRef(false)
 
   const eligible = Boolean(activeSessionId && currentView === 'chat' && supported && focusedRef.current)
 
   useEffect(() => {
+    storedSessionIdRef.current = storedSessionId ?? null
     if (sessionIdRef.current === activeSessionId) {
       controllerRef.current.renderedIds = new Set(messages.map(message => message.id))
 
@@ -287,7 +297,7 @@ export function useSessionChanges({
 
     sessionIdRef.current = activeSessionId
     controllerRef.current = createSessionChangesController(messages)
-  }, [activeSessionId, messages])
+  }, [activeSessionId, messages, storedSessionId])
 
   const clearPollTimer = useCallback(() => {
     if (pollTimerRef.current !== null) {
@@ -305,6 +315,11 @@ export function useSessionChanges({
 
   const pollOnce = useCallback(async () => {
     const sessionId = sessionIdRef.current
+    // Wire id: session.changes resolves sessions by their STORED state.db id;
+    // the live/runtime id 4044s. Fall back to the runtime id only when no
+    // stored id is known (e.g. a brand-new unsaved session — harmless, the
+    // error path never advances the cursor).
+    const wireId = storedSessionIdRef.current || sessionId
 
     if (!sessionId || controllerRef.current.disabled || controllerRef.current.suspended || inFlightRef.current) {
       return
@@ -315,7 +330,7 @@ export function useSessionChanges({
     try {
       const since = controllerRef.current.cursor
       const response = await requestGateway<SessionChangesResponse>('session.changes', {
-        session_id: sessionId,
+        session_id: wireId,
         since_message_id: since
       })
       const rows = response.messages ?? []

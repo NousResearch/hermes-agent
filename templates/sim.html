@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>æ://glocal-agent · SIM — sovereign local agent, running</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --void:#050505; --gold:#D4AF37; --gold-glow:rgba(212,175,55,.32);
+    --neon:#00ff9d; --ink:#f0ece4; --muted:rgba(240,236,228,.38);
+    --border:rgba(212,175,55,.16); --border-hot:rgba(212,175,55,.5);
+    --panel:#090909; --panel-2:#0b0b0b; --warn:#ffb454;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--void);color:var(--ink);
+    font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;min-height:100vh;overflow-x:hidden;}
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:9998;opacity:.04;
+    background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(212,175,55,.6) 3px,transparent 4px);}
+  body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9997;
+    background:radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.7) 100%);}
+  #mesh{position:fixed;inset:0;z-index:0;opacity:.45;}
+  .wrap{position:relative;z-index:2;max-width:1100px;margin:0 auto;padding:20px clamp(14px,3vw,30px) 50px;}
+  .topbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;
+    border-top:1px solid var(--border-hot);border-bottom:1px solid var(--border);padding:9px 0;
+    font-size:11px;letter-spacing:.12em;color:var(--muted);text-transform:uppercase;}
+  .topbar b{color:var(--gold);font-family:'Orbitron',sans-serif;letter-spacing:.18em;}
+  .mode{font-weight:700;} .mode.live{color:var(--neon);} .mode.sim{color:var(--warn);}
+  .grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:20px;}
+  @media(min-width:840px){.grid{grid-template-columns:1.1fr 1fr;}}
+  .panel{background:linear-gradient(135deg,var(--panel),var(--panel-2));border:1px solid var(--border);padding:16px;}
+  .panel.goldwash{background:linear-gradient(225deg,rgba(212,175,55,.06),var(--panel-2) 60%);}
+  .panel h3{font-family:'Orbitron',sans-serif;color:var(--gold);font-size:11px;letter-spacing:.16em;
+    margin:0 0 12px;text-transform:uppercase;}
+  /* GPU chip */
+  .chip{position:relative;border:1px solid var(--border-hot);background:#000;padding:18px;text-align:center;}
+  .die{width:140px;height:140px;margin:6px auto;position:relative;border:2px solid var(--gold);
+    background:repeating-linear-gradient(45deg,#0a0a0a,#0a0a0a 6px,#111 6px,#111 12px);
+    display:flex;align-items:center;justify-content:center;font-family:'Orbitron',sans-serif;
+    color:var(--gold);text-shadow:0 0 14px var(--gold-glow);}
+  .die .pct{font-size:30px;} .die .lbl{font-size:9px;color:var(--muted);position:absolute;bottom:8px;letter-spacing:.1em;}
+  .heat{position:absolute;inset:0;background:radial-gradient(circle,rgba(255,120,40,.0),transparent 70%);transition:background .4s;}
+  .bars{display:grid;gap:8px;margin-top:12px;}
+  .bar{display:grid;grid-template-columns:90px 1fr 56px;gap:8px;align-items:center;font-size:10px;color:var(--muted);}
+  .bar .track{height:7px;background:#000;border:1px solid var(--border);}
+  .bar .fill{height:100%;background:linear-gradient(90deg,var(--gold),var(--neon));width:0;transition:width .5s;}
+  .bar .val{color:var(--ink);text-align:right;}
+  /* loop trace */
+  .trace{background:#000;border:1px solid var(--border);padding:12px;font-size:12px;line-height:1.65;min-height:200px;}
+  .trace .ln{opacity:0;animation:fadein .35s forwards;} .trace .t{color:var(--gold);}
+  .trace .ok{color:var(--neon);} .trace .sim{color:var(--warn);} .trace .cu{color:#7fd0ff;}
+  @keyframes fadein{to{opacity:1}}
+  /* mcp tools */
+  .tools{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-top:10px;}
+  .tool{border:1px solid var(--border);background:#000;padding:9px;font-size:10px;color:var(--muted);}
+  .tool .nm{color:var(--gold);font-size:11px;} .tool .st{color:var(--neon);float:right;}
+  .steps{list-style:none;padding:0;margin:12px 0 0;display:grid;gap:6px;counter-reset:s;}
+  .steps li{display:grid;grid-template-columns:26px 1fr auto;gap:10px;align-items:center;border:1px solid var(--border);
+    padding:8px 10px;background:#000;font-size:11px;opacity:.4;} .steps li.on{opacity:1;border-color:var(--border-hot);}
+  .steps li.done .ok{color:var(--neon);} .steps .n{font-family:'Orbitron',sans-serif;color:var(--gold);}
+  .note{color:var(--muted);font-size:10px;line-height:1.6;border-left:2px solid var(--warn);padding-left:10px;margin-top:10px;}
+  .note b{color:var(--warn);}
+  a.cta{display:block;text-align:center;margin-top:18px;text-decoration:none;
+    background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;font-family:'Orbitron',sans-serif;
+    font-weight:700;letter-spacing:.08em;font-size:14px;padding:15px;border-radius:5px;}
+</style>
+</head>
+<body>
+<canvas id="mesh"></canvas>
+<div class="wrap">
+  <div class="topbar">
+    <span><b>æ://glocal-agent</b> · SIM</span>
+    <span class="mode sim" id="mode">● SIM MODE</span>
+    <span id="clock">--:--:--</span>
+  </div>
+
+  <div class="grid">
+    <!-- GPU -->
+    <div class="panel goldwash">
+      <h3>Local Compute · GeForce RTX</h3>
+      <div class="chip">
+        <div class="die"><span class="pct" id="util">0%</span><span class="lbl">GPU UTIL</span></div>
+        <div class="heat" id="heat"></div>
+      </div>
+      <div class="bars">
+        <div class="bar"><span>VRAM</span><div class="track"><div class="fill" id="f-mem"></div></div><span class="val" id="v-mem">0/0</span></div>
+        <div class="bar"><span>TEMP</span><div class="track"><div class="fill" id="f-tmp"></div></div><span class="val" id="v-tmp">0°C</span></div>
+        <div class="bar"><span>KERNEL</span><div class="track"><div class="fill" id="f-k"></div></div><span class="val" id="v-k">idle</span></div>
+      </div>
+      <div class="note" id="src-note"><b>SIM:</b> no gpu_mcp server detected. Showing deterministic local simulation. Run <code>python environments/gpu_mcp.py</code> to upgrade to LIVE telemetry.</div>
+    </div>
+
+    <!-- Loop trace -->
+    <div class="panel">
+      <h3>Agent Loop · planner → executor → auditor → manifest</h3>
+      <div class="trace" id="trace"></div>
+      <ol class="steps" id="steps">
+        <li><span class="n">01</span><span>brain · ollama offline</span><span class="ok">·</span></li>
+        <li><span class="n">02</span><span>probe_gpu</span><span class="ok">·</span></li>
+        <li><span class="n">03</span><span>compile_kernel (nvcc)</span><span class="ok">·</span></li>
+        <li><span class="n">04</span><span>run_kernel (silicon)</span><span class="ok">·</span></li>
+        <li><span class="n">05</span><span>rust_build_wasm</span><span class="ok">·</span></li>
+        <li><span class="n">06</span><span>manifest · sealed</span><span class="ok">·</span></li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- MCP tools -->
+  <div class="panel goldwash" style="margin-top:16px;">
+    <h3>GPU-MCP · tools exposed (mcp://gpu-mcp)</h3>
+    <div class="tools" id="tools"></div>
+  </div>
+
+  <a class="cta" href="https://partnersps.doola.com/hhsoqhb23250" target="_blank" rel="noopener">>_[your glyph]:#STARTABUSINESS → own the runtime</a>
+</div>
+
+<script>
+/* ---------- mesh ---------- */
+const c=document.getElementById('mesh'),x=c.getContext('2d');let w,h,pts;
+function init(){w=c.width=innerWidth;h=c.height=innerHeight;
+  pts=Array.from({length:Math.min(60,Math.floor(w*h/28000))},()=>({x:Math.random()*w,y:Math.random()*h,vx:(Math.random()-.5)*.22,vy:(Math.random()-.5)*.22}));}
+function draw(){x.clearRect(0,0,w,h);
+  for(const p of pts){p.x+=p.vx;p.y+=p.vy;if(p.x<0||p.x>w)p.vx*=-1;if(p.y<0||p.y>h)p.vy*=-1;}
+  for(let i=0;i<pts.length;i++)for(let j=i+1;j<pts.length;j++){const a=pts[i],b=pts[j],d=Math.hypot(a.x-b.x,a.y-b.y);
+    if(d<130){x.strokeStyle='rgba(212,175,55,'+(0.1*(1-d/130))+')';x.lineWidth=1;x.beginPath();x.moveTo(a.x,a.y);x.lineTo(b.x,b.y);x.stroke();}}
+  x.fillStyle='rgba(212,175,55,.5)';for(const p of pts){x.beginPath();x.arc(p.x,p.y,1.5,0,7);x.fill();}
+  requestAnimationFrame(draw);}
+init();draw();addEventListener('resize',init);
+
+/* ---------- state ---------- */
+const $=id=>document.getElementById(id);
+const TOOLS=[
+  {n:'probe_gpu',d:'nvidia-smi telemetry'},{n:'compile_kernel',d:'nvcc compile'},
+  {n:'run_kernel',d:'execute on GPU'},{n:'rust_build_wasm',d:'cargo→wasm32'},
+  {n:'rust_run_wasm',d:'wasmtime run'}
+];
+$('tools').innerHTML=TOOLS.map(t=>`<div class="tool"><span class="st">○</span><span class="nm">${t.n}</span><br>${t.d}</div>`).join('');
+
+/* ---------- LIVE detection: ping ollama + gpu_mcp manifest ---------- */
+let LIVE=false;
+async function detect(){
+  // ollama brain reachable?
+  try{const r=await fetch('http://localhost:11434/api/tags',{signal:AbortSignal.timeout(1200)});
+    if(r.ok){LIVE=true;}}catch(e){}
+  setMode();
+}
+function setMode(){const m=$('mode');
+  if(LIVE){m.textContent='● LIVE MODE';m.className='mode live';
+    $('src-note').innerHTML='<b>LIVE:</b> ollama brain detected at :11434. Loop runs against real local compute. Attach gpu_mcp for kernel telemetry.';}
+  else{m.textContent='● SIM MODE';m.className='mode sim';}
+}
+
+/* ---------- simulation engine ---------- */
+const SIM={util:0,mem:[0,0],tmp:0,step:0,kernel:0,phase:'idle'};
+function rnd(a,b){return a+Math.random()*(b-a);}
+function simTick(){
+  if(!LIVE){
+    // deterministic-ish drift
+    SIM.util=Math.max(4,Math.min(98,SIM.util+rnd(-8,10)));
+    SIM.mem=[Math.round(rnd(1900,3200)),6144];
+    SIM.tmp=Math.round(rnd(48,67));
+    if(SIM.phase==='run'){SIM.kernel=Math.min(100,SIM.kernel+18);if(SIM.kernel>=100)SIM.phase='idle';}
+    else{SIM.kernel=Math.max(0,SIM.kernel-12);if(Math.random()<0.04)SIM.phase='run';}
+  }
+  render();
+}
+function render(){
+  $('util').textContent=Math.round(SIM.util)+'%';
+  const memPct=SIM.mem[1]?SIM.mem[0]/SIM.mem[1]*100:0;
+  $('f-mem').style.width=memPct+'%';$('v-mem').textContent=SIM.mem[0]+'/'+SIM.mem[1]+' MiB';
+  $('f-tmp').style.width=Math.min(100,SIM.tmp)+'%';$('v-tmp').textContent=SIM.tmp+'°C';
+  $('f-k').style.width=SIM.kernel+'%';$('v-k').textContent=SIM.phase==='run'?'RUNNING':(SIM.kernel>2?'cooling':'idle');
+  const heat=Math.min(0.5,SIM.util/200+SIM.kernel/300);
+  $('heat').style.background=`radial-gradient(circle,rgba(255,120,40,${heat}),transparent 70%)`;
+}
+
+/* ---------- loop trace ---------- */
+const trace=$('trace');
+const PLAN=[
+  ['brain','ollama qwen2.5-coder · offline · disk weights','sim'],
+  ['cu','TOOL: probe_gpu → NVIDIA GeForce RTX 3050 6GB','cu'],
+  ['ok','probe_gpu ✓ 3158/6144 MiB · util 41% · 58°C','ok'],
+  ['cu','TOOL: compile_kernel matmul → nvcc (MSVC vcvars)','cu'],
+  ['ok','compile_kernel ✓ matmul.exe written','ok'],
+  ['cu','TOOL: run_kernel matmul → execute on silicon','cu'],
+  ['ok','run_kernel ✓ host 12.4ms · n=512 · c[0]=1.000','ok'],
+  ['cu','TOOL: rust_build_wasm → cargo --target wasm32','cu'],
+  ['ok','rust_build_wasm ✓ 383-byte .wasm','ok'],
+  ['done','manifest sealed · æ://glocal-agent loop complete','ok']
+];
+let pi=0;
+function loopTick(){
+  // advance step indicators
+  const steps=$('steps').children;
+  for(let i=0;i<steps.length;i++){steps[i].classList.toggle('on',i<=Math.min(pi,steps.length-1));
+    steps[i].classList.toggle('done',i<Math.min(pi,steps.length-1)&&i<5);}
+  if(pi<PLAN.length){
+    const[l,msg,cls]=PLAN[pi++];
+    const d=document.createElement('div');d.className='ln';
+    const tag=LIVE?'ok':cls;
+    d.innerHTML=`<span class="t">[${l}]</span> <span class="${tag}">${msg}</span>`+(LIVE?'':' <span class="sim">(sim)</span>');
+    trace.appendChild(d);trace.scrollTop=trace.scrollHeight;
+  } else {
+    // reset after a beat
+    setTimeout(()=>{trace.innerHTML='';pi=0;},2600);
+  }
+}
+
+/* ---------- clock ---------- */
+setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString('en-GB');},1000);
+
+/* ---------- boot ---------- */
+detect();
+setInterval(simTick,650);
+setInterval(loopTick,900);
+render();
+</script>
+</body>
+</html>

@@ -166,7 +166,7 @@ jobs:
   ci-review:
     # Require explicit maintainer review when CI-sensitive files change:
     # eslint config, workflow YAMLs, or composite actions. These files
-    # influence what code the desktop-autofix job executes and pushes to
+    # influence what code the js-autofix job executes and pushes to
     # main, so a malicious PR could inject arbitrary code via a custom eslint
     # rule's `fix` function. The label gate ensures a human reviews before
     # merge. Mirrors the mcp-catalog-reviewed pattern in supply-chain-audit.yml.
@@ -210,7 +210,7 @@ jobs:
 
           This PR changes CI-sensitive files (eslint config, workflow YAMLs,
           or composite actions). These files influence what code the
-          desktop-autofix job executes and pushes to main.
+          js-autofix job executes and pushes to main.
 
           A maintainer should verify:
           - no new eslint rules with custom \`fix\` functions that write outside linted paths,

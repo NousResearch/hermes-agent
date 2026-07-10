@@ -947,7 +947,19 @@ async def web_extract_tool(
         # provider-processed entries. Providers are expected to preserve the
         # order of the safe URL list they receive.
         if invalid_urls or ssrf_blocked:
-            safe_results = dict(zip(safe_indices, results))
+            safe_results = {
+                index: (
+                    results[position]
+                    if position < len(results)
+                    else {
+                        "url": safe_urls[position],
+                        "title": "",
+                        "content": "",
+                        "error": "Extract backend returned no result for this URL",
+                    }
+                )
+                for position, index in enumerate(safe_indices)
+            }
             by_index = {**safe_results, **ssrf_blocked, **invalid_urls}
             results = [by_index[index] for index in range(len(urls))]
 

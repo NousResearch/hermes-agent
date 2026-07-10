@@ -443,6 +443,7 @@ function BranchHarness({
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef: ref<string | null>(null),
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    resetViewSync: vi.fn(),
     syncSessionStateToView: vi.fn(),
     updateSessionState: () => ({}) as ClientSessionState
   })

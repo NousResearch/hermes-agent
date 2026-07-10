@@ -124,7 +124,7 @@ export function BootFailureOverlay() {
 
   const switchToLocalGateway = async () => {
     setBusy('local')
-    // applyConnectionConfig reloads the window from the main process.
+    // Soft apply: tears down the primary and re-dials in place (shell stays).
     await window.hermesDesktop?.applyConnectionConfig({ mode: 'local' }).catch(() => undefined)
     setBusy(null)
   }

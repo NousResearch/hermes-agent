@@ -1999,6 +1999,12 @@ def run_conversation(
                                     f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
                                     force=True,
                                 )
+
+                                # Reset truncation retry state so the next user turn
+                                # starts with a clean max_tokens budget.
+                                truncated_tool_call_retries = 0
+                                length_continue_retries = 0
+                                agent._ephemeral_max_output_tokens = None
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             _final_response = (

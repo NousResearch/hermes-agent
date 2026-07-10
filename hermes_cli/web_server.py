@@ -10253,16 +10253,19 @@ async def get_cron_delivery_targets(profile: Optional[str] = None):
             "home_env_var": None,
         }
     ]
-    override_token = None
+    home_override_token = None
+    secret_override_token = None
     try:
         from cron.scheduler import cron_delivery_targets
         from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from agent.secret_scope import build_profile_secret_scope, set_secret_scope, reset_secret_scope
 
-        # If a profile is requested, temporarily override HERMES_HOME
-        # so cron_delivery_targets() loads that profile's gateway config
+        # If a profile is requested, scope both home and secrets to that profile
+        # so cron_delivery_targets() loads that profile's gateway config and credentials
         if profile:
             profile_dir = _resolve_profile_dir(profile)
-            override_token = set_hermes_home_override(profile_dir)
+            home_override_token = set_hermes_home_override(profile_dir)
+            secret_override_token = set_secret_scope(build_profile_secret_scope(profile_dir))
 
         targets.extend(cron_delivery_targets())
     except HTTPException:
@@ -10271,8 +10274,11 @@ async def get_cron_delivery_targets(profile: Optional[str] = None):
     except Exception:
         _log.exception("GET /api/cron/delivery-targets failed")
     finally:
-        if override_token is not None:
-            reset_hermes_home_override(override_token)
+        # Clean up scopes in reverse order of setup
+        if secret_override_token is not None:
+            reset_secret_scope(secret_override_token)
+        if home_override_token is not None:
+            reset_hermes_home_override(home_override_token)
     return {"targets": targets}
 
 

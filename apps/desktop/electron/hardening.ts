@@ -10,6 +10,38 @@ const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
 
+const EXTERNAL_FILE_REVEAL_EXTENSIONS = new Set([
+  '.app',
+  '.appimage',
+  '.bat',
+  '.bash',
+  '.cmd',
+  '.com',
+  '.command',
+  '.desktop',
+  '.dmg',
+  '.exe',
+  '.fish',
+  '.jar',
+  '.js',
+  '.jse',
+  '.lnk',
+  '.msc',
+  '.msi',
+  '.msp',
+  '.pkg',
+  '.ps1',
+  '.psm1',
+  '.run',
+  '.scr',
+  '.sh',
+  '.vbe',
+  '.vbs',
+  '.wsf',
+  '.wsh',
+  '.zsh'
+])
+
 function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   const fallback =
     Number.isFinite(fallbackMs) && Number(fallbackMs) > 0 ? Math.round(Number(fallbackMs)) : DEFAULT_FETCH_TIMEOUT_MS
@@ -108,6 +140,27 @@ function sensitiveFileBlockReason(filePath) {
   }
 
   return null
+}
+
+function shouldRevealExternalFilePath(filePath) {
+  const basename = path.basename(String(filePath || '')).toLowerCase()
+
+  return Boolean(basename) && EXTERNAL_FILE_REVEAL_EXTENSIONS.has(path.extname(basename))
+}
+
+async function openOrRevealExternalFilePath(filePath, actions) {
+  if (shouldRevealExternalFilePath(filePath)) {
+    actions.reveal(filePath)
+    return { action: 'revealed', reason: 'unsafe-file-type' }
+  }
+
+  try {
+    await actions.open(filePath)
+    return { action: 'opened' }
+  } catch (openError) {
+    actions.reveal(filePath)
+    return { action: 'revealed', reason: 'open-failed', openError }
+  }
 }
 
 function ipcPathError(code: any, message: string): Error & { code: any } {
@@ -306,11 +359,13 @@ export {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
+  openOrRevealExternalFilePath,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   sensitiveFileBlockReason,
+  shouldRevealExternalFilePath,
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 }

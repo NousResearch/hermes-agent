@@ -8,11 +8,13 @@ import { pathToFileURL } from 'node:url'
 import {
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
+  openOrRevealExternalFilePath,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
-  sensitiveFileBlockReason
+  sensitiveFileBlockReason,
+  shouldRevealExternalFilePath
 } from './hardening'
 
 async function rejectsWithCode(promise, code: string) {
@@ -59,6 +61,47 @@ test('sensitiveFileBlockReason blocks obvious secret file patterns', () => {
   assert.equal(sensitiveFileBlockReason('/tmp/.env.example'), null)
   assert.match(String(sensitiveFileBlockReason('/Users/me/.ssh/id_ed25519')), /SSH/)
   assert.match(String(sensitiveFileBlockReason('/tmp/server-cert.pem')), /\.pem/)
+})
+
+test('openOrRevealExternalFilePath reveals executable-like file URLs instead of launching them', async () => {
+  const filePath = 'C:\\Users\\me\\Downloads\\setup.EXE'
+  const opened: string[] = []
+  const revealed: string[] = []
+
+  assert.equal(shouldRevealExternalFilePath(filePath), true)
+
+  const outcome = await openOrRevealExternalFilePath(filePath, {
+    open: async target => {
+      opened.push(target)
+    },
+    reveal: target => {
+      revealed.push(target)
+    }
+  })
+
+  assert.deepEqual(opened, [])
+  assert.deepEqual(revealed, [filePath])
+  assert.deepEqual(outcome, { action: 'revealed', reason: 'unsafe-file-type' })
+})
+
+test('openOrRevealExternalFilePath handles a rejected openExternal by revealing the file', async () => {
+  const filePath = '/tmp/report.html'
+  const openError = new Error('browser unavailable')
+  const revealed: string[] = []
+
+  const outcome = await openOrRevealExternalFilePath(filePath, {
+    open: async () => {
+      throw openError
+    },
+    reveal: target => {
+      revealed.push(target)
+    }
+  })
+
+  assert.deepEqual(revealed, [filePath])
+  assert.equal(outcome.action, 'revealed')
+  assert.equal(outcome.reason, 'open-failed')
+  assert.equal(outcome.openError, openError)
 })
 
 test('path helpers reject blank non-string NUL and Windows device syntax', async () => {

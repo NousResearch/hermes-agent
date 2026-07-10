@@ -36,7 +36,8 @@ def relay_url() -> Optional[str]:
         from gateway.run import _load_gateway_config  # late import to avoid cycle
 
         cfg = _load_gateway_config()
-        url = (cfg.get("gateway") or {}).get("relay_url", "").strip()
+        url = (cfg.get("gateway") or {}).get("relay_url")
+        url = (url or "").strip()
         if url:
             return url.rstrip("/")
     except Exception:  # noqa: BLE001 - config absence/parse must never crash registration

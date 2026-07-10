@@ -37,6 +37,7 @@ import site
 import sys
 import signal
 import tempfile
+import traceback
 import threading
 import time
 import sqlite3
@@ -306,6 +307,83 @@ def _gateway_loop_exception_handler(
         return
     # Fall back to the default handler for anything we don't recognise.
     loop.default_exception_handler(context)
+
+
+# ── Last-resort crash diagnostics (issue #52942) ──────────────────────
+# The gateway has been observed dying with ZERO log output — no traceback,
+# no warning, just a silent stop. The asyncio loop handler above only
+# catches exceptions that reach the event loop; exceptions raised in plain
+# worker threads (cron subprocess readers, agent session threads, the
+# planned-stop watcher) or that escape ``asyncio.run`` entirely bypass it
+# and, without a ``sys.excepthook``/``threading.excepthook``, vanish.
+#
+# These hooks guarantee the unhandled exception is written straight to a
+# diagnostic file — bypassing the logging system, which may itself be
+# wedged or unflushed at crash time — so the crash signature is never
+# silently lost again. They are intentionally defensive: a failed write
+# must never become its own crash.
+_CRASH_HOOK_INSTALLED = False
+
+
+def _write_crash_diagnostic(
+    exc_type: "type",
+    exc_value: "BaseException",
+    exc_tb: "Any",
+    source: str,
+) -> None:
+    """Append an unhandled-exception traceback to the crash diagnostic log.
+
+    Writes directly to ``<hermes_home>/logs/gateway-crash-diag.log`` (and
+    best-effort to stderr) without going through ``logging`` — the whole
+    point is to capture crashes that occur when logging is unavailable or
+    unflushed. Never raises; a failed write must not become its own crash.
+    """
+    try:
+        ts = datetime.now().isoformat(timespec="seconds")
+        block = (
+            f"=== Hermes Gateway crash diagnostic ({source}) @ {ts} ===\n"
+            + "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+            + "\n"
+        )
+        try:
+            log_path = _hermes_home / "logs" / "gateway-crash-diag.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8", errors="replace") as fh:
+                fh.write(block)
+        except Exception:
+            pass
+        try:
+            sys.stderr.write(block)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _gateway_excepthook(exc_type, exc_value, exc_tb):
+    _write_crash_diagnostic(exc_type, exc_value, exc_tb, "sys.excepthook")
+
+
+def _gateway_threading_excepthook(args):
+    # args: types.SimpleNamespace(exc_type, exc_value, exc_traceback, thread)
+    thread_name = getattr(args.thread, "name", "?") if args.thread else "?"
+    _write_crash_diagnostic(
+        args.exc_type,
+        args.exc_value,
+        args.exc_traceback,
+        f"threading:{thread_name}",
+    )
+
+
+def _install_crash_diagnostic_hooks() -> None:
+    """Install process-global crash hooks. Idempotent and side-effect free."""
+    global _CRASH_HOOK_INSTALLED
+    if _CRASH_HOOK_INSTALLED:
+        return
+    _CRASH_HOOK_INSTALLED = True
+    sys.excepthook = _gateway_excepthook
+    if hasattr(threading, "excepthook"):
+        threading.excepthook = _gateway_threading_excepthook
 
 
 def _redact_gateway_user_facing_secrets(text: str) -> str:
@@ -20606,6 +20684,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # is forwarded to the default handler so real bugs still surface.
     loop.set_exception_handler(_gateway_loop_exception_handler)
 
+    # Last-resort crash diagnostics (issue #52942): unhandled exceptions in
+    # plain worker threads or ones that escape ``asyncio.run`` bypass the loop
+    # handler entirely. Install process-global hooks so any such crash is
+    # written to ``<hermes_home>/logs/gateway-crash-diag.log`` instead of
+    # being silently lost with zero log output.
+    _install_crash_diagnostic_hooks()
+
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
@@ -20854,6 +20939,13 @@ def main():
     
     args = parser.parse_args()
     
+    # Last-resort crash diagnostics (issue #52942): install as early as
+    # possible so even an unhandled exception during startup config load
+    # or inside ``asyncio.run`` is written to the crash diagnostic log
+    # instead of being silently swallowed. ``start_gateway`` installs the
+    # same hooks again (idempotent) once ``_hermes_home`` is authoritative.
+    _install_crash_diagnostic_hooks()
+
     config = None
     if args.config:
         import yaml

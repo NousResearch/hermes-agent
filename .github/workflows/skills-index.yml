@@ -15,6 +15,12 @@ permissions:
   contents: read
   actions: write # to trigger deploy-site.yml on schedule
 
+concurrency:
+  group: skills-index-${{ github.ref }}
+  # Never cancel an in-flight index build: the deploy trigger downstream
+  # depends on a complete run, so we queue duplicates instead of dropping one.
+  cancel-in-progress: false
+
 jobs:
   build-index:
     # Only run on the upstream repository, not on forks

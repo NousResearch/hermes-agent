@@ -86,3 +86,52 @@ async def test_help_keeps_non_telegram_slash_command_mentions_unchanged(monkeypa
     )
 
     assert "`/Linear`" in result
+
+
+@pytest.mark.asyncio
+async def test_commands_survives_null_skill_description(monkeypatch):
+    """A skill whose SKILL.md frontmatter has a blank/null ``description:``
+    parses as ``description: None`` and must not take down the *entire*
+    skill-commands section of /commands for every other skill.
+
+    ``tools/skill_manager_tool.py::_validate_frontmatter`` only checks
+    ``"description" not in parsed`` (key absence), not falsiness, so such a
+    manifest is accepted today and reaches ``get_skill_commands()`` with a
+    ``None`` description.
+    """
+    monkeypatch.setattr(
+        "agent.skill_commands.get_skill_commands",
+        lambda: {
+            "/broken": {"description": None},
+            "/fine": {"description": "Does something useful"},
+        },
+    )
+
+    result = await _make_runner()._handle_commands_command(
+        _make_event("/commands 999", Platform.DISCORD)
+    )
+
+    assert "`/fine`" in result
+    assert "Does something useful" in result
+    assert "`/broken`" in result
+
+
+@pytest.mark.asyncio
+async def test_help_survives_null_skill_description(monkeypatch):
+    """Same null-description tolerance for /help's skill listing."""
+    monkeypatch.setattr(
+        "agent.skill_commands.get_skill_commands",
+        lambda: {
+            "/broken": {"description": None},
+            "/fine": {"description": "Does something useful"},
+        },
+    )
+
+    result = await _make_runner()._handle_help_command(
+        _make_event("/help", Platform.DISCORD)
+    )
+
+    assert "`/fine`" in result
+    assert "Does something useful" in result
+    assert "`/broken`" in result
+    assert "None" not in result

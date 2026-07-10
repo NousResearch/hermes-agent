@@ -1333,7 +1333,8 @@ class GatewaySlashCommandsMixin:
                 # Show first 10, then point to /commands for the rest
                 sorted_cmds = sorted(skill_cmds)
                 for cmd in sorted_cmds[:10]:
-                    lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
+                    desc = skill_cmds[cmd].get("description") or t("gateway.commands.default_desc")
+                    lines.append(f"`{cmd}` — {desc}")
                 if len(sorted_cmds) > 10:
                     lines.append(t("gateway.help.more_use_commands", count=len(sorted_cmds) - 10))
         except Exception:
@@ -1365,7 +1366,7 @@ class GatewaySlashCommandsMixin:
                 entries.append("")
                 entries.append(t("gateway.commands.skill_header"))
                 for cmd in sorted(skill_cmds):
-                    desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
+                    desc = (skill_cmds[cmd].get("description") or "").strip() or t("gateway.commands.default_desc")
                     entries.append(f"`{cmd}` — {desc}")
         except Exception:
             pass

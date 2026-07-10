@@ -228,6 +228,7 @@ def test_gated_require_token_endpoint_accepts_cookie_session(gated_app):
         "/api/dashboard/agent-plugins/install",
         json={"identifier": "definitely not a valid identifier",
               "force": False, "enable": False},
+        headers={"Origin": "https://fly-app.fly.dev"},
     )
     assert r.status_code != 401, (
         "A _require_token endpoint 401'd a cookie-authenticated request under "
@@ -238,6 +239,72 @@ def test_gated_require_token_endpoint_accepts_cookie_session(gated_app):
         f"Expected the install handler's 400 (bad identifier), got "
         f"{r.status_code}: {r.text}"
     )
+
+
+def test_gated_cookie_mutation_rejects_cross_site_origin(gated_app):
+    """Cookie-authenticated unsafe APIs must reject CSRF Origin mismatch."""
+    _complete_stub_login(gated_app)
+    r = gated_app.post(
+        "/api/providers/validate",
+        json={"key": "OPENAI_API_KEY", "value": ""},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert r.status_code == 403
+    assert "cross-site" in r.text.lower()
+
+
+def test_gated_cookie_mutation_rejects_fetch_metadata_cross_site(gated_app):
+    _complete_stub_login(gated_app)
+    r = gated_app.post(
+        "/api/providers/validate",
+        json={"key": "OPENAI_API_KEY", "value": ""},
+        headers={
+            "Origin": "https://fly-app.fly.dev",
+            "Sec-Fetch-Site": "cross-site",
+        },
+    )
+    assert r.status_code == 403
+
+
+def test_gated_cookie_mutation_rejects_missing_origin_and_referer(gated_app):
+    _complete_stub_login(gated_app)
+    r = gated_app.post(
+        "/api/providers/validate",
+        json={"key": "OPENAI_API_KEY", "value": ""},
+    )
+    assert r.status_code == 403
+
+
+def test_gated_cookie_mutation_allows_same_origin_referer_fallback(gated_app):
+    _complete_stub_login(gated_app)
+    r = gated_app.post(
+        "/api/providers/validate",
+        json={"key": "OPENAI_API_KEY", "value": ""},
+        headers={"Referer": "https://fly-app.fly.dev/config"},
+    )
+    assert r.status_code != 401
+    assert r.status_code != 403
+
+
+def test_gated_cookie_mutation_rejects_cross_site_referer(gated_app):
+    _complete_stub_login(gated_app)
+    r = gated_app.post(
+        "/api/providers/validate",
+        json={"key": "OPENAI_API_KEY", "value": ""},
+        headers={"Referer": "https://evil.example/config"},
+    )
+    assert r.status_code == 403
+
+
+def test_gated_cookie_mutation_allows_same_origin(gated_app):
+    _complete_stub_login(gated_app)
+    r = gated_app.post(
+        "/api/providers/validate",
+        json={"key": "OPENAI_API_KEY", "value": ""},
+        headers={"Origin": "https://fly-app.fly.dev"},
+    )
+    assert r.status_code != 401
+    assert r.status_code != 403
 
 
 def test_gated_require_token_endpoint_still_rejects_no_cookie(gated_app):
@@ -285,6 +352,8 @@ def test_gated_require_token_routes_accept_cookie_session(
     """
     _complete_stub_login(gated_app)
     kwargs = {"json": body} if body is not None else {}
+    if method.lower() in {"post", "put", "patch", "delete"}:
+        kwargs["headers"] = {"Origin": "https://fly-app.fly.dev"}
     r = gated_app.request(method.upper(), path, **kwargs)
     assert r.status_code != 401, (
         f"{method.upper()} {path} 401'd a cookie-authenticated request under "

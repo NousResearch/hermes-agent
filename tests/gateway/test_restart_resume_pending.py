@@ -166,16 +166,22 @@ def _simulate_note_injection(
             )
         else:
             resume_guidance = (
-                "Report to the user that the session was restored "
-                "successfully and ask what they would like to do next."
+                "Report briefly that the session was restored, then "
+                "continue autonomously with the safest recoverable next "
+                "step from the transcript, todos, handoff/state files, "
+                "or other available context. Do NOT ask what to do next "
+                "unless an explicit owner/approval gate or missing "
+                "required context blocks every safe action."
             )
         message = (
             f"[System note: The previous turn was interrupted by "
             f"{reason_phrase}; the gateway is now back online. "
             f"Any restart/shutdown command in the history has already "
             f"run — do NOT re-execute or verify it. {resume_guidance} "
-            f"Do NOT re-execute old tool calls — skip any unfinished "
-            f"work from the conversation history.]"
+            f"Do NOT re-execute old tool calls blindly; reconstruct current "
+            f"state first, then resume unfinished safe work from the "
+            f"conversation history without repeating dangerous or "
+            f"externally mutating actions.]"
             + (f"\n\n{message}" if message else "")
         )
     elif has_fresh_tool_tail:
@@ -207,11 +213,16 @@ def _simulate_note_injection(
             f"[System note: The previous turn was interrupted by "
             f"{sn_reason_phrase}; the gateway is now back online. "
             f"Any restart/shutdown command in the history has already "
-            f"run — do NOT re-execute or verify it. Report to the user "
-            f"that the session was restored successfully and ask what "
-            f"they would like to do next. Do NOT re-execute old tool "
-            f"calls — skip any unfinished work from the conversation "
-            f"history.]"
+            f"run — do NOT re-execute or verify it. Report briefly that "
+            f"the session was restored, then continue autonomously with "
+            f"the safest recoverable next step from the transcript, "
+            f"todos, handoff/state files, or other available context. "
+            f"Do NOT ask what to do next unless an explicit owner/approval "
+            f"gate or missing required context blocks every safe action. "
+            f"Do NOT re-execute old tool calls blindly; reconstruct current "
+            f"state first, then resume unfinished safe work from the "
+            f"conversation history without repeating dangerous or "
+            f"externally mutating actions.]"
         )
     return message
 
@@ -801,10 +812,10 @@ class TestResumePendingSystemNote:
         assert "already" in result and "do NOT re-execute or verify" in result
         assert "restarted!" in result
 
-    def test_resume_pending_empty_message_reports_recovery(self):
+    def test_resume_pending_empty_message_continues_autonomously(self):
         """On the empty-message auto-resume startup turn there is no NEW user
-        message, so the note instructs the model to report recovery and ask
-        for instructions rather than 'address the user's NEW message'.
+        message, so the note instructs the model to report recovery and resume
+        safe unfinished work rather than ask the user for instructions.
         """
         entry = self._pending_entry(reason="restart_timeout")
         result = _simulate_note_injection(
@@ -816,8 +827,11 @@ class TestResumePendingSystemNote:
         )
         assert "[System note:" in result
         assert "gateway restart" in result
-        assert "restored successfully" in result
-        assert "ask what they would like to do next" in result
+        assert "session was restored" in result
+        assert "continue autonomously" in result
+        assert "Do NOT ask what to do next" in result
+        assert "resume unfinished safe work" in result
+        assert "ask what they would like to do next" not in result
         assert "do NOT re-execute or verify" in result
         # No phantom "NEW message" instruction when there is no new message.
         assert "NEW message" not in result

@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
 import { fuzzyRank } from "@/lib/fuzzy";
+import { useModalBehavior } from "@/hooks/useModalBehavior";
 
 /**
  * Two-stage model picker modal.
@@ -189,18 +190,6 @@ export function ModelPickerDialog(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Esc closes.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   const selectedProvider = useMemo(
     () => providers.find((p) => p.slug === selectedSlug) ?? null,
     [providers, selectedSlug],
@@ -238,6 +227,7 @@ export function ModelPickerDialog(props: Props) {
   );
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;
+  const dialogRef = useModalBehavior({ open: true, onClose });
 
   const applySelection = async (
     confirmExpensiveModel = false,
@@ -325,11 +315,13 @@ export function ModelPickerDialog(props: Props) {
   // Toast.tsx for the same pattern.
   return createPortal(
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
       onClick={(e) => e.target === e.currentTarget && onClose()}
       role="dialog"
       aria-modal="true"
       aria-labelledby="model-picker-title"
+      tabIndex={-1}
     >
       <div className={cn(themedBody, "relative w-full max-w-3xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col")}>
         <Button

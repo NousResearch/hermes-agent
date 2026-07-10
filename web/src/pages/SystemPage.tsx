@@ -716,6 +716,7 @@ export default function SystemPage() {
           onClick={(e) => e.target === e.currentTarget && setHookModalOpen(false)}
           role="dialog"
           aria-modal="true"
+          aria-labelledby="system-hook-modal-title"
         >
           <div className={cn(themedBody, "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col")}>
             <Button
@@ -728,7 +729,10 @@ export default function SystemPage() {
               <X />
             </Button>
             <header className="p-5 pb-3 border-b border-border">
-              <h2 className="font-mondwest text-display text-base tracking-wider">
+              <h2
+                id="system-hook-modal-title"
+                className="font-mondwest text-display text-base tracking-wider"
+              >
                 New shell hook
               </h2>
             </header>

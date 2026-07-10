@@ -100,10 +100,6 @@ export function ChatSessionList({
   }, [scopeKey]);
 
   useEffect(() => {
-    // Dashboard data surfaces fetch from an effect on mount + scope change;
-    // keep this local and explicit until the shared lint profile is updated
-    // for async loaders (matches FilesPage).
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
     // `reloadNonce` is a manual refetch trigger (Refresh button / row pick).
   }, [load, reloadNonce]);

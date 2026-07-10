@@ -1283,8 +1283,17 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "google_oauth.json",
     "webhook_subscriptions.json",
     "bws_cache.json",
-    # git's credential-store helper cache (agent.file_safety blocks this too).
+    # Common home-directory credential files mirrored from agent.file_safety.
     ".git-credentials",
+    ".netrc",
+    ".pgpass",
+    ".npmrc",
+    ".pypirc",
+    "authorized_keys",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
 })
 
 # Directory names whose entire subtree is credential material. Both canonical
@@ -1299,6 +1308,13 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
 _SENSITIVE_MANAGED_DIR_NAMES = frozenset({
     "mcp-tokens",
     "pairing",
+    # Home/cloud credential stores mirrored from agent.file_safety.
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".kube",
+    ".docker",
+    ".azure",
 })
 
 
@@ -1329,16 +1345,16 @@ def _is_sensitive_path(path: Path) -> bool:
     Combines the basename denylist (:func:`_is_sensitive_filename`) with a
     credential-directory-tree check: a path is sensitive if its own basename
     is sensitive OR any of its path components is a credential directory
-    (``mcp-tokens`` / ``pairing``). The component match is case-insensitive
-    and needs no HERMES_HOME resolution, so it blocks these trees wherever
+    (``mcp-tokens`` / ``pairing`` plus common home/cloud credential dirs).
+    The component match is case-insensitive and needs no HERMES_HOME
+    resolution, so it blocks these trees wherever
     they sit under the operator-configured managed root — closing the gap
     the canonical guards cover as directory trees but a basename-only check
     would miss.
 
-    Read-side only: this guards list/read/download (the #57505 exfil surface).
-    The write endpoints (upload/mkdir/delete) are a separate threat class
-    handled by the write-path checks; extending this guard to them is out of
-    scope for this fix.
+    The guard is used by list/read/download and by the in-app text write path
+    so credential material cannot be exposed or overwritten through the Files
+    tab.
     """
     if _is_sensitive_filename(path.name):
         return True
@@ -2021,7 +2037,7 @@ async def fs_list(path: str):
         entries = []
         with os.scandir(target) as scan:
             for entry in scan:
-                if entry.name in _FS_READDIR_HIDDEN:
+                if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path)):
                     continue
                 entries.append({
                     "name": entry.name,
@@ -2043,6 +2059,8 @@ async def fs_list(path: str):
 @app.get("/api/fs/read-text")
 async def fs_read_text(path: str):
     target, st = _fs_regular_file(_fs_path(path))
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     bytes_to_read = min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES)
@@ -2082,6 +2100,8 @@ async def fs_write_text(payload: FsWriteText):
     so both transports behave identically.
     """
     target = _fs_path(payload.path)
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Writing sensitive files is not allowed")
     text = payload.content or ""
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
@@ -2119,6 +2139,8 @@ async def fs_write_text(payload: FsWriteText):
 @app.get("/api/fs/read-data-url")
 async def fs_read_data_url(path: str):
     target, st = _fs_regular_file(_fs_path(path))
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     try:
@@ -2439,6 +2461,25 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     return {"profiles": profile_names, "gateway_mode": mode, "gateways": gateways}
 
 
+def _gateway_liveness_for_home(home: Path) -> tuple[int | None, dict | None]:
+    """Return gateway PID/runtime for a specific profile home.
+
+    ``gateway.status`` intentionally uses the process-level ``HERMES_HOME`` for
+    writes, so context-local dashboard profile scopes are not enough for status
+    reads. Parameterize the PID/runtime files explicitly so ``/api/status?profile``
+    reflects the selected profile instead of the dashboard process profile.
+    """
+    pid_path = home / "gateway.pid"
+    runtime_path = home / "gateway_state.json"
+    gateway_pid = get_running_pid_cached(pid_path, cleanup_stale=False)
+    local_runtime = read_runtime_status(runtime_path)
+    if gateway_pid is None and local_runtime is not None:
+        runtime_pid = get_runtime_status_running_pid(local_runtime, expected_home=home)
+        if runtime_pid is not None:
+            gateway_pid = runtime_pid
+    return gateway_pid, local_runtime
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -2459,10 +2500,12 @@ async def get_status(profile: Optional[str] = None):
     try:
         current_ver, latest_ver = check_config_version()
         # --- Gateway liveness detection ---
-        # Try local PID check first (same-host).  If that fails and a remote
-        # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
-        # dashboard works when the gateway runs in a separate container.
-        gateway_pid = get_running_pid_cached()
+        # Try the selected profile's PID/runtime files first (same-host). If
+        # that fails and a remote GATEWAY_HEALTH_URL is configured, probe the
+        # gateway over HTTP so the dashboard works when the gateway runs in a
+        # separate container.
+        selected_home = get_hermes_home()
+        gateway_pid, local_runtime = _gateway_liveness_for_home(selected_home)
         gateway_running = gateway_pid is not None
         remote_health_body: dict | None = None
 
@@ -2493,21 +2536,11 @@ async def get_status(profile: Optional[str] = None):
             configured_gateway_platforms = None
 
         # Prefer the detailed health endpoint response (has full state) when the
-        # local runtime status file is absent or stale (cross-container).
-        local_runtime = read_runtime_status()
+        # selected profile's local runtime status file is absent or stale
+        # (cross-container).
         runtime = local_runtime
         if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
             runtime = remote_health_body
-        # The runtime-status PID fallback validates liveness with a local
-        # os.kill() probe, so it must only run against the LOCAL status file —
-        # never the remote health body, whose PID belongs to another host and
-        # is display-only. (Running os.kill on a remote PID is both wrong and
-        # trips the test live-system guard.)
-        if not gateway_running and local_runtime is not None:
-            runtime_pid = get_runtime_status_running_pid(local_runtime)
-            if runtime_pid is not None:
-                gateway_running = True
-                gateway_pid = runtime_pid
 
         if runtime:
             gateway_state = runtime.get("gateway_state")

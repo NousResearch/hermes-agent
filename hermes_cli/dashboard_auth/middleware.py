@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from typing import Awaitable, Callable
+from urllib.parse import urlsplit
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -252,6 +253,76 @@ def _safe_next_target(request: Request) -> str:
     return quote(target, safe="")
 
 
+def _normalise_origin(scheme: str, host: str) -> str:
+    """Return a canonical ``scheme://host[:port]`` origin string."""
+    scheme = (scheme or "").lower()
+    host = (host or "").strip().lower()
+    if not scheme or not host:
+        return ""
+    # Host may already include a port (or IPv6 bracket notation). Keep explicit
+    # non-default ports but strip default :80/:443 so equivalent origins match.
+    default = ":443" if scheme == "https" else ":80" if scheme == "http" else ""
+    if default and host.endswith(default):
+        host = host[: -len(default)]
+    return f"{scheme}://{host}"
+
+
+def _request_origin(request: Request) -> str:
+    """Best-effort external origin for the dashboard request.
+
+    Honour common reverse-proxy headers because the auth gate is often mounted
+    behind TLS termination; fall back to the ASGI URL/Host shape used by tests
+    and direct Uvicorn binds.
+    """
+    proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+    scheme = proto or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    return _normalise_origin(scheme, host)
+
+
+def _header_origin(value: str) -> str:
+    if not value or value == "null":
+        return ""
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return ""
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return _normalise_origin(parsed.scheme, parsed.netloc)
+
+
+def _csrf_origin_ok(request: Request) -> bool:
+    """Validate Fetch Metadata plus Origin/Referer for cookie-auth unsafe APIs.
+
+    Per OWASP CSRF guidance, privileged cookie-authenticated state changes must
+    not rely on SameSite alone. Browser unsafe requests should provide either a
+    same-origin ``Origin`` or, as fallback, a same-origin ``Referer``; Fetch
+    Metadata gives an additional early reject for explicit cross-site attempts.
+    Requests missing both headers are rejected fail-closed for cookie sessions.
+    Token-auth service routes bypass the cookie gate before this check.
+    """
+    sec_fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
+    if sec_fetch_site == "cross-site":
+        return False
+
+    expected = _request_origin(request)
+    origin = request.headers.get("origin", "")
+    if origin:
+        return bool(expected) and _header_origin(origin) == expected
+    referer = request.headers.get("referer", "")
+    if referer:
+        return bool(expected) and _header_origin(referer) == expected
+    return False
+
+
+def _csrf_forbidden() -> JSONResponse:
+    return JSONResponse(
+        {"detail": "Cross-site request blocked: invalid Origin or Referer"},
+        status_code=403,
+    )
+
+
 async def gated_auth_middleware(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
@@ -359,6 +430,8 @@ async def gated_auth_middleware(
         if refreshed is not None:
             new_session, refreshing_provider = refreshed
             request.state.session = new_session
+            if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and not _csrf_origin_ok(request):
+                return _csrf_forbidden()
             response = await call_next(request)
             # Persist the ROTATED tokens. Portal rotates the refresh token on
             # every refresh and runs reuse-detection, so writing the new RT
@@ -405,6 +478,8 @@ async def gated_auth_middleware(
         return response
 
     request.state.session = session
+    if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and not _csrf_origin_ok(request):
+        return _csrf_forbidden()
     return await call_next(request)
 
 

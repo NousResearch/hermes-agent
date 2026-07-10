@@ -16,6 +16,7 @@ import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { cn, themedBody } from "@/lib/utils";
+import { useModalBehavior } from "@/hooks/useModalBehavior";
 
 interface Props {
   /** The toolset whose backends are being configured. */
@@ -211,13 +212,19 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
   };
 
   const labelText = toolset.label?.trim() || toolset.name;
+  const dialogRef = useModalBehavior({ open: true, onClose });
 
   return createPortal(
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="toolset-config-title"
+      tabIndex={-1}
     >
       <div
         className={cn(
@@ -238,7 +245,10 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
         {/* Header — toolset identity + enable toggle */}
         <header className="p-5 pb-3 border-b border-border">
           <div className="flex items-center gap-3 pr-8">
-            <span className="font-mondwest text-display text-base tracking-wider">
+            <span
+              id="toolset-config-title"
+              className="font-mondwest text-display text-base tracking-wider"
+            >
               {labelText}
             </span>
             <Badge tone={enabled ? "success" : "outline"} className="text-xs">
@@ -349,6 +359,10 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                           <Input
                             id={`env-${ev.key}`}
                             type="password"
+                            autoComplete="new-password"
+                            autoCapitalize="off"
+                            autoCorrect="off"
+                            spellCheck={false}
                             className="h-8 rounded-none text-xs font-mono"
                             placeholder={
                               isSet[ev.key]

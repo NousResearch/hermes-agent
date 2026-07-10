@@ -117,9 +117,6 @@ export default function FilesPage() {
   );
 
   useEffect(() => {
-    // Existing dashboard data pages fetch from effects; keep this local and explicit
-    // until the shared lint profile is updated for async page loaders.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load(currentPath);
   }, [currentPath]); // eslint-disable-line react-hooks/exhaustive-deps
 

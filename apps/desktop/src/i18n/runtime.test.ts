@@ -45,6 +45,10 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('notifications.more', 5)).toBe('Ещё 5 уведомлений')
     expect(translateNow('notifications.more', 11)).toBe('Ещё 11 уведомлений')
     expect(translateNow('notifications.more', 21)).toBe('Ещё 21 уведомление')
+    expect(translateNow('settings.appearance.uiScaleTitle')).toBe('Масштаб интерфейса')
+    expect(translateNow('settings.appearance.embedsTitle')).toBe('Встроенные предпросмотры')
+    expect(translateNow('settings.appearance.pet.title')).toBe('Питомец')
+    expect(translateNow('settings.appearance.pet.count', 11)).toBe('11 питомцев.')
   })
 
   it('translates settings copy for newly supported locales', () => {

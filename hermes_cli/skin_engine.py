@@ -917,23 +917,19 @@ def _skin_monitor_loop(config: dict) -> None:
     if sys.platform == "darwin":
         try:
             from Foundation import NSDistributedNotificationCenter
-            from AppKit import NSApplication
+            import objc
 
             center = NSDistributedNotificationCenter.defaultCenter()
 
-            # Create observer object — must be a proper NSObject subclass
-            class ThemeObserver:
-                pass
+            # Create a proper PyObjC NSObject subclass for the observer
+            NSObject = objc.lookUpClass('NSObject')
+
+            class ThemeObserver(NSObject):
+                def themeChanged_(self, notification):
+                    if _skin_switch_event is not None:
+                        _skin_switch_event.set()
 
             observer = ThemeObserver.alloc().init()
-            # Use objc method to register
-            import objc
-            objc.classAddMethod(
-                ThemeObserver,
-                'themeChanged:',
-                _macos_theme_observer_callback,
-                b'v@:@'
-            )
 
             center.addObserver_selector_name_object_(
                 observer,
@@ -946,8 +942,7 @@ def _skin_monitor_loop(config: dict) -> None:
 
             # Run loop to receive notifications
             while not stop.is_set():
-                # Process notifications for up to 1 second
-                from Foundation import NSDate, NSRunLoop, NSDefaultRunLoopMode
+                from Foundation import NSDate, NSRunLoop
                 loop = NSRunLoop.currentRunLoop()
                 date = NSDate.dateWithTimeIntervalSinceNow_(1.0)
                 loop.runUntilDate_(date)

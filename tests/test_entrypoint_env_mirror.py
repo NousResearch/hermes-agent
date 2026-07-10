@@ -40,31 +40,79 @@ def test_acp_entry_mirrors_env_before_early_return(monkeypatch, capsys):
     assert capsys.readouterr().out.strip()
 
 
-def test_entrypoints_use_the_shared_mirror_helper():
-    """Guard that the entry modules reference the mirror helper, so the wiring
-    isn't silently dropped in a refactor (the acp behavioural test covers one
-    path; this keeps the other two honest without driving their heavy mains)."""
+def _called_function_names(obj) -> set:
+    """Names of every function actually *called* in obj's source.
+
+    AST ``Call`` nodes only — a name that survives merely in an import line,
+    a comment, or a docstring does NOT count, unlike the substring check this
+    replaces (which passed even when the call itself was deleted)."""
+    import ast
     import inspect
+    import textwrap
 
-    import batch_runner
-    import run_agent
+    tree = ast.parse(textwrap.dedent(inspect.getsource(obj)))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name):
+                names.add(func.id)
+            elif isinstance(func, ast.Attribute):
+                names.add(func.attr)
+    return names
 
-    assert "mirror_brand_env" in inspect.getsource(run_agent.main)
-    # batch_runner wires it in the module __main__ block.
-    assert "mirror_brand_env" in inspect.getsource(batch_runner)
 
-
-def test_entrypoints_wire_home_migration():
-    """Every standalone entrypoint must also run maybe_migrate_home(): the
-    ~/.hermes -> ~/.ht-ai-agent bridge symlink has to exist no matter which
-    entry launches first, or the hardcoded legacy fallbacks fork a second data
-    dir on fresh installs (the CLI alone running it is not enough)."""
-    import inspect
-
+def test_entrypoints_call_mirror_and_migration():
+    """Every standalone entrypoint must CALL mirror_brand_env (both env-name
+    spellings work when launched directly) and maybe_migrate_home (the
+    ~/.hermes -> ~/.ht-ai-agent bridge symlink exists no matter which entry
+    launches first — the CLI alone running it is not enough). The acp
+    behavioural test above exercises the mirror at runtime; run_agent's and
+    batch_runner's mains are too heavy to drive here, so their wiring is
+    pinned at the AST level (a deleted call fails; a leftover import cannot
+    pass)."""
     import acp_adapter.entry as acp_entry
     import batch_runner
     import run_agent
 
-    assert "maybe_migrate_home" in inspect.getsource(run_agent.main)
-    assert "maybe_migrate_home" in inspect.getsource(acp_entry.main)
-    assert "maybe_migrate_home" in inspect.getsource(batch_runner)
+    for entry in (run_agent.main, acp_entry.main):
+        called = _called_function_names(entry)
+        assert "mirror_brand_env" in called
+        assert "maybe_migrate_home" in called
+    # batch_runner wires both in the module __main__ block.
+    called = _called_function_names(batch_runner)
+    assert "mirror_brand_env" in called
+    assert "maybe_migrate_home" in called
+
+
+def test_acp_entry_provisions_home_bridge_in_fresh_home(tmp_path):
+    """End-to-end guard for the entrypoint migration wiring: a standalone
+    `hermes-acp --version` in a fresh HOME (outside pytest, which suppresses
+    migration in-process) must provision ~/.ht-ai-agent AND the ~/.hermes
+    bridge symlink — without the bridge, the hardcoded legacy fallbacks fork
+    a second data dir."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    scratch = tmp_path / "fresh-home"
+    scratch.mkdir()
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("HERMES_HOME", "HT_HOME", "PYTEST_CURRENT_TEST", "HT_SKIP_HOME_MIGRATION")
+    }
+    env["HOME"] = str(scratch)
+    proc = subprocess.run(
+        [sys.executable, "-c", "import acp_adapter.entry as e; e.main(['--version'])"],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    new = scratch / ".ht-ai-agent"
+    legacy = scratch / ".hermes"
+    assert new.is_dir()
+    assert legacy.is_symlink() and legacy.resolve() == new.resolve()

@@ -991,6 +991,10 @@ class SessionStore:
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
         self._lock = threading.Lock()
+        # Serialize whole-index persistence without holding ``_lock`` across
+        # SQLite / fsync. Each writer snapshots the latest state only after
+        # acquiring this lock, preventing stale delayed writes.
+        self._save_lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
         # Whether to keep writing the legacy sessions.json mirror alongside
         # the primary gateway_routing table in state.db. Default True for
@@ -1272,34 +1276,36 @@ class SessionStore:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
-    def _save_entries(self, entries_snapshot: Dict[str, "SessionEntry"]) -> None:
-        """Persist a caller-captured snapshot of entries (callable off-lock).
+    def _save_entries(self) -> None:
+        """Persist the latest routing index without holding the state lock for I/O."""
+        save_lock = getattr(self, "_save_lock", None)
+        if save_lock is None:
+            save_lock = threading.Lock()
+            self._save_lock = save_lock
+        with save_lock:
+            # Capture immutable dictionaries under the state lock, then release
+            # it before SQLite replacement and JSON fsync.
+            with self._lock:
+                data = {key: entry.to_dict() for key, entry in self._entries.items()}
 
-        Same write logic as :meth:`_save` but operates on a snapshot dict
-        instead of reading ``self._entries`` live.  This avoids
-        ``RuntimeError: dictionary changed size during iteration`` when
-        another thread mutates ``_entries`` concurrently.
-        """
-        data = {key: entry.to_dict() for key, entry in entries_snapshot.items()}
+            db_saved = False
+            _db = getattr(self, "_db", None)
+            if _db:
+                replacer = getattr(_db, "replace_gateway_routing_entries", None)
+                if callable(replacer):
+                    try:
+                        replacer(
+                            {k: json.dumps(v) for k, v in data.items()},
+                            scope=self._routing_scope(),
+                        )
+                        db_saved = True
+                    except Exception as exc:
+                        logger.warning(
+                            "gateway.session: state.db routing save failed: %s", exc
+                        )
 
-        db_saved = False
-        _db = getattr(self, "_db", None)
-        if _db:
-            replacer = getattr(_db, "replace_gateway_routing_entries", None)
-            if callable(replacer):
-                try:
-                    replacer(
-                        {k: json.dumps(v) for k, v in data.items()},
-                        scope=self._routing_scope(),
-                    )
-                    db_saved = True
-                except Exception as exc:
-                    logger.warning(
-                        "gateway.session: state.db routing save failed: %s", exc
-                    )
-
-        if getattr(self, "_write_sessions_json", True) or not db_saved:
-            self._save_sessions_json(data)
+            if getattr(self, "_write_sessions_json", True) or not db_saved:
+                self._save_sessions_json(data)
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Return the profile namespace for session keys, or None when off.
 
@@ -1464,7 +1470,19 @@ class SessionStore:
             logger.debug("Gateway session DB recovery failed for %s: %s",
                          session_key, exc)
             return None
-        if not recovered:
+        if not isinstance(recovered, dict):
+            return None
+        if not self._recovered_row_allowed_for_active_profile(
+            requested_session_key=session_key,
+            recovered=recovered,
+        ):
+            logger.warning(
+                "Gateway session DB recovery ignored %s for %s because "
+                "multiplex_profiles is disabled and the row belongs to a "
+                "different profile",
+                recovered.get("session_key"),
+                session_key,
+            )
             return None
         try:
             self._db.reopen_session(str(recovered["id"]))
@@ -1831,7 +1849,6 @@ class SessionStore:
         # ---- Phase 2: lock write -- apply decisions to _entries ----
         _needs_save = False
         _needs_recover = False
-        _entries_snapshot: Optional[Dict[str, SessionEntry]] = None
         entry: Optional[SessionEntry] = None
         was_auto_reset = False
         auto_reset_reason = None
@@ -1885,8 +1902,6 @@ class SessionStore:
                 if not force_new:
                     _needs_recover = True
 
-            _entries_snapshot = dict(self._entries)
-
         # ---- Phase 3: no-lock I/O -- recovery + create + save + DB ops ----
         if _needs_recover:
             recovered = self._query_recoverable_session(
@@ -1894,15 +1909,18 @@ class SessionStore:
             )
             if recovered is not None:
                 with self._lock:
-                    self._entries[session_key] = recovered
-                    _entries_snapshot = dict(self._entries)
-                entry = recovered
+                    published = self._entries.get(session_key)
+                    if published is None:
+                        self._entries[session_key] = recovered
+                        published = recovered
+                entry = published
                 _needs_save = True
 
         if entry is None:
-            # Create new session.
+            # Create a candidate outside the lock, then publish only if another
+            # worker has not already populated this routing key.
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-            entry = SessionEntry(
+            candidate = SessionEntry(
                 session_key=session_key,
                 session_id=session_id,
                 created_at=now,
@@ -1916,22 +1934,25 @@ class SessionStore:
                 reset_had_activity=reset_had_activity,
             )
             with self._lock:
-                self._entries[session_key] = entry
-                _entries_snapshot = dict(self._entries)
+                published = self._entries.get(session_key) if not force_new else None
+                if published is None:
+                    self._entries[session_key] = candidate
+                    published = candidate
+            entry = published
             _needs_save = True
-            db_create_kwargs = {
-                "session_id": session_id,
-                "source": source.platform.value,
-                "user_id": source.user_id,
-                "session_key": session_key,
-                "chat_id": source.chat_id,
-                "chat_type": source.chat_type,
-                "thread_id": source.thread_id,
-            }
+            if entry is candidate:
+                db_create_kwargs = {
+                    "session_id": session_id,
+                    "source": source.platform.value,
+                    "user_id": source.user_id,
+                    "session_key": session_key,
+                    "chat_id": source.chat_id,
+                    "chat_type": source.chat_type,
+                    "thread_id": source.thread_id,
+                }
 
-        # Persist routing index from snapshot (was _save under lock).
-        if _needs_save and _entries_snapshot is not None:
-            self._save_entries(_entries_snapshot)
+        if _needs_save:
+            self._save_entries()
 
         # SQLite operations outside the lock (unchanged).
         if self._db and db_end_session_id:

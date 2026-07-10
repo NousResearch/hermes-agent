@@ -78,9 +78,9 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 # produce the #30719 respawn loop even though the ssh client itself would
 # survive.  We cannot resolve arbitrary hostnames in a text guard, so an ssh
 # to this machine's own LAN hostname is an accepted residual gap.
-_SSH_COMMAND_RE = re.compile(r"(?i)(?:^|\s)(?:\S*/)?(?:ssh|autossh)\s")
+_SSH_COMMAND_RE = re.compile(r"(?i)(?:^|\s)(?:/\S*/)?(?:ssh|autossh)\s")
 _LOOPBACK_HOST_RE = re.compile(
-    r"(?i)(?:^|[\s@\[])(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|0\.0\.0\.0)\b"
+    r"(?i)(?:^|[\s@\[:])(?:localhost|(?:::ffff:)?127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|0\.0\.0\.0)\b"
 )
 
 # Rough shell-segment separators.  This is a heuristic split (it does not

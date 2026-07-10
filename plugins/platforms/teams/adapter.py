@@ -1098,6 +1098,7 @@ class TeamsAdapter(BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
     ) -> SendResult:
         """Send an Adaptive Card approval prompt with Allow/Deny buttons."""
         if not self._app:
@@ -1111,6 +1112,32 @@ class TeamsAdapter(BasePlatformAdapter):
             "desc": description,
         }
 
+        actions = [
+            ExecuteAction(
+                title="Allow Once",
+                verb="hermes_approve",
+                data={**btn_data_base, "hermes_action": "approve_once"},
+                style="positive",
+            ),
+            ExecuteAction(
+                title="Allow Session",
+                verb="hermes_approve",
+                data={**btn_data_base, "hermes_action": "approve_session"},
+            ),
+        ]
+        if allow_permanent:
+            actions.append(ExecuteAction(
+                title="Always Allow",
+                verb="hermes_approve",
+                data={**btn_data_base, "hermes_action": "approve_always"},
+            ))
+        actions.append(ExecuteAction(
+            title="Deny",
+            verb="hermes_approve",
+            data={**btn_data_base, "hermes_action": "deny"},
+            style="destructive",
+        ))
+
         card = (
             AdaptiveCard()
             .with_version("1.4")
@@ -1119,30 +1146,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 TextBlock(text=f"```\n{cmd_preview}\n```", wrap=True),
                 TextBlock(text=f"Reason: {description}", wrap=True, isSubtle=True),
             ])
-            .with_actions([
-                ExecuteAction(
-                    title="Allow Once",
-                    verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "approve_once"},
-                    style="positive",
-                ),
-                ExecuteAction(
-                    title="Allow Session",
-                    verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "approve_session"},
-                ),
-                ExecuteAction(
-                    title="Always Allow",
-                    verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "approve_always"},
-                ),
-                ExecuteAction(
-                    title="Deny",
-                    verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "deny"},
-                    style="destructive",
-                ),
-            ])
+            .with_actions(actions)
         )
 
         try:

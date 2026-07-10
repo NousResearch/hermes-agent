@@ -1069,6 +1069,16 @@ class TestBuildApprovalKeyboard:
         assert len(kb.content.rows) == 1
         assert len(kb.content.rows[0].buttons) == 3
 
+    def test_hides_always_when_permanent_approval_disallowed(self):
+        from gateway.platforms.qqbot.keyboards import build_approval_keyboard
+
+        kb = build_approval_keyboard("session-1", allow_permanent=False)
+        datas = [button.action.data for button in kb.content.rows[0].buttons]
+        assert datas == [
+            "approve:session-1:allow-once",
+            "approve:session-1:deny",
+        ]
+
     def test_button_data_embeds_session_key(self):
         from gateway.platforms.qqbot.keyboards import build_approval_keyboard
         kb = build_approval_keyboard("agent:main:qqbot:c2c:UID")
@@ -1780,9 +1790,16 @@ class TestSendExecApproval:
 
         calls = []
 
-        async def fake_send_approval(chat_id, req, reply_to=None):
+        async def fake_send_approval(
+            chat_id, req, reply_to=None, allow_permanent=True,
+        ):
             from gateway.platforms.base import SendResult
-            calls.append({"chat_id": chat_id, "req": req, "reply_to": reply_to})
+            calls.append({
+                "chat_id": chat_id,
+                "req": req,
+                "reply_to": reply_to,
+                "allow_permanent": allow_permanent,
+            })
             return SendResult(success=True, message_id="m-1")
 
         adapter.send_approval_request = fake_send_approval  # type: ignore[assignment]
@@ -1802,13 +1819,39 @@ class TestSendExecApproval:
         assert req.command_preview == "rm -rf /tmp/demo"
         assert req.description == "delete temp dir"
         assert calls[0]["reply_to"] == "inbound-42"
+        assert calls[0]["allow_permanent"] is True
+
+    @pytest.mark.asyncio
+    async def test_forwards_permanent_approval_policy(self):
+        adapter = self._make_adapter()
+        calls = []
+
+        async def fake_send_approval(
+            chat_id, req, reply_to=None, allow_permanent=True,
+        ):
+            from gateway.platforms.base import SendResult
+            calls.append(allow_permanent)
+            return SendResult(success=True)
+
+        adapter.send_approval_request = fake_send_approval  # type: ignore[assignment]
+
+        await adapter.send_exec_approval(
+            chat_id="u",
+            command="curl http://172.16.0.2/internal",
+            session_key="s",
+            allow_permanent=False,
+        )
+
+        assert calls == [False]
 
     @pytest.mark.asyncio
     async def test_accepts_metadata_arg(self):
         """Gateway always passes metadata=…; the adapter must accept + ignore it."""
         adapter = self._make_adapter()
 
-        async def fake_send_approval(chat_id, req, reply_to=None):
+        async def fake_send_approval(
+            chat_id, req, reply_to=None, allow_permanent=True,
+        ):
             from gateway.platforms.base import SendResult
             return SendResult(success=True)
 

@@ -106,6 +106,38 @@ class TestTelegramExecApproval:
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
 
     @pytest.mark.asyncio
+    async def test_hides_always_when_permanent_approval_disallowed(self, monkeypatch):
+        import plugins.platforms.telegram.adapter as telegram_adapter
+
+        monkeypatch.setattr(
+            telegram_adapter,
+            "InlineKeyboardButton",
+            lambda text, callback_data: SimpleNamespace(
+                text=text, callback_data=callback_data,
+            ),
+        )
+        monkeypatch.setattr(
+            telegram_adapter,
+            "InlineKeyboardMarkup",
+            lambda rows: SimpleNamespace(inline_keyboard=rows),
+        )
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(
+            return_value=SimpleNamespace(message_id=42)
+        )
+
+        await adapter.send_exec_approval(
+            chat_id="12345",
+            command="curl http://172.16.0.2/internal",
+            session_key="session-1",
+            allow_permanent=False,
+        )
+
+        keyboard = adapter._bot.send_message.call_args.kwargs["reply_markup"]
+        labels = [button.text for row in keyboard.inline_keyboard for button in row]
+        assert labels == ["✅ Allow Once", "✅ Session", "❌ Deny"]
+
+    @pytest.mark.asyncio
     async def test_stores_approval_state(self):
         adapter = _make_adapter()
         mock_msg = MagicMock()

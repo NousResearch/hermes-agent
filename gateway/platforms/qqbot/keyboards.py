@@ -10,7 +10,7 @@ This module provides:
 
 - :class:`InlineKeyboard` + button dataclasses — serialized into the
   ``keyboard`` field of the outbound message body.
-- :func:`build_approval_keyboard` — 3-button ✅ once / ⭐ always / ❌ deny
+- :func:`build_approval_keyboard` — ✅ once / optional ⭐ always / ❌ deny
   keyboard for tool-approval flows.
 - :func:`build_update_prompt_keyboard` — Yes/No keyboard for update confirms.
 - :func:`parse_approval_button_data` / :func:`parse_update_prompt_button_data`
@@ -201,44 +201,49 @@ def _make_callback_button(
     )
 
 
-def build_approval_keyboard(session_key: str) -> InlineKeyboard:
-    """Build the 3-button approval keyboard.
+def build_approval_keyboard(
+    session_key: str, *, allow_permanent: bool = True,
+) -> InlineKeyboard:
+    """Build an approval keyboard, optionally without permanent approval.
 
-    Layout: ``[✅ 允许一次] [⭐ 始终允许] [❌ 拒绝]`` — all three share
-    ``group_id='approval'`` so clicking one greys out the rest.
+    All rendered buttons share ``group_id='approval'`` so clicking one greys
+    out the rest.
 
     :param session_key: Embedded into ``button_data`` so the decision
         routes back to the right pending approval.
+    :param allow_permanent: Include the permanent-approval button when true.
     """
+    buttons = [
+        _make_callback_button(
+            btn_id="allow",
+            label="✅ 允许一次",
+            visited_label="已允许",
+            data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:allow-once",
+            style=1,
+            group_id="approval",
+        ),
+    ]
+    if allow_permanent:
+        buttons.append(_make_callback_button(
+            btn_id="always",
+            label="⭐ 始终允许",
+            visited_label="已始终允许",
+            data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:allow-always",
+            style=1,
+            group_id="approval",
+        ))
+    buttons.append(_make_callback_button(
+        btn_id="deny",
+        label="❌ 拒绝",
+        visited_label="已拒绝",
+        data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:deny",
+        style=0,
+        group_id="approval",
+    ))
     return InlineKeyboard(
         content=KeyboardContent(
             rows=[
-                KeyboardRow(buttons=[
-                    _make_callback_button(
-                        btn_id="allow",
-                        label="✅ 允许一次",
-                        visited_label="已允许",
-                        data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:allow-once",
-                        style=1,
-                        group_id="approval",
-                    ),
-                    _make_callback_button(
-                        btn_id="always",
-                        label="⭐ 始终允许",
-                        visited_label="已始终允许",
-                        data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:allow-always",
-                        style=1,
-                        group_id="approval",
-                    ),
-                    _make_callback_button(
-                        btn_id="deny",
-                        label="❌ 拒绝",
-                        visited_label="已拒绝",
-                        data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:deny",
-                        style=0,
-                        group_id="approval",
-                    ),
-                ]),
+                KeyboardRow(buttons=buttons),
             ]
         )
     )

@@ -122,6 +122,27 @@ class TestSlackExecApproval:
             assert e["value"] == "agent:main:slack:group:C1:1111"
 
     @pytest.mark.asyncio
+    async def test_hides_always_when_permanent_approval_disallowed(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1234.5678"})
+
+        await adapter.send_exec_approval(
+            chat_id="C1",
+            command="curl http://172.16.0.2/internal",
+            session_key="session-1",
+            allow_permanent=False,
+        )
+
+        blocks = mock_client.chat_postMessage.call_args.kwargs["blocks"]
+        action_ids = [element["action_id"] for element in blocks[1]["elements"]]
+        assert action_ids == [
+            "hermes_approve_once",
+            "hermes_approve_session",
+            "hermes_deny",
+        ]
+
+    @pytest.mark.asyncio
     async def test_sends_in_thread(self):
         adapter = _make_adapter()
         mock_client = adapter._team_clients["T1"]

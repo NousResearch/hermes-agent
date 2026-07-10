@@ -657,6 +657,14 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+def _approval_event_choices(allow_permanent: bool = True) -> List[str]:
+    choices = ["once", "session"]
+    if allow_permanent:
+        choices.append("always")
+    choices.append("deny")
+    return choices
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -4308,15 +4316,13 @@ class APIServerAdapter(BasePlatformAdapter):
                         from gateway.run import _redact_approval_command
 
                         event["command"] = _redact_approval_command(event.get("command"))
-                    choices = ["once", "session"]
-                    if event.get("allow_permanent", True):
-                        choices.append("always")
-                    choices.append("deny")
                     event.update({
                         "event": "approval.request",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "choices": choices,
+                        "choices": _approval_event_choices(
+                            bool(event.get("allow_permanent", True))
+                        ),
                     })
                     self._set_run_status(
                         run_id,

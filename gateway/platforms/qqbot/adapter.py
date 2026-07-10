@@ -2634,8 +2634,9 @@ class QQAdapter(BasePlatformAdapter):
             chat_id: str,
             req: ApprovalRequest,
             reply_to: Optional[str] = None,
+            allow_permanent: bool = True,
     ) -> SendResult:
-        """Send a 3-button approval request (``allow-once / allow-always / deny``).
+        """Send an approval request with an optional permanent choice.
 
         The rendered text comes from :func:`build_approval_text`; callers can
         override by passing a custom :class:`ApprovalRequest`.
@@ -2648,7 +2649,9 @@ class QQAdapter(BasePlatformAdapter):
         return await self.send_with_keyboard(
             chat_id,
             build_approval_text(req),
-            build_approval_keyboard(req.session_key),
+            build_approval_keyboard(
+                req.session_key, allow_permanent=allow_permanent,
+            ),
             reply_to=reply_to,
         )
 
@@ -2668,6 +2671,7 @@ class QQAdapter(BasePlatformAdapter):
             session_key: str,
             description: str = "dangerous command",
             metadata: Optional[Dict[str, Any]] = None,
+            allow_permanent: bool = True,
     ) -> SendResult:
         """Send a button-based exec-approval prompt for a dangerous command.
 
@@ -2691,7 +2695,7 @@ class QQAdapter(BasePlatformAdapter):
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
         )
         return await self.send_approval_request(
-            chat_id, req, reply_to=msg_id,
+            chat_id, req, reply_to=msg_id, allow_permanent=allow_permanent,
         )
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # matches gateway's default gateway_timeout

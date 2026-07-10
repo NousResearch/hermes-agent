@@ -5579,15 +5579,24 @@ def resolve_nous_runtime_credentials(
                 portal_url = env_portal_override.rstrip("/")
             else:
                 parsed_portal_url = urlparse(portal_url)
+                portal_host = parsed_portal_url.hostname
+                loopback_http = (
+                    parsed_portal_url.scheme == "http"
+                    and portal_host in {"localhost", "127.0.0.1"}
+                )
+                trusted_scheme = (
+                    parsed_portal_url.scheme == "https" or loopback_http
+                )
                 if (
-                    parsed_portal_url.hostname
-                    and parsed_portal_url.hostname not in _NOUS_PORTAL_ALLOWED_HOSTS
+                    not portal_host
+                    or portal_host not in _NOUS_PORTAL_ALLOWED_HOSTS
+                    or not trusted_scheme
                 ):
                     logger.warning(
                         "auth: ignoring invalid portal_base_url %r "
-                        "(host %r not in allowlist), using default",
+                        "(host %r or scheme not allowed), using default",
                         portal_url,
-                        parsed_portal_url.hostname,
+                        portal_host,
                     )
                     portal_url = DEFAULT_NOUS_PORTAL_URL
 
@@ -5769,6 +5778,11 @@ def resolve_nous_runtime_credentials(
                         inference_base_url = (
                             _nous_inference_env_override() or stored_inference_base_url
                         )
+                        # Persist network-derived routing with rotated tokens so
+                        # a later JWT validation failure cannot leave the profile
+                        # and shared stores on stale metadata. Never persist the
+                        # operator-only env overlay.
+                        state["inference_base_url"] = stored_inference_base_url
                         state["obtained_at"] = now.isoformat()
                         state["expires_in"] = access_ttl
                         state["expires_at"] = datetime.fromtimestamp(

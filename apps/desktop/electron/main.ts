@@ -59,11 +59,11 @@ import {
   normalizeRemoteBaseUrl,
   normalizeSshConfig,
   normAuthMode,
-  pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
   resolveAuthMode,
+  resolveProfileApiRequest,
   resolveProfileBackendRoute,
   resolveTestWsUrl,
   savedProfileSsh,
@@ -7743,11 +7743,13 @@ function primaryProfileKey() {
 }
 
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
-function profileRouteOptions(profile) {
+function profileRouteOptions(profile, request?) {
   return {
     globalRemote: globalRemoteActive(),
     primaryProfile: primaryProfileKey(),
-    profileRemoteOverride: Boolean(profileHasRemoteOverride(profile))
+    profileRemoteOverride: Boolean(profileHasRemoteOverride(profile)),
+    requestMethod: request?.method,
+    requestPath: request?.path
   }
 }
 
@@ -9899,13 +9901,17 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   // backend instead of spawning a fresh pool backend.  A freshly spawned
   // backend calls ensure_hermes_home() which recreates the profile directory,
   // defeating the deletion and leaving a zombie process.
-  const routeProfile = resolveRouteProfile(tornDownProfile, profile)
+  //
+  // Safe local-profile REST calls also stay on the primary dashboard and carry
+  // ?profile=. Endpoints that cannot honor that scope retain their pooled
+  // backend so a destructive call can never fall through to the primary home.
+  const apiRoute = resolveProfileApiRequest(profile, request.path, profileRouteOptions(profile, request))
+  const routeProfile = resolveRouteProfile(tornDownProfile, apiRoute.backendProfile)
+
   const connection = await ensureBackend(routeProfile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-  const requestPath = pathWithGlobalRemoteProfile(request.path, profile, profileRouteOptions(profile))
-
-  const url = `${connection.baseUrl}${requestPath}`
+  const url = `${connection.baseUrl}${apiRoute.requestPath}`
 
   // OAuth gateways authenticate REST via EITHER a native bearer token
   // (cookieless RFC 8252 flow) OR the HttpOnly session cookie held in the OAuth

@@ -354,6 +354,8 @@ export interface ProfileRouteOptions {
   globalRemote?: boolean
   primaryProfile?: null | string
   profileRemoteOverride?: boolean
+  requestMethod?: null | string
+  requestPath?: null | string
 }
 
 export interface ProfileBackendRoute {
@@ -369,16 +371,81 @@ export interface ProfileBackendRoute {
   scopePath: boolean
 }
 
+const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
+  'GET /api/config',
+  'PUT /api/config',
+  'GET /api/config/raw',
+  'PUT /api/config/raw',
+  'GET /api/config/schema',
+  'DELETE /api/env',
+  'GET /api/env',
+  'PUT /api/env',
+  'POST /api/env/reveal',
+  'GET /api/model/auxiliary',
+  'GET /api/model/info',
+  'GET /api/model/moa',
+  'PUT /api/model/moa',
+  'GET /api/model/options',
+  'POST /api/model/set',
+  'GET /api/skills',
+  'GET /api/skills/content',
+  'PUT /api/skills/toggle',
+  'POST /api/skills/hub/install',
+  'GET /api/skills/hub/preview',
+  'GET /api/skills/hub/scan',
+  'GET /api/skills/hub/search',
+  'GET /api/skills/hub/sources',
+  'POST /api/skills/hub/uninstall',
+  'POST /api/skills/hub/update'
+])
+
+function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
+  const rawPath = String(opts.requestPath || '')
+
+  if (!rawPath) {
+    return null
+  }
+
+  let pathname
+
+  try {
+    pathname = new URL(rawPath, 'https://example.invalid').pathname
+  } catch {
+    return null
+  }
+
+  const method = String(opts.requestMethod || 'GET').toUpperCase()
+
+  if (LOCAL_PRIMARY_SCOPED_ROUTES.has(`${method} ${pathname}`)) {
+    return true
+  }
+
+  // Every current /api/tools handler accepts `profile`; every /api/profiles
+  // handler either aggregates profiles or names its target in the path/body.
+  // These are the only whole families safe to route through the primary.
+  if (pathname === '/api/tools' || pathname.startsWith('/api/tools/')) {
+    return true
+  }
+
+  if (pathname === '/api/profiles' || pathname.startsWith('/api/profiles/')) {
+    return false
+  }
+
+  return null
+}
+
 /**
  * The one place that answers "which backend serves profile P, and does its
- * REST path need a profile scope?". Four routes, in precedence order:
+ * REST path need a profile scope?". Five routes, in precedence order:
  *
  *  1. The primary profile owns the window backend outright.
  *  2. A profile with its own remote override gets a pooled descriptor for that
  *     host, which is already scoped to it.
  *  3. A profile inheriting the app-global remote shares the primary backend —
  *     one host serves every profile — so it is scoped per request instead.
- *  4. Any other local profile gets its own pooled backend, spawned with
+ *  4. A local profile REST request that the primary backend can safely scope
+ *     reuses that backend, with `?profile=` when the handler accepts it.
+ *  5. Any other local profile gets its own pooled backend, spawned with
  *     `--profile`, so its `HERMES_HOME` scopes it.
  *
  * Routing used to be spread across three overlapping predicates that each
@@ -399,6 +466,16 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
 
   if (opts.globalRemote) {
     return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+  }
+
+  const localScope = localPrimaryRequestScope(opts)
+
+  if (localScope !== null) {
+    return {
+      backend: 'primary',
+      descriptorProfile: localScope ? scopedProfile : null,
+      scopePath: localScope
+    }
   }
 
   return { backend: 'pool', descriptorProfile: null, scopePath: false }
@@ -436,6 +513,29 @@ function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = 
   parsed.searchParams.set('profile', scopedProfile)
 
   return `${parsed.pathname}${parsed.search}${parsed.hash}`
+}
+
+export interface ProfileApiRequestRoute {
+  /** Profile passed to ensureBackend; null selects the primary backend. */
+  backendProfile: null | string
+  requestPath: string
+}
+
+/**
+ * Resolve the two decisions made by the `hermes:api` IPC handler from the same
+ * routing table: which backend serves the request, and whether its URL needs a
+ * profile query scope.
+ */
+function resolveProfileApiRequest(profile, path, opts: ProfileRouteOptions = {}): ProfileApiRequestRoute {
+  const scopedProfile = connectionScopeKey(profile)
+  const requestPath = String(path || '')
+  const routeOpts = { ...opts, requestPath }
+  const route = resolveProfileBackendRoute(scopedProfile, routeOpts)
+
+  return {
+    backendProfile: route.backend === 'pool' ? scopedProfile : null,
+    requestPath: pathWithGlobalRemoteProfile(requestPath, scopedProfile, routeOpts)
+  }
 }
 
 function tokenPreview(value) {
@@ -558,6 +658,7 @@ export {
   profileRemoteOverride,
   profileSshOverride,
   resolveAuthMode,
+  resolveProfileApiRequest,
   resolveProfileBackendRoute,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,

@@ -10,7 +10,8 @@ import {
   getSessionMessages,
   getStatus,
   listAllProfileSessions,
-  listSessions
+  listSessions,
+  transcribeAudio
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
 
@@ -109,6 +110,20 @@ describe('Hermes REST session helpers', () => {
       await call()
       expect(api).toHaveBeenCalledWith(expect.objectContaining({ path, timeoutMs: 60_000 }))
     }
+  })
+
+  it('gives desktop voice transcription enough time for CPU/local Whisper', async () => {
+    api.mockResolvedValue({ ok: true, transcript: 'hello', provider: 'local' })
+
+    await transcribeAudio('data:audio/webm;base64,ZmFrZQ==', 'audio/webm')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/audio/transcribe',
+        method: 'POST',
+        timeoutMs: 600_000
+      })
+    )
   })
 
   it('keeps the liveness poll on the short default so a dead backend fails fast', async () => {

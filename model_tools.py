@@ -492,25 +492,48 @@ def _compute_tool_definitions(
                         filtered_tools[i] = {"type": "function", "function": dynamic}
                         break
 
-    # Strip web tool cross-references from browser_navigate description when
-    # web_search / web_extract are not available.  The static schema says
-    # "prefer web_search or web_extract" which causes the model to hallucinate
-    # those tools when they're missing.
+    # Strip web/terminal tool cross-references from browser_navigate
+    # description when those tools are not available.  The static schema
+    # mentions "web_search", "web_extract", and "the terminal tool" in two
+    # separate sentences, which causes the model to hallucinate calls to
+    # those tools when they're missing (#43099).
     if "browser_navigate" in available_tool_names:
         web_tools_available = {"web_search", "web_extract"} & available_tool_names
-        if not web_tools_available:
+        web_extract_available = "web_extract" in available_tool_names
+        terminal_available = "terminal" in available_tool_names
+        if not web_tools_available or not (web_extract_available and terminal_available):
             for i, td in enumerate(filtered_tools):
-                if td.get("function", {}).get("name") == "browser_navigate":
-                    desc = td["function"].get("description", "")
+                if td.get("function", {}).get("name") != "browser_navigate":
+                    continue
+                desc = td["function"].get("description", "")
+                if not web_tools_available:
                     desc = desc.replace(
                         " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
                         "",
                     )
-                    filtered_tools[i] = {
-                        "type": "function",
-                        "function": {**td["function"], "description": desc},
-                    }
-                    break
+                if not web_extract_available and not terminal_available:
+                    desc = desc.replace(
+                        " For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, "
+                        ".yml, .csv, .xml, raw.githubusercontent.com, or any documented API "
+                        "endpoint — prefer curl via the terminal tool or web_extract; the "
+                        "browser stack is overkill and much slower for these.",
+                        "",
+                    )
+                elif not web_extract_available:
+                    desc = desc.replace(
+                        "prefer curl via the terminal tool or web_extract;",
+                        "prefer curl via the terminal tool;",
+                    )
+                elif not terminal_available:
+                    desc = desc.replace(
+                        "prefer curl via the terminal tool or web_extract;",
+                        "prefer web_extract;",
+                    )
+                filtered_tools[i] = {
+                    "type": "function",
+                    "function": {**td["function"], "description": desc},
+                }
+                break
 
     if not quiet_mode:
         if filtered_tools:

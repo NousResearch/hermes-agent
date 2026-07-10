@@ -31,14 +31,16 @@ const DEFAULT_SIGN_IN_COPY: SignInCopy = {
 // dashboard restarted) and the local-recovery buttons (Retry/Repair) can't
 // fix it — only re-establishing the remote session can. A connected oauth
 // session, or a token/local gateway, boots for some other reason the
-// local-recovery buttons address, so those return false here.
+// local-recovery buttons address, so those return false here. 'cloud' counts
+// as remote here — it resolves to a remote oauth backend (cloud-auto-discovery
+// Q6), so a lapsed cloud session is the same reauth failure.
 export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | undefined): boolean {
   if (!config) {
     return false
   }
 
   return (
-    config.mode === 'remote' &&
+    (config.mode === 'remote' || config.mode === 'cloud') &&
     config.remoteAuthMode === 'oauth' &&
     !config.remoteOauthConnected &&
     Boolean(config.remoteUrl)

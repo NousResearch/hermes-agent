@@ -1,0 +1,179 @@
+name: Issue Self-Assign
+
+# Opt-in, degrades-gracefully issue-claim tooling.
+#
+# Contributors comment `/assign` to assign an open issue to themselves and
+# `/unassign` to release it. GitHub's native Assignees field is the source of
+# truth; this only lets a contributor self-serve it instead of waiting on a
+# maintainer. A daily sweep releases claims that never turned into a PR so an
+# abandoned claim never blocks an issue for good.
+
+on:
+  issue_comment:
+    types: [created]
+  schedule:
+    # Daily stale-claim sweep at 07:00 UTC.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      stale_days:
+        description: "Days of inactivity before an unclaimed assignment is released"
+        required: false
+        default: "14"
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: issue-self-assign-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  assign:
+    name: Handle /assign and /unassign
+    if: >-
+      github.repository == 'NousResearch/hermes-agent' &&
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request == null &&
+      (startsWith(github.event.comment.body, '/assign') || startsWith(github.event.comment.body, '/unassign'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const body = context.payload.comment.body.trim();
+            const isAssign = /^\/assign\s*$/i.test(body);
+            const isUnassign = /^\/unassign\s*$/i.test(body);
+            if (!isAssign && !isUnassign) {
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.issue.number;
+            const commenter = context.payload.comment.user.login;
+            const current = (context.payload.issue.assignees || []).map((a) => a.login);
+
+            const react = async (content) => {
+              try {
+                await github.rest.reactions.createForIssueComment({
+                  owner,
+                  repo,
+                  comment_id: context.payload.comment.id,
+                  content,
+                });
+              } catch (err) {
+                core.warning(`Could not add reaction: ${err.message}`);
+              }
+            };
+
+            if (isUnassign) {
+              if (current.includes(commenter)) {
+                await github.rest.issues.removeAssignees({
+                  owner,
+                  repo,
+                  issue_number,
+                  assignees: [commenter],
+                });
+                await react("+1");
+              }
+              return;
+            }
+
+            const others = current.filter((login) => login !== commenter);
+            if (others.length > 0) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body:
+                  `This issue is already assigned to @${others[0]}. ` +
+                  `If that claim looks stale, comment here and a maintainer can reassign it — ` +
+                  `unclaimed assignments are released automatically after a period of inactivity.`,
+              });
+              return;
+            }
+
+            if (current.includes(commenter)) {
+              await react("+1");
+              return;
+            }
+
+            await github.rest.issues.addAssignees({
+              owner,
+              repo,
+              issue_number,
+              assignees: [commenter],
+            });
+            await react("rocket");
+
+  expire-stale-claims:
+    name: Release stale claims
+    if: >-
+      github.repository == 'NousResearch/hermes-agent' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const staleDays = parseInt(
+              (context.payload.inputs && context.payload.inputs.stale_days) || "14",
+              10,
+            ) || 14;
+            const cutoff = Date.now() - staleDays * 24 * 60 * 60 * 1000;
+            const { owner, repo } = context.repo;
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "open",
+              assignee: "*",
+              per_page: 100,
+            });
+
+            for (const issue of issues) {
+              if (issue.pull_request) {
+                continue;
+              }
+              const assignees = (issue.assignees || []).map((a) => a.login);
+              if (assignees.length === 0) {
+                continue;
+              }
+              if (new Date(issue.updated_at).getTime() >= cutoff) {
+                continue;
+              }
+
+              const timeline = await github.paginate(
+                github.rest.issues.listEventsForTimeline,
+                { owner, repo, issue_number: issue.number, per_page: 100 },
+              );
+              const hasLinkedPR = timeline.some(
+                (e) =>
+                  e.event === "cross-referenced" &&
+                  e.source &&
+                  e.source.issue &&
+                  e.source.issue.pull_request,
+              );
+              if (hasLinkedPR) {
+                continue;
+              }
+
+              await github.rest.issues.removeAssignees({
+                owner,
+                repo,
+                issue_number: issue.number,
+                assignees,
+              });
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issue.number,
+                body:
+                  `Releasing this claim: no linked pull request and no activity for ` +
+                  `${staleDays}+ days. ${assignees.map((a) => "@" + a).join(", ")}, ` +
+                  `comment \`/assign\` to pick it back up.`,
+              });
+            }

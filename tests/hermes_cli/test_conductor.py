@@ -199,3 +199,15 @@ def test_viewport_scheme_is_the_mandate() -> None:
     assert vs["ok"] is True
     assert vs["surface"]["kind"] == "viewport_host"
     assert vs["surface"]["v"] == "viewport"
+
+
+def test_viewport_hermes_agent_resolves_to_concrete_surface() -> None:
+    """viewport://hermes-agent is the concrete instance: the Hermes Agent
+    viewport (ae://glocal-agent primitive rendered local)."""
+    r = _dispatch("viewport://hermes-agent")
+    assert r["ok"] is True
+    assert r["surface"]["node"] == "hermes-agent"
+    assert r["surface"]["agent"] == "ae://glocal-agent"
+    assert r["surface"]["control_surface"] == "mcp://gpu-mcp"
+    assert r["surface"]["brain"] == "ollama://localhost:11434"
+    assert r["surface"]["html"] == "templates/surfaces/index.html"

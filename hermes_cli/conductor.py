@@ -912,21 +912,39 @@ def _vscode_dispatch(raw: str) -> dict:
 
 def _viewport_dispatch(raw: str) -> dict:
     """viewport:// — the mandate: the local HTML/CSS/Rust-WASM surface is the
-    control plane. The v in vscode stands for viewport, not Visual Studio."""
+    control plane. The v in vscode stands for viewport, not Visual Studio.
+
+    viewport://hermes-agent is the concrete instance: the Hermes Agent viewport
+    (gold-on-void, GPU-MCP control surface, offline ollama brain) = the
+    æ://glocal-agent primitive rendered as a local viewport. Other nodes
+    (home://, etc.) resolve to a generic local viewport."""
     node = raw.split("viewport://", 1)[1].strip() or "home://"
-    return {
-        "ok": True,
-        "rc": 0,
-        "stdout": f"viewport://{node} -> local HTML/CSS/WASM viewport (the mandate)\n",
-        "stderr": "",
-        "surface": {
+    if node == "hermes-agent":
+        surface = {
+            "kind": "viewport",
+            "address": "viewport://hermes-agent",
+            "v": "viewport",
+            "node": "hermes-agent",
+            "runtime": "hermes-viewport",
+            "plugin": "hermes-agent",
+            "agent": "ae://glocal-agent",
+            "control_surface": "mcp://gpu-mcp",
+            "brain": "ollama://localhost:11434",
+            "html": "templates/surfaces/index.html",
+            "manifest": "gold-on-void #D4AF37/#050505",
+        }
+        stdout = ("viewport://hermes-agent -> Hermes Agent viewport "
+                  "(ae://glocal-agent: GPU-MCP + offline brain, rendered local)\n")
+    else:
+        surface = {
             "kind": "viewport",
             "address": f"viewport://{node}",
             "v": "viewport",
             "node": node,
             "runtime": "hermes-viewport",
-        },
-    }
+        }
+        stdout = f"viewport://{node} -> local HTML/CSS/WASM viewport (the mandate)\n"
+    return {"ok": True, "rc": 0, "stdout": stdout, "stderr": "", "surface": surface}
 
 
 def _vscode_open_dispatch(raw: str) -> dict:

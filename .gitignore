@@ -148,3 +148,8 @@ node_modules
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
 dist/
+
+# ApexNodes 内部笔记 / 构建产物 —— 不进公开 fork
+/WORK-NOTES-*.md
+/coscli.log
+/coscli_output/

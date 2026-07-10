@@ -10181,25 +10181,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if self._restart_requested and self._restart_via_service:
                 self._launch_systemd_restart_shortcut()
-                # Always exit with TEMPFAIL (75) on service-managed
-                # restarts.  The shortcut helper above is best-effort and
-                # commonly fails on real deployments: non-root gateway
-                # units hit Polkit denials when invoking ``systemd-run
-                # --system``, headless boxes have no user bus for
-                # ``--user``, and operator-managed unit files may use
-                # ``Restart=on-failure`` rather than ``Restart=always``.
-                # Exit 75 paired with ``RestartForceExitStatus=75`` makes
-                # systemd treat the planned restart as a controlled
-                # failure and revive the unit via ``Restart=on-failure``,
-                # regardless of whether the helper survived.  Without
-                # this, a clean exit (0) on Linux left the gateway dead
-                # until someone rebooted the host.  Only the planned code
-                # (75) is whitelisted via ``RestartForceExitStatus``; a
-                # genuine crash exits non-zero-but-not-75, so real crash
-                # loops are still governed by the unit's normal
-                # ``Restart=``/``RestartSec`` (and any StartLimit the
-                # operator sets) rather than force-restarted here.
-                self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
+                # systemd units use Restart=always, so a planned restart should
+                # exit cleanly (0) and still be relaunched. Using TEMPFAIL (75)
+                # under systemd makes it treat the operator-requested restart as
+                # a failure and can trip stepped restart backoff. launchd's
+                # KeepAlive.SuccessfulExit=false, by contrast, needs a NON-zero
+                # exit to relaunch, so keep 75 on macOS (and whenever we're not
+                # under a systemd invocation). Branch on INVOCATION_ID + platform
+                # rather than always-75 (fork deployment model; paired darwin
+                # test asserts the 75 path).
+                self._exit_code = (
+                    GATEWAY_SERVICE_RESTART_EXIT_CODE
+                    if sys.platform == "darwin" or not os.environ.get("INVOCATION_ID")
+                    else 0
+                )
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
             self._draining = False

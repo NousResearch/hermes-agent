@@ -788,6 +788,62 @@ def test_detect_crashed_workers_isolated_failure_normal_retry(
             )
 
 
+def _run_as_protocol_violation(conn, monkeypatch, tid, pid):
+    import hermes_cli.kanban_db as _kb
+
+    host = _kb._claimer_id().split(":", 1)[0]
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, claim_lock=? " "WHERE id=?",
+        (pid, f"{host}:wpv", tid),
+    )
+    conn.commit()
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(_kb, "_classify_worker_exit", lambda _pid: ("clean_exit", 0))
+    return kb.detect_crashed_workers(conn)
+
+
+def test_protocol_violation_first_offense_gets_instructed_retry(
+    kanban_home,
+    monkeypatch,
+):
+    """A clean-exit-without-complete worker gets exactly one retry, with an
+    instructive error the retry worker sees in its prior-attempts context —
+    small local models commonly do the work but skip the terminal call."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pv-once", assignee="a")
+        _run_as_protocol_violation(conn, monkeypatch, tid, 91000)
+
+        task = kb.get_task(conn, tid)
+        assert (
+            task.status == "ready"
+        ), f"first protocol violation should allow a retry, got {task.status}"
+        row = conn.execute(
+            "SELECT consecutive_failures, last_failure_error FROM tasks " "WHERE id=?",
+            (tid,),
+        ).fetchone()
+        assert row["consecutive_failures"] == 1
+        assert "RETRY INSTRUCTION" in (row["last_failure_error"] or "")
+
+
+def test_protocol_violation_second_offense_trips_breaker(
+    kanban_home,
+    monkeypatch,
+):
+    """The no-infinite-loop guarantee: a second consecutive protocol
+    violation blocks the task."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pv-twice", assignee="a")
+        _run_as_protocol_violation(conn, monkeypatch, tid, 92000)
+        assert kb.get_task(conn, tid).status == "ready"
+
+        _run_as_protocol_violation(conn, monkeypatch, tid, 92001)
+
+        task = kb.get_task(conn, tid)
+        assert (
+            task.status == "blocked"
+        ), f"second protocol violation should trip breaker, got {task.status}"
+
+
 def test_detect_crashed_workers_skips_freshly_claimed_tasks(
     kanban_home, monkeypatch,
 ):

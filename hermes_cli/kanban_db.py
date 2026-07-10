@@ -6413,7 +6413,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 protocol_violation = True
                 error_text = (
                     "worker exited cleanly (rc=0) without calling "
-                    "kanban_complete or kanban_block — protocol violation"
+                    "kanban_complete or kanban_block — protocol violation. "
+                    "RETRY INSTRUCTION: if the prior run already did the "
+                    "work, verify it and report the result via "
+                    "kanban_complete; a run that ends without a terminal "
+                    "kanban call counts as failed no matter what it did."
                 )
                 event_kind = "protocol_violation"
                 event_payload = {
@@ -6518,11 +6522,18 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 not protocol_violation
                 and _fp_counts.get(fp, 0) >= 3
             )
+            # Protocol violations get exactly ONE instructed retry (limit 2)
+            # instead of an instant breaker trip: small local models commonly
+            # finish the work but exit without the terminal kanban call, and
+            # the retry worker sees the instructive error text below in its
+            # prior-attempts context — which usually fixes the second run.
+            # The no-infinite-loop guarantee is preserved (breaker on the
+            # 2nd consecutive violation). Systemic crashes keep limit 1.
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
-                failure_limit=1 if (protocol_violation or is_systemic) else None,
+                failure_limit=2 if protocol_violation else (1 if is_systemic else None),
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},

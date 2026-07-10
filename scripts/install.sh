@@ -1499,6 +1499,34 @@ setup_venv() {
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
 }
 
+# uv.lock records the ACTUAL registry each package was resolved against
+# (`source = { registry = "https://pypi.org/simple" }` in uv.lock). A CN
+# mirror default index (UV_DEFAULT_INDEX=TUNA etc, exported by
+# apexnodes_apply_cn_mirror_env when HERMES_CN_MIRRORS=1) is a DIFFERENT
+# identity than the one recorded, so `--locked` refuses outright with "The
+# lockfile ... needs to be updated" — verified against uv 0.11: an index
+# mismatch forces a live re-resolve against the mirror (30s+) that always
+# ends in that same refusal, before ever reaching hash comparison. Every
+# CN-mirror install therefore silently skipped the hash-verified tier and
+# fell straight through to the unverified `uv pip install` fallback below —
+# for every install, not just flaky ones (hc-472 followup).
+#
+# Sanitizing the index env here costs the CN path nothing: a `--locked`
+# sync's package URLs are pinned literal files.pythonhosted.org links inside
+# the lock regardless of which index is configured, and when the index DOES
+# match the recorded one, uv trusts the lock directly with NO network probe
+# at all — so this is strictly faster on top of restoring real hash
+# verification. Only the unlocked `uv pip install` fallback tiers below
+# still want the CN mirror (they re-resolve fresh from an index, so the
+# mirror genuinely buys speed there); this helper deliberately does not
+# touch those. Mirrors build-runtime-bundle.mjs's identical sanitization for
+# the bundle build path — keep the env-var list in step with that file.
+_uv_sync_locked() {
+    env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_EXTRA_INDEX_URL -u UV_INDEX \
+        -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL \
+        UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked "$@"
+}
+
 install_deps() {
     log_info "Installing dependencies..."
 
@@ -1578,9 +1606,10 @@ install_deps() {
     # non-zero if any package would be added/removed/changed — so this never
     # masks a stale or partial environment (those fall through and reinstall).
     # Correctness-preserving by construction: we only skip when uv itself
-    # confirms nothing would change.
+    # confirms nothing would change. Goes through _uv_sync_locked (see above)
+    # so a CN mirror index in the env can't turn this into a permanent no-op.
     if [ "$USE_VENV" = true ] && [ -f "uv.lock" ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
-        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked --check >/dev/null 2>&1; then
+        if _uv_sync_locked --check >/dev/null 2>&1; then
             log_success "Python dependencies already satisfied (uv.lock) — skipping"
             mark_stage_skipped
             return 0
@@ -1652,7 +1681,10 @@ install_deps() {
         #                  This respects the curation in pyproject.toml.
         # uv's own progress UI handles TTY detection and downgrades
         # gracefully when stdout/stderr aren't terminals.
-        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
+        # _uv_sync_locked (see above install_deps) sanitizes the CN mirror
+        # index env so this tier is actually attempted instead of always
+        # refusing under HERMES_CN_MIRRORS=1.
+        if _uv_sync_locked; then
             log_success "Main package installed (hash-verified via uv.lock)"
             log_success "All dependencies installed"
             return 0

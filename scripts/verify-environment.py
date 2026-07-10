@@ -57,6 +57,43 @@ def static_source_checks(manifest_path):
         node_bootstrap = f"{node_bootstrap} ({e})"
     checks.append(("node-bootstrap.sh honors HERMES_NODE_DIST_BASE", ok, node_bootstrap))
 
+    # hc-472 followup: uv.lock records the ACTUAL registry each package was
+    # resolved against, so the CN mirror default index (UV_DEFAULT_INDEX etc,
+    # apexnodes_apply_cn_mirror_env / Set-ApexCnMirrorEnv) is a DIFFERENT
+    # identity than the lock expects — `uv sync --extra all --locked` then
+    # refuses outright ("lockfile needs to be updated") and every CN-mirror
+    # install silently fell through past hash verification into the
+    # unverified `uv pip install` fallback tiers, every time. install.sh /
+    # install.ps1 must sanitize that index env for the --locked calls
+    # specifically (see _uv_sync_locked / Invoke-UvSyncLocked) — this guards
+    # the fix from silently regressing back to the raw, unsanitized call.
+    install_sh = os.path.join(repo_root, "scripts", "install.sh")
+    try:
+        src = open(install_sh, encoding="utf-8").read()
+        ok = (
+            "_uv_sync_locked" in src
+            and "-u UV_DEFAULT_INDEX" in src
+            and "_uv_sync_locked --check" in src
+            and "if _uv_sync_locked; then" in src
+        )
+    except OSError as e:
+        ok = False
+        install_sh = f"{install_sh} ({e})"
+    checks.append(("install.sh sanitizes mirror index env for uv sync --locked", ok, install_sh))
+
+    install_ps1 = os.path.join(repo_root, "scripts", "install.ps1")
+    try:
+        src = open(install_ps1, encoding="utf-8").read()
+        ok = (
+            "function Invoke-UvSyncLocked" in src
+            and '$env:UV_DEFAULT_INDEX = $null' in src
+            and "Invoke-UvSyncLocked -Check" in src
+        )
+    except OSError as e:
+        ok = False
+        install_ps1 = f"{install_ps1} ({e})"
+    checks.append(("install.ps1 sanitizes mirror index env for uv sync --locked", ok, install_ps1))
+
     return checks
 
 

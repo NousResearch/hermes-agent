@@ -1929,6 +1929,62 @@ function Install-Venv {
     Write-Success "Virtual environment ready (Python $PythonVersion)"
 }
 
+# uv.lock records the ACTUAL registry each package was resolved against
+# (`source = { registry = "https://pypi.org/simple" }` in uv.lock). A CN
+# mirror default index ($env:UV_DEFAULT_INDEX = TUNA etc, exported by
+# Set-ApexCnMirrorEnv when HERMES_CN_MIRRORS=1) is a DIFFERENT identity than
+# the one recorded, so `--locked` refuses outright with "The lockfile ...
+# needs to be updated" -- verified against uv 0.11: an index mismatch forces
+# a live re-resolve against the mirror (30s+) that always ends in that same
+# refusal, before ever reaching hash comparison. Every CN-mirror install
+# therefore silently skipped the hash-verified tier and fell straight
+# through to the unverified `uv pip install` fallback below -- for every
+# install, not just flaky ones (hc-472 followup).
+#
+# Sanitizing the index env here costs the CN path nothing: a `--locked` sync's
+# package URLs are pinned literal files.pythonhosted.org links inside the
+# lock regardless of which index is configured, and when the index DOES
+# match the recorded one, uv trusts the lock directly with NO network probe
+# at all -- so this is strictly faster on top of restoring real hash
+# verification. Only the unlocked `uv pip install` fallback tiers below still
+# want the CN mirror (they re-resolve fresh from an index, so the mirror
+# genuinely buys speed there); this helper deliberately does not touch those.
+# Mirrors scripts/install.sh::_uv_sync_locked -- keep the two in step.
+function Invoke-UvSyncLocked {
+    param([switch]$Check)
+
+    $savedIndexEnv = @{
+        UV_DEFAULT_INDEX    = $env:UV_DEFAULT_INDEX
+        UV_INDEX_URL        = $env:UV_INDEX_URL
+        UV_EXTRA_INDEX_URL  = $env:UV_EXTRA_INDEX_URL
+        UV_INDEX            = $env:UV_INDEX
+        PIP_INDEX_URL       = $env:PIP_INDEX_URL
+        PIP_EXTRA_INDEX_URL = $env:PIP_EXTRA_INDEX_URL
+    }
+    $env:UV_DEFAULT_INDEX = $null
+    $env:UV_INDEX_URL = $null
+    $env:UV_EXTRA_INDEX_URL = $null
+    $env:UV_INDEX = $null
+    $env:PIP_INDEX_URL = $null
+    $env:PIP_EXTRA_INDEX_URL = $null
+
+    try {
+        $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
+        if ($Check) {
+            Invoke-NativeWithRelaxedErrorAction { & $UvCmd sync --extra all --locked --check *> $null }
+        } else {
+            Invoke-NativeWithRelaxedErrorAction { & $UvCmd sync --extra all --locked }
+        }
+    } finally {
+        $env:UV_DEFAULT_INDEX = $savedIndexEnv.UV_DEFAULT_INDEX
+        $env:UV_INDEX_URL = $savedIndexEnv.UV_INDEX_URL
+        $env:UV_EXTRA_INDEX_URL = $savedIndexEnv.UV_EXTRA_INDEX_URL
+        $env:UV_INDEX = $savedIndexEnv.UV_INDEX
+        $env:PIP_INDEX_URL = $savedIndexEnv.PIP_INDEX_URL
+        $env:PIP_EXTRA_INDEX_URL = $savedIndexEnv.PIP_EXTRA_INDEX_URL
+    }
+}
+
 function Install-Dependencies {
     Write-Info "Installing dependencies..."
     
@@ -1959,10 +2015,11 @@ function Install-Dependencies {
     # never mask a stale or partial environment (those fall through and
     # reinstall). Correctness-preserving by construction: we only skip when uv
     # itself confirms nothing would change. Mirrors install.sh::install_deps.
+    # Goes through Invoke-UvSyncLocked (see above) so a CN mirror index in the
+    # env can't turn this into a permanent no-op.
     $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
     if ((-not $NoVenv) -and (Test-Path "uv.lock") -and (Test-Path $venvPythonExe)) {
-        $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
-        Invoke-NativeWithRelaxedErrorAction { & $UvCmd sync --extra all --locked --check *> $null }
+        Invoke-UvSyncLocked -Check
         if ($LASTEXITCODE -eq 0) {
             Pop-Location
             Write-Success "Python dependencies already satisfied (uv.lock) -- skipping"
@@ -1998,8 +2055,10 @@ function Install-Dependencies {
         # empty and producing the broken state where `hermes.exe` exists
         # in the wrong directory and imports fail with ModuleNotFoundError.
         # (Mirrors the same flag in scripts/install.sh::install_deps.)
-        $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
-        Invoke-NativeWithRelaxedErrorAction { & $UvCmd sync --extra all --locked }
+        # Invoke-UvSyncLocked (above) sanitizes the CN mirror index env so
+        # this tier is actually attempted instead of always refusing under
+        # HERMES_CN_MIRRORS=1.
+        Invoke-UvSyncLocked
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Main package installed (hash-verified via uv.lock)"
             $script:InstalledTier = "hash-verified (uv.lock)"

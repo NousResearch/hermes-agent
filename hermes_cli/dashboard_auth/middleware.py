@@ -150,6 +150,8 @@ def _auto_sso_response(request: Request) -> Response | None:
       * exactly ONE interactive provider is registered — with two or more we
         can't pick for the user, so the ``/login`` chooser must render; with
         zero there's nothing to redirect to;
+      * that provider is OAuth-style, not a password form provider. Password
+        providers must render ``/login`` so the user can enter credentials;
       * the one-shot loop-guard marker is ABSENT. Its presence means we
         already bounced to the portal once and came back still
         unauthenticated (no portal session) — auto-redirecting again would
@@ -462,4 +464,3 @@ def _attempt_refresh(request: Request, *, refresh_token):
         if new_session is not None:
             return new_session, provider.name
     return None
-

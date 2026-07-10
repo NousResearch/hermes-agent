@@ -701,14 +701,29 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     if detected and detected.get("base_url"):
         # Persist the detection result keyed on the API key hash.
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
-        state["detected_endpoint"] = {
+        detected_endpoint = {
             "base_url": detected["base_url"],
             "endpoint_id": detected.get("id", ""),
             "model": detected.get("model", ""),
             "label": detected.get("label", ""),
             "key_hash": key_hash,
         }
-        _save_provider_state(auth_store, "zai", state)
+        # Persist failure (disk full, permissions, lock timeout) must not
+        # break resolution — detection already succeeded; worst case the
+        # next start re-probes.
+        try:
+            with _auth_store_lock():
+                # Reload auth_store under lock to avoid overwriting concurrent changes
+                auth_store = _load_auth_store()
+                state_under_lock = _load_provider_state(auth_store, "zai") or {}
+                state_under_lock["detected_endpoint"] = detected_endpoint
+                # set_active=False: this runs from credential-pool env seeding
+                # (agent/credential_pool.py) for ANY user with a Z.AI key in env,
+                # and caching a probe result must not flip their active provider.
+                _store_provider_state(auth_store, "zai", state_under_lock, set_active=False)
+                _save_auth_store(auth_store)
+        except Exception as exc:
+            logger.warning("Z.AI: could not persist detected endpoint (%s); will re-probe next start", exc)
         logger.info("Z.AI: auto-detected endpoint %s (%s)", detected["label"], detected["base_url"])
         return detected["base_url"]
 

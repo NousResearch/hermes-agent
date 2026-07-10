@@ -52,7 +52,7 @@ def _on_session_finalize(**kwargs):
         runtime.on_session_finalize(**kwargs)
 
 
-def _handle_advisor(args: str) -> str:
+def _handle_advisor(args: str) -> str | None:
     """Slash command handler for /advisor [on|off|status]."""
     runtime = _get_runtime()
     if runtime is None:

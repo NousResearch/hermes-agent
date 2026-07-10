@@ -31,3 +31,22 @@ export function percentToZoomLevel(percent) {
 
   return clampZoomLevel(Math.log(percent / 100) / Math.log(ZOOM_FACTOR_BASE))
 }
+
+// Chromium on Windows can drop webContents zoom when a BrowserWindow is minimized
+// and restored. Re-apply the persisted level on these lifecycle transitions.
+export const ZOOM_REASSERT_WINDOW_EVENTS = ['show', 'restore']
+
+export function installZoomReassertOnWindowEvents(win, reassert) {
+  if (!win?.on) {
+    return
+  }
+
+  for (const event of ZOOM_REASSERT_WINDOW_EVENTS) {
+    win.on(event, () => {
+      if (win.isDestroyed?.()) {
+        return
+      }
+      reassert()
+    })
+  }
+}

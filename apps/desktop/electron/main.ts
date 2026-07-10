@@ -4743,7 +4743,13 @@ function installPreviewShortcut(window) {
 // survives reloads/restarts) rather than a main-process JSON file. The main
 // process owns setZoomLevel, so we mirror each change into localStorage and
 // read it back on did-finish-load to re-apply after reloads or crash recovery.
-import { clampZoomLevel, percentToZoomLevel, ZOOM_STORAGE_KEY, zoomLevelToPercent } from './zoom'
+import {
+  clampZoomLevel,
+  installZoomReassertOnWindowEvents,
+  percentToZoomLevel,
+  ZOOM_STORAGE_KEY,
+  zoomLevelToPercent
+} from './zoom'
 
 function setAndPersistZoomLevel(window, zoomLevel) {
   if (!window || window.isDestroyed()) {
@@ -6507,10 +6513,21 @@ async function startHermes() {
 // security posture: external links open in the OS browser, in-app navigation
 // stays confined to the dev server / packaged file URL, and the preview /
 // devtools / zoom / context-menu affordances behave identically everywhere.
-function wireCommonWindowHandlers(win) {
+//
+// `zoom` is opt-out for the pet overlay: it sizes its own OS window to fit the
+// sprite in unzoomed CSS px (overlayWindowSize -> setBounds) and has its own
+// Alt+wheel scale, so inheriting the global UI zoom would render the mascot
+// larger than its window and crop it. Chat windows keep zoom on.
+function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {}) {
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
-  installZoomShortcuts(win)
+  if (zoom) {
+    installZoomShortcuts(win)
+    // Re-apply persisted zoom on show/restore (Windows drops webContents zoom on
+    // minimize/restore) and on first load (reloads / crash recovery).
+    installZoomReassertOnWindowEvents(win, () => restorePersistedZoomLevel(win))
+    win.webContents.once('did-finish-load', () => restorePersistedZoomLevel(win))
+  }
   installContextMenu(win)
   win.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)
@@ -6702,7 +6719,9 @@ function spawnPetOverlayWindow(bounds) {
     // Not supported everywhere — best effort.
   }
 
-  wireCommonWindowHandlers(win)
+  // Pet overlay opts out of global UI zoom (see wireCommonWindowHandlers): it
+  // owns its window-fit + scale, and inheriting zoom would crop the sprite.
+  wireCommonWindowHandlers(win, { zoom: false })
 
   win.once('ready-to-show', () => {
     if (!win.isDestroyed()) {
@@ -6893,7 +6912,8 @@ function createWindow() {
   }
 
   mainWindow.webContents.once('did-finish-load', () => {
-    restorePersistedZoomLevel(mainWindow)
+    // Zoom restore is handled by wireCommonWindowHandlers (shared with session
+    // windows); no need to reapply it here.
     broadcastBootProgress()
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))

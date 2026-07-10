@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import fnmatch
 import importlib
 import json
 import logging
@@ -697,13 +698,58 @@ def _normalize_recall_types(value: Any, default: list[str] | None = None) -> lis
     return fallback
 
 
+def _normalize_match_patterns(value: Any) -> list[str]:
+    """Normalize a route match field into non-empty glob patterns."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        return [p.strip() for p in text.split(",") if p.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(p).strip() for p in value if str(p).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _matches_any_glob(value: str, patterns: Any) -> bool:
+    normalized = _normalize_match_patterns(patterns)
+    if not normalized:
+        return True
+    candidate = str(value or "")
+    return any(fnmatch.fnmatchcase(candidate, pattern) for pattern in normalized)
+
+
+def _repo_name_from_workspace_path(workspace_path: str) -> str:
+    return os.path.basename(str(workspace_path or "").rstrip("/"))
+
+
 def _route_matches(rule: dict[str, Any], *, profile: str, workspace: str,
-                   workspace_path: str, platform: str, user: str) -> bool:
+                   workspace_path: str, platform: str, user: str,
+                   git_remote: str = "") -> bool:
     prefix = str(rule.get("workspace_path_prefix") or "").rstrip("/")
     if prefix:
         current = str(workspace_path or "").rstrip("/")
         if not (current == prefix or current.startswith(prefix + "/")):
             return False
+    if "workspace_path_glob" in rule and not _matches_any_glob(
+        str(workspace_path or ""), rule.get("workspace_path_glob")
+    ):
+        return False
+    if "workspace_glob" in rule and not _matches_any_glob(
+        str(workspace or ""), rule.get("workspace_glob")
+    ):
+        return False
+    if "repo_name_glob" in rule and not _matches_any_glob(
+        _repo_name_from_workspace_path(workspace_path) or workspace,
+        rule.get("repo_name_glob"),
+    ):
+        return False
+    if "git_remote_glob" in rule and not _matches_any_glob(
+        str(git_remote or ""), rule.get("git_remote_glob")
+    ):
+        return False
     for key, actual in {
         "profile": profile,
         "workspace": workspace,
@@ -713,6 +759,14 @@ def _route_matches(rule: dict[str, Any], *, profile: str, workspace: str,
         if key in rule and str(rule.get(key) or "") != str(actual or ""):
             return False
     return True
+
+
+def _route_specificity(rule: dict[str, Any]) -> int:
+    """Return a stable specificity score for first-match route ordering."""
+    candidates = [str(rule.get("workspace_path_prefix") or "")]
+    for key in ("workspace_path_glob", "repo_name_glob", "workspace_glob", "git_remote_glob"):
+        candidates.extend(_normalize_match_patterns(rule.get(key)))
+    return max((len(candidate) for candidate in candidates), default=0)
 
 
 def _resolve_hindsight_routes(
@@ -726,6 +780,7 @@ def _resolve_hindsight_routes(
     platform: str,
     user: str,
     session: str,
+    git_remote: str = "",
 ) -> list[HindsightBankRoute]:
     """Resolve configured Hindsight bank routes for this runtime context."""
     fallback_bank = _resolve_bank_id_template(
@@ -758,9 +813,10 @@ def _resolve_hindsight_routes(
     matches = [
         rule for rule in rules
         if _route_matches(rule, profile=profile, workspace=workspace,
-                          workspace_path=workspace_path, platform=platform, user=user)
+                          workspace_path=workspace_path, platform=platform, user=user,
+                          git_remote=git_remote)
     ]
-    matches.sort(key=lambda rule: len(str(rule.get("workspace_path_prefix") or "")), reverse=True)
+    matches.sort(key=_route_specificity, reverse=True)
     selected = matches[:1] if str(routing.get("strategy", "first_match")) == "first_match" else matches
 
     routes: list[HindsightBankRoute] = []
@@ -849,6 +905,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_identity = ""
         self._agent_workspace = ""
         self._agent_workspace_path = ""
+        self._agent_git_remote = ""
         self._turn_index = 0
         self._client = None
         self._timeout = _DEFAULT_TIMEOUT
@@ -1449,6 +1506,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_identity = str(kwargs.get("agent_identity") or "").strip()
         self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
         self._agent_workspace_path = str(kwargs.get("agent_workspace_path") or kwargs.get("workspace_path") or "").strip()
+        self._agent_git_remote = str(
+            kwargs.get("agent_git_remote") or kwargs.get("git_remote") or ""
+        ).strip()
         self._turn_index = 0
         self._session_turns = []
         self._last_retained_turn_count = 0
@@ -1562,6 +1622,7 @@ class HindsightMemoryProvider(MemoryProvider):
             platform=self._platform,
             user=self._user_id,
             session=self._session_id,
+            git_remote=self._agent_git_remote,
         )
         primary_routes = [route for route in self._hindsight_routes if route.retain or route.recall]
         if primary_routes:

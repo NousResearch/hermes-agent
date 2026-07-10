@@ -79,6 +79,8 @@ class MemoryProvider(ABC):
           - agent_workspace (str): Shared workspace name (e.g. "hermes").
           - agent_workspace_path (str): Stable startup working directory / project
             root for providers that route by workspace path.
+          - agent_git_remote (str): Best-effort git remote URL for providers
+            that route by repository origin.
           - parent_session_id (str): For subagents, the parent's session_id.
           - user_id (str): Platform user identifier (gateway sessions).
           - user_id_alt (str): Optional alternate stable platform user identifier.

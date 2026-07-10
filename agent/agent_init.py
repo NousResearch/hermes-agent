@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -57,6 +58,27 @@ from utils import base_url_host_matches, is_truthy_value
 # ``logger = logging.getLogger(__name__)``, which resolves to "run_agent"
 # from inside that module.)
 logger = logging.getLogger("run_agent")
+
+
+def _git_origin_remote_from_cwd(cwd: str) -> str:
+    """Best-effort origin URL for memory providers that route by repository."""
+    if not cwd:
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1,
+            stdin=subprocess.DEVNULL,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip()
 
 
 def _ra():
@@ -1237,9 +1259,11 @@ def init_agent(
                         from hermes_cli.profiles import get_active_profile_name
                         from agent.runtime_cwd import resolve_agent_cwd
                         _profile = get_active_profile_name()
+                        _agent_cwd = str(resolve_agent_cwd())
                         _init_kwargs["agent_identity"] = _profile
                         _init_kwargs["agent_workspace"] = "hermes"
-                        _init_kwargs["agent_workspace_path"] = str(resolve_agent_cwd())
+                        _init_kwargs["agent_workspace_path"] = _agent_cwd
+                        _init_kwargs["agent_git_remote"] = _git_origin_remote_from_cwd(_agent_cwd)
                     except Exception:
                         pass
                     agent._memory_manager.initialize_all(**_init_kwargs)

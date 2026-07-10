@@ -1914,6 +1914,64 @@ class TestBankRouting:
         assert [route.bank_id for route in routes] == ["infra"]
         assert routes[0].name == "common-memory"
 
+    def test_route_resolution_matches_portable_workspace_globs(self):
+        config = {
+            "bank_routing": {
+                "rules": [
+                    {"name": "workspace", "workspace_glob": "rigplane-*", "bank_id": "workspace-bank"},
+                    {"name": "repo", "repo_name_glob": "rigplane-*", "bank_id": "repo-bank"},
+                    {
+                        "name": "path",
+                        "workspace_path_glob": "/work/*/rigplane-*",
+                        "bank_id": "path-bank",
+                    },
+                ],
+                "strategy": "all_matches",
+            }
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="global-user",
+            bank_id_template="",
+            profile="default",
+            workspace="rigplane-desktop",
+            workspace_path="/work/alice/rigplane-pro",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        assert [route.bank_id for route in routes] == ["path-bank", "workspace-bank", "repo-bank"]
+
+    def test_route_resolution_matches_git_remote_glob(self):
+        config = {
+            "bank_routing": {
+                "rules": [
+                    {
+                        "name": "rigplane-git",
+                        "git_remote_glob": "*github.com*rigplane/rigplane-*",
+                        "bank_id": "rigplane-bank",
+                    }
+                ]
+            }
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="global-user",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/some/host/path/rigplane-pro",
+            platform="cli",
+            user="",
+            session="s1",
+            git_remote="git@github.com:rigplane/rigplane-pro.git",
+        )
+
+        assert [route.bank_id for route in routes] == ["rigplane-bank"]
+
     def test_provider_initialize_stores_resolved_routes(self, tmp_path, monkeypatch):
         config = {
             "mode": "cloud",

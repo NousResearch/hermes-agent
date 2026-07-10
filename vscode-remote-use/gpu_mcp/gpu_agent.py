@@ -1,26 +1,26 @@
-"""
-gpu_agent.py — fully-offline sovereign GPU agent on Victus (RTX 3050 6GB).
+"""gpu_agent.py — fully-offline sovereign GPU agent (self-contained plugin copy).
 
-A concrete instance of environments.host_loop.LocalHostLoop:
+SELF-CONTAINED COPY bundled inside the Hermes Agent VS Code extension.
+Canonical source of truth: templates/surfaces/gpu_agent.py (hermes-fork repo).
+
+A concrete instance of host_loop.LocalHostLoop:
   brain  : ollama qwen2.5-coder:3b @ :11434 (disk weights, ZERO network)
   hands  : CUDA tools on the host
            - probe_gpu     : live nvidia-smi telemetry
            - compile_kernel: nvcc (via MSVC vcvars64.bat) compile a matmul kernel
            - run_kernel    : execute the compiled .exe on the GPU, host-side timing
-  manifest: a run record proving probe/compile/run happened offline.
-
-Run:  python gpu_agent.py "probe the GPU then compile and run a CUDA matmul"
+Portable across x86_64-pc-windows (vcvars located via search, not hardcoded).
 """
 from __future__ import annotations
-import json, os, subprocess, tempfile, time
+import glob, json, os, subprocess, tempfile, time
 from pathlib import Path
 
-from environments.host_loop import LocalHostLoop
+from host_loop import LocalHostLoop
+
 
 def _find_vcvars() -> "str | None":
     """Locate MSVC's vcvars64.bat across common install layouts (portable to any
-    x86_64-pc-windows machine, not just Victus). Honors HERMES_MSVC_VCVARS env."""
-    import glob
+    x86_64-pc-windows machine). Honors HERMES_MSVC_VCVARS env."""
     env = os.environ.get("HERMES_MSVC_VCVARS")
     if env and Path(env).exists():
         return env
@@ -39,8 +39,7 @@ def _find_vcvars() -> "str | None":
 
 _VCVARS = _find_vcvars()
 
-_KERNEL_SRC = """
-#include <stdio.h>
+_KERNEL_SRC = """#include <stdio.h>
 __global__ void matmul(float* a, float* b, float* c, int n){
   int i = blockIdx.x*blockDim.x + threadIdx.x;
   if (i < n*n) { float s=0; for(int k=0;k<n;k++) s+=a[i/n*n+k]*b[k*n+i%n]; c[i]=s; }
@@ -58,8 +57,7 @@ int main(){
   printf("OK matmul n=%d c[0]=%.3f\\n", n, hc[0]);
   free(ha); free(hc); cudaFree(a); cudaFree(b); cudaFree(c);
   return 0;
-}
-"""
+}"""
 
 
 class GPUAgent(LocalHostLoop):
@@ -76,7 +74,6 @@ class GPUAgent(LocalHostLoop):
             name="gpu-agent",
         )
 
-    # ---- brain (ollama, offline) ----
     def _ollama_planner(self, prompt: str) -> str:
         try:
             out = subprocess.run(
@@ -89,7 +86,6 @@ class GPUAgent(LocalHostLoop):
         except Exception as e:
             return f"FINAL: brain error ({e})"
 
-    # ---- hands ----
     def probe_gpu(self, arg=None) -> dict:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu",
@@ -128,14 +124,3 @@ class GPUAgent(LocalHostLoop):
         r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
         dt = round((time.perf_counter() - t0) * 1000, 2)
         return {"ok": r.returncode == 0, "host_ms": dt, "n": 512, "stderr": r.stderr[:200]}
-
-
-if __name__ == "__main__":
-    import sys
-    task = sys.argv[1] if len(sys.argv) > 1 else \
-        "Probe the GPU, then compile and run a CUDA matmul kernel, and report what happened."
-    agent = GPUAgent()
-    result = agent.run(task)
-    print("\n=== GPU AGENT RESULT ===")
-    print(result["answer"])
-    print(f"\n[manifest: {agent.manifest_path}]")

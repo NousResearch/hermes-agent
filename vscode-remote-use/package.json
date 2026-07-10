@@ -1,13 +1,14 @@
 {
-  "name": "vscode-remote-use",
-  "displayName": "vscode-remote-use",
-  "description": "Hermes VS Code media primitive + breakout bridge",
-  "version": "0.1.0",
+  "name": "hermes-agent",
+  "displayName": "Hermes Agent",
+  "description": "Hermes Agent — sovereign local AI: offline brain (ollama), CUDA + Rust/WASM command & control, and a local GPU-MCP server. Gold-on-void +æ^glocal runtime.",
+  "version": "0.2.0",
   "publisher": "hermes-agent",
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
+  "categories": ["Other", "AI", "Machine Learning"],
+  "keywords": ["hermes", "agent", "ollama", "cuda", "wasm", "rust", "mcp", "offline", "sovereign", "local", "gpu", "nvidia", "glocal", "ae"],
   "main": "./out/extension.js",
   "activationEvents": [
     "onStartupFinished",
@@ -99,6 +100,16 @@
         "title": "Remote Use: Local Brain (ollama)"
       }
     ],
+    "mcp": {
+      "servers": {
+        "gpu-mcp": {
+          "command": "python",
+          "args": [
+            "${extensionPath}/gpu_mcp/gpu_mcp.py"
+          ]
+        }
+      }
+    },
     "themes": [
       {
         "label": "æ:// Gold-on-Void",

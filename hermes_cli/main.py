@@ -5687,7 +5687,17 @@ def cmd_gui(args: argparse.Namespace):
         else:
             print("→ Installing desktop workspace dependencies...")
             nixos_env = _nixos_build_env()
-            install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
+            # Merge Hermes-managed Node PATH (from `env`, set above via
+            # `with_hermes_node_path()`) with any NixOS-specific vars so
+            # `npm ci` can find `node` even when the parent process's
+            # PATH is bare (e.g. when invoked from the desktop updater
+            # chain: Desktop → hermes-setup → hermes update).
+            install_env = dict(env)
+            if nixos_env:
+                install_env.update(nixos_env)
+            install_result = _run_npm_install_deterministic(
+                npm, PROJECT_ROOT, capture_output=False, env=install_env
+            )
             if install_result.returncode != 0:
                 if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
                     print("✗ Desktop dependency install failed")
@@ -9970,7 +9980,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Electron build by ``hermes update``.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
-        from hermes_constants import find_node_executable
+        from hermes_constants import find_node_executable, with_hermes_node_path
 
         if (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
@@ -9981,9 +9991,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # covers a still-settling rebuild window the first wait didn't fully
             # catch — then surface the captured tail so the failure is
             # debuggable.
-            build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
+            #
+            # Ensure the Hermes-managed Node is on PATH for this subprocess.
+            # When ``hermes update`` runs inside the desktop updater chain
+            # (Desktop → hermes-setup → hermes update), the shell PATH
+            # customizations are lost and ``node``/``npm`` are not found
+            # (#desktop-update-node-path).
+            build_result = _run_logged_subprocess(
+                _desktop_build_cmd, cwd=PROJECT_ROOT, env=with_hermes_node_path()
+            )
             if build_result.returncode != 0:
-                build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
+                build_result = _run_logged_subprocess(
+                    _desktop_build_cmd, cwd=PROJECT_ROOT, env=with_hermes_node_path()
+                )
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
                 tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])

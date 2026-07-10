@@ -102,6 +102,112 @@ class GatewaySlashCommandsMixin:
         adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
+    async def _handle_workspace_command(self, event: MessageEvent) -> str:
+        """List and manage registered gateway working directories."""
+        try:
+            parts = shlex.split((event.text or "").strip())
+        except ValueError as exc:
+            return f"Invalid /workspace arguments: {exc}"
+        args = parts[1:]
+        action = args[0].lower() if args else "list"
+        if action not in {"list", "new", "switch", "remove"}:
+            args = ["switch", *args]
+            action = "switch"
+
+        source = event.source
+        entry = await self.async_session_store.get_or_create_session(source)
+        session_key = entry.session_key
+
+        def _operate() -> tuple[str, Optional[tuple[str, str]]]:
+            from hermes_cli.config import load_config, save_config
+            from hermes_constants import get_hermes_home
+
+            cfg = load_config()
+            gateway_cfg = cfg.setdefault("gateway", {})
+            raw_registry = gateway_cfg.setdefault("workspaces", {})
+            registry = raw_registry if isinstance(raw_registry, dict) else {}
+            if raw_registry is not registry:
+                gateway_cfg["workspaces"] = registry
+
+            if action == "list":
+                current_name = entry.workspace_name or "default"
+                current_cwd = entry.workspace_cwd or os.environ.get(
+                    "TERMINAL_CWD", str(Path.home())
+                )
+                lines = [f"Current: {current_name} ({current_cwd})", "Workspaces:"]
+                if not registry:
+                    lines.append("  (none registered)")
+                for name, raw_path in sorted(registry.items()):
+                    marker = "*" if name == entry.workspace_name else " "
+                    lines.append(f"{marker} {name}: {raw_path}")
+                if entry.workspace_name and entry.workspace_name not in registry:
+                    lines.append(f"* {entry.workspace_name}: {entry.workspace_cwd} (unregistered)")
+                if entry.workspace_name:
+                    lines.append("* = current")
+                return "\n".join(lines), None
+
+            if action == "new":
+                if len(args) not in {2, 3}:
+                    return "Usage: /workspace new <name> [path]", None
+                name = args[1]
+                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name) or name in {".", ".."}:
+                    return "Workspace names may contain letters, numbers, '.', '_', and '-' (max 64).", None
+                if name in registry:
+                    return f"Workspace '{name}' is already registered at {registry[name]}", None
+                path = Path(args[2]).expanduser() if len(args) == 3 else get_hermes_home() / "workspaces" / name
+                try:
+                    path = path.resolve(strict=False)
+                    path.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    return f"Could not create workspace '{name}': {exc}", None
+                registry[name] = str(path)
+                save_config(cfg)
+                return f"Registered workspace '{name}' at {path}", None
+
+            if len(args) != 2:
+                return f"Usage: /workspace {action} <name>", None
+            name = args[1]
+            if name not in registry:
+                return f"Unknown workspace '{name}'. Use /workspace list to see registered workspaces.", None
+
+            path = Path(str(registry[name])).expanduser().resolve(strict=False)
+            if action == "remove":
+                del registry[name]
+                save_config(cfg)
+                if entry.workspace_name == name:
+                    fallback = os.environ.get("TERMINAL_CWD", str(Path.home()))
+                    return f"Unregistered workspace '{name}'. Files were not deleted.", ("", fallback)
+                return f"Unregistered workspace '{name}'. Files were not deleted.", None
+
+            if not path.is_dir():
+                return f"Workspace '{name}' path does not exist or is not a directory: {path}", None
+            return f"Switched workspace to '{name}' ({path})", (name, str(path))
+
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            from gateway.run import _profile_runtime_scope
+            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                message, selection = await asyncio.to_thread(_operate)
+        else:
+            message, selection = await asyncio.to_thread(_operate)
+
+        if selection is not None:
+            name, cwd = selection
+            updated = await self.async_session_store.set_workspace(
+                session_key, name or None, cwd if name else None,
+            )
+            if updated is not None:
+                from tools.terminal_tool import register_task_env_overrides
+                register_task_env_overrides(updated.session_id, {
+                    "cwd": cwd,
+                    # Gateway workspaces may run concurrently. Mark this task
+                    # as isolated so two sessions never share a mutable env.cwd.
+                    "env_type": os.environ.get("TERMINAL_ENV", "local"),
+                })
+                db = getattr(self.session_store, "_db", None)
+                if db is not None:
+                    await asyncio.to_thread(db.update_session_cwd, updated.session_id, cwd)
+        return message
+
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source

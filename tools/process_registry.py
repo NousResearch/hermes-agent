@@ -337,7 +337,7 @@ class ProcessRegistry:
         if not self._global_watch_admit(now):
             return
 
-        self.completion_queue.put({
+        notification = {
             "session_id": session.id,
             "session_key": session.session_key,
             "command": session.command,
@@ -351,7 +351,9 @@ class ProcessRegistry:
             "user_name": session.watcher_user_name,
             "thread_id": session.watcher_thread_id,
             "message_id": session.watcher_message_id,
-        })
+        }
+        _redact_process_result(notification)
+        self.completion_queue.put(notification)
 
     def _global_watch_admit(self, now: float) -> bool:
         """Return True if this watch_match event is allowed through the global breaker.
@@ -1082,7 +1084,7 @@ class ProcessRegistry:
         if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
-            self.completion_queue.put({
+            notification = {
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
@@ -1091,7 +1093,9 @@ class ProcessRegistry:
                 "completion_reason": session.completion_reason,
                 "termination_source": session.termination_source,
                 "output": output_tail,
-            })
+            }
+            _redact_process_result(notification)
+            self.completion_queue.put(notification)
 
     # ----- Query Methods -----
 

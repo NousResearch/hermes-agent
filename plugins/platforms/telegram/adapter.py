@@ -26,6 +26,10 @@ try:
         from telegram import LinkPreviewOptions
     except ImportError:
         LinkPreviewOptions = None
+    try:
+        from telegram import ForceReply
+    except ImportError:
+        ForceReply = None
     from telegram.ext import (
         Application,
         CommandHandler,
@@ -45,6 +49,7 @@ except ImportError:
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
     LinkPreviewOptions = None
+    ForceReply = None
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
@@ -119,7 +124,7 @@ def check_telegram_requirements() -> bool:
     so the adapter's class-level type aliases get rebound.
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
-    global InlineKeyboardMarkup, LinkPreviewOptions, Application
+    global InlineKeyboardMarkup, LinkPreviewOptions, ForceReply, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
@@ -136,6 +141,10 @@ def check_telegram_requirements() -> bool:
             from telegram import LinkPreviewOptions as _LPO
         except ImportError:
             _LPO = None
+        try:
+            from telegram import ForceReply as _FR
+        except ImportError:
+            _FR = None
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
@@ -152,6 +161,7 @@ def check_telegram_requirements() -> bool:
     InlineKeyboardButton = _IKB
     InlineKeyboardMarkup = _IKM
     LinkPreviewOptions = _LPO
+    ForceReply = _FR
     Application = _App
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
@@ -4544,7 +4554,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 nav.append(InlineKeyboardButton("Next ▶", callback_data=f"mpv:{page + 1}"))
             rows.append(nav)
 
-        rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+        rows.append([
+            InlineKeyboardButton("🔍 Search", callback_data="ms:"),
+            InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+        ])
 
         page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
         return InlineKeyboardMarkup(rows), page_info
@@ -4583,6 +4596,7 @@ class TelegramAdapter(BasePlatformAdapter):
             rows.append(nav)
 
         rows.append([
+            InlineKeyboardButton("🔍 Search", callback_data="ms:"),
             InlineKeyboardButton("◀ Back", callback_data="mb"),
             InlineKeyboardButton("✗ Cancel", callback_data="mx"),
         ])
@@ -4912,6 +4926,146 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             await query.answer()
 
+        elif data.startswith("ms:"):
+            # --- Enter search mode: prompt user to type a search query ---
+            state["search_mode"] = True
+            state["search_user_id"] = getattr(query.from_user, "id", None)
+            search_markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("◀ Back", callback_data="msb:"),
+                InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+            ]])
+            try:
+                force_reply = ForceReply(selective=True) if ForceReply else None
+            except Exception:
+                force_reply = None
+            await query.edit_message_text(
+                text=self.format_message(
+                    "🔍 *Search Models*\n\n"
+                    "Type a model name to search across all providers\\.\n"
+                    "Examples: `claude`, `gpt`, `sonnet`, `deepseek`"
+                ),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=force_reply or search_markup,
+            )
+            await query.answer(text="Type your search query")
+
+        elif data.startswith("msr:"):
+            # --- Search result selected: switch to that model ---
+            try:
+                idx = int(data[4:])
+            except ValueError:
+                await query.answer(text="Invalid selection.")
+                return
+
+            search_results = state.get("search_results", [])
+            if idx < 0 or idx >= len(search_results):
+                await query.answer(text="Invalid model index.")
+                return
+
+            result = search_results[idx]
+            model_id = result["model"]
+            provider_slug = result["provider"]
+            callback = state.get("on_model_selected")
+
+            if not callback:
+                await query.answer(text="Picker expired.")
+                return
+
+            # Expensive model guard
+            try:
+                from hermes_cli.model_cost_guard import expensive_model_warning
+                warning = await asyncio.to_thread(
+                    expensive_model_warning,
+                    model_id,
+                    provider=provider_slug,
+                )
+            except Exception:
+                warning = None
+
+            if warning is not None:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Switch anyway", callback_data=f"msr:{idx}")],
+                    [
+                        InlineKeyboardButton("◀ Back", callback_data="msb:"),
+                        InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+                    ],
+                ])
+                await query.edit_message_text(
+                    text=self.format_message(
+                        f"⚠ *Expensive Model Warning*\n\n{warning.message}"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=keyboard,
+                )
+                await query.answer(text="Confirm expensive model")
+                return
+
+            switch_failed = False
+            try:
+                result_text = await callback(chat_id, model_id, provider_slug)
+            except Exception as exc:
+                logger.error("Model picker switch failed: %s", exc)
+                result_text = f"Error switching model: {exc}"
+                switch_failed = True
+
+            try:
+                await query.edit_message_text(
+                    text=self.format_message(result_text),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                try:
+                    await query.edit_message_text(
+                        text=result_text,
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            await query.answer(
+                text="Switch failed." if switch_failed else "Model switched!"
+            )
+            self._model_picker_state.pop(chat_id, None)
+
+        elif data.startswith("msb:"):
+            # --- Back from search results to search input ---
+            state.pop("search_results", None)
+            state["search_mode"] = True
+            search_markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("◀ Back", callback_data="msb:"),
+                InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+            ]])
+            try:
+                force_reply = ForceReply(selective=True) if ForceReply else None
+            except Exception:
+                force_reply = None
+            await query.edit_message_text(
+                text=self.format_message(
+                    "🔍 *Search Models*\n\n"
+                    "Type a model name to search across all providers\\.\n"
+                    "Examples: `claude`, `gpt`, `sonnet`, `deepseek`"
+                ),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=force_reply or search_markup,
+            )
+            await query.answer()
+
+        elif data.startswith("msp:"):
+            # --- Search results page navigation ---
+            try:
+                page = int(data[4:])
+            except ValueError:
+                await query.answer(text="Invalid page.")
+                return
+
+            search_results = state.get("search_results", [])
+            keyboard, page_info = self._build_search_results_keyboard(search_results, page)
+
+            # Find the original search query from the message text if possible
+            await query.edit_message_reply_markup(reply_markup=keyboard)
+            await query.answer()
+
         elif data == "mx":
             # --- Cancel ---
             self._model_picker_state.pop(chat_id, None)
@@ -4924,6 +5078,135 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
+
+    def _build_search_results_keyboard(
+        self, search_results: list, page: int = 0
+    ) -> tuple:
+        """Build paginated keyboard for model search results.
+
+        Each entry in *search_results* is ``{"provider": slug, "model": id}``.
+        Returns ``(InlineKeyboardMarkup, page_info_text)``.
+        """
+        page_size = self._MODEL_PAGE_SIZE
+        total = len(search_results)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+
+        start = page * page_size
+        end = min(start + page_size, total)
+        page_items = search_results[start:end]
+
+        buttons: list = []
+        for i, result in enumerate(page_items):
+            abs_idx = start + i
+            model_short = result["model"].split("/")[-1] if "/" in result["model"] else result["model"]
+            provider_short = result["provider_name"]
+            label = f"{model_short} ({provider_short})"
+            if len(label) > 42:
+                label = label[:39] + "..."
+            buttons.append(
+                InlineKeyboardButton(label, callback_data=f"msr:{abs_idx}")
+            )
+
+        rows = [buttons[j : j + 2] for j in range(0, len(buttons), 2)]
+
+        if total_pages > 1:
+            nav: list = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"msp:{page - 1}"))
+            nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="mx:noop"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"msp:{page + 1}"))
+            rows.append(nav)
+
+        rows.append([
+            InlineKeyboardButton("🔍 New Search", callback_data="ms:"),
+            InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+        ])
+
+        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        return InlineKeyboardMarkup(rows), page_info
+
+    async def _handle_model_search_text(
+        self, msg: "Message", chat_id: str, state: dict
+    ) -> None:
+        """Process a text message as a model search query."""
+        query_text = (msg.text or "").strip()
+        if not query_text:
+            await self._bot.send_message(
+                chat_id=int(chat_id),
+                text="Empty query. Try again or type /model to restart.",
+            )
+            return
+
+        ft = query_text.lower()
+        providers = state.get("providers", [])
+        search_results: list = []
+        for p in providers:
+            models = p.get("models", [])
+            for model_id in models:
+                if ft in model_id.lower():
+                    search_results.append({
+                        "provider": p["slug"],
+                        "provider_name": p.get("name", p["slug"]),
+                        "model": model_id,
+                    })
+
+        state["search_results"] = search_results
+
+        msg_id = state.get("msg_id")
+        if not search_results:
+            # No results — show message and offer to search again
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔍 Search Again", callback_data="ms:"),
+                InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+            ]])
+            try:
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=msg_id,
+                    text=self.format_message(
+                        f"🔍 *Search: `{query_text}`*\n\n"
+                        "No matching models found\\. Try a different term\\."
+                    ),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=keyboard,
+                )
+            except Exception:
+                # Message may have been deleted or is too old
+                await self._bot.send_message(
+                    chat_id=int(chat_id),
+                    text=f"No models matching \"{query_text}\". Type /model to try again.",
+                )
+            return
+
+        # Show results
+        keyboard, page_info = self._build_search_results_keyboard(search_results, 0)
+        try:
+            await self._bot.edit_message_text(
+                chat_id=int(chat_id),
+                message_id=msg_id,
+                text=self.format_message(
+                    f"🔍 *Search: `{query_text}`*{page_info}\n\n"
+                    f"{len(search_results)} match{'es' if len(search_results) != 1 else ''} found — "
+                    f"select a model:"
+                ),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+            )
+        except Exception:
+            # Message gone — send a new one
+            sent = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=self.format_message(
+                    f"🔍 *Search: `{query_text}`*{page_info}\n\n"
+                    f"{len(search_results)} match{'es' if len(search_results) != 1 else ''} found — "
+                    f"select a model:"
+                ),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+            )
+            state["msg_id"] = sent.message_id
 
     async def _notify_clarify_expired(self, query, user_display: str) -> None:
         """Tell the user a clarify tap arrived too late to be delivered.
@@ -4966,7 +5249,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query_user_name = getattr(query.from_user, "first_name", None)
 
         # --- Model picker callbacks ---
-        if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):
+        if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:", "ms:", "msr:", "msb:", "msp:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
@@ -7107,6 +7390,20 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
         await self._ensure_forum_commands(update.message)
+
+        # --- Model picker search interception ---
+        # If the user is in model search mode (tapped 🔍 Search), treat the
+        # text as a model search query instead of a normal chat message.
+        chat_id_str = str(getattr(msg.chat, "id", ""))
+        picker_state = self._model_picker_state.get(chat_id_str)
+        if picker_state and picker_state.get("search_mode"):
+            # In group chats, only intercept messages from the user who tapped Search
+            search_uid = picker_state.get("search_user_id")
+            msg_uid = getattr(getattr(msg, "from_user", None), "id", None)
+            if search_uid is None or msg_uid is None or search_uid == msg_uid:
+                picker_state["search_mode"] = False
+                await self._handle_model_search_text(msg, chat_id_str, picker_state)
+                return
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)

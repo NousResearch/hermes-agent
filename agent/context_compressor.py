@@ -226,6 +226,11 @@ _AUTO_FOCUS_MAX_CHARS = 700
 # high for small/light tails, but using all 20 as a hard floor here would bring
 # back the old large-tool-output case where nothing can be compacted.
 _MAX_TAIL_MESSAGE_FLOOR = 8
+# Under context pressure (protected-tail tool bodies alone exceed the soft
+# tail budget), demote large completed tool/file outputs even inside the
+# protected region — but always keep this many trailing messages verbatim so
+# the active user ask / latest tool pair remain readable.  Issue #61932.
+_PRESSURE_KEEP_RECENT_MESSAGES = 3
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
@@ -1195,7 +1200,14 @@ class ContextCompressor(ContextEngine):
         fall within ``protect_tail_tokens`` (when provided) OR the last
         ``protect_tail_count`` messages (backward-compatible default).
         When both are given, the token budget takes priority and the message
-        count acts as a hard minimum floor.
+        count acts as a hard minimum floor — capped at
+        ``_MAX_TAIL_MESSAGE_FLOOR`` so a default ``protect_last_n=20`` cannot
+        freeze a whole run of bulky tool outputs against pruning.
+
+        When the protected region itself still exceeds the soft tail budget
+        (``protect_tail_tokens * 1.5``), a pressure pass demotes large
+        completed tool/file outputs *inside* that region while keeping a
+        short recent floor verbatim (issue #61932).
 
         Returns (pruned_messages, pruned_count).
         """
@@ -1223,10 +1235,17 @@ class ContextCompressor(ContextEngine):
 
         # Determine the prune boundary
         if protect_tail_tokens is not None and protect_tail_tokens > 0:
-            # Token-budget approach: walk backward accumulating tokens
+            # Token-budget approach: walk backward accumulating tokens.
+            # Cap the message-count floor the same way tail-cut does so a
+            # default protect_last_n=20 cannot lock a bulky recent tool run
+            # outside the compressible / prunable window (#61932).
             accumulated = 0
             boundary = len(result)
-            min_protect = min(protect_tail_count, len(result))
+            min_protect = min(
+                protect_tail_count,
+                len(result),
+                _MAX_TAIL_MESSAGE_FLOOR,
+            )
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 msg_tokens = _estimate_msg_budget_tokens(msg)
@@ -1274,54 +1293,53 @@ class ContextCompressor(ContextEngine):
             else:
                 content_hashes[h] = (i, msg.get("tool_call_id", "?"))
 
-        # Pass 2: Replace old tool results with informative summaries
-        for i in range(prune_boundary):
-            msg = result[i]
+        def _demote_tool_result_at(idx: int) -> bool:
+            """Replace a bulky tool result at ``idx`` with a 1-line summary.
+
+            Returns True when the message was modified.
+            """
+            nonlocal pruned
+            msg = result[idx]
             if msg.get("role") != "tool":
-                continue
+                return False
             content = msg.get("content", "")
-            # Multimodal content (base64 screenshots etc.): strip the image
-            # payload — keep a lightweight text placeholder in its place.
-            # Without this, an old computer_use screenshot (~1MB base64 +
-            # ~1500 real tokens) survives every compression pass forever.
             if isinstance(content, list):
                 stripped = _strip_image_parts_from_parts(content)
                 if stripped is not None:
-                    result[i] = {**msg, "content": stripped}
+                    result[idx] = {**msg, "content": stripped}
                     pruned += 1
-                continue
+                    return True
+                return False
             if isinstance(content, dict) and content.get("_multimodal"):
                 summary = content.get("text_summary") or "[screenshot removed to save context]"
-                result[i] = {**msg, "content": f"[screenshot removed] {summary[:200]}"}
+                result[idx] = {**msg, "content": f"[screenshot removed] {summary[:200]}"}
                 pruned += 1
-                continue
+                return True
             if not isinstance(content, str):
-                continue
+                return False
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
-                continue
-            # Skip already-deduplicated or previously-summarized results
+                return False
             if content.startswith("[Duplicate tool output"):
-                continue
-            # Only prune if the content is substantial (>200 chars)
-            if len(content) > 200:
-                call_id = msg.get("tool_call_id", "")
-                tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
-                summary = _summarize_tool_result(tool_name, tool_args, content)
-                result[i] = {**msg, "content": summary}
-                pruned += 1
+                return False
+            # Already replaced by a prior prune/pressure pass (1-line summary).
+            if content.startswith("[") and " chars)" in content and len(content) < 400:
+                return False
+            if content.startswith("[screenshot removed"):
+                return False
+            if len(content) <= 200:
+                return False
+            call_id = msg.get("tool_call_id", "")
+            tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+            summary = _summarize_tool_result(tool_name, tool_args, content)
+            result[idx] = {**msg, "content": summary}
+            pruned += 1
+            return True
 
-        # Pass 3: Truncate large tool_call arguments in assistant messages
-        # outside the protected tail. write_file with 50KB content, for
-        # example, survives pruning entirely without this.
-        #
-        # The shrinking is done inside the parsed JSON structure so the
-        # result remains valid JSON — otherwise downstream providers 400
-        # on every subsequent turn until the broken call falls out of
-        # the window. See ``_truncate_tool_call_args_json`` docstring.
-        for i in range(prune_boundary):
-            msg = result[i]
+        def _truncate_tool_call_args_at(idx: int) -> bool:
+            """Shrink large tool_call argument payloads at ``idx``."""
+            msg = result[idx]
             if msg.get("role") != "assistant" or not msg.get("tool_calls"):
-                continue
+                return False
             new_tcs = []
             modified = False
             for tc in msg["tool_calls"]:
@@ -1334,7 +1352,93 @@ class ContextCompressor(ContextEngine):
                             modified = True
                 new_tcs.append(tc)
             if modified:
-                result[i] = {**msg, "tool_calls": new_tcs}
+                result[idx] = {**msg, "tool_calls": new_tcs}
+            return modified
+
+        # Pass 2: Replace old tool results with informative summaries
+        for i in range(max(0, prune_boundary)):
+            _demote_tool_result_at(i)
+
+        # Pass 3: Truncate large tool_call arguments in assistant messages
+        # outside the protected tail. write_file with 50KB content, for
+        # example, survives pruning entirely without this.
+        #
+        # The shrinking is done inside the parsed JSON structure so the
+        # result remains valid JSON — otherwise downstream providers 400
+        # on every subsequent turn until the broken call falls out of
+        # the window. See ``_truncate_tool_call_args_json`` docstring.
+        for i in range(max(0, prune_boundary)):
+            _truncate_tool_call_args_at(i)
+
+        # Pass 4 (issue #61932): protected-tail pressure demotion.
+        # After multiple in-place compactions the transcript can be short
+        # enough that nearly every remaining message sits inside the
+        # protected floor, yet those messages are huge completed tool /
+        # file outputs.  Summarizing the (empty) middle does nothing and
+        # preflight ends in "Cannot compress further".  Demote bulky tool
+        # bodies *inside* the protected region until the protected tail
+        # fits the soft budget, always keeping a short recent floor
+        # verbatim so the active ask stays readable.
+        if protect_tail_tokens is not None and protect_tail_tokens > 0 and result:
+            soft_ceiling = int(protect_tail_tokens * 1.5)
+            keep_recent = min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
+            demote_end = len(result) - keep_recent
+
+            def _protected_region_tokens() -> int:
+                start = max(0, prune_boundary)
+                return sum(
+                    _estimate_msg_budget_tokens(result[i])
+                    for i in range(start, len(result))
+                )
+
+            if demote_end > prune_boundary and _protected_region_tokens() > soft_ceiling:
+                pressure_hits = 0
+                for i in range(max(0, prune_boundary), demote_end):
+                    if _demote_tool_result_at(i):
+                        pressure_hits += 1
+                    if _truncate_tool_call_args_at(i):
+                        pressure_hits += 1
+                    if _protected_region_tokens() <= soft_ceiling:
+                        break
+                # If the short recent floor itself is still dominated by a
+                # stack of huge tool bodies, demote every protected tool
+                # result except the single most recent one.  The active
+                # user message (usually the last row) stays untouched.
+                if _protected_region_tokens() > soft_ceiling:
+                    last_tool_idx = None
+                    for i in range(len(result) - 1, -1, -1):
+                        if result[i].get("role") == "tool":
+                            last_tool_idx = i
+                            break
+                    for i in range(max(0, prune_boundary), len(result)):
+                        if last_tool_idx is not None and i == last_tool_idx:
+                            continue
+                        if result[i].get("role") == "tool":
+                            if _demote_tool_result_at(i):
+                                pressure_hits += 1
+                        elif result[i].get("role") == "assistant":
+                            if _truncate_tool_call_args_at(i):
+                                pressure_hits += 1
+                    # Absolute last resort: even the newest tool body can
+                    # be larger than the soft budget alone (one 200KB file
+                    # read).  Summarize it so compression can still reclaim
+                    # enough headroom to continue the session.
+                    if (
+                        last_tool_idx is not None
+                        and last_tool_idx >= prune_boundary
+                        and _protected_region_tokens() > soft_ceiling
+                    ):
+                        if _demote_tool_result_at(last_tool_idx):
+                            pressure_hits += 1
+                if pressure_hits and not self.quiet_mode:
+                    logger.info(
+                        "Pre-compression pressure demotion: reclaimed protected-tail "
+                        "tool output (%d change(s); protected region now ~%s tokens, "
+                        "soft ceiling %s)",
+                        pressure_hits,
+                        f"{_protected_region_tokens():,}",
+                        f"{soft_ceiling:,}",
+                    )
 
         return result, pruned
 

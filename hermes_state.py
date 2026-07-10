@@ -3050,6 +3050,12 @@ class SessionDB:
         the SELECT so SQLite never copies it out of the B-tree page — a
         significant I/O saving on large databases where the blob routinely
         runs to tens of kilobytes per row.
+
+        Contract: with ``compact_rows=True`` the ``system_prompt`` key is
+        **absent from the returned dicts entirely** (not present-as-None).
+        Consumers that may run against compact rows must read it defensively
+        with ``row.get("system_prompt")`` — never ``row["system_prompt"]``,
+        which raises ``KeyError`` on a compact row.
         """
         where_clauses = []
         params = []
@@ -3359,7 +3365,8 @@ class SessionDB:
         session doesn't exist.
 
         Pass ``compact_rows=True`` to omit the ``system_prompt`` blob (see
-        ``list_sessions_rich`` for details).
+        ``list_sessions_rich`` for details). As there, the key is absent (not
+        None) on a compact row — read it with ``.get("system_prompt")``.
         """
         _sel = self._compact_session_cols() if compact_rows else "s.*"
         query = f"""

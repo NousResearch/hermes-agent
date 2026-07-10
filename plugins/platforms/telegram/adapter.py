@@ -1838,7 +1838,11 @@ class TelegramAdapter(BasePlatformAdapter):
         if self.has_fatal_error:
             return
 
-        MAX_NETWORK_RETRIES = 10
+        max_retries_raw = os.getenv("HERMES_TELEGRAM_NETWORK_MAX_RETRIES", "10").strip()
+        try:
+            MAX_NETWORK_RETRIES = int(max_retries_raw)
+        except ValueError:
+            MAX_NETWORK_RETRIES = 0
         BASE_DELAY = 5
         MAX_DELAY = 60
 
@@ -1846,7 +1850,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._send_path_degraded = True
         attempt = self._polling_network_error_count
 
-        if attempt > MAX_NETWORK_RETRIES:
+        if MAX_NETWORK_RETRIES > 0 and attempt > MAX_NETWORK_RETRIES:
             message = (
                 "Telegram polling could not reconnect after %d network error retries. "
                 "Restarting gateway." % MAX_NETWORK_RETRIES
@@ -1858,8 +1862,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         delay = min(BASE_DELAY * (2 ** (attempt - 1)), MAX_DELAY)
         logger.warning(
-            "[%s] Telegram network error (attempt %d/%d), reconnecting in %ds. Error: %s",
-            self.name, attempt, MAX_NETWORK_RETRIES, delay, error,
+            "[%s] Telegram network error (attempt %d/%s), reconnecting in %ds. Error: %s",
+            self.name, attempt, (str(MAX_NETWORK_RETRIES) if MAX_NETWORK_RETRIES > 0 else "unlimited"), delay, error,
         )
         await asyncio.sleep(delay)
 
@@ -2917,40 +2921,47 @@ class TelegramAdapter(BasePlatformAdapter):
                 from telegram.error import NetworkError, TimedOut
             except ImportError:
                 NetworkError = TimedOut = OSError  # type: ignore[misc,assignment]
-            _max_connect = 8
-            _init_timeout = _env_float("HERMES_TELEGRAM_INIT_TIMEOUT", 30.0)
-            for _attempt in range(_max_connect):
+            _max_connect_raw = os.getenv("HERMES_TELEGRAM_MAX_CONNECT_ATTEMPTS", "0").strip()
+            try:
+                _max_connect = int(_max_connect_raw)
+            except ValueError:
+                _max_connect = 0
+            _init_timeout = _env_float("HERMES_TELEGRAM_INIT_TIMEOUT", 0.0)
+            _attempt = 0
+            while _max_connect <= 0 or _attempt < _max_connect:
                 try:
-                    logger.warning(
-                        "[%s] Connecting to Telegram (attempt %d/%d)…",
-                        self.name, _attempt + 1, _max_connect,
-                    )
-                    await asyncio.wait_for(self._app.initialize(), timeout=_init_timeout)
+                    _attempt += 1
+                    if _max_connect > 0:
+                        logger.warning(
+                            "[%s] Connecting to Telegram (attempt %d/%d)…",
+                            self.name, _attempt, _max_connect,
+                        )
+                    else:
+                        logger.warning(
+                            "[%s] Connecting to Telegram (attempt %d/unlimited)…",
+                            self.name, _attempt,
+                        )
+                    if _init_timeout <= 0:
+                        await self._app.initialize()
+                    else:
+                        await asyncio.wait_for(self._app.initialize(), timeout=_init_timeout)
                     break
                 except asyncio.TimeoutError:
-                    if _attempt < _max_connect - 1:
-                        wait = min(2 ** _attempt, 15)
-                        logger.warning(
-                            "[%s] Connect attempt %d/%d timed out after %.0fs — retrying in %ds",
-                            self.name, _attempt + 1, _max_connect, _init_timeout, wait,
-                        )
-                        await asyncio.sleep(wait)
-                    else:
-                        raise OSError(
-                            f"Telegram initialization timed out after {_max_connect} attempts "
-                            f"({_init_timeout:.0f}s each). Check network connectivity to api.telegram.org "
-                            f"or set HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT to a lower value."
-                        )
+                    wait = min(2 ** max(_attempt - 1, 0), 15)
+                    logger.warning(
+                        "[%s] Connect attempt %d timed out after %.0fs — retrying in %ds",
+                        self.name, _attempt, _init_timeout, wait,
+                    )
+                    await asyncio.sleep(wait)
                 except (NetworkError, TimedOut, OSError) as init_err:
-                    if _attempt < _max_connect - 1:
-                        wait = min(2 ** _attempt, 15)
-                        logger.warning(
-                            "[%s] Connect attempt %d/%d failed: %s — retrying in %ds",
-                            self.name, _attempt + 1, _max_connect, init_err, wait,
-                        )
-                        await asyncio.sleep(wait)
-                    else:
+                    if _max_connect > 0 and _attempt >= _max_connect:
                         raise
+                    wait = min(2 ** max(_attempt - 1, 0), 15)
+                    logger.warning(
+                        "[%s] Connect attempt %d failed: %s — retrying in %ds",
+                        self.name, _attempt, init_err, wait,
+                    )
+                    await asyncio.sleep(wait)
             await self._app.start()
 
             # Decide between webhook and polling mode

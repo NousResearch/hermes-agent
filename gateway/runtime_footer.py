@@ -88,12 +88,52 @@ def resolve_footer_config(
     return resolved
 
 
+_APPLE_QUOTA_CACHE: dict[str, Any] = {"ts": 0.0, "remaining": None}
+_APPLE_QUOTA_CACHE_TTL = 5.0
+
+
+def _fetch_apple_quota_remaining() -> Optional[float]:
+    """Fetch $ remaining from the local Apple Claude proxy quota endpoint.
+
+    Cached for a few seconds to keep the hot path fast; fails silently
+    (returns None) if the proxy isn't running or the port is unknown.
+    """
+    import time
+
+    now = time.time()
+    if now - _APPLE_QUOTA_CACHE["ts"] < _APPLE_QUOTA_CACHE_TTL:
+        return _APPLE_QUOTA_CACHE["remaining"]
+
+    port = os.environ.get("APPLE_CLAUDE_CODE_PORT", "18281")
+    remaining: Optional[float] = None
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/quota")
+        with urllib.request.urlopen(req, timeout=0.5) as resp:
+            import json
+
+            data = json.loads(resp.read().decode("utf-8"))
+            q = data.get("quota") or {}
+            spend = q.get("usage", {}).get("spend")
+            budget = q.get("limits", {}).get("budgetSpend")
+            if isinstance(spend, (int, float)) and isinstance(budget, (int, float)):
+                remaining = budget - spend
+    except Exception:
+        remaining = None
+
+    _APPLE_QUOTA_CACHE["ts"] = now
+    _APPLE_QUOTA_CACHE["remaining"] = remaining
+    return remaining
+
+
 def format_runtime_footer(
     *,
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    quota_windows: Optional[dict[str, float]] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -115,6 +155,15 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field in {"five_hour", "weekly"}:
+            pct = (quota_windows or {}).get(field)
+            if pct is not None:
+                label = "5h" if field == "five_hour" else "wk"
+                parts.append(f"{label} {pct:.0f}%")
+        elif field == "apple_quota":
+            remaining = _fetch_apple_quota_remaining()
+            if remaining is not None:
+                parts.append(f"${remaining:.2f} left")
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +179,7 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -140,10 +190,28 @@ def build_footer_line(
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
+    quota_windows: dict[str, float] = {}
+    if any(field in {"five_hour", "weekly"} for field in cfg.get("fields", [])):
+        try:
+            from agent.account_usage import fetch_account_usage
+
+            snapshot = fetch_account_usage(provider)
+            if snapshot:
+                for window in snapshot.windows:
+                    label = window.label.lower()
+                    if window.used_percent is None:
+                        continue
+                    if "session" in label or "five" in label:
+                        quota_windows["five_hour"] = window.used_percent
+                    elif "week" in label:
+                        quota_windows["weekly"] = window.used_percent
+        except Exception:
+            pass
     return format_runtime_footer(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
+        quota_windows=quota_windows,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

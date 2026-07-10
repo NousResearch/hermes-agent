@@ -2079,8 +2079,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # Capture rate limit headers from the initial HTTP response.
         # The OpenAI SDK Stream object exposes the underlying httpx
         # response via .response before any chunks are consumed.
-        agent._capture_rate_limits(getattr(stream, "response", None))
-        agent._capture_credits(getattr(stream, "response", None))
+        raw_response = getattr(stream, "response", None) or getattr(stream, "_response", None)
+        agent._capture_rate_limits(raw_response)
+        agent._capture_credits(raw_response)
         # Snapshot diagnostic headers (cf-ray, x-openrouter-provider, etc.)
         # so they survive even when the stream dies before any chunk
         # arrives.  Best-effort; never raises.

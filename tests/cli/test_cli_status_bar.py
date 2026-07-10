@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import cli as cli_mod
 from cli import HermesCLI
+from agent.rate_limit_tracker import parse_rate_limit_headers
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
@@ -30,6 +31,7 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    rate_limits=None,
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
@@ -43,7 +45,7 @@ def _attach_agent(
         session_completion_tokens=completion_tokens,
         session_total_tokens=total_tokens,
         session_api_calls=api_calls,
-        get_rate_limit_state=lambda: None,
+        get_rate_limit_state=lambda: rate_limits,
         context_compressor=SimpleNamespace(
             last_prompt_tokens=context_tokens,
             context_length=context_length,
@@ -81,6 +83,21 @@ class TestCLIStatusBar:
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_codex_quota_windows_shown_for_wide_terminal(self):
+        state = parse_rate_limit_headers({
+            "x-codex-primary-used-percent": "18",
+            "x-codex-primary-window-minutes": "300",
+            "x-codex-secondary-used-percent": "42",
+            "x-codex-secondary-window-minutes": "10080",
+        }, provider="openai-codex")
+        cli_obj = _attach_agent(
+            _make_cli("gpt-5.6-sol"), prompt_tokens=1000,
+            completion_tokens=100, total_tokens=1100, api_calls=1,
+            context_tokens=1000, context_length=372_000, rate_limits=state,
+        )
+        text = cli_obj._build_status_bar_text(width=160)
+        assert "5h 18% │ wk 42%" in text
 
     def test_post_compression_sentinel_does_not_render_negative(self):
         """Right after a compression, last_prompt_tokens is parked at the -1

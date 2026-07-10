@@ -54,6 +54,18 @@ class RateLimitBucket:
 
 
 @dataclass
+class CodexLimitWindow:
+    used_percent: float = 0.0
+    window_minutes: int = 0
+    reset_seconds: float = 0.0
+    captured_at: float = 0.0
+
+    @property
+    def remaining_seconds_now(self) -> float:
+        return max(0.0, self.reset_seconds - (time.time() - self.captured_at))
+
+
+@dataclass
 class RateLimitState:
     """Full rate-limit state parsed from response headers."""
 
@@ -63,6 +75,9 @@ class RateLimitState:
     tokens_hour: RateLimitBucket = field(default_factory=RateLimitBucket)
     captured_at: float = 0.0  # when the headers were captured
     provider: str = ""
+    codex_primary: Optional[CodexLimitWindow] = None
+    codex_secondary: Optional[CodexLimitWindow] = None
+    plan_type: str = ""
 
     @property
     def has_data(self) -> bool:
@@ -101,8 +116,11 @@ def parse_rate_limit_headers(
     # capitalises headers (HTTP header names are case-insensitive per RFC 7230).
     lowered = {k.lower(): v for k, v in headers.items()}
 
-    # Quick check: at least one rate limit header must exist
-    has_any = any(k.startswith("x-ratelimit-") for k in lowered)
+    # Quick check: at least one supported rate-limit header must exist
+    has_any = any(
+        k.startswith("x-ratelimit-") or k.startswith("x-codex-")
+        for k in lowered
+    )
     if not has_any:
         return None
 
@@ -119,6 +137,17 @@ def parse_rate_limit_headers(
             captured_at=now,
         )
 
+    def _codex_window(name: str) -> Optional[CodexLimitWindow]:
+        prefix = f"x-codex-{name}-"
+        if f"{prefix}used-percent" not in lowered:
+            return None
+        return CodexLimitWindow(
+            used_percent=_safe_float(lowered.get(f"{prefix}used-percent")),
+            window_minutes=_safe_int(lowered.get(f"{prefix}window-minutes")),
+            reset_seconds=_safe_float(lowered.get(f"{prefix}reset-after-seconds")),
+            captured_at=now,
+        )
+
     return RateLimitState(
         requests_min=_bucket("requests"),
         requests_hour=_bucket("requests", "-1h"),
@@ -126,7 +155,21 @@ def parse_rate_limit_headers(
         tokens_hour=_bucket("tokens", "-1h"),
         captured_at=now,
         provider=provider,
+        codex_primary=_codex_window("primary"),
+        codex_secondary=_codex_window("secondary"),
+        plan_type=str(lowered.get("x-codex-plan-type", "")),
     )
+
+
+def format_codex_quota_compact(state: RateLimitState) -> str:
+    """Compact Codex plan-window usage for the TUI status bar."""
+    parts = []
+    for fallback, window in (("5h", state.codex_primary), ("wk", state.codex_secondary)):
+        if window is None:
+            continue
+        label = "5h" if window.window_minutes == 300 else "wk" if window.window_minutes == 10080 else fallback
+        parts.append(f"{label} {window.used_percent:.0f}%")
+    return " │ ".join(parts)
 
 
 # ── Formatting ──────────────────────────────────────────────────────────

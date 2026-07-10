@@ -70,6 +70,17 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
     assert out == "gpt-5.4 · 68% · ~/projects/hermes"
 
 
+def test_format_footer_quota_fields():
+    out = format_runtime_footer(
+        model=None,
+        context_tokens=0,
+        context_length=None,
+        fields=["five_hour", "weekly"],
+        quota_windows={"five_hour": 42.4, "weekly": 17.6},
+    )
+    assert out == "5h 42% · wk 18%"
+
+
 def test_format_footer_skips_missing_context_length():
     out = format_runtime_footer(
         model="openai/gpt-5.4",

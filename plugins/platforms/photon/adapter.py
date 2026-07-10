@@ -891,11 +891,12 @@ class PhotonAdapter(BasePlatformAdapter):
             self._supervise_sidecar(self._sidecar_proc)
         )
 
-        # Wait for /healthz to come up — give it up to 15s on cold start.
-        deadline = time.time() + 15.0
+        # Wait for /healthz to come up. Timeout <= 0 means unlimited.
+        ready_timeout = float(os.getenv("PHOTON_SIDECAR_READY_TIMEOUT", "0"))
+        deadline = None if ready_timeout <= 0 else time.time() + ready_timeout
         last_err: Optional[Exception] = None
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            while time.time() < deadline:
+        async with httpx.AsyncClient(timeout=None) as client:
+            while deadline is None or time.time() < deadline:
                 if self._sidecar_proc.poll() is not None:
                     raise RuntimeError(
                         f"Photon sidecar exited with code "
@@ -912,7 +913,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     last_err = e
                 await asyncio.sleep(0.2)
         raise RuntimeError(
-            f"Photon sidecar did not become ready within 15s: {last_err}"
+            f"Photon sidecar did not become ready within {ready_timeout:g}s: {last_err}"
         )
 
     async def _supervise_sidecar(self, proc: subprocess.Popen) -> None:

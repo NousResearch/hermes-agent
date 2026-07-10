@@ -4569,6 +4569,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
+            "codex_quota": "",
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -4611,6 +4612,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        try:
+            from agent.rate_limit_tracker import format_codex_quota_compact
+            state = agent.get_rate_limit_state()
+            if state:
+                snapshot["codex_quota"] = format_codex_quota_compact(state)
+        except Exception:
+            pass
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -5079,6 +5087,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            if snapshot.get("codex_quota"):
+                parts.append(snapshot["codex_quota"])
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5185,6 +5195,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    if snapshot.get("codex_quota"):
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", snapshot["codex_quota"]))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))

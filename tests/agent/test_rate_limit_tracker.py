@@ -8,6 +8,7 @@ from agent.rate_limit_tracker import (
     parse_rate_limit_headers,
     format_rate_limit_display,
     format_rate_limit_compact,
+    format_codex_quota_compact,
     _fmt_count,
     _fmt_seconds,
     _bar,
@@ -31,6 +32,16 @@ NOUS_HEADERS = {
     "x-ratelimit-reset-tokens-1h": "3490.0",
 }
 
+CODEX_HEADERS = {
+    "x-codex-plan-type": "pro",
+    "x-codex-primary-used-percent": "18",
+    "x-codex-primary-window-minutes": "300",
+    "x-codex-primary-reset-after-seconds": "7200",
+    "x-codex-secondary-used-percent": "42",
+    "x-codex-secondary-window-minutes": "10080",
+    "x-codex-secondary-reset-after-seconds": "432000",
+}
+
 
 class TestParseHeaders:
     def test_basic_parsing(self):
@@ -52,6 +63,16 @@ class TestParseHeaders:
         assert state.tokens_hour.limit == 336000000
         assert state.tokens_hour.remaining == 335999000
         assert state.tokens_hour.reset_seconds == 3490.0
+
+    def test_codex_plan_windows(self):
+        state = parse_rate_limit_headers(CODEX_HEADERS, provider="openai-codex")
+        assert state is not None
+        assert state.plan_type == "pro"
+        assert state.codex_primary.used_percent == 18
+        assert state.codex_primary.window_minutes == 300
+        assert state.codex_secondary.used_percent == 42
+        assert state.codex_secondary.window_minutes == 10080
+        assert format_codex_quota_compact(state) == "5h 18% │ wk 42%"
 
     def test_no_headers(self):
         state = parse_rate_limit_headers({})

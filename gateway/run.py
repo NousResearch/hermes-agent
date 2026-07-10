@@ -6759,8 +6759,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
         
-        # Initialize and connect each configured platform
-        for platform, platform_config in self.config.platforms.items():
+        # Initialize Telegram first so Photon sidecar startup can never block
+        # Telegram availability when Photon is configured with unlimited wait.
+        platform_items = list(self.config.platforms.items())
+        platform_items.sort(key=lambda item: 0 if item[0].value == "telegram" else (1 if item[0].value == "sms" else 2))
+        for platform, platform_config in platform_items:
             if await self._abort_startup_if_shutdown_requested():
                 return True
             if not platform_config.enabled:
@@ -11263,6 +11266,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
                     model=agent_result.get("model"),
+                    provider=agent_result.get("provider") or (_load_gateway_config().get("model") or {}).get("provider"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),

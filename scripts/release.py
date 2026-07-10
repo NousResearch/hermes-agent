@@ -45,6 +45,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "lucasfdale@gmail.com": "lucasfdale",  # PR #61447 salvage (desktop: honor display.interim_assistant_messages — stop collapsing mid-turn narration on message.complete; #61822/#54905/#61297)
     "jonathan@mintrx.com": "JAlmanzarMint",  # PR #52688 salvage (vision: rasterize SVG / re-encode unsupported raster formats to PNG before embedding), folded into #57890
     "al3060388206@gmail.com": "ooiuuii",  # PR #58466/#58377 salvage (redact: fireworks fw-/fpk_ prefixes; telegram: redact bot tokens out of transport error strings). Also PR #58433 salvage (codex: accept recorded final_text when app-server omits turn/completed).
     "Jigoooo@users.noreply.github.com": "Jigoooo",  # PR #58474 salvage (auxiliary: fall back to token resolver when anthropic pool has no usable entry)

@@ -654,6 +654,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "prompt_caching": "agent",
     "goals": "agent",
     "updates": "general",
+    # `session_store.trigram_fts` is currently the only session-store field —
+    # fold it into the agent tab rather than spawning a one-field category.
+    "session_store": "agent",
     # `onboarding.profile_build` is the only schema-surfaced onboarding field
     # (`onboarding.seen` is an internal latch dict, not a user setting), so fold
     # it into the agent tab rather than spawning a one-field orphan category.

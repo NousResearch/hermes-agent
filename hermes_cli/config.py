@@ -906,6 +906,20 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+    # Session store (state.db) tuning.
+    "session_store": {
+        # Trigram FTS index over message content for CJK/substring search.
+        # Costs roughly 2x the on-disk size of every message (a second full
+        # copy of content plus the trigram token index); on large installs it
+        # can dominate state.db size and slow synchronous queries enough to
+        # stall the dashboard event loop. Set false to disable: the index and
+        # its triggers are dropped on next open (run `hermes sessions
+        # optimize` afterwards to reclaim the pages), and CJK/substring
+        # message search degrades to a LIKE scan. Re-enabling rebuilds and
+        # backfills the index on next open. English keyword search
+        # (messages_fts) and session/title search are unaffected.
+        "trigram_fts": True,
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

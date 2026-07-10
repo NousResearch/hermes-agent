@@ -6845,6 +6845,51 @@ def _validate_llm_response(
             f"Expected object with .choices[0].message — check provider "
             f"adapter or custom endpoint compatibility."
         ) from exc
+
+    # ── Kanban usage ledger (HERMES-OBS-001) ────────────────
+    # Record observable auxiliary usage. Best-effort: token
+    # observation is often incomplete (caching, reasoning, etc.).
+    _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+    if _kanban_task:
+        try:
+            _usage = getattr(response, "usage", None)
+            if _usage is not None:
+                from hermes_cli import kanban_db as _kb
+                from hermes_cli.kanban_usage_ledger import (
+                    safe_record_from_canonical_usage,
+                )
+                _kb_conn = _kb.connect()
+                try:
+                    _board = os.environ.get("HERMES_KANBAN_BOARD", "default")
+                    _run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+                    _run_id = int(_run_id_raw) if _run_id_raw else 0
+                    _model = getattr(response, "model", None) or "unknown"
+                    safe_record_from_canonical_usage(
+                        _kb_conn,
+                        board=_board,
+                        task_id=_kanban_task,
+                        run_id=_run_id,
+                        call_kind="auxiliary",
+                        api_call_index=0,
+                        provider="aux",
+                        model=_model,
+                        canonical_usage={
+                            "input_tokens": getattr(_usage, "input_tokens", 0) or 0,
+                            "output_tokens": getattr(_usage, "output_tokens", 0) or 0,
+                            "cache_read_tokens": getattr(_usage, "cache_read_tokens", 0) or 0,
+                            "cache_write_tokens": getattr(_usage, "cache_write_tokens", 0) or 0,
+                            "reasoning_tokens": getattr(_usage, "reasoning_tokens", 0) or 0,
+                        },
+                        token_source="incomplete",
+                    )
+                finally:
+                    try:
+                        _kb_conn.close()
+                    except Exception:
+                        pass
+        except Exception:
+            pass  # Fail-safe: never break auxiliary execution
+
     return response
 
 

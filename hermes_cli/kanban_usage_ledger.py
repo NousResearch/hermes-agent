@@ -69,6 +69,7 @@ def record_run_usage(
     cost_status: Optional[str] = None,
     checker_result: Optional[str] = None,
     repair_cycle: int = 0,
+    accepted_result_tokens: Optional[int] = None,
 ) -> int:
     """Record usage for a single API call in a Kanban task run.
 
@@ -130,8 +131,9 @@ def record_run_usage(
             aux_input_tokens, aux_output_tokens,
             aux_cache_read_tokens, aux_cache_write_tokens,
             parent_task_id, profile, token_source,
-            cost_usd, cost_status, checker_result, repair_cycle
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            cost_usd, cost_status, checker_result, repair_cycle,
+            accepted_result_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(board, task_id, run_id, call_kind, api_call_index) DO UPDATE SET
             provider=excluded.provider,
             model=excluded.model,
@@ -151,7 +153,8 @@ def record_run_usage(
             cost_usd=excluded.cost_usd,
             cost_status=excluded.cost_status,
             checker_result=excluded.checker_result,
-            repair_cycle=excluded.repair_cycle
+            repair_cycle=excluded.repair_cycle,
+            accepted_result_tokens=excluded.accepted_result_tokens
         """,
         (
             board, task_id, run_id, call_kind, api_call_index,
@@ -162,9 +165,197 @@ def record_run_usage(
             aux_cache_read_tokens, aux_cache_write_tokens,
             parent_task_id, profile, token_source,
             cost_usd, cost_status, checker_result, repair_cycle,
+            accepted_result_tokens,
         )
     )
     return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def record_parent(
+    conn: sqlite3.Connection,
+    *,
+    board: str,
+    task_id: str,
+    run_id: int,
+    call_kind: str,
+    api_call_index: int,
+    parent_task_id: str,
+) -> None:
+    """Record a parent-child relationship for a usage event.
+
+    Multi-parent support: each parent is stored as a separate row in
+    run_usage_parents, avoiding UPSERT overwrite. Duplicate recordings
+    are idempotent (INSERT OR IGNORE).
+
+    Args:
+        conn: Database connection
+        board: Board identifier
+        task_id: Child task identifier
+        run_id: Run identifier
+        call_kind: Call type (primary/auxiliary)
+        api_call_index: API call index
+        parent_task_id: Parent task identifier
+    """
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO run_usage_parents (
+            board, task_id, run_id, call_kind, api_call_index, parent_task_id
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (board, task_id, run_id, call_kind, api_call_index, parent_task_id),
+    )
+
+
+def record_from_canonical_usage(
+    conn: sqlite3.Connection,
+    *,
+    board: str,
+    task_id: str,
+    run_id: int,
+    call_kind: str,
+    api_call_index: int,
+    provider: str,
+    model: str,
+    canonical_usage: dict[str, int],
+    token_source: str,
+    elapsed_ms: int = 0,
+    aux_input_tokens: Optional[int] = None,
+    aux_output_tokens: Optional[int] = None,
+    aux_cache_read_tokens: Optional[int] = None,
+    aux_cache_write_tokens: Optional[int] = None,
+    parent_task_id: Optional[str] = None,
+    profile: Optional[str] = None,
+    cost_usd: Optional[float] = None,
+    cost_status: Optional[str] = None,
+    checker_result: Optional[str] = None,
+    repair_cycle: int = 0,
+    accepted_result_tokens: Optional[int] = None,
+) -> int:
+    """Record usage from a CanonicalUsage-like dict at a call boundary.
+
+    This is the primary hook for runtime instrumentation: conversation
+    loop, Codex runtime, and observable auxiliary call paths pass their
+    usage through this function.
+
+    Args:
+        conn: Database connection
+        board: Board identifier
+        task_id: Task identifier
+        run_id: Run identifier
+        call_kind: Call type (primary/auxiliary)
+        api_call_index: Index of this API call
+        provider: Provider name
+        model: Model name
+        canonical_usage: Dict with input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens, reasoning_tokens
+        token_source: Source classification
+        elapsed_ms: Wall-clock time in milliseconds
+        aux_input_tokens: Auxiliary model input tokens (nullable)
+        aux_output_tokens: Auxiliary model output tokens (nullable)
+        aux_cache_read_tokens: Auxiliary model cache read tokens (nullable)
+        aux_cache_write_tokens: Auxiliary model cache write tokens (nullable)
+        parent_task_id: Parent task ID
+        profile: Profile that executed the task
+        cost_usd: Cost in USD
+        cost_status: Cost status
+        checker_result: Checker result
+        repair_cycle: Repair cycle number
+        accepted_result_tokens: Accepted result output tokens
+
+    Returns:
+        Row ID of inserted/updated record
+    """
+    return record_run_usage(
+        conn,
+        board=board,
+        task_id=task_id,
+        run_id=run_id,
+        call_kind=call_kind,
+        api_call_index=api_call_index,
+        provider=provider,
+        model=model,
+        input_tokens=canonical_usage.get("input_tokens", 0),
+        output_tokens=canonical_usage.get("output_tokens", 0),
+        cache_read_tokens=canonical_usage.get("cache_read_tokens", 0),
+        cache_write_tokens=canonical_usage.get("cache_write_tokens", 0),
+        reasoning_tokens=canonical_usage.get("reasoning_tokens", 0),
+        token_source=token_source,
+        elapsed_ms=elapsed_ms,
+        aux_input_tokens=aux_input_tokens,
+        aux_output_tokens=aux_output_tokens,
+        aux_cache_read_tokens=aux_cache_read_tokens,
+        aux_cache_write_tokens=aux_cache_write_tokens,
+        parent_task_id=parent_task_id,
+        profile=profile,
+        cost_usd=cost_usd,
+        cost_status=cost_status,
+        checker_result=checker_result,
+        repair_cycle=repair_cycle,
+        accepted_result_tokens=accepted_result_tokens,
+    )
+
+
+def safe_record_from_canonical_usage(
+    conn: sqlite3.Connection,
+    *,
+    board: str,
+    task_id: str,
+    run_id: int,
+    call_kind: str,
+    api_call_index: int,
+    provider: str,
+    model: str,
+    canonical_usage: dict[str, int],
+    token_source: str,
+    elapsed_ms: int = 0,
+    aux_input_tokens: Optional[int] = None,
+    aux_output_tokens: Optional[int] = None,
+    aux_cache_read_tokens: Optional[int] = None,
+    aux_cache_write_tokens: Optional[int] = None,
+    parent_task_id: Optional[str] = None,
+    profile: Optional[str] = None,
+    cost_usd: Optional[float] = None,
+    cost_status: Optional[str] = None,
+    checker_result: Optional[str] = None,
+    repair_cycle: int = 0,
+    accepted_result_tokens: Optional[int] = None,
+) -> Optional[int]:
+    """Fail-safe wrapper around record_from_canonical_usage.
+
+    Ledger failure must never break model execution. This function
+    catches all exceptions and returns None on failure, so callers
+    can continue without disruption.
+
+    Returns:
+        Row ID on success, None on failure.
+    """
+    try:
+        return record_from_canonical_usage(
+            conn,
+            board=board,
+            task_id=task_id,
+            run_id=run_id,
+            call_kind=call_kind,
+            api_call_index=api_call_index,
+            provider=provider,
+            model=model,
+            canonical_usage=canonical_usage,
+            token_source=token_source,
+            elapsed_ms=elapsed_ms,
+            aux_input_tokens=aux_input_tokens,
+            aux_output_tokens=aux_output_tokens,
+            aux_cache_read_tokens=aux_cache_read_tokens,
+            aux_cache_write_tokens=aux_cache_write_tokens,
+            parent_task_id=parent_task_id,
+            profile=profile,
+            cost_usd=cost_usd,
+            cost_status=cost_status,
+            checker_result=checker_result,
+            repair_cycle=repair_cycle,
+            accepted_result_tokens=accepted_result_tokens,
+        )
+    except Exception:
+        return None
 
 
 def aggregate_usage(
@@ -240,7 +431,9 @@ def aggregate_usage(
             COALESCE(SUM(aux_cache_read_tokens), 0) as total_aux_cache_read,
             COALESCE(SUM(aux_cache_write_tokens), 0) as total_aux_cache_write,
             SUM(cost_usd) as total_cost,
-            COUNT(*) as record_count
+            COUNT(*) as record_count,
+            COUNT(DISTINCT api_call_index) as total_api_calls,
+            COALESCE(SUM(accepted_result_tokens), 0) as total_accepted_result_tokens
         FROM run_usage
         WHERE {where_sql}
     """
@@ -258,6 +451,8 @@ def aggregate_usage(
         "total_aux_cache_write_tokens": row[8] or 0,
         "total_cost_usd": row[9],
         "record_count": row[10] or 0,
+        "total_api_calls": row[11] or 0,
+        "total_accepted_result_tokens": row[12] or 0,
     }
 
 

@@ -1297,8 +1297,24 @@ CREATE TABLE IF NOT EXISTS run_usage (
     cost_status              TEXT,
     checker_result           TEXT,
     repair_cycle             INTEGER NOT NULL DEFAULT 0,
+    accepted_result_tokens   INTEGER DEFAULT NULL,
+    api_calls                INTEGER NOT NULL DEFAULT 0,
     created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (board, task_id, run_id, call_kind, api_call_index)
+);
+-- Multi-parent join table for run_usage (HERMES-OBS-001).
+-- Every parent/root relation for a usage event is stored as a separate row,
+-- avoiding UPSERT overwrite.  Queries use DISTINCT for aggregation.
+CREATE TABLE IF NOT EXISTS run_usage_parents (
+    board                    TEXT NOT NULL,
+    task_id                  TEXT NOT NULL,
+    run_id                   INTEGER NOT NULL,
+    call_kind                TEXT NOT NULL,
+    api_call_index           INTEGER NOT NULL,
+    parent_task_id           TEXT NOT NULL,
+    PRIMARY KEY (board, task_id, run_id, call_kind, api_call_index, parent_task_id),
+    FOREIGN KEY (board, task_id, run_id, call_kind, api_call_index)
+        REFERENCES run_usage(board, task_id, run_id, call_kind, api_call_index)
 );
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);

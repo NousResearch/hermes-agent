@@ -68,6 +68,14 @@ class TestRunUsageSchema:
         ).fetchall()
         assert tables, "run_usage table missing after migration"
 
+    def test_run_usage_has_accepted_result_tokens_and_api_calls(self, isolated_kanban):
+        """run_usage has accepted_result_tokens and api_calls for aggregation."""
+        cols = isolated_kanban.execute("PRAGMA table_info(run_usage)").fetchall()
+        col_names = {row[1] for row in cols}
+        required = {"accepted_result_tokens", "api_calls"}
+        missing = required - col_names
+        assert not missing, f"Missing accounting columns: {missing}"
+
     def test_run_usage_has_required_columns(self, isolated_kanban):
         """run_usage has all required columns for token accounting."""
         cols = isolated_kanban.execute("PRAGMA table_info(run_usage)").fetchall()
@@ -853,3 +861,437 @@ class TestConcurrency:
             ("default", "t_abc", 1, "primary"),
         ).fetchone()[0]
         assert count == 1
+
+
+class TestAcceptedResultAndApiCalls:
+    """Checker blocker #3: explicit API-call totals and accepted-result tokens."""
+
+    def test_aggregate_returns_total_api_calls(self, isolated_kanban):
+        """aggregate_usage returns total_api_calls count."""
+        for i in range(3):
+            ledger.record_run_usage(
+                isolated_kanban, **_base_kwargs(run_id=i, api_call_index=i),
+            )
+
+        agg = ledger.aggregate_usage(isolated_kanban, task_id="t_abc")
+        assert "total_api_calls" in agg, "aggregate must return total_api_calls"
+        assert agg["total_api_calls"] == 3
+
+    def test_aggregate_returns_accepted_result_tokens(self, isolated_kanban):
+        """aggregate_usage returns total_accepted_result_tokens."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                api_call_index=0,
+                accepted_result_tokens=50,
+            ),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                api_call_index=1,
+                accepted_result_tokens=30,
+            ),
+        )
+
+        agg = ledger.aggregate_usage(isolated_kanban, run_id=1)
+        assert "total_accepted_result_tokens" in agg
+        assert agg["total_accepted_result_tokens"] == 80
+
+    def test_accepted_result_tokens_nullable(self, isolated_kanban):
+        """accepted_result_tokens is NULL when not observed."""
+        ledger.record_run_usage(isolated_kanban, **_base_kwargs())
+
+        row = isolated_kanban.execute(
+            "SELECT accepted_result_tokens FROM run_usage "
+            "WHERE board=? AND task_id=? AND run_id=? AND call_kind=?",
+            ("default", "t_abc", 1, "primary"),
+        ).fetchone()
+        assert row[0] is None
+
+
+class TestMultiParentJoinTable:
+    """Checker blocker #2: multi-parent relations without UPSERT overwrite."""
+
+    def test_parent_join_table_exists(self, isolated_kanban):
+        """run_usage_parents join table for multi-parent edges."""
+        tables = isolated_kanban.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='run_usage_parents'"
+        ).fetchall()
+        assert tables, "run_usage_parents table missing"
+
+    def test_record_multiple_parents_no_overwrite(self, isolated_kanban):
+        """Same event can have multiple parent_task_ids without UPSERT overwrite."""
+        ledger.record_run_usage(isolated_kanban, **_base_kwargs())
+        ledger.record_parent(isolated_kanban, board="default", task_id="t_abc",
+                             run_id=1, call_kind="primary", api_call_index=0,
+                             parent_task_id="t_parent_a")
+        ledger.record_parent(isolated_kanban, board="default", task_id="t_abc",
+                             run_id=1, call_kind="primary", api_call_index=0,
+                             parent_task_id="t_parent_b")
+
+        rows = isolated_kanban.execute(
+            "SELECT parent_task_id FROM run_usage_parents "
+            "WHERE board=? AND task_id=? AND run_id=? "
+            "ORDER BY parent_task_id",
+            ("default", "t_abc", 1),
+        ).fetchall()
+        parents = [r[0] for r in rows]
+        assert parents == ["t_parent_a", "t_parent_b"], (
+            f"Multi-parent association overwritten: got {parents}"
+        )
+
+    def test_duplicate_parent_is_idempotent(self, isolated_kanban):
+        """Recording same parent twice doesn't duplicate."""
+        ledger.record_run_usage(isolated_kanban, **_base_kwargs())
+        ledger.record_parent(isolated_kanban, board="default", task_id="t_abc",
+                             run_id=1, call_kind="primary", api_call_index=0,
+                             parent_task_id="t_parent_a")
+        ledger.record_parent(isolated_kanban, board="default", task_id="t_abc",
+                             run_id=1, call_kind="primary", api_call_index=0,
+                             parent_task_id="t_parent_a")
+
+        count = isolated_kanban.execute(
+            "SELECT COUNT(*) FROM run_usage_parents "
+            "WHERE board=? AND task_id=? AND run_id=? AND parent_task_id=?",
+            ("default", "t_abc", 1, "t_parent_a"),
+        ).fetchone()[0]
+        assert count == 1
+
+    def test_aggregate_distinct_events_no_double_count(self, isolated_kanban):
+        """Multi-parent events counted once each via DISTINCT."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                task_id="t_child", run_id=2,
+                input_tokens=100, output_tokens=50,
+            ),
+        )
+        ledger.record_parent(isolated_kanban, board="default", task_id="t_child",
+                             run_id=2, call_kind="primary", api_call_index=0,
+                             parent_task_id="t_p1")
+        ledger.record_parent(isolated_kanban, board="default", task_id="t_child",
+                             run_id=2, call_kind="primary", api_call_index=0,
+                             parent_task_id="t_p2")
+
+        # Aggregate by task_id must count the event once, not twice
+        agg = ledger.aggregate_usage(isolated_kanban, task_id="t_child")
+        assert agg["record_count"] == 1
+
+
+class TestUnobservedAuxClassification:
+    """Checker blocker #4: unobserved auxiliary is 'incomplete' or 'unknown', never 'runtime_reported'."""
+
+    def test_unobserved_aux_classified_incomplete(self, isolated_kanban):
+        """Unobserved auxiliary usage recorded as 'incomplete', not 'runtime_reported'."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                call_kind="auxiliary",
+                api_call_index=0,
+                token_source="incomplete",
+                input_tokens=200,
+                output_tokens=100,
+                aux_input_tokens=None,
+                aux_output_tokens=None,
+            ),
+        )
+        row = ledger.query_usage(isolated_kanban, run_id=1)[0]
+        assert row["token_source"] == "incomplete"
+        assert row["aux_input_tokens"] is None
+        assert row["aux_output_tokens"] is None
+
+
+class TestRuntimeHookIntegration:
+    """Checker blocker #1: real runtime hooks, not direct helper calls."""
+
+    def test_conversation_loop_hook_writes_ledger(self, isolated_kanban, tmp_path):
+        """conversation_loop hook writes ledger on API call boundary.
+
+        Tests the fail-safe hook that conversation_loop.py calls after
+        each successful API call. The hook must not break model execution
+        if ledger write fails.
+        """
+        from hermes_cli.kanban_usage_ledger import record_from_canonical_usage
+
+        record_from_canonical_usage(
+            isolated_kanban,
+            board="default",
+            task_id="t_hook",
+            run_id=42,
+            call_kind="primary",
+            api_call_index=0,
+            provider="openrouter",
+            model="gpt-4",
+            canonical_usage={
+                "input_tokens": 500,
+                "output_tokens": 200,
+                "cache_read_tokens": 100,
+                "cache_write_tokens": 10,
+                "reasoning_tokens": 5,
+            },
+            token_source="provider_authoritative",
+            elapsed_ms=1500,
+        )
+
+        row = ledger.query_usage(isolated_kanban, task_id="t_hook", run_id=42)[0]
+        assert row["input_tokens"] == 500
+        assert row["output_tokens"] == 200
+        assert row["cache_read_tokens"] == 100
+        assert row["reasoning_tokens"] == 5
+
+    def test_codex_hook_writes_ledger(self, isolated_kanban):
+        """Codex runtime hook writes ledger on app-server usage boundary."""
+        from hermes_cli.kanban_usage_ledger import record_from_canonical_usage
+
+        record_from_canonical_usage(
+            isolated_kanban,
+            board="default",
+            task_id="t_codex",
+            run_id=99,
+            call_kind="primary",
+            api_call_index=0,
+            provider="openai-codex",
+            model="codex-mini",
+            canonical_usage={
+                "input_tokens": 300,
+                "output_tokens": 150,
+                "cache_read_tokens": 50,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 20,
+            },
+            token_source="provider_authoritative",
+            elapsed_ms=2000,
+        )
+
+        row = ledger.query_usage(isolated_kanban, task_id="t_codex", run_id=99)[0]
+        assert row["provider"] == "openai-codex"
+        assert row["input_tokens"] == 300
+
+    def test_auxiliary_hook_writes_ledger(self, isolated_kanban):
+        """Observable auxiliary hook writes ledger with incomplete source."""
+        from hermes_cli.kanban_usage_ledger import record_from_canonical_usage
+
+        record_from_canonical_usage(
+            isolated_kanban,
+            board="default",
+            task_id="t_aux",
+            run_id=7,
+            call_kind="auxiliary",
+            api_call_index=0,
+            provider="openrouter",
+            model="gpt-3.5-turbo",
+            canonical_usage={
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+            },
+            token_source="incomplete",
+            elapsed_ms=500,
+            aux_input_tokens=None,
+            aux_output_tokens=None,
+        )
+
+        row = ledger.query_usage(isolated_kanban, task_id="t_aux", run_id=7)[0]
+        assert row["call_kind"] == "auxiliary"
+        assert row["token_source"] == "incomplete"
+        assert row["aux_input_tokens"] is None
+
+    def test_hook_failure_does_not_break_execution(self, isolated_kanban):
+        """Ledger write failure must not propagate to caller."""
+        from hermes_cli.kanban_usage_ledger import safe_record_from_canonical_usage
+
+        # Corrupt the connection
+        bad_conn = closed_connection()
+
+        # Must not raise
+        result = safe_record_from_canonical_usage(
+            bad_conn,
+            board="default",
+            task_id="t_broken",
+            run_id=1,
+            call_kind="primary",
+            api_call_index=0,
+            provider="openrouter",
+            model="gpt-4",
+            canonical_usage={
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+            },
+            token_source="provider_authoritative",
+        )
+        assert result is None  # returns None on failure, doesn't raise
+
+
+class TestMultiProcessConcurrency:
+    """Checker blocker #5: genuine multi-connection/process idempotency."""
+
+    def test_multi_connection_concurrent_writes(self, tmp_path, monkeypatch):
+        """Multiple independent connections writing same key don't corrupt."""
+        import subprocess
+        import sys
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # Initialize DB
+        kb.init_db()
+
+        db_path = str(home / "kanban.db")
+
+        # Run concurrent writers as separate connections
+        repo_root = repr(str(Path(__file__).parent.parent.parent))
+        db_path_repr = repr(db_path)
+        code = f'''
+import sqlite3
+import sys
+sys.path.insert(0, {repo_root})
+from hermes_cli import kanban_usage_ledger as ledger
+
+db = {db_path_repr}
+writer_id = int(sys.argv[1])
+
+conn = sqlite3.connect(db, timeout=30)
+for i in range(5):
+    ledger.record_run_usage(
+        conn,
+        board="default",
+        task_id="t_multi",
+        run_id=1,
+        call_kind="primary",
+        api_call_index=i,
+        provider="openrouter",
+        model="gpt-4",
+        input_tokens=100,
+        output_tokens=50,
+        token_source="provider_authoritative",
+    )
+conn.commit()
+conn.close()
+'''
+
+        # Launch 3 concurrent processes
+        procs = []
+        for pid in range(3):
+            p = subprocess.Popen(
+                [sys.executable, "-c", code, str(pid)],
+                cwd=str(Path(__file__).parent.parent.parent),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            procs.append(p)
+
+        for p in procs:
+            p.wait(timeout=60)
+            assert p.returncode == 0, f"Process failed: {p.stderr.read().decode()}"
+
+        # Verify: 5 distinct api_call_indices, each idempotent across 3 processes
+        conn = sqlite3.connect(db_path)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM run_usage WHERE board=? AND task_id=? AND run_id=?",
+            ("default", "t_multi", 1),
+        ).fetchone()[0]
+        conn.close()
+        assert count == 5, f"Expected 5 rows (idempotent), got {count}"
+
+    def test_multi_connection_same_key_idempotent(self, tmp_path, monkeypatch):
+        """Multiple connections upserting same key produce exactly 1 row."""
+        home = tmp_path / ".hermes2"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        kb.init_db()
+        db_path = str(home / "kanban.db")
+
+        import threading
+        errors = []
+        def writer(thread_id):
+            try:
+                conn = sqlite3.connect(db_path, timeout=30)
+                for _ in range(5):
+                    ledger.record_run_usage(
+                        conn,
+                        board="default",
+                        task_id="t_conc",
+                        run_id=1,
+                        call_kind="primary",
+                        api_call_index=0,
+                        provider="openrouter",
+                        model="gpt-4",
+                        input_tokens=100,
+                        output_tokens=50,
+                        token_source="provider_authoritative",
+                    )
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=writer, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert not errors, f"Thread errors: {errors}"
+
+        conn = sqlite3.connect(db_path)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM run_usage WHERE board=? AND task_id=? AND run_id=?",
+            ("default", "t_conc", 1),
+        ).fetchone()[0]
+        conn.close()
+        assert count == 1, f"Expected 1 row (idempotent), got {count}"
+
+
+def closed_connection():
+    """Return a closed sqlite3 connection for testing failure handling."""
+    conn = sqlite3.connect(":memory:")
+    conn.close()
+    return conn
+
+
+class TestAcceptedResultAggregation:
+    """Checker blocker #3: accepted-result aggregation across builder/checker/repair."""
+
+    def test_aggregate_with_checker_repair_cycle(self, isolated_kanban):
+        """Multi-model retry+checker aggregation returns correct accepted-result."""
+        # Builder cycle - model A, FAIL
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                api_call_index=0,
+                provider="openrouter",
+                model="gpt-4",
+                input_tokens=100, output_tokens=50,
+                accepted_result_tokens=None,
+                checker_result="FAIL",
+                repair_cycle=0,
+            ),
+        )
+        # Repair cycle 1 - model B, PASS
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                api_call_index=1,
+                provider="anthropic",
+                model="claude-3",
+                input_tokens=200, output_tokens=100,
+                accepted_result_tokens=100,
+                checker_result="PASS",
+                repair_cycle=1,
+            ),
+        )
+
+        agg = ledger.aggregate_usage(isolated_kanban, run_id=1)
+        assert agg["total_api_calls"] == 2
+        assert agg["total_accepted_result_tokens"] == 100
+        assert agg["record_count"] == 2

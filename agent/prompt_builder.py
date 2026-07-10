@@ -846,10 +846,13 @@ PLATFORM_HINTS = {
         "— when a sticker is the right response, use yb_send_sticker."
     ),
     "api_server": (
-        "You're responding through an API server. The rendering layer is unknown — "
-        "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
-        "code fences). Treat this like a conversation, not a document. Keep responses "
-        "brief and natural."
+        "You're responding through an API server, typically consumed by an "
+        "OpenAI-compatible chat frontend (Open WebUI, LibreChat, etc.) that renders "
+        "Markdown. You may use Markdown — headings, bold, italic, lists, tables, and "
+        "code fences — when it improves readability. Do NOT use MEDIA:/path "
+        "file-attachment syntax; these frontends do not handle it. To show an image, "
+        "use a normal Markdown image with a real URL: ![alt](https://...). Keep "
+        "responses conversational, not overly long."
     ),
     "webui": (
         "You are in the Hermes WebUI, a browser-based chat interface. "

@@ -657,6 +657,87 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+def _fmt_token_count(n: int) -> str:
+    """Render a token count compactly: 29000 -> '29k', 1500 -> '1.5k'."""
+    try:
+        n = int(n)
+    except Exception:
+        return "0"
+    if n < 1000:
+        return str(n)
+    k = n / 1000.0
+    if k < 10:
+        return f"{k:.1f}".rstrip("0").rstrip(".") + "k"
+    return f"{round(k)}k"
+
+
+def _build_ctx_footer(usage: Dict[str, Any]) -> str:
+    """Build a 'ctx: 29k / 200k (15%)' line from a usage dict.
+
+    Uses the current-turn context occupancy (context_tokens =
+    last_prompt_tokens) over the model's resolved context_length. Returns
+    '' when the data isn't available so we never emit a broken footer.
+    Off by default; gated by display.runtime_footer.show_ctx_in_api in
+    config.yaml so it can be toggled without code changes.
+    """
+    try:
+        tokens = int(usage.get("context_tokens", 0) or 0)
+        length = int(usage.get("context_length", 0) or 0)
+    except Exception:
+        return ""
+    if tokens <= 0 or length <= 0:
+        return ""
+    pct = max(0, min(100, round((tokens / length) * 100)))
+    return f"ctx: {_fmt_token_count(tokens)} / {_fmt_token_count(length)} ({pct}%)"
+
+
+def _ctx_footer_enabled() -> bool:
+    """Whether to append the ctx: footer to API Server chat replies.
+
+    Reads display.runtime_footer.show_ctx_in_api from the gateway config.
+    Defaults to True so the feature is on once the code is present; set to
+    false in config.yaml to disable without reverting the code.
+    """
+    try:
+        from gateway.run import _load_gateway_config  # type: ignore
+        cfg = _load_gateway_config() or {}
+        rf = ((cfg.get("display") or {}).get("runtime_footer") or {})
+        val = rf.get("show_ctx_in_api", True)
+        return bool(val)
+    except Exception:
+        return True
+
+
+def _ctx_usage_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
+    """Extra usage keys for Open WebUI's generation-info (ⓘ) popup.
+
+    Returns a dict carrying the current-turn context-window occupancy so it
+    shows up in the per-message stats popout (not appended to the message
+    body). Empty when token data is unavailable or the feature is disabled.
+    Keys:
+      context_window  - resolved model context length (int)
+      context_used    - current-turn prompt tokens = context occupancy (int)
+      context_pct     - percent of the window used (int 0-100)
+      ctx             - pre-formatted 'ctx: 29k / 200k (15%)' string
+    """
+    try:
+        if not _ctx_footer_enabled():
+            return {}
+        tokens = int(usage.get("context_tokens", 0) or 0)
+        length = int(usage.get("context_length", 0) or 0)
+    except Exception:
+        return {}
+    if tokens <= 0 or length <= 0:
+        return {}
+    pct = max(0, min(100, round((tokens / length) * 100)))
+    return {
+        "context_window": length,
+        "context_used": tokens,
+        "context_pct": pct,
+        "ctx": f"{_fmt_token_count(tokens)} / {_fmt_token_count(length)} ({pct}%)",
+    }
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -2385,6 +2466,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "prompt_tokens": usage.get("input_tokens", 0),
                 "completion_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
+                **_ctx_usage_fields(usage),
             },
         }
         if is_partial or is_failed or not completed:
@@ -2544,6 +2626,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "prompt_tokens": usage.get("input_tokens", 0),
                     "completion_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    **_ctx_usage_fields(usage),
                 },
             }
             if finish_reason != "stop":
@@ -4076,10 +4159,18 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history=conversation_history,
                     task_id=effective_task_id,
                 )
+                _compressor = getattr(agent, "context_compressor", None)
+                _ctx_tokens = getattr(_compressor, "last_prompt_tokens", 0) or 0
+                _ctx_len = getattr(_compressor, "context_length", 0) or 0
                 usage = {
                     "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                     "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                     "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                    # Current-turn context-window occupancy (for the ctx: footer).
+                    # last_prompt_tokens is the size of the prompt actually sent
+                    # this turn — the right number for "how full is the window".
+                    "context_tokens": _ctx_tokens if _ctx_tokens > 0 else 0,
+                    "context_length": _ctx_len,
                 }
                 # Include the effective session ID in the result so callers
                 # (e.g. X-Hermes-Session-Id header) can track compression-
@@ -4368,6 +4459,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                        "context_tokens": getattr(getattr(agent, "context_compressor", None), "last_prompt_tokens", 0) or 0,
+                        "context_length": getattr(getattr(agent, "context_compressor", None), "context_length", 0) or 0,
                     }
                     return r, u
 

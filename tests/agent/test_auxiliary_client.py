@@ -3850,6 +3850,88 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         assert "_reasoning_config" not in openai_wire_kwargs
 
 
+class TestAuxiliaryProviderProfileReasoning:
+    """Auxiliary calls must reuse provider-profile reasoning wire shapes."""
+
+    def test_kimi_reasoning_uses_top_level_effort(self):
+        kwargs = _build_call_kwargs(
+            "kimi-coding",
+            "kimi-k2-turbo-preview",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://api.moonshot.ai/v1",
+        )
+
+        assert kwargs["reasoning_effort"] == "medium"
+        assert "reasoning" not in kwargs.get("extra_body", {})
+        assert "thinking" not in kwargs.get("extra_body", {})
+
+    def test_gemini_reasoning_uses_thinking_config(self):
+        kwargs = _build_call_kwargs(
+            "gemini",
+            "gemini-3.5-flash",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+
+        assert kwargs["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+            "thinkingLevel": "high",
+        }
+        assert "reasoning" not in kwargs["extra_body"]
+
+    def test_custom_openai_compatible_reasoning_uses_top_level_effort(self):
+        kwargs = _build_call_kwargs(
+            "custom",
+            "glm-5.2",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "max"},
+            base_url="https://example.test/v1",
+        )
+
+        assert kwargs["reasoning_effort"] == "max"
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_preserves_profile_reasoning_kwargs(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+        create = AsyncMock(return_value=response)
+        client = SimpleNamespace(
+            base_url="https://api.moonshot.ai/v1",
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=create),
+            ),
+        )
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=(
+                "kimi-coding",
+                "kimi-k2-turbo-preview",
+                "https://api.moonshot.ai/v1",
+                "test-key",
+                None,
+            ),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "kimi-k2-turbo-preview"),
+        ):
+            result = await async_call_llm(
+                provider="kimi-coding",
+                model="kimi-k2-turbo-preview",
+                messages=[{"role": "user", "content": "hi"}],
+                reasoning_config={"enabled": True, "effort": "high"},
+            )
+
+        assert result is response
+        final_kwargs = create.call_args.kwargs
+        assert final_kwargs["reasoning_effort"] == "high"
+        assert "reasoning" not in final_kwargs.get("extra_body", {})
+
+
 class TestCodexAdapterReasoningTranslation:
     """Verify _CodexCompletionsAdapter translates extra_body.reasoning
     into the Responses API's top-level reasoning + include fields, matching

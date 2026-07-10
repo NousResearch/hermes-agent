@@ -70,19 +70,19 @@ else
   pass=false
 fi
 
-print_check "registry_count" "$(count_table "$REGISTRY")" "28"
-print_check "skill_map_count" "$(count_skill_map "$SKILL")" "28"
-print_check "index_count" "$(count_table "$INDEX")" "28"
+print_check "registry_count" "$(count_table "$REGISTRY")" "29"
+print_check "skill_map_count" "$(count_skill_map "$SKILL")" "29"
+print_check "index_count" "$(count_table "$INDEX")" "29"
 prompt_count=0
 if [ -d "$REFS" ]; then
   prompt_count="$(find "$REFS" -maxdepth 1 -type f -name '*.md' | wc -l | tr -d ' ')"
 fi
-print_check "prompt_md_count" "$prompt_count" "32"
+print_check "prompt_md_count" "$prompt_count" "33"
 
 echo ""
 if [ "$pass" = true ]; then
   echo "RESULT: PASS"
-  echo "เครื่องนี้ต่อ Prompt Shortcut พร้อมใช้ 28/28"
+  echo "เครื่องนี้ต่อ Prompt Shortcut พร้อมใช้ 29/29"
 else
   echo "RESULT: FAIL"
   echo "ให้รันตัวติดตั้งใหม่:"

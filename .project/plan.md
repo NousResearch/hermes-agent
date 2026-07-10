@@ -1,89 +1,71 @@
-# Plan — GRD · ระบบกันแผนหาย กัน AI ทำงานมั่ว (อนุมัติ 2026-07-07 · "อนุมัติ" ในแชท Fable)
+# Plan — QAQC · ระบบตรวจคุณภาพงาน "Use QA QC" (อนุมัติ 2026-07-10 · เจ้าของตอบครบ 3 คำถามในแชท Fable)
 
-> memory-schema: v1.2 · **plan_id: GRD** · จาก Use Act-As v3.1 (Fable วิเคราะห์จาก log จริง 3 สาย · เจ้าของอนุมัติทั้ง 4 เฟสรวดเดียว 2026-07-07)
-> ทีม: **Fable = สมองวางแผน/ตัดสิน** (ข้อยกเว้นที่เจ้าของสั่งชัดในแชท 2026-07-07 — ไม่ใช่ค่าเริ่มต้นของ relay) · **Codex = เขียนโค้ด** (`relay-call --tool codex`) · **Claude = ตรวจ** (`relay-call --tool opus` · คนละค่ายกับคนเขียน) · **gate-run = ผู้ตัดสิน verified** · เจ้าของ = กด merge
-> branch: `feature/plan-guardrails` (แตกจาก main `5aa135e7f`) · งานหลายเฟส = **1 PR เดียว** · ห้าม merge→main / deploy เอง (`ALLOW_AUTO_PROD=OFF`)
-> แผนเก่า "Hermes ใช้งานจริงทั้งระบบ" (2026-07-05): P0-P1 เสร็จ merged แล้ว · งานค้าง P2-P6 เดิมถูกดูดเข้าเป็น GRD-P5 ถึง GRD-P9 ท้ายไฟล์นี้ ไม่มีอะไรหาย
+> memory-schema: v1.2 · **plan_id: QAQC** · จาก Use Act-As v3.1 (Fable 5 ออกแบบ · เจ้าของสั่งตรงให้ Fable เป็นสมองแผนนี้ 2026-07-10)
+> แผนก่อนหน้า **GRD จบครบ 4 เฟส merged แล้ว** — เนื้อเต็ม + คิว GRD-P5..P9 ย้ายไป `.project/plan-grd.md` (ห้ามลบ · จะเริ่มคิวไหนให้ยกกลับมาไฟล์นี้ก่อน เพราะ plan-anchor อ่านไฟล์นี้ไฟล์เดียว)
+> ทีม: **Fable 5 = สมองออกแบบ/สังเคราะห์/เขียนเอกสาร** · **Grok + Codex = กรรมการตรวจข้ามค่าย** (ผ่าน relay-call) · **เจ้าของ = อนุมัติผลแต่ละด่าน + push คลัง + กด merge**
+> branch: `feature/use-qa-qc` (แตกจาก origin/main `f14fefca1`) · งานหลายเฟส = **1 PR เดียว** · ไฟล์ shortcut อยู่คลัง Obsidian (คนละ repo — เจ้าของ push เอง)
 
-## กติกาเหล็กของแผนนี้ — ทุก AI ที่มาทำงานต่อ ต้องทำตามก่อนแตะไฟล์ใดๆ
+## กติกาเหล็กของแผนนี้ (สืบทอดจาก GRD ครบทุกข้อ)
 
-1. **เลขงานต้องขึ้นต้นด้วย plan_id** เช่น `GRD-P1-I1` · เลขงานที่ไม่มีในไฟล์นี้ = ห้ามทำ ห้ามเดา ห้ามตั้งเลขเอง (ต้นตอเดิม: เลข P1-I1 ถูกใช้ซ้ำ 3 แผนคนละเรื่อง จน AI ทำงานผิดแผน)
-2. **กลับมาอ่านแผนก่อนลงมือทุกครั้ง** — หลังตอบคำถามแทรก / ออกนอกเรื่อง / สลับงาน ต้องเปิดไฟล์นี้ทวน "เฟสปัจจุบัน + ข้อห้าม" ก่อนแตะไฟล์ (ต้นตอเดิม: AI ตอบคำถามเสร็จแล้วทำต่อจากความจำแชทที่เลือน จนหลุดแผน)
-3. **verified = มีแถว gate-run เท่านั้น** · reviewer บอกผ่าน = ข้อมูลประกอบ ไม่ใช่ verified · ไม่มีแถว gate-run = claimed (ยังไม่นับเสร็จ ห้ามรายงานว่าเสร็จ)
-4. **ใบสั่งงานทุกใบเป็น "สัญญางาน" (Task Contract)**: เลขงาน + ไฟล์ที่แตะได้ (allowed) + ไฟล์ห้ามแตะ (forbidden) + คำสั่งตรวจที่ตอบผ่าน/ตกได้เอง (exit 0/1) · ใบสั่งงานต้องฝังข้อความเฟส+ข้อห้ามจากไฟล์นี้ลงไปในตัว ไม่พึ่งความจำแชท
-5. ห้ามแตะ: `scripts/jarvis-voice/` (สาย JARVIS แยก) · `design-system-standard-v2/` · `.claude/launch.json` · `.hermes/**` (coder ห้ามแตะเด็ดขาด — เป็นช่องปลอมหลักฐาน) · `.env*` / secret ทุกชนิด
+1. **เลขงานขึ้นต้น `QAQC-`** และต้องมีจริงในไฟล์นี้ · เลขที่ไม่มี = ห้ามทำ (งานจรใช้ `--no-plan` ให้เห็นใน ledger)
+2. **กลับมาอ่านแผนก่อนลงมือทุกครั้ง** หลังตอบคำถามแทรก/สลับงาน
+3. **verified = แถว gate-run เท่านั้น** · งานเอกสาร/prompt (ไม่มี test อัตโนมัติ) = `manual_verified` + เจ้าของยืนยัน ตามกฎ no_gate ของ relay
+4. ใบสั่งงานฝังข้อความเฟส + ข้อห้ามจากไฟล์นี้ลงไปในตัว
+5. ห้ามแตะ: `scripts/jarvis-voice/` · `design-system-standard-v2/` · `.claude/launch.json` · `.hermes/**` · `.env*`/secret · **Master ViberQC = อ่านอย่างเดียวเด็ดขาด ห้ามแก้ไฟล์ใดในโปรเจกต์นั้น**
 
-## ต้นตอ 6 ข้อที่แผนนี้แก้ (สอบสวนจาก log จริง 2026-07-07 · หลักฐานเต็มใน decisions.md)
+## โจทย์จากเจ้าของ (สัญญางาน — เช็กครบก่อนปิดแผน)
 
-1. ไม่มีกติกาบังคับ "กลับมาอ่านแผน" หลังออกนอกเรื่อง (ละเมิด "ตอบโดยไม่ทวนโจทย์" 3,790 ครั้ง)
-2. แผนเคยอยู่ในโฟลเดอร์ที่ git ไม่เห็น → แผนอยู่เครื่องเดียว (แก้แล้วด้วย Schema v1.2 แต่เพิ่งครอบ repo นี้)
-3. ไม่มีตัวเทียบความจำกับของจริง (เคส revert เงียบ `fff10805b` ความจำโกหก 7 วัน)
-4. แชทหลายสายทับกัน — สายหนึ่ง stash กวาดงานอีกสายทิ้ง 2 รอบ (เคส JARVIS)
-5. ปิดงานแบบอ้างว่าเสร็จ — สมุด gate-run (`.hermes/ledger/`) ไม่เคยมีจริง + บั๊ก auth ปลอมค้าง 4 งาน (แก้แล้ว PR #15)
-6. เลขงานชนกันข้ามแผน (`P1-I1` ใช้ซ้ำ 3 แผนใน call ledger)
+- shortcut `Use QA QC`: เมนู **2 แกน** — แกนช่วงงาน (25% / 50% / 75% / 100%) × แกนประเภทตรวจ · **เลือกหลายหมวดพร้อมกันได้** · ทุกเมนูมีคำแนะนำภาษา user · **Scan All อยู่ท้ายสุด + ด่านยืนยัน + ประมาณการค่าใช้จ่าย** (เจ้าของไม่อยากให้ใช้ แต่ต้องมี)
+- AI 7 ตัว: เปิดใช้ก่อน **Opus 4.8 / Codex / Grok** · ช่องเสียบอนาคต **Gemini / DeepSeek / Qwen / GLM** — เพิ่ม AI = แก้ config ไม่แก้ prompt
+- หัวข้อตรวจครบแบบ **Full System**: รวมหัวข้อเฉพาะของ AI ที่ยังไม่เปิดใช้ด้วย · **ไม่ซ้ำ-ไม่หาย** พิสูจน์ด้วยตัวเลข N/M ต่อแหล่ง (ไฟล์วิจัย Grok / ViberQC / มาตรฐานโลก)
+- ตัวไหลงาน: Opus สแกนต้น → AI ตัวที่ 2 สแกนคู่ตรวจซึ่งกันและกัน → **ตาราง severity** (Critical/High/… + comment ผลกระทบการแก้ · เสี่ยงสูง = แยกไปเฟสท้ายสุด) → เขียน `.project/qaqc-scan.md` ก่อนแก้ → แตก Phase/Issue ส่ง **Use AI Relay** → AI ตัวที่ 3 แก้โค้ด → AI ตัวที่ยังไม่ถูกใช้รีวิว (มี 3 ตัว = กติกาสำรอง: คนรีวิวห้ามซ้ำคนแก้)
+- เอกสารทุกชิ้นเขียนแบบ **AI อ่านต่อ-ดัดแปลงได้** (แยก "หลักการ" ออกจาก "ค่าเฉพาะโปรเจกต์") · ผล P1 ต้องเอาไปใช้**ปรับปรุง Master ViberQC** ต่อได้
+- งบ: เจ้าของปล่อยเพื่อคุณภาพ แต่ต้องรายงาน**ความคุ้มค่าจริง**ใน P5
 
----
+## QAQC-P1 — คลังหัวข้อครบ ไม่ซ้ำ ไม่หาย (ตารางแม่) · สถานะ: เสร็จ 2026-07-10 (รอเจ้าของอ่านอนุมัติ = manual_verified) — ผลอยู่ `QAQC-Master-Taxonomy.md` + `ViberQC-Diagnosis-2026-07-10.md` ในคลัง · บัญชีกันหาย S1 369/369 · S1b 34/34 · S2 747/747 · S3 13/13
 
-## GRD-P1 — สัญญางานผูกแผน (แก้ต้นตอ 1, 6) · สถานะ: กำลังทำ
+- **QAQC-P1-I1** สกัดหัวข้อตรวจทั้งหมดจากไฟล์วิจัย Grok — `/Users/rattanasak/ObsidianVault/HermesAgent/20-Departments/Security/AI-Security-Testing/Sources/2026-07-10-ai-security-master-source.md` (1,809 บรรทัด) · ทุกหัวข้อ + AI ที่เก่ง + เครื่องมือที่ต้องมี + อ้างบรรทัด · ห้ามตัดทอน
+- **QAQC-P1-I2** สกัด + วินิจฉัย **Master ViberQC** (อ่านอย่างเดียว): หมวด/checklist ที่ออกแบบไว้ · จุดที่กระจัดกระจาย/ซ้ำซ้อน (เจ้าของวินิจฉัยว่ายังไม่รัดกุม — หาหลักฐาน) · ของดีที่ควรเก็บ
+- **QAQC-P1-I3** ค้นมาตรฐานโลก (เน็ต/GitHub/GitLab): ISTQB test types · OWASP ASVS/Top 10 · ISO/IEC 25010 · production-readiness / launch checklist ชั้นนำ · อ้าง URL ทุกแหล่ง
+- **QAQC-P1-I4** Fable สังเคราะห์ **ตารางแม่**: หัวข้อ × หมวด × ช่วงงานที่เหมาะ (25/50/75/100%) × AI หลัก/สำรอง × แหล่งอ้าง + **ตัวเลขกันหาย N/M ต่อแหล่ง** → ไฟล์ในคลัง Obsidian (โฟลเดอร์ AI-Security-Testing)
+- verify: ไฟล์ตารางแม่ + N/M ครบ 3 แหล่ง + เจ้าของอ่านอนุมัติ (manual_verified)
 
-- **GRD-P1-I1** สคริปต์ `plan-anchor` (`scripts/ai-relay/plan-anchor.py`)
-  - หน้าที่ (ก) ตรวจว่าเลขงานมีจริงใน `.project/plan.md` — ไม่มี = exit 1 (ข) โหมด `--emit-brief` พิมพ์หัวใบสั่งงาน: ข้อความเฟส + ข้อห้าม + allowed/forbidden ของเลขงานนั้น เอาไปแปะหัว brief
-  - allowed: `scripts/ai-relay/plan-anchor.py`, `scripts/ai-relay/tests/test_plan_anchor.py`
-  - forbidden: อื่นทั้งหมด (โดยเฉพาะ `relay-call.py`, `.hermes/**`)
-  - verify: `python3 -m pytest scripts/ai-relay/tests/test_plan_anchor.py -q` → exit 0
-- **GRD-P1-I2** ผูกด่านเข้า `relay-call.py`: ถ้า repo มี `.project/plan.md` ที่ประกาศ plan_id → task-id ต้องผ่าน plan-anchor ก่อนยิงงาน · ไม่ผ่าน = ไม่ยิง คืนสถานะ `off_plan` · มีทางหนีชัดเจน `--no-plan` (จดลง ledger ว่า off-plan โดยตั้งใจ เพื่องานจร) · ของเก่าที่ไม่มี plan.md = พฤติกรรมเดิมทุกอย่าง
-  - allowed: `scripts/ai-relay/relay-call.py`, `scripts/ai-relay/tests/test_relay_fixes.py` (เพิ่มเทสต์), `scripts/ai-relay/tests/test_plan_anchor.py`
-  - forbidden: adapter/accounts จริงใน `.hermes/**`
-  - verify: `python3 -m pytest scripts/ai-relay/tests/ -q` → exit 0 (ของเก่าต้องไม่พัง)
-- **GRD-P1-I3** เพิ่มกฎ "re-anchor" ลง prompt กลางใน vault (`use-ai-relay.md` + `use-continue.md`): หลังตอบคำถามแทรก ต้องเปิด plan.md ทวนเฟสก่อนลงมือ · ผู้ทำ: Fable เอง (ไฟล์ vault ไม่ใช่โค้ด ไม่ผ่าน relay)
-  - verify: grep เจอข้อความกฎในทั้ง 2 ไฟล์ + จด SHA/เวลาแก้ใน ledger แชทนี้
+## QAQC-P2 — ตาราง AI ประจำหมวด + สายสำรอง · สถานะ: I1+I2 เสร็จ (ฝังใน taxonomy §2/§4) · **I3 ค้าง — กรรมการนอกค่ายล่มพร้อมกัน 3 ตัว 2026-07-10 (Grok=login พัง exit40 · Codex+Gemini=quota exit30) · ตามกติกา cross-check-จบรอบเดียว จะรีวิวรวบ P1+P2+P3+P4 ครั้งเดียวเมื่อโควต้าคืน**
 
-## GRD-P2 — ตัวเทียบความจำกับของจริง `memory-audit` (แก้ต้นตอ 3) · สถานะ: รอ P1
+- **QAQC-P2-I1** ต่อหมวด: AI หลักสแกน / สำรอง / คนแก้ / คนรีวิว + กติกาเมื่อโดนลิมิต/บัญชีหมดอายุ (สลับตามสาย) + ช่องเสียบ AI อนาคต — โครงแบบ accounts.yaml ของ relay
+- **QAQC-P2-I2** กติกาสำรองช่วง 3 ตัว: **คนรีวิวห้ามซ้ำคนแก้** (กฎเหล็กขั้นต่ำ) · gate-run เป็นผู้ตัดสินจริงเสมอ ไม่ใช่ปากรีวิวเวอร์
+- **QAQC-P2-I3** กรรมการข้ามค่าย: Grok + Codex ตรวจร่าง P1+P2 ผ่าน `relay-call --task-id QAQC-P2-I3` (เพดานรอบเต็มจากรอบล้มเหลว — งานรีวิวย้ายไปรันใต้ QAQC-P3-I3)
+- **QAQC-P2-I4** [เพิ่ม 2026-07-10 — งานซ่อมที่ขวางกรรมการ] แก้ quota ปลอมใน `relay-call.py classify()`: QUOTA_RE จับคำ quota/rate limit ใน "เนื้อคำตอบยาว" ของงานที่พูดถึงเรื่องโควต้า → ใส่ตัวกันความยาว ≤250 แบบเดียวกับ auth (บทเรียน 2026-07-05) ทั้งฝั่ง exit 0 และ exit ≠ 0 + เทสต์กันถอยหลัง 2 ตัว
+  - ผู้ทำ: Fable (ข้อยกเว้นไก่-ไข่: relay พังจนใช้ relay สั่งแก้ตัวเองไม่ได้ — คำตอบของ coder จะโดนบั๊กเดียวกันจับทิ้ง) · ส่ง Codex ตรวจ diff ตามด่านปกติก่อนปิด
+  - verify: `./venv/bin/python -m pytest scripts/ai-relay/tests/ -q` → 68 passed / 1 failed (ตัวที่ failed = `test_run_once_returns_timeout_mark_on_timeout` **แดงบนโค้ดเดิมก่อนแก้ พิสูจน์ด้วย git stash แล้ว** — งานซ่อมแยกรอบ)
+  - พบพ่วง: `~/.local/bin/relay-call` เป็น symlink ไปสำเนาพนักงาน `~/.hermes/ai-relay-tools` รุ่นก่อน GRD (ไม่มี plan-anchor/--no-plan) → หลัง merge ต้องรัน relay-setup.sh อัปสำเนา · grok CLI v1.0.1 ตัด flag เก่า → แก้ adapters.yaml แล้ว · grok headless ต้องมี API key (งานคนของเจ้าของ)
+- verify: ผลตรวจ 2 ค่ายแนบในแชท + แก้ครบข้อ blocking (manual_verified)
 
-- **GRD-P2-I1** สคริปต์ `scripts/memory-audit/memory_audit.py` + เทสต์
-  - ตรวจ 4 อย่าง แล้วออกรายงานภาษาไทย + exit 0(ตรง)/1(เจอความจำโกหก):
-    (ก) commit SHA ที่ OverviewProgress อ้าง มีจริง + ไม่ถูก revert ทีหลัง (สแกน `git log --grep=Revert` + เทียบไฟล์)
-    (ข) ไฟล์ที่ความจำอ้างว่ามี — มีจริง + git เก็บจริง (`check-ignore`/`ls-files`)
-    (ค) ป้าย `> memory-schema:` + plan_id ใน plan.md ยังครบ
-    (ง) เลขงานในสมุด relay (`calls-*.md`) สังกัด plan_id ที่รู้จัก — เจอเลขกำพร้า = เตือน
-  - allowed: `scripts/memory-audit/**`
-  - forbidden: `.project/**` (สคริปต์อ่านอย่างเดียว ห้ามแก้ความจำเอง), `.hermes/**`
-  - verify: `python3 -m pytest scripts/memory-audit/tests/ -q` → exit 0 + ยิงเคสจำลอง "อ้าง SHA ที่ถูก revert" แล้วจับได้
-- **GRD-P2-I2** ต่อเข้าวงจรใช้งาน: เพิ่มบรรทัดสั่งรัน memory-audit ในขั้น 0 ของ `use-new-chat.md` (vault) + คำสั่งติดตั้งตัวตั้งเวลารายสัปดาห์ 1 บรรทัดให้เจ้าของก๊อปวาง · ผู้ทำ: Fable (vault) + Codex (สคริปต์ติดตั้ง ถ้าจำเป็น)
-  - verify: grep เจอใน use-new-chat.md + คำสั่งติดตั้งรันแล้ว `launchctl list` เห็นรายการ (งานคน: เจ้าของกด)
+## QAQC-P3 — ตัว prompt `Use QA QC` · สถานะ: **เปิดใช้แล้ว v1.1 active (คำสั่งเจ้าของ 2026-07-10 "จบให้ก่อน ใช้ Fable ไม่รอ Codex/Grok")** · I3 กรรมการต่างค่าย = เลื่อนเป็น hardening หลังใช้งาน (ไม่ขวาง) · Fable ตรวจปิดเอง + อุดข้อ 5f โหมด AI ตัวเดียว
 
-## GRD-P3 — ด่านกันแชทซ้อนทับ/กวาดงานคนอื่น (แก้ต้นตอ 4) · สถานะ: รอ P1
+- **QAQC-P3-I1** เมนู 2 แกน + เลือกหลายหมวด + คำแนะนำภาษา user ("งานอยู่ช่วงไหน ควรตรวจอะไร") + Scan All ด่านยืนยัน
+- **QAQC-P3-I2** ตัวไหลงานเต็ม (สแกนคู่ → ตาราง severity → qaqc-scan.md → Relay → แก้ → รีวิว) + **ตัวประหยัด 3 ชั้น**: (ก) เครื่องมือฟรีรันก่อน AI อ่านผลสรุป (ข) ตัวสแกนที่ 2 ตรวจเฉพาะสิ่งที่ตัวแรกพบ+จุดไม่แน่ใจ (ค) เพดานงบ ledger ของ relay
+- **QAQC-P3-I3** กรรมการข้ามค่ายตรวจ prompt ทั้งฉบับ ผ่าน `relay-call --task-id QAQC-P3-I3`
+- verify: ไฟล์ prompt เต็มในคลัง + ผ่านกรรมการ + เจ้าของอนุมัติ (manual_verified)
 
-- **GRD-P3-I1** ต่อยอดด่านใน `tools/approval.py` ตามแบบ phase-013 ที่พิสูจน์แล้ว: จับคำสั่งกลุ่ม "กวาดงานค้างทิ้ง" — `git stash push/clear/drop` · `git clean -f` · `git checkout -- .` · `git restore .` (ทั้งโฟลเดอร์) → บล็อกพร้อมข้อความ "อาจกวาดงานค้างของสายอื่น ต้องให้เจ้าของยืนยัน" · ไม่ false positive กับ `git stash list/show` และ `git restore <ไฟล์เดียวที่เพิ่งแก้เอง>`
-  - allowed: `tools/approval.py`, `tests/tools/test_stash_sweep_guard.py` (ใหม่)
-  - forbidden: ไฟล์ test เดิม (ห้ามแก้ให้ผ่าน) · ทุกอย่างนอก allowed
-  - verify: `python3 -m pytest tests/tools/test_stash_sweep_guard.py tests/tools/test_workspace_retirement_guard.py tests/tools/test_command_guards.py -q` → exit 0 (ของเดิม 38 เคสต้องยังผ่าน)
+## QAQC-P4 — ต่อระบบความจำ + ทะเบียน · สถานะ: เสร็จ 3/3 — แม่แบบ qaqc-scan.md ฝังใน shortcut · New Chat → v2.0 + Close Chat → v2.3 (เพิ่มขั้น QA/QC) · ทะเบียน 29→30 (สถานะ draft)
 
-## GRD-P4 — ล้างความจำเก่าให้ตรงจริง + รวมเล่มแผน (แก้ต้นตอ 2, 5) · สถานะ: ทำในแชทนี้โดย Fable
+- **QAQC-P4-I1** แม่แบบ `.project/qaqc-scan.md` — โครง AI-readable: ป้าย schema/สถานะรายหมวด/ตาราง severity/ประวัติรอบสแกน/งานแก้ค้าง
+- **QAQC-P4-I2** เชื่อม **Use New Chat** (อ่าน qaqc-scan.md ตอนเปิด — เฉพาะโปรเจกต์ที่มีไฟล์) + **Use Close Chat** (อัปเดตตอนปิด) · capability-based · bump เวอร์ชัน 2 ไฟล์นั้น
+- **QAQC-P4-I3** ลงทะเบียน shortcut ในคลัง (29→30) + Graph Links
+- verify: `git check-ignore` ว่าง + `git ls-files` เห็นไฟล์ .project ใหม่ (ตอน commit PR) + ทะเบียนมีแถวใหม่ + grep เจอบรรทัดเชื่อมใน use-new-chat.md / use-close-chat.md
 
-- **GRD-P4-I1** เขียน plan.md ฉบับนี้ + แก้ OverviewProgress 3 จุดที่ไม่ตรงจริง (HEAD เก่า · สถานะด่านกันลบโฟลเดอร์ที่จริงๆ merge แล้ว `f9fb0827f` · บรรทัดบทบาท Fable) + append decisions.md
-  - verify: `git check-ignore -v .project/*` ว่าง + `git ls-files .project/` ครบ + commit SHA ใน PR เดียวกัน
+## QAQC-P5 — นำร่อง Road Safe Fund + Root Admin · สถานะ: รอ P1-P4 จบ + เจ้าของสั่งเริ่ม
 
----
-
-## คิวถัดไป (ดูดจากแผนเก่า · ไม่มีอะไรหาย · เริ่มเมื่อ GRD-P1..P4 verified + เจ้าของสั่ง)
-
-- **GRD-P5** Monitor Hub — URL เดียวบน VPS + การ์ดเช้าเข้า Lark (เดิม P5 · Codex เขียน สลับผู้ตรวจตามกติกา)
-- **GRD-P6** มาตรฐานกลางวิ่งจริง 30-40 โปรเจกต์ ผ่าน safe_apply เท่านั้น (เดิม P2 · **รอเจ้าของส่ง "ปัญหาชุดสุดท้าย" ก่อนล็อกดีไซน์**)
-- **GRD-P7** ปิดวงจรคำด่า/ความพลาด — ตัวจับใหม่ + วิเคราะห์ทุก 3 ชม. + ด่าซ้ำออกใบงานอัตโนมัติ (เดิม P3 · รอพร้อม P6)
-- **GRD-P8** ย้ายน้ำหนัก hook จาก "เตือนหลังตอบ" เป็น "กั้นก่อนทำ" + ซ่อมตัวนับเฟ้อ (เดิม P4 · รอพร้อม P6)
-- **GRD-P9** อัปรุ่น v0.17.0 → v0.18.0 — ต้องทำบัญชีของต่อเติม ~3,215 commit ก่อน + ซ้อมใน worktree `upgrade-audit` (เดิม P6)
-- สายคู่ขนาน **JARVIS v2**: แผนแยกที่ `.project/FeatureSpec-jarvis-voice.md` (plan_id: jarvis-v2-phase-plan) · ขอบเขต `scripts/jarvis-voice/` เท่านั้น · รอเจ้าของทดสอบเสียง P0
+- รันจริง 1-2 หมวดต่อโปรเจกต์ (Road Safe Fund + Root Admin ก่อน · ต่อไป DRA, Content Thailand + SaaS/Web App 10+) → เก็บ token/เวลา/ผลจริง → ตารางความคุ้มค่า + ปรับเพดาน/ขอบเขต
+- verify: แถว ledger จริง + ตาราง severity จริง + ตัวเลขงบจริง (tier 3)
 
 ## งานคน (เจ้าของ)
 
-- กด merge PR ของแผน GRD นี้ (1 PR เดียว)
-- สั่ง commit ไฟล์ JARVIS ที่ยัง untracked (`scripts/jarvis-voice/` + `FeatureSpec-jarvis-voice.md` — อยู่เครื่องเดียว เสี่ยงหาย) · หมายเหตุ: โฟลเดอร์นั้นมี `.venv-gemini` ทั้งก้อน ควรใส่ `.gitignore` ก่อน commit
-- รันคำสั่งติดตั้ง memory-audit รายสัปดาห์ 1 บรรทัด (GRD-P2-I2 เตรียมให้)
-- ส่ง "ปัญหาชุดสุดท้าย" เพื่อปลดล็อก GRD-P6..P8
+- อนุมัติตารางแม่ (จบ P1) · อนุมัติ prompt (จบ P3) · push คลัง Obsidian ขึ้น GitLab · กด merge PR repo นี้ · สั่งเริ่ม P5
 
 ## ความเสี่ยงค้าง
 
-- ด่าน plan-anchor กันได้เฉพาะงานที่วิ่งผ่าน relay-call — AI ที่แก้ไฟล์ตรงๆ ไม่ผ่าน relay ยังต้องพึ่งกติกาเหล็กข้อ 2 (จะย้ายเป็นด่านเครื่องใน GRD-P8)
-- memory-audit จับ "ความจำโกหก" ได้เฉพาะแบบที่นิยามไว้ 4 อย่าง — แบบใหม่ๆ ต้องเติม
-- Grok บน VPS ยังไม่ล็อกอิน · Opus 4.7/4.6 ยังไม่ทดสอบ (ยกมาจากแผนเก่า)
+- plan.md active เปลี่ยนเป็น QAQC — เลขงาน GRD-P5..P9 ต้องยกกลับมาไฟล์นี้ก่อนเริ่ม (จดวิธีไว้หัว plan-grd.md แล้ว)
+- เอกสาร ViberQC อาจใหญ่กว่าที่เห็น — สกัดไม่ครบรอบเดียวต้องรายงานส่วนที่ยังไม่ได้อ่าน ห้ามเงียบ
+- Grok/Codex เคยชนโควต้าพร้อมกัน (2026-07-08) — ถ้ากรรมการเรียกไม่ได้ ให้รายงานและรอ ไม่ข้ามด่านตรวจ

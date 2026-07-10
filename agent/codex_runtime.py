@@ -876,11 +876,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 continue
             if sdk_none_iterable:
                 logger.debug(
-                    "Responses stream parser hit None output shape; falling back to create(stream=True). %s err=%s",
+                    "Responses stream parser hit None output shape; falling back to non-stream create. %s err=%s",
                     agent._client_log_context(),
                     err_text,
                 )
-                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+                non_stream_kwargs = dict(api_kwargs)
+                non_stream_kwargs.pop("stream", None)
+                non_stream_kwargs.setdefault("store", False)
+                return active_client.responses.create(**non_stream_kwargs)
             raise
 
         try:

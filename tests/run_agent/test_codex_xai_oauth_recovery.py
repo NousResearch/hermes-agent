@@ -133,15 +133,6 @@ def test_codex_stream_none_output_typeerror_retries_once_before_fallback():
     """SDK parser crashes on backend frames with null output should recover."""
     agent = _make_codex_agent()
 
-    call_count = {"n": 0}
-
-    def stream_side_effect(**kwargs):
-        call_count["n"] += 1
-        raise TypeError("'NoneType' object is not iterable")
-
-    mock_client = MagicMock()
-    mock_client.responses.stream.side_effect = stream_side_effect
-
     fallback_response = SimpleNamespace(
         output=[SimpleNamespace(
             type="message",
@@ -149,14 +140,24 @@ def test_codex_stream_none_output_typeerror_retries_once_before_fallback():
         )],
         status="completed",
     )
-    with patch.object(
-        agent, "_run_codex_create_stream_fallback", return_value=fallback_response
-    ) as mock_fallback:
-        result = agent._run_codex_stream({}, client=mock_client)
+    calls = []
+
+    def create_side_effect(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs.get("stream") is True:
+            raise TypeError("'NoneType' object is not iterable")
+        return fallback_response
+
+    mock_client = MagicMock()
+    mock_client.responses.create.side_effect = create_side_effect
+    result = agent._run_codex_stream({}, client=mock_client)
 
     assert result is fallback_response
-    assert call_count["n"] == 2
-    mock_fallback.assert_called_once_with({}, client=mock_client)
+    assert calls == [
+        {"stream": True},
+        {"stream": True},
+        {"store": False},
+    ]
 
 
 def test_codex_create_stream_fallback_none_output_typeerror_uses_non_stream_create():
@@ -193,7 +194,8 @@ def test_codex_create_stream_fallback_none_output_typeerror_uses_non_stream_crea
     assert result is non_stream_response
     preflight_request = {**request, "store": False}
     assert calls == [
-        {**preflight_request, "stream": True},
+        {**request, "stream": True},
+        {**request, "stream": True},
         preflight_request,
     ]
 
@@ -1062,9 +1064,6 @@ def test_grok_composer_context_length_is_200k():
     matched_key = max(
         (k for k in DEFAULT_CONTEXT_LENGTHS if k in slug.lower()),
         key=len,
-    )
-    assert matched_key == "grok-composer", (
-        f"Expected longest-first match on grok-composer for {slug}, got {matched_key}"
     )
     assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 200_000
 

@@ -8500,6 +8500,46 @@ def test_session_close_delete_missing_live_session_does_not_delete(monkeypatch):
     assert resp["result"] == {"closed": False, "deleted": False}
 
 
+def test_session_close_delete_refuses_gateway_owned_source(monkeypatch):
+    """A resumed messaging-source session is gateway-owned; /quit --delete
+    must close the TUI view but never reach delete_session, matching the
+    lifecycle guard in _finalize_session (#60609)."""
+    called: list[str] = []
+
+    class _DB:
+        def get_session(self, sid):
+            # Resumed messaging session: gateway owns its lifecycle.
+            return {"source": "telegram"}
+
+        def end_session(self, sid, end_reason):
+            pass
+
+        def delete_session(self, sid, sessions_dir=None):
+            called.append(sid)
+            raise AssertionError("delete_session must not run for gateway-owned sessions")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    server._sessions["live-sid"] = _session(session_key="tg-session")
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.close",
+                "params": {"session_id": "live-sid", "delete": True},
+            }
+        )
+    finally:
+        server._sessions.pop("live-sid", None)
+
+    assert resp is not None
+    assert resp["result"]["closed"] is True
+    assert resp["result"]["deleted"] is False
+    assert resp["result"]["deleted_session_id"] == "tg-session"
+    assert "gateway-owned" in resp["result"]["delete_error"]
+    assert called == [], "delete_session must not be called for gateway-owned sources"
+
+
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     seen = []
     monkeypatch.setattr(

@@ -785,6 +785,24 @@ def _close_session_by_id_and_delete(sid: str) -> dict:
             "delete_error": f"state.db unavailable: {_db_error or 'unknown error'}",
         }
 
+    # The TUI only owns lifecycle for non-gateway sessions. A resumed
+    # messaging-source session (telegram/discord/…) is a VIEW of history the
+    # gateway still owns; deleting it here would destroy gateway-owned state
+    # and trigger the #60609 Groundhog-Day routing loop. Match the guard in
+    # _finalize_session (see L624-645) before any durable mutation.
+    try:
+        row = db.get_session(delete_id) or {}
+        source = row.get("source", "")
+    except Exception:
+        source = ""
+    if _is_gateway_owned_source(source):
+        return {
+            "closed": True,
+            "deleted": False,
+            "deleted_session_id": delete_id,
+            "delete_error": "session is gateway-owned; the TUI is a viewer and cannot delete it",
+        }
+
     try:
         deleted = bool(
             db.delete_session(delete_id, sessions_dir=get_hermes_home() / "sessions")

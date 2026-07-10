@@ -236,6 +236,75 @@ def _check_stale_giveup(agent) -> None:
         )
 
 
+def should_use_direct_api_call(agent) -> bool:
+    """True when the non-streaming path should skip the interrupt worker thread.
+
+    Cron jobs run inside nested gateway thread pools (cron-scheduler →
+    cron-parallel → per-job pool → ``interruptible_api_call`` worker). That
+    extra daemon thread can wedge before HTTP on the 2nd+ API call of a
+    tool-using turn (#62151) while the same job succeeds via ``hermes cron
+    tick``. Cron has no interactive interrupt surface, so synchronous calls
+    on the conversation thread are safe and avoid the deadlock class.
+    """
+    return getattr(agent, "platform", None) == "cron"
+
+
+def _execute_nonstreaming_api_request(agent, api_kwargs: dict):
+    """Dispatch one non-streaming LLM request on the calling thread."""
+    request_client = None
+    try:
+        if agent.api_mode == "codex_responses":
+            request_client = agent._create_request_openai_client(
+                reason="codex_stream_request",
+                api_kwargs=api_kwargs,
+            )
+            return agent._run_codex_stream(
+                api_kwargs,
+                client=request_client,
+                on_first_delta=getattr(agent, "_codex_on_first_delta", None),
+            )
+        if agent.api_mode == "anthropic_messages":
+            return agent._anthropic_messages_create(api_kwargs)
+        if agent.api_mode == "bedrock_converse":
+            from agent.bedrock_adapter import (
+                _get_bedrock_runtime_client,
+                invalidate_runtime_client,
+                is_stale_connection_error,
+                normalize_converse_response,
+            )
+
+            region = api_kwargs.pop("__bedrock_region__", "us-east-1")
+            api_kwargs.pop("__bedrock_converse__", None)
+            client = _get_bedrock_runtime_client(region)
+            try:
+                raw_response = client.converse(**api_kwargs)
+            except Exception as bedrock_exc:
+                if is_stale_connection_error(bedrock_exc):
+                    invalidate_runtime_client(region)
+                raise
+            return normalize_converse_response(raw_response)
+
+        request_client = agent._create_request_openai_client(
+            reason="chat_completion_request",
+            api_kwargs=api_kwargs,
+        )
+        return request_client.chat.completions.create(**api_kwargs)
+    finally:
+        if request_client is not None:
+            agent._close_request_openai_client(
+                request_client, reason="request_complete"
+            )
+
+
+def direct_api_call(agent, api_kwargs: dict):
+    """Run a non-streaming API call synchronously on the conversation thread."""
+    _check_stale_giveup(agent)
+    agent._touch_activity("waiting for non-streaming API response")
+    response = _execute_nonstreaming_api_request(agent, api_kwargs)
+    _reset_stale_streak(agent)
+    return response
+
+
 def interruptible_api_call(agent, api_kwargs: dict):
     """
     Run the API call in a background thread so the main conversation loop

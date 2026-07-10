@@ -167,6 +167,97 @@ def test_cli_restores_session_pin_after_ephemeral_route():
     assert calls == [("session-1", "gpt-5.6-terra")]
 
 
+def test_cli_ephemeral_route_restores_durable_agent_and_system_prompt():
+    import cli as cli_mod
+
+    calls = []
+
+    class SessionDB:
+        def get_session(self, session_id):
+            assert session_id == "session-1"
+            return {"system_prompt": "Model: gpt-5.6-terra"}
+
+        def update_session_model(self, session_id, model):
+            calls.append(("model", session_id, model))
+
+        def update_system_prompt(self, session_id, prompt):
+            calls.append(("prompt", session_id, prompt))
+
+    durable = SimpleNamespace(
+        session_id="session-1", _cached_system_prompt="Model: gpt-5.6-terra"
+    )
+    released = []
+    temporary = SimpleNamespace(
+        session_id="session-1", release_clients=lambda: released.append(True)
+    )
+    signature = ("gpt-5.6-terra", "openai-codex", "", "", None, ())
+    stub = SimpleNamespace(
+        session_id="session-1",
+        agent=durable,
+        _active_agent_route_signature=signature,
+        _session_db=SessionDB(),
+    )
+    stub._release_agent_clients = lambda candidate: cli_mod.HermesCLI._release_agent_clients(
+        stub, candidate
+    )
+
+    cli_mod.HermesCLI._capture_ephemeral_router_state(stub, router_ephemeral=True)
+    stub.agent = temporary
+    stub._active_agent_route_signature = None
+    cli_mod.HermesCLI._restore_ephemeral_router_session_model(
+        stub,
+        router_ephemeral=True,
+        restore_model="gpt-5.6-terra",
+    )
+
+    assert stub.agent is durable
+    assert stub._active_agent_route_signature == signature
+    assert released == [True]
+    assert calls == [
+        ("model", "session-1", "gpt-5.6-terra"),
+        ("prompt", "session-1", "Model: gpt-5.6-terra"),
+    ]
+
+
+def test_cli_ephemeral_route_preserves_compressed_child_session_id():
+    import cli as cli_mod
+
+    calls = []
+
+    class SessionDB:
+        def update_session_model(self, session_id, model):
+            calls.append(("model", session_id, model))
+
+        def update_system_prompt(self, session_id, prompt):
+            calls.append(("prompt", session_id, prompt))
+
+    durable = SimpleNamespace(
+        session_id="parent-session", _cached_system_prompt="Model: gpt-5.6-terra"
+    )
+    temporary = SimpleNamespace(session_id="child-session")
+    stub = SimpleNamespace(
+        session_id="parent-session",
+        agent=durable,
+        _active_agent_route_signature=("gpt-5.6-terra",),
+        _session_db=SessionDB(),
+    )
+
+    cli_mod.HermesCLI._capture_ephemeral_router_state(stub, router_ephemeral=True)
+    stub.agent = temporary
+    cli_mod.HermesCLI._restore_ephemeral_router_session_model(
+        stub,
+        router_ephemeral=True,
+        restore_model="gpt-5.6-terra",
+    )
+
+    assert stub.agent is None
+    assert stub._last_ephemeral_router_session_id == "child-session"
+    assert calls == [
+        ("model", "child-session", "gpt-5.6-terra"),
+        ("prompt", "child-session", "Model: gpt-5.6-terra"),
+    ]
+
+
 def test_cli_explicit_model_switch_replaces_router_pin():
     import cli as cli_mod
 
@@ -195,7 +286,55 @@ def test_cli_explicit_model_switch_replaces_router_pin():
     )
 
     assert stub._active_agent_route_signature[0] == "custom-explicit-model"
+    assert stub._explicit_session_model_pin == "custom-explicit-model"
     assert calls == [("session-1", "custom-explicit-model")]
+
+
+def test_cli_explicit_model_pin_beats_stale_session_route_after_restore_failure(monkeypatch):
+    import cli as cli_mod
+    import hermes_cli.model_router as model_router
+
+    captured = {}
+
+    def select_model(message, base_model, pinned_model=None):
+        captured["pinned_model"] = pinned_model
+        return pinned_model or base_model, "standard"
+
+    monkeypatch.setattr(model_router, "explicit_model_router_tier", lambda message, config=None: None)
+    monkeypatch.setattr(model_router, "select_model_for_session_turn", select_model)
+    stub = SimpleNamespace(
+        model="custom-explicit-model",
+        session_id="session-1",
+        agent=SimpleNamespace(session_id="session-1"),
+        _explicit_session_model_pin="custom-explicit-model",
+        _active_agent_route_signature=None,
+        _session_db=SimpleNamespace(
+            get_session=lambda session_id: {
+                "model": "temporary-route-model", "message_count": 2
+            },
+            update_session_model=lambda session_id, model: (_ for _ in ()).throw(
+                RuntimeError("database unavailable")
+            ),
+        ),
+        api_key="primary-key",
+        base_url="https://chatgpt.com/backend-api/codex",
+        provider="openai-codex",
+        api_mode="codex_responses",
+        acp_command=None,
+        acp_args=[],
+        _credential_pool=None,
+        service_tier="",
+    )
+
+    cli_mod.HermesCLI._restore_ephemeral_router_session_model(
+        stub,
+        router_ephemeral=True,
+        restore_model="custom-explicit-model",
+    )
+    route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "continue normally")
+
+    assert captured["pinned_model"] == "custom-explicit-model"
+    assert route["model"] == "custom-explicit-model"
 
 
 def test_cli_model_switch_pins_explicit_model_and_discards_failed_agent(monkeypatch):
@@ -374,6 +513,60 @@ def test_gateway_restores_session_pin_after_ephemeral_route():
     )
 
     assert calls == [("session-1", "gpt-5.6-luna")]
+
+
+def test_gateway_ephemeral_route_restores_durable_system_prompt():
+    import gateway.run as gateway_run
+
+    calls = []
+
+    class SessionDB:
+        def get_session(self, session_id):
+            assert session_id == "session-1"
+            return {"system_prompt": "Model: gpt-5.6-terra"}
+
+        def update_session_model(self, session_id, model):
+            calls.append(("model", session_id, model))
+
+        def update_system_prompt(self, session_id, prompt):
+            calls.append(("prompt", session_id, prompt))
+
+    turn_route = {
+        "router_ephemeral": True,
+        "router_restore_model": "gpt-5.6-terra",
+    }
+    runner = SimpleNamespace(_session_db=SessionDB())
+
+    gateway_run.GatewayRunner._capture_ephemeral_router_system_prompt(
+        runner, "session-1", turn_route
+    )
+    gateway_run.GatewayRunner._restore_ephemeral_router_session_model(
+        runner, "session-1", turn_route
+    )
+
+    assert calls == [
+        ("model", "session-1", "gpt-5.6-terra"),
+        ("prompt", "session-1", "Model: gpt-5.6-terra"),
+    ]
+
+
+def test_gateway_does_not_overwrite_durable_cache_for_ephemeral_route():
+    import gateway.run as gateway_run
+
+    durable = object()
+    cache = {"session-key": (durable, ("gpt-5.6-terra",), 2)}
+    runner = SimpleNamespace(_agent_cache=cache, _agent_cache_lock=None)
+
+    gateway_run.GatewayRunner._cache_agent_for_turn(
+        runner,
+        "session-key",
+        object(),
+        ("gpt-5.6-sol",),
+        2,
+        router_ephemeral=True,
+    )
+
+    assert cache["session-key"][0] is durable
 
 
 def test_session_turn_pins_the_first_effective_model():

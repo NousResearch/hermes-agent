@@ -186,10 +186,13 @@ class CLIAgentSetupMixin:
         )
 
         pinned_model = None
+        explicit_pin = getattr(self, "_explicit_session_model_pin", None)
+        if isinstance(explicit_pin, str) and explicit_pin.strip():
+            pinned_model = explicit_pin.strip()
         active_signature = getattr(self, "_active_agent_route_signature", None)
-        if isinstance(active_signature, tuple) and active_signature:
+        if pinned_model is None and isinstance(active_signature, tuple) and active_signature:
             pinned_model = active_signature[0]
-        elif getattr(self, "_session_db", None) is not None:
+        elif pinned_model is None and getattr(self, "_session_db", None) is not None:
             try:
                 session = self._session_db.get_session(self.session_id)
                 if session and int(session.get("message_count") or 0) > 0:
@@ -258,30 +261,88 @@ class CLIAgentSetupMixin:
             tuple(runtime.get("args") or ()),
         )
 
+    def _release_agent_clients(self, agent: object) -> None:
+        """Release a discarded agent without ending its session tool state."""
+        if agent is None:
+            return
+        try:
+            release_clients = getattr(agent, "release_clients", None)
+            if callable(release_clients):
+                release_clients()
+        except Exception:
+            pass
+
+    def _capture_ephemeral_router_state(self, *, router_ephemeral: bool) -> None:
+        """Snapshot the durable CLI agent/prompt before a one-turn route override."""
+        self._ephemeral_router_state = None
+        self._last_ephemeral_router_session_id = None
+        if not router_ephemeral:
+            return
+
+        agent = getattr(self, "agent", None)
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(agent, "session_id", None) or getattr(self, "session_id", None)
+        prompt = getattr(agent, "_cached_system_prompt", None)
+        if not prompt and session_db is not None and session_id:
+            try:
+                row = session_db.get_session(session_id)
+                candidate = row.get("system_prompt") if row else None
+                prompt = candidate if isinstance(candidate, str) and candidate else None
+            except Exception:
+                prompt = None
+
+        self._ephemeral_router_state = {
+            "agent": agent,
+            "signature": getattr(self, "_active_agent_route_signature", None),
+            "session_id": session_id,
+            "system_prompt": prompt,
+        }
+
     def _restore_ephemeral_router_session_model(
         self, *, router_ephemeral: bool, restore_model: str | None
     ) -> None:
-        """Keep a one-turn directive out of the durable CLI session pin."""
+        """Restore the durable CLI model, prompt, and reusable agent after a directive."""
         from cli import logger
 
         if not router_ephemeral or not isinstance(restore_model, str) or not restore_model.strip():
             return
+
+        state = getattr(self, "_ephemeral_router_state", None)
+        self._ephemeral_router_state = None
+        temporary_agent = getattr(self, "agent", None)
         session_db = getattr(self, "_session_db", None)
-        session_id = getattr(getattr(self, "agent", None), "session_id", None) or getattr(
-            self, "session_id", None
-        )
-        if session_db is None or not session_id:
-            return
-        try:
-            session_db.update_session_model(session_id, restore_model.strip())
-        except Exception:
-            logger.debug(
-                "Could not restore CLI router session model after ephemeral route",
-                exc_info=True,
-            )
+        session_id = getattr(temporary_agent, "session_id", None) or getattr(self, "session_id", None)
+        self._last_ephemeral_router_session_id = session_id
+        durable_prompt = state.get("system_prompt") if isinstance(state, dict) else None
+        if session_db is not None and session_id:
+            try:
+                session_db.update_session_model(session_id, restore_model.strip())
+                if isinstance(durable_prompt, str) and durable_prompt:
+                    session_db.update_system_prompt(session_id, durable_prompt)
+            except Exception:
+                logger.debug(
+                    "Could not restore CLI router session state after ephemeral route",
+                    exc_info=True,
+                )
+
+        durable_agent = state.get("agent") if isinstance(state, dict) else None
+        durable_session_id = state.get("session_id") if isinstance(state, dict) else None
+        durable_signature = state.get("signature") if isinstance(state, dict) else None
+        if durable_agent is not None and durable_session_id == session_id:
+            self.agent = durable_agent
+            self._active_agent_route_signature = durable_signature
+            if temporary_agent is not durable_agent:
+                CLIAgentSetupMixin._release_agent_clients(self, temporary_agent)
+        else:
+            # Compression or a cold-start directive requires a fresh durable
+            # agent next turn; the temporary agent must still release clients.
+            self.agent = None
+            self._active_agent_route_signature = durable_signature
+            CLIAgentSetupMixin._release_agent_clients(self, temporary_agent)
 
     def _set_explicit_session_model_pin(self, model: str, runtime: dict) -> None:
         """Make a deliberate `/model` selection beat any router-derived pin."""
+        self._explicit_session_model_pin = model
         self._set_active_agent_route_signature(model, runtime)
         session_db = getattr(self, "_session_db", None)
         # Compression can rotate the active agent's backing SessionDB row. Use

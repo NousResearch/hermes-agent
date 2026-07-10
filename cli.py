@@ -12110,8 +12110,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
+        self._capture_ephemeral_router_state(
+            router_ephemeral=turn_route.get("router_ephemeral", False)
+        )
         if turn_route["signature"] != self._active_agent_route_signature:
+            discarded_agent = self.agent
             self.agent = None
+            if not turn_route.get("router_ephemeral", False):
+                self._release_agent_clients(discarded_agent)
 
         # Initialize agent if needed
         if self.agent is None:
@@ -12122,6 +12128,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             request_overrides=turn_route.get("request_overrides"),
             router_ephemeral=turn_route.get("router_ephemeral", False),
         ):
+            self._restore_ephemeral_router_session_model(
+                router_ephemeral=turn_route.get("router_ephemeral", False),
+                restore_model=turn_route.get("router_restore_model"),
+            )
             return None
         
         # Route image attachments based on the active model's vision capability.
@@ -12543,18 +12553,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
             # If auto-compression fired mid-turn, the agent created a new
-            # continuation session and mutated self.agent.session_id. Sync
-            # the CLI's session_id so /status, /resume, title generation,
-            # and the exit summary all target the live child session rather
-            # than the ended parent. Mirrors the gateway's post-run sync
-            # (gateway/run.py around line 9983).
-            if (
-                self.agent
-                and getattr(self.agent, "session_id", None)
-                and self.agent.session_id != self.session_id
-            ):
-                self._transfer_session_yolo(self.session_id, self.agent.session_id)
-                self.session_id = self.agent.session_id
+            # continuation session. An ephemeral directive restores the durable
+            # agent before this point, so prefer the temporary agent's recorded
+            # child session when available.
+            _completed_session_id = getattr(self, "_last_ephemeral_router_session_id", None) or getattr(
+                self.agent, "session_id", None
+            )
+            if _completed_session_id and _completed_session_id != self.session_id:
+                self._transfer_session_yolo(self.session_id, _completed_session_id)
+                self.session_id = _completed_session_id
                 self._pending_title = None
 
             # Get the final response
@@ -16163,12 +16170,19 @@ def main(
                                 announce=False,
                             )
                     turn_route = cli._resolve_turn_agent_config(effective_query)
+                    cli._capture_ephemeral_router_state(
+                        router_ephemeral=turn_route.get("router_ephemeral", False)
+                    )
                     if turn_route["signature"] != cli._active_agent_route_signature:
+                        discarded_agent = cli.agent
                         cli.agent = None
+                        if not turn_route.get("router_ephemeral", False):
+                            cli._release_agent_clients(discarded_agent)
                     if cli._init_agent(
                         model_override=turn_route["model"],
                         runtime_override=turn_route["runtime"],
                         request_overrides=turn_route.get("request_overrides"),
+                        router_ephemeral=turn_route.get("router_ephemeral", False),
                     ):
                         cli.agent.quiet_mode = True
                         cli.agent.suppress_status_output = True
@@ -16177,8 +16191,9 @@ def main(
                         # status lines).  The response is printed once below.
                         cli.agent.stream_delta_callback = None
                         cli.agent.tool_gen_callback = None
+                        run_agent = cli.agent
                         try:
-                            result = cli.agent.run_conversation(
+                            result = run_agent.run_conversation(
                                 user_message=effective_query,
                                 conversation_history=cli.conversation_history,
                             )
@@ -16186,15 +16201,27 @@ def main(
                             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
                             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                             sys.exit(130)
+                        finally:
+                            _quiet_completed_session_id = getattr(run_agent, "session_id", None)
+                            cli._restore_ephemeral_router_session_model(
+                                router_ephemeral=turn_route.get("router_ephemeral", False),
+                                restore_model=turn_route.get("router_restore_model"),
+                            )
                         # Sync session_id if mid-run compression created a
-                        # continuation session. The exit line below reports
-                        # session_id to stderr for automation wrappers; without
-                        # this sync it would point at the ended parent.
+                        # continuation session. The temporary routed agent may
+                        # already have been released, so keep its recorded ID.
+                        _quiet_completed_session_id = (
+                            getattr(cli, "_last_ephemeral_router_session_id", None)
+                            or _quiet_completed_session_id
+                        )
                         if (
-                            getattr(cli.agent, "session_id", None)
-                            and cli.agent.session_id != cli.session_id
+                            _quiet_completed_session_id
+                            and _quiet_completed_session_id != cli.session_id
                         ):
-                            cli.session_id = cli.agent.session_id
+                            cli._transfer_session_yolo(
+                                cli.session_id, _quiet_completed_session_id
+                            )
+                            cli.session_id = _quiet_completed_session_id
                         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
                         # Surface backend errors that produced no visible output
                         # (e.g. invalid model slug → provider 4xx). Mirrors the
@@ -16253,7 +16280,11 @@ def main(
                                     _exit_code = 1
                         sys.exit(_exit_code)
 
-                # Exit with error code if credentials or agent init fails
+                # Exit with error code if credentials or agent init fails.
+                cli._restore_ephemeral_router_session_model(
+                    router_ephemeral=turn_route.get("router_ephemeral", False),
+                    restore_model=turn_route.get("router_restore_model"),
+                )
                 sys.exit(1)
             else:
                 # Single-query mode (`hermes chat -q "…"`): skip the welcome

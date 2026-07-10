@@ -138,3 +138,77 @@ async def test_stream_consumer_fallback_sends_tail_after_partial_overflow():
     adapter.delete_message.assert_not_awaited()
     assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_flood_on_overflow_split_first_chunk_enters_fallback_immediately():
+    """Overflow split first-chunk edit hitting flood control enters fallback on
+    first strike (no wasteful retries) and preserves the visible prefix.
+
+    Acceptance criteria (#user-observed):
+      - streaming 中先成功显示 prefix ✓
+      - overflow split first edit 抛 RetryAfter ✓
+      - final response 到达 ✓
+      - 不发送完整 final duplicate ✓
+      - 只发送 missing tail 或 suppress final ✓
+      - final_content_delivered / already_sent 状态一致 ✓
+      - flood control 不导致重复刷屏 ✓
+    """
+    adapter = MagicMock()
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    # first call is the preview send (step 1)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="preview-1"))
+    # overflow split first-chunk edit → flood
+    adapter.edit_message = AsyncMock(
+        return_value=SendResult(
+            success=False,
+            message_id="preview-1",
+            error="Flood control exceeded. Retry in 130 seconds",
+        )
+    )
+    adapter.delete_message = AsyncMock()
+
+    consumer = GatewayStreamConsumer(adapter, "chat-1", metadata={"thread_id": "77"})
+
+    # ── Step 1: Stream prefix "hello" → preview sent ──
+    ok = await consumer._send_or_edit("hello ", finalize=False)
+    assert ok is True
+    assert consumer._message_id == "preview-1"
+    assert consumer._last_sent_text == "hello "
+    assert consumer.already_sent is True
+    assert consumer.final_content_delivered is False
+    assert consumer.final_response_sent is False
+    adapter.send.assert_awaited_once()
+
+    # ── Step 2: Overflow split first-chunk edit → RetryAfter ──
+    ok = await consumer._send_or_edit(
+        "hello world", finalize=True, is_turn_final=False,
+    )
+    # Must enter fallback immediately (first strike) because finalize=True
+    # cannot afford 3 wasteful flood-strike retries.
+    assert ok is False
+    assert consumer._fallback_final_send is True
+    assert consumer._fallback_prefix == "hello "
+    assert consumer._edit_supported is False
+    assert consumer.already_sent is True
+    assert consumer.final_response_sent is False
+    assert consumer.final_content_delivered is False
+    # No full final re-sent via edit_message — only the flood error was returned
+    adapter.edit_message.assert_awaited_once()
+
+    # ── Step 3: Final response → fallback sends only missing tail ──
+    await consumer._send_fallback_final("hello world")
+
+    adapter.send.assert_awaited()  # = preview + fallback tail = 2 calls
+    assert adapter.send.await_args_list[-1].kwargs["content"] == "world"
+    assert adapter.send.await_args_list[-1].kwargs["metadata"] == {"thread_id": "77", "notify": True}
+    # Preview message preserved — not deleted
+    adapter.delete_message.assert_not_awaited()
+    # State flags consistent: content delivered, no false negatives
+    assert consumer.final_response_sent is True
+    assert consumer.final_content_delivered is True
+    assert consumer.already_sent is True
+
+    # ── Step 4: Flood control did NOT cause duplicate spam ──
+    # Only 2 calls: preview send + tail fallback.  Nothing else.
+    assert adapter.send.await_count == 2

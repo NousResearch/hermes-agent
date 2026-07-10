@@ -5333,7 +5333,7 @@ def _redownload_electron_dist(
     if mirror:
         dl_env["ELECTRON_MIRROR"] = mirror
     try:
-        subprocess.run([node, str(installer)], cwd=str(electron_dir), env=dl_env, check=False)
+        subprocess.run([node, str(installer)], cwd=str(electron_dir), env=dl_env, check=False, timeout=600, stdin=subprocess.DEVNULL)
     except OSError:
         return False
     return _electron_dist_ok(project_root)

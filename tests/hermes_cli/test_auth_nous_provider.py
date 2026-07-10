@@ -2002,6 +2002,114 @@ def test_runtime_credentials_merges_shared_token_before_empty_local_access_token
     assert profile_state is not None
     assert profile_state["access_token"] == shared_token
     assert profile_state["refresh_token"] == "shared-fresh-refresh"
+    assert profile_state["agent_key"] == shared_token
+
+
+def test_runtime_shared_recovery_recomputes_routing_before_force_refresh(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    """A shared refresh token must use its own routing metadata."""
+    from hermes_cli import auth as auth_mod
+
+    profile_b = tmp_path / "profile_b"
+    _setup_nous_auth(
+        profile_b,
+        access_token="local-placeholder",
+        refresh_token="local-stale-refresh",
+        expires_at="2000-01-01T00:00:00+00:00",
+        expires_in=0,
+    )
+    auth_path = profile_b / "auth.json"
+    auth_payload = json.loads(auth_path.read_text())
+    local_state = auth_payload["providers"]["nous"]
+    local_state["access_token"] = None
+    local_state["portal_base_url"] = "http://127.0.0.1:8001"
+    local_state["client_id"] = "local-client"
+    auth_path.write_text(json.dumps(auth_payload, indent=2))
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+
+    shared_state = _full_state_fixture()
+    shared_state["access_token"] = _invoke_jwt(seconds=3600)
+    shared_state["refresh_token"] = "shared-refresh"
+    shared_state["expires_at"] = _future_iso(3600)
+    shared_state["scope"] = auth_mod.DEFAULT_NOUS_SCOPE
+    shared_state["portal_base_url"] = "http://localhost:8002"
+    shared_state["client_id"] = "shared-client"
+    shared_state["inference_base_url"] = auth_mod.DEFAULT_NOUS_INFERENCE_URL
+    auth_mod._write_shared_nous_state(shared_state)
+
+    captured = {}
+    refreshed_token = _invoke_jwt(seconds=7200)
+
+    def _refresh(**kwargs):
+        captured.update(kwargs)
+        return {
+            "access_token": refreshed_token,
+            "refresh_token": "rotated-shared-refresh",
+            "expires_in": 7200,
+            "scope": auth_mod.DEFAULT_NOUS_SCOPE,
+            "inference_base_url": auth_mod.DEFAULT_NOUS_INFERENCE_URL,
+        }
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _refresh)
+
+    creds = auth_mod.resolve_nous_runtime_credentials(force_refresh=True)
+
+    assert captured["portal_base_url"] == "http://localhost:8002"
+    assert captured["client_id"] == "shared-client"
+    assert captured["refresh_token"] == "shared-refresh"
+    assert creds["api_key"] == refreshed_token
+
+    profile_state = auth_mod.get_provider_auth_state("nous")
+    assert profile_state is not None
+    assert profile_state["portal_base_url"] == "http://localhost:8002"
+    assert profile_state["client_id"] == "shared-client"
+    assert profile_state["refresh_token"] == "rotated-shared-refresh"
+
+
+def test_runtime_shared_recovery_honors_inference_env_override(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    """Shared state is persisted, but the operator inference override wins."""
+    from hermes_cli import auth as auth_mod
+
+    profile_b = tmp_path / "profile_b"
+    _setup_nous_auth(
+        profile_b,
+        access_token="local-placeholder",
+        refresh_token="local-stale-refresh",
+        expires_at="2000-01-01T00:00:00+00:00",
+        expires_in=0,
+    )
+    auth_path = profile_b / "auth.json"
+    auth_payload = json.loads(auth_path.read_text())
+    auth_payload["providers"]["nous"]["access_token"] = None
+    auth_path.write_text(json.dumps(auth_payload, indent=2))
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+    override_url = "https://operator.example/v1"
+    monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", override_url)
+
+    shared_state = _full_state_fixture()
+    shared_token = _invoke_jwt(seconds=3600)
+    shared_state["access_token"] = shared_token
+    shared_state["refresh_token"] = "shared-refresh"
+    shared_state["expires_at"] = _future_iso(3600)
+    shared_state["scope"] = auth_mod.DEFAULT_NOUS_SCOPE
+    shared_state["inference_base_url"] = auth_mod.DEFAULT_NOUS_INFERENCE_URL
+    auth_mod._write_shared_nous_state(shared_state)
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_refresh_access_token",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected refresh")),
+    )
+
+    creds = auth_mod.resolve_nous_runtime_credentials()
+
+    assert creds["base_url"] == override_url
+    profile_state = auth_mod.get_provider_auth_state("nous")
+    assert profile_state is not None
+    assert profile_state["inference_base_url"] == auth_mod.DEFAULT_NOUS_INFERENCE_URL
 
 
 def test_managed_gateway_access_token_uses_newer_shared_token(

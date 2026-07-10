@@ -220,3 +220,97 @@ class TestRestorePrimaryPoolReselect:
         assert result is True
         assert "custom-endpoint.example.com" in agent.base_url
         assert "custom-endpoint.example.com" in agent._client_kwargs["base_url"]
+
+
+def _make_copilot_swap_agent():
+    from run_agent import AIAgent
+
+    agent = AIAgent.__new__(AIAgent)
+    agent.provider = "copilot"
+    agent.api_mode = "codex_responses"
+    agent.base_url = "https://api.githubcopilot.com"
+    agent.api_key = "test-old-api-token"
+    agent._client_kwargs = {
+        "api_key": "test-old-api-token",
+        "base_url": "https://api.githubcopilot.com",
+    }
+    agent._apply_client_headers_for_base_url = MagicMock()
+    agent._replace_primary_openai_client = MagicMock(return_value=True)
+    return agent
+
+
+def _make_copilot_entry(access_token: str):
+    return PooledCredential.from_dict(
+        "copilot",
+        {
+            "id": "enterprise",
+            "label": "enterprise",
+            "auth_type": "api_key",
+            "source": "manual",
+            "priority": 0,
+            "access_token": access_token,
+            # Regression setup: this public endpoint was persisted before the
+            # token exchange learned the account-specific Enterprise host.
+            "base_url": "https://api.githubcopilot.com",
+        },
+    )
+
+
+def test_swap_raw_copilot_credential_exchanges_token_and_account_endpoint():
+    """Raw GitHub credentials must install the exchanged token/endpoint pair."""
+    agent = _make_copilot_swap_agent()
+    entry = _make_copilot_entry("ghu_raw_enterprise_token")
+
+    with patch(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        return_value=(
+            "tid=example;exp=9999999999;proxy-ep=proxy.enterprise.githubcopilot.com",
+            "https://api.enterprise.githubcopilot.com",
+        ),
+    ) as exchange:
+        agent._swap_credential(entry)
+
+    exchange.assert_called_once_with("ghu_raw_enterprise_token")
+    assert agent.api_key.startswith("tid=example;")
+    assert agent.base_url == "https://api.enterprise.githubcopilot.com"
+    assert agent._client_kwargs["api_key"] == agent.api_key
+    assert agent._client_kwargs["base_url"] == agent.base_url
+    agent._replace_primary_openai_client.assert_called_once_with(
+        reason="credential_rotation",
+    )
+
+
+def test_swap_exchanged_copilot_credential_repairs_stale_account_endpoint():
+    """A cached API token must repair a stale pool URL without re-exchange."""
+    agent = _make_copilot_swap_agent()
+    api_token = (
+        "tid=example;exp=9999999999;"
+        "proxy-ep=proxy.enterprise.githubcopilot.com;sku=copilot_enterprise"
+    )
+    entry = _make_copilot_entry(api_token)
+
+    with patch("hermes_cli.copilot_auth.get_copilot_api_token") as exchange:
+        agent._swap_credential(entry)
+
+    exchange.assert_not_called()
+    assert agent.api_key == api_token
+    assert agent.base_url == "https://api.enterprise.githubcopilot.com"
+    assert agent._client_kwargs["base_url"] == agent.base_url
+
+
+def test_swap_raw_copilot_credential_falls_back_if_exchange_raises():
+    """A transient exchange failure must not break credential rotation."""
+    agent = _make_copilot_swap_agent()
+    entry = _make_copilot_entry("ghu_raw_enterprise_token")
+
+    with patch(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        side_effect=RuntimeError("network unavailable"),
+    ):
+        agent._swap_credential(entry)
+
+    assert agent.api_key == "ghu_raw_enterprise_token"
+    assert agent.base_url == "https://api.githubcopilot.com"
+    agent._replace_primary_openai_client.assert_called_once_with(
+        reason="credential_rotation",
+    )

@@ -198,6 +198,51 @@ def test_telegram_final_response_redacts_auth_secrets():
     assert "sk-live" not in sanitized
 
 
+def test_telegram_final_response_classifies_endpoint_forbidden_as_access_error():
+    """GitHub's exact endpoint 403 is not generic retry exhaustion (#61746)."""
+    raw = (
+        "HTTP 403: Access to this endpoint is forbidden. Please review our "
+        "[Terms of Service](https://docs.github.com/en/site-policy/github-terms/"
+        "github-terms-of-service)."
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "authentication or endpoint access failed" in sanitized.lower()
+    assert "after retries" not in sanitized.lower()
+    assert "terms of service" not in sanitized.lower()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Non-retryable error: HTTP 403: Access to this endpoint is forbidden. "
+        "Please review our [Terms of Service](https://docs.github.com/en/site-policy/"
+        "github-terms/github-terms-of-service).",
+        "HTTP 403: Access to this endpoint is forbidden. Please review our "
+        "[Terms of Service](https://example.com/terms).",
+        "HTTP 403: Access to this endpoint is forbidden. Please review our "
+        "[Terms of Service](https://docs.github.com/en/site-policy/github-terms/"
+        "github-terms-of-service). trailing text",
+    ],
+)
+def test_telegram_final_response_does_not_overmatch_endpoint_forbidden_near_misses(raw):
+    """Only the complete known GitHub envelope gets the access diagnosis."""
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "authentication or endpoint access failed" not in sanitized.lower()
+
+
+def test_telegram_final_response_keeps_other_403s_generic():
+    """Only GitHub's endpoint-forbidden envelope is categorized as access."""
+    raw = "HTTP 403: Organization policy denied this request."
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "provider failed after retries" in sanitized.lower()
+    assert "authentication or endpoint access failed" not in sanitized.lower()
+
+
 def test_telegram_final_response_keeps_normal_answers():
     """Normal assistant content should not be rewritten."""
     answer = "Here is the clean summary you asked for."

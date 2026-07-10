@@ -4505,6 +4505,27 @@ class AIAgent:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
 
+        # Pool entries may contain either a raw GitHub token or an already
+        # exchanged Copilot API token. Exchange only the former, while deriving
+        # the account endpoint directly from the latter, so credential rotation
+        # installs the token and its Enterprise endpoint as one runtime pair.
+        # Keep the selected pool credential unchanged if resolution fails.
+        if self.provider == "copilot":
+            try:
+                from hermes_cli.copilot_auth import (
+                    _derive_base_url_from_proxy_ep,
+                    get_copilot_api_token,
+                )
+
+                if ";" in runtime_key:
+                    account_base_url = _derive_base_url_from_proxy_ep(runtime_key)
+                else:
+                    runtime_key, account_base_url = get_copilot_api_token(runtime_key)
+                if account_base_url:
+                    runtime_base = account_base_url
+            except Exception:
+                logger.debug("Copilot credential exchange failed during rotation", exc_info=True)
+
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
 

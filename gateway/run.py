@@ -141,6 +141,14 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
+_GATEWAY_ENDPOINT_ACCESS_ERROR_RE = re.compile(
+    r"^\s*HTTP\s*403\s*:\s*Access to this endpoint is forbidden\.\s*"
+    r"Please review our \[Terms of Service\]"
+    r"\(https://docs\.github\.com/en/site-policy/github-terms/"
+    r"github-terms-of-service\)\.\s*$",
+    re.IGNORECASE,
+)
+
 _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)",
     re.IGNORECASE,
@@ -355,6 +363,12 @@ def _redact_approval_command(cmd: "str | None") -> str:
 
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
+    if _GATEWAY_ENDPOINT_ACCESS_ERROR_RE.search(text):
+        return (
+            "⚠️ Provider authentication or endpoint access failed. Check the "
+            "configured credentials and endpoint; raw provider details are in "
+            "the gateway logs."
+        )
     if _GATEWAY_AUTH_ERROR_RE.search(text):
         return (
             "⚠️ Provider authentication failed. Check the configured credentials; "

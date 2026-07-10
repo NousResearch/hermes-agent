@@ -811,6 +811,13 @@ export const zh: Translations = {
       existingToken: value => `现有 token ${value}`,
       savedToken: '已保存',
       pasteSessionToken: '粘贴会话 token',
+      plainTextConfirmTitle: '以明文存储网关 token？',
+      plainTextConfirmDesc:
+        '在此设备上未找到操作系统的密钥环服务，因此 token 将以未加密的明文保存在应用的连接设置文件中，以该用户身份运行的任何进程都可读取。请安装或启用 GNOME Keyring 或 KWallet 以进行加密存储。',
+      plainTextConfirmAction: '以明文保存',
+      plainTextStoredTitle: 'Token 以明文存储',
+      plainTextStoredDesc:
+        '安全存储不可用，因此已保存的 token 以未加密方式存储在此设备上应用的连接设置文件中。请安装或启用 GNOME Keyring 或 KWallet 以对其加密。',
       testRemote: '测试远程',
       saveForRestart: '保存到下次重启',
       saveAndReconnect: '保存并重连',

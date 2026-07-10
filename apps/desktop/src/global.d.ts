@@ -429,6 +429,14 @@ export interface DesktopConnectionConfig {
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
+  // Whether OS-keychain-backed encryption (Electron safeStorage) is currently
+  // available on this machine. When false, a persisted remote token can only be
+  // stored as plain text on disk (with an explicit opt-in).
+  secureTokenStorage: boolean
+  // Whether the currently-persisted remote token is stored with encoding
+  // 'plain' (i.e. plain text on disk in connection.json), which happens when
+  // the user opted in on a machine without secure storage.
+  remoteTokenPlainText: boolean
   remoteUrl: string
   // For a 'cloud' connection: the persisted Hermes Cloud org (slug or id) the
   // connected instance was discovered under, so Settings → Gateway can reopen
@@ -443,6 +451,10 @@ export interface DesktopConnectionConfigInput {
   profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
+  // When true and secure (OS-keychain) storage is unavailable, persist the
+  // remote token as plain text on disk instead of failing. Requires an explicit
+  // user opt-in from the renderer.
+  allowPlainTextToken?: boolean
   remoteUrl?: string
   // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.

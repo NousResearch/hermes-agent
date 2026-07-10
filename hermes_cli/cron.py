@@ -135,6 +135,8 @@ def cron_list(show_all: bool = False):
         deliver = job.get("deliver") or ["local"]
         if isinstance(deliver, str):
             deliver = [deliver]
+        # Flatten comma-separated composite targets (e.g. "origin,all")
+        deliver = [t.strip() for item in deliver for t in item.split(",")]
         deliver_str = ", ".join(deliver)
 
         skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
@@ -155,9 +157,13 @@ def cron_list(show_all: bool = False):
         print(f"    Deliver:   {deliver_str}")
         if "origin" in deliver and job.get("origin"):
             origin = job["origin"]
-            platform = origin.get("platform")
-            chat_id = origin.get("chat_id")
-            print(f"    Origin:    {platform}:{chat_id}")
+            if isinstance(origin, dict):
+                platform = origin.get("platform")
+                chat_id = origin.get("chat_id")
+                if platform and chat_id:
+                    print(f"    Origin:    {platform}:{chat_id}")
+                elif platform:
+                    print(f"    Origin:    {platform}")
         enabled_toolsets = job.get("enabled_toolsets")
         if enabled_toolsets:
             print(f"    Toolsets:  {', '.join(enabled_toolsets)}")

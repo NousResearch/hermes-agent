@@ -16,6 +16,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
+import { FirstRunChoiceOverlay } from '@/components/first-run-choice-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
@@ -28,6 +29,7 @@ import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { setCronFocusJobId } from '@/store/cron'
+import { initFirstRunStore } from '@/store/first-run'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
@@ -160,6 +162,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   useEffect(() => {
     syncWorkspaceIsPage(location.pathname)
   }, [location.pathname])
+
+  // Seed + subscribe the first-run gate state from main (primary window only;
+  // secondary windows never own the install/first-run flow).
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    return initFirstRunStore()
+  }, [])
 
   const {
     agentsOpen,
@@ -879,6 +891,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
       {!isSecondaryWindow() && <DesktopInstallOverlay />}
+      {!isSecondaryWindow() && <FirstRunChoiceOverlay />}
       {!isSecondaryWindow() && (
         <DesktopOnboardingOverlay
           enabled={gatewayState === 'open'}

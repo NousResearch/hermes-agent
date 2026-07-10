@@ -242,6 +242,21 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
+  // First-run choice gate: on a fresh machine main parks before any install
+  // starts so the user can pick "install on this computer" vs "connect to an
+  // existing server". get() seeds a late-mounting renderer; onChanged tracks the
+  // waiting state; choose('install') releases the wait. The remote path flows
+  // through the existing applyConnectionConfig, not choose.
+  firstRun: {
+    get: () => ipcRenderer.invoke('hermes:first-run:get'),
+    choose: choice => ipcRenderer.invoke('hermes:first-run:choose', choice),
+    onChanged: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:first-run:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:first-run:changed', listener)
+    }
+  },
   getVersion: () => ipcRenderer.invoke('hermes:version'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),
   uninstall: {

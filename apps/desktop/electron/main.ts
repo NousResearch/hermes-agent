@@ -66,6 +66,13 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
+import {
+  applyFirstRunChoice,
+  guardFirstRunBootstrap,
+  isFirstRunAborted,
+  readFirstRunInstallChoice
+} from './first-run-flow'
+import { createFirstRunGate } from './first-run-gate'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
@@ -174,6 +181,10 @@ if (USER_DATA_OVERRIDE) {
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
+// dev/testing: ignore every non-owned runtime source (dev checkout, PATH hermes,
+// system python) so a sandboxed HERMES_HOME reaches the first-run/bootstrap path.
+// Gated on !IS_PACKAGED so a packaged app never loses its system-python fallback.
+const FORCE_BOOTSTRAP = !IS_PACKAGED && process.env.HERMES_DESKTOP_FORCE_BOOTSTRAP === '1'
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
@@ -500,6 +511,12 @@ const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstr
 const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
+// first-run.json records that the user already picked "install on this computer"
+// at the first-run gate, so an interrupted install (or an unattended relaunch)
+// resumes the bootstrap directly instead of re-asking install-vs-connect. The
+// remote path needs no marker — it writes mode:'remote' to connection.json,
+// which stops the boot flow ever reaching bootstrap-needed again.
+const DESKTOP_FIRST_RUN_CONFIG_PATH = path.join(app.getPath('userData'), 'first-run.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
 // active-profile.json records which Hermes profile the desktop launches its
@@ -1414,6 +1431,27 @@ function broadcastBootstrapEvent(ev) {
 function getBootstrapState() {
   return bootstrapState
 }
+
+// First-run choice gate. On a totally fresh machine ensureRuntime()'s
+// 'bootstrap-needed' branch parks on this before any install starts so the user
+// can pick "install on this computer" vs "connect to an existing server". The
+// gate is electron-free (unit-tested in first-run-gate.test.ts); its onChanged
+// bridges into the renderer via the hermes:first-run:changed broadcast.
+function broadcastFirstRunState(state?: { required: boolean }) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  const { webContents } = mainWindow
+
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
+
+  webContents.send('hermes:first-run:changed', state ?? firstRunGate.state())
+}
+
+const firstRunGate = createFirstRunGate(broadcastFirstRunState)
 
 function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
   const nextProgressRaw =
@@ -3456,7 +3494,11 @@ function resolveHermesBackend(backendArgs) {
   //    cloned repo at SOURCE_REPO_ROOT takes precedence over ACTIVE and any
   //    installed `hermes` on PATH so local Python edits are actually exercised.
   //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
-  if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
+  //    FORCE_BOOTSTRAP (HERMES_DESKTOP_FORCE_BOOTSTRAP=1) is a dev/testing flag to
+  //    exercise the first-run/bootstrap path from a dev checkout: it skips this
+  //    dev-source step, the PATH hermes fallback (step 4), and the system-python
+  //    fallback (step 5) below.
+  if (!FORCE_BOOTSTRAP && !IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
     const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
 
     if (backend) {
@@ -3478,8 +3520,9 @@ function resolveHermesBackend(backendArgs) {
   //    a previous tool-only setup, or pip-installed system-wide. Use it but
   //    do NOT write a bootstrap marker; the user did this themselves and we
   //    don't want to take ownership of an install we didn't perform.
-  //    HERMES_DESKTOP_IGNORE_EXISTING=1 forces the bootstrap path for testing.
-  if (process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1') {
+  //    HERMES_DESKTOP_IGNORE_EXISTING=1 (or FORCE_BOOTSTRAP) forces the bootstrap
+  //    path for testing.
+  if (!FORCE_BOOTSTRAP && process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1') {
     let hermesCommand = null
     const hermesOverride = process.env.HERMES_DESKTOP_HERMES
 
@@ -3542,8 +3585,9 @@ function resolveHermesBackend(backendArgs) {
 
   // 5. Last-ditch: pip-installed hermes_cli module via system Python.
   //    Same rationale as #4 -- the user installed this; we use it but don't
-  //    take ownership.
-  const python = findSystemPython()
+  //    take ownership. FORCE_BOOTSTRAP skips this so the first-run/bootstrap
+  //    path can be exercised from a dev checkout.
+  const python = FORCE_BOOTSTRAP ? null : findSystemPython()
 
   if (python) {
     // Same smoke-test rationale as step 4: a system Python in the
@@ -3595,7 +3639,13 @@ function resolveHermesBackend(backendArgs) {
   }
 }
 
-async function ensureRuntime(backend) {
+// `firstRunGate` (option) enables the fresh-machine install-vs-connect gate on
+// the bootstrap-needed branch. Only the primary boot (startHermes) passes it;
+// the pool call site (spawnPoolBackend) and the post-bootstrap re-resolution
+// leave it false so a non-primary profile bootstraps directly — a secondary
+// window never renders FirstRunChoiceOverlay, so parking it on the gate would
+// hang with no overlay and surface a raw firstRunAborted on abort.
+async function ensureRuntime(backend, { firstRunGate: firstRunGateEnabled = false } = {}) {
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
@@ -3613,6 +3663,31 @@ async function ensureRuntime(backend) {
   // to a renderer-side install overlay.
   if (backend.kind === 'bootstrap-needed') {
     rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
+
+    // First-run choice, BEFORE anything installs — including BEFORE the Windows
+    // recovery handoff below. A fresh machine (any OS) must first pick
+    // install-vs-connect; the recovery handoff only matters once "install" was
+    // chosen (it heals an interrupted install), so a user picking "connect to a
+    // server" must never trigger it. If the user (via connection-config:apply)
+    // aborts to go remote, throw a non-latching firstRunAborted error so
+    // startHermes() re-dials the freshly-saved remote instead of failing boot.
+    //
+    // Only the primary boot parks here (firstRunGateEnabled). Skip the wait when
+    // the user already chose install in a prior run (persisted marker) so an
+    // interrupted install / unattended relaunch resumes bootstrap directly and
+    // the automatic Windows recovery handoff below still runs.
+    if (firstRunGateEnabled && !firstRunInstallChosen()) {
+      const decision = await firstRunGate.waitForDecision()
+
+      if (decision === 'abort') {
+        const abortedError: Error & { firstRunAborted?: boolean } = new Error(
+          'First-run bootstrap aborted: connecting to a remote Hermes backend instead.'
+        )
+
+        abortedError.firstRunAborted = true
+        throw abortedError
+      }
+    }
 
     if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
       const handoffError: Error & { isBootstrapFailure?: boolean; bootstrapHandedOff?: boolean } = new Error(
@@ -6046,6 +6121,26 @@ function writeDesktopConnectionConfig(config) {
   connectionConfigCacheMtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
 }
 
+// Whether the user already chose "install on this computer" at the first-run
+// gate. Read tolerantly (same style as readDesktopConnectionConfig, but
+// uncached — this runs at most once per boot). A recorded install lets the
+// gated ensureRuntime branch skip re-asking after an interrupted install.
+function firstRunInstallChosen() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DESKTOP_FIRST_RUN_CONFIG_PATH, 'utf8'))
+
+    return Boolean(parsed && typeof parsed === 'object' && parsed.choice === 'install')
+  } catch {
+    // Missing or malformed → no recorded choice; fall through to asking.
+    return false
+  }
+}
+
+function writeFirstRunInstallChoice() {
+  fs.mkdirSync(path.dirname(DESKTOP_FIRST_RUN_CONFIG_PATH), { recursive: true })
+  writeFileAtomic(DESKTOP_FIRST_RUN_CONFIG_PATH, JSON.stringify({ choice: 'install' }, null, 2))
+}
+
 // Returns the desktop's chosen profile name, or null when unset. "default" is
 // a valid stored value (pins the root HERMES_HOME explicitly); null means "no
 // preference" and preserves the legacy launch (no --profile flag).
@@ -6551,6 +6646,14 @@ function resetHermesConnection({ soft = false } = {}) {
 // startHermes() spawns fresh instead of racing the dying one. Shared by the
 // connection-config and profile switch flows.
 async function teardownPrimaryBackendAndWait({ soft = false } = {}) {
+  // Settle any parked first-run gate before tearing the primary backend down.
+  // Every primary teardown (config apply, profile switch, bootstrap reset/repair,
+  // primary-profile delete) must do this: an orphaned parked run would be re-
+  // joined by the next boot's waitForDecision(), and a single Install click would
+  // then resume BOTH runs → two concurrent runBootstrap() installers. Safe no-op
+  // when nothing is waiting.
+  firstRunGate.abort()
+
   // Capture the reference before resetHermesConnection() invalidates it.
   const hermesProcess = backendConnectionState.getProcess()
   const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
@@ -6996,7 +7099,9 @@ async function startHermes() {
     }
 
     await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
-    const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
+    // Primary boot: enable the first-run install-vs-connect gate on the
+    // bootstrap-needed branch (the pool call site never does — see ensureRuntime).
+    const backend = await ensureRuntime(resolveHermesBackend(backendArgs), { firstRunGate: true })
     // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
     backend.args = getBackendArgsForRuntime(backend)
     const hermesCwd = resolveHermesCwd()
@@ -7148,6 +7253,23 @@ async function startHermes() {
       ...getWindowState()
     }
   })().catch(error => {
+    // First-run gate abort: a primary teardown settled the parked gate. Do NOT
+    // latch this as a boot failure — null the cache and re-run startHermes() so
+    // the original awaiting callers resolve against the newly-resolved backend.
+    // Usually the abort came from connection-config:apply (mode:'remote' already
+    // written), so resolveRemoteBackend() wins on the re-run and the
+    // bootstrap-needed branch (the only firstRunAborted source) isn't reached —
+    // bounded to one effective retry. If instead the applied/new config is NOT
+    // remote (e.g. a primary-profile teardown that didn't write a remote), the
+    // re-run legitimately re-parks the gate and the overlay re-appears: correct,
+    // the user must still choose. A genuine remote failure takes the latching
+    // path below.
+    if (error?.firstRunAborted) {
+      backendConnectionState.clearPromiseForAttempt(connectionAttempt)
+
+      return startHermes()
+    }
+
     if (!backendConnectionState.clearPromiseForAttempt(connectionAttempt)) {
       throw error
     }
@@ -8015,11 +8137,44 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
     // Global / primary connection: soft re-home. Tear down the window backend
     // without resetting boot UI or reloading — the shell stays, the renderer
     // wipes session lists (skeletons) and re-dials on hermes:connection:applied.
+    // teardownPrimaryBackendAndWait() also settles a parked first-run gate (the
+    // fresh-machine "connect to a server" path): the remote config is already
+    // written above, so the aborted ensureRuntime run's retry re-dials the new
+    // remote.
     await teardownPrimaryBackendAndWait({ soft: true })
     sendConnectionApplied()
   }
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
+})
+
+// First-run choice gate. `get` seeds a late-mounting renderer (it must not miss
+// the changed broadcast); `choose('install')` releases the wait so the existing
+// bootstrap proceeds. The remote path does NOT go through here — it flows through
+// connection-config:apply, which calls firstRunGate.abort().
+ipcMain.handle('hermes:first-run:get', async () => firstRunGate.state())
+ipcMain.handle('hermes:first-run:choose', async (_event, choice) => {
+  if (choice === 'install') {
+    // Persist the choice so an interrupted install / unattended relaunch resumes
+    // bootstrap directly instead of re-asking (see firstRunInstallChosen).
+    writeFirstRunInstallChoice()
+
+    // The remote form may have persisted mode:'remote' (via an OAuth sign-in that
+    // saves before the user clicks Connect) while the user was still deciding. If
+    // they then pick Install, rewrite the saved mode back to 'local' so the next
+    // launch spawns the fresh local install instead of dialing a half-configured
+    // remote. Preserve the remote block/profiles so a saved URL/token can be
+    // reused later from Settings.
+    const config = readDesktopConnectionConfig()
+
+    if (modeIsRemoteLike(config.mode)) {
+      writeDesktopConnectionConfig({ ...config, mode: 'local' })
+    }
+
+    firstRunGate.chooseInstall()
+  }
+
+  return firstRunGate.state()
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))

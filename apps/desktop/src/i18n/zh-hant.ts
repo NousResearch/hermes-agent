@@ -1872,6 +1872,18 @@ export const zhHant = defineLocale({
     reloadRetry: '重新載入並重試'
   },
 
+  firstRun: {
+    title: '設定 Hermes',
+    subtitle: '選擇代理程式的執行位置。稍後可在設定中變更。',
+    installTitle: '安裝到這台電腦',
+    installDesc: '在本機下載並執行 Hermes 代理程式。',
+    installHint: 'Hermes 將在這台電腦上下載並設定代理程式執行環境，這可能需要幾分鐘。',
+    connectTitle: '連線到伺服器',
+    connectDesc: '使用已在其他位置（例如家庭伺服器）執行的 Hermes 代理程式。',
+    install: '安裝',
+    installFailed: '無法開始安裝'
+  },
+
   onboarding: {
     headerTitle: '開始設定 Hermes Agent',
     headerDesc: '連線模型提供方即可開始聊天。大多數選項只需一次點擊。',

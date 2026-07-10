@@ -4,6 +4,10 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+> **Zapabob fork:** This checkout is an engineering fork of NousResearch/hermes-agent.
+> For official-vs-custom layout, merge harness rules, and Windows ops, read
+> [`fork/AGENTS.md`](fork/AGENTS.md) and [`fork/README.md`](fork/README.md) first.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a

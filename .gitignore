@@ -101,6 +101,7 @@ sync_result.txt
 /venv.corrupt.bak/
 /nul
 /_diag_*.py
+/test_web_search.py
 /temp_*.py
 /tmp_*.py
 /tmp_*_output.json

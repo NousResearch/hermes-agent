@@ -18,6 +18,7 @@ import time -> no import cycle. The lazy import preserves the exact logger name
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 from typing import Optional
 
 from gateway.config import Platform
@@ -276,6 +277,33 @@ class GatewayAuthorizationMixin:
             return per_profile[profile]
         return getattr(self, "pairing_store", None)
 
+    def _profile_scope_for(self, profile: Optional[str]):
+        """Enter the named profile's secret scope for one authz decision.
+
+        Multiplexed gateways serve every profile from one process; without
+        this, an authz check for a secondary profile's message would read
+        allowlist env vars from the *active* profile's ``.env`` (loaded into
+        process-global ``os.environ`` at startup) instead of its own — the
+        same class of bug ``_profile_runtime_scope`` fixes for credentials
+        and ``_pairing_store_for`` (above) fixes for pairing whitelists.
+
+        No-op (``nullcontext``) for single-profile gateways, mirroring the
+        same ``if multiplex_profiles: with _profile_runtime_scope(...)`` guard
+        already used elsewhere in the gateway (e.g. ``_run_agent``) — zero
+        behavior or performance change when multiplexing is off.
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return nullcontext()
+        from gateway.run import _profile_runtime_scope
+        from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+        try:
+            name = (profile or "").strip() or get_active_profile_name() or "default"
+            profile_home = get_profile_dir(name)
+        except Exception:
+            from hermes_constants import get_hermes_home
+            profile_home = get_hermes_home()
+        return _profile_runtime_scope(profile_home)
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -329,6 +357,18 @@ class GatewayAuthorizationMixin:
         ):
             return True
 
+        with self._profile_scope_for(source.profile):
+            return self._is_user_authorized_scoped(source)
+
+    def _is_user_authorized_scoped(self, source: SessionSource) -> bool:
+        """Env-allowlist / pairing identity checks for ``_is_user_authorized``.
+
+        Runs inside the routed profile's secret scope (entered by the caller
+        via ``_profile_scope_for``) so ``_auth_env`` resolves *this* profile's
+        allowlist vars instead of the process-global ones. Split out of
+        ``_is_user_authorized`` only for that scope entry — the logic below
+        is unchanged.
+        """
         user_id = source.user_id
 
         # Telegram (and similar) authorize entire group/forum/channel chats
@@ -347,7 +387,7 @@ class GatewayAuthorizationMixin:
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
-                raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
+                raw_chat_allowlist = _auth_env(chat_allowlist_env)
                 if raw_chat_allowlist:
                     allowed_group_ids = {
                         cid.strip()
@@ -371,7 +411,7 @@ class GatewayAuthorizationMixin:
         }
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
-            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+            if allow_bots_var and _auth_env(allow_bots_var, "none").lower() in {"mentions", "all"}:
                 return True
 
         if not user_id:
@@ -643,6 +683,22 @@ class GatewayAuthorizationMixin:
            and a potential info-leak. (#9337)
         6. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
         """
+        with self._profile_scope_for(profile):
+            return self._get_unauthorized_dm_behavior_scoped(platform, profile=profile)
+
+    def _get_unauthorized_dm_behavior_scoped(
+        self,
+        platform: Optional[Platform],
+        *,
+        profile: Optional[str] = None,
+    ) -> str:
+        """Env-allowlist checks for ``_get_unauthorized_dm_behavior``.
+
+        Runs inside the routed profile's secret scope (entered by the caller
+        via ``_profile_scope_for``) so ``_auth_env`` resolves *this* profile's
+        allowlist vars instead of the process-global ones. Split out only for
+        that scope entry — the logic below is unchanged.
+        """
         config = getattr(self, "config", None)
 
         # Check for an explicit per-platform override first.
@@ -713,13 +769,13 @@ class GatewayAuthorizationMixin:
                 ),
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
             }
-            if os.getenv(platform_env_map.get(platform, ""), "").strip():
+            if _auth_env(platform_env_map.get(platform, "")):
                 return "ignore"
             for env_key in platform_group_env_map.get(platform, ()):
-                if os.getenv(env_key, "").strip():
+                if _auth_env(env_key):
                     return "ignore"
 
-        if os.getenv("GATEWAY_ALLOWED_USERS", "").strip():
+        if _auth_env("GATEWAY_ALLOWED_USERS"):
             return "ignore"
 
         return "pair"

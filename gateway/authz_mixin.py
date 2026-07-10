@@ -315,7 +315,6 @@ class GatewayAuthorizationMixin:
         4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
         5. Default: deny
         """
-        from gateway.run import logger
         # Home Assistant events are system-generated (state changes), not
         # user-initiated messages.  The HASS_TOKEN already authenticates the
         # connection, so HA events are always authorized.
@@ -369,6 +368,7 @@ class GatewayAuthorizationMixin:
         ``_is_user_authorized`` only for that scope entry — the logic below
         is unchanged.
         """
+        from gateway.run import logger
         user_id = source.user_id
 
         # Telegram (and similar) authorize entire group/forum/channel chats

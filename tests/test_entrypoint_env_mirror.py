@@ -52,3 +52,19 @@ def test_entrypoints_use_the_shared_mirror_helper():
     assert "mirror_brand_env" in inspect.getsource(run_agent.main)
     # batch_runner wires it in the module __main__ block.
     assert "mirror_brand_env" in inspect.getsource(batch_runner)
+
+
+def test_entrypoints_wire_home_migration():
+    """Every standalone entrypoint must also run maybe_migrate_home(): the
+    ~/.hermes -> ~/.ht-ai-agent bridge symlink has to exist no matter which
+    entry launches first, or the hardcoded legacy fallbacks fork a second data
+    dir on fresh installs (the CLI alone running it is not enough)."""
+    import inspect
+
+    import acp_adapter.entry as acp_entry
+    import batch_runner
+    import run_agent
+
+    assert "maybe_migrate_home" in inspect.getsource(run_agent.main)
+    assert "maybe_migrate_home" in inspect.getsource(acp_entry.main)
+    assert "maybe_migrate_home" in inspect.getsource(batch_runner)

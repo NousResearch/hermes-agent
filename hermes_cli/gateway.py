@@ -2575,24 +2575,32 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
       /root/.ht-ai-agent               → /home/alice/.ht-ai-agent
       /root/.ht-ai-agent/profiles/coder → /home/alice/.ht-ai-agent/profiles/coder
       /root/.hermes  (legacy install)  → /home/alice/.hermes
+      /root/custom-hermes              → /root/custom-hermes  (kept as-is)
       /opt/custom-hermes               → /opt/custom-hermes  (kept as-is)
 
-    Re-anchors relative to the calling user's home rather than assuming a
-    specific data-dir name, so it works for both the new ``.ht-ai-agent`` and
-    legacy ``.hermes`` layouts (and profile subdirs) without hardcoding either.
+    Only the two known data-dir layouts (``.ht-ai-agent`` / ``.hermes`` at the
+    top of the calling user's home, including profile subdirs) are re-anchored.
+    Any other path — even one under the calling user's home — is a deliberate
+    custom HERMES_HOME and is preserved verbatim, matching the pre-rebrand
+    "custom path kept as-is" contract.
     """
     current_hermes = get_hermes_home().resolve()
     calling_home = Path.home().resolve()
 
-    # Anything under the calling user's home (``.ht-ai-agent``, ``.hermes``, or
-    # a profile subdir) is re-anchored under the target user's home, preserving
-    # the relative structure.
     try:
         relative = current_hermes.relative_to(calling_home)
-        return str(Path(target_home_dir) / relative)
     except ValueError:
-        # Completely custom path (not under the calling user's home) — keep as-is
+        # Not under the calling user's home (e.g. /opt/data) — keep as-is.
         return str(current_hermes)
+
+    # hermes_constants owns the brand dir names; systemd units are POSIX-only.
+    from hermes_constants import _LEGACY_HOME_POSIX, _NEW_HOME_POSIX
+
+    top = relative.parts[0] if relative.parts else ""
+    if top in (_NEW_HOME_POSIX, _LEGACY_HOME_POSIX):
+        return str(Path(target_home_dir) / relative)
+    # Custom location under the calling user's home — keep as-is.
+    return str(current_hermes)
 
 
 def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:

@@ -45,6 +45,31 @@ class TestDefaultResolution:
         (home / ".ht-ai-agent").mkdir()
         assert _get_platform_default_hermes_home() == home / ".ht-ai-agent"
 
+    def test_empty_new_does_not_shadow_populated_legacy(self, home):
+        # A stray empty ~/.ht-ai-agent (pre-created, or debris from an
+        # interrupted migration) must not make a populated un-migrated
+        # ~/.hermes invisible — the install would look wiped.
+        legacy = home / ".hermes"
+        legacy.mkdir()
+        (legacy / "sessions").mkdir()
+        (home / ".ht-ai-agent").mkdir()
+        assert _get_platform_default_hermes_home() == legacy
+
+    def test_populated_new_wins_over_populated_legacy(self, home):
+        # Once the new home has content it is authoritative.
+        legacy = home / ".hermes"
+        legacy.mkdir()
+        (legacy / "old").write_text("1")
+        new = home / ".ht-ai-agent"
+        new.mkdir()
+        (new / "config.yaml").write_text("k: v\n")
+        assert _get_platform_default_hermes_home() == new
+
+    def test_empty_new_without_legacy_stays_new(self, home):
+        # Fresh provisioning creates an empty new home — it must resolve.
+        (home / ".ht-ai-agent").mkdir()
+        assert _get_platform_default_hermes_home() == home / ".ht-ai-agent"
+
 
 class TestMigrateLegacyHome:
     def test_migrates_populated_dir_with_backsymlink(self, home):
@@ -114,6 +139,37 @@ class TestMigrateLegacyHome:
         assert (legacy / "config.yaml").read_text() == "keep\n"
         assert not new.exists()
 
+    def test_reports_move_when_rollback_also_fails(self, home, monkeypatch, capsys):
+        # Symlink fails AND the rollback rename fails: the data has physically
+        # moved, so the function must say so (True) — returning False would
+        # leave callers believing ~/.hermes is still authoritative while it no
+        # longer exists. maybe_migrate_home() repairs the bridge next start.
+        legacy = home / ".hermes"
+        new = home / ".ht-ai-agent"
+        legacy.mkdir()
+        (legacy / "config.yaml").write_text("moved\n")
+
+        def _symlink_boom(*a, **k):
+            raise OSError("symlink not permitted")
+
+        real_rename = os.rename
+        calls = {"n": 0}
+
+        def _rename_second_fails(src, dst, *a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real_rename(src, dst, *a, **k)
+            raise OSError("rollback blocked")
+
+        monkeypatch.setattr(hermes_constants.Path, "symlink_to", _symlink_boom)
+        monkeypatch.setattr(hermes_constants.os, "rename", _rename_second_fails)
+
+        assert _migrate_legacy_home(legacy, new) is True
+        # Data lives at new; legacy is gone (the un-rollback-able state).
+        assert (new / "config.yaml").read_text() == "moved\n"
+        assert not legacy.exists() and not legacy.is_symlink()
+        assert "could not" in capsys.readouterr().err
+
 
 class TestProvisionFreshHome:
     def test_creates_new_and_legacy_symlink(self, home):
@@ -149,6 +205,32 @@ class TestProvisionFreshHome:
         assert _provision_fresh_home(new, home / ".hermes") is True
         assert new.is_dir()
         assert not (home / ".hermes").exists()  # bridge skipped, no split-dir stub
+
+    def test_repairs_dangling_legacy_symlink(self, home):
+        # ~/.hermes is a broken symlink (its target was deleted). Provisioning
+        # must not dead-end: create the new home and re-point the bridge, or
+        # every hardcoded ~/.hermes callsite fails with FileNotFoundError
+        # forever.
+        gone = home / "deleted-target"
+        legacy = home / ".hermes"
+        legacy.symlink_to(gone)  # dangling — target never created
+        new = home / ".ht-ai-agent"
+
+        assert _provision_fresh_home(new, legacy) is True
+        assert new.is_dir()
+        assert legacy.is_symlink() and legacy.resolve() == new.resolve()
+
+    def test_leaves_valid_custom_legacy_symlink_alone(self, home):
+        # A *working* user-managed ~/.hermes symlink is a deliberate setup —
+        # never re-pointed.
+        target = home / "custom-target"
+        target.mkdir()
+        legacy = home / ".hermes"
+        legacy.symlink_to(target)
+
+        assert _provision_fresh_home(home / ".ht-ai-agent", legacy) is False
+        assert legacy.resolve() == target.resolve()
+        assert not (home / ".ht-ai-agent").exists()
 
 
 class TestMaybeMigrateHome:
@@ -209,11 +291,58 @@ class TestMaybeMigrateHome:
         assert new.is_dir()
         assert legacy.is_symlink() and legacy.resolve() == new.resolve()
 
-    def test_noop_when_already_migrated(self, home, monkeypatch):
-        # New already exists (already migrated) → nothing to do.
+    def test_noop_when_already_migrated_with_bridge(self, home, monkeypatch):
+        # New exists and the legacy bridge symlink is in place → nothing to do.
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-        _new_default_home().mkdir()
+        new = _new_default_home()
+        new.mkdir()
+        _legacy_default_home().symlink_to(new)
         assert maybe_migrate_home() is False
+
+    def test_repairs_missing_bridge_when_new_exists(self, home, monkeypatch):
+        # Crash between the migration's rename and symlink (or a failed
+        # rollback) leaves new populated and ~/.hermes absent. The next start
+        # must re-create the bridge, or hardcoded legacy fallbacks fork a
+        # second empty ~/.hermes.
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        new = _new_default_home()
+        new.mkdir()
+        (new / "config.yaml").write_text("k: v\n")
+        legacy = _legacy_default_home()
+        assert not legacy.exists() and not legacy.is_symlink()
+
+        assert maybe_migrate_home() is True
+        assert legacy.is_symlink() and legacy.resolve() == new.resolve()
+
+    def test_clears_empty_new_stub_and_migrates(self, home, monkeypatch):
+        # An empty ~/.ht-ai-agent stub next to a populated un-migrated
+        # ~/.hermes: clear the stub and run the real migration instead of
+        # short-circuiting forever on new.exists().
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        new = _new_default_home()
+        new.mkdir()
+        legacy = _legacy_default_home()
+        legacy.mkdir()
+        (legacy / "config.yaml").write_text("model: x\n")
+
+        assert maybe_migrate_home() is True
+        assert (new / "config.yaml").read_text() == "model: x\n"
+        assert legacy.is_symlink() and legacy.resolve() == new.resolve()
+
+    def test_noop_when_both_populated(self, home, monkeypatch):
+        # Ambiguous state (both homes hold data) — never guess; leave both.
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        new = _new_default_home()
+        new.mkdir()
+        (new / "a").write_text("1")
+        legacy = _legacy_default_home()
+        legacy.mkdir()
+        (legacy / "b").write_text("2")
+
+        assert maybe_migrate_home() is False
+        assert (new / "a").read_text() == "1"
+        assert (legacy / "b").read_text() == "2"
+        assert not legacy.is_symlink()
 
 
 if __name__ == "__main__":  # pragma: no cover

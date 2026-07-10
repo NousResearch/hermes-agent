@@ -5841,6 +5841,16 @@ def main(
         mirror_brand_env(_os.environ)
     except Exception:
         pass
+    # Phase 6: one-time ~/.hermes -> ~/.ht-ai-agent reconciliation. Wired at
+    # every standalone entrypoint (not just the CLI) so a fresh install
+    # launched via `hermes-agent` still gets the legacy-path bridge symlink —
+    # without it the hardcoded ~/.hermes fallbacks fork a second data dir.
+    # Guarded (env overrides / pytest) and non-fatal.
+    try:
+        from hermes_constants import maybe_migrate_home
+        maybe_migrate_home()
+    except Exception:
+        pass
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
     

@@ -2053,6 +2053,17 @@ class TestHermesHomeForTargetUser:
         result = gateway_cli._hermes_home_for_target_user("/home/alice")
         assert result == "/opt/hermes"
 
+    def test_keeps_custom_path_under_calling_home(self, monkeypatch):
+        # A custom HERMES_HOME under the calling user's home that is NOT one of
+        # the known data-dir names must be preserved verbatim — re-anchoring it
+        # under the target user would bake a different (likely nonexistent)
+        # path into the systemd unit.
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.setenv("HERMES_HOME", "/root/custom-hermes")
+
+        result = gateway_cli._hermes_home_for_target_user("/home/alice")
+        assert result == "/root/custom-hermes"
+
     def test_noop_when_same_user(self, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/home/alice")))
         monkeypatch.delenv("HERMES_HOME", raising=False)

@@ -1327,5 +1327,13 @@ if __name__ == "__main__":
         mirror_brand_env(_os.environ)
     except Exception:
         pass
+    # Phase 6: one-time ~/.hermes -> ~/.ht-ai-agent reconciliation — same
+    # rationale as the CLI: the legacy-path bridge symlink must exist no matter
+    # which entrypoint runs first. Guarded and non-fatal.
+    try:
+        from hermes_constants import maybe_migrate_home
+        maybe_migrate_home()
+    except Exception:
+        pass
     fire.Fire(main)
 

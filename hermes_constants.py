@@ -77,6 +77,26 @@ def _legacy_default_home() -> Path:
     return _platform_home(_LEGACY_HOME_POSIX, _LEGACY_HOME_WIN)
 
 
+def _empty_dir(path: Path) -> bool:
+    """True iff *path* is a directory (symlinks followed) with no entries."""
+    try:
+        if not path.is_dir():
+            return False
+        return next(path.iterdir(), None) is None
+    except OSError:
+        return False
+
+
+def _populated_real_dir(path: Path) -> bool:
+    """True iff *path* is a real (non-symlink) directory with at least one entry."""
+    try:
+        if path.is_symlink() or not path.is_dir():
+            return False
+        return next(path.iterdir(), None) is not None
+    except OSError:
+        return False
+
+
 def _get_platform_default_hermes_home() -> Path:
     """Return the platform-native default data directory.
 
@@ -85,6 +105,13 @@ def _get_platform_default_hermes_home() -> Path:
     un-migrated install never loses its home. Fresh installs (neither present)
     get the new location.
 
+    One guard on the preference: an **empty** ``~/.ht-ai-agent`` never shadows a
+    **populated** real ``~/.hermes``. A stray empty new dir (pre-created by the
+    user, or debris from an interrupted migration) would otherwise make every
+    consumer resolve an empty home while the real data sits untouched at the
+    legacy path — the install would look wiped. Until migration actually moves
+    the data, the populated legacy home stays authoritative.
+
     The physical migration is done separately and explicitly by
     :func:`maybe_migrate_home` — never here, because this runs at import time
     from 30+ callers and must stay side-effect-free.
@@ -92,6 +119,9 @@ def _get_platform_default_hermes_home() -> Path:
     new = _new_default_home()
     try:
         if new.exists():
+            legacy = _legacy_default_home()
+            if _empty_dir(new) and _populated_real_dir(legacy):
+                return legacy
             return new
         legacy = _legacy_default_home()
         if legacy.exists():
@@ -104,10 +134,18 @@ def _get_platform_default_hermes_home() -> Path:
 def _migrate_legacy_home(legacy: Path, new: Path) -> bool:
     """Atomically move a populated legacy home to *new* and leave a back-symlink.
 
-    All-or-nothing: migrates only when *legacy* is a populated real directory,
-    *new* does not exist, and BOTH the atomic rename and the back-compat symlink
-    succeed. On any failure it rolls back so the legacy home stays authoritative
-    and no data is ever lost or half-moved. Returns ``True`` iff migration ran.
+    All-or-nothing in intent: migrates only when *legacy* is a populated real
+    directory, *new* does not exist, and BOTH the atomic rename and the
+    back-compat symlink succeed. If the symlink fails, the rename is rolled
+    back so the legacy home stays authoritative. Returns ``True`` iff the data
+    now lives at *new*.
+
+    One unavoidable exception to all-or-nothing: if the symlink fails AND the
+    rollback rename also fails (or the process dies between them), the data has
+    physically moved to *new*. Reporting ``False`` there would be a lie — the
+    resolver will (correctly) find *new* — so this returns ``True``, notes the
+    missing bridge on stderr, and relies on :func:`maybe_migrate_home` to
+    re-create the ``legacy -> new`` symlink on the next start.
 
     The back-symlink (``legacy -> new``) means anything still referencing the
     old path — a module-level cached ``~/.hermes`` path, an external tool —
@@ -132,12 +170,23 @@ def _migrate_legacy_home(legacy: Path, new: Path) -> bool:
     except OSError:
         # Can't create the back-compat shim (e.g. Windows without the symlink
         # privilege). Roll back so cached references to the old path keep
-        # resolving — all-or-nothing.
+        # resolving.
         try:
             os.rename(new, legacy)
+            return False
         except OSError:
-            pass
-        return False
+            # Rollback failed too: the data IS at *new*. Be honest about it —
+            # the resolver prefers an existing populated *new*, and the next
+            # maybe_migrate_home() run repairs the missing bridge symlink.
+            try:
+                sys.stderr.write(
+                    f"[home migration] moved {legacy} -> {new} but could not "
+                    f"create the back-compat symlink or roll back; continuing "
+                    f"with {new}. The symlink will be retried on next start.\n"
+                )
+            except Exception:
+                pass
+            return True
     return True
 
 
@@ -151,11 +200,27 @@ def _provision_fresh_home(new: Path, legacy: Path) -> bool:
     dir. Best-effort: if the symlink can't be created (e.g. Windows without the
     privilege) the new home is still created and used — only the legacy bridge
     is skipped. Returns ``True`` iff the new home was created.
+
+    A **dangling** legacy symlink (its target was deleted — e.g. a removed
+    ``~/.ht-ai-agent``) is repaired rather than treated as occupied: the new
+    home is created and the broken link re-pointed at it. Leaving the broken
+    link in place would make every hardcoded ``~/.hermes`` callsite fail with
+    ``FileNotFoundError`` forever, since nothing else ever fixes it. A *valid*
+    legacy symlink (pointing at an existing target) is left untouched — that is
+    a deliberate user setup.
     """
     try:
-        if new.exists() or legacy.exists() or legacy.is_symlink():
+        if new.exists():
+            return False
+        dangling = legacy.is_symlink() and not legacy.exists()
+        if not dangling and (legacy.exists() or legacy.is_symlink()):
             return False
         new.mkdir(parents=True, exist_ok=True)
+        if dangling:
+            try:
+                legacy.unlink()
+            except OSError:
+                return True  # new home exists; broken bridge left, still usable
     except OSError:
         return False
     try:
@@ -191,6 +256,26 @@ def maybe_migrate_home() -> bool:
         legacy = _legacy_default_home()
         new = _new_default_home()
         if new.exists():
+            # The new home already exists. Usually nothing to do, but repair the
+            # two split states that would otherwise persist forever:
+            #  * bridge missing entirely (crash between the migration's rename
+            #    and symlink, or a failed rollback) → re-create legacy -> new so
+            #    hardcoded ~/.hermes fallbacks stop forking a second data dir;
+            #  * an empty new stub shadowing a populated un-migrated legacy home
+            #    → clear the stub and run the real migration.
+            if not legacy.exists() and not legacy.is_symlink():
+                try:
+                    legacy.parent.mkdir(parents=True, exist_ok=True)
+                    legacy.symlink_to(new, target_is_directory=True)
+                    return True
+                except OSError:
+                    return False
+            if _empty_dir(new) and _populated_real_dir(legacy):
+                try:
+                    new.rmdir()
+                except OSError:
+                    return False
+                return _migrate_legacy_home(legacy, new)
             return False
         if legacy.is_dir() and not legacy.is_symlink():
             return _migrate_legacy_home(legacy, new)

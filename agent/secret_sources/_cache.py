@@ -78,15 +78,23 @@ def resolve_cache_home(home_path: Optional[Path] = None) -> Path:
     """Resolve the Hermes home used for cache paths.
 
     ``home_path`` is whatever ``load_hermes_dotenv()`` already resolved;
-    falling back to the canonical resolver keeps direct callers (and tests that
-    don't thread a home through) working.
+    the fallback resolves the same way so direct callers (and tests that don't
+    thread a home through) land in the same directory as the threaded path.
     """
     if home_path is None:
-        # Route through the resolver so this honors HT_HOME, the profile
-        # contextvar override, and the ~/.ht-ai-agent default (Phase 6) instead
-        # of reading HERMES_HOME directly with a legacy hardcoded fallback.
-        from hermes_constants import get_hermes_home
-        home_path = get_hermes_home()
+        # Resolve exactly the way load_hermes_dotenv() resolves the home it
+        # threads through: the *environment* home (HERMES_HOME, with the
+        # HT_HOME alias) or the platform default. Deliberately NOT
+        # get_hermes_home() — its per-task profile contextvar override would
+        # silently relocate the cache between the threaded and fallback paths
+        # (cache misses + duplicate cache files in one process), and it can
+        # emit the profile-fallback stderr warning from inside cache
+        # resolution.
+        from hermes_constants import _get_platform_default_hermes_home
+        from ht_compat import resolve_env
+
+        raw = (resolve_env("HERMES_HOME", "") or "").strip()
+        home_path = Path(raw) if raw else _get_platform_default_hermes_home()
     return home_path
 
 

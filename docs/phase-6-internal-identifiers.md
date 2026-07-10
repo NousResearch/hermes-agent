@@ -107,14 +107,25 @@ existing legacy `~/.hermes` *in place* (so an un-migrated install never loses
 its home), else the new location for fresh installs. Env resolution is unchanged
 and still legacy-authoritative (`HT_HOME` → `HERMES_HOME` → default).
 
-**Migration** (`maybe_migrate_home`, explicit, run once from CLI startup —
-never at import): reconciles the default dir:
+**Migration** (`maybe_migrate_home`, explicit, run once at startup from
+**every** standalone entrypoint — the CLI, `hermes-agent`, `hermes-acp`, and
+`python batch_runner.py` — never at import, so the bridge exists no matter
+which entry launches first): reconciles the default dir:
 - *Existing install* (`~/.hermes` is a populated real dir): atomic `os.rename`
   to `~/.ht-ai-agent` + a back-compat symlink `~/.hermes → ~/.ht-ai-agent`.
-  All-or-nothing — if the rename or the symlink fails it rolls back and the
-  legacy home stays authoritative, so data is never lost or half-moved.
+  If the symlink fails the rename is rolled back and the legacy home stays
+  authoritative. In the one unavoidable split (rollback *also* fails, or the
+  process dies between rename and symlink) the move is reported honestly and
+  the missing bridge is repaired on the next start.
 - *Fresh install* (neither exists): create `~/.ht-ai-agent` and point
-  `~/.hermes` at it via symlink.
+  `~/.hermes` at it via symlink. A **dangling** `~/.hermes` symlink (deleted
+  target) is repaired the same way rather than dead-ending; a *valid* custom
+  symlink is left alone.
+- *Repairs*: a missing bridge next to an existing `~/.ht-ai-agent` is
+  re-created, and an **empty** `~/.ht-ai-agent` stub next to a populated
+  un-migrated `~/.hermes` is cleared so the real migration runs (the resolver
+  likewise never lets an empty new dir shadow a populated legacy home). When
+  both homes hold data the state is ambiguous and nothing is touched.
 
 Either way, the `~/.hermes → ~/.ht-ai-agent` symlink means the ~25 code paths
 that still hardcode the legacy `os.environ.get("HERMES_HOME", ~/.hermes)`
@@ -131,10 +142,15 @@ atomic migrate-with-rollback, fresh-provision, and every `maybe_migrate_home`
 guard; the bare-default assertions in `tests/test_hermes_constants.py` and
 `tests/test_hermes_home_profile_warning.py` were updated to the new default.
 
-**Fallback tidy-up:** the runtime sites that read `HERMES_HOME` from the
-environment *directly* (bypassing `HT_HOME` and the profile contextvar override)
-now route through `get_hermes_home()` — `agent/secret_sources/_cache.py` and the
-node-bootstrap home in `hermes_cli/main.py`. Left as-is on purpose:
+**Fallback tidy-up:** the node-bootstrap home in `hermes_cli/main.py` now
+routes through `get_hermes_home()`. The dotenv loader
+(`hermes_cli/env_loader.py`) and the secret-cache fallback
+(`agent/secret_sources/_cache.py`) resolve the **environment** home
+(`HERMES_HOME` with the `HT_HOME` alias, else the platform default) —
+deliberately *without* the profile contextvar override, so the home the loader
+threads through and the cache's fallback always name the same directory (an
+ambient profile context must not silently relocate the secret cache). Left
+as-is on purpose:
 `hermes_cli/dashboard_auth/audit.py` (kept import-light on a hot auth path; it
 reads the env directly, which stays correct via the startup `HT_HOME` →
 `HERMES_HOME` mirror and the `~/.hermes → ~/.ht-ai-agent` symlink — there is no

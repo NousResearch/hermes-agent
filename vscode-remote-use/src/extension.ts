@@ -914,7 +914,37 @@ function openHtmlSurface(title: string, path: string): void {
   }
 }
 
+function ensureBrain(): boolean {
+  // Returns true if the local ollama brain is already serving on :11434.
+  // If not, kick off `ollama serve` in a detached terminal so the offline
+  // brain (+æ^glocal local model) comes up automatically on extension activate.
+  const http = require('http');
+  const { execSync } = require('child_process');
+  try {
+    execSync('curl -s -m 3 -o nul -w "%{http_code}" http://localhost:11434/api/tags', { stdio: ['ignore', 'pipe', 'ignore'] });
+    return true;
+  } catch {
+    // not up -> start it (best-effort; user may not have ollama installed)
+    try {
+      const term = vscode.window.createTerminal('Local Brain (ollama)');
+      term.sendText('ollama serve');
+      term.hide();
+      vscode.window.showInformationMessage('Remote Use: starting local brain (ollama serve) — offline model coming online');
+    } catch {
+      vscode.window.showWarningMessage('Remote Use: could not auto-start ollama — run `ollama serve` manually');
+    }
+    return false;
+  }
+}
+
+const brainCmd = vscode.commands.registerCommand('remoteUse.brain', async () => {
+  if (ensureBrain()) {
+    vscode.window.showInformationMessage('Remote Use: local brain is online at http://localhost:11434');
+  }
+});
+
 export function activate(context: vscode.ExtensionContext) {
+  ensureBrain();
   const captureCmd = vscode.commands.registerCommand('remoteUse.capture', async () => {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
@@ -1376,7 +1406,8 @@ export function activate(context: vscode.ExtensionContext) {
     nvidiaCmd,
     gpuAgentCmd,
     commandPromptCmd,
-    homeOSCmd
+    homeOSCmd,
+    brainCmd
   );
 
   void launchDefaultMediaWindow();

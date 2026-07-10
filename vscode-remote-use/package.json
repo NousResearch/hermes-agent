@@ -13,7 +13,8 @@
     "onStartupFinished",
     "onCommand:remoteUse.surfaces",
     "onCommand:remoteUse.nvidia",
-    "onCommand:remoteUse.mediaWindow"
+    "onCommand:remoteUse.mediaWindow",
+    "onCommand:remoteUse.brain"
   ],
   "contributes": {
     "commands": [
@@ -92,6 +93,10 @@
       {
         "command": "remoteUse.gpuAgent",
         "title": "Remote Use: GPU-Driven Agent (offline)"
+      },
+      {
+        "command": "remoteUse.brain",
+        "title": "Remote Use: Local Brain (ollama)"
       }
     ],
     "themes": [

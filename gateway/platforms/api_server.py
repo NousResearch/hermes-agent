@@ -891,6 +891,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._session_db_lock: Optional[asyncio.Lock] = None  # Single-flight for lazy init
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
         # config.yaml gateway.api_server.max_concurrent_runs; 0 disables
@@ -1141,16 +1142,26 @@ class APIServerAdapter(BasePlatformAdapter):
     # Session DB helper
     # ------------------------------------------------------------------
 
-    def _ensure_session_db(self):
+    async def _ensure_session_db(self):
         """Lazily initialise and return the shared SessionDB instance.
 
         Sessions are persisted to ``state.db`` so that ``hermes sessions list``
         shows API-server conversations alongside CLI and gateway ones.
+
+        The first request pays the SQLite open + schema-init cost; a
+        single-flight lock prevents duplicate concurrent construction.
         """
-        if self._session_db is None:
+        if self._session_db is not None:
+            return self._session_db
+        if self._session_db_lock is None:
+            self._session_db_lock = asyncio.Lock()
+        async with self._session_db_lock:
+            # Double-check after acquiring the lock.
+            if self._session_db is not None:
+                return self._session_db
             try:
                 from hermes_state import SessionDB
-                self._session_db = SessionDB()
+                self._session_db = await asyncio.to_thread(SessionDB)
             except Exception as e:
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
@@ -1356,7 +1367,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
-            session_db=self._ensure_session_db(),
+            session_db=self._session_db,
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
@@ -1672,7 +1683,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return body, None
 
     async def _get_existing_session_or_404(self, session_id: str) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
-        db = self._ensure_session_db()
+        db = await self._ensure_session_db()
         if db is None:
             return None, web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
         # Offload the blocking SQLite read off the event loop (CWE/perf: the
@@ -1685,7 +1696,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return session, None
 
     async def _conversation_history_for_session(self, session_id: str) -> List[Dict[str, Any]]:
-        db = self._ensure_session_db()
+        db = await self._ensure_session_db()
         if db is None:
             return []
         try:
@@ -1700,7 +1711,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        db = self._ensure_session_db()
+        db = await self._ensure_session_db()
         if db is None:
             return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
 
@@ -1724,7 +1735,14 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":
-        """POST /api/sessions — create an empty Hermes session row."""
+        """POST /api/sessions -- create an empty Hermes session row.
+
+        The existence check, insert, title handling, and invalid-title
+        rollback run as a single off-loop operation to avoid a TOCTOU
+        window between the duplicate check and the insert (concurrent
+        same-ID creates could otherwise both pass the check and both
+        return 201 via the ON CONFLICT enrichment upsert).
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -1732,7 +1750,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
 
-        db = self._ensure_session_db()
+        db = await self._ensure_session_db()
         if db is None:
             return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
 
@@ -1743,22 +1761,68 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
         if len(session_id) > self._MAX_SESSION_HEADER_LEN:
             return web.json_response(_openai_error("Session ID too long", code="invalid_session_id"), status=400)
-        if await asyncio.to_thread(db.get_session, session_id):
-            return web.json_response(_openai_error(f"Session already exists: {session_id}", code="session_exists"), status=409)
 
         model = body.get("model") or self._model_name
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
-        await asyncio.to_thread(db.create_session, session_id, "api_server", model=str(model) if model else None, system_prompt=system_prompt)
         title = body.get("title")
-        if title is not None:
-            try:
-                await asyncio.to_thread(db.set_session_title, session_id, str(title))
-            except ValueError as exc:
-                await asyncio.to_thread(db.delete_session, session_id)
-                return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
-        session = await asyncio.to_thread(db.get_session, session_id) or {"id": session_id, "source": "api_server", "model": model, "title": title}
+
+        # Run the entire check-insert-title sequence inside a single
+        # _execute_write call (BEGIN IMMEDIATE + commit) so the existence
+        # check and the insert are atomic at the SQLite level.  Two
+        # concurrent requests for the same ID serialize here: the second
+        # one blocks on the write lock and sees the row the first inserted.
+        def _do_create():
+            def _atomic(conn):
+                row = conn.execute(
+                    "SELECT id FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if row:
+                    return None, "exists"
+                import time as _time
+                conn.execute(
+                    """INSERT INTO sessions (
+                       id, source, model, system_prompt, started_at
+                    ) VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        session_id,
+                        "api_server",
+                        str(model) if model else None,
+                        system_prompt,
+                        _time.time(),
+                    ),
+                )
+                if title is not None:
+                    clean_title = db.sanitize_title(str(title))
+                    if clean_title:
+                        conflict = conn.execute(
+                            "SELECT id FROM sessions WHERE title = ? AND id != ?",
+                            (clean_title, session_id),
+                        ).fetchone()
+                        if conflict:
+                            conn.execute(
+                                "DELETE FROM sessions WHERE id = ?", (session_id,)
+                            )
+                            return None, f"title:Title already in use by session {conflict['id']}"
+                    conn.execute(
+                        "UPDATE sessions SET title = ? WHERE id = ?",
+                        (clean_title, session_id),
+                    )
+                session_row = conn.execute(
+                    "SELECT * FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                return (dict(session_row) if session_row else {
+                    "id": session_id, "source": "api_server",
+                    "model": model, "title": title,
+                }), None
+            return db._execute_write(_atomic)
+
+        session, err = await asyncio.to_thread(_do_create)
+        if err == "exists":
+            return web.json_response(_openai_error(f"Session already exists: {session_id}", code="session_exists"), status=409)
+        if err and err.startswith("title:"):
+            return web.json_response(_openai_error(err[len("title:"):], code="invalid_title"), status=400)
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)
 
     async def _handle_get_session(self, request: "web.Request") -> "web.Response":
@@ -1788,7 +1852,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
 
-        db = self._ensure_session_db()
+        db = await self._ensure_session_db()
         if "title" in body:
             try:
                 await asyncio.to_thread(db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
@@ -1808,7 +1872,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
-        db = self._ensure_session_db()
+        db = await self._ensure_session_db()
         deleted = await asyncio.to_thread(db.delete_session, session_id)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
@@ -1821,7 +1885,7 @@ class APIServerAdapter(BasePlatformAdapter):
         _, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
-        db = self._ensure_session_db()
+        db = await self._ensure_session_db()
         resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
         messages = await asyncio.to_thread(db.get_messages, resolved_id)
         return web.json_response({
@@ -1842,7 +1906,7 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        db = self._ensure_session_db()
+        db = await self._ensure_session_db()
         fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
         if not fork_id or re.search(r'[\r\n\x00]', fork_id):
             return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
@@ -2172,7 +2236,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             session_id = provided_session_id
             try:
-                db = self._ensure_session_db()
+                db = await self._ensure_session_db()
                 if db is not None:
                     history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
             except Exception as e:

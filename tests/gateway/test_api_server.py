@@ -4129,3 +4129,73 @@ class TestSessionDbOffEventLoop:
         assert resp.status == 200
         assert captured["thread"] is not None
         assert captured["thread"] != threading.current_thread()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_same_id_create_one_201_one_409(self, auth_adapter):
+        """Two concurrent creates for the same ID must yield one 201 and one 409.
+
+        The create sequence (existence check + insert + title) runs as a
+        single off-loop call, so concurrent same-ID requests serialize at
+        the DB level.  Before the fix the TOCTOU window between the check
+        and the insert let both requests pass the existence guard and both
+        return 201 via the ON CONFLICT enrichment upsert.
+        """
+        import asyncio
+
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            # Fire both requests concurrently through the same server.
+            resp_a, resp_b = await asyncio.gather(
+                cli.post(
+                    "/api/sessions",
+                    json={"id": "race-same-id"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                ),
+                cli.post(
+                    "/api/sessions",
+                    json={"id": "race-same-id"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                ),
+            )
+        assert sorted([resp_a.status, resp_b.status]) == [201, 409]
+
+    @pytest.mark.asyncio
+    async def test_ensure_session_db_first_request_path(self, auth_adapter):
+        """First /api/sessions request initializes SessionDB off the event loop."""
+        import threading
+
+        captured = {}
+
+        class FakeDB:
+            def __init__(self):
+                captured["init_thread"] = threading.current_thread()
+
+            def list_sessions_rich(self, **kwargs):
+                return []
+
+        # Simulate cold start -- no DB yet.
+        auth_adapter._session_db = None
+        auth_adapter._session_db_lock = None
+
+        original_class = None
+        import hermes_state
+        original_class = hermes_state.SessionDB
+        hermes_state.SessionDB = FakeDB
+        try:
+            app = _create_app(auth_adapter)
+            app.router.add_get("/api/sessions", auth_adapter._handle_list_sessions)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get(
+                    "/api/sessions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+            assert resp.status == 200
+            # SessionDB() was constructed -- the init must NOT be on the event-loop thread.
+            assert "init_thread" in captured
+            assert captured["init_thread"] != threading.current_thread()
+        finally:
+            hermes_state.SessionDB = original_class
+            auth_adapter._session_db = None
+            auth_adapter._session_db_lock = None

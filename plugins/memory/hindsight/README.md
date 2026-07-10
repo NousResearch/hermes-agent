@@ -98,7 +98,7 @@ Example:
       {
         "name": "common-memory-infra",
         "repo_name_glob": "common-memory*",
-        "git_remote_glob": "*github.com*common-memory*",
+        "git_repo_glob": "*/common-memory*",
         "bank_id": "infra",
         "recall": true,
         "retain": true,
@@ -111,7 +111,7 @@ Example:
 }
 ```
 
-Supported route predicates in this provider are `workspace_path_prefix`, `workspace_path_glob`, `workspace`, `workspace_glob`, `repo_name_glob`, `git_remote_glob`, `profile`, `platform`, and `user`. A route matches only when all configured predicates match. Prefer portable predicates such as `repo_name_glob` or `git_remote_glob` for product families and multi-machine setups; `workspace_path_prefix` is host-local and best reserved for fixed local paths. `workspace_path_prefix` and glob predicates contribute to route specificity so nested or more specific projects choose the best route. `strategy: "first_match"` selects the best match; any other strategy currently keeps all matching routes.
+Supported route predicates in this provider are `workspace_path_prefix`, `workspace_path_glob`, `workspace`, `workspace_glob`, `repo_name_glob`, `git_remote_glob`, `git_repo_glob`, `profile`, `platform`, and `user`. A route matches only when all configured predicates match. Prefer portable predicates such as `repo_name_glob` or `git_repo_glob` for product families and multi-machine setups; `git_repo_glob` matches a normalized `owner/repo` string from common GitHub remote forms (`git@github.com:owner/repo.git`, `https://github.com/owner/repo.git`, etc.). Use raw `git_remote_glob` only when matching the exact remote URL form matters. `workspace_path_prefix` is host-local and best reserved for fixed local paths. `workspace_path_prefix` and glob predicates contribute to route specificity so nested or more specific projects choose the best route. `strategy: "first_match"` selects the best match; any other strategy currently keeps all matching routes.
 
 Global recall (`bank_routing.recall.include_global`) is recall-only by default so project conversations do not automatically retain into personal/global memory. To retain into a global bank, configure an explicit retain-enabled route. Global recall routes can set `global_tags`, `global_tags_match`, and `global_types`; these do not inherit route/project tags unless explicitly configured.
 

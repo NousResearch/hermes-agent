@@ -1972,6 +1972,39 @@ class TestBankRouting:
 
         assert [route.bank_id for route in routes] == ["rigplane-bank"]
 
+    def test_route_resolution_matches_normalized_git_repo_glob(self):
+        config = {
+            "bank_routing": {
+                "rules": [
+                    {
+                        "name": "rigplane-repo",
+                        "git_repo_glob": "rigplane/rigplane-*",
+                        "bank_id": "rigplane-bank",
+                    }
+                ]
+            }
+        }
+
+        for remote in (
+            "git@github.com:rigplane/rigplane-pro.git",
+            "https://github.com/rigplane/rigplane-pro.git",
+            "ssh://git@github.com/rigplane/rigplane-pro.git",
+        ):
+            routes = _resolve_hindsight_routes(
+                config,
+                fallback_bank_id="global-user",
+                bank_id_template="",
+                profile="default",
+                workspace="hermes",
+                workspace_path="/some/host/path/rigplane-pro",
+                platform="cli",
+                user="",
+                session="s1",
+                git_remote=remote,
+            )
+
+            assert [route.bank_id for route in routes] == ["rigplane-bank"]
+
     def test_provider_initialize_stores_resolved_routes(self, tmp_path, monkeypatch):
         config = {
             "mode": "cloud",

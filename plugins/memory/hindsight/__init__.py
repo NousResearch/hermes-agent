@@ -725,6 +725,20 @@ def _repo_name_from_workspace_path(workspace_path: str) -> str:
     return os.path.basename(str(workspace_path or "").rstrip("/"))
 
 
+def _git_repo_from_remote(git_remote: str) -> str:
+    """Return a stable owner/repo string for common GitHub remote URL forms."""
+    remote = str(git_remote or "").strip()
+    if not remote or "github.com" not in remote:
+        return ""
+    tail = remote.split("github.com", 1)[1].lstrip(":/")
+    if tail.endswith(".git"):
+        tail = tail[:-4]
+    parts = [part for part in tail.split("/") if part]
+    if len(parts) < 2:
+        return ""
+    return "/".join(parts[:2])
+
+
 def _route_matches(rule: dict[str, Any], *, profile: str, workspace: str,
                    workspace_path: str, platform: str, user: str,
                    git_remote: str = "") -> bool:
@@ -750,6 +764,10 @@ def _route_matches(rule: dict[str, Any], *, profile: str, workspace: str,
         str(git_remote or ""), rule.get("git_remote_glob")
     ):
         return False
+    if "git_repo_glob" in rule and not _matches_any_glob(
+        _git_repo_from_remote(git_remote), rule.get("git_repo_glob")
+    ):
+        return False
     for key, actual in {
         "profile": profile,
         "workspace": workspace,
@@ -764,7 +782,13 @@ def _route_matches(rule: dict[str, Any], *, profile: str, workspace: str,
 def _route_specificity(rule: dict[str, Any]) -> int:
     """Return a stable specificity score for first-match route ordering."""
     candidates = [str(rule.get("workspace_path_prefix") or "")]
-    for key in ("workspace_path_glob", "repo_name_glob", "workspace_glob", "git_remote_glob"):
+    for key in (
+        "workspace_path_glob",
+        "repo_name_glob",
+        "workspace_glob",
+        "git_remote_glob",
+        "git_repo_glob",
+    ):
         candidates.extend(_normalize_match_patterns(rule.get(key)))
     return max((len(candidate) for candidate in candidates), default=0)
 

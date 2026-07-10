@@ -167,6 +167,7 @@ class InProcessCronScheduler(CronScheduler):
         import logging
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat
+        from cron.reliability import log_cron_health
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
@@ -191,4 +192,12 @@ class InProcessCronScheduler(CronScheduler):
             # clean tick, so status can tell "alive but failing every tick" from
             # "actually firing jobs" (#32612, #32895).
             record_ticker_heartbeat(success=ok)
+            # Surface reliability signals (job loss, missed runs, failure state)
+            # once per tick. log_cron_health is self-contained and never raises,
+            # but guard the call anyway so a future regression there can never
+            # unwind the ticker loop and stop all cron firing.
+            try:
+                log_cron_health()
+            except Exception:
+                logger.debug("cron health audit failed", exc_info=True)
             stop_event.wait(interval)

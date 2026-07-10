@@ -3482,7 +3482,18 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            # Durable delivery status: "delivered" only when a message was
+            # actually sent — i.e. content was deliverable AND a real target
+            # resolved. `should_deliver` alone is True for local-only / origin-
+            # less jobs (non-empty content), but `_deliver_result` sends nothing
+            # for them (no targets), so keying on it would falsely stamp those
+            # runs "delivered". A send that resolved a target but errored is
+            # caught by `delivery_error` (→ "failed") inside mark_job_run.
+            delivered = should_deliver and bool(_resolve_delivery_targets(job))
+            mark_job_run(
+                job["id"], success, error,
+                delivery_error=delivery_error, delivered=delivered,
+            )
         return True
 
     except Exception as e:

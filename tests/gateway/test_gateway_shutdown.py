@@ -1,4 +1,5 @@
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -161,6 +162,24 @@ async def test_gateway_stop_launchd_service_restart_keeps_nonzero_exit(tmp_path,
         await runner.stop(restart=True, service_restart=True)
 
     assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
+@pytest.mark.asyncio
+async def test_unexpected_signal_writes_home_startup_marker(tmp_path, monkeypatch):
+    """External supervisor restarts should send the missing 'back online' half."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    runner._signal_initiated_shutdown = True
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    marker = tmp_path / ".restart_pending.json"
+    assert marker.exists()
+    payload = json.loads(marker.read_text())
+    assert payload["reason"] == "external_signal"
+    assert payload["via_service"] is True
 
 
 @pytest.mark.asyncio

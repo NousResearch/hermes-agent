@@ -6765,14 +6765,36 @@ class GatewayRunner:
             if active_agents:
                 self._increment_restart_failure_counts(set(active_agents.keys()))
 
-            if self._restart_requested and self._restart_command_source is None:
+            should_notify_home_on_next_boot = (
+                # Normal Hermes-managed restarts with no specific originating
+                # chat should announce the comeback to configured home channels.
+                (self._restart_requested and self._restart_command_source is None)
+                # External SIGTERM under supervisors such as systemd also comes
+                # back automatically, but it bypasses request_restart() and used
+                # to send only the shutdown half of the lifecycle. Persist the
+                # same marker so the next process can say it is back online.
+                or (
+                    getattr(self, "_signal_initiated_shutdown", False)
+                    and not self._restart_requested
+                )
+            )
+            if should_notify_home_on_next_boot:
                 try:
                     atomic_json_write(
                         _planned_restart_notification_path(),
                         {
                             "requested_at": time.time(),
-                            "via_service": bool(self._restart_via_service),
+                            "via_service": bool(
+                                self._restart_via_service
+                                or getattr(self, "_signal_initiated_shutdown", False)
+                            ),
                             "detached": bool(self._restart_detached),
+                            "reason": (
+                                "external_signal"
+                                if getattr(self, "_signal_initiated_shutdown", False)
+                                and not self._restart_requested
+                                else "planned_restart"
+                            ),
                         },
                         indent=None,
                     )

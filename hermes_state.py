@@ -3374,6 +3374,83 @@ class SessionDB:
             current = child_id
         return current
 
+    def resolve_latest_descendant_session_id(
+        self,
+        session_id: str,
+    ) -> Tuple[Optional[str], List[str]]:
+        """Resolve a WebUI resume id to the latest continuable descendant.
+
+        ``parent_session_id`` is shared by several edge types. Dashboard chat
+        resume should follow compression/model-switch continuations, but it must
+        not be hijacked by branch, delegate/subagent, or tool children that are
+        retained under the same parent for history/debugging.
+        """
+        if not session_id:
+            return None, []
+
+        sid = self.resolve_session_id(session_id)
+        if not sid or not self.get_session(sid):
+            return None, []
+
+        current = sid
+        path = [sid]
+        seen = {sid}
+        branch_child_sql = _BRANCH_CHILD_SQL.format(a="child")
+
+        # Bound the walk defensively. Normal continuation chains are shallow;
+        # this just prevents malformed parent cycles from looping forever.
+        for _ in range(100):
+            seen_placeholders = ",".join("?" for _ in seen)
+            params: List[Any] = [current, *seen]
+            with self._lock:
+                row = self._conn.execute(
+                    f"""
+                    SELECT child.id
+                    FROM sessions parent
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.id = ?
+                      AND child.id NOT IN ({seen_placeholders})
+                      AND (
+                        ({_COMPRESSION_CONTINUATION_CHILD_SQL})
+                        OR (
+                          COALESCE(parent.end_reason, '') != 'compression'
+                          AND NOT ({branch_child_sql})
+                          AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                          AND LOWER(COALESCE(child.source, '')) NOT IN ('tool', 'subagent')
+                        )
+                      )
+                    ORDER BY
+                      CASE
+                        WHEN parent.end_reason = 'compression' AND child.end_reason = 'compression' THEN 0
+                        WHEN parent.end_reason = 'compression' AND child.ended_at IS NULL THEN 1
+                        WHEN parent.end_reason = 'compression' THEN 2
+                        ELSE 0
+                      END,
+                      CASE
+                        WHEN parent.end_reason = 'compression' THEN COALESCE(
+                          (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = child.id),
+                          child.started_at
+                        )
+                        ELSE child.started_at
+                      END DESC,
+                      child.started_at DESC,
+                      child.id DESC
+                    LIMIT 1
+                    """,
+                    params,
+                ).fetchone()
+
+            if row is None:
+                break
+            child_id = row["id"] if hasattr(row, "keys") else row[0]
+            if not child_id or child_id in seen:
+                break
+            seen.add(child_id)
+            path.append(child_id)
+            current = child_id
+
+        return current, path
+
     # Columns excluded from compact_rows projections: only the payload-heavy
     # blob no list consumer renders. Everything else — including gateway
     # routing fields and desktop sidebar fields like git_branch — stays, and

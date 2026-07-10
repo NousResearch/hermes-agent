@@ -9646,84 +9646,14 @@ async def cancel_oauth_session(
 
 
 def _session_latest_descendant(session_id: str, db):
-    """Resolve a session id to the newest child leaf session.
+    """Resolve a session id to the latest continuable child leaf session.
 
     /model may create child sessions. Dashboard refresh should continue the
-    newest child instead of reopening the old parent.
+    latest continuable child instead of reopening the old parent, while leaving
+    branch/delegate/tool children out of the resume path.
     """
-    def row_get(row, key, index):
-        if isinstance(row, dict):
-            return row.get(key)
-        try:
-            return row[key]
-        except Exception:
-            try:
-                return row[index]
-            except Exception:
-                return None
-
-    sid = db.resolve_session_id(session_id)
-    if not sid or not db.get_session(sid):
-        return None, []
-
-    conn = (
-        getattr(db, "conn", None)
-        or getattr(db, "_conn", None)
-        or getattr(db, "connection", None)
-        or getattr(db, "_connection", None)
-    )
-
-    rows = []
-    if conn is not None:
-        raw_rows = conn.execute(
-            """
-            WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
-                SELECT id, parent_session_id, started_at FROM sessions WHERE id = ?
-                UNION
-                SELECT s.id, s.parent_session_id, s.started_at
-                FROM sessions s
-                JOIN descendants d ON s.parent_session_id = d.id
-            )
-            SELECT id, parent_session_id, started_at FROM descendants
-            """,
-            (sid,),
-        ).fetchall()
-        for row in raw_rows:
-            rows.append({
-                "id": row_get(row, "id", 0),
-                "parent_session_id": row_get(row, "parent_session_id", 1),
-                "started_at": row_get(row, "started_at", 2),
-            })
-    else:
-        rows = db.list_sessions_rich(limit=10000, offset=0, compact_rows=True)
-
-    children = {}
-    for row in rows:
-        rid = row.get("id")
-        parent = row.get("parent_session_id")
-        if rid and parent:
-            children.setdefault(parent, []).append(row)
-
-    def started(row):
-        try:
-            return float(row.get("started_at") or 0)
-        except Exception:
-            return 0.0
-
-    current = sid
-    path = [sid]
-    seen = {sid}
-
-    while children.get(current):
-        candidates = [r for r in children[current] if r.get("id") not in seen]
-        if not candidates:
-            break
-        candidates.sort(key=started, reverse=True)
-        current = candidates[0]["id"]
-        path.append(current)
-        seen.add(current)
-
-    return current, path
+    resolver = getattr(db, "resolve_latest_descendant_session_id")
+    return resolver(session_id)
 
 
 # CRITICAL — every literal-path route below MUST be declared BEFORE the

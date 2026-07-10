@@ -584,6 +584,20 @@ def _delete_message(token: str, channel_id: str, message_id: str, **_kwargs: Any
     return json.dumps({"success": True, "message": f"Message {message_id} deleted."})
 
 
+def _delete_own_message(token: str, channel_id: str, message_id: str, **_kwargs: Any) -> str:
+    """Delete one of the bot's own messages (core action, token-only).
+
+    Discord lets a bot delete its own messages with just the bot token —
+    no MANAGE_MESSAGES permission required. Exposed on the core ``discord``
+    toolset (not ``discord_admin``) so a bot in a normal chat can honour
+    "delete your messages" / "clear our chat" without admin scope. Deleting
+    *other* users' messages still requires MANAGE_MESSAGES and is the separate
+    ``delete_message`` (admin) action. Discord 403s self-deletes in DMs of the
+    other party's messages; ``_enrich_403`` surfaces that as guidance.
+    """
+    return _delete_message(token, channel_id, message_id)
+
+
 def _create_thread(
     token: str, channel_id: str, name: str,
     message_id: Optional[str] = None,
@@ -643,12 +657,13 @@ _ACTIONS = {
     "pin_message": _pin_message,
     "unpin_message": _unpin_message,
     "delete_message": _delete_message,
+    "delete_own_message": _delete_own_message,
     "create_thread": _create_thread,
     "add_role": _add_role,
     "remove_role": _remove_role,
 }
 
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "delete_own_message"})
 _ADMIN_ACTION_NAMES = frozenset(_ACTIONS.keys()) - _CORE_ACTION_NAMES
 
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
@@ -669,7 +684,8 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("list_pins", "(channel_id)", "pinned messages in a channel"),
     ("pin_message", "(channel_id, message_id)", "pin a message"),
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
-    ("delete_message", "(channel_id, message_id)", "delete a message"),
+    ("delete_message", "(channel_id, message_id)", "delete a message (admin: any message)"),
+    ("delete_own_message", "(channel_id, message_id)", "delete one of the bot's own messages"),
     ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
@@ -691,6 +707,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "pin_message": ["channel_id", "message_id"],
     "unpin_message": ["channel_id", "message_id"],
     "delete_message": ["channel_id", "message_id"],
+    "delete_own_message": ["channel_id", "message_id"],
     "create_thread": ["channel_id", "name"],
     "add_role": ["guild_id", "user_id", "role_id"],
     "remove_role": ["guild_id", "user_id", "role_id"],

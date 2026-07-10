@@ -14302,8 +14302,13 @@ def _resolve_chat_argv(
         finally:
             _resume_db.close()
         if latest_resume:
+            _log.info("chat PTY resume: %s -> %s (descendant)", resume, latest_resume)
             resume = latest_resume
+        else:
+            _log.info("chat PTY resume: %s (no descendant)", resume)
         env["HERMES_TUI_RESUME"] = resume
+    else:
+        _log.info("chat PTY resume: NONE — spawning fresh session")
 
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
@@ -15156,6 +15161,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # --- spawn PTY ------------------------------------------------------
     resume = ws.query_params.get("resume") or None
+    _log.info("pty_ws: resume=%s channel=%s force_fresh=%s", resume, ws.query_params.get("channel",""), ws.query_params.get("fresh",""))
     profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None

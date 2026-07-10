@@ -79,6 +79,12 @@ class TurnResult:
 # normal completion path fires. Mirrors openclaw beta.8 fix.
 _TURN_ABORTED_MARKERS = ("<turn_aborted>", "<turn_aborted/>")
 
+# How long a user-interrupted turn may take to emit its terminal
+# turn/completed after turn/interrupt before we give up draining and retire
+# the session. Codex normally aborts within well under a second; a longer
+# silence means the queue state is unknown and reuse is unsafe.
+_INTERRUPT_DRAIN_GRACE_SECONDS = 3.0
+
 
 def _coerce_turn_input_text(user_input: Any) -> str:
     """Collapse Hermes/OpenAI rich content into app-server text input.
@@ -214,6 +220,10 @@ class CodexAppServerSession:
         self._client: Optional[CodexAppServerClient] = None
         self._thread_id: Optional[str] = None
         self._interrupt_event = threading.Event()
+        # Turn ids the user interrupted whose terminal turn/completed may
+        # still be in flight. Notifications scoped to these ids are dropped
+        # instead of being taken as the current turn's events.
+        self._stale_turn_ids: set[str] = set()
         # Pending file-change items, keyed by item id. Populated on
         # item/started for fileChange items; consumed by the approval
         # bridge when codex sends item/fileChange/requestApproval. The
@@ -436,6 +446,12 @@ class CodexAppServerSession:
             if self._interrupt_event.is_set():
                 self._issue_interrupt(result.turn_id)
                 result.interrupted = True
+                # Unlike the watchdog/deadline interrupts below (which
+                # retire the session), this path keeps the session alive
+                # for the next turn — so the interrupted turn's remaining
+                # notifications must not stay queued. Drain them, or retire
+                # if the turn's terminal event never arrives.
+                self._drain_interrupted_turn(result, projector)
                 break
 
             # Detect a dead subprocess between iterations. If codex exited
@@ -485,6 +501,17 @@ class CodexAppServerSession:
                     pending = self._client.take_notification(timeout=0)
                     if pending is None:
                         break
+                    pending_turn_id = (
+                        pending.get("params") or {}
+                    ).get("turnId")
+                    if (
+                        pending_turn_id
+                        and pending_turn_id in self._stale_turn_ids
+                    ):
+                        # Tail of an earlier user-interrupted turn — must
+                        # not project into this turn (mirrors the main
+                        # wait-loop filter below).
+                        continue
                     _apply_token_usage_notification(result, pending)
                     _apply_compaction_notification(result, pending)
                     self._track_pending_file_change(pending)
@@ -503,6 +530,7 @@ class CodexAppServerSession:
                                 result.error
                                 or "codex reported turn_aborted"
                             )
+                            self._mark_turn_stale_on_marker(result)
                 self._handle_server_request(sreq)
                 # Activity counts as live signal — reset the post-tool
                 # quiet timer so an approval round-trip doesn't trip it.
@@ -516,6 +544,15 @@ class CodexAppServerSession:
                 continue
 
             method = note.get("method", "")
+            note_scope_turn_id = (note.get("params") or {}).get("turnId")
+            if (
+                note_scope_turn_id
+                and note_scope_turn_id in self._stale_turn_ids
+            ):
+                # Tail item/usage of an earlier user-interrupted turn.
+                # Displaying or projecting it would leak stale work into
+                # the current turn's transcript and misattribute usage.
+                continue
             if self._on_event is not None:
                 try:
                     self._on_event(note)
@@ -560,12 +597,25 @@ class CodexAppServerSession:
                     result.error = (
                         result.error or "codex reported turn_aborted"
                     )
+                    self._mark_turn_stale_on_marker(result)
 
             if method == "turn/completed":
+                note_turn = (note.get("params") or {}).get("turn") or {}
+                note_turn_id = note_turn.get("id")
+                if note_turn_id and note_turn_id in self._stale_turn_ids:
+                    # Terminal event of an earlier user-interrupted turn
+                    # that slipped past the drain. It must never terminate
+                    # the current turn.
+                    self._stale_turn_ids.discard(note_turn_id)
+                    logger.debug(
+                        "ignoring stale turn/completed for interrupted "
+                        "turn %s (current turn %s)",
+                        note_turn_id,
+                        result.turn_id,
+                    )
+                    continue
                 turn_complete = True
-                turn_status = (
-                    (note.get("params") or {}).get("turn") or {}
-                ).get("status")
+                turn_status = note_turn.get("status")
                 if turn_status and turn_status not in {"completed", "interrupted"}:
                     err_obj = (
                         (note.get("params") or {}).get("turn") or {}
@@ -676,6 +726,10 @@ class CodexAppServerSession:
             if self._interrupt_event.is_set():
                 self._issue_interrupt(result.turn_id)
                 result.interrupted = True
+                # Same contamination hazard as run_turn: an interrupted
+                # compaction leaves its tail queued while the session stays
+                # reusable. Drain it (or retire) before returning.
+                self._drain_interrupted_turn(result, projector)
                 break
 
             if not self._client.is_alive():
@@ -726,14 +780,29 @@ class CodexAppServerSession:
                     result.error = (
                         result.error or "codex reported turn_aborted"
                     )
+                    self._mark_turn_stale_on_marker(result)
 
             if method == "turn/started":
                 turn_obj = (note.get("params") or {}).get("turn") or {}
                 result.turn_id = turn_obj.get("id") or result.turn_id
             elif method == "turn/completed":
-                turn_complete = True
                 turn_obj = (note.get("params") or {}).get("turn") or {}
-                result.turn_id = turn_obj.get("id") or result.turn_id
+                completed_turn_id = turn_obj.get("id")
+                if (
+                    completed_turn_id
+                    and completed_turn_id in self._stale_turn_ids
+                ):
+                    # Terminal event of an earlier user-interrupted turn —
+                    # not this compaction's own completion.
+                    self._stale_turn_ids.discard(completed_turn_id)
+                    logger.debug(
+                        "ignoring stale turn/completed for interrupted "
+                        "turn %s during compaction",
+                        completed_turn_id,
+                    )
+                    continue
+                turn_complete = True
+                result.turn_id = completed_turn_id or result.turn_id
                 turn_status = turn_obj.get("status")
                 if turn_status and turn_status not in {"completed", "interrupted"}:
                     err_obj = turn_obj.get("error")
@@ -779,6 +848,165 @@ class CodexAppServerSession:
             logger.debug("turn/interrupt non-fatal: %s", exc)
         except TimeoutError:
             logger.warning("turn/interrupt timed out")
+
+    def _drain_interrupted_turn(
+        self,
+        result: TurnResult,
+        projector: CodexEventProjector,
+        grace_seconds: Optional[float] = None,
+    ) -> None:
+        """Consume the interrupted turn's remaining notifications.
+
+        After turn/interrupt, codex still finishes the turn asynchronously
+        (aborted items, a final token-usage update, then turn/completed with
+        status=interrupted). The tail belongs to THIS turn, so its usage and
+        items are folded into ``result`` rather than dropped. If the turn's
+        terminal event doesn't arrive within the grace window, the queue
+        state is unknown — retire the session so the next turn respawns
+        codex instead of inheriting a contaminated queue.
+        """
+        if self._client is None:
+            return
+        if grace_seconds is None:
+            # Resolved at call time so tests can patch the module constant.
+            grace_seconds = _INTERRUPT_DRAIN_GRACE_SECONDS
+        if result.turn_id:
+            # Remember the interrupted turn until its terminal event is
+            # consumed, so a tail that outlives the grace window can still
+            # be recognized (and dropped) by a later turn's wait loop.
+            self._stale_turn_ids.add(result.turn_id)
+        deadline = time.monotonic() + grace_seconds
+        while time.monotonic() < deadline:
+            # A canceled turn's exec/patch approval must never greet the
+            # next turn as if it were current.
+            self._decline_stale_server_requests()
+            note = self._client.take_notification(timeout=0.1)
+            if note is None:
+                if not self._client.is_alive():
+                    # Subprocess died mid-drain — the terminal event will
+                    # never arrive. Retire so the next turn respawns codex
+                    # instead of failing turn/start on a dead client and
+                    # losing a user-visible turn.
+                    result.should_retire = True
+                    return
+                continue
+            if self._fold_tail_note(result, projector, note):
+                self._finish_drain_reusable(result)
+                return
+        logger.warning(
+            "interrupted codex turn %s did not finish within %.1fs; "
+            "retiring the session to avoid reusing a contaminated queue",
+            result.turn_id,
+            grace_seconds,
+        )
+        result.should_retire = True
+
+    def _mark_turn_stale_on_marker(self, result: TurnResult) -> None:
+        """A marker-terminated turn may still emit its ``turn/completed``
+        later — keep tracking its id so a later wait loop filters (and
+        discards) that event instead of taking it as its own terminal."""
+        if result.turn_id:
+            self._stale_turn_ids.add(result.turn_id)
+
+    def _finish_drain_reusable(self, result: TurnResult) -> None:
+        """Final checks before declaring the drained session reusable.
+
+        The stale-turn id is NOT discarded here: only consuming the turn's
+        matching ``turn/completed`` (in ``_tail_note_is_terminal`` or a
+        later turn's wait loop) fully accounts for the turn. A drain that
+        ended on an abort marker may still have that completion in flight.
+        """
+        # One last sweep: an approval that raced in alongside the terminal
+        # event must not greet the next turn.
+        self._decline_stale_server_requests()
+        if not self._client.is_alive():
+            # Codex emitted its terminal event and then exited — the next
+            # turn/start would fail on a dead client. Retire instead.
+            result.should_retire = True
+
+    def _decline_stale_server_requests(self) -> None:
+        """Decline server-initiated requests queued by an aborted turn.
+
+        A canceled turn's approval request handled as current would show a
+        stale prompt at best or auto-accept a stale command/patch at worst.
+        """
+        while True:
+            sreq = self._client.take_server_request(timeout=0)
+            if sreq is None:
+                return
+            rid = sreq.get("id")
+            method = sreq.get("method", "")
+            logger.debug("declining stale codex server request: %s", method)
+            if method.endswith("/requestApproval"):
+                self._client.respond(rid, {"decision": "decline"})
+            elif method == "mcpServer/elicitation/request":
+                self._client.respond(
+                    rid, {"action": "decline", "content": None, "_meta": None}
+                )
+            else:
+                self._client.respond_error(
+                    rid, code=-32601, message=f"Unsupported method: {method}"
+                )
+
+    def _fold_tail_note(
+        self,
+        result: TurnResult,
+        projector: CodexEventProjector,
+        note: dict,
+    ) -> bool:
+        """Fold one drained notification into the interrupted turn's result.
+
+        The tail belongs to the interrupted turn, so its usage and items are
+        recorded rather than dropped. Returns True when the note is terminal
+        for the interrupted turn, meaning draining is done.
+        """
+        _apply_token_usage_notification(result, note)
+        _apply_compaction_notification(result, note)
+        projection = projector.project(note)
+        if projection.messages:
+            result.projected_messages.extend(projection.messages)
+        if projection.is_tool_iteration:
+            result.tool_iterations += 1
+        if projection.final_text is not None:
+            result.final_text = projection.final_text
+            if _has_turn_aborted_marker(projection.final_text):
+                # Some codex builds tear a turn down with a <turn_aborted>
+                # marker and never send turn/completed (main-loop parity).
+                # Without this, the drain would burn the whole grace window
+                # and retire a healthy, context-bearing thread on every
+                # interrupt against those builds.
+                result.error = result.error or "codex reported turn_aborted"
+                return True
+        return self._tail_note_is_terminal(result, note)
+
+    def _tail_note_is_terminal(self, result: TurnResult, note: dict) -> bool:
+        """True when the drained note is the interrupted turn's own
+        ``turn/completed``; folds a failed terminal's error into the result.
+
+        ``result.interrupted`` deliberately stays True even when the turn
+        raced to status="completed": the user requested the interrupt, and
+        flipping it off while the agent-level interrupt flag is still set
+        would make the next turn's pre-check fire a spurious empty
+        interrupted turn. The completed text/usage are preserved either way.
+        """
+        if note.get("method") != "turn/completed":
+            return False
+        turn_obj = (note.get("params") or {}).get("turn") or {}
+        completed_id = turn_obj.get("id")
+        if completed_id and result.turn_id and completed_id != result.turn_id:
+            return False
+        status = turn_obj.get("status")
+        if status and status not in {"completed", "interrupted"}:
+            err_obj = turn_obj.get("error")
+            if err_obj:
+                result.error = result.error or _format_responses_error(
+                    err_obj, str(status)
+                )
+        if result.turn_id:
+            # The matching terminal event has been consumed — nothing more
+            # can leak from this turn, so stop tracking it as stale.
+            self._stale_turn_ids.discard(result.turn_id)
+        return True
 
     def _handle_server_request(self, req: dict) -> None:
         """Translate a codex server request (approval) into Hermes' approval

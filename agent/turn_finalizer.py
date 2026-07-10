@@ -121,11 +121,18 @@ def finalize_turn(
                     exc_info=True,
                 )
 
-    # Determine if conversation completed successfully
+    # Determine if conversation completed successfully. An interrupted turn
+    # is never "completed": the classic loop guarantees final_response is
+    # still None when the interrupt breaks it, but the codex app-server
+    # runtime passes turn.final_text, which is "" (not None) for interrupted
+    # turns — without the explicit interrupted term, trajectory persistence
+    # and the on_session_end hook below would classify cancelled work as
+    # successful.
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")
     completed = (
         final_response is not None
         and not failed
+        and not interrupted
         and (
             api_call_count < agent.max_iterations
             or normal_text_response

@@ -367,6 +367,361 @@ class TestMigrate:
         assert f'sandbox_mode = "{expected}"' in text
         assert report.wrote_permissions_default == expected
 
+    @pytest.mark.parametrize("quoted_key", ['"sandbox_mode"', "'sandbox_mode'"])
+    def test_quoted_user_sandbox_mode_is_recognized(self, tmp_path, quoted_key):
+        """TOML allows quoted root keys; missing them would emit a duplicate
+        bare sandbox_mode and break the whole config with a parse error."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(f'{quoted_key} = "read-only"\n')
+        report = migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        text = target.read_text()
+        parsed = tomllib.loads(text)  # a duplicate root key would raise here
+        assert parsed["sandbox_mode"] == "read-only"
+        assert report.wrote_permissions_default is None
+
+    def test_header_like_line_inside_multiline_string_sandbox_recognized(
+        self, tmp_path
+    ):
+        """A '[header]'-shaped line inside a multiline root string is string
+        content. Cutting the scan there would miss a later root sandbox_mode
+        and emit a duplicate."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'developer_instructions = """\n'
+            "[features]\n"
+            "looks like a header but is string content\n"
+            '"""\n'
+            'sandbox_mode = "read-only"\n'
+            "\n"
+            "[features]\n"
+            "real = true\n"
+        )
+        report = migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        parsed = tomllib.loads(target.read_text())
+        assert parsed["sandbox_mode"] == "read-only"
+        assert "[features]" in parsed["developer_instructions"]
+        assert parsed["features"]["real"] is True
+        assert report.wrote_permissions_default is None
+
+    def test_managed_block_not_injected_into_multiline_string(self, tmp_path):
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'developer_instructions = """\n'
+            "[fake-header]\n"
+            '"""\n'
+            "\n"
+            "[features]\n"
+            "real = true\n"
+        )
+        migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        text = target.read_text()
+        parsed = tomllib.loads(text)
+        # The user's string value is intact — the managed block (with the
+        # workspace-write default) landed at the document root, not inside
+        # the multiline string.
+        assert parsed["developer_instructions"] == "[fake-header]\n"
+        assert MIGRATION_MARKER not in parsed["developer_instructions"]
+        assert parsed["sandbox_mode"] == "workspace-write"
+        assert parsed["features"]["real"] is True
+
+    def test_triple_quotes_in_comment_do_not_hide_headers(self, tmp_path):
+        """A triple-quote sequence inside a comment is plain text; counting
+        it as a fence made header detection fail and appended the managed
+        sandbox default AFTER [features] (features.sandbox_mode)."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            '# documentation token: """\n'
+            "\n"
+            "[features]\n"
+            "real = true\n"
+        )
+        migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        parsed = tomllib.loads(target.read_text())
+        assert parsed["sandbox_mode"] == "workspace-write"
+        assert "sandbox_mode" not in parsed["features"]
+
+    def test_triple_quotes_inside_single_line_string_do_not_hide_headers(
+        self, tmp_path
+    ):
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            "note = \"contains ''' inside\"\n"
+            "\n"
+            "[features]\n"
+            "real = true\n"
+        )
+        migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        parsed = tomllib.loads(target.read_text())
+        assert parsed["sandbox_mode"] == "workspace-write"
+        assert "sandbox_mode" not in parsed["features"]
+
+    def test_escaped_fence_on_opening_line_keeps_multiline_open(self, tmp_path):
+        r"""``x = \"\"\"text \"\"\"`` — the backslash escapes the first quote,
+        so the string stays open; treating it as closed made the next
+        header-shaped line a 'real' header and injected the managed block
+        into the user's string value."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'developer_instructions = """text \\"""\n'
+            "[fake-header]\n"
+            '"""\n'
+            "\n"
+            "[features]\n"
+            "real = true\n"
+        )
+        migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        parsed = tomllib.loads(target.read_text())
+        # \" is an escaped quote and the following "" are literal content —
+        # the value keeps all three characters.
+        assert parsed["developer_instructions"] == 'text """\n[fake-header]\n'
+        assert MIGRATION_MARKER not in parsed["developer_instructions"]
+        assert parsed["sandbox_mode"] == "workspace-write"
+        assert parsed["features"]["real"] is True
+
+    def test_even_backslash_run_before_closing_fence_closes(self, tmp_path):
+        r"""``\\\"\"\"`` is an escaped backslash followed by a REAL fence —
+        parity-blind escape checks would keep the fence open forever."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'developer_instructions = """\n'
+            'ends with backslash \\\\"""\n'
+            "\n"
+            "[features]\n"
+            "real = true\n"
+        )
+        migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        parsed = tomllib.loads(target.read_text())
+        assert parsed["developer_instructions"] == "ends with backslash \\"
+        assert parsed["sandbox_mode"] == "workspace-write"
+        assert parsed["features"]["real"] is True
+
+    def test_close_and_reopen_multiline_on_same_line(self, tmp_path):
+        """Arrays may close one multiline string and open another on the
+        SAME line — missing the second opener made a header-shaped line
+        inside the second string look like the first real table."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            "values = [\n"
+            '  """first\n'
+            'closes""", """second\n'
+            "[fake-header]\n"
+            '"""\n'
+            "]\n"
+            "\n"
+            "[features]\n"
+            "real = true\n"
+        )
+        migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        parsed = tomllib.loads(target.read_text())
+        assert parsed["values"] == ["first\ncloses", "second\n[fake-header]\n"]
+        assert parsed["sandbox_mode"] == "workspace-write"
+        assert parsed["features"]["real"] is True
+
+    def test_plugin_strip_leaves_multiline_string_content_alone(self):
+        """A '[plugins.…]'-shaped line inside a multiline string is string
+        content — the stripper eating it (and everything until the next
+        header) was silent user-data loss that predated the backstop."""
+        import hermes_cli.codex_runtime_plugin_migration as mig
+
+        text = (
+            'developer_instructions = """\n'
+            '[plugins."fake@market"]\n'
+            "example line the user wrote\n"
+            '"""\n'
+            '[plugins."real@market"]\n'
+            "enabled = true\n"
+        )
+        out = mig._strip_unmanaged_plugin_tables(text)
+        assert '[plugins."fake@market"]' in out
+        assert "example line the user wrote" in out
+        assert '[plugins."real@market"]' not in out
+        assert "enabled = true" not in out
+
+    def test_four_quote_close_and_reopen_on_same_line(self, tmp_path):
+        """``closes\"\"\"\"`` is one content quote + the closing delimiter —
+        picking the FIRST triple left a stray quote that swallowed the next
+        opener."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            "values = [\n"
+            '  """first\n'
+            'closes"""", """second\n'
+            "[fake-header]\n"
+            '"""\n'
+            "]\n"
+            "\n"
+            "[features]\n"
+            "real = true\n"
+        )
+        migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        parsed = tomllib.loads(target.read_text())
+        assert parsed["values"] == [
+            'first\ncloses"', "second\n[fake-header]\n"
+        ]
+        assert parsed["sandbox_mode"] == "workspace-write"
+        assert parsed["features"]["real"] is True
+
+    def test_validation_backstop_catches_misplaced_managed_entries(
+        self, tmp_path, monkeypatch
+    ):
+        """Even when no user entry changes, a managed block inserted under
+        an existing table (features.sandbox_mode) must be refused — the
+        managed entries are required to land at the document root."""
+        import hermes_cli.codex_runtime_plugin_migration as mig
+
+        target = tmp_path / "config.toml"
+        original = "[features]\nreal = true\n"
+        target.write_text(original)
+        # Force append-at-end placement: the managed block lands after
+        # [features], nesting sandbox_mode under it.
+        monkeypatch.setattr(
+            mig, "_first_table_header_index", lambda lines: None
+        )
+        report = migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        assert report.written is False
+        assert any("did not land at the document root" in e
+                   for e in report.errors)
+        assert target.read_text() == original
+
+    def test_validation_backstop_refuses_corrupting_write(
+        self, tmp_path, monkeypatch
+    ):
+        """If the placement scanner ever misjudges again, the tomllib
+        validation must refuse the write instead of silently corrupting the
+        user's config."""
+        import hermes_cli.codex_runtime_plugin_migration as mig
+
+        target = tmp_path / "config.toml"
+        original = (
+            'developer_instructions = """\n'
+            "[fake-header]\n"
+            '"""\n'
+            "\n"
+            "[features]\n"
+            "real = true\n"
+        )
+        target.write_text(original)
+        # Force the scanner to pick the header-shaped line INSIDE the string.
+        monkeypatch.setattr(
+            mig, "_first_table_header_index", lambda lines: 1
+        )
+        report = migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        assert report.written is False
+        assert any("refusing to write" in e for e in report.errors)
+        assert target.read_text() == original
+
+    def test_escaped_quoted_sandbox_mode_key_is_recognized(self, tmp_path):
+        """TOML basic quoted keys may contain escapes: "sandbox\\u005fmode"
+        decodes to sandbox_mode. Missing it would emit a duplicate managed
+        key and make the whole config unparseable."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text('"sandbox\\u005fmode" = "read-only"\n')
+        report = migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        parsed = tomllib.loads(target.read_text())  # duplicate would raise
+        assert parsed["sandbox_mode"] == "read-only"
+        assert report.wrote_permissions_default is None
+
+    def test_legacy_user_default_permissions_read_only_is_honored(self, tmp_path):
+        """A user-owned legacy ``default_permissions = ":read-only"`` (the
+        format the previous runtime docs prescribed) must not be silently
+        upgraded to the workspace-write default — current Codex ignores the
+        legacy key entirely."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text('default_permissions = ":read-only"\n')
+        report = migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        parsed = tomllib.loads(target.read_text())
+        assert parsed["sandbox_mode"] == "read-only"
+        assert report.wrote_permissions_default == "read-only"
+
+    def test_legacy_user_default_permissions_unknown_fails_closed(self, tmp_path):
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text('default_permissions = ":my-custom-profile"\n')
+        migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        parsed = tomllib.loads(target.read_text())
+        assert parsed["sandbox_mode"] == "read-only"
+
+    def test_user_sandbox_mode_wins_over_legacy_default_permissions(self, tmp_path):
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'sandbox_mode = "danger-full-access"\n'
+            'default_permissions = ":read-only"\n'
+        )
+        report = migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        parsed = tomllib.loads(target.read_text())
+        assert parsed["sandbox_mode"] == "danger-full-access"
+        assert report.wrote_permissions_default is None
+
     def test_explicit_none_permissions_skips_block(self, tmp_path):
         report = migrate({"mcp_servers": {"x": {"command": "y"}}},
                          codex_home=tmp_path,

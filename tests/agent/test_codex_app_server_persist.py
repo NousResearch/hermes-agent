@@ -139,6 +139,82 @@ def test_codex_turn_persists_each_message_exactly_once():
         shutil.rmtree(tmp)
 
 
+def test_codex_interrupted_turn_finalizes_as_not_completed():
+    """An interrupted codex turn carries final_text == "" (not None); the
+    shared finalizer must not classify it as completed. The finalizer's own
+    ``completed`` drives trajectory persistence and the on_session_end hook,
+    so the result-dict override in codex_runtime alone is not enough."""
+    agent = _make_agent(session_db=None)
+    turn = _make_turn()
+    turn.interrupted = True
+    turn.final_text = ""
+    turn.projected_messages = []
+    agent._codex_session.run_turn.return_value = turn
+
+    saved = {}
+    agent._save_trajectory = (
+        lambda msgs, summary, completed: saved.__setitem__("completed", completed)
+    )
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+    assert result["completed"] is False
+    assert result["interrupted"] is True
+    assert saved["completed"] is False
+
+
+def test_codex_multi_turn_usage_stays_cumulative():
+    """The turn result must report cumulative session totals. Merging the
+    per-turn usage snapshot back into the result clobbered the cumulative
+    token/cost fields with single-turn values from the second turn on."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    agent = _make_agent(session_db=None)
+
+    def make_usage_turn(n):
+        t = _make_turn()
+        t.token_usage_last = {
+            "inputTokens": 100 * n,
+            "cachedInputTokens": 0,
+            "outputTokens": 10 * n,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 110 * n,
+        }
+        return t
+
+    fake_cost = SimpleNamespace(amount_usd=0.0, status="included", source="test")
+    with patch(
+        "agent.usage_pricing.estimate_usage_cost", return_value=fake_cost
+    ):
+        agent._codex_session.run_turn.return_value = make_usage_turn(1)
+        r1 = run_codex_app_server_turn(
+            agent,
+            user_message="one",
+            original_user_message="one",
+            messages=[{"role": "user", "content": "one"}],
+            effective_task_id="task-1",
+        )
+        agent._codex_session.run_turn.return_value = make_usage_turn(2)
+        r2 = run_codex_app_server_turn(
+            agent,
+            user_message="two",
+            original_user_message="two",
+            messages=[{"role": "user", "content": "two"}],
+            effective_task_id="task-1",
+        )
+
+    assert r1["total_tokens"] == 110
+    # Turn 2 reports 110 + 220 cumulative, not the last turn's 220.
+    assert r2["total_tokens"] == 330
+    assert r2["input_tokens"] == 300
+    assert r2["output_tokens"] == 30
+
+
 class TestGatewayPersistedResolution:
     """The gateway default must preserve standard-runtime skip-db behaviour."""
 

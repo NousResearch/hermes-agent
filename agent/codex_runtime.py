@@ -464,10 +464,14 @@ def run_codex_app_server_turn(
     )
     _record_codex_app_server_compaction(agent, turn)
     if turn_returned:
-        usage_result = _record_codex_app_server_usage(agent, turn)
+        # Folds this turn's usage into agent.session_* BEFORE finalize_turn
+        # runs, so the finalizer's result already reports the correct
+        # cumulative session totals. Do NOT merge the returned per-turn
+        # snapshot into the result: from the second turn on it would clobber
+        # the cumulative token/cost fields with single-turn values.
+        _record_codex_app_server_usage(agent, turn)
         api_calls = 1
     else:
-        usage_result = {}
         api_calls = 0
 
     # Codex owns the model/tool loop, but Hermes must own turn finalization.
@@ -516,7 +520,6 @@ def run_codex_app_server_turn(
             "codex_turn_id": turn.turn_id,
         }
     )
-    result.update(usage_result)
     return result
 
 

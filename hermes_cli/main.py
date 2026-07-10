@@ -12937,6 +12937,27 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
+def _reexec_dashboard(reexec_argv, env):
+    """Hand control to the machine-level dashboard process; never returns.
+
+    Kept as a module-level seam so unit tests can intercept the entire
+    hand-off with one monkeypatch: the Windows path below goes through
+    subprocess.Popen, so tests that only patch os.execvpe would launch a
+    real dashboard server and then hang forever on proc.wait() (#61729).
+
+    On Windows, os.execvpe() does not truly replace the process — it
+    spawns via CreateProcess then the parent exits.  Under Python 3.14+
+    this can crash with STATUS_ACCESS_VIOLATION (0xC0000005) when
+    re-executing the dashboard for a non-default profile.  Use
+    subprocess.Popen + sys.exit() on Windows to avoid the crash.
+    """
+    if sys.platform == "win32":
+        proc = subprocess.Popen(reexec_argv, env=env)
+        sys.exit(proc.wait())
+    else:
+        os.execvpe(sys.executable, reexec_argv, env)
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
@@ -13074,16 +13095,7 @@ def cmd_dashboard(args):
             # Best-effort: if root resolution fails, fall back to the prior
             # behaviour (drop HERMES_HOME) rather than block the reroute.
             env.pop("HERMES_HOME", None)
-        # On Windows, os.execvpe() does not truly replace the process — it
-        # spawns via CreateProcess then the parent exits.  Under Python 3.14+
-        # this can crash with STATUS_ACCESS_VIOLATION (0xC0000005) when
-        # re-executing the dashboard for a non-default profile.  Use
-        # subprocess.Popen + sys.exit() on Windows to avoid the crash.
-        if sys.platform == "win32":
-            proc = subprocess.Popen(reexec_argv, env=env)
-            sys.exit(proc.wait())
-        else:
-            os.execvpe(sys.executable, reexec_argv, env)
+        _reexec_dashboard(reexec_argv, env)
 
     if _token_file:
         _ssh_session_token = _read_ssh_session_token_file(_token_file)

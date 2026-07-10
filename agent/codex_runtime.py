@@ -179,49 +179,51 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
             )
 
     # ── Kanban usage ledger (HERMES-OBS-001) ────────────────
-    # Persist per-API-call usage to the Kanban usage ledger
-    # when running as a Kanban worker. Fail-safe.
-    _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
-    if _kanban_task:
+    # Persist one distinct primary usage event per observable Codex
+    # app-server API call when running as a Kanban worker. Fail-safe:
+    # ledger write failures must never break Codex execution.
+    try:
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli.kanban_usage_ledger import (
+            _record_kanban_usage_at_boundary,
+        )
+        _kb_conn = _kb.connect()
         try:
-            from hermes_cli import kanban_db as _kb
-            from hermes_cli.kanban_usage_ledger import (
-                safe_record_from_canonical_usage,
+            _record_kanban_usage_at_boundary(
+                _kb_conn,
+                call_kind="primary",
+                # session_api_calls already incremented above for this turn
+                # → stable 0-based index for this observable API call.
+                api_call_index=max(0, int(agent.session_api_calls) - 1),
+                provider=agent.provider or "unknown",
+                model=agent.model,
+                canonical_usage={
+                    "input_tokens": canonical_usage.input_tokens,
+                    "output_tokens": canonical_usage.output_tokens,
+                    "cache_read_tokens": canonical_usage.cache_read_tokens,
+                    "cache_write_tokens": canonical_usage.cache_write_tokens,
+                    "reasoning_tokens": canonical_usage.reasoning_tokens,
+                },
+                token_source="provider_authoritative",
+                elapsed_ms=0,
+                cost_usd=(
+                    float(cost_result.amount_usd)
+                    if cost_result.amount_usd is not None
+                    else None
+                ),
+                cost_status=cost_result.status,
             )
-            _kb_conn = _kb.connect()
+        finally:
             try:
-                _board = os.environ.get("HERMES_KANBAN_BOARD", "default")
-                _run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
-                _run_id = int(_run_id_raw) if _run_id_raw else 0
-                safe_record_from_canonical_usage(
-                    _kb_conn,
-                    board=_board,
-                    task_id=_kanban_task,
-                    run_id=_run_id,
-                    call_kind="primary",
-                    api_call_index=agent.session_api_calls - 1,
-                    provider=agent.provider or "unknown",
-                    model=agent.model,
-                    canonical_usage={
-                        "input_tokens": canonical_usage.input_tokens,
-                        "output_tokens": canonical_usage.output_tokens,
-                        "cache_read_tokens": canonical_usage.cache_read_tokens,
-                        "cache_write_tokens": canonical_usage.cache_write_tokens,
-                        "reasoning_tokens": canonical_usage.reasoning_tokens,
-                    },
-                    token_source="provider_authoritative",
-                    elapsed_ms=0,
-                )
-            finally:
-                try:
-                    _kb_conn.close()
-                except Exception:
-                    pass
-        except Exception:
-            logger.debug(
-                "Codex kanban usage ledger write failed (task=%s): %s",
-                _kanban_task, exc_info=True,
-            )
+                _kb_conn.close()
+            except Exception:
+                pass
+    except Exception:
+        logger.debug(
+            "Codex kanban usage ledger write failed (task=%s):",
+            os.environ.get("HERMES_KANBAN_TASK"),
+            exc_info=True,
+        )
 
     return {
         **usage_dict,

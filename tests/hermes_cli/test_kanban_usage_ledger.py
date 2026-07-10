@@ -1950,3 +1950,232 @@ class TestNormalConversationRuntimeBoundary:
         result = agent.run_conversation("no kanban")
         assert result.get("failed") is not True
         assert ledger.query_usage(isolated_kanban) == []
+
+
+class TestCodexRuntimeBoundary:
+    """R4D: real Codex app-server usage boundary (not helper-only).
+
+    Exercises agent.codex_runtime via AIAgent.run_conversation with
+    api_mode=codex_app_server, a monkeypatched no-network Codex session,
+    and a temp Kanban DB.
+    """
+
+    @staticmethod
+    def _token_usage(
+        *,
+        input_tokens=80,
+        cached_input_tokens=20,
+        output_tokens=25,
+        reasoning_tokens=5,
+        total_tokens=130,
+    ):
+        return {
+            "inputTokens": input_tokens,
+            "cachedInputTokens": cached_input_tokens,
+            "outputTokens": output_tokens,
+            "reasoningOutputTokens": reasoning_tokens,
+            "totalTokens": total_tokens,
+        }
+
+    def _make_codex_agent(self, monkeypatch, token_usage_fn, *, model="codex-test-model", provider="openai"):
+        """Build a real AIAgent on the codex_app_server path; no network."""
+        import run_agent
+        from agent.transports.codex_app_server_session import (
+            CodexAppServerSession,
+            TurnResult,
+        )
+
+        monkeypatch.setattr(
+            run_agent,
+            "get_tool_definitions",
+            lambda **kwargs: [],
+        )
+        monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+
+        call_n = {"n": 0}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            call_n["n"] += 1
+            usage = token_usage_fn(call_n["n"], user_input)
+            return TurnResult(
+                final_text=f"codex:{user_input}",
+                projected_messages=[
+                    {"role": "assistant", "content": f"codex:{user_input}"}
+                ],
+                tool_iterations=0,
+                interrupted=False,
+                error=None,
+                turn_id=f"turn-{call_n['n']}",
+                thread_id="thread-r4d",
+                token_usage_last=usage,
+                model_context_window=200000,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-r4d"
+        )
+
+        agent = run_agent.AIAgent(
+            model=model,
+            api_key="test-key",
+            base_url="http://127.0.0.1:9/v1",
+            provider=provider,
+            api_mode="codex_app_server",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            max_iterations=2,
+        )
+        # Avoid side-effects outside the usage boundary under test.
+        agent._spawn_background_review = lambda *a, **k: None
+        agent._cleanup_task_resources = lambda *a, **k: None
+        agent._persist_session = lambda *a, **k: None
+        agent._save_trajectory = lambda *a, **k: None
+        agent._call_count = call_n
+        return agent
+
+    def test_single_codex_turn_persists_one_primary_usage_event(
+        self, isolated_kanban, monkeypatch
+    ):
+        """One Codex app-server turn with usage → one primary ledger row."""
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_r4d_single")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "obs-board")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "21")
+        monkeypatch.setenv("HERMES_PROFILE", "builder-grok")
+
+        agent = self._make_codex_agent(
+            monkeypatch,
+            lambda n, msg: self._token_usage(
+                input_tokens=80,
+                cached_input_tokens=20,
+                output_tokens=25,
+                reasoning_tokens=5,
+                total_tokens=130,
+            ),
+        )
+        result = agent.run_conversation("hello r4d")
+        assert result.get("failed") is not True
+        assert result.get("completed") is True
+        assert result.get("api_calls") == 1
+
+        rows = ledger.query_usage(
+            isolated_kanban,
+            board="obs-board",
+            task_id="t_r4d_single",
+            run_id=21,
+            call_kind="primary",
+        )
+        assert len(rows) == 1, f"expected 1 primary event, got {rows!r}"
+        row = rows[0]
+        assert row["board"] == "obs-board"
+        assert row["task_id"] == "t_r4d_single"
+        assert row["run_id"] == 21
+        assert row["profile"] == "builder-grok"
+        assert row["provider"] == "openai"
+        assert row["model"] == "codex-test-model"
+        assert row["api_call_index"] == 0
+        assert row["call_kind"] == "primary"
+        # Codex reports inputTokens separately from cache; ledger stores the
+        # raw inputTokens bucket from CanonicalUsage (not prompt_tokens sum).
+        assert row["input_tokens"] == 80
+        assert row["output_tokens"] == 25
+        assert row["cache_read_tokens"] == 20
+        assert row["cache_write_tokens"] == 0
+        assert row["reasoning_tokens"] == 5
+        assert row["token_source"] == "provider_authoritative"
+        assert row["elapsed_ms"] >= 0
+        assert row["cost_usd"] is None or isinstance(row["cost_usd"], (int, float))
+        assert row["cost_status"] in (None, "unknown", "estimated", "included")
+
+    def test_two_codex_turns_get_distinct_stable_indices(
+        self, isolated_kanban, monkeypatch
+    ):
+        """Two Codex turns → two primary events with stable api_call_index 0,1."""
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_r4d_multi")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "5")
+        monkeypatch.setenv("HERMES_PROFILE", "builder-grok")
+
+        def usage_fn(n, msg):
+            if n == 1:
+                return self._token_usage(
+                    input_tokens=50,
+                    cached_input_tokens=0,
+                    output_tokens=10,
+                    reasoning_tokens=0,
+                    total_tokens=60,
+                )
+            return self._token_usage(
+                input_tokens=90,
+                cached_input_tokens=10,
+                output_tokens=40,
+                reasoning_tokens=2,
+                total_tokens=142,
+            )
+
+        agent = self._make_codex_agent(monkeypatch, usage_fn)
+        r1 = agent.run_conversation("turn one")
+        r2 = agent.run_conversation("turn two")
+        assert r1.get("failed") is not True
+        assert r2.get("failed") is not True
+        assert agent.session_api_calls == 2
+
+        rows = ledger.query_usage(
+            isolated_kanban,
+            task_id="t_r4d_multi",
+            run_id=5,
+            call_kind="primary",
+        )
+        assert len(rows) == 2, f"expected 2 primary events, got {rows!r}"
+        indices = sorted(r["api_call_index"] for r in rows)
+        assert indices == [0, 1], f"stable indices expected [0,1], got {indices}"
+        by_idx = {r["api_call_index"]: r for r in rows}
+        assert by_idx[0]["input_tokens"] == 50
+        assert by_idx[0]["output_tokens"] == 10
+        assert by_idx[1]["input_tokens"] == 90
+        assert by_idx[1]["output_tokens"] == 40
+        assert by_idx[1]["cache_read_tokens"] == 10
+        assert by_idx[1]["reasoning_tokens"] == 2
+
+    def test_ledger_failure_does_not_break_codex_turn(
+        self, isolated_kanban, monkeypatch
+    ):
+        """Persistence errors are fail-safe: Codex turn still completes."""
+        from hermes_cli import kanban_db as kdb
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_r4d_failsafe")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "11")
+        monkeypatch.setenv("HERMES_PROFILE", "builder-grok")
+
+        def _boom():
+            raise RuntimeError("simulated ledger connect failure")
+
+        monkeypatch.setattr(kdb, "connect", _boom)
+
+        agent = self._make_codex_agent(
+            monkeypatch, lambda n, msg: self._token_usage()
+        )
+        result = agent.run_conversation("still works")
+        assert result.get("failed") is not True
+        assert result.get("completed") is True
+        assert result.get("final_response") is not None
+        # No rows written (connect always failed).
+        rows = ledger.query_usage(isolated_kanban, task_id="t_r4d_failsafe")
+        assert rows == []
+
+    def test_no_kanban_env_skips_codex_ledger_write(
+        self, isolated_kanban, monkeypatch
+    ):
+        """Outside a Kanban worker the Codex path is a no-op for the ledger."""
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+
+        agent = self._make_codex_agent(
+            monkeypatch, lambda n, msg: self._token_usage()
+        )
+        result = agent.run_conversation("no kanban")
+        assert result.get("failed") is not True
+        assert result.get("completed") is True
+        assert ledger.query_usage(isolated_kanban) == []

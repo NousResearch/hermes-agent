@@ -77,6 +77,48 @@ logger = logging.getLogger(__name__)
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
+CODEX_MISSING_TERMINAL_ERROR = (
+    "Codex Responses stream ended without a terminal response after one "
+    "finalization retry"
+)
+
+
+def _rollback_codex_incomplete_chain(agent: Any, messages: List[Dict]) -> None:
+    """Drop transient continuation records while preserving prior tool work."""
+    checkpoint = getattr(agent, "_codex_incomplete_checkpoint", None)
+    if isinstance(checkpoint, int) and 0 <= checkpoint <= len(messages):
+        messages[checkpoint:] = [
+            msg
+            for msg in messages[checkpoint:]
+            if not (
+                isinstance(msg, dict)
+                and msg.get("role") == "assistant"
+                and msg.get("finish_reason") == "incomplete"
+            )
+        ]
+    agent._codex_incomplete_checkpoint = None
+    agent._codex_incomplete_retries = 0
+    agent._codex_missing_terminal_retries = 0
+    agent._session_messages = messages
+
+
+def _finish_codex_missing_terminal_failure(
+    agent: Any,
+    messages: List[Dict],
+    conversation_history: Optional[List[Dict]],
+    api_call_count: int,
+) -> Dict[str, Any]:
+    _rollback_codex_incomplete_chain(agent, messages)
+    agent._persist_session(messages, conversation_history)
+    return {
+        "final_response": CODEX_MISSING_TERMINAL_ERROR,
+        "messages": messages,
+        "api_calls": api_call_count,
+        "completed": False,
+        "partial": True,
+        "failed": True,
+        "error": CODEX_MISSING_TERMINAL_ERROR,
+    }
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
@@ -2304,6 +2346,38 @@ def run_conversation(
                 if agent.thinking_callback:
                     agent.thinking_callback("")
 
+                # A Responses stream that closes without a terminal frame is
+                # not a normal provider error: replay it once, then stop. The
+                # generic retry loop would otherwise issue three identical
+                # requests, while any reasoning-only continuation records
+                # accumulated around the truncation would be persisted as
+                # separate assistant turns.
+                if agent.api_mode == "codex_responses":
+                    from agent.codex_runtime import CodexMissingTerminalResponseError
+
+                    if isinstance(api_error, CodexMissingTerminalResponseError):
+                        agent._codex_missing_terminal_retries += 1
+                        if agent._codex_missing_terminal_retries < 2:
+                            logger.warning(
+                                "Codex Responses stream ended without a terminal "
+                                "event; issuing one finalization retry. %s",
+                                agent._client_log_context(),
+                            )
+                            agent._buffer_status(
+                                "Codex stream ended early; retrying final response once..."
+                            )
+                            continue
+
+                        logger.error(
+                            "%s. %s",
+                            CODEX_MISSING_TERMINAL_ERROR,
+                            agent._client_log_context(),
+                        )
+                        agent._flush_status_buffer()
+                        return _finish_codex_missing_terminal_failure(
+                            agent, messages, conversation_history, api_call_count
+                        )
+
                 # -----------------------------------------------------------
                 # UnicodeEncodeError recovery.  Two common causes:
                 #   1. Lone surrogates (U+D800..U+DFFF) from clipboard paste
@@ -4358,6 +4432,26 @@ def run_conversation(
             agent._incomplete_scratchpad_retries = 0
 
             if agent.api_mode == "codex_responses" and finish_reason == "incomplete":
+                # Streams with recoverable output but no terminal event carry
+                # this marker from codex_runtime. They get one bounded replay
+                # and are never stored as valid assistant turns.
+                if getattr(response, "terminal_event_received", None) is False:
+                    agent._codex_missing_terminal_retries += 1
+                    if agent._codex_missing_terminal_retries < 2:
+                        if not agent.quiet_mode:
+                            agent._vprint(
+                                f"{agent.log_prefix}↻ Codex stream ended early; "
+                                "retrying final response once"
+                            )
+                        agent._session_messages = messages
+                        continue
+
+                    return _finish_codex_missing_terminal_failure(
+                        agent, messages, conversation_history, api_call_count
+                    )
+
+                if getattr(agent, "_codex_incomplete_checkpoint", None) is None:
+                    agent._codex_incomplete_checkpoint = len(messages)
                 agent._codex_incomplete_retries += 1
 
                 interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
@@ -4403,7 +4497,7 @@ def run_conversation(
                     agent._session_messages = messages
                     continue
 
-                agent._codex_incomplete_retries = 0
+                _rollback_codex_incomplete_chain(agent, messages)
                 agent._persist_session(messages, conversation_history)
                 return {
                     "final_response": "Codex response remained incomplete after 3 continuation attempts",
@@ -4415,6 +4509,8 @@ def run_conversation(
                 }
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
+                agent._codex_missing_terminal_retries = 0
+                agent._codex_incomplete_checkpoint = None
             
             # Check for tool calls
             if assistant_message.tool_calls:

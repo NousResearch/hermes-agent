@@ -25,10 +25,14 @@ Usage:
 import re
 import fnmatch
 import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
+
+
+SCANNER_VERSION = "skills-guard-v1"
 
 
 
@@ -87,6 +91,7 @@ class ScanResult:
     findings: List[Finding] = field(default_factory=list)
     scanned_at: str = ""
     summary: str = ""
+    scan_provenance: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -681,6 +686,76 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         scanned_at=datetime.now(timezone.utc).isoformat(),
         summary=summary,
     )
+
+
+def _full_content_hash(skill_path: Path) -> str:
+    """Complete SHA-256 over paths and bytes for scan cache identity."""
+    h = hashlib.sha256()
+    if skill_path.is_dir():
+        for file_path in sorted(skill_path.rglob("*")):
+            rel = file_path.relative_to(skill_path).as_posix()
+            if file_path.is_symlink():
+                h.update(rel.encode() + b"\x00SYMLINK\x00")
+            elif file_path.is_file():
+                h.update(rel.encode() + b"\x00")
+                h.update(file_path.read_bytes())
+    else:
+        h.update(skill_path.read_bytes())
+    return f"sha256:{h.hexdigest()}"
+
+
+def _finding_dict(finding: Finding) -> dict:
+    return {key: getattr(finding, key) for key in (
+        "pattern_id", "severity", "category", "file", "line", "match", "description"
+    )}
+
+
+def scan_skill_cached(
+    skill_path: Path,
+    source: str = "community",
+    *,
+    source_url: str = "",
+    cache_dir: Path | None = None,
+) -> Tuple[ScanResult, dict]:
+    """Return a scan plus attestation, caching only exact current content."""
+    bundle_hash = _full_content_hash(skill_path)
+    cache_root = cache_dir or skill_path.parent / ".scan-cache"
+    cache_file = cache_root / f"{bundle_hash.split(':', 1)[1]}.json"
+    try:
+        cached = json.loads(cache_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cached = None
+    if (isinstance(cached, dict)
+            and cached.get("bundle_hash") == bundle_hash
+            and cached.get("scanner_version") == SCANNER_VERSION
+            and cached.get("source") == source):
+        result = ScanResult(
+            skill_name=skill_path.name, source=source,
+            trust_level=cached["trust_level"], verdict=cached["verdict"],
+            findings=[Finding(**item) for item in cached.get("findings", [])],
+            scanned_at=cached["scanned_at"], summary=cached.get("summary", ""),
+        )
+        provenance = dict(cached)
+        provenance["fresh"] = False
+        result.scan_provenance = provenance
+        return result, provenance
+
+    result = scan_skill(skill_path, source=source)
+    findings = [_finding_dict(item) for item in result.findings]
+    provenance = {
+        "source": source, "source_url": source_url, "bundle_hash": bundle_hash,
+        "scanner_version": SCANNER_VERSION, "verdict": result.verdict,
+        "trust_level": result.trust_level, "findings": findings,
+        "rules": sorted({item["pattern_id"] for item in findings}),
+        "scanned_at": result.scanned_at, "summary": result.summary, "fresh": True,
+    }
+    try:
+        cache_root.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    result.scan_provenance = provenance
+    return result, provenance
 
 
 def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool, str]:

@@ -516,7 +516,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         GitHubAuth, create_source_router, ensure_hub_dirs,
         quarantine_bundle, install_from_quarantine, HubLockFile,
     )
-    from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+    from tools.skills_guard import scan_skill_cached, should_allow_install, format_scan_report
 
     c = console or _console
     ensure_hub_dirs()
@@ -648,8 +648,24 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             or getattr(meta, "identifier", "")
             or identifier
         )
-    result = scan_skill(q_path, source=scan_source)
+    from tools.skills_hub import HUB_DIR, source_url_for_bundle
+    result, scan_provenance = scan_skill_cached(
+        q_path,
+        source=scan_source,
+        source_url=source_url_for_bundle(bundle),
+        cache_dir=HUB_DIR / "scan-cache",
+    )
     c.print(format_scan_report(result))
+    freshness = "fresh" if scan_provenance["fresh"] else "cached"
+    c.print(
+        f"[dim]Scan provenance: {freshness}; scanner "
+        f"{scan_provenance['scanner_version']}; hash {scan_provenance['bundle_hash']}[/]"
+    )
+    rules = ", ".join(scan_provenance["rules"]) or "none"
+    c.print(
+        f"[dim]Source: {scan_provenance['source_url']}; scanned "
+        f"{scan_provenance['scanned_at']}; rules: {rules}[/]"
+    )
 
     # Check install policy
     allowed, reason = should_allow_install(result, force=force)

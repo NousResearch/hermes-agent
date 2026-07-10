@@ -17,9 +17,11 @@
   },
   "overrides": {
     "protobufjs": "8.6.1",
-    "@opentelemetry/otlp-transformer": "0.218.0",
-    "@opentelemetry/otlp-exporter-base": "0.218.0",
-    "@opentelemetry/exporter-trace-otlp-http": "0.218.0",
-    "@opentelemetry/exporter-logs-otlp-http": "0.218.0"
+    "@opentelemetry/api-logs": "0.219.0",
+    "@opentelemetry/sdk-logs": "0.219.0",
+    "@opentelemetry/otlp-transformer": "0.219.0",
+    "@opentelemetry/otlp-exporter-base": "0.219.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.219.0",
+    "@opentelemetry/exporter-logs-otlp-http": "0.219.0"
   }
 }

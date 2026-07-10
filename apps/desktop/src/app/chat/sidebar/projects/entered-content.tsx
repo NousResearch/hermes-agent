@@ -22,7 +22,7 @@ import { removeWorktreePath } from '@/store/projects'
 import { SidebarRowStack } from '../chrome'
 
 import { useWorkspaceNodeOpen } from './model'
-import { type ProjectSessionSort, sortProjectSessions } from './session-sort'
+import { pageProjectSessions, type ProjectSessionSort, sortProjectSessions } from './session-sort'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
   mergeRepoWorktreeGroups,
@@ -181,6 +181,7 @@ function RepoFlatSection({
           // "new session here" and "remove worktree" have no single target.
           onNewSession={group.isKanban ? undefined : onNewSession}
           onRemove={group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group)}
+          pageSessions={sessionSort === 'recent' ? undefined : pageProjectSessions}
           renderRows={renderRows}
           sortSessions={sessions => sortProjectSessions(sessions, sessionSort, sessionLocale)}
         />

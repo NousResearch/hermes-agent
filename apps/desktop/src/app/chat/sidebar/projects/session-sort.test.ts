@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '@/hermes'
 import { projectPreviewLimit } from '@/lib/project-session-sort'
 
-import { flattenProjectSessions, sortProjectSessions } from './session-sort'
+import { flattenProjectSessions, pageProjectSessions, sortProjectSessions } from './session-sort'
 
 let nextId = 0
 
@@ -97,6 +97,31 @@ describe('sortProjectSessions', () => {
       ['parent', null],
       ['child', '└─ ']
     ])
+  })
+
+  it('extends a title-sorted page through an entire branch subtree', () => {
+    const parent = session('Alpha parent', { id: 'parent' })
+
+    const children = Array.from({ length: 6 }, (_, index) =>
+      session(`Alpha child ${index + 1}`, { id: `child-${index + 1}`, parent_session_id: parent.id })
+    )
+
+    const input = [session('Beta root', { id: 'beta' }), ...children.reverse(), parent]
+
+    const ordered = sortProjectSessions(input, 'title-asc')
+    const firstPage = pageProjectSessions(ordered, 5)
+
+    expect(firstPage.map(item => item.id)).toEqual([
+      'parent',
+      'child-1',
+      'child-2',
+      'child-3',
+      'child-4',
+      'child-5',
+      'child-6'
+    ])
+    expect(flattenProjectSessions(firstPage, 'title-asc').every(entry => entry.session.id === 'parent' || entry.branchStem)).toBe(true)
+    expect(pageProjectSessions(ordered, 10).map(item => item.id)).toEqual([...firstPage.map(item => item.id), 'beta'])
   })
 
   it('sorts branch clusters and sibling branches by title without breaking nesting', () => {

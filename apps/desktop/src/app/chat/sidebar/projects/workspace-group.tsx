@@ -20,12 +20,13 @@ interface SidebarWorkspaceGroupProps {
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
   sortSessions?: (sessions: SessionInfo[]) => SessionInfo[]
+  pageSessions?: (sessions: SessionInfo[], visibleCount: number) => SessionInfo[]
   // When set (linked worktree rows), shows a remove affordance that runs a real
   // `git worktree remove`.
   onRemove?: () => void
 }
 
-export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemove, sortSessions }: SidebarWorkspaceGroupProps) {
+export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemove, pageSessions, sortSessions }: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
@@ -41,7 +42,7 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
   // Profile groups know their on-disk total (children excluded); workspace
   // groups only ever page within what's already loaded.
   const totalCount = isProfileGroup ? Math.max(group.totalCount ?? loadedCount, loadedCount) : loadedCount
-  const visibleSessions = orderedSessions.slice(0, visibleCount)
+  const visibleSessions = pageSessions ? pageSessions(orderedSessions, visibleCount) : orderedSessions.slice(0, visibleCount)
   const hiddenCount = Math.max(0, totalCount - visibleSessions.length)
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
 

@@ -50,6 +50,53 @@ export function sortProjectSessions(
   return flattenSessionsWithBranches(sessions, titleComparator(sort, locale)).map(entry => entry.session)
 }
 
+/**
+ * Returns the requested prefix plus any descendant rows whose ancestor is
+ * already visible. Title sorting stores a branch subtree as a contiguous
+ * parent-first cluster; extending the boundary keeps a later render from
+ * receiving children without their parent.
+ */
+export function pageProjectSessions(sessions: SessionInfo[], visibleCount: number): SessionInfo[] {
+  const boundary = Math.max(0, Math.min(visibleCount, sessions.length))
+
+  if (boundary === sessions.length) {
+    return sessions
+  }
+
+  const byId = new Map(sessions.map(session => [session.id, session]))
+  const visibleIds = new Set(sessions.slice(0, boundary).map(session => session.id))
+  let end = boundary
+
+  const hasVisibleAncestor = (session: SessionInfo): boolean => {
+    const lineageRootId = session._lineage_root_id?.trim()
+
+    if (lineageRootId && visibleIds.has(lineageRootId)) {
+      return true
+    }
+
+    const seen = new Set<string>()
+    let parentId = session.parent_session_id?.trim()
+
+    while (parentId && !seen.has(parentId)) {
+      if (visibleIds.has(parentId)) {
+        return true
+      }
+
+      seen.add(parentId)
+      parentId = byId.get(parentId)?.parent_session_id?.trim()
+    }
+
+    return false
+  }
+
+  while (end < sessions.length && hasVisibleAncestor(sessions[end])) {
+    visibleIds.add(sessions[end].id)
+    end += 1
+  }
+
+  return sessions.slice(0, end)
+}
+
 /** Flatten rows for rendering while applying the selected project sort semantics. */
 export function flattenProjectSessions(
   sessions: SessionInfo[],

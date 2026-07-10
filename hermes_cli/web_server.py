@@ -10399,18 +10399,26 @@ def _fire_cron_job_for_profile(profile: str, job_id: str) -> bool:
     """Run ONE due cron job end-to-end for ``profile`` via the resolved
     scheduler provider's ``fire_due`` (store CAS claim + ``run_one_job``).
 
-    Uses the same execution-context store routing as ``_call_cron_for_profile``
-    so the claim and run operate on the right profile's ``jobs.json`` without
-    mutating paths observed by the desktop ticker. Runs with no live adapters;
-    delivery falls back to the per-platform send path.
+    Scope both cron storage and the runtime Hermes home so the job's store,
+    config, credentials, scripts, skills, and output all belong to the selected
+    profile. Runs with no live adapters; delivery falls back to the per-platform
+    send path.
     """
     _profile_name, home = _cron_profile_home(profile)
     from cron import jobs as cron_jobs
     from cron.scheduler_provider import resolve_cron_scheduler
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
 
-    with cron_jobs.use_cron_store(home):
-        provider = resolve_cron_scheduler()
-        return bool(provider.fire_due(job_id, adapters=None, loop=None))
+    token = set_hermes_home_override(str(home))
+    try:
+        with cron_jobs.use_cron_store(home):
+            provider = resolve_cron_scheduler()
+            return bool(provider.fire_due(job_id, adapters=None, loop=None))
+    finally:
+        reset_hermes_home_override(token)
 
 
 @app.post("/api/cron/fire")

@@ -80,7 +80,8 @@ class TestWrapCommand:
         env._snapshot_ready = True
         wrapped = env._wrap_command("pwd", "-demo")
 
-        assert "builtin cd -- -demo || exit 126" in wrapped
+        # After #62169 fix: cd has fallback chain, not just `|| exit 126`
+        assert "builtin cd -- -demo" in wrapped
 
     def test_cd_failure_exit_126(self):
         env = _TestableEnv()

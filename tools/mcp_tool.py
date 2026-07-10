@@ -1883,12 +1883,46 @@ class MCPServerTask:
                     # (e.g. ``claude mcp serve`` spawned by a stdio wrapper).
                     new_pgids: Dict[int, int] = {}
                     new_jobs: Dict[int, int] = {}
+                    new_signatures: Dict[int, List[str]] = {}
                     for _pid in new_pids:
                         try:
                             new_pgids[_pid] = os.getpgid(_pid)
                         except (AttributeError, ProcessLookupError, OSError):
                             # AttributeError: Windows (os.getpgid is POSIX-only)
                             # ProcessLookupError: child raced and already exited
+                            pass
+                        # Snapshot the grandchild tree's cmdline markers while
+                        # the wrapper is still alive.  We capture identity
+                        # NOW so that, even if the wrapper exits before we
+                        # reap, the descendants can still be found by a
+                        # global process scan (not by ``parent.children()``
+                        # which fails once the wrapper is gone).  See the
+                        # ``_kill_process_tree`` reap-by-identity step.
+                        try:
+                            import psutil as _ps
+                            _wp = _ps.Process(_pid)
+                            _desc = _wp.children(recursive=True)
+                            sigs = []
+                            for d in _desc:
+                                try:
+                                    cl = d.cmdline()
+                                except (
+                                    _ps.NoSuchProcess, _ps.AccessDenied,
+                                    ProcessLookupError, OSError,
+                                ):
+                                    continue
+                                sigs.append(" ".join(cl))
+                            if sigs:
+                                new_signatures[_pid] = sigs
+                        except ImportError:
+                            pass
+                        except (
+                            _ps.NoSuchProcess, _ps.AccessDenied,
+                            ProcessLookupError, OSError,
+                        ):
+                            # Wrapper raced to exit between PID capture and
+                            # this snapshot — no signature available, psutil
+                            # fallback at teardown will be a best-effort.
                             pass
                         # Windows: assign the direct child to a per-server
                         # Job Object so closing the handle atomically kills the
@@ -1915,6 +1949,8 @@ class MCPServerTask:
                         _stdio_pgids.update(new_pgids)
                         if new_jobs:
                             _stdio_jobs.update(new_jobs)
+                        if new_signatures:
+                            _stdio_descendant_sigs.update(new_signatures)
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
@@ -3062,6 +3098,16 @@ _stdio_pgids: Dict[int, int] = {}  # pid -> pgid
 # created with ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``.  Empty on non-Windows.
 _stdio_jobs: Dict[int, int] = {}
 
+# Cmdline signatures of stdio MCP descendant processes, snapshotted at
+# spawn time while the wrapper is still alive.  Used by
+# ``_kill_process_tree`` to reap descendants by IDENTITY (cmdline match)
+# when the wrapper has already exited and ``parent.children(recursive=
+# True)`` can no longer reach them.  The maintainer's review (PR #61722)
+# flagged this exact lifecycle as the gap in the original fix.
+# Keyed by the direct child PID we spawned; value is a list of full
+# cmdline strings (one per descendant seen at snapshot time).
+_stdio_descendant_sigs: Dict[int, List[str]] = {}
+
 # Whether ctypes/wintypes is available in this interpreter.  Cached at
 # module import so we don't pay the import cost on every reconnect.
 try:
@@ -3312,8 +3358,17 @@ def _kill_process_tree(pid: int) -> None:
     Order of attempts (each falls through to the next on failure):
       1. Close the tracked Job Object for this PID if one was assigned at
          spawn — kernel kills the entire tree atomically.
-      2. psutil tree-kill — graceful SIGTERM then SIGKILL.
-      3. Direct os.kill(pid, sig) — only reaches the direct child.
+      2. psutil tree-kill — graceful SIGTERM then SIGKILL.  This handles
+         the live-wrapper case (``proc.children(recursive=True)`` can
+         reach descendants while the wrapper is alive).
+      3. Reap by identity — global scan for any process whose cmdline
+         matches a signature we snapshotted at spawn.  This handles the
+         case the maintainer's review (PR #61722) flagged: the wrapper
+         exited before the teardown sweep ran, the descendants were
+         reparented to PID 0/system, and ``proc.children()`` can no
+         longer reach them.  Without this step, those survivors would
+         leak until Hermes itself exits.
+      4. Direct os.kill(pid, sig) — only reaches the direct child.
 
     No-op when ``pid`` is falsy.  Never raises.
     """
@@ -3321,6 +3376,7 @@ def _kill_process_tree(pid: int) -> None:
         return
     with _lock:
         job = _stdio_jobs.pop(pid, None)
+        sigs = _stdio_descendant_sigs.pop(pid, None)
     if job:
         _close_job(job)
         # The Job Object close is synchronous on Windows, but give the
@@ -3333,6 +3389,12 @@ def _kill_process_tree(pid: int) -> None:
         # before this code shipped, or ctypes failed), still try to reap
         # the tree.  This is what fixes the user-reported leak.
         _kill_process_tree_psutil(pid)
+        # Reap-by-identity pass for the reparented-orphan case.  Runs
+        # even when the psutil step succeeded — survivors here are
+        # precisely the reparented orphans psutil could not reach
+        # because the wrapper already exited.
+        if sigs:
+            _kill_process_tree_by_identity(sigs)
         return
     # POSIX: nothing to do here; _send_signal/killpg already handled it.
     try:
@@ -3340,6 +3402,71 @@ def _kill_process_tree(pid: int) -> None:
         os.kill(pid, _signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
         pass
+
+
+def _kill_process_tree_by_identity(signatures: List[str]) -> None:
+    """Kill any process whose cmdline matches one of ``signatures``.
+
+    Used to clean up reparented orphans after the wrapper has exited.
+    Walks the global process table (independent of any parent/child
+    relationship) and terminates every match.  This is the only way to
+    reach grandchildren whose wrapper is gone — ``psutil.Process(pid).
+    children(recursive=True)`` raises ``NoSuchProcess`` once the
+    wrapper exits, even though the grandchildren are still alive and
+    reparented to system/PID 0.
+
+    Args:
+        signatures: full-cmdline strings snapshotted at spawn.  Matched
+            as exact, case-sensitive substrings of the candidate
+            process's cmdline.  We use substring (not equality) because
+            cmdlines differ across platforms (Windows quoting, argv[0]
+            resolution).  False-positive risk is bounded by the fact
+            that signatures were captured from a process we ourselves
+            spawned, not from arbitrary user input.
+    """
+    if not signatures:
+        return
+    try:
+        import psutil
+    except ImportError:
+        return
+    sig_set = set(signatures)
+    matches: List[psutil.Process] = []
+    try:
+        for proc in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                cl = proc.info.get("cmdline") or []
+                joined = " ".join(cl)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                continue
+            if not joined:
+                continue
+            for sig in sig_set:
+                if sig and sig in joined:
+                    matches.append(proc)
+                    break
+    except Exception:
+        return
+    for proc in matches:
+        try:
+            proc.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
+    # Brief grace, then escalate.
+    try:
+        gone, alive = psutil.wait_procs(matches, timeout=0.25)
+    except TypeError:
+        try:
+            gone, alive = psutil.wait_procs(matches, 0.25)
+        except Exception:
+            alive = matches
+    except Exception:
+        alive = matches
+    for proc in alive:
+        try:
+            proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
 
 
 def _snapshot_child_pids() -> set:

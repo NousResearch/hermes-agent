@@ -287,6 +287,116 @@ class TestWindowsProcessTreeKill:
             "so PID-reuse can't leak a stale handle"
         )
 
+    def test_reap_by_identity_catches_reparented_orphan(self, monkeypatch):
+        """Regression for teknium's PR #61722 review.
+
+        The scenario: the wrapper exits between spawn-time signature
+        capture and teardown.  Its grandchild is reparented to PID 0
+        (System) and survives.  ``psutil.Process(wrapper_pid).children(
+        recursive=True)`` raises NoSuchProcess because the wrapper is
+        gone — the original psutil-only fallback would miss the
+        grandchild.  The reap-by-identity step walks the global process
+        table, finds any process whose cmdline matches the snapshot
+        signature, and terminates it.
+        """
+        import sys
+
+        import tools.mcp_tool as mcp_tool
+
+        grandchild_cmdline = [
+            "C:/Python312/python.exe",
+            "C:/Users/me/grandchild_server.py",
+            "--stdio",
+        ]
+        grandchild_pid = 9999
+        unrelated_pid = 10000
+
+        class _DeadWrapper:
+            """psutil.Process(wrapper_pid) — wrapper is gone, raises on
+            ``.children()``.  Has terminate/kill no-ops so the psutil
+            tree-kill step doesn't crash before the reap-by-identity
+            pass runs."""
+            def __init__(self, pid):
+                self.pid = pid
+            def children(self, recursive=True):
+                raise ProcessLookupError(self.pid)
+            def terminate(self):
+                pass
+            def kill(self):
+                pass
+
+        killed_pids: list = []
+
+        class _ProcItem:
+            """Stand-in for psutil process_iter entries.
+
+            ``_kill_process_tree_by_identity`` uses both ``.info`` (for
+            pid/cmdline lookup) and ``.terminate()``/``.kill()``.  Real
+            ``psutil.Process`` objects satisfy both, so this mocks that
+            combined contract.
+            """
+            def __init__(self, pid, cmdline):
+                self.pid = pid
+                self.info = {"pid": pid, "cmdline": cmdline}
+            def terminate(self):
+                killed_pids.append(("terminate", self.pid))
+            def kill(self):
+                killed_pids.append(("kill", self.pid))
+
+        fake = SimpleNamespace(
+            Process=_DeadWrapper,
+            process_iter=lambda attrs: iter([
+                _ProcItem(grandchild_pid, grandchild_cmdline),
+                _ProcItem(unrelated_pid, ["unrelated", "process"]),
+            ]),
+            NoSuchProcess=ProcessLookupError,
+            AccessDenied=PermissionError,
+            wait_procs=lambda procs, *a, **kw: (list(procs), []),
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake)
+        monkeypatch.setattr(mcp_tool, "_WIN32_CTYPES_OK", False, raising=False)
+        monkeypatch.setattr(mcp_tool, "sys", SimpleNamespace(platform="win32"))
+
+        # Pre-register the cmdline signature as if we had snapshotted
+        # it at spawn time while the wrapper was still alive.  This is
+        # the only thing that lets _kill_process_tree_by_identity find
+        # the reparented orphan — the wrapper PID itself is gone.
+        mcp_tool._stdio_descendant_sigs[6000] = [
+            " ".join(grandchild_cmdline),
+        ]
+
+        mcp_tool._kill_process_tree(6000)
+
+        killed_only = [pid for _, pid in killed_pids]
+        assert grandchild_pid in killed_only, (
+            f"Reparented grandchild {grandchild_pid} was not reaped by "
+            f"identity. Killed PIDs: {killed_pids}"
+        )
+        assert unrelated_pid not in killed_only, (
+            f"Unrelated process {unrelated_pid} was wrongly killed by "
+            f"signature match. Killed PIDs: {killed_pids}"
+        )
+        # Signatures must be popped so PID-reuse can't surface stale state.
+        assert 6000 not in mcp_tool._stdio_descendant_sigs
+
+    def test_reap_by_identity_skipped_when_no_signatures(self, monkeypatch):
+        """If no signatures were captured at spawn (psutil missing, or
+        the wrapper raced to exit before snapshot), the reap-by-identity
+        pass is a no-op.  The earlier psutil tree-kill still runs.
+        """
+        import sys
+
+        import tools.mcp_tool as mcp_tool
+
+        fake = self._make_fake_psutil({7000: []})
+        monkeypatch.setitem(sys.modules, "psutil", fake)
+        monkeypatch.setattr(mcp_tool, "_WIN32_CTYPES_OK", False, raising=False)
+        monkeypatch.setattr(mcp_tool, "sys", SimpleNamespace(platform="win32"))
+
+        # No pre-registered signatures for PID 7000.
+        mcp_tool._kill_process_tree(7000)
+        assert fake._terminated == {7000}
+
 
 # ---------------------------------------------------------------------------
 # Config loading

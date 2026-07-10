@@ -548,6 +548,14 @@ Runs FTS5, dedupes hits by session lineage, returns the top N sessions. Each res
 
 Bookends + window together reconstruct goal → match → resolution without paying for the whole transcript. Typical wall time: 15–50ms on a real session DB.
 
+To narrow discovery to messages from a time window, pass Unix timestamps or ISO timestamps:
+
+```python
+session_search(query="auth refactor", since=1770249600, before="2026-02-06T00:00:00Z")
+```
+
+`since` is inclusive (`timestamp >= since`) and `before` is exclusive (`timestamp < before`).
+
 **2. Scroll — pass `session_id` + `around_message_id`:**
 
 ```python
@@ -583,6 +591,8 @@ The keyword mode supports standard FTS5 query syntax:
 ### Optional parameters
 
 - `sort` — `newest` or `oldest`, on top of FTS5 ranking. Omit for relevance-only ordering (the default; suitable for exploratory recall). Use `newest` for "where did we leave X" questions, `oldest` for "how did X start" questions.
+- `since` — discovery only. Inclusive lower bound on message timestamp (`timestamp >= since`). Accepts a Unix timestamp or ISO timestamp string.
+- `before` — discovery only. Exclusive upper bound on message timestamp (`timestamp < before`). Accepts a Unix timestamp or ISO timestamp string.
 - `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
 
 ### When It's Used

@@ -69,6 +69,8 @@ class TestSchema:
         assert "query" in params
         assert "limit" in params
         assert "sort" in params
+        assert "since" in params
+        assert "before" in params
         # Scroll shape
         assert "session_id" in params
         assert "around_message_id" in params
@@ -274,6 +276,68 @@ class TestDiscoverySort:
         # Should not error
         result = json.loads(session_search(query="modpack", sort="bogus", db=db))
         assert result["success"] is True
+
+
+class TestDiscoveryTimeWindow:
+    def _seed(self, db):
+        rows = [
+            ("s_old", 1000.0, "old"),
+            ("s_since_boundary", 2000.0, "since boundary"),
+            ("s_inside", 2500.0, "inside"),
+            ("s_before_boundary", 3000.0, "before boundary"),
+        ]
+        for sid, ts, label in rows:
+            db.create_session(sid, source="cli")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                (ts, label, sid),
+            )
+            db.append_message(
+                sid,
+                role="user",
+                content=f"timewindow needle {label}",
+                timestamp=ts,
+            )
+        db._conn.commit()
+
+    def _session_ids(self, db, **kwargs):
+        result = json.loads(
+            session_search(query="timewindow", limit=10, sort="oldest", db=db, **kwargs)
+        )
+        assert result["success"] is True
+        return [r["session_id"] for r in result["results"]]
+
+    def test_without_bounds_matches_existing_discovery(self, db):
+        self._seed(db)
+        assert self._session_ids(db) == [
+            "s_old",
+            "s_since_boundary",
+            "s_inside",
+            "s_before_boundary",
+        ]
+
+    def test_since_excludes_older_messages(self, db):
+        self._seed(db)
+        assert self._session_ids(db, since=2000.0) == [
+            "s_since_boundary",
+            "s_inside",
+            "s_before_boundary",
+        ]
+
+    def test_before_excludes_newer_messages(self, db):
+        self._seed(db)
+        assert self._session_ids(db, before=3000.0) == [
+            "s_old",
+            "s_since_boundary",
+            "s_inside",
+        ]
+
+    def test_since_before_use_half_open_interval(self, db):
+        self._seed(db)
+        assert self._session_ids(db, since=2000.0, before=3000.0) == [
+            "s_since_boundary",
+            "s_inside",
+        ]
 
 
 class TestRoleFilter:

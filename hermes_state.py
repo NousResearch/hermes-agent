@@ -4519,6 +4519,8 @@ class SessionDB:
         offset: int = 0,
         sort: str = None,
         include_inactive: bool = False,
+        since: Optional[float] = None,
+        before: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -4601,6 +4603,13 @@ class SessionDB:
             where_clauses.append(f"m.role IN ({role_placeholders})")
             params.extend(role_filter)
 
+        if since is not None:
+            where_clauses.append("m.timestamp >= ?")
+            params.append(since)
+        if before is not None:
+            where_clauses.append("m.timestamp < ?")
+            params.append(before)
+
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
 
@@ -4676,6 +4685,12 @@ class SessionDB:
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
+                if since is not None:
+                    tri_where.append("m.timestamp >= ?")
+                    tri_params.append(since)
+                if before is not None:
+                    tri_where.append("m.timestamp < ?")
+                    tri_params.append(before)
                 tri_sql = f"""
                     SELECT
                         m.id,
@@ -4733,6 +4748,12 @@ class SessionDB:
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
+                if since is not None:
+                    like_where.append("m.timestamp >= ?")
+                    like_params.append(since)
+                if before is not None:
+                    like_where.append("m.timestamp < ?")
+                    like_params.append(before)
                 like_sql = f"""
                     SELECT m.id, m.session_id, m.role,
                            substr(m.content,

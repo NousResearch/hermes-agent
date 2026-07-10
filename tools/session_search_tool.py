@@ -31,6 +31,8 @@ support.
 
 import json
 import logging
+import math
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 # Sources that are excluded from session browsing/searching by default.
@@ -79,6 +81,33 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     except Exception as e:
         logging.debug("Unexpected error formatting timestamp %s: %s", ts, e, exc_info=True)
     return str(ts)
+
+
+def _parse_timestamp_bound(value: Any, name: str) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a Unix timestamp or ISO timestamp string")
+    if isinstance(value, (int, float)):
+        ts = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            ts = float(text)
+        except ValueError:
+            try:
+                ts = datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+            except ValueError as exc:
+                raise ValueError(
+                    f"{name} must be a Unix timestamp or ISO timestamp string"
+                ) from exc
+    else:
+        raise ValueError(f"{name} must be a Unix timestamp or ISO timestamp string")
+    if not math.isfinite(ts):
+        raise ValueError(f"{name} must be a finite timestamp")
+    return ts
 
 
 def _resolve_to_parent(db, session_id: str) -> str:
@@ -502,6 +531,8 @@ def _discover(
     role_filter: Optional[List[str]],
     limit: int,
     sort: Optional[str],
+    since: Optional[float] = None,
+    before: Optional[float] = None,
     current_session_id: str = None,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
@@ -519,6 +550,8 @@ def _discover(
             # of cron rows are still in hand for the demotion pass below.
             offset=0,
             sort=sort,
+            since=since,
+            before=before,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
@@ -628,6 +661,8 @@ def session_search(
     window: int = 5,
     # Discovery shape
     sort: str = None,
+    since: Any = None,
+    before: Any = None,
     # Cross-profile (any shape)
     profile: str = None,
 ) -> str:
@@ -730,12 +765,20 @@ def session_search(
         if candidate in ("newest", "oldest"):
             sort_norm = candidate
 
+    try:
+        since_ts = _parse_timestamp_bound(since, "since")
+        before_ts = _parse_timestamp_bound(before, "before")
+    except ValueError as e:
+        return tool_error(str(e), success=False)
+
     return _discover(
         db=db,
         query=query.strip(),
         role_filter=role_list,
         limit=limit,
         sort=sort_norm,
+        since=since_ts,
+        before=before_ts,
         current_session_id=current_session_id,
     )
 
@@ -848,6 +891,22 @@ SESSION_SEARCH_SCHEMA = {
                     "and browse shapes."
                 ),
             },
+            "since": {
+                "type": ["number", "string"],
+                "description": (
+                    "Discovery shape only. Optional inclusive lower bound on "
+                    "message timestamp: only match messages with timestamp >= since. "
+                    "Accepts a Unix timestamp number or ISO timestamp string."
+                ),
+            },
+            "before": {
+                "type": ["number", "string"],
+                "description": (
+                    "Discovery shape only. Optional exclusive upper bound on "
+                    "message timestamp: only match messages with timestamp < before. "
+                    "Accepts a Unix timestamp number or ISO timestamp string."
+                ),
+            },
             "session_id": {
                 "type": "string",
                 "description": (
@@ -912,6 +971,8 @@ registry.register(
         around_message_id=args.get("around_message_id"),
         window=args.get("window", 5),
         sort=args.get("sort"),
+        since=args.get("since"),
+        before=args.get("before"),
         profile=args.get("profile"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),

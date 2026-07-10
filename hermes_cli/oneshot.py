@@ -422,10 +422,16 @@ def _run_agent(
     # CPython then forcibly kills those threads at Py_FinalizeEx via
     # PyThread_exit_thread -> __pthread_unwind -> abort(), producing SIGABRT
     # (exit 134) with no Python traceback. Register a direct atexit hook here
-    # so the memory provider is torn down cleanly before finalize.
+    # as a fallback, and call shutdown explicitly after the conversation
+    # completes so providers receive the real transcript.
     import atexit as _atexit
 
+    _shutdown_done = [False]
+
     def _shutdown_oneshot_and_exit() -> None:
+        if _shutdown_done[0]:
+            return
+        _shutdown_done[0] = True
         try:
             if hasattr(agent, "shutdown_memory_provider"):
                 agent.shutdown_memory_provider()
@@ -435,6 +441,12 @@ def _run_agent(
     _atexit.register(_shutdown_oneshot_and_exit)
 
     result = agent.run_conversation(prompt)
+
+    # Explicit shutdown after the conversation so the memory provider's
+    # on_session_end hooks can flush the real transcript (not an empty
+    # list). The atexit hook above is a fallback for the uncaught-exception
+    # path.
+    _shutdown_oneshot_and_exit()
     return (result.get("final_response") or "", result)
 
 

@@ -147,6 +147,7 @@ class HonchoSessionManager:
         # so none is left blocked in HTTP recv at interpreter teardown (which
         # aborts CPython — see HonchoMemoryProvider.shutdown).
         self._context_prefetch_threads: list[threading.Thread] = []
+        self._closed = False
         if write_frequency == "async":
             self._async_queue = queue.Queue()
             self._async_thread = threading.Thread(
@@ -556,14 +557,22 @@ class HonchoSessionManager:
         none is left blocked in HTTP recv at interpreter teardown (which would
         abort CPython via PyThread_exit_thread → __pthread_unwind → abort()).
         """
+        if self._closed:
+            return
+        self._closed = True
         if self._async_queue is not None and self._async_thread is not None:
             self.flush_all()
             self._async_queue.put(_ASYNC_SHUTDOWN)
             self._async_thread.join(timeout=10)
+        # Join context-prefetch threads, but keep references to any that
+        # don't join within the timeout so a later shutdown phase can retry.
+        alive = []
         for t in self._context_prefetch_threads:
             if t.is_alive():
                 t.join(timeout=5.0)
-        self._context_prefetch_threads.clear()
+                if t.is_alive():
+                    alive.append(t)
+        self._context_prefetch_threads = alive
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""
@@ -677,12 +686,13 @@ class HonchoSessionManager:
             return ""
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
-        """
-        Fire get_prefetch_context in a background thread, caching the result.
+        """Fire get_prefetch_context in a background thread, caching the result.
 
         Non-blocking. Consumed next turn via pop_context_result(). This avoids
         a synchronous HTTP round-trip blocking every response.
         """
+        if self._closed:
+            return
         def _run():
             result = self.get_prefetch_context(session_key, user_message)
             if result:
@@ -690,6 +700,11 @@ class HonchoSessionManager:
 
         t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
         # Track so shutdown() can join it before interpreter teardown.
+        # Prune completed threads to avoid unbounded list growth in long-lived
+        # sessions (e.g. gateway runs for days/weeks with many turns).
+        self._context_prefetch_threads = [
+            th for th in self._context_prefetch_threads if th.is_alive()
+        ]
         self._context_prefetch_threads.append(t)
         t.start()
 

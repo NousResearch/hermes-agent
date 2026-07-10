@@ -1438,23 +1438,23 @@ class HonchoMemoryProvider(MemoryProvider):
                     self._manager.flush_all()
                 except Exception:
                     pass
-            # Stop the manager's async writer + tracked prefetch threads.
+            # Close the Honcho httpx.Client FIRST so threads blocked in
+            # socket recv are interrupted — otherwise the manager's shutdown()
+            # joins time out against the 30s read poll.
+            self._close_honcho_http_client()
+
+            # Now join the manager's async writer + prefetch threads (they
+            # should unblock quickly after the client close).
             try:
                 self._manager.shutdown()
             except Exception:
                 pass
 
-        # Close the Honcho httpx.Client to unblock any worker still in recv,
-        # then join the tracked threads once more so they exit cleanly.
-        self._close_honcho_http_client()
+        # Re-join tracked threads after the http client close — they may
+        # have been blocked in socket recv during the first join attempt.
         for t in (self._init_thread, self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
-        if self._manager:
-            try:
-                self._manager.shutdown()
-            except Exception:
-                pass
 
     def _close_honcho_http_client(self) -> None:
         """Close the Honcho SDK's httpx.Client to interrupt in-flight recvs.

@@ -257,23 +257,30 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
     """Copy a SQLite database safely using the backup() API.
 
     Handles WAL mode — produces a consistent snapshot even while
-    the DB is being written to.  Falls back to raw copy on failure.
+    the DB is being written to. Fail closed if a consistent snapshot cannot
+    be created: copying only the live main file can omit committed WAL data.
     """
+    conn = None
+    backup_conn = None
     try:
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
         backup_conn = sqlite3.connect(str(dst))
         conn.backup(backup_conn)
-        backup_conn.close()
-        conn.close()
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
         try:
-            shutil.copy2(src, dst)
-            return True
-        except Exception as exc2:
-            logger.error("Raw copy also failed for %s: %s", src, exc2)
-            return False
+            dst.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+    finally:
+        for connection in (backup_conn, conn):
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +436,10 @@ def run_backup(args) -> None:
 
     # Summary
     print()
-    print(f"Backup complete: {out_path}")
+    if errors:
+        print(f"Backup incomplete: {out_path}")
+    else:
+        print(f"Backup complete: {out_path}")
     print(f"  Files:       {file_count}")
     print(f"  Original:    {_format_size(total_bytes)}")
     print(f"  Compressed:  {_format_size(zip_size)}")
@@ -461,7 +471,8 @@ def run_backup(args) -> None:
         if len(errors) > 10:
             print(f"  ... and {len(errors) - 10} more")
 
-    print(f"\nRestore with: hermes import {out_path.name}")
+    if not errors:
+        print(f"\nRestore with: hermes import {out_path.name}")
 
 
 # ---------------------------------------------------------------------------
@@ -1215,6 +1226,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     if not files_to_add:
         return None
 
+    sqlite_snapshot_failed = False
     try:
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             for abs_path, rel_path in files_to_add:
@@ -1229,8 +1241,14 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                         ) as tmp:
                             tmp_db = Path(tmp.name)
                         try:
-                            if _safe_copy_db(abs_path, tmp_db):
-                                zf.write(tmp_db, arcname=str(rel_path))
+                            if not _safe_copy_db(abs_path, tmp_db):
+                                logger.warning(
+                                    "Full-zip backup aborted: SQLite snapshot failed for %s",
+                                    rel_path,
+                                )
+                                sqlite_snapshot_failed = True
+                                break
+                            zf.write(tmp_db, arcname=str(rel_path))
                         finally:
                             tmp_db.unlink(missing_ok=True)
                     else:
@@ -1241,6 +1259,13 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     except OSError as exc:
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         # Best-effort cleanup of partial file
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+    if sqlite_snapshot_failed:
         try:
             out_path.unlink(missing_ok=True)
         except OSError:

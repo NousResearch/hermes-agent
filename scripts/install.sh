@@ -3067,7 +3067,7 @@ run_stage_protocol() {
     # before emitting the frame and the Rust/Electron parser would see "no
     # result frame" instead of a clean {ok:false} contract response.
     set +e
-    ( run_stage_body "$stage" )
+    ( set -e; run_stage_body "$stage" )
     local code=$?
     set -e
 

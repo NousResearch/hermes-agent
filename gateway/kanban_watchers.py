@@ -394,14 +394,6 @@ class GatewayKanbanWatchersMixin:
                                         notifier_profile,
                                     )
                                     continue
-                                if owner_profile and owner_profile != notifier_profile:
-                                    _owner_adapters = getattr(self, "_profile_adapters", {}).get(owner_profile)
-                                    if not _owner_adapters:
-                                        logger.debug(
-                                            "kanban notifier: subscription for %s owned by profile %s; current profile %s has no adapter for it, skipping",
-                                            sub.get("task_id"), owner_profile, notifier_profile,
-                                        )
-                                        continue
                                 platform = (sub.get("platform") or "").lower()
                                 if platform not in active_platforms:
                                     logger.debug(
@@ -534,7 +526,7 @@ class GatewayKanbanWatchersMixin:
                             if ev.payload and ev.payload.get("reason"):
                                 reason_text = str(ev.payload["reason"]).strip()
                                 if reason_text:
-                                    reason = f": {reason_text[:160]}"
+                                    reason = f": {reason_text}"
                             msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""

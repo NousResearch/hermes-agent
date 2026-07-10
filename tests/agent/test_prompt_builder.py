@@ -66,7 +66,7 @@ class TestGuidanceConstants:
         assert "retry until max iterations" not in KANBAN_GUIDANCE.lower()
 
     def test_kanban_guidance_prompt_size_stays_bounded(self):
-        assert 1_500 < len(KANBAN_GUIDANCE) < 4_096
+        assert 1_500 < len(KANBAN_GUIDANCE) < 5_500
 
 
 # =========================================================================

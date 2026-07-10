@@ -1812,7 +1812,7 @@ export const ru = defineLocale({
       },
       titleTemplates: {
         actionCommand: (action, command) => `${action}: ${command}`,
-        actionQuoted: (action, value) => `${action} «${value}»`,
+        actionQuoted: (action, value) => `${action}: «${value}»`,
         actionTarget: (action, target) => `${action}: ${target}`,
         prefixedDone: (prefix, action) => `${prefix}: ${action}`,
         runningPrefixedTool: (prefix, action) => `${prefix}: ${action}…`,

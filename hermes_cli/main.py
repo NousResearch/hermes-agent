@@ -8398,7 +8398,25 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
-def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+_UPDATE_HTTPS_URL = "https://github.com/NousResearch/hermes-agent.git"
+
+
+def _https_update_fetch_args(branch: str) -> list[str]:
+    return [
+        "fetch",
+        "--depth",
+        "1",
+        _UPDATE_HTTPS_URL,
+        f"+{branch}:refs/remotes/origin/{branch}",
+    ]
+
+
+def _cmd_update_check(
+    branch: str = "main",
+    *,
+    branch_explicit: bool = False,
+    use_https: bool = False,
+):
     """Implement ``hermes update --check``: fetch and report without installing.
 
     ``branch`` selects which branch the check compares against. Default is
@@ -8473,7 +8491,17 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     )
     depth_args = ["--depth", "1"] if is_shallow else []
 
-    if branch == "main":
+    if use_https:
+        print("→ Fetching from GitHub HTTPS...")
+        fetch_result = subprocess.run(
+            git_cmd + _https_update_fetch_args(branch),
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        upstream_exists = False
+        compare_branch = f"origin/{branch}"
+    elif branch == "main":
         print("→ Fetching from upstream...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch"] + depth_args + ["upstream", branch],
@@ -8533,7 +8561,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
 
-    if is_shallow:
+    if is_shallow or use_https:
         # No history to count across the shallow boundary. Compare tip SHAs and
         # report presence-only (mirrors the banner's _check_via_local_git).
         head_sha = subprocess.run(
@@ -8550,7 +8578,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             print(f"⚕ Update available (behind {compare_branch}).")
             from hermes_cli.config import recommended_update_command
 
-            print(f"  Run '{recommended_update_command()}' to install.")
+            update_command = recommended_update_command()
+            if use_https and "--use-https" not in update_command:
+                update_command = f"{update_command} --use-https"
+            print(f"  Run '{update_command}' to install.")
         return
 
     rev_result = subprocess.run(
@@ -9336,6 +9367,7 @@ def cmd_update(args):
         _cmd_update_check(
             branch=branch,
             branch_explicit=bool(getattr(args, "branch", None)),
+            use_https=bool(getattr(args, "use_https", False)),
         )
         return
 
@@ -9569,10 +9601,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # minutes on a non-single-branch checkout. Fetch only what we update
         # against.
         branch = _resolve_update_branch(args)
+        use_https = bool(getattr(args, "use_https", False))
 
         print("→ Fetching updates...")
+        fetch_args = (
+            _https_update_fetch_args(branch)
+            if use_https
+            else ["fetch", "origin", branch]
+        )
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin", branch],
+            git_cmd + fetch_args,
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -9775,8 +9813,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
+            pull_args = (
+                ["merge", "--ff-only", f"origin/{branch}"]
+                if use_https
+                else ["pull", "--ff-only", "origin", branch]
+            )
             pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+                git_cmd + pull_args,
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,

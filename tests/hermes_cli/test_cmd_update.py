@@ -799,6 +799,44 @@ class TestCmdUpdateCheckBranchFlag:
         rev_list_cmds = [c for c in commands if "rev-list" in c]
         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
 
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_use_https_fetches_public_url_and_recommends_flag(
+        self, mock_run, _mock_method, capsys
+    ):
+        """--check --use-https bypasses remotes and keeps the install hint."""
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--is-shallow-repository" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="false\n", stderr="")
+            if "fetch" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if joined.endswith("rev-parse HEAD"):
+                return subprocess.CompletedProcess(cmd, 0, stdout="local-sha\n", stderr="")
+            if joined.endswith("rev-parse origin/main"):
+                return subprocess.CompletedProcess(cmd, 0, stdout="remote-sha\n", stderr="")
+            if "rev-list" in joined:
+                raise AssertionError("--use-https check should use presence-only comparison")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+        args = SimpleNamespace(check=True, branch=None, use_https=True)
+
+        cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        fetch_cmds = [c for c in commands if "fetch" in c]
+        assert len(fetch_cmds) == 1
+        assert "fetch --depth 1 https://github.com/NousResearch/hermes-agent.git" in fetch_cmds[0]
+        assert "+main:refs/remotes/origin/main" in fetch_cmds[0]
+        assert not any("upstream" in c for c in commands)
+
+        out = capsys.readouterr().out
+        assert "Run 'hermes update --use-https' to install." in out
+
     @patch("hermes_cli.config.detect_install_method", return_value="pip")
     @patch("hermes_cli.banner.check_via_pypi", return_value=0)
     @patch("subprocess.run")

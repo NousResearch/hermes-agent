@@ -62,6 +62,16 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         ),
     )
     update_parser.add_argument(
+        "--use-https",
+        action="store_true",
+        default=False,
+        help=(
+            "Fetch update code from the public GitHub HTTPS URL instead of the "
+            "configured git remote. Useful when SSH is slow or blocked but an "
+            "HTTP/HTTPS proxy is available."
+        ),
+    )
+    update_parser.add_argument(
         "--force",
         action="store_true",
         default=False,

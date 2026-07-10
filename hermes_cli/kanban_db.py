@@ -3922,6 +3922,54 @@ def _synthesize_ended_run(
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
+def _dependency_state_snapshot(conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+    """Return a compact, comparable snapshot of the task's current parent state.
+
+    Used by dependency-wait parking to distinguish a legitimate upstream
+    transition (parent graph/status changed since the worker parked) from an
+    unchanged state that should stay dormant instead of re-promoting into a new
+    run.
+    """
+    parents = conn.execute(
+        "SELECT t.id, t.status FROM tasks t "
+        "JOIN task_links l ON l.parent_id = t.id "
+        "WHERE l.child_id = ? ORDER BY t.id",
+        (task_id,),
+    ).fetchall()
+    snapshot: list[list[str]] = []
+    unresolved_parent_ids: list[str] = []
+    for row in parents:
+        parent_id = str(row["id"])
+        status = str(row["status"])
+        snapshot.append([parent_id, status])
+        if status not in ("done", "archived"):
+            unresolved_parent_ids.append(parent_id)
+    return {
+        "parents": snapshot,
+        "unresolved_parent_ids": unresolved_parent_ids,
+    }
+
+
+def _last_dependency_wait_state(conn: sqlite3.Connection, task_id: str) -> Optional[dict[str, Any]]:
+    """Return the most recent dependency-wait snapshot, if one was recorded."""
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'dependency_wait' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return None
+    try:
+        payload = json.loads(row["payload"])
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    state = payload.get("dependency_state")
+    return state if isinstance(state, dict) else None
+
+
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return True when ``task_id`` is sticky-blocked by an explicit
     worker/operator ``kanban_block`` call (#28712).
@@ -3996,7 +4044,7 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, block_kind "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
@@ -4008,13 +4056,18 @@ def recompute_ready(
                 # legitimate exit (it emits ``"unblocked"`` which flips
                 # this predicate back).
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            parent_state = _dependency_state_snapshot(conn, task_id)
+            parents = parent_state["parents"]
+            if cur_status == "todo" and row["block_kind"] == "dependency":
+                last_dependency_state = _last_dependency_wait_state(conn, task_id)
+                if last_dependency_state == parent_state:
+                    _log.info(
+                        "kanban dependency promotion suppressed: task=%s reason=unchanged_dependency_state parents=%s",
+                        task_id,
+                        parent_state["parents"],
+                    )
+                    continue
+            if all(status in ("done", "archived") for _, status in parents):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -5525,6 +5578,7 @@ def block_task(
         # here (rather than ``blocked``) is what keeps a cron from ever seeing
         # a dependency-wait as something to "unblock".
         if kind == "dependency":
+            dependency_state = _dependency_state_snapshot(conn, task_id)
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -5552,8 +5606,25 @@ def block_task(
                 )
             _append_event(
                 conn, task_id, "dependency_wait",
-                {"reason": reason, "kind": kind}, run_id=run_id,
+                {
+                    "reason": reason,
+                    "kind": kind,
+                    "dependency_state": dependency_state,
+                },
+                run_id=run_id,
             )
+            if not dependency_state["unresolved_parent_ids"]:
+                _append_event(
+                    conn,
+                    task_id,
+                    "dependency_wait_without_unmet_parent",
+                    {
+                        "reason": reason,
+                        "kind": kind,
+                        "dependency_state": dependency_state,
+                    },
+                    run_id=run_id,
+                )
             routed_to = "todo"
             _blocked_task = get_task(conn, task_id)
             _fire_kanban_lifecycle_hook(

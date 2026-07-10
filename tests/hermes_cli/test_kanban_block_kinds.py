@@ -145,6 +145,45 @@ def test_dependency_block_routes_to_todo(kanban_home: Path) -> None:
         assert t.block_kind == "dependency"
 
 
+def test_dependency_block_with_unchanged_satisfied_parents_stays_todo(kanban_home: Path) -> None:
+    """A dependency wait with unchanged parent state must stay dormant."""
+    with kb.connect_closing() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
+        kb.claim_task(conn, parent, claimer="worker")
+        kb.complete_task(conn, parent, result="done")
+
+        child = _running_task(conn, title="child")
+        kb.link_tasks(conn, parent_id=parent, child_id=child)
+        kb.block_task(conn, child, reason="still waiting on non-graph truth", kind="dependency")
+
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None
+        assert child_task.status == "todo"
+        assert kb.recompute_ready(conn) == 0
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None
+        assert child_task.status == "todo"
+        events = [e for e in kb.list_events(conn, child)
+                  if e.kind == "dependency_wait_without_unmet_parent"]
+        assert events, "expected an explicit defect signal for prose-only dependency waits"
+        payload = events[-1].payload or {}
+        assert payload.get("dependency_state", {}).get("unresolved_parent_ids") == []
+
+
+def test_dependency_block_with_unresolved_parent_does_not_emit_defect_signal(kanban_home: Path) -> None:
+    with kb.connect_closing() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        child = _running_task(conn, title="child")
+        kb.link_tasks(conn, parent_id=parent, child_id=child)
+
+        assert kb.block_task(conn, child, reason="wait on actual parent", kind="dependency")
+        events = [e for e in kb.list_events(conn, child)
+                  if e.kind == "dependency_wait_without_unmet_parent"]
+        assert not events
+
+
 def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
     """A dependency-parked child becomes ready once its parent completes."""
     with kb.connect_closing() as conn:
@@ -153,13 +192,19 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
         kb.link_tasks(conn, parent_id=parent, child_id=child)
         kb.block_task(conn, child, reason="wait", kind="dependency")
         assert kb.get_task(conn, child).status == "todo"
-        # Finish the parent, then let recompute_ready run.
+        # Finish the parent; complete_task() recomputes ready children.
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
         kb.claim_task(conn, parent, claimer="worker")
         kb.complete_task(conn, parent, result="done")
-        kb.recompute_ready(conn)
-        assert kb.get_task(conn, child).status == "ready"
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None
+        assert child_task.status == "ready"
+        # A later dispatcher tick should see no additional work to do.
+        assert kb.recompute_ready(conn) == 0
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None
+        assert child_task.status == "ready"
 
 
 # ---------------------------------------------------------------------------

@@ -818,8 +818,17 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        # In-memory skew resets with the rest of the per-session state, but the
+        # PERSISTED row must survive: the gateway calls on_session_end() on
+        # cached agents during SHUTDOWN (shutdown_memory_provider), which is
+        # not a real conversation boundary — the same session resumes right
+        # after, and wiping the row here defeats the restart seed entirely
+        # (found by the 2026-07-10 restart-B live E2E: row gone at boot,
+        # skew back to 1.0). Persisted rows are keyed by session_id, which is
+        # unique per conversation — a stale row can never contaminate a
+        # different session, so leaving it is safe; a genuinely dead session's
+        # row is just inert data on its own sessions row.
         self.reset_skew_calibration()
-        self._clear_persisted_skew_history()
 
     def _clear_persisted_skew_history(self) -> None:
         """Best-effort: drop the persisted skew history for the bound session."""

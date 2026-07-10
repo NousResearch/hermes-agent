@@ -57,9 +57,40 @@ export const CenteredThreadSpinner: FC = () => {
   )
 }
 
+// Key the chat-level elapsed timer on the running assistant message id so it
+// survives view navigation (chat switch, Settings open/close) instead of
+// restarting from zero on every remount. `ResponseLoadingIndicator` renders at
+// the thread-list scope (no message context), so it reads the id of the last
+// running assistant message from `s.thread.messages`; `StreamStallIndicator`
+// renders inside the message and reads `s.message.id` directly. Both key on the
+// same `run:` prefix, so the pre-first-token -> streaming -> stall phases of one
+// turn count continuously, and a new prompt (new message id) resets the timer.
+const RUN_KEY_PREFIX = 'run:'
+
+function runningAssistantMessageIdFromThread(): string | undefined {
+  const thread = useAuiState(s => s.thread)
+  const messages = thread?.messages
+  if (!messages || messages.length === 0) {
+    return undefined
+  }
+  // Only the running assistant message counts. The runtime appends the run's
+  // assistant message (status `running`) as the last message once a turn
+  // starts, but during the transition before that append — or if a prior
+  // turn's completed assistant message is still last — the last message is not
+  // the in-flight one. Keying on either would reuse a stale timestamp and show
+  // a huge bogus elapsed time, so require the last message to be an assistant
+  // message that is currently running.
+  const last = messages[messages.length - 1]
+  if (last.role !== 'assistant' || last.status?.type !== 'running') {
+    return undefined
+  }
+  return last.id
+}
+
 export const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
-  const elapsed = useElapsedSeconds()
+  const runId = runningAssistantMessageIdFromThread()
+  const elapsed = useElapsedSeconds(true, runId ? `${RUN_KEY_PREFIX}${runId}` : undefined)
   const compacting = useStore($compactionActive)
 
   return (
@@ -147,7 +178,8 @@ export const StreamStallIndicator: FC = () => {
   }, [activity])
 
   const active = (stalled || compacting) && !awaitingInput
-  const elapsed = useElapsedSeconds(active)
+  const messageId = useAuiState(s => s.message.id)
+  const elapsed = useElapsedSeconds(active, messageId ? `${RUN_KEY_PREFIX}${messageId}` : undefined)
 
   if (!active) {
     return null

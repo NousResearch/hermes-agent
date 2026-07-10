@@ -782,11 +782,13 @@ def content_hash(skill_path: Path) -> str:
                     rel = f.relative_to(skill_path).as_posix()
                     h.update(rel.encode("utf-8"))
                     h.update(b"\x00")
-                    h.update(f.read_bytes())
+                    # Normalize CRLF → LF so Windows disk reads match
+                    # the LF-only upstream bundle hash (see bundle_content_hash).
+                    h.update(f.read_bytes().replace(b"\r\n", b"\n"))
                 except OSError:
                     continue
     elif skill_path.is_file():
-        h.update(skill_path.read_bytes())
+        h.update(skill_path.read_bytes().replace(b"\r\n", b"\n"))
     return f"sha256:{h.hexdigest()[:16]}"
 
 

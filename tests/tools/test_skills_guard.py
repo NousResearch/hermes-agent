@@ -500,6 +500,35 @@ class TestContentHash:
         h2 = content_hash(tmp_path)
         assert h1 != h2
 
+    def test_crlf_normalized_to_lf(self, tmp_path):
+        """CRLF and LF line endings must produce the same hash.
+
+        On Windows, files on disk use CRLF while the upstream GitHub bundle
+        uses LF. Without normalization the hashes diverge and
+        ``hermes skills check`` always reports ``update_available``.
+        """
+        lf_content = "line one\nline two\n"
+        crlf_content = lf_content.replace("\n", "\r\n")
+
+        lf_dir = tmp_path / "lf"
+        lf_dir.mkdir()
+        (lf_dir / "a.txt").write_text(lf_content, newline="")
+
+        crlf_dir = tmp_path / "crlf"
+        crlf_dir.mkdir()
+        (crlf_dir / "a.txt").write_bytes(crlf_content.encode("utf-8"))
+
+        assert content_hash(lf_dir) == content_hash(crlf_dir)
+
+    def test_crlf_normalized_single_file(self, tmp_path):
+        lf_file = tmp_path / "lf.txt"
+        lf_file.write_text("line one\nline two\n", newline="")
+
+        crlf_file = tmp_path / "crlf.txt"
+        crlf_file.write_bytes(b"line one\r\nline two\r\n")
+
+        assert content_hash(lf_file) == content_hash(crlf_file)
+
 
 # ---------------------------------------------------------------------------
 # _unicode_char_name

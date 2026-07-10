@@ -52,6 +52,7 @@ import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
   $activeSessionId,
   $attentionSessionIds,
+  $busy,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
@@ -78,6 +79,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store
 import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
+import { useSessionChanges } from './chat/hooks/use-session-changes'
 import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
@@ -188,8 +190,10 @@ export function DesktopController() {
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
+  const busy = useStore($busy)
   const currentCwd = useStore($currentCwd)
   const freshDraftReady = useStore($freshDraftReady)
+  const messages = useStore($messages)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const filePreviewTarget = useStore($filePreviewTarget)
@@ -581,9 +585,21 @@ export function DesktopController() {
     }
   }, [activeSessionIdRef, busyRef, selectedStoredSessionIdRef, updateSessionState])
 
+  const sessionChanges = useSessionChanges({
+    activeSessionId,
+    busy,
+    currentView,
+    messages,
+    requestGateway,
+    statusSnapshot,
+    updateSessionState
+  })
+
   const { handleGatewayEvent } = useMessageStream({
     activeSessionIdRef,
     hydrateFromStoredSession,
+    onTurnComplete: sessionChanges.markTurnComplete,
+    onTurnFrame: sessionChanges.markFrame,
     queryClient,
     refreshHermesConfig,
     refreshSessions,

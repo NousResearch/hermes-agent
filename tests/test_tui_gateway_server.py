@@ -1232,7 +1232,15 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
 
     assert server._history_to_messages(history) == [
         {"role": "user", "text": "first prompt"},
-        {"context": "Searching files for resume", "name": "search_files", "role": "tool"},
+        # livesync 2026-07-10 (SPEC P1-1/P1-4b): tool rows now carry
+        # tool_call_id so the desktop can correlate polled tool results with
+        # their tool_calls. Additive contract change; renderer ignores extras.
+        {
+            "context": "Searching files for resume",
+            "name": "search_files",
+            "role": "tool",
+            "tool_call_id": "call_1",
+        },
         {"role": "assistant", "text": "first answer"},
         {"role": "user", "text": "second prompt"},
     ]

@@ -1821,7 +1821,11 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 
     agent = types.SimpleNamespace(session_id="session-key")
-    agent.commit_memory_session = lambda history: calls.setdefault("history", history)
+    def _commit_memory_session(history, *, wait_for_review=False):
+        calls["history"] = history
+        calls["wait_for_review"] = wait_for_review
+
+    agent.commit_memory_session = _commit_memory_session
     server._sessions["sid"] = _session(
         agent=agent, history=[{"role": "user", "content": "hello"}]
     )
@@ -1837,6 +1841,7 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         )
         assert resp["result"]["closed"] is True
         assert calls["history"] == [{"role": "user", "content": "hello"}]
+        assert calls["wait_for_review"] is True
         assert ("on_session_finalize", "session-key") in calls["hooks"]
     finally:
         server._sessions.pop("sid", None)

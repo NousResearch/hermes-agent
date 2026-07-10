@@ -613,7 +613,9 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 
     if agent is not None and history and hasattr(agent, "commit_memory_session"):
         try:
-            agent.commit_memory_session(history)
+            # agent.close() follows immediately on this true TUI boundary.
+            # Wait for the last-chance review so short-session facts reach disk.
+            agent.commit_memory_session(history, wait_for_review=True)
         except Exception:
             pass
 

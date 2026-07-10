@@ -21,11 +21,120 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
+from contextlib import nullcontext
 from typing import Any, Dict, List, Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
+
+
+_SESSION_END_REVIEW_WAIT_SECONDS = 30.0
+
+
+def _has_reviewable_user_turn(messages: List[Dict]) -> bool:
+    """Return whether a transcript contains a non-empty user turn."""
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "user" and message.get("content"):
+            return True
+    return False
+
+
+def schedule_session_end_memory_review(
+    agent: Any,
+    messages: Optional[List[Dict]] = None,
+) -> Optional[threading.Thread]:
+    """Schedule one last memory review for turns below the nudge threshold.
+
+    The normal review loop runs every ``memory.nudge_interval`` user turns.
+    A session may end before reaching that boundary, leaving a tail of turns
+    that was never considered for durable memory. Claim that tail by resetting
+    the same counter used by the periodic loop, then launch the existing review
+    fork against the final transcript. The claim is protected by the agent's
+    review-state lock so overlapping session-finalization paths cannot schedule
+    the same review twice.
+    """
+    if not getattr(agent, "_memory_store", None):
+        return None
+    if not (
+        getattr(agent, "_memory_enabled", False)
+        or getattr(agent, "_user_profile_enabled", False)
+    ):
+        return None
+    if int(getattr(agent, "_memory_nudge_interval", 0) or 0) <= 0:
+        return None
+    spawn = getattr(agent, "_spawn_background_review", None)
+    if not callable(spawn):
+        return None
+
+    snapshot_source = (
+        messages
+        if isinstance(messages, list)
+        else getattr(agent, "_session_messages", None)
+    )
+    snapshot = list(snapshot_source) if isinstance(snapshot_source, list) else []
+    if not _has_reviewable_user_turn(snapshot):
+        return None
+
+    state_lock = getattr(agent, "_background_review_state_lock", None)
+    with state_lock if state_lock is not None else nullcontext():
+        pending_turns = int(getattr(agent, "_turns_since_memory", 0) or 0)
+        if pending_turns <= 0:
+            return None
+        agent._turns_since_memory = 0
+
+    try:
+        thread = spawn(
+            messages_snapshot=snapshot,
+            review_memory=True,
+            review_skills=False,
+        )
+    except Exception:
+        # Preserve the pending-tail signal so another lifecycle path can retry.
+        with state_lock if state_lock is not None else nullcontext():
+            current = int(getattr(agent, "_turns_since_memory", 0) or 0)
+            agent._turns_since_memory = max(current, pending_turns)
+        raise
+
+    logger.info(
+        "Scheduled session-end memory review for %d unreviewed turn(s) "
+        "(session=%s)",
+        pending_turns,
+        getattr(agent, "session_id", "") or "none",
+    )
+    return thread
+
+
+def wait_for_pending_memory_review(
+    agent: Any,
+    timeout: float = _SESSION_END_REVIEW_WAIT_SECONDS,
+) -> bool:
+    """Wait up to ``timeout`` seconds for the latest memory review thread."""
+    state_lock = getattr(agent, "_background_review_state_lock", None)
+    with state_lock if state_lock is not None else nullcontext():
+        thread = getattr(agent, "_last_memory_review_thread", None)
+
+    join = getattr(thread, "join", None)
+    if not callable(join):
+        return True
+    if thread is threading.current_thread():
+        return False
+
+    started = time.monotonic()
+    join(timeout=max(0.0, float(timeout)))
+    is_alive = getattr(thread, "is_alive", None)
+    if callable(is_alive) and is_alive():
+        logger.warning(
+            "Session-end memory review still running after %.1fs; continuing "
+            "teardown without blocking",
+            time.monotonic() - started,
+        )
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -955,6 +1064,8 @@ __all__ = [
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",
     "spawn_background_review_thread",
+    "schedule_session_end_memory_review",
+    "wait_for_pending_memory_review",
     "summarize_background_review_actions",
     "build_memory_write_metadata",
 ]

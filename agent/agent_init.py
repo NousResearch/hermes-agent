@@ -1330,6 +1330,13 @@ def init_agent(
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
+    # Background reviews may be triggered by a normal turn and again by a
+    # session boundary. Serialize them so both forks never mutate MEMORY.md at
+    # the same time, and retain the latest memory-review thread so teardown can
+    # wait for the final write to finish.
+    agent._background_review_execution_lock = threading.Lock()
+    agent._background_review_state_lock = threading.Lock()
+    agent._last_memory_review_thread = None
     if not skip_memory:
         try:
             mem_config = _agent_cfg.get("memory", {})

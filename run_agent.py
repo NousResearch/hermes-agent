@@ -1600,7 +1600,7 @@ class AIAgent:
         messages_snapshot: List[Dict],
         review_memory: bool = False,
         review_skills: bool = False,
-    ) -> None:
+    ) -> threading.Thread:
         """Spawn the background memory/skill review thread.
 
         Thin wrapper — the heavy lifting lives in
@@ -1617,12 +1617,42 @@ class AIAgent:
             review_memory=review_memory,
             review_skills=review_skills,
         )
+        execution_lock = getattr(self, "_background_review_execution_lock", None)
+
+        def _serialized_target() -> None:
+            if execution_lock is None:
+                target()
+                return
+            with execution_lock:
+                target()
+
         # Carry the active profile into the review thread so MEMORY.md / skill
         # review writes land in the right profile (#54937).
         t = threading.Thread(
-            target=propagate_context_to_thread(target), daemon=True, name="bg-review"
+            target=propagate_context_to_thread(_serialized_target),
+            daemon=True,
+            name="bg-review",
         )
-        t.start()
+        state_lock = getattr(self, "_background_review_state_lock", None)
+        if review_memory:
+            if state_lock is None:
+                self._last_memory_review_thread = t
+            else:
+                with state_lock:
+                    self._last_memory_review_thread = t
+        try:
+            t.start()
+        except Exception:
+            if review_memory:
+                if state_lock is None:
+                    if getattr(self, "_last_memory_review_thread", None) is t:
+                        self._last_memory_review_thread = None
+                else:
+                    with state_lock:
+                        if getattr(self, "_last_memory_review_thread", None) is t:
+                            self._last_memory_review_thread = None
+            raise
+        return t
 
     def _build_memory_write_metadata(
         self,
@@ -3317,6 +3347,16 @@ class AIAgent:
                 self._memory_manager.shutdown_all()
             except Exception:
                 pass
+        try:
+            from agent.background_review import schedule_session_end_memory_review
+
+            schedule_session_end_memory_review(self, messages)
+        except Exception as e:
+            logger.warning(
+                "Session-end memory review scheduling failed during shutdown: %s",
+                e,
+                exc_info=True,
+            )
         # Notify context engine of session end (flush DAG, close DBs, etc.)
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:
@@ -3326,12 +3366,32 @@ class AIAgent:
                 )
             except Exception:
                 pass
+        try:
+            from agent.background_review import wait_for_pending_memory_review
 
-    def commit_memory_session(self, messages: list = None) -> None:
+            wait_for_pending_memory_review(self)
+        except Exception as e:
+            logger.warning(
+                "Session-end memory review wait failed during shutdown: %s",
+                e,
+                exc_info=True,
+            )
+
+    def commit_memory_session(
+        self,
+        messages: list = None,
+        *,
+        wait_for_review: bool = False,
+    ) -> None:
         """Trigger end-of-session extraction without tearing providers down.
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
-        session_id — they just flush pending extraction now."""
+        session_id — they just flush pending extraction now.
+
+        Set ``wait_for_review`` only at a true teardown boundary that will
+        immediately discard the agent runtime. Compression and soft eviction
+        keep it false so the last-chance review remains off the foreground path.
+        """
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
@@ -3351,6 +3411,28 @@ class AIAgent:
                 )
             except Exception:
                 pass
+        try:
+            from agent.background_review import schedule_session_end_memory_review
+
+            schedule_session_end_memory_review(self, messages)
+        except Exception as e:
+            logger.warning(
+                "Session-end memory review scheduling failed during commit: %s",
+                e,
+                exc_info=True,
+            )
+
+        if wait_for_review:
+            try:
+                from agent.background_review import wait_for_pending_memory_review
+
+                wait_for_pending_memory_review(self)
+            except Exception as e:
+                logger.warning(
+                    "Session-end memory review wait failed during commit: %s",
+                    e,
+                    exc_info=True,
+                )
 
     def _sync_external_memory_for_turn(
         self,

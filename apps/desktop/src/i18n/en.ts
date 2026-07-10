@@ -530,14 +530,15 @@ export const en: Translations = {
       envOverrideTitle: 'Environment variables are controlling this desktop session.',
       envOverrideDesc:
         'Unset HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN to use the saved setting below.',
+      modeTitle: 'Connection mode',
       localTitle: 'Local gateway',
       localDesc: 'Start a private Hermes backend on localhost. This is the default and works offline.',
       remoteTitle: 'Remote gateway',
-      remoteDesc:
-        'Connect this desktop shell to a remote Hermes backend. Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
+      remoteDesc: 'Connect this desktop shell to a remote Hermes backend.',
+      remoteAuthHint:
+        'Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
       cloudTitle: 'Hermes Cloud',
-      cloudDesc:
-        'Sign in once to Hermes Cloud and pick from the agents on your account — no URL to paste. Connects to the one you choose.',
+      cloudDesc: 'Sign in once to Hermes Cloud and pick from the agents on your account — no URL to paste.',
       cloudSignInTitle: 'Hermes Cloud',
       cloudSignIn: 'Sign in to Hermes Cloud',
       cloudSignedIn: 'Signed in to Hermes Cloud',
@@ -550,8 +551,8 @@ export const en: Translations = {
       cloudOrgRole: role => `Role: ${role}`,
       cloudLoadingAgents: 'Loading your agents…',
       cloudNoAgents: {
-        before: 'No agents found on this account. Create one in ',
-        linkText: 'Hermes Cloud',
+        before: 'No agents found on this account. Create one in the ',
+        linkText: 'Nous portal',
         after: ', then refresh.'
       },
       cloudRefresh: 'Refresh',
@@ -600,7 +601,7 @@ export const en: Translations = {
       enterUrlFirst: 'Enter a remote URL first.',
       restartingTitle: 'Gateway connection restarting',
       savedTitle: 'Gateway settings saved',
-      restartingMessage: 'Hermes Desktop will reconnect using the saved settings.',
+      restartingMessage: 'Hermes Desktop will reconnect using the saved settings — the shell stays open.',
       savedMessage: 'Saved for the next restart.',
       connectedTo: (baseUrl, version) => `Connected to ${baseUrl}${version ? ` · Hermes ${version}` : ''}`,
       reachableTitle: 'Remote gateway reachable',

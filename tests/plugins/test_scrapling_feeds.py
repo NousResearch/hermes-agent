@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import types
 from datetime import timedelta
 from pathlib import Path
+
+from tools.url_safety import SSRFProtectedTransport
 
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "scrapling-feeds"
 
@@ -69,6 +72,94 @@ def test_feed_catalog_has_mod_and_cisa():
     assert "mod_press" in feeds_catalog.GOV_FEEDS
     assert "cisa_advisories_all" in feeds_catalog.GOV_FEEDS
     assert feeds_catalog.GOV_FEEDS["mod_press"]["url"].endswith("news.xml")
+
+
+def test_fetch_url_blocks_unsafe_target_before_backend(monkeypatch):
+    fetcher = _load_module("fetcher")
+    monkeypatch.setattr(fetcher, "resolve_safe_url_addresses", lambda *_a, **_k: ())
+    monkeypatch.setattr(
+        fetcher,
+        "_fetch_httpx",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not fetch")),
+    )
+
+    result = fetcher.fetch_url("http://127.0.0.1/internal")
+
+    assert result["success"] is False
+    assert result["backend"] == "safety"
+
+
+def test_scrapling_fetch_uses_safe_redirect_policy(monkeypatch):
+    fetcher = _load_module("fetcher")
+    captured = {}
+
+    class _Fetcher:
+        @staticmethod
+        def get(url, **kwargs):
+            captured.update({"url": url, **kwargs})
+            return types.SimpleNamespace(
+                status=200,
+                body=b"<rss/>",
+                url=url,
+            )
+
+    package = types.ModuleType("scrapling")
+    package.__path__ = []  # type: ignore[attr-defined]
+    module = types.ModuleType("scrapling.fetchers")
+    module.Fetcher = _Fetcher
+    monkeypatch.setitem(sys.modules, "scrapling", package)
+    monkeypatch.setitem(sys.modules, "scrapling.fetchers", module)
+    monkeypatch.setattr(
+        fetcher,
+        "resolve_safe_url_addresses",
+        lambda *_a, **_k: ("93.184.216.34",),
+    )
+
+    result = fetcher._fetch_scrapling("https://www.mod.go.jp/feed.xml", timeout=5)
+
+    assert result["success"] is True
+    assert captured["follow_redirects"] == "safe"
+    assert captured["max_redirects"] == 10
+
+
+def test_httpx_fallback_uses_pinned_transport(monkeypatch):
+    fetcher = _load_module("fetcher")
+    captured = {}
+
+    class _Response:
+        status_code = 200
+        encoding = "utf-8"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_bytes(self):
+            yield b"<rss/>"
+
+    class _Client:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def stream(self, method, url):
+            captured.update({"method": method, "url": url})
+            return _Response()
+
+    monkeypatch.setattr(fetcher.httpx, "Client", _Client)
+
+    result = fetcher._fetch_httpx("https://www.cisa.gov/news.xml", timeout=5)
+
+    assert result["success"] is True
+    assert isinstance(captured["transport"], SSRFProtectedTransport)
+    assert captured["transport"]._allow_private_urls is False
 
 
 def test_build_gov_feeds_block_markdown():

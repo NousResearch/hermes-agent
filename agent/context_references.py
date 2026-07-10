@@ -167,9 +167,14 @@ async def preprocess_context_references_async(
                 allowed_root=allowed_root_path,
             )
             for ref in refs
-        )
+        ),
+        return_exceptions=True,
     )
-    for warning, block in expanded:
+    for result in expanded:
+        if isinstance(result, BaseException):
+            warnings.append(f"@ context reference expansion failed: {result}")
+            continue
+        warning, block = result
         if warning:
             warnings.append(warning)
         if block:

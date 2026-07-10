@@ -477,12 +477,14 @@ def strip_internal_markup(text: str | None) -> str | None:
     ``reply_to_text`` preview resolved from a replied-to bot message
     (#61217) — the markup must not be shown verbatim. Each block (closed,
     or unclosed through end-of-text) is replaced with a neutral
-    placeholder; text without markup is returned unchanged, and
-    ``None``/empty input passes through as-is.
+    placeholder. Redaction is surgical: only the markup blocks change,
+    so surrounding user content (including leading/trailing whitespace)
+    is preserved byte-for-byte. Text without markup is returned
+    unchanged, and ``None``/empty input passes through as-is.
     """
     if not text or "<TOOLCALL>" not in text:
         return text
-    return _TOOLCALL_BLOCK_RE.sub(_TOOLCALL_PLACEHOLDER, text).strip()
+    return _TOOLCALL_BLOCK_RE.sub(_TOOLCALL_PLACEHOLDER, text)
 
 
 __all__ = [

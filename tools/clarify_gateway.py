@@ -187,30 +187,68 @@ def get_pending_for_session(
         return None
 
 
-def _coerce_text_response(entry: _ClarifyEntry, response: str) -> str:
-    """Map typed choice replies to canonical choice text, otherwise keep custom text."""
+def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
+    """Map typed choice replies to canonical choice text, otherwise keep or reject custom text.
+
+    For native interactive multi-choice clarifies (button UI, awaiting_text=False):
+      - Accept numeric selections ("2" → choice[1])
+      - Accept exact choice label matches (case-insensitive)
+      - Reject arbitrary prose (return None) so the message continues as a normal turn
+
+    For text fallback or awaiting_text mode:
+      - Accept any text (numeric/label/custom) after passing through coercion
+
+    For open-ended clarifies (no choices):
+      - Accept any text
+
+    Returns None when the response should be rejected (arbitrary prose for native multi-choice).
+    """
     text = str(response).strip()
-    if entry.choices:
-        try:
-            idx = int(text) - 1
-        except ValueError:
-            idx = -1
-        if 0 <= idx < len(entry.choices):
-            return entry.choices[idx]
-        for choice in entry.choices:
-            if text.casefold() == str(choice).strip().casefold():
-                return str(choice).strip()
-    return text
+
+    if not entry.choices:
+        # Open-ended: accept any text
+        return text
+
+    # Try numeric selection first (always valid for multi-choice)
+    try:
+        idx = int(text) - 1
+    except ValueError:
+        idx = -1
+
+    if 0 <= idx < len(entry.choices):
+        return entry.choices[idx]
+
+    # Try exact choice label match (always valid for multi-choice)
+    for choice in entry.choices:
+        if text.casefold() == str(choice).strip().casefold():
+            return str(choice).strip()
+
+    # For text fallback or awaiting_text mode, accept custom text
+    # For native interactive multi-choice mode, reject arbitrary prose
+    if entry.awaiting_text:
+        return text
+
+    return None
 
 
 def resolve_text_response_for_session(session_key: str, response: str) -> bool:
-    """Resolve the oldest pending clarify in ``session_key`` from typed text."""
+    """Resolve the oldest pending clarify in ``session_key`` from typed text.
+
+    Returns False if no pending clarify exists or if the response was rejected
+    (arbitrary prose for native interactive multi-choice clarifies).
+    """
     entry = get_pending_for_session(session_key, include_choice_prompts=True)
     if entry is None:
         return False
+
+    coerced = _coerce_text_response(entry, response)
+    if coerced is None:
+        # Response rejected: message should continue as a normal turn
+        return False
+
     return resolve_gateway_clarify(
         entry.clarify_id,
-        _coerce_text_response(entry, response),
+        coerced,
     )
 
 
@@ -232,7 +270,6 @@ def has_pending(session_key: str) -> bool:
     with _lock:
         ids = _session_index.get(session_key) or []
         return any(_entries.get(cid) is not None for cid in ids)
-
 
 def clear_session(session_key: str) -> int:
     """Resolve and drop every pending clarify for a session.

@@ -77,6 +77,36 @@ function copyBuildRelease(srcDir, destDir) {
   }
 }
 
+function nativePayloadDir(root, platform, arch, { includeBuild = true } = {}) {
+  const candidates = [join(root, 'prebuilds', `${platform}-${arch}`)]
+  if (includeBuild) candidates.push(join(root, 'build', 'Release'))
+  return candidates.find((candidate) => {
+    if (!existsSync(join(candidate, 'pty.node'))) return false
+    return platform !== 'darwin' || existsSync(join(candidate, 'spawn-helper'))
+  })
+}
+
+export function findNodePtyNativePayload({
+  platform = process.platform,
+  arch = process.arch,
+  root = resolveNodePtyRoot()
+} = {}) {
+  return nativePayloadDir(root, platform, arch, {
+    includeBuild: platform === process.platform && arch === process.arch
+  })
+}
+
+export function assertNodePtyNativePayload(root, { platform, arch }) {
+  const payload = nativePayloadDir(root, platform, arch)
+  if (payload) return payload
+
+  const helperRequirement = platform === 'darwin' ? ' plus spawn-helper' : ''
+  throw new Error(
+    `node-pty has no usable native payload for ${platform}-${arch}: expected pty.node${helperRequirement} ` +
+      `under prebuilds/${platform}-${arch} or build/Release`
+  )
+}
+
 export function stageNodePty({ platform = process.platform, arch = process.arch } = {}) {
   const srcRoot = resolveNodePtyRoot()
   const destRoot = resolve(projectRoot, 'dist/node_modules/node-pty')
@@ -91,10 +121,12 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
   // lib/**/*.js — the JS surface node-pty's `main` points into.
   copyGlobByExt(join(srcRoot, 'lib'), join(destRoot, 'lib'), ['.js'])
 
-  // build/Release/* — present when node-pty was compiled locally
-  // (e.g. no prebuild available for this Electron ABI/platform combo).
-  // Some installs won't have this at all if prebuild-install succeeded.
-  copyBuildRelease(join(srcRoot, 'build/Release'), join(destRoot, 'build/Release'))
+  // build/Release/* — present when node-pty was compiled locally. A local
+  // build is valid only for the host platform/arch; copying it into a cross-
+  // target package would silently ship the wrong ELF/Mach-O/PE binary.
+  if (platform === process.platform && arch === process.arch) {
+    copyBuildRelease(join(srcRoot, 'build/Release'), join(destRoot, 'build/Release'))
+  }
 
   // prebuilds/<platform>-<arch>/* — the prebuild-install payload for the
   // *target* we're packaging, not necessarily the host running this script.
@@ -117,16 +149,12 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
         cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
       }
     }
-  } else {
-    console.warn(
-      `[stage-native-deps] no prebuild found at prebuilds/${platform}-${arch} for node-pty. ` +
-        `If build/Release/* above is also empty, this target will fail at runtime. ` +
-        `Run "npx electron-rebuild -w node-pty" for this target, or check that ` +
-        `node-pty's published prebuilds cover ${platform}-${arch}.`
-    )
   }
 
-  console.log(`[stage-native-deps] staged node-pty (${platform}-${arch}) -> ${destRoot}`)
+  const payload = assertNodePtyNativePayload(destRoot, { platform, arch })
+  console.log(
+    `[stage-native-deps] staged node-pty (${platform}-${arch}, ${payload}) -> ${destRoot}`
+  )
   return destRoot
 }
 

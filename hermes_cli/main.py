@@ -5726,6 +5726,14 @@ def cmd_gui(args: argparse.Namespace):
             build_label = "source build" if source_mode else "packaged app"
             print(f"→ Building desktop {build_label}...")
             build_script = "build" if source_mode else "pack"
+            assert npm is not None
+            # npm 12 may block node-pty's install script, so the desktop build
+            # can perform the native rebuild itself. Preserve the NixOS Python
+            # discovered above for node-gyp while keeping the managed Node PATH
+            # and desktop-specific environment from ``env``.
+            build_env = dict(env)
+            if nixos_env and nixos_env.get("PYTHON"):
+                build_env["PYTHON"] = nixos_env["PYTHON"]
             if _force_adhoc_macos_signing(env, source_mode=source_mode):
                 print("  → No Developer ID configured; ad-hoc signing this local rebuild "
                       "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
@@ -5738,7 +5746,9 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
-            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            build_result = subprocess.run(
+                [npm, "run", build_script], cwd=desktop_dir, env=build_env, check=False
+            )
             if (
                 build_result.returncode != 0
                 and not source_mode
@@ -5765,7 +5775,9 @@ def cmd_gui(args: argparse.Namespace):
                     # The purge can't remove a win-unpacked tree whose Hermes.exe
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
-                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+                    build_result = subprocess.run(
+                        [npm, "run", build_script], cwd=desktop_dir, env=build_env, check=False
+                    )
             if (
                 build_result.returncode != 0
                 and not source_mode

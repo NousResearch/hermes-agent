@@ -77,6 +77,34 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
 
 
+def test_gui_preserves_nixos_python_for_native_desktop_build(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    ok = subprocess.CompletedProcess([], 0)
+    nixos_env = {"PYTHON": "/nix/store/python/bin/python3", "PATH": "/nix/store/bin"}
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._nixos_build_env", return_value=nixos_env), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok) as mock_install, \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    mock_install.assert_called_once_with("/usr/bin/npm", root, capture_output=False, env=nixos_env)
+    build_call = mock_run.call_args_list[0]
+    assert build_call.args[0] == ["/usr/bin/npm", "run", "pack"]
+    assert build_call.kwargs["cwd"] == desktop_dir
+    assert build_call.kwargs["env"]["PYTHON"] == nixos_env["PYTHON"]
+    assert mock_run.call_args_list[1].args[0] == [str(packaged_exe)]
+
+
 def test_gui_forwards_desktop_environment_overrides(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     hermes_root = tmp_path / "custom-hermes"

@@ -48,4 +48,5 @@ jobs:
       - uses: ./.github/actions/retry
         with:
           command: npm ci
+      - run: npm run --prefix apps/desktop test:native-deps
       - run: npm run --prefix apps/desktop build

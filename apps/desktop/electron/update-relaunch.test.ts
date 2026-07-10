@@ -34,7 +34,7 @@ import {
   sandboxPreflight,
   shellQuote,
   unpackedDirName
-} from './update-relaunch'
+} from './update-relaunch.ts'
 
 const ROOT = '/home/u/.hermes/hermes-agent'
 const UNPACKED = path.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked')

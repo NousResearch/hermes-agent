@@ -30,12 +30,12 @@ import {
 } from 'electron'
 import nodePty from 'node-pty'
 
-import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
-import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
-import { canImportHermesCli, verifyHermesCli } from './backend-probes'
-import { waitForDashboardPortAnnouncement } from './backend-ready'
-import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
-import { runBootstrap } from './bootstrap-runner'
+import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command.ts'
+import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env.ts'
+import { canImportHermesCli, verifyHermesCli } from './backend-probes.ts'
+import { waitForDashboardPortAnnouncement } from './backend-ready.ts'
+import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform.ts'
+import { runBootstrap } from './bootstrap-runner.ts'
 import {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -52,8 +52,8 @@ import {
   resolveAuthMode,
   resolveTestWsUrl,
   tokenPreview
-} from './connection-config'
-import { adoptServedDashboardToken } from './dashboard-token'
+} from './connection-config.ts'
+import { adoptServedDashboardToken } from './dashboard-token.ts'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -62,11 +62,11 @@ import {
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
   uninstallArgsForMode
-} from './desktop-uninstall'
-import { installEmbedReferer } from './embed-referer'
-import { readDirForIpc } from './fs-read-dir'
-import { probeGatewayWebSocket } from './gateway-ws-probe'
-import { scanGitRepos } from './git-repo-scan'
+} from './desktop-uninstall.ts'
+import { installEmbedReferer } from './embed-referer.ts'
+import { readDirForIpc } from './fs-read-dir.ts'
+import { probeGatewayWebSocket } from './gateway-ws-probe.ts'
+import { scanGitRepos } from './git-repo-scan.ts'
 import {
   fileDiffVsHead,
   repoStatus,
@@ -81,9 +81,9 @@ import {
   reviewShipInfo,
   reviewStage,
   reviewUnstage
-} from './git-review-ops'
-import { gitRootForIpc } from './git-root'
-import { addWorktree, listBranches, listWorktrees, removeWorktree, switchBranch } from './git-worktree-ops'
+} from './git-review-ops.ts'
+import { gitRootForIpc } from './git-root.ts'
+import { addWorktree, listBranches, listWorktrees, removeWorktree, switchBranch } from './git-worktree-ops.ts'
 import {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -92,20 +92,20 @@ import {
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   TEXT_PREVIEW_SOURCE_MAX_BYTES
-} from './hardening'
-import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
-import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+} from './hardening.ts'
+import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window.ts'
+import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request.ts'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
-} from './session-windows'
-import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
-import { resolveBehindCount, shouldCountCommits } from './update-count'
-import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
-import { runRebuildWithRetry } from './update-rebuild'
+} from './session-windows.ts'
+import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width.ts'
+import { resolveBehindCount, shouldCountCommits } from './update-count.ts'
+import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker.ts'
+import { runRebuildWithRetry } from './update-rebuild.ts'
 import {
   buildRelaunchScript,
   collectRelaunchArgs,
@@ -114,19 +114,19 @@ import {
   resolveUnpackedRelease,
   sandboxFallbackFromEnv,
   sandboxPreflight
-} from './update-relaunch'
-import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
-import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
+} from './update-relaunch.ts'
+import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote.ts'
+import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace.ts'
 import {
   computeWindowOptions,
   debounce,
   sanitizeWindowState,
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
   MIN_WIDTH as WINDOW_MIN_WIDTH
-} from './window-state'
-import { readWindowsUserEnvVar } from './windows-user-env'
-import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
-import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+} from './window-state.ts'
+import { readWindowsUserEnvVar } from './windows-user-env.ts'
+import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd.ts'
+import { readWslWindowsClipboardImage } from './wsl-clipboard-image.ts'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -4760,7 +4760,7 @@ import {
   percentToZoomLevel,
   ZOOM_STORAGE_KEY,
   zoomLevelToPercent
-} from './zoom'
+} from './zoom.ts'
 
 function setAndPersistZoomLevel(window, zoomLevel) {
   if (!window || window.isDestroyed()) {

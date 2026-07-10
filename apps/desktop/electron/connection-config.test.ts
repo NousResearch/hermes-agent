@@ -31,7 +31,7 @@ import {
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   tokenPreview
-} from './connection-config'
+} from './connection-config.ts'
 
 // --- connectionScopeKey / normAuthMode ---
 

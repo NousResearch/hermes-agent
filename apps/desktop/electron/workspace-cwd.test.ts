@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import path from 'node:path'
 import test from 'node:test'
 
-import { isPackagedInstallPath } from './workspace-cwd'
+import { isPackagedInstallPath } from './workspace-cwd.ts'
 
 const installRoot = path.resolve('/opt/Hermes')
 

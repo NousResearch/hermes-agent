@@ -2446,11 +2446,22 @@ class SessionStore:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
 
-    def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> bool:
+    def rewrite_transcript(
+        self, session_id: str, messages: List[Dict[str, Any]], active_only: bool = False,
+    ) -> bool:
         """Replace the entire transcript for a session with new messages.
 
         Used by /retry, /undo, and /compress to persist modified conversation
         history. state.db is the canonical store.
+
+        DESTRUCTIVE by default (``active_only=False``): every row for the
+        session is deleted, including any soft-archived (``active = 0``)
+        turns that in-place compaction keeps on disk for durability. Callers
+        that share a session id with an agent that may have compacted
+        in-place must probe :meth:`has_archived_messages` first and pass
+        ``active_only=True`` when it returns True, mirroring the ACP
+        adapter's ``_persist`` guard — otherwise the archived pre-compaction
+        history is silently destroyed.
 
         Returns ``True`` when the write lands (or there is no DB to write to)
         and ``False`` when the canonical write fails. Most callers can ignore
@@ -2462,10 +2473,24 @@ class SessionStore:
         if not self._db:
             return True
         try:
-            self._db.replace_messages(session_id, messages)
+            self._db.replace_messages(session_id, messages, active_only=active_only)
             return True
         except Exception as e:
             logger.debug("Failed to rewrite transcript in DB: %s", e)
+            return False
+
+    def has_archived_messages(self, session_id: str) -> bool:
+        """Return True if the session has any soft-archived (``active = 0``) rows.
+
+        Used by callers of :meth:`rewrite_transcript` to decide whether a
+        full-history rewrite would destroy durably archived compaction turns.
+        """
+        if not self._db:
+            return False
+        try:
+            return bool(self._db.has_archived_messages(session_id))
+        except Exception as e:
+            logger.debug("Could not check archived messages in DB: %s", e)
             return False
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:

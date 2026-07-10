@@ -1424,7 +1424,15 @@ class RecallGuardMiddleware(InboundMiddleware):
                     if entry.get("role") == "user" and entry.get("content") == recalled_text:
                         entry["content"] = cls._REDACTED
                         try:
-                            store.rewrite_transcript(sid, transcript)
+                            # load_transcript() returns only the active view;
+                            # rewrite_transcript() is destructive by default
+                            # and would DELETE any soft-archived rows a prior
+                            # in-place compaction kept on disk. Preserve them.
+                            try:
+                                has_archived = store.has_archived_messages(sid)
+                            except Exception:
+                                has_archived = False
+                            store.rewrite_transcript(sid, transcript, active_only=has_archived)
                             logger.info("[%s] Recall redact: session %s", adapter.name, session_key[:30])
                         except Exception as exc:
                             logger.warning("[%s] Recall redact failed: %s", adapter.name, exc)
@@ -1484,7 +1492,15 @@ class RecallGuardMiddleware(InboundMiddleware):
         if target is not None:
             target["content"] = cls._REDACTED
             try:
-                store.rewrite_transcript(sid, transcript)
+                # load_transcript() returns only the active view;
+                # rewrite_transcript() is destructive by default and would
+                # DELETE any soft-archived rows a prior in-place compaction
+                # kept on disk. Preserve them.
+                try:
+                    has_archived = store.has_archived_messages(sid)
+                except Exception:
+                    has_archived = False
+                store.rewrite_transcript(sid, transcript, active_only=has_archived)
                 logger.info("[%s] Recall: redacted msg_id=%s (%s)", adapter.name, recalled_id, branch_label)
             except Exception as exc:
                 logger.warning("[%s] Recall: rewrite_transcript failed: %s", adapter.name, exc)

@@ -442,10 +442,12 @@ export interface Translations {
       profileConnection: (profile: string) => string
       envOverrideTitle: string
       envOverrideDesc: string
+      modeTitle: string
       localTitle: string
       localDesc: string
       remoteTitle: string
       remoteDesc: string
+      remoteAuthHint: string
       cloudTitle: string
       cloudDesc: string
       cloudSignInTitle: string

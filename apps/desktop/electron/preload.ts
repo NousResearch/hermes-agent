@@ -204,6 +204,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:backend-exit', listener)
   },
+  // Soft gateway-mode apply finished tearing down the primary backend. Renderer
+  // should wipe session lists + re-dial without a window reload.
+  onConnectionApplied: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:connection:applied', listener)
+
+    return () => ipcRenderer.removeListener('hermes:connection:applied', listener)
+  },
   onPowerResume: callback => {
     const listener = () => callback()
     ipcRenderer.on('hermes:power-resume', listener)

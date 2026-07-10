@@ -100,6 +100,18 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         self.assertIsNotNone(warn)
         self.assertIn("modified since you last read", warn)
 
+    def test_remote_tracking_ignores_coincidental_host_mtime(self):
+        p = self._mk()
+        file_state.record_read("A", p, track_mtime=False)
+        time.sleep(0.01)
+        os.utime(p, None)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("host-only change\n")
+
+        self.assertIsNone(
+            file_state.check_stale("A", p, track_mtime=False)
+        )
+
     def test_own_write_updates_stamp_so_next_write_is_clean(self):
         p = self._mk()
         file_state.record_read("A", p)

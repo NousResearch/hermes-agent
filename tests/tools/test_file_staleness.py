@@ -13,10 +13,10 @@ import os
 import tempfile
 import time
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from tools import file_state
+from tools.environments.local import LocalEnvironment
 from tools.file_tools import (
     read_file_tool,
     write_file_tool,
@@ -165,7 +165,7 @@ class TestStalenessCheck(unittest.TestCase):
             f.write("live copy\n")
 
         fake_ops = _make_fake_ops("live copy\n", 10)
-        fake_ops.env = SimpleNamespace(cwd=live_dir)
+        fake_ops.env = LocalEnvironment(cwd=live_dir)
         fake_ops.cwd = start_dir
         mock_ops.return_value = fake_ops
 

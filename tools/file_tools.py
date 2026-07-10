@@ -506,8 +506,15 @@ def _lexical_path_for_task(
     root = _live_cwd_if_owned(env, task_id) if env is not None else None
     if not root:
         root = _registered_task_cwd_override_lexical(task_id)
+    backend_cwd = getattr(file_ops, "cwd", None) if file_ops is not None else None
+    if not root and backend_cwd == "/":
+        # A freshly recreated remote backend commonly reports its default root
+        # cwd before the session drives it again. Preserve the previous cwd in
+        # that specific case; do not let a shared stale registry override an
+        # explicit non-root backend cwd or invent a root when none is known.
+        root = _last_known_cwd_for(task_id)
     if not root:
-        root = getattr(file_ops, "cwd", None) if file_ops is not None else None
+        root = backend_cwd
     if root and not str(root).startswith("~") and posixpath.isabs(str(root)):
         return posixpath.normpath(posixpath.join(str(root), raw))
     return posixpath.normpath(raw)
@@ -786,7 +793,12 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     return False
 
 
-def _search_result_read_block_error(path: str, task_id: str = "default") -> str | None:
+def _search_result_read_block_error(
+    path: str,
+    task_id: str = "default",
+    file_ops=None,
+    uses_host_paths: bool | None = None,
+) -> str | None:
     """Return the read-safety error for a search result path.
 
     Search backends may return paths relative to the task cwd, while
@@ -795,20 +807,37 @@ def _search_result_read_block_error(path: str, task_id: str = "default") -> str 
     resolution before applying the shared read guard.
     """
     try:
-        resolved = _resolve_path_for_task(path, task_id)
+        if file_ops is None:
+            resolved = _resolve_path_for_task(path, task_id)
+        elif uses_host_paths is False:
+            resolved = _lexical_path_for_task(path, task_id, file_ops)
+        elif uses_host_paths is True:
+            resolved = _resolve_path_for_task(path, task_id)
+        else:
+            resolved = _resolve_path_for_file_ops(path, task_id, file_ops)
     except (OSError, ValueError, RuntimeError):
         return get_read_block_error(path)
     return get_read_block_error(str(resolved))
 
 
-def _filter_read_blocked_search_results(result, task_id: str = "default") -> int:
+def _filter_read_blocked_search_results(
+    result,
+    task_id: str = "default",
+    file_ops=None,
+    uses_host_paths: bool | None = None,
+) -> int:
     """Remove credential/cache/env paths from a SearchResult in-place."""
     omitted = 0
 
     if hasattr(result, "matches") and result.matches:
         allowed_matches = []
         for match in result.matches:
-            if _search_result_read_block_error(match.path, task_id):
+            if _search_result_read_block_error(
+                match.path,
+                task_id,
+                file_ops,
+                uses_host_paths,
+            ):
                 omitted += 1
                 continue
             allowed_matches.append(match)
@@ -817,7 +846,12 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
     if hasattr(result, "files") and result.files:
         allowed_files = []
         for file_path in result.files:
-            if _search_result_read_block_error(file_path, task_id):
+            if _search_result_read_block_error(
+                file_path,
+                task_id,
+                file_ops,
+                uses_host_paths,
+            ):
                 omitted += 1
                 continue
             allowed_files.append(file_path)
@@ -826,7 +860,12 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
     if hasattr(result, "counts") and result.counts:
         allowed_counts = {}
         for file_path, count in result.counts.items():
-            if _search_result_read_block_error(file_path, task_id):
+            if _search_result_read_block_error(
+                file_path,
+                task_id,
+                file_ops,
+                uses_host_paths,
+            ):
                 omitted += 1
                 continue
             allowed_counts[file_path] = count
@@ -864,12 +903,20 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
-def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
+def _check_sensitive_path(
+    filepath: str,
+    task_id: str = "default",
+    *,
+    candidate_path: str | None = None,
+) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
-    try:
-        resolved = str(_resolve_path_for_task(filepath, task_id))
-    except (OSError, ValueError):
-        resolved = filepath
+    if candidate_path is None:
+        try:
+            resolved = str(_resolve_path_for_task(filepath, task_id))
+        except (OSError, ValueError):
+            resolved = filepath
+    else:
+        resolved = candidate_path
     normalized = os.path.normpath(_expand_tilde(filepath))
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
@@ -928,7 +975,12 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
     return None
 
 
-def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
+def _check_cross_profile_path(
+    filepath: str,
+    task_id: str = "default",
+    *,
+    candidate_path: str | None = None,
+) -> str | None:
     """Return a soft-guard warning when ``filepath`` lands in another Hermes
     profile's scoped area, a host-side sandbox-mirror of authoritative profile
     state, or the Docker container's sandbox mirror of Hermes state.
@@ -969,10 +1021,13 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     # Resolve via the task's cwd so a relative ``skills/foo/SKILL.md``
     # in a session that cd'd into ``~/.hermes/profiles/other/`` is
     # classified against the right base.
-    try:
-        resolved = str(_resolve_path_for_task(filepath, task_id))
-    except (OSError, ValueError):
-        resolved = filepath
+    if candidate_path is None:
+        try:
+            resolved = str(_resolve_path_for_task(filepath, task_id))
+        except (OSError, ValueError):
+            resolved = filepath
+    else:
+        resolved = candidate_path
 
     warning = get_cross_profile_warning(resolved)
     if warning is not None:
@@ -1459,30 +1514,30 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         if uses_host_paths:
             _resolved = _resolve_path_for_task(path, task_id)
             extractable_document = is_extractable_document(str(_resolved))
-
-            # ── Hermes internal path guard ────────────────────────────────
-            # Prevent prompt injection via catalog or hub metadata files,
-            # and block credential stores under HERMES_HOME.  Pass the
-            # already-resolved path so a relative-path read against
-            # TERMINAL_CWD == HERMES_HOME (e.g. "auth.json") still hits the
-            # denylist — get_read_block_error's own resolve() runs against
-            # the Python process cwd, which can differ.
-            block_error = get_read_block_error(str(_resolved))
-            if block_error:
-                return json.dumps({"error": block_error})
+            has_declared_env, _env = _file_ops_static_env(file_ops)
+            # Production ShellFileOperations always declares ``env`` and uses
+            # the canonical host path.  Env-less test doubles intentionally
+            # keep the caller path shape so read/write staleness keys agree.
+            resolved_str = str(_resolved) if has_declared_env else str(path)
         else:
             _resolved = None
-
-        try:
-            resolved_str = _resolve_path_for_file_ops(path, task_id, file_ops)
-        except Exception:
-            if uses_host_paths:
-                resolved_str = str(_resolved)
-            else:
+            try:
+                resolved_str = _resolve_path_for_file_ops(path, task_id, file_ops)
+            except Exception:
                 try:
                     resolved_str = _lexical_path_for_task(path, task_id, file_ops)
                 except Exception:
                     resolved_str = path
+
+        # ── Hermes internal path guard ────────────────────────────────
+        # Prevent prompt injection via catalog or hub metadata files and block
+        # credential stores on every backend.  Use the exact host-canonical or
+        # backend-lexical path that file_ops will read; a relative task path may
+        # otherwise be resolved against the Python process cwd and miss the
+        # denylist, while host-resolving a remote path can corrupt its meaning.
+        block_error = get_read_block_error(resolved_str)
+        if block_error:
+            return json.dumps({"error": block_error})
 
         # ── Structured-document extraction ────────────────────────────
         # Try before the normal read so .docx/.xlsx can render as text on local
@@ -1709,7 +1764,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         if not result_dict.get("error"):
             try:
                 _partial = (offset > 1) or bool(result_dict.get("truncated"))
-                file_state.record_read(task_id, resolved_str, partial=_partial)
+                file_state.record_read(
+                    task_id,
+                    resolved_str,
+                    partial=_partial,
+                    track_mtime=uses_host_paths,
+                )
             except Exception:
                 logger.debug("file_state.record_read failed", exc_info=True)
 
@@ -1944,13 +2004,21 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
     """
-    sensitive_err = _check_sensitive_path(path, task_id)
+    # Cheap lexical preflight rejects obvious sensitive/profile targets before
+    # a remote backend is created. The authoritative second pass below uses the
+    # exact backend path, so relative remote targets remain classified safely.
+    sensitive_err = _check_sensitive_path(path, task_id, candidate_path=path)
     if sensitive_err:
         return tool_error(sensitive_err)
     if not cross_profile:
-        cross_warning = _check_cross_profile_path(path, task_id)
+        cross_warning = _check_cross_profile_path(
+            path,
+            task_id,
+            candidate_path=path,
+        )
         if cross_warning:
             return tool_error(cross_warning)
+
     if _is_internal_file_tool_content(content):
         return tool_error(
             "Refusing to write internal read_file display text as file content. "
@@ -1967,6 +2035,28 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             _resolved = _resolve_path_for_file_ops(path, task_id, file_ops)
         except Exception:
             _resolved = None
+
+        # Apply write guards to the same path representation that the backend
+        # receives.  In particular, SSH paths must stay lexical instead of
+        # passing through the host-only _resolve_path_for_task fallback.
+        _guard_resolved = _resolved
+        if _guard_resolved is None and not uses_host_paths:
+            _guard_resolved = path
+        sensitive_err = _check_sensitive_path(
+            path,
+            task_id,
+            candidate_path=_guard_resolved,
+        )
+        if sensitive_err:
+            return tool_error(sensitive_err)
+        if not cross_profile:
+            cross_warning = _check_cross_profile_path(
+                path,
+                task_id,
+                candidate_path=_guard_resolved,
+            )
+            if cross_warning:
+                return tool_error(cross_warning)
 
         if _resolved is None:
             stale_warning = _check_file_staleness(
@@ -1993,7 +2083,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         with file_state.lock_path(_resolved):
             # Cross-agent staleness wins over per-task warning when both
             # fire — its message names the sibling subagent.
-            cross_warning = file_state.check_stale(task_id, _resolved)
+            cross_warning = file_state.check_stale(
+                task_id,
+                _resolved,
+                track_mtime=uses_host_paths,
+            )
             stale_warning = _check_file_staleness(
                 path,
                 task_id,
@@ -2029,7 +2123,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 uses_host_paths=uses_host_paths,
             )
             if not result_dict.get("error"):
-                file_state.note_write(task_id, _resolved)
+                file_state.note_write(
+                    task_id,
+                    _resolved,
+                    track_mtime=uses_host_paths,
+                )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -2096,20 +2194,31 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 if _err:
                     return _err
                 _paths_to_check.append(v4a_path)
+    # As in write_file_tool, reject obvious lexical targets before a remote
+    # backend is created; exact backend-resolved paths are checked below.
     for _p in _paths_to_check:
-        sensitive_err = _check_sensitive_path(_p, task_id)
+        sensitive_err = _check_sensitive_path(
+            _p,
+            task_id,
+            candidate_path=_p,
+        )
         if sensitive_err:
             return tool_error(sensitive_err)
         if not cross_profile:
-            cross_warning = _check_cross_profile_path(_p, task_id)
+            cross_warning = _check_cross_profile_path(
+                _p,
+                task_id,
+                candidate_path=_p,
+            )
             if cross_warning:
                 return tool_error(cross_warning)
     try:
         file_ops = _get_file_ops(task_id)
         uses_host_paths = _file_ops_uses_host_paths(file_ops)
-        # Resolve paths for locking.  Ordered + deduplicated so concurrent
-        # callers lock in the same order — prevents deadlock on overlapping
+        # Resolve each path once for guards, locking, dispatch, and reporting.
+        # Ordered + deduplicated locks prevent deadlock on overlapping
         # multi-file V4A patches.
+        _path_to_resolved: dict[str, str | None] = {}
         _resolved_paths: list[str] = []
         _seen: set[str] = set()
         for _p in _paths_to_check:
@@ -2117,6 +2226,27 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _r = _resolve_path_for_file_ops(_p, task_id, file_ops)
             except Exception:
                 _r = None
+            _path_to_resolved[_p] = _r
+
+            _guard_resolved = _r
+            if _guard_resolved is None and not uses_host_paths:
+                _guard_resolved = _p
+            sensitive_err = _check_sensitive_path(
+                _p,
+                task_id,
+                candidate_path=_guard_resolved,
+            )
+            if sensitive_err:
+                return tool_error(sensitive_err)
+            if not cross_profile:
+                cross_warning = _check_cross_profile_path(
+                    _p,
+                    task_id,
+                    candidate_path=_guard_resolved,
+                )
+                if cross_warning:
+                    return tool_error(cross_warning)
+
             if _r and _r not in _seen:
                 _resolved_paths.append(_r)
                 _seen.add(_r)
@@ -2133,14 +2263,17 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # Collect warnings — cross-agent registry first (names sibling),
             # then per-task tracker as a fallback.
             stale_warnings: list[str] = []
-            _path_to_resolved: dict[str, str | None] = {}
             for _p in _paths_to_check:
-                try:
-                    _r = _resolve_path_for_file_ops(_p, task_id, file_ops)
-                except Exception:
-                    _r = None
-                _path_to_resolved[_p] = _r
-                _cross = file_state.check_stale(task_id, _r) if _r else None
+                _r = _path_to_resolved[_p]
+                _cross = (
+                    file_state.check_stale(
+                        task_id,
+                        _r,
+                        track_mtime=uses_host_paths,
+                    )
+                    if _r
+                    else None
+                )
                 _sw = _cross or _check_file_staleness(
                     _p,
                     task_id,
@@ -2219,7 +2352,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                         uses_host_paths=uses_host_paths,
                     )
                     if _r:
-                        file_state.note_write(task_id, _r)
+                        file_state.note_write(
+                            task_id,
+                            _r,
+                            track_mtime=uses_host_paths,
+                        )
                 # Successful patch: clear any prior consecutive-failure
                 # counters for the touched paths so a future failure on
                 # the same path starts the escalation cycle fresh.
@@ -2308,26 +2445,46 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "already_searched": count,
             }, ensure_ascii=False)
 
+        # Preserve the cheap local credential fast-fail: direct host paths must
+        # be denied before a backend is created.  Remote tasks skip this host
+        # resolution and use the authoritative backend-lexical check below.
+        if _terminal_env_type_for_task(task_id) == "local":
+            block_error = get_read_block_error(path)
+            if block_error:
+                return json.dumps({"error": block_error}, ensure_ascii=False)
+
+        file_ops = _get_file_ops(task_id)
+        uses_host_paths = _file_ops_uses_host_paths(file_ops)
         try:
-            resolved_path = _resolve_path_for_task(path, task_id)
-        except (OSError, ValueError, RuntimeError):
-            resolved_path = None
-        block_error = get_read_block_error(str(resolved_path) if resolved_path else path)
+            if uses_host_paths:
+                guarded_path = str(_resolve_path_for_task(path, task_id))
+            else:
+                guarded_path = _lexical_path_for_task(path, task_id, file_ops)
+        except Exception:
+            if uses_host_paths:
+                guarded_path = path
+            else:
+                try:
+                    guarded_path = _lexical_path_for_task(path, task_id, file_ops)
+                except Exception:
+                    guarded_path = path
+        block_error = get_read_block_error(guarded_path)
         if block_error:
             return json.dumps({"error": block_error}, ensure_ascii=False)
 
-        file_ops = _get_file_ops(task_id)
         search_path = path
-        if not _file_ops_uses_host_paths(file_ops):
-            try:
-                search_path = _resolve_path_for_file_ops(path, task_id, file_ops)
-            except Exception:
-                search_path = path
+        if not uses_host_paths:
+            search_path = guarded_path
         result = file_ops.search(
             pattern=pattern, path=search_path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
-        omitted = _filter_read_blocked_search_results(result, task_id)
+        omitted = _filter_read_blocked_search_results(
+            result,
+            task_id,
+            file_ops,
+            uses_host_paths,
+        )
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:

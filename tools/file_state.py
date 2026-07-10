@@ -102,10 +102,13 @@ class FileStateRegistry:
         *,
         partial: bool = False,
         mtime: Optional[float] = None,
+        track_mtime: bool = True,
     ) -> None:
         if _disabled():
             return
-        if mtime is None:
+        if not track_mtime:
+            mtime = _UNKNOWN_MTIME
+        elif mtime is None:
             try:
                 mtime = os.path.getmtime(resolved)
             except OSError:
@@ -122,6 +125,7 @@ class FileStateRegistry:
         resolved: str,
         *,
         mtime: Optional[float] = None,
+        track_mtime: bool = True,
     ) -> None:
         """Record a successful write.
 
@@ -131,7 +135,9 @@ class FileStateRegistry:
         """
         if _disabled():
             return
-        if mtime is None:
+        if not track_mtime:
+            mtime = _UNKNOWN_MTIME
+        elif mtime is None:
             try:
                 mtime = os.path.getmtime(resolved)
             except OSError:
@@ -144,7 +150,13 @@ class FileStateRegistry:
             self._reads[task_id][resolved] = (float(mtime), now, False)
             _cap_dict(self._reads[task_id], _MAX_PATHS_PER_AGENT)
 
-    def check_stale(self, task_id: str, resolved: str) -> Optional[str]:
+    def check_stale(
+        self,
+        task_id: str,
+        resolved: str,
+        *,
+        track_mtime: bool = True,
+    ) -> Optional[str]:
         """Return a model-facing warning if this write would be stale.
 
         Three staleness classes, in order of severity:
@@ -191,7 +203,7 @@ class FileStateRegistry:
         # Case 2: external / unknown modification (mtime drifted).
         if stamp is not None:
             read_mtime, _read_ts, partial = stamp
-            if read_mtime != _UNKNOWN_MTIME:
+            if track_mtime and read_mtime != _UNKNOWN_MTIME:
                 try:
                     current_mtime = os.path.getmtime(resolved)
                 except OSError:
@@ -296,16 +308,45 @@ def _cap_dict(d: dict, limit: int) -> None:
 
 
 # ── Convenience wrappers (short names used at call sites) ────────────
-def record_read(task_id: str, resolved_or_path: str | Path, *, partial: bool = False) -> None:
-    _registry.record_read(task_id, str(resolved_or_path), partial=partial)
+def record_read(
+    task_id: str,
+    resolved_or_path: str | Path,
+    *,
+    partial: bool = False,
+    track_mtime: bool = True,
+) -> None:
+    _registry.record_read(
+        task_id,
+        str(resolved_or_path),
+        partial=partial,
+        track_mtime=track_mtime,
+    )
 
 
-def note_write(task_id: str, resolved_or_path: str | Path) -> None:
-    _registry.note_write(task_id, str(resolved_or_path))
+def note_write(
+    task_id: str,
+    resolved_or_path: str | Path,
+    *,
+    track_mtime: bool = True,
+) -> None:
+    _registry.note_write(
+        task_id,
+        str(resolved_or_path),
+        track_mtime=track_mtime,
+    )
 
 
-def check_stale(task_id: str, resolved_or_path: str | Path) -> Optional[str]:
-    return _registry.check_stale(task_id, str(resolved_or_path))
+def check_stale(
+    task_id: str,
+    resolved_or_path: str | Path,
+    *,
+    track_mtime: bool = True,
+) -> Optional[str]:
+    return _registry.check_stale(
+        task_id,
+        str(resolved_or_path),
+        track_mtime=track_mtime,
+    )
 
 
 def lock_path(resolved_or_path: str | Path):

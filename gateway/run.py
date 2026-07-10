@@ -17203,7 +17203,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Returns a list of reset tokens; pass them to ``_clear_session_env``
         in a ``finally`` block.
         """
+        return self._set_session_vars_for_source(
+            source=context.source,
+            session_key=context.session_key,
+            session_id=context.session_id,
+            message_id=context.source.message_id,
+        )
+
+    def _set_session_vars_for_source(
+        self,
+        *,
+        source: SessionSource,
+        session_key: Optional[str],
+        session_id: Optional[str],
+        message_id: Optional[str],
+    ) -> list:
+        """Bind one turn's source identity into the current async context."""
         from gateway.session_context import set_session_vars
+
         # Propagate the adapter's async-delivery capability so async tools
         # (terminal notify_on_complete / watch_patterns, delegate_task
         # background=True) know whether this channel can wake a later turn.
@@ -17212,19 +17229,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # bare runners built via object.__new__ (tests) without self.adapters
         # don't blow up — they simply default to supported.
         _adapters = getattr(self, "adapters", None) or {}
-        _adapter = _adapters.get(context.source.platform)
+        _adapter = _adapters.get(source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
         return set_session_vars(
-            platform=context.source.platform.value,
-            chat_id=context.source.chat_id,
-            chat_name=context.source.chat_name or "",
-            thread_id=str(context.source.thread_id) if context.source.thread_id else "",
-            user_id=str(context.source.user_id) if context.source.user_id else "",
-            user_name=str(context.source.user_name) if context.source.user_name else "",
-            session_key=context.session_key,
-            session_id=context.session_id or "",
-            message_id=str(context.source.message_id) if context.source.message_id else "",
-            profile=getattr(context.source, "profile", "") or "",
+            platform=source.platform.value,
+            chat_id=source.chat_id,
+            chat_name=source.chat_name or "",
+            thread_id=str(source.thread_id) if source.thread_id else "",
+            user_id=str(source.user_id) if source.user_id else "",
+            user_name=str(source.user_name) if source.user_name else "",
+            session_key=session_key or "",
+            session_id=session_id or "",
+            message_id=str(message_id) if message_id else "",
+            profile=getattr(source, "profile", "") or "",
             async_delivery=_async_delivery,
         )
 
@@ -19252,35 +19269,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Profile-scoping wrapper around the agent run.
+        """Session-binding and profile-scoping wrapper around the agent run.
 
-        When multiplexing is active, resolve the inbound source's profile and
-        run the whole turn inside ``_profile_runtime_scope`` so config/skills/
-        memory resolve to that profile's home AND credentials resolve from that
-        profile's secret scope (never the process-global ``os.environ``). When
-        multiplexing is off this is a transparent pass-through — zero behavior
-        change for single-profile gateways.
+        Rebind the identity from this call's own arguments before any local or
+        proxy execution. Recursive queued turns bypass the top-level message
+        handler and may otherwise inherit the outer turn's coherent identity.
+
+        When multiplexing is active, also resolve the inbound source's profile
+        and run the whole turn inside ``_profile_runtime_scope`` so config,
+        skills, memory, and credentials resolve from the routed profile.
         """
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            return await self._run_agent_inner(
-                message, context_prompt, history, source, session_id,
-                session_key=session_key, run_generation=run_generation,
-                _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                channel_prompt=channel_prompt, moa_config=moa_config,
-                persist_user_message=persist_user_message,
-                persist_user_timestamp=persist_user_timestamp,
+        from gateway.session_context import reset_session_vars, restore_session_vars
+
+        reset_tokens = reset_session_vars()
+        session_tokens = []
+        try:
+            session_tokens = self._set_session_vars_for_source(
+                source=source,
+                session_key=session_key,
+                session_id=session_id,
+                message_id=event_message_id,
             )
 
-        profile_home = self._resolve_profile_home_for_source(source)
-        with _profile_runtime_scope(profile_home):
-            return await self._run_agent_inner(
-                message, context_prompt, history, source, session_id,
-                session_key=session_key, run_generation=run_generation,
-                _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                channel_prompt=channel_prompt, moa_config=moa_config,
-                persist_user_message=persist_user_message,
-                persist_user_timestamp=persist_user_timestamp,
-            )
+            if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                return await self._run_agent_inner(
+                    message, context_prompt, history, source, session_id,
+                    session_key=session_key, run_generation=run_generation,
+                    _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
+                    channel_prompt=channel_prompt, moa_config=moa_config,
+                    persist_user_message=persist_user_message,
+                    persist_user_timestamp=persist_user_timestamp,
+                )
+
+            profile_home = self._resolve_profile_home_for_source(source)
+            with _profile_runtime_scope(profile_home):
+                return await self._run_agent_inner(
+                    message, context_prompt, history, source, session_id,
+                    session_key=session_key, run_generation=run_generation,
+                    _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
+                    channel_prompt=channel_prompt, moa_config=moa_config,
+                    persist_user_message=persist_user_message,
+                    persist_user_timestamp=persist_user_timestamp,
+                )
+        finally:
+            try:
+                restore_session_vars(session_tokens)
+            finally:
+                restore_session_vars(reset_tokens)
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
         """Resolve which profile's HERMES_HOME should serve this inbound source.
@@ -19325,6 +19360,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        from gateway.session_context import get_session_env
+
+        try:
+            expected_session_key = self._session_key_for_source(source)
+        except Exception:
+            expected_session_key = session_key
+        bound_session_key = get_session_env("HERMES_SESSION_KEY", "")
+        if expected_session_key and bound_session_key != expected_session_key:
+            logger.warning(
+                "Agent executor context mismatch: bound session %r, executing turn %r",
+                bound_session_key,
+                expected_session_key,
+            )
+
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(

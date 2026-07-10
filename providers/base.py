@@ -17,6 +17,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on a /models catalog response. A model list is small JSON even
+# for providers with thousands of models; this only exists so a misconfigured
+# or hostile catalog endpoint can't stream an unbounded body into memory.
+_MAX_MODELS_RESPONSE_BYTES = 16 * 1024 * 1024  # 16 MiB
+
 # Sentinel for "omit temperature entirely" (Kimi: server manages it)
 OMIT_TEMPERATURE = object()
 
@@ -207,9 +212,33 @@ class ProviderProfile:
         for k, v in self.default_headers.items():
             req.add_header(k, v)
 
+        # Bound the response so a misconfigured/hostile catalog endpoint
+        # can't force an unbounded in-memory buffer. A timeout limits
+        # wall-clock, not size. Oversized responses fall back to the static
+        # model list (return None), matching the documented contract.
+        max_bytes = _MAX_MODELS_RESPONSE_BYTES
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                content_length = resp.headers.get("Content-Length")
+                if content_length is not None:
+                    try:
+                        if int(content_length) > max_bytes:
+                            logger.debug(
+                                "fetch_models(%s): catalog response too large "
+                                "(Content-Length=%s > %d)",
+                                self.name, content_length, max_bytes,
+                            )
+                            return None
+                    except (TypeError, ValueError):
+                        pass
+                raw = resp.read(max_bytes + 1)
+            if len(raw) > max_bytes:
+                logger.debug(
+                    "fetch_models(%s): catalog response exceeded %d bytes",
+                    self.name, max_bytes,
+                )
+                return None
+            data = json.loads(raw.decode())
             items = data if isinstance(data, list) else data.get("data", [])
             return [m["id"] for m in items if isinstance(m, dict) and "id" in m]
         except Exception as exc:

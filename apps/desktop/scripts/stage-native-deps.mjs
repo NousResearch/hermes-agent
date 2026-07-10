@@ -13,6 +13,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -114,7 +115,16 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
         continue
       }
       if (entry.name === 'spawn-helper') {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        // fs.cpSync does not preserve the source file's permission bits — the
+        // destination is created with the default mode from the process
+        // umask, not the source's mode. spawn-helper must be executable
+        // (node-pty's unixTerminal.js posix_spawns it directly), so restore
+        // the bit explicitly or every staged build silently ships a
+        // non-executable spawn-helper and the in-app terminal fails with
+        // "posix_spawnp failed".
+        const dest = join(destPrebuild, entry.name)
+        cpSync(join(prebuildDir, entry.name), dest)
+        chmodSync(dest, 0o755)
       }
     }
   } else {

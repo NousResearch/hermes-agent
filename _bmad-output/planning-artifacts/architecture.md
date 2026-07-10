@@ -2,7 +2,7 @@
 title: hermes-agent Architecture Handoff - Hermes Agent Workflow Commander
 status: handoff
 created: '2026-07-02'
-updated: '2026-07-09'
+updated: '2026-07-10'
 source_spine: workflow-engine parent workspace ARCHITECTURE-SPINE.md (architecture-workflow-engine-2026-06-26)
 localContractPackage: _bmad-output/planning-artifacts/contracts/workflow-commander/
 ---
@@ -32,7 +32,7 @@ flowchart LR
   GitHub[GitHub PR state] --> Reconcile
   BMAD --> Reconcile
   Kanban --> Reconcile
-  Reconcile --> Timeline[Hermes Story Timeline]
+  Reconcile --> StatusHistory[Hermes Story Status History]
 ```
 
 ## Architecture Decisions (all directly govern hermes-agent)
@@ -41,7 +41,7 @@ flowchart LR
 Hermes, BMAD, workflow providers, GitHub, and Kanban stay separately owned, connected only by explicit ports, machine contracts, and reconciliation records.
 
 ### AD-2 - Split Project Binding and Workflow Provider Binding ownership [ADOPTED]
-Hermes owns the forward Project Binding: profile, cwd, GitHub context, BMAD mount, dashboard status, user-facing workflow. Each provider owns the reverse binding (Archon owns the first implementation) — Hermes never assumes a profile name is a provider's project identity.
+Hermes owns the forward Project Binding: profile, cwd, GitHub context, BMAD mount, operational status, and headless user interaction. Each provider owns the reverse binding.
 
 ### AD-3 - Control providers through adapters, receive signed typed events [ADOPTED]
 Hermes state-changing control uses a strict provider adapter capturing cwd (when applicable), stdout, stderr, exit code, timeout, correlation id, JSON result. Provider-to-Hermes mutation uses signed typed workflow events from an outbox, accepted only after schema, signature, replay, idempotency, profile, and binding checks. For provider `archon`, the adapter uses Archon CLI commands.
@@ -53,7 +53,7 @@ Hermes state-changing control uses a strict provider adapter capturing cwd (when
 Hermes owns the reconciliation projection across BMAD artifacts, project work, provider run state, GitHub PR state, workflow events, gate records. May auto-repair deterministic drift but must not auto-approve HILT gates or mark stories complete when evidence conflicts.
 
 ### AD-6 - Implementation ownership split by subproject [ADOPTED]
-`hermes-agent` owns user/project orchestration, Project Binding, BMAD mount and materialization, Project Work Items, HILT gates, Story Timeline, reconciliation projection, provider adapter registration, provider command result consumption, workflow event ingress, and provider-neutral reconciliation.
+`hermes-agent` owns user/project orchestration, Project Binding, BMAD mount and materialization, Project Work Items, HILT Gates, Story Status History, reconciliation projection, provider adapter registration, provider command result consumption, workflow event ingress, and provider-neutral reconciliation.
 
 ### AD-7 - Version every cross-subproject machine contract [ADOPTED]
 Workflow command envelopes, workflow event envelopes, provider binding records, delivery status records, and materialization idempotency records are JSON, schema-versioned, and compatibility-tested from shared examples before consumer implementation begins.
@@ -74,7 +74,7 @@ This file, `prd.md`, and `epics.md` are that materialization for `hermes-agent`.
 | Concern | Convention |
 | --- | --- |
 | Controller naming | Workflow providers use generic `provider`/`name` vocabulary for external controller identity. |
-| Hermes naming | Project Binding, Project Work Item, Phase Task, HILT Gate, Story Timeline. |
+| Hermes naming | Project Binding, Project Work Item, Phase Task, HILT Gate, Story Status History. |
 | Binding direction | Hermes Project Binding points outward to cwd/GitHub/BMAD/provider metadata; provider binding points back to the event route. |
 | Control direction | Hermes controls providers through adapters. Provider `archon` uses CLI only. |
 | Event direction | Providers report events to Hermes through signed workflow event ingress. Archon uses a non-blocking outbox. |
@@ -84,8 +84,7 @@ This file, `prd.md`, and `epics.md` are that materialization for `hermes-agent`.
 | Project Work Item identity | Derived from bound project cwd, BMAD artifact path, BMAD epic/story identity. |
 | Phase Task identity | Derived from Project Work Item identity plus phase kind. |
 | Kanban lifecycle | Canonical status remains `triage`, `todo`, `ready`, `running`, `blocked`, `done`, `archived`. |
-| Review lanes | Verify Done is a facade lane over canonical `blocked` plus gate metadata. |
-| Gate notification surface | V1 required surface is the Hermes dashboard gate prompt plus blocked phase-task state; other channels optional. |
+| Gate interaction surface | V1 uses durable pending-gate queries, authorized decision commands, and canonical `blocked` plus `gate_kind=done_verification`; existing transports may mirror notifications. |
 | Completion semantics | Done requires Hermes done verification even when the provider workflow completed and GitHub PR state is favorable. |
 | Drift handling | Deterministic drift may auto-repair; conflicting evidence routes to diagnostics and human decision. |
 
@@ -118,12 +117,12 @@ hermes-agent/
     provider_commands.py        # Provider command result records.
     workflow_events.py          # Signed typed workflow event ingress.
     reconciliation.py           # Cross-system projection and diagnostics.
-    story_timeline.py           # User-facing status synthesis.
+    story_status.py             # Structured status-history synthesis.
   tests/
     project_work/
 ```
 
-**Note:** per the confirmed UX scope decision, there is no `hermes-agent/web/` source tree seed here — UI/frontend work is out of scope for this handoff; new backend fields surface through the existing reused dashboard UI without new frontend code.
+**Note:** there is no `hermes-agent/web/` source tree seed because Workflow Commander v1 is explicitly headless.
 
 ## Core Entity Shape
 
@@ -137,7 +136,7 @@ erDiagram
   PHASE_TASK ||--o{ WORKFLOW_RUN_REF : starts
   WORKFLOW_RUN_REF ||--o{ WORKFLOW_EVENT : reports
   PROJECT_WORK_ITEM ||--o{ PR_REF : observes
-  PROJECT_WORK_ITEM ||--|| STORY_TIMELINE : renders
+  PROJECT_WORK_ITEM ||--o{ STORY_STATUS_ENTRY : projects
 ```
 
 ## Operational Envelope
@@ -153,7 +152,7 @@ erDiagram
 
 | Capability | Lives in | Governed by |
 | --- | --- | --- |
-| CAP-1 command center | Project Binding, Project Work Items, Story Timeline | AD-1, AD-2, AD-4, AD-5 |
+| CAP-1 command center | Headless commands, Project Binding, Project Work Items | AD-1, AD-2, AD-4, AD-5 |
 | CAP-2 BMAD invocation | BMAD workflow port and BMAD artifacts | AD-1, AD-4, AD-8 |
 | CAP-3 project-local BMAD mount | Project Binding and profile skill mount | AD-2, AD-4 |
 | CAP-4 provider control (consumer side) | Workflow provider adapters and command JSON consumption | AD-3, AD-7, AD-9 |
@@ -161,7 +160,7 @@ erDiagram
 | CAP-7 operational project work | Kanban plus Project Work Item metadata | AD-4, AD-5, AD-8 |
 | CAP-8 sprint status materialization | Materialization service | AD-4, AD-7, AD-9 |
 | CAP-9 phase tasks and gates | Phase task model and HILT gate records | AD-4, AD-5, AD-7 |
-| CAP-10 story timeline and reconciliation | Reconciliation projection and Story Timeline | AD-5, AD-7, AD-9 |
+| CAP-10 story status history and reconciliation | Reconciliation projection and Story Status History | AD-5, AD-7, AD-9 |
 
 ## Implementation Validation Gates
 
@@ -193,4 +192,4 @@ uv run ruff check .
 
 ## Source
 
-Derived from the parent workspace's `ARCHITECTURE-SPINE.md` (architecture-workflow-engine-2026-06-26, current as of 2026-07-01) and `epics.md` (current as of 2026-07-01, post `bmad-correct-course`).
+Derived from the parent workspace's canonical architecture and epics, current as of 2026-07-10 after the approved headless correction.

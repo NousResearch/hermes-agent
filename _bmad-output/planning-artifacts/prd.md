@@ -2,7 +2,7 @@
 title: hermes-agent Planning Handoff - Hermes Agent Workflow Commander
 status: handoff
 created: '2026-07-02'
-updated: '2026-07-02'
+updated: '2026-07-10'
 source: workflow-engine parent workspace, materialized per cross-project-isolated-handoff-contract.md
 ---
 
@@ -10,12 +10,12 @@ source: workflow-engine parent workspace, materialized per cross-project-isolate
 
 ## Purpose
 
-Hermes Agent Workflow Commander makes Hermes Agent the human-facing command center for BMAD planning, Archon workflow execution, GitHub PR state, and local project work. `hermes-agent` owns nearly all of this product's requirements: Project Binding, BMAD mount, materialization, phase tasks, HILT gates, provider adapter consumption, workflow event ingress, Story Timeline, reconciliation, and diagnostics. Archon is the first workflow provider `hermes-agent` controls — see its own separate local handoff for the producer side.
+Hermes Agent Workflow Commander makes Hermes Agent the human-facing, headless command surface for BMAD planning, Archon workflow execution, GitHub PR state, and local project work. `hermes-agent` owns nearly all requirements: Project Binding, BMAD mount, materialization, Phase Tasks, HILT Gates, provider adapter consumption, workflow event ingress, Story Status History, reconciliation, and diagnostics. Archon is the first workflow provider `hermes-agent` controls.
 The full parent PRD lives at `_bmad-output/planning-artifacts/prds/prd-workflow-engine-2026-06-26/prd.md` in the parent workspace; this file exists so no `hermes-agent` implementation agent needs to read it.
 
 ## Vision (unabridged — this is hermes-agent's core product)
 
-Hermes Agent Workflow Commander turns Hermes Agent into the human-facing command center for agentic implementation work. The user should be able to brainstorm, plan, choose work, start implementation workflows, receive status, approve review gates, reject incomplete work, and understand story progress from Hermes without treating a provider dashboard as the primary control surface. For v1, Archon is the first workflow provider.
+Hermes Agent Workflow Commander turns Hermes Agent into a human-facing, headless command surface for agentic implementation work. V1 provides command, agent, and API results; it does not provide a dedicated graphical dashboard or frontend. For v1, Archon is the first workflow provider.
 The first release prioritizes reliability, explicit project binding, human trust, auditable decisions, and clean handoff to architecture and epics. [ASSUMPTION] This is an internal workflow-engine product for trusted local projects rather than a public SaaS launch.
 
 ## Target User / Key User Journeys (unabridged)
@@ -39,7 +39,7 @@ FR-1 through FR-6 and FR-11 through FR-17 are fully owned. FR-7 through FR-10 ar
 
 **FR-5: Materialize BMAD sprint status into Project Work Items** — read `sprint-status.yaml`, idempotently create/update Project Work Items. Re-running updates instead of duplicating; stores artifact references; reports unsupported/missing/malformed data before mutating; never treats the file as the runtime queue.
 
-**FR-6: Maintain Hermes-owned operational backlog** — store operational backlog, selected story, phase metadata, workflow references, gate metadata, next action. User chooses next story without BMAD auto-picking; facade lanes (Ideas, Backlog, Active Runs, Review Test Cases, Verify Done) over canonical Kanban status; canonical lifecycle stays `triage`/`todo`/`ready`/`running`/`blocked`/`done`/`archived`.
+**FR-6: Maintain Hermes-owned operational backlog** — persist operational backlog, selected story, phase metadata, workflow references, gate metadata, and next action; expose them through structured command, agent, or API results. Canonical lifecycle stays `triage`/`todo`/`ready`/`running`/`blocked`/`done`/`archived`.
 
 **FR-7 (consumer side): Register generic workflow provider bindings** — create/update the provider-side binding using generic `provider`/`name` vocabulary, detect disagreement with Archon's stored binding, surface rotation/removal/stale/missing states.
 
@@ -47,17 +47,17 @@ FR-1 through FR-6 and FR-11 through FR-17 are fully owned. FR-7 through FR-10 ar
 
 **FR-9 (consumer side): Receive typed workflow provider events** — receive signed events at `/p/{profile}/webhooks/workflow-events/{provider}`, validate schema/binding/replay/idempotency/authorization before mutating. Rejects unknown binding/wrong profile/wrong codebase/stale timestamp/duplicate id/invalid signature/unsupported provider/schema failure; stores accepted event ids for duplicate-safety; maps events to the correct Project Work Item.
 
-**FR-10 (consumer side): Surface provider event delivery and outbox health** — show whether delivery is healthy/delayed/failed/duplicated/waiting-for-reconciliation. Exposes status on Story Timeline; shows terminal failures as actionable diagnostics; never blocks workflow execution solely on notification failure.
+**FR-10 (consumer side): Return provider event delivery and outbox health** — return structured healthy/delayed/failed/duplicated/reconciliation-pending status through Story Status History and diagnostic queries; never block workflow execution solely on notification failure.
 
-**FR-11: Create one phase task per BMAD story** — each BMAD story has exactly one Phase Task sharing a Story Timeline; repeated materialization never duplicates it.
+**FR-11: Create one phase task per BMAD story** — each BMAD story has exactly one Phase Task sharing a Story Status History; repeated materialization never duplicates it.
 
 **FR-12: Run the combined story workflow** — start the configured combined workflow for a selected story; record the run reference on the Phase Task; runs story creation through review without a Hermes-side pause in between.
 
 **FR-13: Gate done verification** — block the phase task with gate kind `done_verification` after workflow provider reports completion; human approval completes the task; rejection reruns the fix loop or routes recovery.
 
-**FR-14: Collect human decisions from Hermes** — notify user, present gate evidence, capture approval/rejection, store the decision, send the matching command when required. Each decision records actor/timestamp/gate kind/decision/reason/evidence; approval and rejection are visibly distinct; never auto-continues past a HILT Gate without explicit persisted policy.
+**FR-14: Collect human decisions from Hermes** — publish or return structured gate evidence, accept approval/rejection through authorized commands or agent interaction, persist the decision, and send the matching provider command when required. Never auto-continue past a HILT Gate without explicit persisted policy.
 
-**FR-15: Show a unified Story Timeline** — show BMAD milestones, Project Work Item state, phase task state, provider run references, workflow events, GitHub PR references, HILT Gate decisions, next action in one place. Distinguishes BMAD artifact status from Hermes Kanban status; distinguishes GitHub PR merge state from Done Verification Gate state.
+**FR-15: Return a unified Story Status History** — return BMAD milestones, Project Work Item and Phase Task state, provider runs, workflow events, GitHub PR references, HILT decisions, provenance, and next action in one versioned structured result.
 
 **FR-16: Reconcile cross-system state** — compare BMAD artifact state, provider workflow state, GitHub PR state, Project Work Item state, HILT Gate state to detect drift. Detects completed-but-unapplied provider runs, GitHub-merge-vs-unresolved-gate conflicts, unmaterialized BMAD changes; reports automatic repair vs. needs-human-action.
 
@@ -67,17 +67,17 @@ FR-1 through FR-6 and FR-11 through FR-17 are fully owned. FR-7 through FR-10 ar
 
 **Reliability:** NFR-1 (workflow events are delivery acceleration, not sole source of truth) · NFR-2 (reconcile after event loss/duplicate/gateway downtime/command failure/manual PR merge) · NFR-3 (materialization must be idempotent) · NFR-4 (gate decisions replay-safe and auditable).
 
-**Security and Safety:** NFR-5 (reject events failing signature/schema/replay/binding/provider/authorization checks) · NFR-6 (scope event secrets to correct profile) · NFR-7 (prevent workflow actions outside Bound Project Cwd) · NFR-8 (redact secrets in command logs, event logs, diagnostics, timeline views).
+**Security and Safety:** NFR-5 (reject events failing signature/schema/replay/binding/provider/authorization checks) · NFR-6 (scope event secrets to correct profile) · NFR-7 (prevent workflow actions outside Bound Project Cwd) · NFR-8 (redact secrets in command logs, event logs, diagnostics, and status-history results).
 
-**Auditability:** NFR-9 (persist workflow commands, events, reconciliation actions, gate decisions, state transitions) · NFR-10 (Story Timeline sufficient to understand why a story changed state) · NFR-11 (state changes carry enough provenance to distinguish BMAD/provider/GitHub/Hermes/workflow event/human decision sources).
+**Auditability:** NFR-9 (persist workflow commands, events, reconciliation actions, gate decisions, state transitions) · NFR-10 (Story Status History explains why a story changed state) · NFR-11 (state changes carry source provenance).
 
 **Usability:** NFR-12 (phrase next actions in user-facing language, not backend state names) · NFR-13 (distinguish Done Verification Gate approval from GitHub PR merge state) · NFR-14 (surface blocking issues with recovery options, not raw stack traces).
 
 **Maintainability:** NFR-15 (preserve bounded ownership between Hermes/BMAD/providers/GitHub) · NFR-16 (new provider integration surfaces stay generic) · NFR-17 (cross-project handoffs complete enough for isolated agents).
 
-## UX (existing surfaces reused — no new UI stories)
+## Headless Product Surface
 
-Per explicit product-scope decision (2026-07-02): UI/frontend work for this feature is **out of scope**. The existing Hermes dashboard shell, Kanban plugin, task drawer, and comment/attachment surfaces are reused as-is; new data (Project Binding state, gate evidence, Story Timeline entries, diagnostics) surfaces through those existing generic components via the "display state" fields each backend story already populates. No dedicated UI/component story is needed. If this decision changes, the parent workspace's UX delta contract (`ux-workflow-commander-delta-2026-06-27.md`) documents the intended surfaces (Project Binding selector, gate evidence panel, Story Timeline, diagnostics panel) and uses generic "workflow provider"/"workflow event" vocabulary consistent with this PRD.
+Workflow Commander v1 does not ship a dedicated web dashboard, graphical Kanban board, gate screen, timeline screen, or other graphical frontend. Commands, agent interactions, APIs, durable records, and optional existing notification transports are authoritative.
 
 ## Non-Goals (hermes-agent-relevant subset)
 
@@ -87,10 +87,11 @@ Per explicit product-scope decision (2026-07-02): UI/frontend work for this feat
 - Will not treat `sprint-status.yaml`, GitHub Issues, or Archon UI as Hermes runtime queue state.
 - Will not rely on global `~/.hermes/skills` as the primary BMAD mount mechanism.
 - Will not auto-approve HILT Gates without explicit persisted policy and evidence requirements.
+- Will not ship a dedicated graphical Workflow Commander frontend in v1.
 
 ## Glossary (hermes-agent-relevant terms)
 
-Bound Project Cwd, Controller Identity, Done Verification Gate, HILT Gate, Materialization, Phase Task, Product Work Dashboard, Project Binding, Project Work Item, Reconciliation, Story Timeline — full definitions in parent PRD §3; reproduced in local `architecture.md`'s Consistency Conventions table.
+Bound Project Cwd, Controller Identity, Done Verification Gate, HILT Gate, Materialization, Phase Task, Project Binding, Project Work Item, Reconciliation, Story Status History — full definitions are in parent PRD §3.
 
 ## Cross-Project Dependencies
 
@@ -105,4 +106,4 @@ Integration validation: <how both sides will be proven compatible>
 
 ## Source
 
-Derived from the parent workspace's `prds/prd-workflow-engine-2026-06-26/prd.md` and `epics.md`, both current as of 2026-07-02 (post `bmad-correct-course` pass — see parent `sprint-change-proposal-2026-07-02.md`).
+Derived from the parent workspace's canonical PRD and epics, current as of 2026-07-10 after the approved headless correction.

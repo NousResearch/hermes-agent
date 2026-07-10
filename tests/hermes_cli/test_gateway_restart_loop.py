@@ -89,6 +89,48 @@ class TestGatewayLifecyclePattern:
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
 
 
+class TestSshRemoteExemption:
+    """ssh-wrapped lifecycle commands target a REMOTE host's gateway —
+    legitimate fleet maintenance, must not be blocked (the local gateway is
+    never SIGTERMed, so the #30719 respawn loop cannot form here)."""
+
+    @pytest.mark.parametrize("text", [
+        # The real incident: restarting a sibling machine's gateway over ssh.
+        "ssh ace-ai 'sudo systemctl restart hermes-gateway'",
+        "ssh ace-ai sudo systemctl restart hermes-gateway.service",
+        "ssh -i ~/.ssh/fleet ace@192.168.1.50 'systemctl stop hermes-gateway'",
+        "ssh macbook 'launchctl kickstart -k gui/501/ai.hermes.gateway'",
+        "ssh ace-media \"hermes gateway restart\"",
+        "autossh -M 0 ace-ai systemctl restart hermes-gateway",
+        "/usr/bin/ssh ace-ai systemctl restart hermes-gateway",
+        # Preamble on the same line before the ssh segment is fine.
+        "echo updating && ssh ace-ai 'systemctl restart hermes-gateway'",
+    ])
+    def test_ssh_remote_lifecycle_allowed(self, text):
+        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        # Loopback ssh is still this machine's gateway — blocked.
+        "ssh localhost 'systemctl restart hermes-gateway'",
+        "ssh 127.0.0.1 hermes gateway restart",
+        "ssh [::1] 'systemctl restart hermes-gateway'",        # bracketed IPv6 loopback
+        "ssh [::1]:22 'systemctl restart hermes-gateway'",     # with explicit port
+        "ssh ace@localhost 'launchctl kickstart gui/501/ai.hermes.gateway'",
+        # A lifecycle command in a LATER shell segment is NOT covered by the
+        # ssh prefix (heuristic split errs toward blocking).
+        "ssh ace-ai 'echo hi' && hermes gateway restart",
+        "ssh ace-ai uptime; systemctl restart hermes-gateway",
+        # ssh on a previous line does not exempt the next line.
+        "ssh ace-ai uptime\nhermes gateway restart",
+        # Non-ssh commands that merely contain 'ssh' in an argument.
+        "pkill -f hermes.*gateway # cleanup after ssh session",
+        # ssh-keygen etc. are not ssh invocations.
+        "ssh-keygen -t ed25519 && hermes gateway restart",
+    ])
+    def test_ssh_local_or_split_still_blocked(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+
 class TestCronCreateLifecycleBlock:
     """Verify cron create rejects gateway lifecycle prompts."""
 

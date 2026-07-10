@@ -4230,7 +4230,7 @@
         // dispatcher's claim_task path, which atomically creates the run row,
         // claim lock, and worker process metadata.
         b(tx(t, "block", "Block"),     { status: "blocked" },
-          task.status === "running" || task.status === "ready",
+          task.status === "running" || task.status === "ready" || task.status === "todo",
           getDestructiveConfirm(t, "blocked")),
         b(tx(t, "unblock", "Unblock"),   { status: "ready" },    task.status === "blocked"),
         b(tx(t, "complete", "Complete"),  { status: "done" },

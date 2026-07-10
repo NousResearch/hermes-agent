@@ -4881,7 +4881,7 @@ def block_task(
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
+    """Transition ``running``/``ready``/``todo`` → ``blocked`` (or route elsewhere).
 
     ``kind`` (one of :data:`VALID_BLOCK_KINDS`, or ``None`` for a legacy
     un-typed block) drives routing instead of every block landing in one
@@ -4943,7 +4943,7 @@ def block_task(
                        worker_pid    = NULL,
                        block_kind    = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'todo')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
                 (kind, task_id) if expected_run_id is None
                 else (kind, task_id, int(expected_run_id)),
@@ -4997,7 +4997,7 @@ def block_task(
                        block_kind    = ?,
                        block_recurrences = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'todo')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
                 (kind, recurrences, task_id) if expected_run_id is None
                 else (kind, recurrences, task_id, int(expected_run_id)),
@@ -5036,7 +5036,7 @@ def block_task(
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
-                       AND status IN ('running', 'ready')
+                       AND status IN ('running', 'ready', 'todo')
                     """,
                     (kind, recurrences, task_id),
                 )
@@ -5051,7 +5051,7 @@ def block_task(
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
-                       AND status IN ('running', 'ready')
+                       AND status IN ('running', 'ready', 'todo')
                        AND current_run_id = ?
                     """,
                     (kind, recurrences, task_id, int(expected_run_id)),

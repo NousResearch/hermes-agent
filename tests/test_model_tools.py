@@ -587,3 +587,126 @@ class TestDisabledToolsetsPostureToolset:
             )
         }
         assert "write_file" not in no_file
+
+class TestDisabledCompositeToolsetOverlap:
+    """Regression for #58281: disabling a composite toolset like ``coding``
+    must preserve tools belonging to explicitly-enabled subtoolsets."""
+
+    def test_disabling_coding_preserves_terminal_and_file_tools(self):
+        """With terminal + file enabled, disabling coding keeps terminal/file tools."""
+        from model_tools import get_tool_definitions
+
+        tools_before = get_tool_definitions(
+            enabled_toolsets=["terminal", "file"],
+            quiet_mode=True,
+        )
+        tools_after = get_tool_definitions(
+            enabled_toolsets=["terminal", "file"],
+            disabled_toolsets=["coding"],
+            quiet_mode=True,
+        )
+        names_before = {t["function"]["name"] for t in tools_before}
+        names_after = {t["function"]["name"] for t in tools_after}
+
+        # Should not lose any terminal or file tools
+        assert names_before == names_after, (
+            f"Tools lost when disabling coding: {names_before - names_after}"
+        )
+
+    def test_disabling_coding_removes_coding_only_tools(self):
+        """Tools exclusive to 'coding' (not in terminal/file) are still removed."""
+        from model_tools import get_tool_definitions
+
+        tools_all = get_tool_definitions(
+            enabled_toolsets=["terminal", "file", "coding"],
+            quiet_mode=True,
+        )
+        tools_no_coding = get_tool_definitions(
+            enabled_toolsets=["terminal", "file"],
+            disabled_toolsets=["coding"],
+            quiet_mode=True,
+        )
+        names_all = {t["function"]["name"] for t in tools_all}
+        names_no_coding = {t["function"]["name"] for t in tools_no_coding}
+
+        # coding-only tools should NOT appear
+        coding_only = names_all - names_no_coding
+        assert coding_only, "expected coding to contribute exclusive tools"
+        assert not (coding_only & names_no_coding), (
+            f"coding-only tools leaked: {coding_only & names_no_coding}"
+        )
+
+    def test_disabling_safe_preserves_enabled_overlap(self):
+        """Disabling 'safe' preserves tools from explicitly enabled terminal/file."""
+        from model_tools import get_tool_definitions
+
+        tools = get_tool_definitions(
+            enabled_toolsets=["terminal", "file"],
+            disabled_toolsets=["safe"],
+            quiet_mode=True,
+        )
+        names = {t["function"]["name"] for t in tools}
+        assert "terminal" in names
+        assert "read_file" in names
+
+    def test_disabling_debugging_preserves_enabled_overlap(self):
+        """Disabling 'debugging' preserves tools from explicitly enabled terminal/file."""
+        from model_tools import get_tool_definitions
+
+        tools = get_tool_definitions(
+            enabled_toolsets=["terminal", "file"],
+            disabled_toolsets=["debugging"],
+            quiet_mode=True,
+        )
+        names = {t["function"]["name"] for t in tools}
+        assert "terminal" in names
+        assert "read_file" in names
+
+    def test_default_enabled_toolsets_full_subtraction_still_works(self):
+        """When enabled_toolsets is None (default=all), full subtraction still works."""
+        from model_tools import get_tool_definitions
+
+        tools_all = get_tool_definitions(quiet_mode=True)
+        tools_no_coding = get_tool_definitions(
+            disabled_toolsets=["coding"],
+            quiet_mode=True,
+        )
+        names_all = {t["function"]["name"] for t in tools_all}
+        names_no_coding = {t["function"]["name"] for t in tools_no_coding}
+
+        removed = names_all - names_no_coding
+        assert removed, "expected tools to be removed when all toolsets are enabled"
+
+    def test_legacy_toolset_disabled_preserves_enabled_overlap(self):
+        """Disabling legacy 'file_tools' preserves file tools from enabled 'terminal' + 'file'."""
+        from model_tools import get_tool_definitions
+
+        tools = get_tool_definitions(
+            enabled_toolsets=["terminal", "file"],
+            disabled_toolsets=["file_tools"],
+            quiet_mode=True,
+        )
+        names = {t["function"]["name"] for t in tools}
+        # file tools should still be present because "file" toolset is explicitly enabled
+        for file_tool in ("read_file", "write_file", "patch", "search_files"):
+            assert file_tool in names, f"{file_tool} lost when disabling legacy file_tools"
+
+    def test_hermes_bundle_regression_unchanged(self):
+        """hermes-* bundle protection (#33924) is unchanged by the new logic."""
+        from model_tools import get_tool_definitions
+
+        tools_telegram = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            quiet_mode=True,
+        )
+        tools_telegram_no_yuanbao = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            disabled_toolsets=["hermes-yuanbao"],
+            quiet_mode=True,
+        )
+        names_telegram = {t["function"]["name"] for t in tools_telegram}
+        names_no_yuanbao = {t["function"]["name"] for t in tools_telegram_no_yuanbao}
+
+        assert names_telegram == names_no_yuanbao, (
+            f"Tools lost from telegram bundle: {names_telegram - names_no_yuanbao}"
+        )

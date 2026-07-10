@@ -15,7 +15,9 @@ function removeLastChar(text: string): string {
   return c.join("");
 }
 
+ 
 function isPlainText(data: string): boolean {
+  // eslint-disable-next-line no-control-regex -- terminal data may contain control chars
   return !/[\x00-\x1f\x7f]/.test(data);
 }
 

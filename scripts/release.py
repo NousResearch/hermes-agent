@@ -1861,6 +1861,7 @@ AUTHOR_MAP = {
     "yosapol@jitrak.dev": "Eji4h",  # direct email match
     "kiljadn@gmail.com": "designnotdrum",  # PR #56480 salvage (toolset static-inference fix)
     "lavya@loom.local": "LavyaTandel",  # PR #57893 salvage local git identity (envelope-layout cache markers on tool/empty-assistant messages; #57845)
+    "nithishyenaganti02@gmail.com": "Nithish-Yenaganti",  # PR #58589
 }
 
 

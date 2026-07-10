@@ -13909,15 +13909,37 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
 # ---------------------------------------------------------------------------
 
 
+def _analytics_local_day(started_at: float, tz) -> Optional[str]:
+    """Return a session's local calendar day, or ``None`` for bad data."""
+    try:
+        if tz is None:
+            # ``fromtimestamp`` without an explicit zone uses the server's local
+            # timezone, including the historical offset for this timestamp.
+            return datetime.fromtimestamp(started_at).date().isoformat()
+        return datetime.fromtimestamp(started_at, tz).date().isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
 @app.get("/api/analytics/usage")
 async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
+    import hermes_time
     from agent.insights import InsightsEngine
 
     db = _open_session_db_for_profile(profile)
     try:
         cutoff = time.time() - (days * 86400)
+        # Resolve without the process-global cache so profile-scoped requests
+        # and runtime timezone edits take effect immediately.
+        with _config_profile_scope(profile):
+            tz = hermes_time.resolve_timezone()
+        db._conn.create_function(
+            "hermes_local_day",
+            1,
+            lambda started_at: _analytics_local_day(started_at, tz),
+        )
         cur = db._conn.execute("""
-            SELECT date(started_at, 'unixepoch') as day,
+            SELECT hermes_local_day(started_at) as day,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,

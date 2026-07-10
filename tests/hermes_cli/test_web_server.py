@@ -4702,6 +4702,99 @@ class TestNewEndpoints:
             "top_skills": [],
         }
 
+    def test_analytics_usage_groups_days_in_configured_timezone(self, monkeypatch):
+        from datetime import datetime, timezone
+
+        import hermes_time
+        from hermes_cli import web_server
+        from hermes_state import SessionDB
+
+        monkeypatch.setenv("HERMES_TIMEZONE", "UTC")
+        hermes_time.reset_cache()
+        assert str(hermes_time.get_timezone()) == "UTC"
+        # Simulate a runtime config/env update after the process-global cache
+        # has already been populated. Analytics must use the current value.
+        monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Bangkok")
+        monkeypatch.setattr(
+            web_server.time,
+            "time",
+            lambda: datetime(2026, 5, 13, 12, tzinfo=timezone.utc).timestamp(),
+        )
+
+        db = SessionDB()
+        try:
+            assert db._conn is not None
+            rows = [
+                ("bangkok-may-12", datetime(2026, 5, 11, 18, tzinfo=timezone.utc), 10),
+                ("bangkok-may-13", datetime(2026, 5, 12, 18, tzinfo=timezone.utc), 20),
+            ]
+            for session_id, started_at, input_tokens in rows:
+                db.create_session(session_id=session_id, source="cli", model="test/model")
+                db.update_token_counts(session_id, input_tokens=input_tokens)
+                db._conn.execute(
+                    "UPDATE sessions SET started_at = ? WHERE id = ?",
+                    (started_at.timestamp(), session_id),
+                )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        try:
+            resp = self.client.get("/api/analytics/usage?days=7")
+        finally:
+            hermes_time.reset_cache()
+
+        assert resp.status_code == 200
+        daily = resp.json()["daily"]
+        assert [(row["day"], row["input_tokens"]) for row in daily] == [
+            ("2026-05-12", 10),
+            ("2026-05-13", 20),
+        ]
+
+    def test_analytics_usage_uses_requested_profile_timezone(self, monkeypatch):
+        from datetime import datetime, timezone
+
+        import hermes_time
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli import web_server
+        from hermes_state import SessionDB
+
+        monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+        hermes_time.reset_cache()
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+        (worker_home / "config.yaml").write_text(
+            "timezone: Asia/Bangkok\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            web_server.time,
+            "time",
+            lambda: datetime(2026, 5, 13, 12, tzinfo=timezone.utc).timestamp(),
+        )
+
+        db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            assert db._conn is not None
+            db.create_session(
+                session_id="worker-local-day", source="cli", model="test/model"
+            )
+            db.update_token_counts("worker-local-day", input_tokens=10)
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (
+                    datetime(2026, 5, 12, 18, tzinfo=timezone.utc).timestamp(),
+                    "worker-local-day",
+                ),
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/usage?days=7&profile=worker")
+
+        assert resp.status_code == 200
+        assert [row["day"] for row in resp.json()["daily"]] == ["2026-05-13"]
+
     def test_models_analytics_merges_session_only_duplicate_into_accounted_provider(self):
         """Session-only model rows should not render as duplicate zero-token cards.
 

@@ -220,6 +220,40 @@ class TestCmdUpdateNpmLockfileCache:
 
         mock_run.assert_not_called()
 
+    def test_update_uses_one_shared_npm_cache_across_profiles(
+        self, tmp_path, monkeypatch
+    ):
+        """The npm cache describes checkout-global node_modules, not a profile."""
+        from hermes_cli import main as hm
+        import hermes_constants
+
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        (checkout / "package.json").write_text("{}")
+        shared_root = tmp_path / ".hermes"
+        named_profile = shared_root / "profiles" / "work"
+        named_profile.mkdir(parents=True)
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", checkout)
+        monkeypatch.setattr(hermes_constants.Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            hermes_constants, "find_node_executable", lambda _name: "/usr/bin/npm"
+        )
+
+        cache_roots = []
+        with patch.object(
+            hm,
+            "_npm_lockfile_changed",
+            side_effect=lambda root: cache_roots.append(root) or False,
+        ):
+            monkeypatch.setenv("HERMES_HOME", str(shared_root))
+            hm._update_node_dependencies()
+
+            monkeypatch.setenv("HERMES_HOME", str(named_profile))
+            hm._update_node_dependencies()
+
+        assert cache_roots == [shared_root, shared_root]
+
 
 class TestCmdUpdatePip:
     """Regression tests for pip-install update flows."""

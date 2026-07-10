@@ -49,6 +49,40 @@ LMSTUDIO_UNLOAD_POLICIES = {
 # as its instance id.
 _lmstudio_owned_instances: dict[tuple[str, str], str] = {}
 
+# Instances Hermes must address directly in chat requests, keyed the same
+# way (recorded under both the requested model name and the catalog key).
+# Populated only when Hermes stacks its own instance next to resident copies
+# it doesn't own: LM Studio routes bare-name requests to the oldest resident
+# instance, so a stacked window is unreachable by name.
+_lmstudio_routed_instances: dict[tuple[str, str], str] = {}
+
+
+def _drop_lmstudio_instance_claims(server_root: str, instance_id: str) -> None:
+    for registry in (_lmstudio_owned_instances, _lmstudio_routed_instances):
+        stale = [
+            key
+            for key, value in registry.items()
+            if key[0] == server_root and value == instance_id
+        ]
+        for key in stale:
+            registry.pop(key, None)
+
+
+def lmstudio_request_model(model: str, base_url: Optional[str]) -> str:
+    """Return the wire model id for ``model`` on an LM Studio endpoint.
+
+    When Hermes stacked its own instance next to resident copies it doesn't
+    own, requests must address that instance directly — LM Studio routes
+    bare-name requests to the oldest resident instance, not the largest.
+    Returns ``model`` unchanged when no routing claim exists, which is every
+    endpoint Hermes never stacked an instance on.
+    """
+    server_root = _lmstudio_server_root(base_url)
+    if not server_root:
+        return model
+    routed = _lmstudio_routed_instances.get((server_root, str(model or "").strip()))
+    return routed or model
+
 
 def normalize_lmstudio_unload_policy(value: Any) -> str:
     """Normalize the LM Studio model-switch unload policy.
@@ -3427,6 +3461,7 @@ def ensure_lmstudio_model_loaded(
                 # 404 means the instance is already gone (unloaded via the LM
                 # Studio UI, or a race) — that IS the goal, not a failure.
                 if exc.code == 404:
+                    _drop_lmstudio_instance_claims(server_root, instance_id)
                     continue
                 success = False
                 if strict:
@@ -3435,6 +3470,8 @@ def ensure_lmstudio_model_loaded(
                 success = False
                 if strict:
                     break
+            else:
+                _drop_lmstudio_instance_claims(server_root, instance_id)
         return success
 
     def load_model(model_id: str, context_length: Optional[int]) -> Optional[int]:
@@ -3502,6 +3539,13 @@ def ensure_lmstudio_model_loaded(
         return None
 
     target_model_id = model_key(target_entry) or model
+
+    # A routing claim is only honored while its instance is still resident;
+    # LM Studio restarts and manual unloads invalidate it.
+    for route_key in {str(model or "").strip(), target_model_id}:
+        routed = _lmstudio_routed_instances.get((server_root, route_key))
+        if routed and routed not in loaded_instance_ids(target_entry):
+            _drop_lmstudio_instance_claims(server_root, routed)
 
     # Never request more context than the model supports. Depending on the
     # LM Studio version, an over-ask is either rejected (and the retry path
@@ -3627,9 +3671,21 @@ def ensure_lmstudio_model_loaded(
     target_loaded_ids = loaded_instance_ids(target_entry)
     if target_loaded_ids:
         if unload_policy == LMSTUDIO_UNLOAD_POLICY_NEVER:
-            # ``never`` means Hermes doesn't evict resident models even to
-            # win a bigger context window — run with what's loaded.
-            return previous_target_ctx
+            # ``never`` forbids evicting the resident copies, but Hermes can
+            # stack its own instance beside them. The routing claim below is
+            # what makes the new window reachable: LM Studio sends bare-name
+            # requests to the oldest resident instance, not the largest.
+            stacked_ctx = load_model(target_model_id, target_context_length)
+            if stacked_ctx is None:
+                return previous_target_ctx
+            stacked_instance = owned_instance_id(target_model_id)
+            if not stacked_instance:
+                # Without an instance id from the load echo the stacked copy
+                # can't be addressed; report the window requests will reach.
+                return previous_target_ctx
+            for route_key in {str(model or "").strip(), target_model_id}:
+                _lmstudio_routed_instances[(server_root, route_key)] = stacked_instance
+            return stacked_ctx
         if len(target_loaded_ids) > 1:
             # Same ambiguity as the previous-model guard: several resident
             # copies and only a name to go on. Evicting them all could take

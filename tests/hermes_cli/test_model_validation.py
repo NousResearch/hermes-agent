@@ -591,12 +591,17 @@ class TestAzureFoundryModelApiMode:
 class TestEnsureLmStudioModelLoaded:
     @pytest.fixture(autouse=True)
     def _reset_lmstudio_ownership(self):
-        registry = getattr(hermes_models, "_lmstudio_owned_instances", None)
-        if registry is not None:
-            registry.clear()
+        registries = [
+            getattr(hermes_models, "_lmstudio_owned_instances", None),
+            getattr(hermes_models, "_lmstudio_routed_instances", None),
+        ]
+        for registry in registries:
+            if registry is not None:
+                registry.clear()
         yield
-        if registry is not None:
-            registry.clear()
+        for registry in registries:
+            if registry is not None:
+                registry.clear()
 
     class _Resp:
         def __init__(self, body=b"{}"):
@@ -875,7 +880,9 @@ class TestEnsureLmStudioModelLoaded:
             "context_length": 64000,
         }
 
-    def test_unload_policy_never_keeps_too_small_target_instance(self):
+    def test_unload_policy_never_stacks_own_instance_next_to_small_resident(self):
+        from hermes_cli.models import lmstudio_request_model
+
         calls = []
         initial = [
             {
@@ -886,10 +893,67 @@ class TestEnsureLmStudioModelLoaded:
                 ],
             }
         ]
+        load_responses = [
+            {
+                "instance_id": "qwen/qwen3.6-35b-a3b:2",
+                "load_config": {"context_length": 64000},
+            }
+        ]
 
         with patch(
             "hermes_cli.models._urlopen_model_catalog_request",
-            self._fake_urlopen([initial], [], calls),
+            self._fake_urlopen([initial], load_responses, calls),
+        ):
+            result = ensure_lmstudio_model_loaded(
+                "qwen3.6-35b-a3b",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+                unload_policy="never",
+            )
+
+        assert result == 64000
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models", "load"]
+        assert calls[1][1] == {
+            "model": "qwen/qwen3.6-35b-a3b",
+            "echo_load_config": True,
+            "context_length": 64000,
+        }
+        # Requests must address the stacked instance: LM Studio routes
+        # bare-name requests to the oldest resident copy, not the largest.
+        assert (
+            lmstudio_request_model("qwen3.6-35b-a3b", "http://localhost:1234/v1")
+            == "qwen/qwen3.6-35b-a3b:2"
+        )
+        assert (
+            lmstudio_request_model(
+                "qwen/qwen3.6-35b-a3b", "http://localhost:1234/v1"
+            )
+            == "qwen/qwen3.6-35b-a3b:2"
+        )
+
+    def test_unload_policy_never_stack_failure_falls_back_to_resident_ctx(self):
+        from hermes_cli.models import lmstudio_request_model
+
+        calls = []
+        initial = [
+            {
+                "key": "qwen/qwen3.6-35b-a3b",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "qwen/qwen3.6-35b-a3b", "config": {"context_length": 8000}}
+                ],
+            }
+        ]
+        load_responses = [
+            urllib.error.HTTPError(
+                "http://localhost:1234/api/v1/models/load", 500, "boom", {}, None
+            )
+        ]
+
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            self._fake_urlopen([initial], load_responses, calls),
         ):
             result = ensure_lmstudio_model_loaded(
                 "qwen/qwen3.6-35b-a3b",
@@ -900,7 +964,89 @@ class TestEnsureLmStudioModelLoaded:
             )
 
         assert result == 8000
-        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models"]
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == ["models", "load"]
+        assert (
+            lmstudio_request_model(
+                "qwen/qwen3.6-35b-a3b", "http://localhost:1234/v1"
+            )
+            == "qwen/qwen3.6-35b-a3b"
+        )
+
+    def test_stale_routing_claim_dropped_when_instance_gone(self):
+        from hermes_cli.models import lmstudio_request_model
+
+        calls = []
+        first = [
+            {
+                "key": "qwen/qwen3.6-35b-a3b",
+                "type": "llm",
+                "loaded_instances": [
+                    {"id": "qwen/qwen3.6-35b-a3b", "config": {"context_length": 8000}}
+                ],
+            }
+        ]
+        second = [
+            {
+                "key": "qwen/qwen3.6-35b-a3b",
+                "type": "llm",
+                "loaded_instances": [
+                    {
+                        "id": "qwen/qwen3.6-35b-a3b",
+                        "config": {"context_length": 128000},
+                    }
+                ],
+            }
+        ]
+        load_responses = [
+            {
+                "instance_id": "qwen/qwen3.6-35b-a3b:2",
+                "load_config": {"context_length": 64000},
+            }
+        ]
+
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            self._fake_urlopen([first, second], load_responses, calls),
+        ):
+            first_result = ensure_lmstudio_model_loaded(
+                "qwen/qwen3.6-35b-a3b",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+                unload_policy="never",
+            )
+            second_result = ensure_lmstudio_model_loaded(
+                "qwen/qwen3.6-35b-a3b",
+                "http://localhost:1234/v1",
+                api_key=None,
+                target_context_length=64000,
+                unload_policy="never",
+            )
+
+        assert first_result == 64000
+        assert second_result == 128000
+        # The stacked instance vanished between calls (LM Studio restart);
+        # requests must fall back to the bare name.
+        assert (
+            lmstudio_request_model(
+                "qwen/qwen3.6-35b-a3b", "http://localhost:1234/v1"
+            )
+            == "qwen/qwen3.6-35b-a3b"
+        )
+
+    def test_lmstudio_request_model_defaults_to_bare_name(self):
+        from hermes_cli.models import lmstudio_request_model
+
+        assert (
+            lmstudio_request_model(
+                "qwen/qwen3.6-35b-a3b", "http://localhost:1234/v1"
+            )
+            == "qwen/qwen3.6-35b-a3b"
+        )
+        assert (
+            lmstudio_request_model("qwen/qwen3.6-35b-a3b", None)
+            == "qwen/qwen3.6-35b-a3b"
+        )
 
     def test_unload_policy_never_still_resizes_own_fresh_instance(self):
         calls = []

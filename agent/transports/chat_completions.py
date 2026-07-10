@@ -103,6 +103,22 @@ def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
     return translated or None
 
 
+def _lmstudio_wire_model(model: str, base_url: Any) -> str:
+    """Swap in the LM Studio instance id Hermes must address directly, when
+    one is claimed for (base_url, model). LM Studio routes bare-name requests
+    to the oldest resident instance, so an instance Hermes stacked next to
+    copies it doesn't own is unreachable by name. Returns ``model`` unchanged
+    for every other endpoint — the claim registry is only populated for LM
+    Studio servers Hermes loaded instances on.
+    """
+    try:
+        from hermes_cli.models import lmstudio_request_model
+
+        return lmstudio_request_model(model, base_url)
+    except Exception:
+        return model
+
+
 def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
@@ -353,7 +369,7 @@ class ChatCompletionsTransport(ProviderTransport):
             sanitized[0] = {**sanitized[0], "role": "developer"}
 
         api_kwargs: dict[str, Any] = {
-            "model": model,
+            "model": _lmstudio_wire_model(model, params.get("base_url")),
             "messages": sanitized,
         }
 
@@ -531,7 +547,7 @@ class ChatCompletionsTransport(ProviderTransport):
             sanitized[0] = {**sanitized[0], "role": "developer"}
 
         api_kwargs: dict[str, Any] = {
-            "model": model,
+            "model": _lmstudio_wire_model(model, params.get("base_url")),
             "messages": sanitized,
         }
 

@@ -110,7 +110,12 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:
-            return f"extract: {urls[0]}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
+            first = urls[0]
+            if isinstance(first, dict):
+                first = first.get("url") or first.get("href") or "?"
+            elif not isinstance(first, str):
+                first = "?"
+            return f"extract: {first}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
         return "web extract"
     if tool_name == "process":
         action = str(args.get("action") or "").strip() or "manage"

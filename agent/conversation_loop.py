@@ -1055,6 +1055,18 @@ def run_conversation(
                             "completed": False,
                             "failed": True,
                             "error": _nous_msg,
+                            # BUILD-371: this IS a quota-exhaustion terminal
+                            # (Nous Portal rate limit, no fallback left) —
+                            # without failure_reason the kanban exit-75
+                            # gate in cli.py never sees it and this death
+                            # counts as a crash instead of a graceful
+                            # requeue. No ClassifiedError exists at this
+                            # preemptive guard (it fires before any API
+                            # call is attempted this turn), so pass the
+                            # reason directly.
+                            "failure_reason": _retry.resolve_failure_reason(
+                                reason=FailoverReason.rate_limit.value
+                            ),
                         }
                 except ImportError:
                     pass
@@ -2591,10 +2603,8 @@ def run_conversation(
                     # kanban exit-75 gate in cli.py never sees it and a
                     # pure quota death on a chain-less worker gets counted
                     # as a crash. Same origin-preference semantics as the
-                    # main terminal return below.
-                    _park_failure_reason = classified.reason.value
-                    if not classified.is_quota_exhaustion and _retry.quota_origin_reason:
-                        _park_failure_reason = _retry.quota_origin_reason
+                    # main terminal return below (BUILD-371: now shared via
+                    # TurnRetryState.resolve_failure_reason).
                     return {
                         "final_response": str(_pool_exhausted),
                         "messages": messages,
@@ -2602,7 +2612,7 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": str(_pool_exhausted),
-                        "failure_reason": _park_failure_reason,
+                        "failure_reason": _retry.resolve_failure_reason(classified),
                     }
                 if recovered_with_pool:
                     continue
@@ -3828,6 +3838,14 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": _nonretryable_summary,
+                        # BUILD-371: billing is deliberately NOT excluded
+                        # from is_client_error (see the comment on
+                        # is_client_error above) so a quota death can land
+                        # here even though this branch is mostly non-quota
+                        # client errors (auth_permanent, format_error,
+                        # etc). Same origin-preference semantics as the
+                        # other terminal returns.
+                        "failure_reason": _retry.resolve_failure_reason(classified),
                     }
 
                 if retry_count >= max_retries:
@@ -4011,22 +4029,11 @@ def run_conversation(
                             "execute_code with Python's open() for large "
                             "files, or to write in smaller sections."
                         )
-                    # BUILD-343: if THIS last hop's own error isn't itself
-                    # quota-class but a quota-class reason was recorded
-                    # earlier in the turn (e.g. the primary hit billing,
-                    # failed over, and the chain's final tier — often a
-                    # local model with no billing/rate-limit concept —
-                    # died on a plain transport error), report the quota
-                    # origin instead. Implements the fallback-chain
-                    # contract in hermes-runtime-routing-debugging/
-                    # SKILL.md: "when the fallback chain exhausts, Hermes
-                    # surfaces the original primary error, not the last
-                    # fallback error." The error/message fields above stay
-                    # the last hop's own text — only this classification
-                    # prefers the origin.
-                    _reported_failure_reason = classified.reason.value
-                    if not classified.is_quota_exhaustion and _retry.quota_origin_reason:
-                        _reported_failure_reason = _retry.quota_origin_reason
+                    # BUILD-343/371: origin-preference rule lives in
+                    # TurnRetryState.resolve_failure_reason's docstring —
+                    # the error/message fields above stay the last hop's
+                    # own text; only the classification below may prefer
+                    # an earlier quota-class origin.
                     return {
                         "final_response": _final_response,
                         "messages": messages,
@@ -4039,7 +4046,7 @@ def run_conversation(
                         # transient throttle from a real failure and choose a
                         # different exit code. ``rate_limit`` / ``billing`` here
                         # mean "quota wall, not a task error".
-                        "failure_reason": _reported_failure_reason,
+                        "failure_reason": _retry.resolve_failure_reason(classified),
                     }
 
                 # For rate limits, respect the Retry-After header if present

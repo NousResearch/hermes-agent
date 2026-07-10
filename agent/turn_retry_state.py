@@ -27,7 +27,10 @@ imported by the turn loop without an import cycle.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:  # pragma: no cover — type-only, keeps this module dependency-free
+    from agent.error_classifier import ClassifiedError
 
 
 @dataclass
@@ -88,6 +91,42 @@ class TurnRetryState:
     # original primary error, not the last fallback error." First quota
     # reason wins; never overwritten once set.
     quota_origin_reason: Optional[str] = None
+
+    def resolve_failure_reason(
+        self, classified: ClassifiedError | None = None, *, reason: str | None = None
+    ) -> str:
+        """Resolve the terminal ``failure_reason`` value for a turn result.
+
+        Implements the BUILD-343 origin-preference contract (previously
+        duplicated inline at every terminal ``return`` in
+        ``conversation_loop.py``): report the CURRENT site's own reason
+        unless it is non-quota-class AND an earlier quota-class origin was
+        recorded this turn via ``quota_origin_reason`` — in which case the
+        earlier origin wins. A fallback chain's tail hop is often a local/
+        transport-only tier with no billing/rate-limit concept of its own;
+        without this preference its plain transport error would mask the
+        real quota-wall cause and the kanban exit-75 gate would never fire.
+
+        Exactly one of the two calling conventions applies:
+          - ``classified``: pass the current attempt's ``ClassifiedError``
+            — used by every site that has one.
+          - ``reason``: a raw ``FailoverReason.value`` string for sites
+            that die before any ``ClassifiedError`` exists (e.g. the Nous
+            Portal preemptive rate-limit guard, which returns before an
+            API call is even attempted). The caller vouches this reason is
+            itself quota-class, so no origin lookup is needed.
+        """
+        if classified is not None and reason is not None:
+            raise ValueError(
+                "resolve_failure_reason: pass classified or reason, not both"
+            )
+        if classified is not None:
+            if not classified.is_quota_exhaustion and self.quota_origin_reason:
+                return self.quota_origin_reason
+            return classified.reason.value
+        if reason is None:
+            raise ValueError("resolve_failure_reason requires classified or reason")
+        return reason
 
     def __iter__(self):
         # Convenience for debugging / tests: iterate (name, value) pairs.

@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from dataclasses import fields
 
+import pytest
+
+from agent.error_classifier import ClassifiedError, FailoverReason
 from agent.turn_retry_state import TurnRetryState
 
 
@@ -80,3 +83,52 @@ def test_guards_are_independently_mutable():
     # untouched guards stay False
     assert s.has_retried_429 is False
     assert s.anthropic_auth_retry_attempted is False
+
+
+class TestResolveFailureReason:
+    """BUILD-343/BUILD-371: the origin-preference contract, now shared by
+    all 4 terminal-return call sites instead of being duplicated inline."""
+
+    def test_quota_class_classified_reports_its_own_reason(self):
+        s = TurnRetryState()
+        classified = ClassifiedError(reason=FailoverReason.billing)
+        assert s.resolve_failure_reason(classified) == "billing"
+
+    def test_nonquota_classified_with_no_recorded_origin_reports_its_own_reason(self):
+        s = TurnRetryState()
+        classified = ClassifiedError(reason=FailoverReason.timeout)
+        assert s.resolve_failure_reason(classified) == "timeout"
+
+    def test_nonquota_classified_with_recorded_origin_prefers_the_origin(self):
+        s = TurnRetryState()
+        s.quota_origin_reason = "billing"
+        classified = ClassifiedError(reason=FailoverReason.timeout)
+        assert s.resolve_failure_reason(classified) == "billing"
+
+    def test_quota_class_classified_ignores_a_different_recorded_origin(self):
+        # The CURRENT hop is itself quota-class — report it directly, even
+        # if an earlier (different) quota-class origin was recorded. Only
+        # a non-quota current hop falls back to the recorded origin.
+        s = TurnRetryState()
+        s.quota_origin_reason = "billing"
+        classified = ClassifiedError(reason=FailoverReason.rate_limit)
+        assert s.resolve_failure_reason(classified) == "rate_limit"
+
+    def test_raw_reason_string_with_no_classified_error(self):
+        # Sites that die before any ClassifiedError exists this turn (the
+        # Nous Portal preemptive rate-limit guard) pass the reason directly.
+        s = TurnRetryState()
+        assert s.resolve_failure_reason(reason="rate_limit") == "rate_limit"
+
+    def test_raises_when_neither_classified_nor_reason_given(self):
+        s = TurnRetryState()
+        with pytest.raises(ValueError):
+            s.resolve_failure_reason()
+
+    def test_raises_when_both_classified_and_reason_given(self):
+        # Exactly one calling convention applies (docstring contract) —
+        # passing both is caller confusion, not a case to silently resolve.
+        s = TurnRetryState()
+        classified = ClassifiedError(reason=FailoverReason.billing)
+        with pytest.raises(ValueError):
+            s.resolve_failure_reason(classified, reason="rate_limit")

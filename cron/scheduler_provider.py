@@ -95,6 +95,7 @@ class CronScheduler(ABC):
         was lost (another machine/retry won it) or the job no longer exists.
         """
         from cron.jobs import claim_job_for_fire, get_job
+        from cron.executions import create_execution
         from cron.scheduler import run_one_job
 
         if not claim_job_for_fire(job_id):
@@ -102,6 +103,7 @@ class CronScheduler(ABC):
         job = get_job(job_id)
         if job is None:
             return False  # job removed (e.g. repeat-N exhausted) between arm and fire
+        job["execution_id"] = create_execution(job_id, source=self.name)["id"]
         return run_one_job(job, adapters=adapters, loop=loop)
 
     def reconcile(self) -> None:
@@ -169,9 +171,16 @@ class InProcessCronScheduler(CronScheduler):
         import logging
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat
+        from cron.executions import recover_interrupted_executions
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
+        recovered = recover_interrupted_executions()
+        if recovered:
+            logger.warning(
+                "Marked %d interrupted cron execution(s) unknown after restart",
+                recovered,
+            )
         # Heartbeat once before the first sleep so `hermes cron status` sees a
         # live ticker immediately after startup, not only after the first tick.
         record_ticker_heartbeat()

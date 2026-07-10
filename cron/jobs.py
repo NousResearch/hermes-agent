@@ -455,6 +455,14 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
+    # Expose the independent latest attempt through existing job detail/list
+    # readers without coupling execution history into schedule persistence.
+    try:
+        from cron.executions import latest_execution
+        normalized["latest_execution"] = latest_execution(job_id)
+    except Exception:
+        normalized["latest_execution"] = None
+
     return normalized
 
 

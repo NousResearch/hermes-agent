@@ -174,6 +174,13 @@ def cron_list(show_all: bool = False):
                 status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
             print(f"    Last run:  {last_run}  {status_display}")
 
+        latest_execution = job.get("latest_execution")
+        if latest_execution:
+            print(
+                f"    Execution: {latest_execution.get('status', '?')}  "
+                f"{latest_execution.get('id', '?')}"
+            )
+
         delivery_err = job.get("last_delivery_error")
         if delivery_err:
             print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")

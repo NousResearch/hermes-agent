@@ -27,7 +27,7 @@ import fnmatch
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import List, Tuple
 
 
@@ -763,28 +763,41 @@ def format_scan_report(result: ScanResult) -> str:
     return "\n".join(lines)
 
 
+def is_python_bytecode(rel_path: PurePath) -> bool:
+    """True for auto-generated Python bytecode under ``__pycache__`` — never
+    part of a skill's content identity (importing a skill helper must not
+    mark the skill modified). Deliberately narrow: an orphan ``.pyc`` outside
+    ``__pycache__`` is importable, so it stays visible to integrity hashing."""
+    return "__pycache__" in rel_path.parts
+
+
 def content_hash(skill_path: Path) -> str:
-    """Compute a SHA-256 hash of all files in a skill directory for integrity tracking.
+    """Compute a SHA-256 hash of all relevant files in a skill directory for integrity tracking.
 
     File paths (relative to ``skill_path``) are mixed into the hash alongside
     file contents so that swapping the contents of two files in a skill
-    changes the hash. This must stay symmetric with
-    ``tools.skills_hub.bundle_content_hash`` — both functions need to
-    produce the same digest for the same skill (one operates on disk,
-    one on an in-memory bundle), so any change to the hash shape MUST
+    changes the hash. Generated Python bytecode is intentionally ignored so
+    running a skill script cannot mark a bundled skill as user-modified. This
+    must stay symmetric with ``tools.skills_hub.bundle_content_hash`` — both
+    functions need to produce the same digest for the same skill (one operates
+    on disk, one on an in-memory bundle), so any change to the hash shape MUST
     land in both places at once.
     """
     h = hashlib.sha256()
     if skill_path.is_dir():
         for f in sorted(skill_path.rglob("*")):
-            if f.is_file():
-                try:
-                    rel = f.relative_to(skill_path).as_posix()
-                    h.update(rel.encode("utf-8"))
-                    h.update(b"\x00")
-                    h.update(f.read_bytes())
-                except OSError:
-                    continue
+            if not f.is_file():
+                continue
+            rel = f.relative_to(skill_path)
+            if is_python_bytecode(rel):
+                continue
+            try:
+                rel_posix = rel.as_posix()
+                h.update(rel_posix.encode("utf-8"))
+                h.update(b"\x00")
+                h.update(f.read_bytes())
+            except OSError:
+                continue
     elif skill_path.is_file():
         h.update(skill_path.read_bytes())
     return f"sha256:{h.hexdigest()[:16]}"

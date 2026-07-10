@@ -230,14 +230,25 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
 
 
 def _dir_hash(directory: Path) -> str:
-    """Compute a hash of all file contents in a directory for change detection."""
+    """Compute a hash of all relevant file contents in a directory for change detection."""
+    try:
+        from tools.skills_guard import is_python_bytecode
+    except Exception:
+        # _dir_hash is the fallback when guard deps are unavailable
+        # (packaged/update contexts) — it must not require them itself.
+        def is_python_bytecode(rel_path):
+            return "__pycache__" in rel_path.parts
+
     hasher = hashlib.md5()
     try:
         for fpath in sorted(directory.rglob("*")):
-            if fpath.is_file():
-                rel = fpath.relative_to(directory)
-                hasher.update(str(rel).encode("utf-8"))
-                hasher.update(fpath.read_bytes())
+            if not fpath.is_file():
+                continue
+            rel = fpath.relative_to(directory)
+            if is_python_bytecode(rel):
+                continue
+            hasher.update(str(rel).encode("utf-8"))
+            hasher.update(fpath.read_bytes())
     except (OSError, IOError):
         pass
     return hasher.hexdigest()

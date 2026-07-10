@@ -109,6 +109,22 @@ class TestDirHash:
         h = _dir_hash(tmp_path / "nope")
         assert isinstance(h, str)  # returns hash of empty content
 
+    def test_ignores_python_bytecode_artifacts(self, tmp_path):
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# Test\n")
+        before = _dir_hash(skill_dir)
+
+        pycache = skill_dir / "__pycache__"
+        pycache.mkdir()
+        (pycache / "helper.cpython-311.pyc").write_bytes(b"compiled")
+
+        assert _dir_hash(skill_dir) == before
+
+        # Orphan bytecode outside __pycache__ stays tamper-visible.
+        (skill_dir / "orphan.pyc").write_bytes(b"planted")
+        assert _dir_hash(skill_dir) != before
+
 
 class TestDiscoverBundledSkills:
     def test_finds_skills_with_skill_md(self, tmp_path):

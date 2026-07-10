@@ -1168,6 +1168,47 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_hashes_ignore_python_bytecode_artifacts(self, tmp_path):
+        from tools.skills_guard import content_hash
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": "same content",
+                "references/checklist.md": "- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        bundle_with_bytecode = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": "same content",
+                "references/checklist.md": "- [ ] security\n",
+                "__pycache__/helper.cpython-311.pyc": b"compiled",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        skill_dir = tmp_path / "demo-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("same content")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
+        pycache = skill_dir / "__pycache__"
+        pycache.mkdir()
+        (pycache / "helper.cpython-311.pyc").write_bytes(b"compiled")
+
+        assert bundle_content_hash(bundle_with_bytecode) == bundle_content_hash(bundle)
+        assert content_hash(skill_dir) == bundle_content_hash(bundle)
+
+        # An orphan .pyc OUTSIDE __pycache__ is importable (sourceless
+        # loading) and must stay tamper-visible to the hash.
+        (skill_dir / "orphan.pyc").write_bytes(b"planted")
+        assert content_hash(skill_dir) != bundle_content_hash(bundle)
+
     def test_bundle_content_hash_accepts_binary_files(self):
         bundle = SkillBundle(
             name="demo-binary-skill",

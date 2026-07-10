@@ -4476,10 +4476,19 @@ def _make_agent(
     # once here and never re-reads it, so briefly wait for in-flight discovery
     # to land before building — bounded, so a slow/dead server still can't
     # block. Dashboard /api/ws uses hermes_cli.mcp_startup; TUI stdio keeps
-    # its existing tui_gateway.entry-owned thread.
+    # its existing tui_gateway.entry-owned thread.  Start discovery here too
+    # (idempotent) so a missed dashboard/ws startup or a profile-scoped build
+    # still registers MCP tools before the snapshot (issue #61891).
     try:
-        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+        from hermes_cli.mcp_startup import (
+            start_background_mcp_discovery,
+            wait_for_mcp_discovery,
+        )
 
+        start_background_mcp_discovery(
+            logger=logger,
+            thread_name="tui-agent-mcp-discovery",
+        )
         wait_for_mcp_discovery()
     except Exception:
         pass

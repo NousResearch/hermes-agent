@@ -1272,7 +1272,10 @@ def _terminal_env_snapshot() -> Dict[str, str]:
     stripped and a ``_config_bridge_failed`` sentinel is set so callers can
     fail closed instead of silently downgrading an isolated backend to local.
     """
-    env = dict(os.environ)
+    # Save original process-env values so explicit worker overrides
+    # (e.g. kanban subprocess TERMINAL_TIMEOUT) survive the bridge.
+    orig = os.environ
+    env = dict(orig)
 
     try:
         from hermes_cli.config import apply_terminal_config_to_env
@@ -1285,6 +1288,14 @@ def _terminal_env_snapshot() -> Dict[str, str]:
             if key.startswith("TERMINAL_") and key != "TERMINAL_ENV":
                 env.pop(key, None)
         env["_config_bridge_failed"] = "1"
+        return env
+
+    # Restore explicit worker overrides for timeout/lifetime so that
+    # subprocess callers (e.g. kanban _default_spawn) that intentionally
+    # set a longer value are not clobbered by config defaults.
+    for key in ("TERMINAL_TIMEOUT", "TERMINAL_LIFETIME_SECONDS"):
+        if key in orig:
+            env[key] = orig[key]
 
     return env
 

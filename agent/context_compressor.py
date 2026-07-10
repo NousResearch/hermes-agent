@@ -2840,10 +2840,21 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
+            # Record the no-op, exactly as the sibling "no compressable window"
+            # branch below does (#40803). Returning without touching the
+            # anti-thrashing counter leaves should_compress() saying True on a
+            # transcript that can never shrink: when the prompt sits above the
+            # threshold because of the incompressible floor (system prompt +
+            # tool schemas), every subsequent turn re-fires a compaction that
+            # returns here unchanged, and the CLI appears frozen.
+            self._ineffective_compression_count += 1
+            self._last_compression_savings_pct = 0.0
             if not self.quiet_mode:
                 logger.warning(
-                    "Cannot compress: only %d messages (need > %d)",
+                    "Cannot compress: only %d messages (need > %d). "
+                    "ineffective_compression_count=%d",
                     n_messages, _min_for_compress,
+                    self._ineffective_compression_count,
                 )
             return messages
 
@@ -3139,12 +3150,43 @@ This compaction should PRIORITISE preserving all information related to the focu
         compressed = _strip_historical_media(compressed)
 
         new_estimate = estimate_messages_tokens_rough(compressed)
-        saved_estimate = display_tokens - new_estimate
 
-        # Anti-thrashing: track compression effectiveness
-        savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
+        # Anti-thrashing: measure effectiveness on a like-for-like basis.
+        #
+        # ``display_tokens`` is usually ``current_tokens`` — the provider's real
+        # prompt count, which includes the system prompt and tool schemas.
+        # ``new_estimate`` covers the messages ONLY. Comparing the two makes a
+        # compaction that freed almost nothing look like it saved ~96%, so the
+        # counter below resets every pass and the anti-thrashing guard is dead
+        # code. Compaction can only shrink messages, so score it against the
+        # messages it was given.
+        pre_estimate = estimate_messages_tokens_rough(messages)
+        saved_estimate = pre_estimate - new_estimate
+        savings_pct = (saved_estimate / pre_estimate * 100) if pre_estimate > 0 else 0
         self._last_compression_savings_pct = savings_pct
-        if savings_pct < 10:
+
+        # Effectiveness is "did we get the prompt under the threshold?", not
+        # "did the message list shrink?". ``should_compress()`` trips on the
+        # FULL prompt, but compaction can only shrink messages: the system
+        # prompt and tool schemas are an incompressible floor. When that floor
+        # alone meets the threshold — a too-small context_length makes this
+        # trivially true — every pass can shrink messages by a healthy margin,
+        # reset the counter here, and still leave the prompt over the line, so
+        # the next turn compacts again, forever. Score against the goal.
+        incompressible_floor = max(0, display_tokens - pre_estimate)
+        projected_prompt = incompressible_floor + new_estimate
+        if projected_prompt >= self.threshold_tokens:
+            self._ineffective_compression_count += 1
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compaction cannot clear the threshold: ~%d incompressible "
+                    "tokens (system prompt + tool schemas) + ~%d compressed "
+                    "messages >= %d threshold. Shrinking messages further "
+                    "cannot help. ineffective_compression_count=%d",
+                    incompressible_floor, new_estimate, self.threshold_tokens,
+                    self._ineffective_compression_count,
+                )
+        elif savings_pct < 10:
             self._ineffective_compression_count += 1
         else:
             self._ineffective_compression_count = 0

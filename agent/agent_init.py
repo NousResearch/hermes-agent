@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -66,6 +66,34 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def scoped_config_context_length(
+    model_cfg: Any, active_model: str,
+) -> Tuple[Optional[Any], Optional[Tuple[str, str, Any]]]:
+    """Return the ``model.context_length`` override, or ``None`` if it is out of scope.
+
+    ``model.context_length`` describes ``model.model``. When the active model came
+    from somewhere else — a CLI ``--model`` flag, a skill, a fallback — the number
+    describes a *different* window, and applying it silently mis-sizes the
+    compaction threshold. A too-small window drops ``threshold_tokens`` below the
+    incompressible floor (system prompt + tool schemas), so ``should_compress()``
+    is true on every turn and the agent compacts forever without making progress.
+
+    Returns ``(context_length, mismatch)``. ``mismatch`` is ``None`` when the
+    override applies; otherwise ``(config_model, active_model, ignored_value)`` so
+    the caller can log why the override was dropped.
+    """
+    if not isinstance(model_cfg, dict):
+        return None, None
+    context_length = model_cfg.get("context_length")
+    if context_length is None:
+        return None, None
+    cfg_model = str(model_cfg.get("model") or model_cfg.get("default") or "").strip()
+    model = str(active_model or "").strip()
+    if cfg_model and model and cfg_model != model:
+        return None, (cfg_model, model, context_length)
+    return context_length, None
 
 
 def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
@@ -1627,11 +1655,19 @@ def init_agent(
                 )
     agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
-    # Read explicit context_length override from model config
-    if isinstance(_model_cfg, dict):
-        _config_context_length = _model_cfg.get("context_length")
-    else:
-        _config_context_length = None
+    # Read explicit context_length override from model config, scoped to the
+    # model it actually describes (see scoped_config_context_length).
+    _config_context_length, _override_mismatch = scoped_config_context_length(
+        _model_cfg, getattr(agent, "model", ""),
+    )
+    if _override_mismatch is not None:
+        _cfg_model, _active_model, _ignored = _override_mismatch
+        _ra().logger.warning(
+            "Ignoring model.context_length=%r from config.yaml: it describes "
+            "model %r, but the active model is %r. Falling back to "
+            "auto-detection for %r.",
+            _ignored, _cfg_model, _active_model, _active_model,
+        )
     if _config_context_length is not None:
         try:
             _config_context_length = int(_config_context_length)

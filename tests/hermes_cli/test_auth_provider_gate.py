@@ -65,6 +65,25 @@ def test_returns_false_when_config_provider_is_different(tmp_path, monkeypatch):
     assert is_provider_explicitly_configured("anthropic") is False
 
 
+def test_returns_true_when_non_default_provider_has_explicit_config_block(tmp_path, monkeypatch):
+    """A configured override provider stays visible when another provider is default."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_config(tmp_path, {
+        "model": {"provider": "openai-codex", "default": "gpt-5.6-sol"},
+        "providers": {
+            "anthropic": {"base_url": "http://127.0.0.1:3456"},
+        },
+    })
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "active_provider": "openai-codex",
+    })
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("anthropic") is True
+
+
 def test_returns_true_when_anthropic_env_var_set(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-realkey")

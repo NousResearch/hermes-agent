@@ -1468,7 +1468,8 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     Checks:
       1. active_provider in auth.json matches
       2. model.provider in config.yaml matches
-      3. Provider-specific env vars are set (e.g. ANTHROPIC_API_KEY)
+      3. providers.<id> exists in config.yaml
+      4. Provider-specific env vars are set (e.g. ANTHROPIC_API_KEY)
 
     This is used to gate auto-discovery of external credentials (e.g.
     Claude Code's ~/.claude/.credentials.json) so they are never used
@@ -1486,7 +1487,10 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     except Exception:
         pass
 
-    # 2. Check config.yaml model.provider
+    # 2. Check config.yaml: either the active model provider or an explicit
+    # provider block. The latter matters when provider A is the global default
+    # but provider B is deliberately configured for session overrides (for
+    # example ``providers.anthropic.base_url`` pointing at an OAuth proxy).
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -1495,6 +1499,12 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
             cfg_provider = (model_cfg.get("provider") or "").strip().lower()
             if cfg_provider == normalized:
                 return True
+        configured_providers = cfg.get("providers")
+        if isinstance(configured_providers, dict) and any(
+            str(provider_key or "").strip().lower() == normalized
+            for provider_key in configured_providers
+        ):
+            return True
     except Exception:
         pass
 

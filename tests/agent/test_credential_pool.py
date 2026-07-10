@@ -3050,6 +3050,11 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
 def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
     """Regression for #19566: stale rotation writes keep concurrent entries."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Block external-credential autodiscovery: a real ~/.claude/.credentials.json
+    # on a dev machine would seed an extra claude_code entry and break the
+    # exact-id assertions below (passes on CI where no such file exists).
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
     _write_auth_store(
         tmp_path,
         {
@@ -3111,6 +3116,9 @@ def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
 
 def test_remove_index_does_not_resurrect_via_disk_merge(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Block external-credential autodiscovery (see note in the test above).
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
     _write_auth_store(
         tmp_path,
         {

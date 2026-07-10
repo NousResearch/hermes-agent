@@ -548,6 +548,14 @@ class TestCheckWebApiKey:
         self._managed_patchers = [
             patch("tools.web_tools.managed_nous_tools_enabled", return_value=True),
             patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+            # ddgs availability is package-presence driven and the plugin
+            # registry can hold an available ddgs provider. Neutralize both
+            # fallback surfaces so this class only exercises env-key/gateway
+            # resolution — otherwise these tests flip on machines where the
+            # optional ``ddgs`` package is installed (dev venvs) vs CI.
+            patch("tools.web_tools._ddgs_package_importable", return_value=False),
+            patch("agent.web_search_registry.get_active_search_provider", return_value=None),
+            patch("agent.web_search_registry.get_active_extract_provider", return_value=None),
         ]
         for p in self._managed_patchers:
             p.start()

@@ -523,6 +523,7 @@ class WeComAdapter(BasePlatformAdapter):
         # WeCom AI Bots cannot initiate APP_CMD_SEND in group chats).
         self._remember_chat_req_id(chat_id, self._payload_req_id(payload))
 
+        msgtype = str(body.get("msgtype") or "").lower()
         text, reply_text = self._extract_text(body)
         # Strip leading @mention in group chats so slash commands like
         # "@BotName /approve" are correctly recognized as "/approve".
@@ -537,8 +538,28 @@ class WeComAdapter(BasePlatformAdapter):
             text = reply_text
 
         if not text and not media_urls:
-            logger.debug("[%s] Empty WeCom message skipped", self.name)
-            return
+            # Non-text message types (image, file, voice, video) that fail
+            # media extraction should NOT be silently dropped — the user
+            # sent something and the agent should at least acknowledge it.
+            # Log a warning and create a placeholder event.
+            if msgtype in {"image", "file", "voice", "video", "appmsg"}:
+                logger.warning(
+                    "[%s] %s message received but media extraction produced no results — "
+                    "creating placeholder event so the agent can acknowledge receipt. "
+                    "Check previous warnings for download/decryption failures.",
+                    self.name, msgtype,
+                )
+                text = f"[{msgtype.upper()}]"
+                message_type = {
+                    "image": MessageType.PHOTO,
+                    "file": MessageType.DOCUMENT,
+                    "voice": MessageType.VOICE,
+                    "video": MessageType.VIDEO,
+                    "appmsg": MessageType.DOCUMENT,
+                }.get(msgtype, MessageType.TEXT)
+            else:
+                logger.debug("[%s] Empty WeCom message skipped", self.name)
+                return
 
         source = self.build_source(
             chat_id=chat_id,
@@ -774,7 +795,7 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
         except Exception as exc:
-            logger.debug("[%s] Failed to download %s from %s: %s", self.name, kind, url, exc)
+            logger.warning("[%s] Failed to download %s from %s: %s", self.name, kind, url, exc)
             return None
 
         aes_key = str(media.get("aeskey") or "").strip()
@@ -782,7 +803,7 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 raw = self._decrypt_file_bytes(raw, aes_key)
             except Exception as exc:
-                logger.debug("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
+                logger.warning("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
                 return None
 
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"

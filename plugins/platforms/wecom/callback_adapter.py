@@ -115,7 +115,13 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # ``is_reconnect`` is forwarded by GatewayRunner on every retry per
+        # the BasePlatformAdapter.connect contract. Callback adapters have
+        # no server-side queue to preserve, so the flag is accepted-and-
+        # ignored — but the kwarg MUST be present or the reconnect watcher
+        # dies with TypeError and the platform silently stays offline.
+        del is_reconnect
         if not self._apps:
             logger.warning("[WecomCallback] No callback apps configured")
             return False

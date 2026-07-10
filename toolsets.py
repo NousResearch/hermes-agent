@@ -139,10 +139,11 @@ TOOLSETS = {
         "description": (
             "Video generation tools. Single ``video_generate`` tool covers "
             "text-to-video (prompt only) and image-to-video (prompt + "
-            "image_url) — the active backend auto-routes. Configure via "
+            "image_url), plus reference-to-video. Provider-specific edit/"
+            "extend workflows may appear as separate tools. Configure via "
             "``hermes tools`` → Video Generation."
         ),
-        "tools": ["video_generate"],
+        "tools": ["video_generate", "xai_video_edit", "xai_video_extend"],
         "includes": []
     },
 
@@ -582,18 +583,40 @@ TOOLSETS = {
 
 
 
-def get_toolset(name: str) -> Optional[Dict[str, Any]]:
+def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[str, Any]]:
     """
     Get a toolset definition by name.
-    
+
     Args:
         name (str): Name of the toolset
-        
+        include_registry (bool): When True (default), merge in tools that
+            plugins/overlays registered into this toolset via the registry.
+            When False, return only the static ``TOOLSETS`` definition (the
+            composite-authored view). Platform reverse-mapping in
+            ``_get_platform_tools`` uses False so that a tool registered into a
+            toolset but absent from a platform's static composite does not drop
+            the whole toolset from inference. See issue #49622.
+
     Returns:
         Dict: Toolset definition with description, tools, and includes
-        None: If toolset not found
+        None: If toolset not found. With include_registry=False the static
+            view only recognizes names literally present in ``TOOLSETS``, so
+            registry/MCP-only toolsets AND registry-derived aliases return None
+            (they have no static counterpart).
     """
     toolset = TOOLSETS.get(name)
+
+    if not include_registry:
+        # Static view only: return the built-in definition (copying the nested
+        # tools/includes lists so callers can't mutate TOOLSETS), or None for
+        # registry/MCP-only toolsets that have no static counterpart.
+        if not toolset:
+            return None
+        return {
+            **toolset,
+            "tools": list(toolset.get("tools", [])),
+            "includes": list(toolset.get("includes", [])),
+        }
 
     try:
         from tools.registry import registry
@@ -661,30 +684,36 @@ def bundle_non_core_tools(toolset_name: str) -> Set[str]:
     return to_remove
 
 
-def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
+def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bool = True) -> List[str]:
     """
     Recursively resolve a toolset to get all tool names.
-    
+
     This function handles toolset composition by recursively resolving
     included toolsets and combining all tools.
-    
+
     Args:
         name (str): Name of the toolset to resolve
         visited (Set[str]): Set of already visited toolsets (for cycle detection)
-        
+        include_registry (bool): When True (default), include tools that
+            plugins/overlays registered into a toolset. When False, resolve only
+            the static ``TOOLSETS`` definition (includes are still resolved, but
+            statically). Platform reverse-mapping uses False so a registry-added
+            tool cannot drop the whole toolset from inference (see #49622 and
+            ``_get_platform_tools``).
+
     Returns:
         List[str]: List of all tool names in the toolset
     """
     if visited is None:
         visited = set()
-    
+
     # Special aliases that represent all tools across every toolset
     # This ensures future toolsets are automatically included without changes.
     if name in {"all", "*"}:
         all_tools: Set[str] = set()
         for toolset_name in get_toolset_names():
             # Use a fresh visited set per branch to avoid cross-branch contamination
-            resolved = resolve_toolset(toolset_name, visited.copy())
+            resolved = resolve_toolset(toolset_name, visited.copy(), include_registry=include_registry)
             all_tools.update(resolved)
         return sorted(all_tools)
 
@@ -697,12 +726,14 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     visited.add(name)
 
     # Get toolset definition
-    toolset = get_toolset(name)
+    toolset = get_toolset(name, include_registry=include_registry)
     if not toolset:
         # Auto-generate a toolset for plugin platforms (hermes-<name>).
         # Gives them _HERMES_CORE_TOOLS plus any tools the plugin registered
-        # into a toolset matching the platform name.
-        if name.startswith("hermes-"):
+        # into a toolset matching the platform name. This is a registry-derived
+        # view, so it only applies when registry tools are requested; the static
+        # view (include_registry=False) has no plugin-platform definition.
+        if include_registry and name.startswith("hermes-"):
             platform_name = name[len("hermes-"):]
             try:
                 from gateway.platform_registry import platform_registry
@@ -729,9 +760,9 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     # sibling includes so diamond dependencies are only resolved once and
     # cycle warnings don't fire multiple times for the same cycle.
     for included_name in toolset.get("includes", []):
-        included_tools = resolve_toolset(included_name, visited)
+        included_tools = resolve_toolset(included_name, visited, include_registry=include_registry)
         tools.update(included_tools)
-    
+
     return sorted(tools)
 
 

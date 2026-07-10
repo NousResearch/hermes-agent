@@ -117,9 +117,18 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         chat_topic=src.get("chat_topic"),
         user_id_alt=src.get("user_id_alt"),
         chat_id_alt=src.get("chat_id_alt"),
-        guild_id=src.get("guild_id"),
+        scope_id=src.get("scope_id"),
         parent_chat_id=src.get("parent_chat_id"),
         message_id=src.get("message_id"),
+        # The HERMES profile this event is routed to (multiplex mode). The
+        # connector stamps it on the wire source when NAS resolves the target
+        # profile for a Team-Gateway message; absent for a single-profile
+        # gateway, where it stays None and session keys keep the legacy
+        # ``agent:main`` namespace (SessionStore._resolve_profile_for_key).
+        # Consumed by build_session_key's profile namespacing + the per-turn
+        # config/credential scope — the same field the /p/<profile>/ HTTP
+        # prefix and per-credential polling adapters already set.
+        profile=src.get("profile"),
         # Authentic upstream-trust signal: this event arrived over the
         # per-instance-authenticated relay WS, so the connector already resolved
         # it to this instance's owner-bound author. ``platform`` is the

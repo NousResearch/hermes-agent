@@ -1,3 +1,5 @@
+import { normalize } from '@/lib/text'
+
 const REASONING_LABELS: Record<string, string> = {
   none: 'Off',
   minimal: 'Min',
@@ -8,7 +10,7 @@ const REASONING_LABELS: Record<string, string> = {
 }
 
 export function reasoningEffortLabel(effort: string): string {
-  const key = effort.trim().toLowerCase()
+  const key = normalize(effort)
 
   if (!key) {
     return ''

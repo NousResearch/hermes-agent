@@ -2,11 +2,12 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
-import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
+import { normalize } from '@/lib/text'
+import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
-import { getGlobalModelOptions } from '../hermes'
 import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
 
@@ -54,15 +55,7 @@ export function ModelPickerDialog({
 
   const modelOptions = useQuery({
     queryKey: ['model-options', sessionId || 'global'],
-    queryFn: () => {
-      if (gw && sessionId) {
-        return gw.request<ModelOptionsResponse>('model.options', {
-          session_id: sessionId
-        })
-      }
-
-      return getGlobalModelOptions()
-    },
+    queryFn: () => requestModelOptions({ gateway: gw, sessionId }),
     enabled: open
   })
 
@@ -174,7 +167,7 @@ function ModelResults({
     return <div className="px-4 py-6 text-sm text-muted-foreground">{copy.noAuthenticatedProviders}</div>
   }
 
-  const q = search.trim().toLowerCase()
+  const q = normalize(search)
 
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q ||

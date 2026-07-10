@@ -12,6 +12,7 @@ import {
   IconBell as Bell,
   IconBookmark as Bookmark,
   IconBookmarkFilled as BookmarkFilled,
+  IconBox as Box,
   IconBrain as Brain,
   IconBug as Bug,
   IconCheck as Check,
@@ -26,6 +27,7 @@ import {
   IconCircle as CircleIcon,
   IconClipboard as Clipboard,
   IconClock as Clock,
+  IconCloud as Cloud,
   IconCommand as Command,
   IconCopy as Copy,
   IconCopy as CopyIcon,
@@ -91,6 +93,7 @@ import {
   IconSettings2 as Settings2,
   IconAdjustmentsHorizontal as SlidersHorizontal,
   IconSquare as Square,
+  IconChartDots3 as Starmap,
   IconSteeringWheel as SteeringWheel,
   IconPlayerStopFilled as StopFilled,
   IconSun as Sun,
@@ -125,6 +128,7 @@ export {
   Bell,
   Bookmark,
   BookmarkFilled,
+  Box,
   Brain,
   Bug,
   Check,
@@ -139,6 +143,7 @@ export {
   CircleIcon,
   Clipboard,
   Clock,
+  Cloud,
   Command,
   Copy,
   CopyIcon,
@@ -204,6 +209,7 @@ export {
   Settings2,
   SlidersHorizontal,
   Square,
+  Starmap,
   SteeringWheel,
   StopFilled,
   Sun,
@@ -225,3 +231,19 @@ export {
 }
 
 export type { Icon as IconComponent } from '@tabler/icons-react'
+
+/**
+ * Named icon-size scale — the single source of truth for SVG icon dimensions,
+ * replacing ad-hoc `h-N w-N` / `size={N}`. Use `<Icon className={iconSize.sm} />`
+ * (Tailwind `size-*` sets w+h and beats the icon's default 24px); compose with
+ * `cn()` for colour/animation classes.
+ */
+export const iconSize = {
+  xs: 'size-3', // 12px
+  sm: 'size-3.5', // 14px
+  md: 'size-4', // 16px
+  lg: 'size-5', // 20px
+  xl: 'size-6' // 24px
+} as const
+
+export type IconSize = keyof typeof iconSize

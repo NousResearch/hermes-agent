@@ -78,11 +78,17 @@ def format_secret_source_suffix(env_var: str) -> str:
         return ""
     if source == "bitwarden":
         return " (from Bitwarden)"
-    if source == "vaultwarden":
-        return " (from Vaultwarden)"
-    # Generic fallback — future-proofing for additional secret sources
-    # (e.g. 1Password, HashiCorp Vault) without having to update every
-    # call site.
+    # Ask the registry for the source's human label (e.g. "1Password").
+    # Fall back to the raw source name for labels the registry doesn't
+    # know (stale provenance from an uninstalled plugin, tests).
+    try:
+        from agent.secret_sources.registry import get_source
+
+        registered = get_source(source)
+        if registered is not None and registered.label:
+            return f" (from {registered.label})"
+    except Exception:  # noqa: BLE001 — label lookup must never raise
+        pass
     return f" (from {source})"
 
 
@@ -240,6 +246,20 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
 
+    # Load .op.env AFTER .env so that .env values win, but the bootstrap
+    # token (OP_SERVICE_ACCOUNT_TOKEN) becomes available for
+    # apply_onepassword_secrets() even in cron / subprocess environments
+    # that inherit no shell state (no systemd EnvironmentFile, no op run).
+    # .op.env is gitignored — the service-account token never enters the
+    # committed .env file.
+    # Users on systemd can alternatively use:
+    #   EnvironmentFile=-/path/to/.hermes/.op.env
+    # in their gateway unit, which takes precedence (override=False below
+    # ensures .op.env never clobbers a token already in the environment).
+    op_env = home_path / ".op.env"
+    if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+        _load_dotenv_with_fallback(op_env, override=False)
+
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
@@ -283,21 +303,27 @@ def _apply_managed_env() -> None:
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
-    """Pull secrets from external sources (currently Bitwarden) into env.
+    """Pull secrets from every enabled external source into env.
 
-    Runs AFTER dotenv loads so .env values are visible (we use them to
-    locate the access token) but BEFORE the rest of Hermes reads
+    Runs AFTER dotenv loads so .env values are visible (sources use them
+    to locate bootstrap tokens) but BEFORE the rest of Hermes reads
     ``os.environ`` for credentials.  Any failure here is logged and
     swallowed — external secret sources must never block startup.
+
+    The heavy lifting (source ordering, mapped-beats-bulk precedence,
+    first-claim-wins conflict handling, override semantics, provenance)
+    lives in ``agent.secret_sources.registry.apply_all``; this wrapper
+    owns the once-per-HERMES_HOME guard, the post-apply ASCII
+    sanitization sweep, the ``_SECRET_SOURCES`` provenance map that
+    UI surfaces read, and the startup status lines.
 
     Idempotent within a process: subsequent calls for the same
     ``home_path`` are no-ops.  ``load_hermes_dotenv()`` runs at import
     time from several hot modules (cli.py, hermes_cli/main.py,
     run_agent.py, trajectory_compressor.py, ...), so without this guard
-    the Bitwarden status line would print 3-5x per CLI startup.  Use
+    the status lines would print 3-5x per CLI startup.  Use
     ``reset_secret_source_cache()`` if you need to force a re-pull
-    (tests, future ``hermes secrets bitwarden sync`` from a long-running
-    process).
+    (tests, long-running processes after a config change).
     """
     home_key = str(Path(home_path).resolve())
     if home_key in _APPLIED_HOMES:
@@ -308,71 +334,45 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
         return
+    if not cfg:
+        return
 
-    bw_cfg = (cfg or {}).get("bitwarden") or {}
-    if bw_cfg.get("enabled"):
-        try:
-            from agent.secret_sources.bitwarden import apply_bitwarden_secrets
-        except ImportError:
-            pass
-        else:
-            result = apply_bitwarden_secrets(
-                enabled=True,
-                access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
-                project_id=bw_cfg.get("project_id", ""),
-                override_existing=bool(bw_cfg.get("override_existing", False)),
-                cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
-                auto_install=bool(bw_cfg.get("auto_install", True)),
-                server_url=str(bw_cfg.get("server_url", "") or "").strip(),
-                home_path=home_path,
-            )
-            _report_secret_source_result(result, "Bitwarden Secrets Manager", "bitwarden")
+    try:
+        from agent.secret_sources.registry import apply_all
+    except ImportError:
+        return
 
-    vw_cfg = (cfg or {}).get("vaultwarden") or {}
-    if vw_cfg.get("enabled"):
-        try:
-            from agent.secret_sources.vaultwarden import apply_vaultwarden_secrets
-        except ImportError:
-            pass
-        else:
-            result = apply_vaultwarden_secrets(
-                enabled=True,
-                session_env=vw_cfg.get("session_env", "BW_SESSION"),
-                item_name=vw_cfg.get("item_name", ""),
-                override_existing=bool(vw_cfg.get("override_existing", False)),
-                cache_ttl_seconds=float(vw_cfg.get("cache_ttl_seconds", 300)),
-                home_path=home_path,
-            )
-            _report_secret_source_result(result, "Vaultwarden", "vaultwarden")
+    try:
+        report = apply_all(cfg, home_path)
+    except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
+        return
 
-
-def _report_secret_source_result(result: object, label: str, source_key: str) -> None:
-    """Print status lines and record secret origins for a FetchResult."""
-    applied = getattr(result, "applied", [])
-    skipped = getattr(result, "skipped", [])
-    error = getattr(result, "error", None)
-    warnings = getattr(result, "warnings", [])
-    if applied:
+    if report.applied_any:
+        # Re-run the ASCII sanitization pass: vault values are
+        # user-supplied and might have the same copy-paste corruption as
+        # a manually edited .env (see #6843).
         _sanitize_loaded_credentials()
-        for name in applied:
-            _SECRET_SOURCES[name] = source_key
-        print(
-            f"  {label}: applied {len(applied)} "
-            f"secret{'s' if len(applied) != 1 else ''} "
-            f"({', '.join(sorted(applied))})",
-            file=sys.stderr,
-        )
-    if skipped:
-        print(
-            f"  {label}: skipped {len(skipped)} "
-            f"secret{'s' if len(skipped) != 1 else ''} already set in env "
-            f"({', '.join(sorted(skipped))})",
-            file=sys.stderr,
-        )
-    if error:
-        print(f"  {label}: {error}", file=sys.stderr)
-    for warn in warnings:
-        print(f"  {label}: {warn}", file=sys.stderr)
+        # Remember where each var came from so setup / `hermes model`
+        # flows can label detected credentials with "(from Bitwarden)" /
+        # "(from 1Password)" — otherwise users see "credentials ✓" with
+        # no hint the value came from a vault rather than .env.
+        for name, applied in report.provenance.items():
+            _SECRET_SOURCES[name] = applied.source
+
+    for src in report.sources:
+        if src.applied:
+            print(
+                f"  {src.label}: applied {len(src.applied)} "
+                f"secret{'s' if len(src.applied) != 1 else ''} "
+                f"({', '.join(sorted(src.applied))})",
+                file=sys.stderr,
+            )
+        if src.result.error:
+            print(f"  {src.label}: {src.result.error}", file=sys.stderr)
+        for warn in src.result.warnings:
+            print(f"  {src.label}: {warn}", file=sys.stderr)
+    for conflict in report.conflicts:
+        print(f"  Secret sources: {conflict}", file=sys.stderr)
 
 
 def _load_secrets_config(home_path: Path) -> dict:

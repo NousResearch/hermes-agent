@@ -216,6 +216,13 @@ chown_hermes_tree() {
     if refuse_symlinked_path "recursive chown" "$target"; then
         return 0
     fi
+    # Short-circuit: skip the recursive chown when the target is already owned
+    # by hermes:hermes.  Warm boots on profiles with tens of thousands of paths
+    # otherwise pay a full tree walk (via `chown -R`) just to confirm ownership
+    # that's already correct — adding minutes to container startup (#62208).
+    if [ "$(stat -c '%u:%g' "$target" 2>/dev/null)" = "$(id -u hermes 2>/dev/null):$(id -g hermes 2>/dev/null)" ]; then
+        return 0
+    fi
     chown -R hermes:hermes "$target" 2>/dev/null || \
         echo "[stage2] Warning: chown $target failed (rootless container?) — continuing"
 }

@@ -2559,3 +2559,134 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+# ---------------------------------------------------------------------------
+# Receive-path liveness stamp (#40199)
+# ---------------------------------------------------------------------------
+
+class TestSignalInboundLivenessStamp:
+    """_last_inbound_message must reflect ONLY real dispatched user messages.
+
+    Regression guard for the keepalive/daemon-health conflation the v0.99
+    transport rewrite removed: decryption failures, contentless envelopes,
+    sync-only events, and transport-level frames (receipts, typing) must NOT
+    advance the liveness stamp, while a genuinely dispatched message must —
+    and must also persist last_inbound_message_at for operators.
+    """
+
+    def _adapter_with_capture(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        dispatched = []
+
+        async def fake_handle(event):
+            dispatched.append(event)
+
+        adapter.handle_message = fake_handle
+
+        status_writes = []
+
+        def fake_status_write(context, **kwargs):
+            status_writes.append({"context": context, **kwargs})
+
+        adapter._write_runtime_status_safe = fake_status_write
+        return adapter, dispatched, status_writes
+
+    @pytest.mark.asyncio
+    async def test_real_message_stamps_and_persists(self, monkeypatch):
+        adapter, dispatched, status_writes = self._adapter_with_capture(monkeypatch)
+        assert adapter._last_inbound_message == 0.0
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {"message": "hello"},
+            }
+        })
+
+        assert len(dispatched) == 1
+        assert adapter._last_inbound_message > 0.0
+        inbound_writes = [w for w in status_writes if "last_inbound_message_at" in w]
+        assert len(inbound_writes) == 1
+        assert inbound_writes[0]["last_inbound_message_at"]
+
+    @pytest.mark.asyncio
+    async def test_decryption_exception_does_not_stamp(self, monkeypatch):
+        adapter, dispatched, status_writes = self._adapter_with_capture(monkeypatch)
+
+        await adapter._handle_envelope({
+            "exception": {
+                "type": "ProtocolNoSessionException",
+                "message": "no session with +15550001111",
+            },
+            "envelope": {"sourceNumber": "+15550001111"},
+        })
+
+        assert dispatched == []
+        assert adapter._last_inbound_message == 0.0
+        assert status_writes == []
+
+    @pytest.mark.asyncio
+    async def test_contentless_envelope_does_not_stamp(self, monkeypatch):
+        """Profile-key updates etc. carry a dataMessage wrapper but no content."""
+        adapter, dispatched, status_writes = self._adapter_with_capture(monkeypatch)
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "timestamp": 1000000000,
+                "dataMessage": {"message": ""},
+            }
+        })
+
+        assert dispatched == []
+        assert adapter._last_inbound_message == 0.0
+        assert status_writes == []
+
+    @pytest.mark.asyncio
+    async def test_sync_only_envelope_does_not_stamp(self, monkeypatch):
+        """Sync events that aren't Note-to-Self (read receipts) are filtered."""
+        adapter, dispatched, status_writes = self._adapter_with_capture(monkeypatch)
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15551234567",
+                "timestamp": 1000000000,
+                "syncMessage": {
+                    "readMessages": [
+                        {"sender": "+15550001111", "timestamp": 999999999},
+                    ],
+                },
+            }
+        })
+
+        assert dispatched == []
+        assert adapter._last_inbound_message == 0.0
+        assert status_writes == []
+
+    @pytest.mark.asyncio
+    async def test_transport_frames_do_not_stamp(self, monkeypatch):
+        """Receipt/typing envelopes prove the transport is alive, not that
+        user messages are being delivered — they must not touch the stamp."""
+        adapter, dispatched, status_writes = self._adapter_with_capture(monkeypatch)
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "timestamp": 1000000000,
+                "receiptMessage": {"when": 1000000000, "isDelivery": True},
+            }
+        })
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "timestamp": 1000000001,
+                "typingMessage": {"action": "STARTED"},
+            }
+        })
+
+        assert dispatched == []
+        assert adapter._last_inbound_message == 0.0
+        assert status_writes == []

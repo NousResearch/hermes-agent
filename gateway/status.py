@@ -804,6 +804,7 @@ def write_runtime_status(
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
+    last_inbound_message_at: Any = _UNSET,
     served_profiles: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
@@ -839,6 +840,12 @@ def write_runtime_status(
             platform_payload["error_code"] = error_code
         if error_message is not _UNSET:
             platform_payload["error_message"] = error_message
+        if last_inbound_message_at is not _UNSET:
+            # Stamped by an adapter's dispatch path when a REAL user message
+            # is delivered — never on transport frames, receipts, or daemon
+            # health. Lets operators distinguish "connected" from "connected
+            # but not receiving" (#40199).
+            platform_payload["last_inbound_message_at"] = last_inbound_message_at
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
 

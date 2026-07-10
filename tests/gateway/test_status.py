@@ -641,6 +641,32 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
 
+    def test_write_runtime_status_records_last_inbound_message_at(self, tmp_path, monkeypatch):
+        """Adapters stamp last_inbound_message_at when a real user message is
+        dispatched (#40199) — it must persist in the platform payload and
+        survive later writes that omit it."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            platform="signal",
+            last_inbound_message_at="2026-07-09T12:00:00+00:00",
+        )
+
+        payload = status.read_runtime_status()
+        assert (
+            payload["platforms"]["signal"]["last_inbound_message_at"]
+            == "2026-07-09T12:00:00+00:00"
+        )
+
+        # A subsequent state-only write must not clobber the stamp.
+        status.write_runtime_status(platform="signal", platform_state="connected")
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["signal"]["state"] == "connected"
+        assert (
+            payload["platforms"]["signal"]["last_inbound_message_at"]
+            == "2026-07-09T12:00:00+00:00"
+        )
+
     def test_write_runtime_status_explicit_none_clears_stale_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

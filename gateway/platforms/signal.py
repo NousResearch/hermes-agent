@@ -778,6 +778,13 @@ class SignalAdapter(BasePlatformAdapter):
         # message — never on keepalives, receipts, sync events, or daemon-health.
         # This is the honest "are we actually receiving?" signal (#32574/#40199).
         self._last_inbound_message = time.time()
+        # Persist to gateway_state.json so operators can distinguish
+        # "connected" from "connected but no real inbound for N hours"
+        # without access to adapter-private state (#40199).
+        self._write_runtime_status_safe(
+            "inbound",
+            last_inbound_message_at=datetime.now(tz=timezone.utc).isoformat(),
+        )
         await self.handle_message(event)
 
     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:

@@ -187,8 +187,14 @@ def get_pending_for_session(
         return None
 
 
-def _coerce_text_response(entry: _ClarifyEntry, response: str) -> str:
-    """Map typed choice replies to canonical choice text, otherwise keep custom text."""
+def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
+    """Map typed choice replies to canonical choice text, or None if the text doesn't match.
+
+    For multi-choice clarifies, only numeric choices and exact label matches
+    auto-resolve.  Arbitrary prose returns None so it is NOT consumed as a
+    clarify answer and proceeds as a normal turn instead.
+    For open-ended clarifies (no choices), any text is accepted.
+    """
     text = str(response).strip()
     if entry.choices:
         try:
@@ -200,18 +206,25 @@ def _coerce_text_response(entry: _ClarifyEntry, response: str) -> str:
         for choice in entry.choices:
             if text.casefold() == str(choice).strip().casefold():
                 return str(choice).strip()
+        # Multi-choice with no match → don't consume the message.
+        return None
     return text
 
 
 def resolve_text_response_for_session(session_key: str, response: str) -> bool:
-    """Resolve the oldest pending clarify in ``session_key`` from typed text."""
+    """Resolve the oldest pending clarify in ``session_key`` from typed text.
+
+    For multi-choice clarifies, only numeric choices and exact label matches
+    resolve the clarify.  Arbitrary prose returns False so the message proceeds
+    as a normal turn instead of being swallowed.
+    """
     entry = get_pending_for_session(session_key, include_choice_prompts=True)
     if entry is None:
         return False
-    return resolve_gateway_clarify(
-        entry.clarify_id,
-        _coerce_text_response(entry, response),
-    )
+    coerced = _coerce_text_response(entry, response)
+    if coerced is None:
+        return False
+    return resolve_gateway_clarify(entry.clarify_id, coerced)
 
 
 def mark_awaiting_text(clarify_id: str) -> bool:

@@ -744,8 +744,9 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     teaching subagents a fake container path while still helping them avoid
     guessing `/workspace/...` for local repo tasks.
     """
+    from agent.runtime_cwd import resolve_tool_cwd
     candidates = [
-        os.getenv("TERMINAL_CWD"),
+        resolve_tool_cwd() or None,
         getattr(
             getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None
         ),

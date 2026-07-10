@@ -2958,21 +2958,17 @@ def run_job(
         _VAR_MAP[_var_name].set("")
 
     # Per-job working directory.  When set (and validated at create/update
-    # time), we point TERMINAL_CWD at it so:
+    # time), we pin it via the _SESSION_CWD ContextVar (set_session_cwd) so:
     #   - build_context_files_prompt() picks up AGENTS.md / CLAUDE.md /
     #     .cursorrules from the job's project dir, AND
     #   - the terminal, file, and code-exec tools run commands from there.
     #
-    # os.environ["TERMINAL_CWD"] is process-global, so this override is
-    # serialized by _terminal_cwd_lock (acquired just below): a workdir job
-    # holds it as a writer for its whole run, excluding every other job, while
-    # workdir-less jobs hold it as readers and stay parallel with each other.
-    # The sequential pool only keeps workdir jobs from overlapping EACH OTHER;
-    # the lock is what additionally keeps a concurrently-firing workdir-less
-    # parallel-pool job from observing this override and running its shell /
-    # file / code-exec commands in the wrong directory.  For workdir-less jobs
-    # we leave TERMINAL_CWD untouched — preserves the original behaviour
-    # (skip_context_files=True, tools use whatever cwd the scheduler has).
+    # ContextVar isolation means each cron job's workdir is visible only
+    # within that job's execution context (propagated through
+    # contextvars.copy_context() in _submit_with_guard and
+    # propagate_context_to_thread in tool dispatch).  Multiple workdir
+    # jobs can run in parallel without colliding — no process-global
+    # os.environ mutation, no ReadWriteLock, no sequential pool.
     _job_workdir = (job.get("workdir") or "").strip() or None
     if _job_workdir and not Path(_job_workdir).is_dir():
         # Directory was removed between create-time validation and now.  Log
@@ -2983,26 +2979,12 @@ def run_job(
         )
         _job_workdir = None
 
-    # Snapshot the current env value BEFORE acquiring the lock so the finally
-    # below can always restore it, even if an exception fires before we set the
-    # override inside the try.  This read can't leak the lock (it precedes the
-    # acquire) and is a no-op for workdir-less jobs (they never mutate the env).
-    _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
+    _cwd_token = None
 
-    _holds_cwd_write = _job_workdir is not None
-    if _holds_cwd_write:
-        _terminal_cwd_lock.acquire_write()
-    else:
-        _terminal_cwd_lock.acquire_read()
-
-    # Everything after the acquire MUST live inside this try, so the finally
-    # below always releases the lock even if the env override or any later
-    # statement raises.  A leaked writer would deadlock the whole scheduler
-    # (every future job blocks on acquire_*); a leaked reader blocks all
-    # future writers.  Acquire itself can't leak (it either blocks or returns).
     try:
         if _job_workdir:
-            os.environ["TERMINAL_CWD"] = _job_workdir
+            from agent.runtime_cwd import set_session_cwd
+            _cwd_token = set_session_cwd(_job_workdir)
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
 
         # Re-read .env and config.yaml fresh every run so provider/key
@@ -3589,20 +3571,13 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
-        # Restore TERMINAL_CWD to whatever it was before this job ran.  We
-        # only ever mutate it when the job has a workdir; see the setup block
-        # at the top of run_job for the serialization guarantee.
-        if _job_workdir:
-            if _prior_terminal_cwd == "_UNSET_":
-                os.environ.pop("TERMINAL_CWD", None)
-            else:
-                os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
-        # Release the cwd lock now that the env is restored, so a waiting
-        # workdir job (or queued reader) can proceed without seeing the override.
-        if _holds_cwd_write:
-            _terminal_cwd_lock.release_write()
-        else:
-            _terminal_cwd_lock.release_read()
+        # Reset the per-context _SESSION_CWD ContextVar if we overrode it.
+        # clear_session_vars (below) also resets _SESSION_CWD to "", but
+        # resetting the token explicitly is cleaner and handles the case
+        # where clear_session_vars is skipped due to an earlier exception.
+        if _cwd_token is not None:
+            from agent.runtime_cwd import _SESSION_CWD
+            _SESSION_CWD.reset(_cwd_token)
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
@@ -3963,14 +3938,13 @@ def tick(
             body."""
             return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
-        # they queue on the single-thread sequential pool to run one at a time.
-        # That alone only keeps workdir jobs from overlapping EACH OTHER;
-        # run_job's _terminal_cwd_lock is what additionally stops a concurrently
-        # firing workdir-less parallel-pool job from observing the override.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # All due jobs run in the parallel pool. Workdir jobs no longer need
+        # sequential execution because the workdir is pinned via a per-context
+        # ContextVar (_SESSION_CWD), not the process-global os.environ.
+        # contextvars.copy_context() in _submit_with_guard ensures each job's
+        # ContextVar is isolated from every other concurrently running job.
+        sequential_jobs: list = []
+        parallel_jobs = list(due_jobs)
 
         _results: list = []
         _all_futures: list = []

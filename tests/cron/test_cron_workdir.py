@@ -198,16 +198,15 @@ class TestCronjobToolWorkdir:
 
 class TestTickWorkdirPartition:
     """
-    tick() must run workdir jobs sequentially (outside the ThreadPoolExecutor)
-    because run_job mutates os.environ["TERMINAL_CWD"], which is process-global.
-    We verify the partition without booting the real scheduler by patching the
-    pieces tick() calls.
+    tick() now runs ALL jobs (including workdir jobs) in the parallel pool.
+    Workdir isolation is achieved via per-context ContextVar (_SESSION_CWD),
+    not process-global os.environ mutation, so no sequential pool is needed.
     """
 
-    def test_workdir_jobs_run_sequentially(self, tmp_path, monkeypatch):
+    def test_workdir_jobs_run_in_parallel(self, tmp_path, monkeypatch):
         import cron.scheduler as sched
 
-        # Two workdir jobs (both sequential) + one parallel job.
+        # Two workdir jobs + one non-workdir job — all should run in parallel.
         workdir_a = {"id": "a", "name": "A", "workdir": str(tmp_path)}
         workdir_b = {"id": "b", "name": "B", "workdir": str(tmp_path)}
         parallel_job = {"id": "c", "name": "C", "workdir": None}
@@ -237,19 +236,16 @@ class TestTickWorkdirPartition:
         assert n == 3
 
         ids = [c[0] for c in calls]
-        # Sequential workdir jobs preserve submission order relative to each
-        # other (single-thread pool).
-        assert ids.index("a") < ids.index("b")
+        # All jobs should be submitted (order may vary due to parallel execution)
+        assert set(ids) == {"a", "b", "c"}
 
-        # Workdir jobs run on the persistent single-thread cron-seq pool —
-        # NOT the main thread — so a long workdir job never blocks the ticker.
+        # All jobs run on the parallel pool (not sequential pool) because
+        # workdir jobs now use per-context ContextVar isolation.
         main_thread_name = threading.current_thread().name
-        for jid in ("a", "b"):
-            workdir_thread_name = next(t for j, t in calls if j == jid)
-            assert workdir_thread_name != main_thread_name
-            assert workdir_thread_name.startswith("cron-seq"), workdir_thread_name
-        par_thread_name = next(t for j, t in calls if j == "c")
-        assert par_thread_name.startswith("cron-parallel"), par_thread_name
+        for jid in ("a", "b", "c"):
+            job_thread_name = next(t for j, t in calls if j == jid)
+            assert job_thread_name != main_thread_name
+            assert job_thread_name.startswith("cron-parallel"), job_thread_name
 
 
 # ---------------------------------------------------------------------------
@@ -274,14 +270,12 @@ class TestRunJobTerminalCwd:
             def __init__(self, **kwargs):
                 observed["skip_context_files"] = kwargs.get("skip_context_files")
                 observed["load_soul_identity"] = kwargs.get("load_soul_identity")
-                observed["terminal_cwd_during_init"] = os.environ.get(
-                    "TERMINAL_CWD", "_UNSET_"
-                )
+                from agent.runtime_cwd import resolve_agent_cwd
+                observed["terminal_cwd_during_init"] = str(resolve_agent_cwd())
 
             def run_conversation(self, *_a, **_kw):
-                observed["terminal_cwd_during_run"] = os.environ.get(
-                    "TERMINAL_CWD", "_UNSET_"
-                )
+                from agent.runtime_cwd import resolve_agent_cwd
+                observed["terminal_cwd_during_run"] = str(resolve_agent_cwd())
                 return {"final_response": "done", "messages": []}
 
             def get_activity_summary(self):
@@ -318,16 +312,18 @@ class TestRunJobTerminalCwd:
         import dotenv
         monkeypatch.setattr(dotenv, "load_dotenv", lambda *_a, **_kw: True)
 
-    def test_workdir_sets_and_restores_terminal_cwd(
+    def test_workdir_sets_and_restores_session_cwd(
         self, tmp_path, monkeypatch
     ):
         import os
         import cron.scheduler as sched
+        from agent.runtime_cwd import resolve_agent_cwd, _SESSION_CWD
 
         # Make sure the test's TERMINAL_CWD starts at a known non-workdir value.
         # Use monkeypatch.setenv so it's restored on teardown regardless of
         # whatever other tests in this xdist worker have left behind.
         monkeypatch.setenv("TERMINAL_CWD", "/original/cwd")
+        _SESSION_CWD.set("")
 
         observed: dict = {}
         self._install_stubs(monkeypatch, observed)
@@ -345,27 +341,27 @@ class TestRunJobTerminalCwd:
         # AIAgent was built with skip_context_files=False (feature ON).
         assert observed["skip_context_files"] is False
         assert observed["load_soul_identity"] is True
-        # TERMINAL_CWD was pointing at the job workdir while the agent ran.
+        # The agent's resolved cwd was pointing at the job workdir while the agent ran.
         assert observed["terminal_cwd_during_init"] == str(tmp_path.resolve())
         assert observed["terminal_cwd_during_run"] == str(tmp_path.resolve())
 
-        # And it was restored to the original value in finally.
-        assert os.environ["TERMINAL_CWD"] == "/original/cwd"
+        # And _SESSION_CWD was reset to "" in finally (ContextVar restored).
+        assert _SESSION_CWD.get() == ""
+        # os.environ["TERMINAL_CWD"] was not mutated by the ContextVar approach.
+        assert os.environ.get("TERMINAL_CWD", "") == "/original/cwd"
 
-    def test_no_workdir_leaves_terminal_cwd_untouched(self, monkeypatch):
-        """When workdir is absent, run_job must not touch TERMINAL_CWD at all —
+    def test_no_workdir_leaves_terminal_cwd_untouched(self, tmp_path, monkeypatch):
+        """When workdir is absent, run_job must not touch the agent cwd at all —
         whatever value was present before the call should be present after.
-
-        We don't assert on the *content* of TERMINAL_CWD (other tests in the
-        same xdist worker may leave it set to something like '.'); we just
-        check it's unchanged by run_job.
         """
         import os
         import cron.scheduler as sched
+        from agent.runtime_cwd import _SESSION_CWD
 
-        # Pin TERMINAL_CWD to a sentinel via monkeypatch so we control both
+        # Pin TERMINAL_CWD to a real dir via monkeypatch so we control both
         # the before-value and the after-value regardless of cross-test state.
-        monkeypatch.setenv("TERMINAL_CWD", "/cron-test-sentinel")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        _SESSION_CWD.set("")
         before = os.environ["TERMINAL_CWD"]
 
         observed: dict = {}
@@ -385,8 +381,8 @@ class TestRunJobTerminalCwd:
         assert observed["skip_context_files"] is True
         # Cron still forces SOUL.md identity even when cwd context files stay off.
         assert observed["load_soul_identity"] is True
-        # TERMINAL_CWD saw the same value during init as it had before.
+        # The agent's resolved cwd saw the same value during init as it had before.
         assert observed["terminal_cwd_during_init"] == before
-        # And after run_job completes, it's still the sentinel (nothing
+        # And after run_job completes, it's still the same (nothing
         # overwrote or cleared it).
         assert os.environ["TERMINAL_CWD"] == before

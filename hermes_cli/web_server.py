@@ -78,7 +78,6 @@ from plugins.memory.config_schema import (
     ProviderConfigSchema,
     ProviderField,
     STORAGE_HONCHO_HOST_BLOCK,
-    get_provider_action_handler,
     get_provider_config_schema,
 )
 from gateway.status import (
@@ -855,10 +854,6 @@ class EnvVarReveal(BaseModel):
 
 
 class MemoryProviderConfigUpdate(BaseModel):
-    values: Dict[str, Any] = {}
-
-
-class MemoryProviderActionRequest(BaseModel):
     values: Dict[str, Any] = {}
 
 
@@ -4377,16 +4372,7 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]
         entry["is_set"] = native is not None if is_honcho else bool(value)
         fields.append(entry)
 
-    return {
-        "name": provider.name,
-        "label": provider.label,
-        "docs_url": provider.docs_url,
-        "fields": fields,
-        "actions": [
-            {"key": action.key, "label": action.label, "description": action.description}
-            for action in provider.actions
-        ],
-    }
+    return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": fields}
 
 
 def _apply_field_values(provider: ProviderConfigSchema, values: Dict[str, str], target_for) -> None:
@@ -5365,43 +5351,6 @@ async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpd
         _log.exception("PUT /api/memory/providers/%s/config failed", name)
         raise HTTPException(status_code=500, detail="Internal server error")
 
-
-@app.post("/api/memory/providers/{name}/actions/{action}")
-async def run_memory_provider_action(
-    name: str, action: str, body: MemoryProviderActionRequest, profile: Optional[str] = None
-):
-    """Run a provider-declared action (validate, start-local, …) generically.
-
-    The schema declares actions; the plugin's config_actions.py implements
-    them. Undeclared actions 404, a declared action without a handler is a
-    plugin bug and 500s, and a handler raising ValueError maps to 400 so
-    plugins can surface user-facing validation messages.
-    """
-
-    _require_valid_memory_provider_name(name)
-
-    def _run():
-        with _profile_scope(profile):
-            provider = get_provider_config_schema(name)
-            if provider is None or provider.action(action) is None:
-                raise HTTPException(status_code=404, detail=f"Unknown action: {name}/{action}")
-            handler = get_provider_action_handler(name, action)
-            if handler is None:
-                raise HTTPException(
-                    status_code=500, detail=f"No handler for declared action: {name}/{action}"
-                )
-            return handler(dict(body.values or {}))
-
-    try:
-        result = await asyncio.to_thread(_run)
-        return {"ok": True, "result": result if isinstance(result, dict) else {}}
-    except HTTPException:
-        raise
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception:
-        _log.exception("POST /api/memory/providers/%s/actions/%s failed", name, action)
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/api/config")
 async def get_config(profile: Optional[str] = None):

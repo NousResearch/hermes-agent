@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
-import { getMemoryProviderConfig, runMemoryProviderAction, saveMemoryProviderConfig } from '@/hermes'
-import { Loader2, SlidersHorizontal } from '@/lib/icons'
-import { notify, notifyError } from '@/store/notifications'
+import { getMemoryProviderConfig, saveMemoryProviderConfig } from '@/hermes'
+import { SlidersHorizontal } from '@/lib/icons'
+import { notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
 import { FieldControl, FieldTitle } from './field-control'
@@ -24,7 +24,6 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
   const [values, setValues] = useState<Record<string, string>>({})
   const [saved, setSaved] = useState<Record<string, string>>({})
   const [expanded, setExpanded] = useState(true)
-  const [runningAction, setRunningAction] = useState<null | string>(null)
   const [showModal, setShowModal] = useState(false)
 
   const refresh = useCallback(async () => {
@@ -73,26 +72,6 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
       }
     },
     [provider, saved]
-  )
-
-  const runAction = useCallback(
-    async (key: string, label: string) => {
-      setRunningAction(key)
-      try {
-        const { result } = await runMemoryProviderAction(provider, key, values)
-        notify({
-          kind: 'success',
-          title: label,
-          message: typeof result.message === 'string' ? result.message : 'Action completed.'
-        })
-        await refresh()
-      } catch (err) {
-        notifyError(err, `${label} failed`)
-      } finally {
-        setRunningAction(null)
-      }
-    },
-    [provider, refresh, values]
   )
 
   // Providers without a declared config surface (e.g. builtin) render nothing.
@@ -164,24 +143,6 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
             </div>
           ))}
 
-          {config.actions.length > 0 && (
-            <div className="flex items-center justify-end gap-2 pt-3">
-              {config.actions.map(action => (
-                <Button
-                  disabled={runningAction !== null}
-                  key={action.key}
-                  onClick={() => void runAction(action.key, action.label)}
-                  size="sm"
-                  title={action.description || undefined}
-                  type="button"
-                  variant="secondary"
-                >
-                  {runningAction === action.key && <Loader2 className="size-3.5 animate-spin" />}
-                  {action.label}
-                </Button>
-              ))}
-            </div>
-          )}
         </div>
       )}
 

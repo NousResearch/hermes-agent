@@ -92,22 +92,6 @@ class ProviderField:
 
 
 @dataclass(frozen=True)
-class ProviderAction:
-    """A provider-specific operation exposed as a button on the config panel.
-
-    Declared here, implemented in the plugin's ``config_actions.py`` as an
-    entry in ``ACTION_HANDLERS`` — ``{key: handler}`` where the handler takes
-    the submitted field values dict and returns a JSON-able result dict.
-    Like ``config_schema.py``, that file is loaded by path and must stay
-    import-light; heavy imports belong inside the handler bodies.
-    """
-
-    key: str
-    label: str
-    description: str = ""
-
-
-@dataclass(frozen=True)
 class ProviderConfigSchema:
     """A provider plugin's declared config surface."""
 
@@ -117,13 +101,9 @@ class ProviderConfigSchema:
     # Optional link to the provider's config docs, shown in the full-config modal.
     docs_url: str = ""
     fields: tuple[ProviderField, ...] = dataclass_field(default_factory=tuple)
-    actions: tuple[ProviderAction, ...] = ()
 
     def inline_fields(self) -> tuple[ProviderField, ...]:
         return tuple(f for f in self.fields if f.inline)
-
-    def action(self, key: str) -> ProviderAction | None:
-        return next((a for a in self.actions if a.key == key), None)
 
 
 _SCHEMA_CACHE: dict[str, ProviderConfigSchema] = {}
@@ -162,30 +142,3 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
     if schema is not None:
         _SCHEMA_CACHE[key] = schema
     return schema
-
-
-def get_provider_action_handler(name: str, action_key: str):
-    """Return the handler for a declared action, or ``None`` when missing.
-
-    Handlers live in ``ACTION_HANDLERS`` in the plugin's ``config_actions.py``,
-    loaded by path like the schema. Not cached: actions are user-initiated and
-    rare, and a fixed handler file must not need a restart to be picked up.
-    """
-
-    from plugins.memory import find_provider_dir
-
-    provider_dir = find_provider_dir(name)
-    path = provider_dir / "config_actions.py" if provider_dir else None
-    if path is None or not path.is_file():
-        return None
-
-    try:
-        spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_actions.{name}", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    except Exception:
-        _log.exception("failed to load config actions for memory provider %r", name)
-        return None
-
-    handlers = getattr(module, "ACTION_HANDLERS", None)
-    return handlers.get(action_key) if isinstance(handlers, dict) else None

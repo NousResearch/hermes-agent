@@ -35,7 +35,6 @@ function field(overrides: Partial<MemoryProviderField> & Pick<MemoryProviderFiel
 
 function schema(): MemoryProviderConfig {
   return {
-    actions: [],
     name: 'honcho',
     label: 'Honcho',
     docs_url: 'https://docs.honcho.dev/v3/guides/integrations/hermes',

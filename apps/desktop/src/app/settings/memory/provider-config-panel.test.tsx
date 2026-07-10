@@ -5,13 +5,10 @@ import type { MemoryProviderConfig } from '@/types/hermes'
 
 const getMemoryProviderConfig = vi.fn()
 const saveMemoryProviderConfig = vi.fn()
-const runMemoryProviderAction = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getMemoryProviderConfig: (provider: string) => getMemoryProviderConfig(provider),
-  saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values),
-  runMemoryProviderAction: (provider: string, action: string, values: unknown) =>
-    runMemoryProviderAction(provider, action, values)
+  saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values)
 }))
 
 vi.mock('@/store/profile', async () => {
@@ -26,7 +23,6 @@ vi.mock('@/store/notifications', () => ({
 
 function honchoSchema(): MemoryProviderConfig {
   return {
-    actions: [],
     name: 'honcho',
     label: 'Honcho',
     docs_url: 'https://docs.honcho.dev/v3/guides/integrations/hermes',
@@ -104,7 +100,6 @@ function honchoSchema(): MemoryProviderConfig {
 beforeEach(() => {
   getMemoryProviderConfig.mockResolvedValue(honchoSchema())
   saveMemoryProviderConfig.mockResolvedValue({ ok: true })
-  runMemoryProviderAction.mockResolvedValue({ ok: true, result: { message: 'pong' } })
 })
 
 afterEach(() => {
@@ -188,20 +183,6 @@ describe('ProviderConfigPanel', () => {
 
     await screen.findByDisplayValue('myws')
     expect(screen.getByRole('button', { name: /Full config/ })).toBeTruthy()
-  })
-
-  it('renders declared actions as buttons and posts the inline values', async () => {
-    const schema = honchoSchema()
-    schema.actions = [{ key: 'ping', label: 'Ping', description: 'Check the server' }]
-    getMemoryProviderConfig.mockResolvedValue(schema)
-
-    await renderPanel()
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Ping' }))
-
-    await waitFor(() =>
-      expect(runMemoryProviderAction).toHaveBeenCalledWith('honcho', 'ping', expect.objectContaining({ workspace: 'myws' }))
-    )
   })
 
   it('shows an inline error with retry when the load fails, then recovers', async () => {

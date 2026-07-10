@@ -142,14 +142,7 @@ export interface MemoryProviderField {
   value: string
 }
 
-export interface MemoryProviderAction {
-  description: string
-  key: string
-  label: string
-}
-
 export interface MemoryProviderConfig {
-  actions: MemoryProviderAction[]
   docs_url: string
   fields: MemoryProviderField[]
   label: string

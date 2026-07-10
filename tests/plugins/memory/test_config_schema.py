@@ -65,9 +65,3 @@ def test_broken_schema_is_not_cached(monkeypatch, tmp_path):
     recovered = get_provider_config_schema("broken")
     assert recovered is not None
     assert recovered.label == "Broken"
-
-
-def test_provider_without_action_module_has_no_handlers():
-    from plugins.memory.config_schema import get_provider_action_handler
-
-    assert get_provider_action_handler("honcho", "anything") is None

@@ -154,7 +154,7 @@ Relevant source locations at the investigation commit:
 3. The chat-host terminal interface used during this investigation bypassed the repository's source terminal tool, so it is not a valid production-path test of automatic evidence recording.
 4. The old in-memory CLI/harness process used different identities for edit tracking and the stop notifier, even after the source patch was committed and gateway restarted.
 5. The source test covers mocked generic tool dispatch and mocked stop-gate ownership after one simulated rotation. It does not exercise `tools.terminal_tool`, SQLite evidence, actual preflight compression, background review, or gateway session routing together.
-6. `hermes_state.py:1914-1927` documents an existing race: two `AIAgent` instances sharing a parent session ID—especially a parent turn plus a background-review fork—can each rotate that parent while compressing, leaving orphan child sessions. A lock API exists to prevent it.
+6. `hermes_state.py:1914-1927` documents an existing race for two `AIAgent` instances that share a parent session ID. The current background-review implementation explicitly sets `review_agent.compression_enabled = False` (`agent/background_review.py:731-741`), so that fork is not a proven direct compressor in the normal current path. The race remains a guardrail/risk if another peer compresses or if that invariant regresses. A lock API exists to prevent it.
 7. The gateway log demonstrated pathological repeated compression and self-improvement writes in a live process.
 8. Live config contains an obsolete `hooks.post_turn` entry. Gateway logs correctly warn that `post_turn` is unknown. It is a cleanup item, but no evidence presently ties it to this incident.
 
@@ -166,11 +166,11 @@ Relevant source locations at the investigation commit:
 
 **What would prove/disprove it:** A deterministic integration test that mutates live `agent.session_id` during preflight compression, performs a real source terminal-tool test command, and asserts exactly one parent-owned state/event and no verifier nudge.
 
-### H2 — Concurrent compression by parent and background-review fork creates orphan lineage
+### H2 — Concurrent compression can create orphan lineage when its locking invariant is unavailable
 
-**Evidence:** The state-layer source explicitly describes this race, and the live gateway logged 49 compressions plus self-improvement behavior during the affected process lifetime.
+**Evidence:** The state-layer source explicitly describes this race, and the live gateway logged 49 compressions plus self-improvement behavior during the affected process lifetime. The normal current background-review fork sets `compression_enabled = False`, so it is not a demonstrated active contender; the observed skill writes are still possible because the fork is intentionally permitted to use skill and memory tools.
 
-**What would prove/disprove it:** A deterministic two-agent/fork concurrency test using the same state DB and session ID. Assert that exactly one agent obtains the compression lock, one successor identity exists, the losing fork does not persist/rotate the user session, and no skill/memory write leaks from a cancelled/shutting-down fork.
+**What would prove/disprove it:** A deterministic two-peer compression test using the same state DB and session ID, including the lock-subsystem-unavailable branch. Assert that exactly one agent obtains the compression lock when available, one successor identity exists, and an unavailable lock does not permit unbounded retries or orphan lineage. Separately, assert that a cancelled/shutting-down review fork performs no skill/memory write.
 
 ### H3 — Synthetic verification continuation is leaking into user-visible output
 
@@ -229,10 +229,10 @@ Before another implementation attempt, add focused tests that fail on the curren
    - Cover quiet sequential executor, normal sequential executor, generic runtime helper, and middleware/hook route.
    - Assert each receives the same immutable verification owner.
 
-3. **Background-review compression race**
-   - Run parent and review-fork contenders against one state DB/session ID.
+3. **Concurrent-compression safety**
+   - Run two compression-capable peer contenders against one state DB/session ID (the normal review fork is compression-disabled).
    - Assert exactly one lock holder and one session rotation.
-   - Assert no orphan session writes and no user-session mutation from the losing/cancelled fork.
+   - Assert no orphan session writes and bounded, safe behavior if the lock subsystem is unavailable.
 
 4. **Shutdown cancellation**
    - Interrupt a compression/review path.
@@ -260,3 +260,24 @@ A fix is not complete until all are true:
 - Current old CLI/harness session: not trustworthy for rollout verification; it retained pre-patch runtime behavior and split state ownership.
 - Do not apply a third in-process identity patch before an independent audit identifies the complete ownership boundary.
 - The next implementation should be done in a fresh external harness/worktree, commit only the smallest verified slice, then roll out with a fresh-process receipt.
+
+## Independent external audit receipt (verified)
+
+On 2026-07-10, `codex-cli 0.140.0` ran a read-only audit in a fresh ephemeral session (`gpt-5.4`, `sandbox=read-only`). Its final report was preserved at `/tmp/hermes-verification-interruption-codex-audit-20260710.md`; the repository remained clean after the audit.
+
+The following audit findings were independently checked in source:
+
+1. **Confirmed identity miss:** `agent/agent_runtime_helpers.py:2135-2145` invokes `run_tool_execution_middleware` with mutable `agent.session_id`, while the nested registry dispatch uses `_verification_session_id`. This is a real split boundary missed by `8092c8b182`.
+2. **Confirmed cancellation miss:** `agent/turn_finalizer.py:470-480` only prevents review when the completed turn is already marked interrupted. A process shutdown can occur after that decision. `agent/background_review.py:677-741` disables transcript persistence and compression but deliberately permits skills/memory tool writes; the daemon review thread has no parent cancellation token. This explains the observed self-improvement writes during the old process shutdown.
+3. **Confirmed compression caveat:** `agent/conversation_compression.py:487-529` intentionally proceeds without a lock when the lock subsystem is missing or stale in memory. It is a bounded trade-off against a no-progress retry loop, not a proof that the normal review fork caused the incident.
+4. **Not confirmed as a product leak:** `agent/conversation_loop.py:5069-5150` appends verification nudges as synthetic model turns. The audit found no standard CLI/gateway emitter for those flags. Raw `[System: ...]` appearance therefore remains a harness/transport hypothesis and requires an end-to-end test rather than a speculative code change.
+
+### External implementation contract
+
+The next coding pass must remain narrow and test-driven:
+
+1. Add failing regressions for the execution-middleware identity, real file/terminal evidence after a rotation, and shutdown cancellation of background review.
+2. Pass the immutable verification owner to execution middleware as well as nested dispatch. Preserve explicit compatibility semantics for any genuine task-scoped call; do not silently change unrelated task IDs.
+3. Introduce a cancellation/shutdown signal shared with background-review work, check it before review spawn and immediately before any review skill/memory write, and prevent new compression work/rotation after interruption while always releasing any acquired lock.
+4. Do not remove verification, weaken freshness, or make the `post_turn` cleanup part of the behavioral fix.
+5. Run focused tests, the relevant wider suite, and a fresh-process verification before service rollout. No manual ledger reconciliation may be used as acceptance evidence.

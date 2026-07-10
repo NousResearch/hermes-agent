@@ -51,7 +51,9 @@ interface HarnessHandle {
 }
 
 function Harness({
+  activeSessionIdRef: activeSessionIdRefProp,
   busyRef,
+  getRouteToken,
   onReady,
   onSeedState,
   openMemoryGraph,
@@ -59,11 +61,14 @@ function Harness({
   requestGateway,
   resumeStoredSession,
   seedMessages,
+  selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
   storedSessionId,
   activeSessionId,
   createBackendSessionForSend
 }: {
+  activeSessionIdRef?: MutableRefObject<string | null>
   busyRef?: MutableRefObject<boolean>
+  getRouteToken?: () => string
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
   openMemoryGraph?: () => void
@@ -71,15 +76,16 @@ function Harness({
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   seedMessages?: unknown[]
+  selectedStoredSessionIdRef?: MutableRefObject<string | null>
   storedSessionId?: null | string
   activeSessionId?: null | string
   createBackendSessionForSend?: () => Promise<null | string>
 }) {
-  const activeSessionIdRef: MutableRefObject<string | null> = {
+  const activeSessionIdRef: MutableRefObject<string | null> = activeSessionIdRefProp ?? {
     current: activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
   }
 
-  const selectedStoredSessionIdRef: MutableRefObject<string | null> = {
+  const selectedStoredSessionIdRef: MutableRefObject<string | null> = selectedStoredSessionIdRefProp ?? {
     current: storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
   }
 
@@ -98,6 +104,7 @@ function Harness({
     branchCurrentSession: async () => true,
     busyRef: localBusyRef,
     createBackendSessionForSend: createBackendSessionForSend ?? (async () => RUNTIME_SESSION_ID),
+    getRouteToken: getRouteToken ?? (() => 'token'),
     handleSkinCommand: () => '',
     openMemoryGraph: openMemoryGraph ?? (() => undefined),
     refreshSessions,
@@ -1239,7 +1246,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID })
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({
       session_id: RECOVERED_SESSION_ID,
       text: 'message during starved loop'
@@ -1313,6 +1320,125 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
     expect(calls).not.toContain('session.resume')
+  })
+})
+
+describe('usePromptActions submit session-context isolation (#54527)', () => {
+  const STORED_SESSION_A = 'stored-project-a'
+  const STORED_SESSION_B = 'stored-project-b'
+  const RUNTIME_SESSION_B = 'rt-session-b-wrong'
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('aborts submit when the user switches sessions during session.resume (no misroute)', async () => {
+    // Exact #54527 failure: user submits in Session A while its runtime binding
+    // is gone; before resume returns they switch to Session B. Without a pinned
+    // context the resumed runtime id belongs to B and A's text lands in the
+    // wrong chat — permanently lost from A.
+    let releaseResume: () => void = () => {}
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_A }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        await new Promise<void>(resolve => {
+          releaseResume = resolve
+        })
+
+        // Simulate the user switching to Session B while resume is in flight.
+        selectedStoredSessionIdRef.current = STORED_SESSION_B
+        activeSessionIdRef.current = RUNTIME_SESSION_B
+
+        return { session_id: RUNTIME_SESSION_B } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_A}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const submitting = handle!.submitText('carefully composed prompt for project A')
+    await waitFor(() => expect(calls.some(c => c.method === 'session.resume')).toBe(true))
+    releaseResume()
+
+    expect(await submitting).toBe(false)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
+    expect(calls.find(c => c.method === 'session.resume')?.params).toEqual({
+      session_id: STORED_SESSION_A
+    })
+  })
+
+  it('aborts recovery submit when the user switches sessions during timeout resume', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let submitAttempts = 0
+    let releaseResume: () => void = () => {}
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_A }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('request timed out: prompt.submit')
+        }
+      }
+
+      if (method === 'session.resume') {
+        await new Promise<void>(resolve => {
+          releaseResume = resolve
+        })
+        selectedStoredSessionIdRef.current = STORED_SESSION_B
+
+        return { session_id: RUNTIME_SESSION_B } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_A}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const submitting = handle!.submitText('message that must not land in session B')
+    await waitFor(() => expect(calls.some(c => c.method === 'session.resume')).toBe(true))
+    releaseResume()
+
+    expect(await submitting).toBe(false)
+    expect(submitAttempts).toBe(1)
+    expect(calls.filter(c => c.method === 'prompt.submit')).toHaveLength(1)
+    expect(calls.find(c => c.method === 'session.resume')?.params).toMatchObject({
+      session_id: STORED_SESSION_A
+    })
   })
 })
 

@@ -88,6 +88,44 @@ YOLO mode disables **all** dangerous command safety checks for the session — *
 
 For destructive session slash commands (`/clear`, `/new` / `/reset`, `/undo`, `/quit --delete` — `/exit --delete` is an alias), the CLI also prompts for confirmation before running them. See [Slash Commands — Confirmation prompts for destructive commands](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands).
 
+### Auto Mode
+
+Auto Mode lets a lightweight LLM classifier decide approve/deny for flagged commands instead of blocking on an interactive prompt — built for long or unattended sessions (messaging platforms, cron-adjacent workflows) where no human is reliably present to answer.
+
+It differs from `smart` mode above in three ways: it's a **runtime session toggle**, not persistent config; it's **two-way only** (approve/deny, no escalate — there's no human to escalate to); and any classifier error, timeout, or unparseable response **fails closed to deny**.
+
+Toggle it with `/auto` (bare call toggles, matching `/footer`/`/fast`/`/voice`'s convention):
+
+```
+> /auto
+  🤖 Auto Mode ON — flagged commands are approved or declined automatically by a safety classifier. No prompts; use with awareness.
+
+> /auto off
+  ⚠ Auto Mode OFF — flagged commands will require approval.
+
+> /auto status
+  🤖 Auto Mode: OFF
+```
+
+Every flagged command is classified independently. Unlike manual/smart approvals, Auto Mode never persists a broad "approved for this session" grant on a matched pattern — a later command matching the same dangerous pattern is judged again rather than silently waved through.
+
+Configure the classifier's model independently of your main chat model via `auxiliary.auto_mode` in `config.yaml`:
+
+```yaml
+auxiliary:
+  auto_mode:
+    provider: auto      # empty/"auto" = same as main model
+    model: ""
+    base_url: ""        # optional explicit endpoint (e.g. a local server)
+    api_key: ""
+```
+
+:::warning
+Auto Mode still evaluates every flagged command through a real LLM call — it does not disable the dangerous-command detector or the hardline blocklist below. Unlike YOLO mode (a blind bypass), Auto Mode is a judgment call each time, so it inherits whatever blind spots the underlying classifier model has. It fails closed on uncertainty, but a confidently wrong classification is still possible.
+:::
+
+Auto Mode is available in both CLI and gateway sessions (Telegram, Discord, Slack).
+
 ### Hardline Blocklist (Always-On Floor)
 
 Some commands are so catastrophic — irreversible filesystem wipes, fork bombs, direct block-device writes — that Hermes refuses to run them **regardless** of:

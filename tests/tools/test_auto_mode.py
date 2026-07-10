@@ -217,6 +217,33 @@ class TestAutoModeIntegration(unittest.TestCase):
         # Must never have gone through the blocking gateway-notify path.
         assert notified == []
 
+    def test_auto_mode_reclassifies_a_second_command_with_the_same_pattern(self):
+        """Regression: approving one command must NOT silently wave through a
+        later command that matches the same (often broad) dangerous-pattern
+        key without ever consulting the classifier again.
+
+        Auto Mode deliberately does not call approve_session() on approve —
+        doing so would let is_approved() skip the pattern_key entirely on
+        the next match, bypassing _auto_mode_classify() for every subsequent
+        command sharing that pattern for the rest of the session. Auto
+        Mode's whole premise is judging each flagged command on its own.
+        """
+        from tools import approval as mod
+
+        enable_session_auto(self.SESSION_KEY)
+
+        with patch("tools.approval._auto_mode_classify", return_value="approve") as mock_classify:
+            first = mod.check_all_command_guards("rm -rf .git", "local")
+            second = mod.check_all_command_guards("rm -rf .git", "local")
+
+        assert first["approved"] is True
+        assert second["approved"] is True
+        # Both commands match the same rm -rf pattern_key. If the first
+        # approval had persisted via approve_session(), the second call
+        # would short-circuit at the is_approved() check before warnings
+        # collection and never reach the classifier a second time.
+        assert mock_classify.call_count == 2
+
     def test_auto_mode_denies_without_blocking(self):
         from tools import approval as mod
 

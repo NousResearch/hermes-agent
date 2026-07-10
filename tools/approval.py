@@ -2856,12 +2856,19 @@ def check_all_command_guards(command: str, env_type: str,
     # escalation. It takes precedence over smart mode when both are active,
     # and always resolves to approve/deny — it never falls through to a
     # blocking manual prompt.
+    #
+    # Deliberately does NOT call approve_session() on approve. That call
+    # persists a pattern_key as approved for the rest of the session, and
+    # the warnings-collection step above (`if not is_approved(...)`) skips
+    # already-approved keys before Auto Mode is even reached — so a single
+    # approved verdict would silently wave through every later command
+    # matching the same (often broad) pattern without ever consulting the
+    # classifier again. Auto Mode's entire premise is judging each flagged
+    # command on its own; every match must re-run _auto_mode_classify.
     if is_current_session_auto_enabled():
         combined_desc_for_auto = "; ".join(desc for _, desc, _ in warnings)
         auto_verdict = _auto_mode_classify(command, combined_desc_for_auto)
         if auto_verdict == "approve":
-            for key, _, _ in warnings:
-                approve_session(session_key, key)
             logger.debug("Auto Mode: auto-approved '%s' (%s)",
                          command[:60], combined_desc_for_auto)
             return {"approved": True, "message": None,

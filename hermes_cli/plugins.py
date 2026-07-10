@@ -1254,6 +1254,10 @@ class PluginManager:
         self._plugin_platform_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
+        # A context-engine lookup may happen after an earlier discovery pass
+        # completed before user plugins were available.  Allow exactly one
+        # gated refresh for that stale-manager case.
+        self._context_engine_refresh_attempted: bool = False
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
@@ -2337,7 +2341,24 @@ def _ensure_plugins_discovered(force: bool = False) -> PluginManager:
 
 def get_plugin_context_engine():
     """Return the plugin-registered context engine, or None."""
-    return _ensure_plugins_discovered()._context_engine
+    manager = get_plugin_manager()
+    was_discovered = manager._discovered
+    manager.discover_and_load()
+
+    # A long-lived process can create the manager and complete discovery
+    # before the configured user-plugin directory is mounted or otherwise
+    # visible.  Retry that stale state once through PluginManager so normal
+    # enabled/disabled gates still apply and plugin register() is never
+    # replayed outside the manager.
+    if (
+        was_discovered
+        and manager._context_engine is None
+        and not manager._context_engine_refresh_attempted
+    ):
+        manager._context_engine_refresh_attempted = True
+        manager.discover_and_load(force=True)
+
+    return manager._context_engine
 
 
 def get_plugin_command_handler(name: str) -> Optional[Callable]:

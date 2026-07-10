@@ -37,7 +37,7 @@ This skill teaches the agent to build institutional-grade comparable company ana
 
 **Reference Material & Contextualization:**
 
-An example comparable company analysis is provided in `examples/comps_example.xlsx`. When using this or other example files in this skill directory, use them intelligently:
+When the user provides an example comparable company analysis (or template), use it intelligently:
 
 **DO use examples for:**
 - Understanding structural hierarchy (how sections flow)

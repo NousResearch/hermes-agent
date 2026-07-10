@@ -24,7 +24,7 @@ logger = logging.getLogger("cli")
 class CLIInitMixin:
     """HermesCLI constructor phases: display options, model/provider routing, turn limits, toolsets, checkpoints, prompt/reasoning, runtime state, session store and UI state."""
 
-    def _init_display_options(self, verbose, compact):
+    def _init_display_options(self, verbose, compact, no_streaming=False):
         """Display-related config: compact/tool-progress/focus view, bells, streaming, previews, stream buffers."""
         from cli import CLI_CONFIG, _configure_output_history, _int_or
         self.console = Console()
@@ -61,7 +61,7 @@ class CLIInitMixin:
         # (coupling them spewed every module's DEBUG logs to the console).
         self.verbose = bool(verbose) if verbose is not None else False
 
-        self.streaming_enabled = display.get("streaming", False)
+        self.streaming_enabled = False if no_streaming else display.get("streaming", False)
         self.show_timestamps = display.get("timestamps", False)
         self.timestamp_format = display.get("timestamp_format", "%H:%M")
         _frm = str(display.get("final_response_markdown", "strip")).strip().lower()

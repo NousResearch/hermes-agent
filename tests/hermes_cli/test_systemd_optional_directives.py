@@ -245,3 +245,110 @@ WantedBy=default.target
         unit_file = tmp_path / "nonexistent.service"
         monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
         assert gw.systemd_unit_is_current(system=False) is False
+
+
+# ---------------------------------------------------------------------------
+# PATH normalization (WSL Windows-interop staleness churn)
+# ---------------------------------------------------------------------------
+
+
+class TestSystemdUnitPathNormalization:
+    """The generated unit's Environment="PATH=..." is assembled from the
+    invoking shell. Under WSL it also carries volatile Windows-interop /mnt/*
+    entries harvested from os.environ, which differ between the login shell
+    that installed the unit and the non-login shell that later runs
+    status/restart. A unit that differs ONLY by its PATH payload must be
+    treated as current — otherwise every restart rewrites it + daemon-reloads.
+    """
+
+    def test_masks_path_value(self):
+        from hermes_cli.gateway import _normalize_systemd_unit_for_comparison
+        a = 'Environment="PATH=/a/bin:/mnt/c/WINDOWS/system32"'
+        b = 'Environment="PATH=/a/bin:/mnt/c/Users/user/AppData/Local/Microsoft/WindowsApps"'
+        assert _normalize_systemd_unit_for_comparison(a) == _normalize_systemd_unit_for_comparison(b)
+
+    def test_non_path_differences_still_visible(self):
+        from hermes_cli.gateway import _normalize_systemd_unit_for_comparison
+        a = 'Environment="PATH=/x"\nRestartSec=5'
+        b = 'Environment="PATH=/y"\nRestartSec=10'
+        assert _normalize_systemd_unit_for_comparison(a) != _normalize_systemd_unit_for_comparison(b)
+
+    def test_other_environment_lines_untouched(self):
+        from hermes_cli.gateway import _normalize_systemd_unit_for_comparison
+        a = 'Environment="PATH=/x"\nEnvironment="HERMES_HOME=/home/a/.hermes"'
+        b = 'Environment="PATH=/y"\nEnvironment="HERMES_HOME=/home/b/.hermes"'
+        # PATH is masked away, but the differing HERMES_HOME must remain visible
+        assert _normalize_systemd_unit_for_comparison(a) != _normalize_systemd_unit_for_comparison(b)
+
+    def test_unit_differing_only_by_wsl_interop_path_is_current(self, tmp_path, monkeypatch):
+        """Reproduces the live WSL churn: installed unit has extra Windows-interop
+        /mnt/* PATH entries that the regenerated unit lacks; still current."""
+        from hermes_cli import gateway as gw
+
+        base = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+ExecStart=/home/a/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run
+WorkingDirectory=/home/a/.hermes
+Environment="PATH={path}"
+Environment="VIRTUAL_ENV=/home/a/.hermes/hermes-agent/venv"
+Environment="HERMES_HOME=/home/a/.hermes"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+        installed = base.format(
+            path="/home/a/.hermes/hermes-agent/venv/bin:/mnt/c/WINDOWS/system32:"
+            "/mnt/c/Users/user/AppData/Local/Microsoft/WindowsApps:/usr/bin:/bin"
+        )
+        regenerated = base.format(
+            path="/home/a/.hermes/hermes-agent/venv/bin:/mnt/c/WINDOWS/system32:/usr/bin:/bin"
+        )
+        unit_file = tmp_path / "hermes-gateway.service"
+        unit_file.write_text(installed)
+
+        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
+        monkeypatch.setattr(
+            gw,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: regenerated,
+        )
+
+        assert gw.systemd_unit_is_current(system=False) is True
+
+    def test_unit_differing_by_hermes_home_still_outdated(self, tmp_path, monkeypatch):
+        """PATH masking must not hide a genuinely changed non-PATH directive."""
+        from hermes_cli import gateway as gw
+
+        installed = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python gateway run
+Environment="PATH=/a:/mnt/c/WINDOWS/system32"
+Environment="HERMES_HOME=/home/a/.hermes"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+        regenerated = installed.replace(
+            'HERMES_HOME=/home/a/.hermes', 'HERMES_HOME=/home/a/.hermes/profiles/coder'
+        ).replace('PATH=/a:/mnt/c/WINDOWS/system32', 'PATH=/a:/usr/bin')
+        unit_file = tmp_path / "hermes-gateway.service"
+        unit_file.write_text(installed)
+
+        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
+        monkeypatch.setattr(
+            gw,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: regenerated,
+        )
+
+        assert gw.systemd_unit_is_current(system=False) is False

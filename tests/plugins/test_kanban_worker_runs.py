@@ -147,6 +147,40 @@ def test_workers_active_excludes_runs_without_pid(client):
 
 
 # ---------------------------------------------------------------------------
+# GET /workers/machines
+# ---------------------------------------------------------------------------
+
+def test_worker_machines_lists_idle_registered_remote_capacity(client):
+    """Registered machines remain visible even with no active task."""
+    machine_id = "a0aa0000-0000-4000-8000-000000000001"
+    conn = kb.connect()
+    try:
+        kb.register_machine(
+            conn,
+            machine_id,
+            hostname="mac-worker",
+            profiles=["ios"],
+            capabilities=["macos", "xcode"],
+        )
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/workers/machines")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 1
+    assert body["machines"] == [{
+        "machine_id": machine_id,
+        "hostname": "mac-worker",
+        "last_seen_at": body["machines"][0]["last_seen_at"],
+        "online": True,
+        "profiles": ["ios"],
+        "capabilities": ["macos", "xcode"],
+        "active_workers": 0,
+    }]
+
+
+# ---------------------------------------------------------------------------
 # GET /runs/{run_id}
 # ---------------------------------------------------------------------------
 
@@ -373,7 +407,7 @@ def test_terminate_run_ok(client, monkeypatch):
     # Capture signal calls so we don't actually SIGTERM a random PID.
     sent = []
 
-    def _fake_terminate(pid, prev_lock, *, signal_fn=None):
+    def _fake_terminate(pid, prev_lock, *, machine_id=None, signal_fn=None):
         sent.append((pid, prev_lock))
         return {"signal": "SIGTERM", "delivered": True}
 

@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import asdict
@@ -223,6 +224,7 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
         "claim_lock": r.claim_lock,
         "claim_expires": r.claim_expires,
         "worker_pid": r.worker_pid,
+        "machine_id": r.machine_id,
         "max_runtime_seconds": r.max_runtime_seconds,
         "last_heartbeat_at": r.last_heartbeat_at,
         "started_at": r.started_at,
@@ -592,6 +594,8 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    target_machine: Optional[str] = None
+    required_capabilities: list[str] = Field(default_factory=list)
 
 
 @router.post("/tasks")
@@ -616,6 +620,8 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            target_machine=payload.target_machine,
+            required_capabilities=payload.required_capabilities,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
@@ -1349,14 +1355,89 @@ except ImportError:
     _psutil = None  # type: ignore[assignment]
 
 
+MACHINE_ONLINE_SECONDS = 90
+
+
+@router.get("/workers/machines")
+def list_worker_machines(
+    board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+):
+    """Return every registered dispatch machine, including idle remote workers.
+
+    This is intentionally separate from ``/workers/active``: an idle machine
+    is useful scheduling capacity and should remain visible even when it has
+    no in-flight task.
+    """
+    from hermes_cli.kanban_remote import configured_coordinator_url
+    if configured_coordinator_url():
+        from hermes_cli.kanban_remote import connect_from_config
+        try:
+            remote, remote_conn = connect_from_config()
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Kanban coordinator is unavailable: {exc}",
+            ) from exc
+        try:
+            return remote.list_machines()
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Kanban coordinator is unavailable: {exc}",
+            ) from exc
+        finally:
+            remote_conn.close()
+
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        now = int(time.time())
+        rows = conn.execute(
+            "SELECT id, hostname, last_seen_at FROM machines ORDER BY hostname, id"
+        ).fetchall()
+        capabilities: dict[str, list[str]] = {}
+        for row in conn.execute(
+            "SELECT machine_id, capability FROM machine_capabilities ORDER BY machine_id, capability"
+        ).fetchall():
+            capabilities.setdefault(row["machine_id"], []).append(row["capability"])
+        profiles_by_machine: dict[str, list[str]] = {}
+        for row in conn.execute(
+            "SELECT machine_id, profile FROM machine_profiles ORDER BY machine_id, profile"
+        ).fetchall():
+            profiles_by_machine.setdefault(row["machine_id"], []).append(row["profile"])
+        active_counts = {
+            row["machine_id"]: row["count"]
+            for row in conn.execute(
+                "SELECT machine_id, COUNT(*) AS count FROM tasks "
+                "WHERE status = 'running' AND machine_id IS NOT NULL GROUP BY machine_id"
+            ).fetchall()
+        }
+        machines = [
+            {
+                "machine_id": row["id"],
+                "hostname": row["hostname"],
+                "last_seen_at": row["last_seen_at"],
+                "online": now - int(row["last_seen_at"]) <= MACHINE_ONLINE_SECONDS,
+                "profiles": profiles_by_machine.get(row["id"], []),
+                "capabilities": capabilities.get(row["id"], []),
+                "active_workers": active_counts.get(row["id"], 0),
+            }
+            for row in rows
+        ]
+        return {"machines": machines, "count": len(machines), "checked_at": now}
+    finally:
+        conn.close()
+
+
 @router.get("/workers/active")
 def list_active_workers(
     board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
 ):
     """Return every currently-running worker on the board.
 
-    A worker is a ``task_runs`` row whose ``ended_at`` is NULL and whose
-    ``worker_pid`` is non-NULL, belonging to a task with ``status='running'``.
+    A worker is a ``task_runs`` row whose ``ended_at`` is NULL, has a reported
+    ``worker_pid``, and whose task is ``running``. Remote workers report their
+    own PID through the coordinator; this host must not attempt to inspect it.
 
     Returns ``{workers: [...], count: N, checked_at: <epoch>}``.  Each
     worker entry carries enough context for the dashboard to link back to
@@ -1375,6 +1456,8 @@ def list_active_workers(
                 t.assignee    AS task_assignee,
                 r.profile,
                 r.worker_pid,
+                r.machine_id,
+                m.hostname AS machine_hostname,
                 r.started_at,
                 r.claim_lock,
                 r.claim_expires,
@@ -1382,6 +1465,7 @@ def list_active_workers(
                 r.max_runtime_seconds
             FROM task_runs r
             JOIN tasks t ON t.id = r.task_id
+            LEFT JOIN machines m ON m.id = r.machine_id
             WHERE r.ended_at IS NULL
               AND r.worker_pid IS NOT NULL
               AND t.status = 'running'
@@ -1397,6 +1481,8 @@ def list_active_workers(
                 "task_assignee": row["task_assignee"],
                 "profile": row["profile"],
                 "worker_pid": row["worker_pid"],
+                "machine_id": row["machine_id"],
+                "machine_hostname": row["machine_hostname"],
                 "started_at": row["started_at"],
                 "claim_lock": row["claim_lock"],
                 "claim_expires": row["claim_expires"],

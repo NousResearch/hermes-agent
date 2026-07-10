@@ -1043,6 +1043,7 @@
           },
         }) : null,
         h(OrchestrationPanel, null),
+        h(WorkerMachines, { board: board }),
         h(AttentionStrip, {
           boardData,
           onOpen: setSelectedTaskId,
@@ -1502,6 +1503,66 @@
             }),
           )
         : null,
+    );
+  }
+
+  // Registered machines are scheduling capacity, not merely active task
+  // processes. Keep them visible even while idle so an operator can confirm a
+  // remote worker is enrolled before routing work to it.
+  function WorkerMachines(props) {
+    const [data, setData] = useState(null);
+    const [expanded, setExpanded] = useState(false);
+    const load = useCallback(function () {
+      return SDK.fetchJSON(withBoard(`${API}/workers/machines`, props.board))
+        .then(function (result) { setData(result); })
+        .catch(function () { /* board remains usable if roster is unavailable */ });
+    }, [props.board]);
+
+    useEffect(function () {
+      load();
+      const timer = setInterval(load, 15000);
+      return function () { clearInterval(timer); };
+    }, [load]);
+
+    const machines = (data && data.machines) || [];
+    const online = machines.filter(function (machine) { return machine.online; }).length;
+    return h(Card, { className: "hermes-kanban-workers" },
+      h(CardContent, { className: "py-3" },
+        h("div", { className: "flex items-center justify-between gap-3" },
+          h("div", { className: "flex items-center gap-2" },
+            h("strong", { className: "text-sm" }, "Workers"),
+            h(Badge, { variant: online > 0 ? "secondary" : "outline" },
+              `${online}/${machines.length} online`),
+          ),
+          h(Button, {
+            size: "sm",
+            variant: "ghost",
+            onClick: function () { setExpanded(function (value) { return !value; }); },
+          }, expanded ? "Hide" : "Show"),
+        ),
+        expanded ? h("div", { className: "mt-3 grid gap-2" },
+          machines.length === 0
+            ? h("div", { className: "text-xs text-muted-foreground" },
+                "No registered worker machines yet.")
+            : machines.map(function (machine) {
+                return h("div", {
+                  key: machine.machine_id,
+                  className: "flex flex-wrap items-center gap-x-3 gap-y-1 rounded border px-3 py-2 text-xs",
+                },
+                  h("span", { className: "font-medium" }, machine.hostname || machine.machine_id),
+                  h(Badge, { variant: machine.online ? "secondary" : "outline" },
+                    machine.online ? "online" : "offline"),
+                  h("span", { className: "text-muted-foreground" },
+                    `${machine.active_workers || 0} active`),
+                  h("span", { className: "text-muted-foreground" },
+                    (machine.profiles || []).join(", ") || "no profiles"),
+                  h("span", { className: "text-muted-foreground" },
+                    (machine.capabilities || []).join(", ") || "no capabilities"),
+                  h("code", { className: "text-[10px] text-muted-foreground" }, machine.machine_id),
+                );
+              }),
+        ) : null,
+      ),
     );
   }
 

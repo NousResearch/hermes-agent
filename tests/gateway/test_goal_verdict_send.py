@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.run import _should_run_post_turn_goal_continuation
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -94,6 +95,34 @@ def _make_runner_with_adapter(session_id: str = None):
     adapter = _RecordingAdapter()
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner, adapter, session_entry, src
+
+
+
+
+def test_post_turn_goal_continuation_predicate_allows_real_final_response():
+    assert _should_run_post_turn_goal_continuation("I shipped the fix.") is True
+    assert _should_run_post_turn_goal_continuation({"final_response": "Done."}) is True
+
+
+@pytest.mark.parametrize(
+    "agent_result",
+    [
+        "",
+        None,
+        {"final_response": "Done.", "failed": True},
+        {"final_response": "Done.", "partial": True},
+        {"final_response": "Done.", "interrupted": True},
+        {"final_response": "Done.", "error": "boom"},
+        {"final_response": "Done.", "compression_exhausted": True},
+        {"final_response": "Done.", "completed": False},
+        "⚠️ Provider authentication failed. Check the configured credentials.",
+        "⏱️ The model provider is rate-limiting requests. Please wait.",
+        "The request failed: upstream timeout\nTry again or use /reset to start a fresh session.",
+        "Sorry, I encountered an error (RuntimeError).\nboom\nTry again.",
+    ],
+)
+def test_post_turn_goal_continuation_predicate_skips_failed_turns(agent_result):
+    assert _should_run_post_turn_goal_continuation(agent_result) is False
 
 
 @pytest.mark.asyncio

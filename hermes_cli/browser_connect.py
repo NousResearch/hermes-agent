@@ -41,6 +41,10 @@ _WINDOWS_INSTALL_PARTS = tuple(parts for _, group in _WINDOWS_BROWSER_GROUPS for
 
 _LINUX_BROWSER_GROUPS = (
     (
+        ("helium-browser",),
+        ("/usr/bin/helium-browser",),
+    ),
+    (
         ("google-chrome", "google-chrome-stable"),
         ("/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"),
     ),
@@ -129,13 +133,15 @@ def chrome_debug_data_dir() -> str:
     return str(get_hermes_home() / "chrome-debug")
 
 
-def _chrome_debug_args(port: int) -> list[str]:
-    return [
+def _chrome_debug_args(port: int, data_dir: str | None = None) -> list[str]:
+    args = [
         f"--remote-debugging-port={port}",
-        f"--user-data-dir={chrome_debug_data_dir()}",
         "--no-first-run",
         "--no-default-browser-check",
     ]
+    if data_dir is not None:
+        args.append(f"--user-data-dir={data_dir}")
+    return args
 
 
 def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
@@ -179,7 +185,8 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
     candidates = get_chrome_debug_candidates(system)
 
     if candidates:
-        argv = [candidates[0], *_chrome_debug_args(port)]
+        data_dir = None if "helium" in os.path.basename(candidates[0]).lower() else chrome_debug_data_dir()
+        argv = [candidates[0], *_chrome_debug_args(port, data_dir)]
         return subprocess.list2cmdline(argv) if system == "Windows" else shlex.join(argv)
 
     if system == "Darwin":
@@ -306,9 +313,10 @@ def launch_chrome_debug(
 
     for candidate in candidates:
         try:
+            data_dir = None if "helium" in os.path.basename(candidate).lower() else chrome_debug_data_dir()
             with open(stderr_path, "wb") as stderr_file:
                 proc = subprocess.Popen(
-                    [candidate, *_chrome_debug_args(port)],
+                    [candidate, *_chrome_debug_args(port, data_dir)],
                     stdout=subprocess.DEVNULL,
                     stderr=stderr_file,
                     **_detach_kwargs(system),

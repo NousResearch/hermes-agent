@@ -1,0 +1,60 @@
+[
+  {
+    "feature": "cron-subagent approval gate reads ContextVar not raw env",
+    "tests": [
+      "tests/tools/test_cron_subagent_session.py::TestCronSubagentApprovalGating"
+    ],
+    "paths": [
+      "hermes_cli/approval.py",
+      "hermes_cli/gateway/session_context.py"
+    ],
+    "why": "Cron subagents must inherit approval gating from session ContextVars instead of ambient process environment."
+  },
+  {
+    "feature": "systemd restart exits 0, darwin/launchd exits 75",
+    "tests": [
+      "tests/gateway/test_gateway_shutdown.py::test_gateway_stop_systemd_service_restart_exits_cleanly",
+      "tests/gateway/test_gateway_shutdown.py::test_gateway_stop_launchd_service_restart_keeps_nonzero_exit"
+    ],
+    "paths": [
+      "hermes_cli/gateway/run.py"
+    ],
+    "why": "Supervisor-specific restart exit contracts prevent restart loops and preserve launchd's intentional nonzero restart path."
+  },
+  {
+    "feature": "hygiene compaction announces in-chat on success",
+    "tests": [
+      "tests/gateway/test_session_hygiene.py::test_hygiene_msgcount_announces_limit_not_count"
+    ],
+    "paths": [
+      "hermes_cli/gateway/run.py"
+    ],
+    "why": "Successful hygiene compaction must be visible in the originating chat without exposing misleading raw message counts."
+  },
+  {
+    "feature": "messaging + moa toolsets present",
+    "tests": [
+      "tests/agent/test_fork_custom_toolsets.py::TestForkCustomToolsetsPresent::test_messaging_toolset_resolves_send_message",
+      "tests/agent/test_fork_custom_toolsets.py::TestForkCustomToolsetsPresent::test_moa_toolset_resolves_mixture_of_agents",
+      "tests/agent/test_fork_custom_toolsets.py::test_send_message_and_moa_not_silently_zero"
+    ],
+    "paths": [
+      "toolsets.py",
+      "tools/send_message_tool.py",
+      "tools/mixture_of_agents_tool.py"
+    ],
+    "why": "The fork intentionally exposes agent-callable messaging and MoA toolsets that upstream does not ship."
+  },
+  {
+    "feature": "telegram polling never drops pending updates on recovery",
+    "tests": [
+      "tests/gateway/test_telegram_restart_parity.py::test_reconnect_preserves_pending_updates",
+      "tests/gateway/test_telegram_restart_parity.py::test_all_start_polling_sites_preserve_queue_or_gate_on_reconnect",
+      "tests/gateway/test_telegram_restart_parity.py::test_recovery_ladders_preserve_queue_unconditionally"
+    ],
+    "paths": [
+      "gateway/platforms/telegram*.py"
+    ],
+    "why": "Recovery paths must keep Telegram pending updates; only cold bootstrap may drop stale updates."
+  }
+]

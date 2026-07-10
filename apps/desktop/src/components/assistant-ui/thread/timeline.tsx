@@ -178,7 +178,7 @@ export const ThreadTimeline: FC = () => {
   useEffect(() => {
     const viewport = document.querySelector<HTMLElement>(VIEWPORT)
 
-    if (!viewport || entries.length === 0) {
+    if (!viewport || entries.length < MIN_ENTRIES) {
       return
     }
 
@@ -190,9 +190,7 @@ export const ThreadTimeline: FC = () => {
       const top = viewport.getBoundingClientRect().top
 
       const offsets = entries.map(entry => {
-        const node = Array.from(viewport.querySelectorAll<HTMLElement>('[data-message-id]')).find(
-          candidate => candidate.dataset.messageId === entry.id
-        )
+        const node = viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(entry.id)}"]`)
 
         return node ? node.getBoundingClientRect().top - top : null
       })

@@ -1,8 +1,8 @@
-import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import fs from 'fs'
+import { defineConfig } from 'vitest/config'
 
 // `hgui` symlinks a worktree's node_modules to the main checkout. Vite realpaths
 // those before enforcing server.fs.allow, so codicon/font assets resolve outside
@@ -77,5 +77,8 @@ export default defineConfig({
   preview: {
     host: '127.0.0.1',
     port: 4174
+  },
+  test: {
+    setupFiles: ['./src/test/setup.ts']
   }
 })

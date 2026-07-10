@@ -27,13 +27,35 @@ def _ensure_telegram_mock():
     telegram_mod.constants.ChatType.CHANNEL = "channel"
     telegram_mod.constants.ChatType.PRIVATE = "private"
 
+    telegram_mod.error.TelegramError = type("TelegramError", (Exception,), {})
+    telegram_mod.error.NetworkError = type("NetworkError", (telegram_mod.error.TelegramError,), {})
+    telegram_mod.error.TimedOut = type("TimedOut", (telegram_mod.error.NetworkError,), {})
+    telegram_mod.error.BadRequest = type("BadRequest", (telegram_mod.error.NetworkError,), {})
+    telegram_mod.error.InvalidToken = type("InvalidToken", (telegram_mod.error.TelegramError,), {})
+
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, telegram_mod)
+    sys.modules.setdefault("telegram.error", telegram_mod.error)
 
 
 _ensure_telegram_mock()
 
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+
+
+# Real-PTB-shaped exception stand-ins for the #62047 classification tests.
+# The gateway conftest's telegram mock derives NetworkError/TimedOut from
+# OSError, which the pre-#62047 handler already caught — tests raising those
+# classes pass with or without the fix. Real PTB derives them from
+# TelegramError (never OSError); the adapter then classifies by class NAME,
+# so these fakes exercise the same branch production hits.
+class _FakeTelegramError(Exception):
+    pass
+
+
+_FakeNetworkError = type("NetworkError", (_FakeTelegramError,), {})
+_FakeTimedOut = type("TimedOut", (_FakeNetworkError,), {})
+_FakeInvalidToken = type("InvalidToken", (_FakeTelegramError,), {})
 
 
 @pytest.fixture(autouse=True)
@@ -608,6 +630,42 @@ async def test_heartbeat_loop_triggers_reconnect_on_os_error():
     assert adapter._polling_error_task is not None
 
 
+@pytest.mark.parametrize("exc_cls", [_FakeNetworkError, _FakeTimedOut])
+@pytest.mark.asyncio
+async def test_heartbeat_loop_triggers_reconnect_on_ptb_network_errors(exc_cls):
+    """PTB connectivity errors from get_me() must trigger the reconnect ladder."""
+    adapter = _make_adapter()
+    adapter._handle_polling_network_error = AsyncMock()
+
+    mock_app = MagicMock()
+    adapter._app = mock_app
+
+    sleep_call = 0
+    probe_error = exc_cls("connection lost")
+
+    async def fast_sleep(seconds):
+        nonlocal sleep_call
+        sleep_call += 1
+        if sleep_call >= 2:
+            raise asyncio.CancelledError()
+
+    async def ptb_error_wait_for(coro, timeout):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise probe_error
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        with patch(
+            "plugins.platforms.telegram.adapter.asyncio.wait_for",
+            side_effect=ptb_error_wait_for,
+        ):
+            await adapter._polling_heartbeat_loop()
+
+    assert adapter._polling_error_task is not None
+    await adapter._polling_error_task
+    adapter._handle_polling_network_error.assert_awaited_once_with(probe_error)
+
+
 @pytest.mark.asyncio
 async def test_heartbeat_loop_skips_reconnect_if_already_in_progress():
     """If a reconnect task is already running, the heartbeat must not spawn another."""
@@ -675,6 +733,80 @@ async def test_heartbeat_loop_ignores_non_connectivity_errors():
             await adapter._polling_heartbeat_loop()
 
     # No reconnect should have been triggered for a non-connectivity error.
+    adapter._handle_polling_network_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_does_not_reconnect_on_invalid_token():
+    """Auth/request-validation failures must not enter network reconnect."""
+    adapter = _make_adapter()
+    adapter._handle_polling_network_error = AsyncMock()
+
+    mock_app = MagicMock()
+    adapter._app = mock_app
+
+    sleep_call = 0
+    auth_error = _FakeInvalidToken("invalid token")
+
+    async def fast_sleep(seconds):
+        nonlocal sleep_call
+        sleep_call += 1
+        if sleep_call >= 2:
+            raise asyncio.CancelledError()
+
+    async def invalid_token_wait_for(coro, timeout):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise auth_error
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        with patch(
+            "plugins.platforms.telegram.adapter.asyncio.wait_for",
+            side_effect=invalid_token_wait_for,
+        ):
+            await adapter._polling_heartbeat_loop()
+
+    assert adapter._polling_error_task is None
+    adapter._handle_polling_network_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_does_not_reconnect_on_bad_request():
+    """PTB BadRequest subclasses NetworkError but is a request-validation
+    failure (HTTP 400), not a connectivity symptom — it must not enter the
+    reconnect ladder."""
+    from telegram.error import BadRequest
+
+    adapter = _make_adapter()
+    adapter._handle_polling_network_error = AsyncMock()
+
+    mock_app = MagicMock()
+    adapter._app = mock_app
+
+    sleep_call = 0
+    # Mirror real PTB's hierarchy: an error that classifies as a NetworkError
+    # (by name) while being a BadRequest instance.
+    bad_request = type("NetworkError", (BadRequest,), {})("message text invalid")
+
+    async def fast_sleep(seconds):
+        nonlocal sleep_call
+        sleep_call += 1
+        if sleep_call >= 2:
+            raise asyncio.CancelledError()
+
+    async def bad_request_wait_for(coro, timeout):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise bad_request
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        with patch(
+            "plugins.platforms.telegram.adapter.asyncio.wait_for",
+            side_effect=bad_request_wait_for,
+        ):
+            await adapter._polling_heartbeat_loop()
+
+    assert adapter._polling_error_task is None
     adapter._handle_polling_network_error.assert_not_awaited()
 
 
@@ -867,4 +999,3 @@ async def test_handle_polling_network_error_updater_stop_timeout():
     # The reconnect ladder must have advanced past the hung stop().
     assert drain_called, "_drain_polling_connections was not called after stop() timeout"
     assert start_polling_called, "start_polling was not called after stop() timeout"
-

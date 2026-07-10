@@ -1188,6 +1188,20 @@ class TelegramAdapter(BasePlatformAdapter):
         return isinstance(error, OSError)
 
     @staticmethod
+    def _is_request_validation_error(error: Exception) -> bool:
+        """Return True for PTB request-validation failures (HTTP 400).
+
+        PTB's ``BadRequest`` subclasses ``NetworkError``, so
+        ``_looks_like_network_error`` alone would classify a 400 response as a
+        connectivity symptom and feed it to the reconnect ladder.
+        """
+        try:
+            from telegram.error import BadRequest
+        except ImportError:
+            return False
+        return isinstance(error, BadRequest)
+
+    @staticmethod
     def _looks_like_connect_timeout(error: Exception) -> bool:
         """Return True when a Telegram TimedOut wraps a connect-timeout.
 
@@ -2203,10 +2217,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._probe_pending_updates(bot, PROBE_TIMEOUT)
             except asyncio.CancelledError:
                 return
-            except (asyncio.TimeoutError, OSError) as probe_err:
+            except Exception as probe_err:
+                # Non-connectivity errors (e.g. TelegramError 401, BadRequest
+                # 400 — which PTB derives from NetworkError) are not
+                # CLOSE-WAIT symptoms — let PTB's own handlers surface them.
+                if not self._looks_like_network_error(probe_err) or self._is_request_validation_error(probe_err):
+                    continue
                 logger.warning(
                     "[%s] Polling heartbeat probe failed (%s); triggering reconnect",
-                    self.name, probe_err,
+                    self.name, _redact_telegram_error_text(probe_err),
                 )
                 if self._polling_error_task and not self._polling_error_task.done():
                     continue   # reconnect already in progress
@@ -2214,10 +2233,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._polling_error_task = loop.create_task(
                     self._handle_polling_network_error(probe_err)
                 )
-            except Exception:
-                # Non-connectivity errors (e.g. TelegramError 401) are not
-                # CLOSE-WAIT symptoms — let PTB's own handlers surface them.
-                pass
 
     async def _probe_pending_updates(self, bot, probe_timeout: float) -> None:
         """Detect a wedged getUpdates consumer via pending_update_count.
@@ -2293,9 +2308,14 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         try:
             info = await asyncio.wait_for(get_webhook_info(), probe_timeout)  # type: ignore[arg-type]
-        except (asyncio.TimeoutError, OSError):
+        except Exception as probe_err:
             # A failed probe is a connectivity symptom the get_me() path or the
             # outer handler will catch; don't treat it as a stuck-queue signal.
+            # PTB connectivity errors (NetworkError/TimedOut) get the same
+            # deliberate deferral the TimeoutError/OSError path always had
+            # (#62047) instead of leaking to the heartbeat's classifier.
+            if not self._looks_like_network_error(probe_err):
+                raise
             return
         pending = int(getattr(info, "pending_update_count", 0) or 0)
         if pending <= 0:

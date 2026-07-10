@@ -36,6 +36,10 @@ _ensure_telegram_mock()
 
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
+# Real PTB derives NetworkError from TelegramError, never OSError — this fake
+# classifies via the adapter's name-based branch, like production (#62047).
+_FakeNetworkError = type("NetworkError", (Exception,), {})
+
 
 def _make_adapter(*, pending: int) -> TelegramAdapter:
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
@@ -88,6 +92,41 @@ async def test_zero_pending_resets_counter():
         await adapter._probe_pending_updates(adapter._app.bot, 5)
     assert adapter._polling_pending_stuck_count == 0
     rec.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_webhook_info_network_error_defers_to_heartbeat():
+    """Connectivity failures of the webhook-info probe are deliberately
+    deferred — the get_me() heartbeat owns reconnect scheduling, and a
+    transient get_webhook_info() failure must not tear down a healthy poller.
+    PTB errors get the same deferral the TimeoutError/OSError path always had
+    (#62047)."""
+    adapter = _make_adapter(pending=0)
+    probe_error = _FakeNetworkError("connection lost")
+    adapter._app.bot.get_webhook_info = AsyncMock(side_effect=probe_error)
+    recovery = AsyncMock()
+
+    with patch.object(adapter, "_handle_polling_network_error", new=recovery):
+        await adapter._probe_pending_updates(adapter._app.bot, 5)
+
+    assert adapter._polling_error_task is None
+    recovery.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_webhook_info_non_network_error_propagates():
+    """Non-connectivity probe errors propagate to the heartbeat's classifier."""
+    adapter = _make_adapter(pending=0)
+    adapter._app.bot.get_webhook_info = AsyncMock(
+        side_effect=RuntimeError("api contract change")
+    )
+
+    with patch.object(adapter, "_handle_polling_network_error", new=AsyncMock()) as rec:
+        with pytest.raises(RuntimeError):
+            await adapter._probe_pending_updates(adapter._app.bot, 5)
+
+    assert adapter._polling_error_task is None
+    rec.assert_not_awaited()
 
 
 @pytest.mark.asyncio

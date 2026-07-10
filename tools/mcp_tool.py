@@ -2588,20 +2588,27 @@ class MCPServerTask:
         self._register_discovered_tools_if_needed()
 
     def _register_discovered_tools_if_needed(self) -> None:
-        """Re-register tools after a post-ready reconnect if needed.
+        """Re-register tools after an owned server reconnects if needed.
 
         Initial registration is performed by ``_discover_and_register_server``
-        after ``start()`` completes. During a later reconnect, however,
-        ``_ready`` remains set; if outage handling previously deregistered
-        stale tools (parking calls ``_deregister_tools``), a successful
-        revival must publish the freshly discovered tools again — otherwise
-        the transport comes back alive with zero registered tools.
+        after ``start()`` completes. A server retained after recoverable
+        initial failure is already registry-owned before its first successful
+        session, though, and ``_ready`` remains cleared while that session
+        discovers tools. Ownership therefore also authorizes publication.
         """
-        if not self._ready.is_set() or self._registered_tool_names:
+        with _lock:
+            registry_owned = _servers.get(self.name) is self
+        if (
+            (not self._ready.is_set() and not registry_owned)
+            or self._registered_tool_names
+        ):
             return
         self._registered_tool_names = _register_server_tools(
             self.name, self, self._config
         )
+        if registry_owned:
+            with _lock:
+                _server_connect_errors.pop(self.name, None)
 
     async def run(self, config: dict):
         """Long-lived coroutine: connect, discover tools, wait, disconnect.
@@ -2967,6 +2974,12 @@ class MCPServerTask:
 _servers: Dict[str, MCPServerTask] = {}
 _server_connecting: set[str] = set()
 _server_connect_errors: Dict[str, str] = {}
+# Discovery installs a task-local claim before calling ``_connect_server`` so
+# it can retain a recoverable parked task without making standalone probe calls
+# publish failed servers into module-global ownership.
+_connect_server_claim: contextvars.ContextVar[
+    Optional[Callable[[MCPServerTask], None]]
+] = contextvars.ContextVar("mcp_connect_server_claim", default=None)
 
 # Circuit breaker: consecutive error counts per server.  After
 # _CIRCUIT_BREAKER_THRESHOLD consecutive failures, the handler returns
@@ -3021,9 +3034,8 @@ def _signal_reconnect(server: Any) -> bool:
     The tool handlers run on caller threads, while the server task and its
     ``_reconnect_event`` live on the background MCP loop. Setting an
     asyncio.Event from another thread must go through
-    ``loop.call_soon_threadsafe``; only fall back to a direct ``.set()``
-    when the loop isn't running (e.g. unit tests that drive the handler
-    synchronously).
+    ``loop.call_soon_threadsafe``; non-async adapters and tests without a
+    running loop can use a direct ``.set()``.
 
     Returns True if a reconnect signal was delivered, False if the server
     has no reconnect machinery (nothing to revive).
@@ -3032,7 +3044,11 @@ def _signal_reconnect(server: Any) -> bool:
     if event is None:
         return False
     loop = _mcp_loop
-    if loop is not None and loop.is_running():
+    if (
+        isinstance(event, asyncio.Event)
+        and loop is not None
+        and loop.is_running()
+    ):
         loop.call_soon_threadsafe(event.set)
     else:
         event.set()
@@ -3796,7 +3812,26 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
         Exception: on connection or initialization failure.
     """
     server = MCPServerTask(name)
-    await server.start(config)
+    claim = _connect_server_claim.get()
+    claim_token = None
+    if claim is not None:
+        claim(server)
+        # ``start()`` creates the long-lived run task by copying this context.
+        # The ownership callback is only for this connection attempt; do not
+        # retain its discovery closure for the server's lifetime.
+        claim_token = _connect_server_claim.set(None)
+    try:
+        await server.start(config)
+    except BaseException:
+        # Discovery owns claimed tasks and decides whether a failed start is a
+        # live recoverable park or a terminal failure. Standalone probes have
+        # no revival owner, so they must reap their failed task locally.
+        if claim is None:
+            await server.shutdown()
+        raise
+    finally:
+        if claim_token is not None:
+            _connect_server_claim.reset(claim_token)
     return server
 
 
@@ -4848,10 +4883,42 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     Returns list of registered tool names.
     """
     connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
-    server = await asyncio.wait_for(
-        _connect_server(name, config),
-        timeout=connect_timeout,
-    )
+    server: Optional[MCPServerTask] = None
+
+    def _claim_server(created: MCPServerTask) -> None:
+        nonlocal server
+        server = created
+
+    claim_token = _connect_server_claim.set(_claim_server)
+    try:
+        server = await asyncio.wait_for(
+            _connect_server(name, config),
+            timeout=connect_timeout,
+        )
+    except BaseException:
+        task = server._task if server is not None else None
+        task_cancelling = (
+            task.cancelling()
+            if task is not None and hasattr(task, "cancelling")
+            else 0
+        )
+        recoverable_park = (
+            server is not None
+            and server._error is not None
+            and task is not None
+            and not task.done()
+            and not task_cancelling
+        )
+        if recoverable_park:
+            with _lock:
+                _servers[name] = server
+        elif server is not None:
+            await server.shutdown()
+        raise
+    finally:
+        _connect_server_claim.reset(claim_token)
+
+    assert server is not None
     with _lock:
         _server_connecting.discard(name)
         _server_connect_errors.pop(name, None)
@@ -4978,7 +5045,11 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     # Log a summary so ACP callers get visibility into what was registered.
     with _lock:
-        connected = [n for n in new_servers if n in _servers]
+        connected = [
+            n
+            for n in new_servers
+            if n in _servers and n not in _server_connect_errors
+        ]
         new_tool_count = sum(
             len(getattr(_servers[n], "_registered_tool_names", []))
             for n in connected
@@ -5026,7 +5097,11 @@ def discover_mcp_tools() -> List[str]:
         return tool_names
 
     with _lock:
-        connected_server_names = [name for name in new_server_names if name in _servers]
+        connected_server_names = [
+            name
+            for name in new_server_names
+            if name in _servers and name not in _server_connect_errors
+        ]
         new_tool_count = sum(
             len(getattr(_servers[name], "_registered_tool_names", []))
             for name in connected_server_names

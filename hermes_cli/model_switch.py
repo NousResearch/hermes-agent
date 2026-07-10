@@ -1245,6 +1245,57 @@ def switch_model(
         except Exception:
             pass
 
+    # Do not persist a provider switch that cannot make its first request.
+    # Vendor-qualified model IDs such as ``anthropic/claude-fable-5`` are
+    # OpenRouter slugs, so auto-detection can move a working native session to
+    # OpenRouter even when no OpenRouter credential exists.  The old behavior
+    # confirmed the switch and failed only on the next message with HTTP 401.
+    if target_provider == "openrouter" and not str(api_key or "").strip():
+        direct_hint = ""
+        if "/" in raw_input:
+            vendor, bare_model = raw_input.split("/", 1)
+            direct_provider = resolve_provider_full(
+                vendor.strip(), user_providers, custom_providers
+            )
+            if direct_provider is None or direct_provider.id == "openrouter":
+                vendor_prefix = f"{vendor.strip().lower()}-"
+                authenticated = get_authenticated_provider_slugs(
+                    current_provider=current_provider,
+                    user_providers=user_providers,
+                    custom_providers=custom_providers,
+                )
+                candidates = sorted(
+                    authenticated,
+                    key=lambda provider: provider != current_provider,
+                )
+                for candidate in candidates:
+                    if candidate != vendor.strip().lower() and not candidate.startswith(
+                        vendor_prefix
+                    ):
+                        continue
+                    resolved = resolve_provider_full(
+                        candidate, user_providers, custom_providers
+                    )
+                    if resolved is not None and resolved.id != "openrouter":
+                        direct_provider = resolved
+                        break
+            if direct_provider is not None and direct_provider.id != "openrouter":
+                direct_hint = (
+                    f" To use {direct_provider.name} directly, run "
+                    f"`/model {bare_model.strip()} --provider {direct_provider.id}`."
+                )
+        return ModelSwitchResult(
+            success=False,
+            new_model=new_model,
+            target_provider=target_provider,
+            provider_label=provider_label,
+            is_global=is_global,
+            error_message=(
+                "OpenRouter credentials are required before switching to "
+                f"`{new_model}`. Configure OpenRouter first.{direct_hint}"
+            ),
+        )
+
     # --- Direct alias override: use exact base_url from the alias if set ---
     if resolved_alias:
         _ensure_direct_aliases()

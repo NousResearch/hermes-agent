@@ -154,7 +154,7 @@ AI INSIGHTS  (wrapped; batch, carry generatedAt)
 
 NEWS & STORIES
   GET /api/v1/documents/ticker/{T}?limit=N          Sentiment-tagged feed ({documents, totalCount}); each doc
-                                                   has url, source, published (epoch seconds), averageSentiment; no title.
+                                                   has url, source, sourceName, published (epoch seconds), averageSentiment; no title.
   GET /api/v1/documents/stories?limit=N             Pre-clustered stories; cluster.title is SentiSense-authored and safe to show.
   GET /api/v1/documents/stories/ticker/{T}?limit=N  Stories for one ticker.
   GET /api/v1/documents/stories/{id}                Story detail (PublicStoryDetailDto; aspectPerspectives[], bullishView/bearishView).
@@ -163,7 +163,7 @@ NEWS & STORIES
 SUPPORTING  (price, prices, chart are real-time; profile, popular, calendar, market-summary are reference or batch)
   GET /api/v1/stocks/price?ticker={T}                       Flat (no wrapper): currentPrice, changePercent at root.
   GET /api/v1/stocks/prices?tickers=A,B,C                   Batch quotes.
-  GET /api/v1/stocks/{T}/profile                            profile.name, sector, industry.
+  GET /api/v1/stocks/{T}/profile                            name, sector, industry (flat at root; no profile key).
   GET /api/v1/stocks/chart?ticker={T}&timeframe=1D|5D|1W|1M|3M|6M|1Y|ALL   Bars; read each point's timestamp (Unix ms).
   GET /api/v1/stocks/popular                                Bare array of ~75 ticker strings (screen universe).
   GET /api/v1/calendar/earnings?ticker={T}                  data.earnings[]; next date + consensus EPS + confirmed.

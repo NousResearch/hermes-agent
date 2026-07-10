@@ -1,4 +1,4 @@
-import { type CSSProperties, useEffect } from 'react'
+import { type CSSProperties } from 'react'
 
 import {
   createParticleEmitter,
@@ -11,8 +11,8 @@ import { $petOverlayActive, forwardPetReaction } from '@/store/pet-overlay'
 /**
  * TikTok-style floating hearts — a thin skin over {@link ParticleField} (pixel
  * heart glyph + pink). Placed two ways: rising from the composer when no pet is
- * out, or from the pet when one is. Not wired to vibes/`ily`/`<3` yet — call
- * {@link burstVibeHearts} (or hit the DEV hotkey Shift+H).
+ * out, or from the pet when one is. Fired by the core `reaction` event (affection
+ * in a user message) via {@link burstVibeHearts}.
  */
 
 // Light pink reads on both light and dark chat surfaces.
@@ -55,8 +55,8 @@ const emitter = createParticleEmitter()
 export const playVibeHearts = (count?: number) => emitter.burst(count)
 
 /**
- * Fire a vibe burst from anywhere (hotkey, future `ily`/`<3` wiring). Routes to
- * where the affection should land:
+ * Fire a vibe burst (from the core `reaction` event). Routes to where the
+ * affection should land:
  *  - pet popped out  → forward to the overlay window + celebrate (mirrored)
  *  - pet in-window   → play here (on the pet) + celebrate
  *  - no pet          → play here (composer)
@@ -73,29 +73,6 @@ export const burstVibeHearts = (count?: number) => {
   } else {
     playVibeHearts(count)
   }
-}
-
-/** DEV-only preview: Shift+H, firing even while the composer is focused. Mount
- *  once in an always-present component (FloatingPet) — a single listener. */
-export function useHeartPreviewHotkey() {
-  useEffect(() => {
-    if (!import.meta.env.DEV) {
-      return
-    }
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!e.shiftKey || e.repeat || e.altKey || e.ctrlKey || e.metaKey || e.code !== 'KeyH') {
-        return
-      }
-
-      e.preventDefault()
-      burstVibeHearts()
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
 }
 
 export interface HeartFieldProps {

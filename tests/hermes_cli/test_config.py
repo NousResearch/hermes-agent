@@ -360,6 +360,34 @@ class TestLoadConfigParseFailure:
             assert capsys.readouterr().err == ""
 
 
+class TestEmptyConfigSections:
+    """Empty section keys (``terminal:`` with no value) parse as YAML None
+    and must not replace the default dict for that section (#58277)."""
+
+    def test_null_section_keeps_defaults_in_load_config(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "model:\n  default: test/custom\n"
+                "terminal:\n"
+                "display:\n"
+            )
+            config = load_config()
+            assert config["model"]["default"] == "test/custom"
+            assert isinstance(config["terminal"], dict)
+            assert config["terminal"] == DEFAULT_CONFIG["terminal"]
+            assert isinstance(config["display"], dict)
+
+    def test_null_override_of_non_dict_default_still_applies(self, tmp_path):
+        """None only shields dict defaults — explicit null for a scalar
+        key remains an override (unchanged behavior)."""
+        from hermes_cli.config import _deep_merge
+
+        merged = _deep_merge({"scalar": 5, "section": {"a": 1}},
+                             {"scalar": None, "section": None})
+        assert merged["scalar"] is None
+        assert merged["section"] == {"a": 1}
+
+
 class TestSaveAndLoadRoundtrip:
     @staticmethod
     def _deny_config_reads(config_path):

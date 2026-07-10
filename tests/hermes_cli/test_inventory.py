@@ -204,22 +204,47 @@ def test_build_models_payload_explicit_only_keeps_moa_presets():
     providers are — instead of being hidden like ambient auto-seeded credentials
     (e.g. GitHub CLI -> Copilot). Verifies the chat model menu still lists the
     Mixture of Agents provider and its presets.
+
+    ``_moa_provider_row`` is patched so the test is deterministic and does not
+    leak the host machine's real MoA config into the assertion.
+    """
+    moa_row = {
+        "slug": "moa", "name": "Mixture of Agents",
+        "models": ["default", "Free MOA Gemini build"], "total_models": 2,
+        "is_current": False, "is_user_defined": False, "source": "virtual",
+    }
+    rows = [
+        {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+        moa_row,
+    ]
+    ctx = _empty_ctx(provider="openrouter", model="m1", base_url="")
+    with _list_auth_returning(rows), \
+         patch("hermes_cli.inventory._moa_provider_row", return_value=moa_row):
+        payload = build_models_payload(ctx, explicit_only=True)
+    moa_rows = [r for r in payload["providers"] if r["slug"] == "moa"]
+    assert len(moa_rows) == 1, "moa virtual provider must survive explicit_only filter"
+    assert moa_rows[0]["models"] == ["default", "Free MOA Gemini build"], \
+        "moa row must surface the exact configured presets in explicit-only pickers"
+
+
+def test_build_models_payload_explicit_only_drops_moa_with_no_presets():
+    """Complement to the regression test above: when the user has NO MoA
+    presets configured, ``_moa_provider_row`` returns None and the moa row must
+    NOT appear in explicit-only pickers (no ambient clutter). Guards the fix
+    against over-keeping an empty/unconfigured routing mode.
     """
     rows = [
         {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
          "total_models": 1, "is_current": False, "is_user_defined": False,
          "source": "built-in"},
-        {"slug": "moa", "name": "Mixture of Agents", "models": ["default",
-         "Free MOA Gemini build"], "total_models": 2, "is_current": False,
-         "is_user_defined": False, "source": "virtual"},
     ]
     ctx = _empty_ctx(provider="openrouter", model="m1", base_url="")
-    with _list_auth_returning(rows):
+    with _list_auth_returning(rows), \
+         patch("hermes_cli.inventory._moa_provider_row", return_value=None):
         payload = build_models_payload(ctx, explicit_only=True)
-    moa_rows = [r for r in payload["providers"] if r["slug"] == "moa"]
-    assert moa_rows, "moa virtual provider must survive explicit_only filter"
-    assert isinstance(moa_rows[0].get("models"), list) and moa_rows[0]["models"], \
-        "moa row must surface at least one preset in explicit-only pickers"
+    assert [r["slug"] for r in payload["providers"]] == ["openrouter"]
 
 
 def test_build_models_payload_does_not_call_provider_model_ids():

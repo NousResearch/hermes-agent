@@ -5561,64 +5561,63 @@ def resolve_nous_runtime_credentials(
         persisted_state = dict(state)
         state_persisted = False
 
-        portal_base_url = (
-            _optional_base_url(state.get("portal_base_url"))
-            or os.getenv("HERMES_PORTAL_BASE_URL")
-            or os.getenv("NOUS_PORTAL_BASE_URL")
-            or DEFAULT_NOUS_PORTAL_URL
-        ).rstrip("/")
+        def _resolve_effective_routing_metadata() -> tuple[str, str, str, str]:
+            """Resolve every routing value that shared OAuth state can replace."""
+            portal_url = (
+                _optional_base_url(state.get("portal_base_url"))
+                or os.getenv("HERMES_PORTAL_BASE_URL")
+                or os.getenv("NOUS_PORTAL_BASE_URL")
+                or DEFAULT_NOUS_PORTAL_URL
+            ).rstrip("/")
 
-        # A persisted/stale portal_base_url is where the refresh token gets
-        # POSTed on refresh — reject any host outside the allowlist so a
-        # poisoned value can't exfiltrate the bearer, healing to the default.
-        # The trusted operator/deployment env override (HERMES_PORTAL_BASE_URL /
-        # NOUS_PORTAL_BASE_URL) bypasses this gate entirely — mirrors
-        # NOUS_INFERENCE_BASE_URL's treatment below; the allowlist exists to
-        # reject an untrusted NETWORK-provided value, not one the operator
-        # explicitly configured.
-        env_portal_override = _nous_portal_env_override()
-        if env_portal_override:
-            portal_base_url = env_portal_override.rstrip("/")
-        else:
-            parsed_portal_url = urlparse(portal_base_url)
-            if parsed_portal_url.hostname and parsed_portal_url.hostname not in _NOUS_PORTAL_ALLOWED_HOSTS:
-                logger.warning(
-                    "auth: ignoring invalid portal_base_url %r (host %r not in allowlist), using default",
-                    portal_base_url, parsed_portal_url.hostname,
-                )
-                portal_base_url = DEFAULT_NOUS_PORTAL_URL
+            # A persisted/stale portal_base_url is where the refresh token gets
+            # POSTed on refresh — reject any host outside the allowlist so a
+            # poisoned value can't exfiltrate the bearer, healing to the default.
+            # Trusted operator env overrides bypass this network-value gate.
+            env_portal_override = _nous_portal_env_override()
+            if env_portal_override:
+                portal_url = env_portal_override.rstrip("/")
+            else:
+                parsed_portal_url = urlparse(portal_url)
+                if (
+                    parsed_portal_url.hostname
+                    and parsed_portal_url.hostname not in _NOUS_PORTAL_ALLOWED_HOSTS
+                ):
+                    logger.warning(
+                        "auth: ignoring invalid portal_base_url %r "
+                        "(host %r not in allowlist), using default",
+                        portal_url,
+                        parsed_portal_url.hostname,
+                    )
+                    portal_url = DEFAULT_NOUS_PORTAL_URL
 
-        # Persisted value: validated network-provenance only. The stored
-        # inference_base_url is re-validated on read so a poisoned/stale
-        # staging host (persisted before the allowlist existed) heals to the
-        # production default on the no-refresh read path — this is what gets
-        # written back to auth.json. The env override is deliberately NOT
-        # folded in here: it must never be persisted (it's a runtime overlay).
-        stored_inference_base_url = (
-            _validate_nous_inference_url_from_network(
-                _optional_base_url(state.get("inference_base_url"))
-            )
-            or DEFAULT_NOUS_INFERENCE_URL
-        )
-        # Effective value used to build the client / returned to callers:
-        # the NOUS_INFERENCE_BASE_URL env override wins (documented dev/staging
-        # escape hatch), else the validated stored value.
-        inference_base_url = (
-            _nous_inference_env_override() or stored_inference_base_url
-        )
-        client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
-
-        def _refresh_effective_inference_base_url() -> None:
-            nonlocal stored_inference_base_url, inference_base_url
-            stored_inference_base_url = (
+            # Re-validate persisted network-provenance on every shared merge.
+            # The env override is runtime-only and must never be persisted.
+            stored_inference_url = (
                 _validate_nous_inference_url_from_network(
                     _optional_base_url(state.get("inference_base_url"))
                 )
                 or DEFAULT_NOUS_INFERENCE_URL
             )
-            inference_base_url = (
-                _nous_inference_env_override() or stored_inference_base_url
+            effective_inference_url = (
+                _nous_inference_env_override() or stored_inference_url
             )
+            effective_client_id = str(
+                state.get("client_id") or DEFAULT_NOUS_CLIENT_ID
+            )
+            return (
+                portal_url,
+                stored_inference_url,
+                effective_inference_url,
+                effective_client_id,
+            )
+
+        (
+            portal_base_url,
+            stored_inference_base_url,
+            inference_base_url,
+            client_id,
+        ) = _resolve_effective_routing_metadata()
 
         def _persist_state(reason: str) -> None:
             nonlocal persisted_state, state_persisted
@@ -5678,7 +5677,12 @@ def resolve_nous_runtime_credentials(
                     if _merge_shared_nous_oauth_state(state):
                         access_token = state.get("access_token")
                         refresh_token = state.get("refresh_token")
-                        _refresh_effective_inference_base_url()
+                        (
+                            portal_base_url,
+                            stored_inference_base_url,
+                            inference_base_url,
+                            client_id,
+                        ) = _resolve_effective_routing_metadata()
                         _persist_state("runtime_shared_merge_missing_access_token")
 
             if not isinstance(access_token, str) or not access_token:
@@ -5695,6 +5699,12 @@ def resolve_nous_runtime_credentials(
                     if _merge_shared_nous_oauth_state(state):
                         access_token = state.get("access_token")
                         refresh_token = state.get("refresh_token")
+                        (
+                            portal_base_url,
+                            stored_inference_base_url,
+                            inference_base_url,
+                            client_id,
+                        ) = _resolve_effective_routing_metadata()
                         invoke_jwt_status = _nous_invoke_jwt_status(
                             access_token,
                             scope=state.get("scope"),

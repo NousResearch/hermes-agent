@@ -533,6 +533,26 @@ def run_codex_app_server_turn(
     }
 
 
+def close_codex_session(agent) -> None:
+    """Tear down the per-agent `codex app-server` subprocess, if any.
+
+    Ephemeral agents (cron jobs, gateway hygiene/summary agents) run inside
+    the long-lived gateway process, so the subprocess never exits with its
+    parent the way it does for a one-shot CLI run. The client's reader
+    threads keep the client object referenced, so GC never closes its pipes
+    either — without this explicit close, every such run leaks one
+    `codex app-server` process. Safe no-op for agents on other runtimes.
+    """
+    session = getattr(agent, "_codex_session", None)
+    if session is None:
+        return
+    try:
+        session.close()
+    except Exception:
+        logger.debug("codex app-server session close failed", exc_info=True)
+    agent._codex_session = None
+
+
 # ---------------------------------------------------------------------------
 # Event-driven Responses streaming
 #

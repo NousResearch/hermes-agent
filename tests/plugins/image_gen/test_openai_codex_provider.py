@@ -271,6 +271,17 @@ class TestGenerate:
             "item": {"type": "image_generation_call", "result": "abc"},
         }]
 
+    def test_error_response_preview_is_bounded(self, monkeypatch):
+        class _Response:
+            def iter_bytes(self):
+                yield b"a" * 8
+                yield b"b" * 8
+
+        monkeypatch.setattr(codex_plugin, "_CODEX_ERROR_BODY_MAX_BYTES", 10)
+        preview = codex_plugin._codex_error_response_preview(_Response())
+
+        assert preview == "a" * 8 + "b" * 2 + " ... [truncated after 10 bytes]"
+
     def test_final_response_sweep_recovers_image(self):
         """Completed response output is found by recursive payload scanning."""
         payload = {

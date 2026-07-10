@@ -4,6 +4,7 @@ import {
   currentPickerSelection,
   displayModelName,
   formatModelStatusLabel,
+  reconcilePickerSelection,
   reasoningEffortLabel
 } from './model-status-label'
 
@@ -59,6 +60,33 @@ describe('model-status-label', () => {
 
     it('falls back to the store while options are still loading', () => {
       expect(currentPickerSelection(true, store, undefined)).toEqual(store)
+    })
+
+    it('moves a stale sticky selection to the catalog provider that owns the model', () => {
+      const catalog = {
+        model: 'gpt-5.5',
+        provider: 'custom:provider-a',
+        providers: [
+          { slug: 'custom:provider-a', name: 'Provider A', models: ['gpt-5.5'] },
+          { slug: 'custom:provider-b', name: 'Provider B', models: ['grok-4.5'] }
+        ]
+      }
+
+      expect(currentPickerSelection(false, { model: 'grok-4.5', provider: 'custom:provider-a' }, catalog)).toEqual({
+        model: 'grok-4.5',
+        provider: 'custom:provider-b'
+      })
+    })
+  })
+
+  describe('reconcilePickerSelection', () => {
+    it('keeps unknown sticky selections while the catalog is incomplete', () => {
+      const selection = { model: 'grok-4.5', provider: 'custom:provider-a' }
+
+      expect(reconcilePickerSelection(selection, { providers: [] })).toEqual(selection)
+      expect(reconcilePickerSelection(selection, { providers: [{ slug: 'custom:provider-a', models: [] }] })).toEqual(
+        selection
+      )
     })
   })
 })

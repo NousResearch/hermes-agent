@@ -2365,14 +2365,18 @@ def list_authenticated_providers(
     # post-pass so it covers every provider section uniformly, regardless of
     # which branch emitted the row.
     if current_model:
-        for _row in results:
-            if not _row.get("is_current"):
-                continue
-            _models = _row.get("models") or []
+        _current_row = next((_row for _row in results if _row.get("is_current")), None)
+        _model_belongs_elsewhere = any(
+            _row is not _current_row and current_model in (_row.get("models") or [])
+            for _row in results
+        )
+        if _current_row is not None and not _model_belongs_elsewhere:
+            _models = _current_row.get("models") or []
             if current_model not in _models:
-                _row["models"] = [current_model, *_models]
-                _row["total_models"] = _row.get("total_models", len(_models)) + 1
-            break
+                _current_row["models"] = [current_model, *_models]
+                _current_row["total_models"] = (
+                    _current_row.get("total_models", len(_models)) + 1
+                )
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))

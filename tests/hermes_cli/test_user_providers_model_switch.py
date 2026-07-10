@@ -8,11 +8,37 @@ are exposed in the model picker.
 import pytest
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli import runtime_provider as rp
+from hermes_cli.config import get_compatible_custom_providers
 
 
 # =============================================================================
 # Tests for list_authenticated_providers including full models list
 # =============================================================================
+
+def test_providers_dict_preserve_model_dots_reaches_custom_provider_view():
+    providers = get_compatible_custom_providers(
+        {
+            "providers": {
+                "anthropic-proxy": {
+                    "api": "https://gateway.example.com/anthropic",
+                    "transport": "anthropic_messages",
+                    "default_model": "vendor/model-4.5",
+                    "preserve_model_dots": True,
+                }
+            }
+        }
+    )
+
+    assert providers == [
+        {
+            "name": "anthropic-proxy",
+            "base_url": "https://gateway.example.com/anthropic",
+            "provider_key": "anthropic-proxy",
+            "api_mode": "anthropic_messages",
+            "model": "vendor/model-4.5",
+            "preserve_model_dots": True,
+        }
+    ]
 
 def test_list_authenticated_providers_includes_full_models_list_from_user_providers(monkeypatch):
     """User-defined providers should expose both default_model and full models list.

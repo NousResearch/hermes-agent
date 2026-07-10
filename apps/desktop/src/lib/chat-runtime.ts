@@ -4,6 +4,7 @@ import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { reconcilePickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
@@ -270,15 +271,17 @@ export function quickModelOptions(
   currentProvider: string,
   currentModel: string
 ): QuickModelOption[] {
+  const limit = 8
   const seen = new Set<string>()
   const options: QuickModelOption[] = []
+  const current = reconcilePickerSelection({ model: currentModel, provider: currentProvider }, data)
 
   const providers = [...(data?.providers ?? [])].sort((a, b) => {
-    if (a.slug === currentProvider) {
+    if (a.slug === current.provider) {
       return -1
     }
 
-    if (b.slug === currentProvider) {
+    if (b.slug === current.provider) {
       return 1
     }
 
@@ -304,17 +307,34 @@ export function quickModelOptions(
     options.push({ provider, providerName, model })
   }
 
-  if (currentProvider && currentModel) {
-    add(currentProvider, currentProvider, currentModel)
+  if (current.provider && current.model) {
+    add(current.provider, current.provider, current.model)
+  }
+
+  for (const provider of providers) {
+    const models = provider.models ?? []
+
+    if (models.length === 0) {
+      continue
+    }
+
+    const representative =
+      provider.slug === current.provider && models.includes(current.model) ? current.model : models[0]
+
+    add(provider.slug, provider.name, representative)
+
+    if (options.length >= limit) {
+      return options.slice(0, limit)
+    }
   }
 
   for (const provider of providers) {
     const models = [...(provider.models ?? [])].sort((a, b) => {
-      if (provider.slug === currentProvider && a === currentModel) {
+      if (provider.slug === current.provider && a === current.model) {
         return -1
       }
 
-      if (provider.slug === currentProvider && b === currentModel) {
+      if (provider.slug === current.provider && b === current.model) {
         return 1
       }
 
@@ -325,12 +345,12 @@ export function quickModelOptions(
       add(provider.slug, provider.name, model)
     }
 
-    if (options.length >= 8) {
+    if (options.length >= limit) {
       break
     }
   }
 
-  return options.slice(0, 8)
+  return options.slice(0, limit)
 }
 
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {

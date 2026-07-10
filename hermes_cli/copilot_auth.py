@@ -9,11 +9,8 @@ Token type support (per GitHub docs):
   ghu_          GitHub App token      ✓  (via environment variable)
   ghp_          Classic PAT           ✗  NOT SUPPORTED
 
-Credential search order (matching Copilot CLI behaviour):
+Credential search order for automatic provider discovery:
   1. COPILOT_GITHUB_TOKEN env var
-  2. GH_TOKEN env var
-  3. GITHUB_TOKEN env var
-  4. gh auth token  CLI fallback
 """
 
 from __future__ import annotations
@@ -43,8 +40,9 @@ COPILOT_OAUTH_CLIENT_ID = "Iv1.b507a08c87ecfe98"
 _CLASSIC_PAT_PREFIX = "ghp_"
 _SUPPORTED_PREFIXES = ("gho_", "github_pat_", "ghu_")
 
-# Env var search order (matches Copilot CLI)
-COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+# Env var search order. Keep generic GitHub credentials out of implicit
+# provider discovery; only Copilot-specific credentials should enable Copilot.
+COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN",)
 
 # Polling constants
 _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
@@ -66,7 +64,7 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
             "Copilot API. Use one of:\n"
             "  → `copilot login` or `hermes model` to authenticate via OAuth\n"
             "  → A fine-grained PAT (github_pat_*) with Copilot Requests permission\n"
-            "  → `gh auth login` with the default device code flow (produces gho_* tokens)"
+            "  → `COPILOT_GITHUB_TOKEN` with a supported Copilot token"
         )
 
     return True, "OK"
@@ -76,7 +74,8 @@ def resolve_copilot_token() -> tuple[str, str]:
     """Resolve a GitHub token suitable for Copilot API use.
 
     Returns (token, source) where source describes where the token came from.
-    Raises ValueError if only a classic PAT is available.
+    Ambient GitHub CLI credentials are deliberately ignored so a normal GitHub
+    login does not make Copilot appear as an authenticated model provider.
     """
     # 1. Check env vars in priority order
     for env_var in COPILOT_ENV_VARS:
@@ -89,16 +88,6 @@ def resolve_copilot_token() -> tuple[str, str]:
                 )
                 continue
             return val, env_var
-
-    # 2. Fall back to gh auth token
-    token = _try_gh_cli_token()
-    if token:
-        valid, msg = validate_copilot_token(token)
-        if not valid:
-            raise ValueError(
-                f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}"
-            )
-        return token, "gh auth token"
 
     return "", ""
 

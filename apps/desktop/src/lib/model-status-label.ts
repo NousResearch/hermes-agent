@@ -9,6 +9,18 @@ const REASONING_LABELS: Record<string, string> = {
   xhigh: 'Max'
 }
 
+interface PickerModelProvider {
+  models?: string[]
+  name?: string
+  slug: string
+}
+
+interface PickerModelOptions {
+  model?: string
+  provider?: string
+  providers?: PickerModelProvider[]
+}
+
 export function reasoningEffortLabel(effort: string): string {
   const key = normalize(effort)
 
@@ -19,6 +31,36 @@ export function reasoningEffortLabel(effort: string): string {
   return REASONING_LABELS[key] ?? effort
 }
 
+function providerHasModel(options: PickerModelOptions | undefined, provider: string, model: string): boolean {
+  const row = options?.providers?.find(candidate => candidate.slug === provider)
+
+  return Boolean(row?.models?.includes(model))
+}
+
+function providerOwningModel(options: PickerModelOptions | undefined, model: string): string {
+  if (!model) {
+    return ''
+  }
+
+  return options?.providers?.find(provider => provider.models?.includes(model))?.slug ?? ''
+}
+
+export function reconcilePickerSelection(
+  selection: { model: string; provider: string },
+  options?: PickerModelOptions
+): { model: string; provider: string } {
+  const model = String(selection.model || '')
+  const provider = String(selection.provider || '')
+
+  if (!model || !provider || !options?.providers?.length || providerHasModel(options, provider, model)) {
+    return { model, provider }
+  }
+
+  const owner = providerOwningModel(options, model)
+
+  return owner ? { model, provider: owner } : { model, provider }
+}
+
 /** Which model/provider a picker should mark "current". With a live session the
  *  gateway's `model.options` is authoritative; pre-session there is no server
  *  "current", so the sticky composer pick wins over the profile default the
@@ -27,12 +69,15 @@ export function reasoningEffortLabel(effort: string): string {
 export function currentPickerSelection(
   hasSession: boolean,
   store: { model: string; provider: string },
-  options?: { model?: string; provider?: string }
+  options?: PickerModelOptions
 ): { model: string; provider: string } {
-  return {
-    model: String((hasSession && options?.model) || store.model || options?.model || ''),
-    provider: String((hasSession && options?.provider) || store.provider || options?.provider || '')
-  }
+  return reconcilePickerSelection(
+    {
+      model: String((hasSession && options?.model) || store.model || options?.model || ''),
+      provider: String((hasSession && options?.provider) || store.provider || options?.provider || '')
+    },
+    options
+  )
 }
 
 /** Strip provider prefix and normalize for display. */

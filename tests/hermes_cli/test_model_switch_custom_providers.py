@@ -70,6 +70,41 @@ def test_list_authenticated_providers_can_skip_custom_provider_live_probe(monkey
     assert row["total_models"] == 1
 
 
+def test_current_model_not_injected_into_wrong_custom_provider(monkeypatch):
+    """A stale UI/session provider must not make another provider's model appear under it."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom:provider-a",
+        current_model="grok-4.5",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "provider-a",
+                "base_url": "https://gateway.example.com",
+                "key_env": "GPT_KEY",
+                "api_mode": "codex_responses",
+                "model": "gpt-5.5",
+            },
+            {
+                "name": "provider-b",
+                "base_url": "https://gateway.example.com",
+                "key_env": "GROK_KEY",
+                "api_mode": "chat_completions",
+                "model": "grok-4.5",
+            },
+        ],
+        max_models=50,
+    )
+
+    by_slug = {p["slug"]: p for p in providers if p.get("is_user_defined")}
+
+    assert by_slug["custom:provider-a"]["is_current"] is True
+    assert by_slug["custom:provider-a"]["models"] == ["gpt-5.5"]
+    assert by_slug["custom:provider-b"]["models"] == ["grok-4.5"]
+
+
 def test_list_authenticated_providers_can_probe_only_current_custom_provider(monkeypatch):
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})

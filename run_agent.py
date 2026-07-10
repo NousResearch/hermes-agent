@@ -5226,6 +5226,8 @@ class AIAgent:
 
     def _anthropic_preserve_dots(self) -> bool:
         """True when using an anthropic-compatible endpoint that preserves dots in model names.
+        ``custom_providers[].preserve_model_dots`` lets third-party gateways opt
+        in without hard-coding private hostnames.
         Alibaba/DashScope keeps dots (e.g. qwen3.5-plus).
         MiniMax keeps dots (e.g. MiniMax-M2.7).
         Xiaomi MiMo keeps dots (e.g. mimo-v2.5, mimo-v2.5-pro).
@@ -5238,6 +5240,8 @@ class AIAgent:
         ``HTTP 400 The provided model identifier is invalid``.
         Regression for #11976; mirrors the opencode-go fix for #5211
         (commit f77be22c), which extended this same allowlist."""
+        if bool(getattr(self, "_preserve_model_dots", False)):
+            return True
         if (getattr(self, "provider", "") or "").lower() in {
             "alibaba", "minimax", "minimax-cn",
             "opencode-go", "opencode-zen",

@@ -200,6 +200,30 @@ def _custom_provider_extra_body_for_agent(
     base_url: str,
     custom_providers: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
+    entry = _matching_custom_provider_for_agent(
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        custom_providers=custom_providers,
+        require_model_match=True,
+        required_dict_field="extra_body",
+    )
+
+    if isinstance(entry, dict) and isinstance(entry.get("extra_body"), dict) and entry["extra_body"]:
+        return dict(entry["extra_body"])
+
+    return None
+
+
+def _matching_custom_provider_for_agent(
+    *,
+    provider: str,
+    model: str,
+    base_url: str,
+    custom_providers: List[Dict[str, Any]],
+    require_model_match: bool = False,
+    required_dict_field: str | None = None,
+) -> Optional[Dict[str, Any]]:
     provider_norm = (provider or "").strip().lower()
     if provider_norm == "custom":
         provider_key_filter = ""
@@ -225,17 +249,34 @@ def _custom_provider_extra_body_for_agent(
                 continue
         if _normalized_custom_base_url(entry.get("base_url")) != target_url:
             continue
-        extra_body = entry.get("extra_body")
-        if not isinstance(extra_body, dict) or not extra_body:
-            continue
+        if required_dict_field:
+            value = entry.get(required_dict_field)
+            if not isinstance(value, dict) or not value:
+                continue
         provider_model = str(entry.get("model", "") or "").strip()
         if provider_model:
             if _custom_provider_model_matches(model, entry):
-                return dict(extra_body)
+                return entry
+            if require_model_match:
+                continue
         elif fallback is None:
-            fallback = dict(extra_body)
+            fallback = entry
 
     return fallback
+
+
+def _apply_custom_provider_flags(agent, custom_providers: List[Dict[str, Any]]) -> None:
+    entry = _matching_custom_provider_for_agent(
+        provider=agent.provider,
+        model=agent.model,
+        base_url=agent.base_url,
+        custom_providers=custom_providers,
+    )
+    if not isinstance(entry, dict):
+        return
+
+    if is_truthy_value(entry.get("preserve_model_dots")):
+        agent._preserve_model_dots = True
 
 
 def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, Any]]) -> None:
@@ -1663,6 +1704,7 @@ def init_agent(
     # Store for reuse by _check_compression_model_feasibility (auxiliary
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
+    _apply_custom_provider_flags(agent, _custom_providers)
     _merge_custom_provider_extra_body(agent, _custom_providers)
 
     # Check custom_providers per-model context_length

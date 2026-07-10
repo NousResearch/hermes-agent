@@ -3434,6 +3434,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
+        self.interim_assistant_messages = CLI_CONFIG["display"].get(
+            "interim_assistant_messages", False
+        )
         # show_timestamps: prefix user and assistant labels with [HH:MM]
         self.show_timestamps = CLI_CONFIG["display"].get("timestamps", False)
         self.final_response_markdown = str(
@@ -4798,6 +4801,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         it's a no-op for rendering — kept so the agent's clear callback is bound
         symmetrically with the show callback (and so future REPL UIs can hook it)."""
         return
+
+    def _on_interim_assistant(self, text: str, already_streamed: bool = False) -> None:
+        """Render intermediate assistant messages that appear between tool calls.
+
+        The agent core emits real assistant commentary mid-turn (e.g.
+        "Let me look at the code first…" before calling a read_file tool,
+        or "I see the issue now, let me fix it…" before a patch).
+        Without this callback the CLI only shows the final response,
+        making the agent appear to silently execute tools without
+        any visible reasoning between them.
+        """
+        if already_streamed:
+            return  # text was already displayed via stream delta
+        if not self.interim_assistant_messages:
+            return
+        display_text = text.strip()
+        if not display_text:
+            return
+        if hasattr(self, "_stream_buf") and self._stream_buf:
+            self._flush_stream()
+        _cprint(f"  {display_text}")
 
     # ── Streaming display ────────────────────────────────────────────────
 

@@ -23,8 +23,6 @@ node_modules
 **/node_modules
 .venv
 **/.venv
-.notebooklm-cli-venv/
-.notebooklm-playwright/
 .pip-cache/
 .uv-cache/
 
@@ -58,7 +56,6 @@ htmlcov/
 # Runtime data (bind-mounted at /opt/data; must not leak into build context)
 data/
 .hermes-docker/
-.notebooklm-home/
 
 # Compose/profile runtime state (bind-mounted; avoid ownership/secret issues)
 hermes-config/

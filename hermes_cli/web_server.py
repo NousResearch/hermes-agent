@@ -10048,29 +10048,44 @@ def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args,
     from the process HERMES_HOME at import time. The dashboard is a single
     process that can inspect many profiles, so temporarily retarget those
     globals while holding a lock and restore them immediately after the call.
+
+    Issue #61768: the previous version held only _CRON_PROFILE_LOCK (a
+    web-local Python RLock) around the retarget, while cron.jobs' own
+    write helpers acquire cron.jobs._jobs_file_lock (the in-process RLock
+    inside cron.jobs). These are different locks — desktop ticker
+    threads and the dashboard retarget can interleave across them. The fix
+    acquires **both** locks: _CRON_PROFILE_LOCK for the cross-calls serial
+    position across dashboard endpoints, and cron.jobs._jobs_lock for
+    serialization against the cron ticker thread. The two-tier hold is
+    unbounded-correct and forces the destruct-overwrite race's writer to
+    serialize against the retarget.
     """
     profile_name, home = _cron_profile_home(target_profile)
     with _CRON_PROFILE_LOCK:
+        # Lazy import: cron.jobs may not be available in all dashboard
+        # backends. The inner context manager acquires cron.jobs' own
+        # in-process RLock to interlock with the desktop ticker thread.
         from cron import jobs as cron_jobs
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
-        )
+        with cron_jobs._jobs_lock():
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
 
-        old_cron_dir = cron_jobs.CRON_DIR
-        old_jobs_file = cron_jobs.JOBS_FILE
-        old_output_dir = cron_jobs.OUTPUT_DIR
-        token = set_hermes_home_override(str(home))
-        cron_jobs.CRON_DIR = home / "cron"
-        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
-        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
-        try:
-            result = getattr(cron_jobs, func_name)(*args, **kwargs)
-        finally:
-            cron_jobs.CRON_DIR = old_cron_dir
-            cron_jobs.JOBS_FILE = old_jobs_file
-            cron_jobs.OUTPUT_DIR = old_output_dir
-            reset_hermes_home_override(token)
+            old_cron_dir = cron_jobs.CRON_DIR
+            old_jobs_file = cron_jobs.JOBS_FILE
+            old_output_dir = cron_jobs.OUTPUT_DIR
+            token = set_hermes_home_override(str(home))
+            cron_jobs.CRON_DIR = home / "cron"
+            cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
+            cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
+            try:
+                result = getattr(cron_jobs, func_name)(*args, **kwargs)
+            finally:
+                cron_jobs.CRON_DIR = old_cron_dir
+                cron_jobs.JOBS_FILE = old_jobs_file
+                cron_jobs.OUTPUT_DIR = old_output_dir
+                reset_hermes_home_override(token)
 
     if isinstance(result, list):
         return [_annotate_cron_job(j, profile_name, home) for j in result]
@@ -10370,25 +10385,30 @@ def _fire_cron_job_for_profile(profile: str, job_id: str) -> bool:
     no live adapters; delivery falls back to the per-platform send path (the
     dashboard process has no gateway adapter handles, exactly like the desktop
     cron path above).
+
+    Issue #61768: also acquires cron.jobs' in-process _jobs_lock around
+    the retarget+call window so that the desktop ticker thread (which only
+    holds _jobs_lock, not _CRON_PROFILE_LOCK) cannot race with the
+    dashboard's read-modify-write against the same profile's jobs.json.
     """
     _profile_name, home = _cron_profile_home(profile)
     with _CRON_PROFILE_LOCK:
         from cron import jobs as cron_jobs
-        from cron.scheduler_provider import resolve_cron_scheduler
-
-        old_cron_dir = cron_jobs.CRON_DIR
-        old_jobs_file = cron_jobs.JOBS_FILE
-        old_output_dir = cron_jobs.OUTPUT_DIR
-        cron_jobs.CRON_DIR = home / "cron"
-        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
-        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
-        try:
-            provider = resolve_cron_scheduler()
-            return bool(provider.fire_due(job_id, adapters=None, loop=None))
-        finally:
-            cron_jobs.CRON_DIR = old_cron_dir
-            cron_jobs.JOBS_FILE = old_jobs_file
-            cron_jobs.OUTPUT_DIR = old_output_dir
+        with cron_jobs._jobs_lock():
+            old_cron_dir = cron_jobs.CRON_DIR
+            old_jobs_file = cron_jobs.JOBS_FILE
+            old_output_dir = cron_jobs.OUTPUT_DIR
+            cron_jobs.CRON_DIR = home / "cron"
+            cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
+            cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
+            try:
+                from cron.scheduler_provider import resolve_cron_scheduler
+                provider = resolve_cron_scheduler()
+                return bool(provider.fire_due(job_id, adapters=None, loop=None))
+            finally:
+                cron_jobs.CRON_DIR = old_cron_dir
+                cron_jobs.JOBS_FILE = old_jobs_file
+                cron_jobs.OUTPUT_DIR = old_output_dir
 
 
 @app.post("/api/cron/fire")

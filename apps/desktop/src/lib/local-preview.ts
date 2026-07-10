@@ -58,13 +58,43 @@ function joinPath(base: string, rel: string) {
   return `${base.replace(/\/+$/, '')}/${rel.replace(/^\.?\//, '')}`
 }
 
+function encodePathSegments(path: string) {
+  return path
+    .split(/[\\/]/)
+    .map(part => encodeURIComponent(part))
+    .join('/')
+}
+
 function pathToFileUrl(path: string) {
+  const drivePath = /^([a-z]:)[\\/](.*)$/i.exec(path)
+
+  if (drivePath) {
+    return `file:///${drivePath[1]}/${encodePathSegments(drivePath[2] || '')}`
+  }
+
+  const uncPath = /^\\\\([^\\/]+)[\\/](.*)$/.exec(path)
+
+  if (uncPath) {
+    return `file://${uncPath[1]}/${encodePathSegments(uncPath[2] || '')}`
+  }
+
   const encoded = path
     .split('/')
     .map(part => encodeURIComponent(part))
     .join('/')
 
   return `file://${encoded.startsWith('/') ? encoded : `/${encoded}`}`
+}
+
+function fileUrlToPath(raw: string) {
+  const url = new URL(raw)
+  const pathname = decodeURIComponent(url.pathname)
+
+  if (url.hostname && url.hostname.toLowerCase() !== 'localhost') {
+    return `\\\\${url.hostname}${pathname.replaceAll('/', '\\')}`
+  }
+
+  return /^\/[a-z]:[\\/]/i.test(pathname) ? pathname.slice(1) : pathname
 }
 
 export function localPreviewTarget(rawTarget: string, cwd?: string | null): PreviewTarget | null {
@@ -82,11 +112,18 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
 
   if (/^file:\/\//i.test(raw)) {
     try {
-      path = decodeURIComponent(new URL(raw).pathname)
+      path = fileUrlToPath(raw)
     } catch {
       path = raw.replace(/^file:\/\//i, '')
     }
-  } else if (!raw.startsWith('/') && cwd) {
+  } else if (
+    !raw.startsWith('/') &&
+    !raw.startsWith('\\\\') &&
+    !/^[a-z]:[\\/]/i.test(raw) &&
+    !raw.startsWith('~/') &&
+    !raw.startsWith('~\\') &&
+    cwd
+  ) {
     path = joinPath(cwd, raw)
   }
 
@@ -115,6 +152,7 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
 
   try {
     const result = await readDesktopFileText(target.path || target.source)
+    const resolvedPath = result.path || target.path
 
     return {
       ...target,
@@ -122,7 +160,9 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
       byteSize: result.byteSize,
       language: result.language || target.language,
       large: (result.byteSize ?? 0) > 512 * 1024,
-      mimeType: result.mimeType
+      mimeType: result.mimeType,
+      path: resolvedPath,
+      url: resolvedPath ? pathToFileUrl(resolvedPath) : target.url
     }
   } catch {
     return target
@@ -133,15 +173,17 @@ export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
   cwd?: string | null
 ): Promise<PreviewTarget | null> {
-  try {
-    const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
+  if (!isDesktopFsRemoteMode()) {
+    try {
+      const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 
-    if (normalized) {
-      return enrichPreviewTarget(normalized)
+      if (normalized) {
+        return enrichPreviewTarget(normalized)
+      }
+    } catch {
+      // Running Electron may still have the old HTML-only preview IPC. Fall
+      // through to renderer-side classification so text/images still open.
     }
-  } catch {
-    // Running Electron may still have the old HTML-only preview IPC. Fall
-    // through to renderer-side local classification so text/images still open.
   }
 
   return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd))

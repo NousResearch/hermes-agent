@@ -2192,6 +2192,19 @@ export const en: Translations = {
       'This file changed since you opened it. Overwrite it with your version, or discard your edits and reload?',
     overwrite: 'Overwrite',
     discardReload: 'Discard & reload',
+    artifact: {
+      toolbar: 'Markdown artifact actions',
+      open: 'Open',
+      reveal: 'Reveal',
+      copyPath: 'Copy path',
+      copyContents: 'Copy contents',
+      localOnly: 'Available only for files on this computer',
+      contentsUnavailable: 'Contents are unavailable until the file can be read',
+      filesystemChanged: 'Reopen this artifact after switching filesystems or gateway profiles',
+      pathCopied: 'Artifact path copied',
+      contentsCopied: 'Artifact contents copied',
+      actionFailed: 'Artifact action failed'
+    },
     console: {
       deselect: 'Deselect entry',
       select: 'Select entry',

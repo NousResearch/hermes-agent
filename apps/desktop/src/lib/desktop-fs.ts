@@ -28,6 +28,26 @@ export function desktopFsCacheKey() {
   return connectionCacheKey($connection.get())
 }
 
+export function desktopFilesystemKey(connection: HermesConnection | null = $connection.get()) {
+  if (!connection || connection.mode !== 'remote') {
+    return 'local'
+  }
+
+  const rawBaseUrl = (connection.baseUrl || '').trim()
+  let baseUrl = rawBaseUrl.replace(/\/+$/, '')
+
+  try {
+    const parsed = new URL(rawBaseUrl)
+    const pathname = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '')
+
+    baseUrl = `${parsed.protocol}//${parsed.host}${pathname}${parsed.search}`
+  } catch {
+    // Preserve invalid/custom path casing rather than creating a collision.
+  }
+
+  return `remote:${connection.profile || ''}:${baseUrl}`
+}
+
 export function isDesktopFsRemoteMode() {
   return $connection.get()?.mode === 'remote'
 }
@@ -66,12 +86,21 @@ export async function readDesktopDir(path: string): Promise<HermesReadDirResult>
   return remoteFsApi<HermesReadDirResult>(fsPath('list', path))
 }
 
-export async function readDesktopFileText(path: string): Promise<HermesReadFileTextResult> {
+export interface DesktopReadFileTextOptions {
+  complete?: boolean
+}
+
+export async function readDesktopFileText(
+  path: string,
+  options?: DesktopReadFileTextOptions
+): Promise<HermesReadFileTextResult> {
   if (!isDesktopFsRemoteMode()) {
-    return bridge().readFileText(path)
+    return options ? bridge().readFileText(path, options) : bridge().readFileText(path)
   }
 
-  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path))
+  const endpoint = `${fsPath('read-text', path)}${options?.complete ? '&complete=true' : ''}`
+
+  return remoteFsApi<HermesReadFileTextResult>(endpoint)
 }
 
 // Save UTF-8 text back to a file. Local writes go through the hardened Electron

@@ -2358,6 +2358,19 @@ export const zh: Translations = {
     diskChangedBody: '此文件自打开以来已更改。用你的版本覆盖，还是放弃你的编辑并重新加载？',
     overwrite: '覆盖',
     discardReload: '放弃并重新加载',
+    artifact: {
+      toolbar: 'Markdown 文件操作',
+      open: '打开',
+      reveal: '在文件管理器中显示',
+      copyPath: '复制路径',
+      copyContents: '复制内容',
+      localOnly: '仅适用于此电脑上的文件',
+      contentsUnavailable: '文件可读取后才能复制内容',
+      filesystemChanged: '切换文件系统或网关配置后，请重新打开此文件',
+      pathCopied: '文件路径已复制',
+      contentsCopied: '文件内容已复制',
+      actionFailed: '文件操作失败'
+    },
     console: {
       deselect: '取消选择条目',
       select: '选择条目',

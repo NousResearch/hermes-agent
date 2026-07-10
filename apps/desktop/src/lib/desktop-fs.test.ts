@@ -5,6 +5,7 @@ import { $connection } from '@/store/session'
 import {
   desktopDefaultCwd,
   desktopFileDiff,
+  desktopFilesystemKey,
   desktopGitRoot,
   readDesktopDir,
   readDesktopFileDataUrl,
@@ -92,6 +93,22 @@ describe('desktop filesystem facade', () => {
     expect(api).not.toHaveBeenCalled()
   })
 
+  it('uses a durable filesystem identity separate from ephemeral connection URLs', () => {
+    $connection.set({ baseUrl: 'http://127.0.0.1:49152', mode: 'local' } as never)
+    expect(desktopFilesystemKey()).toBe('local')
+
+    $connection.set({ baseUrl: 'http://127.0.0.1:53219', mode: 'local' } as never)
+    expect(desktopFilesystemKey()).toBe('local')
+
+    $connection.set({ baseUrl: 'https://GW.EXAMPLE/', mode: 'remote', profile: 'prod' } as never)
+    expect(desktopFilesystemKey()).toBe('remote:prod:https://gw.example')
+
+    $connection.set({ baseUrl: 'https://gw.example/TenantA', mode: 'remote', profile: 'prod' } as never)
+    const upperPath = desktopFilesystemKey()
+    $connection.set({ baseUrl: 'https://gw.example/tenanta', mode: 'remote', profile: 'prod' } as never)
+    expect(desktopFilesystemKey()).not.toBe(upperPath)
+  })
+
   it('routes filesystem reads through authenticated backend REST in remote mode', async () => {
     $connection.set({ mode: 'remote' } as never)
 
@@ -110,6 +127,16 @@ describe('desktop filesystem facade', () => {
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()
     expect(gitRoot).not.toHaveBeenCalled()
+  })
+
+  it('requests complete text through the active local or remote filesystem boundary', async () => {
+    $connection.set({ mode: 'local' } as never)
+    await readDesktopFileText('/work/report.md', { complete: true })
+    expect(readFileText).toHaveBeenCalledWith('/work/report.md', { complete: true })
+
+    $connection.set({ mode: 'remote' } as never)
+    await readDesktopFileText('/remote/report.md', { complete: true })
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-text?path=%2Fremote%2Freport.md&complete=true' })
   })
 
   it('targets the active profile backend so a remote profile never reads local disk', async () => {

@@ -14,6 +14,9 @@ import { setPaneOpen } from './panes'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
 
 export interface PreviewTarget {
+  /** Assistant-surfaced Markdown artifact: always rendered read-only with
+   * artifact actions instead of the general file editor. */
+  artifact?: boolean
   binary?: boolean
   byteSize?: number
   /** Inline image bytes (a `data:` URL) when the renderer already holds them —
@@ -21,6 +24,9 @@ export interface PreviewTarget {
    * path the preview can't reliably re-read. Rendered directly and NOT
    * persisted to the session-preview registry (it would bloat localStorage). */
   dataUrl?: string
+  /** Filesystem/profile provenance. Artifact actions refuse a target after
+   * the active local/remote filesystem changes. */
+  filesystemKey?: string
   kind: 'file' | 'url'
   label: string
   large?: boolean
@@ -40,7 +46,7 @@ export interface PreviewServerRestart {
   url: string
 }
 
-export type PreviewRecordSource = 'explicit-link' | 'file-browser' | 'manual' | 'tool-result'
+export type PreviewRecordSource = 'artifact-link' | 'explicit-link' | 'file-browser' | 'manual' | 'tool-result'
 
 export interface SessionPreviewRecord {
   autoOpen?: boolean
@@ -158,7 +164,7 @@ function openFilePreviewTarget(target: PreviewTarget) {
 // Manual/file-browser opens are "peeking at a file" → source view in the file
 // pane. Tool/explicit-link opens are runnable artifacts → live preview pane.
 function isFilePreviewSource(source: PreviewRecordSource): boolean {
-  return source === 'file-browser' || source === 'manual'
+  return source === 'artifact-link' || source === 'file-browser' || source === 'manual'
 }
 
 function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSource): PreviewTarget {
@@ -216,7 +222,7 @@ function isPreviewRecord(value: unknown): value is SessionPreviewRecord {
     typeof r.id === 'string' &&
     isPreviewTarget(r.normalized) &&
     typeof r.sessionId === 'string' &&
-    ['explicit-link', 'file-browser', 'manual', 'tool-result'].includes(String(r.source)) &&
+    ['artifact-link', 'explicit-link', 'file-browser', 'manual', 'tool-result'].includes(String(r.source)) &&
     typeof r.target === 'string' &&
     (r.dismissedAt === undefined || typeof r.dismissedAt === 'number')
   )

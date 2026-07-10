@@ -15678,6 +15678,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "codex_app_server_auto"),
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
+        ("context", "engine"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
     )
@@ -15773,6 +15774,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cache_keys: dict | None = None,
         user_id: str | None = None,
         user_id_alt: str | None = None,
+        session_id: str | None = None,
+        context_engine: str | None = None,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -15800,6 +15803,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         broke #27371's per-user-peer contract in multi-user gateways.
         Per-user agent rebuilds in shared threads trade prompt-cache
         warmth for correct memory attribution.
+
+        ``session_id`` and ``context_engine`` are included because gateway
+        ``session_key`` values are stable across compression rollovers while
+        context engines bind durable state to the concrete Hermes session id.
+        Reusing a cached AIAgent after either identity changes can leave the
+        context engine pointed at stale session data.
         """
         import hashlib, json as _j
 
@@ -15826,6 +15835,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _cache_keys_sorted,
                 str(user_id or ""),
                 str(user_id_alt or ""),
+                str(session_id or ""),
+                str(context_engine or ""),
             ],
             sort_keys=True,
             default=str,
@@ -18092,6 +18103,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 cache_keys=self._extract_cache_busting_config(user_config),
                 user_id=getattr(source, "user_id", None),
                 user_id_alt=getattr(source, "user_id_alt", None),
+                session_id=session_id,
+                context_engine=cfg_get(user_config, "context", "engine"),
             )
             agent = None
             reused_cached_agent = False

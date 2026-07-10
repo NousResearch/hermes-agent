@@ -2524,14 +2524,54 @@ def run_conversation(
                     # left and rotation's bounded retry budget is spent.
                     # This is the actual spin site from the 2026-07-08
                     # incident (4,323 iterations / 43 minutes, ~2 req/sec,
-                    # zero backoff) — `continue`-ing this loop on recovery
-                    # is exactly what spun. Park the turn with a clear,
-                    # actionable error instead of retry-looping on a dead
-                    # pool.
+                    # zero backoff) — retry-looping straight back into pool
+                    # rotation is exactly what spun and must never happen
+                    # here again.
+                    #
+                    # BUILD-342: the pool being exhausted (billing-out, or
+                    # a zero-credential pool — same exception class, either
+                    # way) doesn't mean every configured provider is dead.
+                    # A cross-provider fallback chain may still have a
+                    # healthy entry, and was unreachable from here (this
+                    # `return` fired ~550 lines before the eager fallback
+                    # block below). Give it ONE bounded activation attempt
+                    # — never a retry of the dead pool itself — before
+                    # parking, mirroring the rate-limit/billing/auth
+                    # failover a few hundred lines down.
                     logger.warning(
-                        "%scredential pool exhausted — parking request instead of "
-                        "retry-looping: %s",
+                        "%scredential pool exhausted: %s",
                         agent.log_prefix, _pool_exhausted,
+                    )
+                    # This handler's charter (BUILD-262) is a guaranteed-
+                    # safe terminal path — it must always reach
+                    # _persist_session()/return below, never raise out of
+                    # run_conversation(). _try_activate_fallback() has
+                    # unguarded code ahead of its own try (resolving the
+                    # eager-cooldown / chain-exhaustion branches), so wrap
+                    # only this new attempt and treat any failure the same
+                    # as "no fallback available."
+                    try:
+                        if agent._fallback_index < len(agent._fallback_chain):
+                            agent._buffer_status(
+                                f"⚠️ {_pool_exhausted} — switching to fallback provider..."
+                            )
+                            if agent._try_activate_fallback(reason=classified.reason):
+                                active_system_prompt = _sync_failover_system_message(
+                                    agent, api_messages, active_system_prompt)
+                                retry_count = 0
+                                compression_attempts = 0
+                                _retry.primary_recovery_attempted = False
+                                continue
+                    except Exception:
+                        logger.exception(
+                            "%sfallback activation raised while handling pool "
+                            "exhaustion — parking instead",
+                            agent.log_prefix,
+                        )
+                    logger.warning(
+                        "%sno fallback available (or activation failed) — "
+                        "parking request instead of retry-looping",
+                        agent.log_prefix,
                     )
                     agent._flush_status_buffer()
                     agent._emit_status(f"❌ {_pool_exhausted}")

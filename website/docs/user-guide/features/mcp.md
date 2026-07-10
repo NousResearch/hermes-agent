@@ -201,8 +201,15 @@ mcp_servers:
   remote_api:
     url: "https://mcp.example.com/mcp"
     headers:
-      Authorization: "Bearer ***"
+      Authorization: "Bearer ${MCP_API_KEY}"
+      X-Workspace-slug: "${MCP_WORKSPACE_SLUG}"
 ```
+
+`headers` is a free-form map, so include every header required by the MCP
+provider—not only `Authorization`. For example, Plane Cloud's hosted MCP server
+requires both a bearer token and `X-Workspace-slug`; omitting the workspace
+header returns HTTP 400. Check the provider's MCP documentation for its exact
+header names and values.
 
 Use HTTP servers when:
 - the MCP server is hosted elsewhere

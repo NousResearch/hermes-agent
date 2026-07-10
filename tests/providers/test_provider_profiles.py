@@ -418,6 +418,7 @@ class TestNousProfile:
         from agent.portal_tags import nous_portal_tags
 
         p = get_provider_profile("nous")
+        assert p is not None
         preferences = {"only": ["deepseek"], "ignore": ["deepinfra"]}
         body = p.build_extra_body(provider_preferences=preferences)
 

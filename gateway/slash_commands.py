@@ -330,12 +330,33 @@ class GatewaySlashCommandsMixin:
         return EphemeralReply(f"{header}{_tip_line}")
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show active profile name and home directory."""
+        """Handle /profile — show the profile serving this source and its home.
+
+        On a multiplexed gateway the process-level active profile is always
+        the multiplexer's own (usually ``default``), so reporting it would
+        answer "default" in every chat regardless of which profile actually
+        serves the room/channel (``source.profile`` — stamped by the
+        ``/p/<profile>/`` URL prefix, a per-credential adapter, or a room→
+        profile map). Report the stamped profile and, like the scoped /reset
+        banner (#59003), resolve the displayed home under that profile's
+        runtime scope. Single-profile gateways are unchanged: an unstamped
+        source falls back to the active profile and the default home.
+        """
         from hermes_constants import display_hermes_home
         from hermes_cli.profiles import get_active_profile_name
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        source = getattr(event, "source", None)
+        profile_name = (
+            getattr(source, "profile", "") or ""
+        ).strip() or get_active_profile_name()
+        try:
+            from gateway.run import _profile_runtime_scope
+
+            profile_home = self._resolve_profile_home_for_source(source)
+            with _profile_runtime_scope(profile_home):
+                display = display_hermes_home()
+        except Exception:
+            display = display_hermes_home()
 
         lines = [
             t("gateway.profile.header", profile=profile_name),

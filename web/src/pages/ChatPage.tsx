@@ -185,6 +185,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // the async ticket/URL await gap where wsRef.current is not yet assigned.
   const connectInFlightRef = useRef(false);
   const connectingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevResumeRef = useRef<string | null>(null);
   const ptyInputLineRef = useRef("");
   const mobileReplacementInputUntilRef = useRef(0);
   const [ptyState, setPtyState] =
@@ -426,6 +427,30 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     );
     return () => setEnd(null);
   }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
+
+  // NS-session-switch: rotating `resume` swaps the underlying hermes session
+  // the PTY should target, but `ptyAttachToken` lives in localStorage and
+  // would otherwise persist across switches. The server sees the same attach
+  // token and reattaches to the OLD live PTY instead of spawning a new one
+  // for the new session — so the user sees an empty terminal rather than the
+  // previous conversation's history. Mint a fresh token whenever `resume`
+  // changes; the connect effect already re-runs on resumeParam change (it's
+  // in the dep array) and will read the new token from localStorage.
+  // We only need to rotate the token here — no need to bump reconnectNonce
+  // since that would cause a redundant double connection.
+  useEffect(() => {
+    // Guard against the initial mount: on first run the connect effect
+    // picks up the existing token correctly; we only need to rotate on
+    // subsequent resume-param changes.
+    if (!resumeParam) return;
+    if (!prevResumeRef.current) {
+      prevResumeRef.current = resumeParam;
+      return;
+    }
+    if (prevResumeRef.current === resumeParam) return;
+    prevResumeRef.current = resumeParam;
+    ptyAttachToken(true);
+  }, [resumeParam]);
 
   const handleCopyLast = () => {
     const ws = wsRef.current;

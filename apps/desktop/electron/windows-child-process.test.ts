@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import test from 'node:test'
+import { test } from 'vitest'
 import { fileURLToPath } from 'node:url'
 
 const ELECTRON_DIR = path.dirname(fileURLToPath(import.meta.url))

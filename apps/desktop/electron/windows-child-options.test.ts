@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+
+import { test } from 'vitest'
 
 import { stopBackendChild } from './backend-child'
 import { hiddenWindowsChildOptions } from './windows-child-options'

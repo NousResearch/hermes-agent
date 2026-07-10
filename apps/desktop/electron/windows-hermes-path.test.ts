@@ -13,7 +13,7 @@
 //      re-selected forever instead of falling through to bootstrap.
 
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import { test } from 'vitest'
 
 import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } from './windows-hermes-path'
 

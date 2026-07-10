@@ -109,7 +109,7 @@ def test_intermediate_ack_uses_summary_instead_of_premature_text(agent, monkeypa
     agent._intent_ack_continuation = True
     agent._looks_like_codex_intermediate_ack = MagicMock(return_value=True)
     agent._interruptible_api_call = lambda _kwargs: _response("I'll inspect the files now")
-    agent._handle_max_iterations = MagicMock(return_value="verified summary")
+    agent._handle_max_iterations = MagicMock(return_value="verified summary.")
     monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "0")
 
     with (
@@ -118,7 +118,7 @@ def test_intermediate_ack_uses_summary_instead_of_premature_text(agent, monkeypa
     ):
         result = agent.run_conversation("inspect /tmp/project")
 
-    assert result["final_response"] == "verified summary"
+    assert result["final_response"] == "verified summary."
     assert result["turn_exit_reason"] == "max_iterations_reached(1/1)"
     agent._handle_max_iterations.assert_called_once()
 

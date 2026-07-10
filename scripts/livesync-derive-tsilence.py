@@ -121,9 +121,9 @@ async def main() -> int:
             last_frame[0] = time.monotonic()
             await call("prompt.submit", {"session_id": sid, "text": prompt}, timeout=30)
             try:
-                await asyncio.wait_for(turn_done.wait(), timeout=300)
+                await asyncio.wait_for(turn_done.wait(), timeout=120)
             except asyncio.TimeoutError:
-                print("  [warn] turn did not settle in 300s; gaps recorded anyway")
+                print("  [warn] no settle event in 120s; gaps recorded anyway")
             await asyncio.sleep(2)
 
         try:

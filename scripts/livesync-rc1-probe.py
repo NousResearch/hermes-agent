@@ -109,20 +109,33 @@ async def main() -> int:
     ok_all = True
     sid = ""
     try:
-        # Disposable seeded session (per dashboard-ws-rpc-harness).
-        seed = [
-            {"role": r_, "content": f"{r_} {i}: probe filler " * 5}
-            for i in range(3)
-            for r_ in ("user", "assistant")
-        ]
-        r = await c1.call(
-            "session.create", {"messages": seed, "title": "rc1-probe", "source": "tui"}
-        )
-        sid = (r.get("result") or {}).get("session_id", "")
+        # Probe over an EXISTING stored session (read-only: resume/changes/
+        # active_list only — never delete). `session.create` seeds only the
+        # live registry; its state.db row persists lazily on the first real
+        # turn, so a synthetic session has no committed rows for
+        # `session.changes` (found live 2026-07-10). session.changes /
+        # session.resume take the STORED id (state.db key). Pass argv[4] to
+        # pin one; otherwise pick the most recent small idle cli/tui session.
+        import os
+        import sqlite3
+
+        if len(sys.argv) > 4:
+            sid = sys.argv[4]
+        else:
+            sdb = sqlite3.connect(os.path.expanduser("~/.hermes/state.db"))
+            pick = sdb.execute(
+                "SELECT m.session_id, COUNT(*) c FROM messages m "
+                "JOIN sessions s ON s.id = m.session_id "
+                "WHERE s.source IN ('cli','tui') "
+                "GROUP BY m.session_id HAVING c BETWEEN 2 AND 50 "
+                "ORDER BY MAX(m.id) DESC LIMIT 1"
+            ).fetchone()
+            sdb.close()
+            sid = pick[0] if pick else ""
         if not sid:
-            print(f"FATAL: session.create failed: {json.dumps(r)[:300]}")
+            print("FATAL: no suitable idle stored session; pass one as argv[4]")
             return 1
-        print(f"probe session: {sid}")
+        print(f"probe session (existing, read-only): {sid}")
 
         # Client-1 resumes (becomes transport holder), takes a cursor.
         r = await c1.call("session.resume", {"session_id": sid})
@@ -136,13 +149,17 @@ async def main() -> int:
             if m.get("id") is not None
         ]
         ok_all &= row(
-            "c1 pre-steal session.changes", "result" in r, f"{len(pre_ids)} rows"
+            "c1 pre-steal session.changes returns committed rows",
+            "result" in r and len(pre_ids) > 0,
+            f"{len(pre_ids)} rows",
         )
         cursor = (r.get("result") or {}).get("last_id", 0)
 
         # THE STEAL: client-2 resumes the same session. WATCH-ONLY — no send.
         r = await c2.call("session.resume", {"session_id": sid})
         ok_all &= row("c2 steal (session.resume)", "result" in r)
+        # c2 is now the holder — its LIVE registry id keys the active_list row.
+        c2_live_id = (r.get("result") or {}).get("session_id", "")
         await asyncio.sleep(1.0)
 
         # (a) ROUTING: c1's polls/probes still round-trip on ITS socket.
@@ -165,12 +182,25 @@ async def main() -> int:
 
         # (b) SEMANTIC: status for the stolen session settles idle/waiting
         # (no turn is running; a lost frame must read as settled, not working).
+        # active_list rows key by the LIVE registry id (captured from c2's
+        # steal above). Match rows on stored-id fields OR that live id — NO
+        # loose fallback: an unrelated idle session must not be able to green
+        # the semantic (Greptile #272).
         status = None
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
+            status = None  # reset per iteration: only the CURRENT read counts
             r = await c1.call("session.active_list", {}, timeout=15)
-            for s in (r.get("result") or {}).get("sessions", []):
-                if s.get("session_id") == sid or s.get("id") == sid:
+            rows_ = (r.get("result") or {}).get("sessions", [])
+            for s in rows_:
+                candidates = (
+                    s.get("session_id"),
+                    s.get("id"),
+                    s.get("stored_session_id"),
+                    s.get("resumed"),
+                    s.get("session_key"),
+                )
+                if sid in candidates or (c2_live_id and c2_live_id in candidates):
                     status = s.get("status")
             if status in ("idle", "waiting"):
                 break
@@ -181,11 +211,7 @@ async def main() -> int:
             f"status={status!r}",
         )
     finally:
-        if sid:
-            try:
-                await c1.call("session.delete", {"session_id": sid}, timeout=30)
-            except Exception:  # noqa: BLE001
-                print("  [warn] probe session cleanup failed — delete manually:", sid)
+        # Read-only probe over a pre-existing session — nothing to delete.
         await c1.close()
         await c2.close()
 

@@ -441,6 +441,71 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
 
 
 @pytest.mark.asyncio
+async def test_notifier_wakes_dm_origin_in_same_dm_session(kanban_home):
+    """A Kanban wake must reconstruct the creator's real DM session.
+
+    Terminal status text can be sent with only chat/thread coordinates, but the
+    internal wake re-enters the agent loop and therefore also needs chat_type.
+    Treat an unknown legacy chat_type as non-wakeable rather than opening a
+    fresh, incorrectly-keyed group session.
+    """
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="DM-owned task",
+            assignee="backend-engineer",
+            session_id="session-that-requested-the-task",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="dm-chat-1",
+            chat_type="dm",
+            user_id="dm-user-1",
+        )
+        kb.complete_task(conn, tid, result="done")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock()
+
+    async def _wake_and_stop(_event):
+        runner._running = False
+
+    fake_adapter.handle_message = AsyncMock(side_effect=_wake_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+    runner._authorization_adapter = lambda _platform, _profile: fake_adapter
+
+    original_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await original_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.handle_message.assert_awaited_once()
+    wake_event = fake_adapter.handle_message.await_args.args[0]
+    assert wake_event.internal is True
+    assert wake_event.source.chat_id == "dm-chat-1"
+    assert wake_event.source.chat_type == "dm"
+    assert wake_event.source.user_id == "dm-user-1"
+
+
+@pytest.mark.asyncio
 async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     """`/kanban --board <slug> create ...` must subscribe on that board.
 

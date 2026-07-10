@@ -20,7 +20,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
-import { FileImage, FileText, FolderOpen, Link2, Loader2, RefreshCw } from '@/lib/icons'
+import { Eye, FileImage, FolderOpen, Loader2, RefreshCw } from '@/lib/icons'
 import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
@@ -33,6 +33,7 @@ import { PageSearchShell } from '../page-search-shell'
 import { sessionRoute } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { ArtifactPreviewThumbnail } from './artifact-preview'
 import {
   ARTIFACT_FILTERS,
   type ArtifactFilter,
@@ -43,6 +44,16 @@ import {
 
 function formatArtifactTime(timestamp: number): string {
   return fmtDayTime.format(new Date(timestamp))
+}
+
+function artifactDisplayValue(value: string): string {
+  if (!/^data:image\//i.test(value)) {
+    return value
+  }
+
+  const mime = /^data:([^;,]+)/i.exec(value)?.[1] || 'image'
+
+  return `data:${mime};…`
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {
@@ -83,7 +94,7 @@ function paginationItems(page: number, pageCount: number): Array<number | 'ellip
 }
 
 type CellCtx = {
-  onOpen: (href: string) => void | Promise<void>
+  onOpen: (artifact: ArtifactRecord) => void | Promise<void>
   onOpenChat: (sessionId: string) => void
 }
 
@@ -236,22 +247,25 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }, [artifacts])
 
   const openArtifact = useCallback(
-    async (href: string) => {
+    async (artifact: ArtifactRecord) => {
       try {
-        // A gateway-local file resolves to file:// in remote mode (the file
-        // lives on the gateway, not this disk). Opening that locally fails —
-        // and an OAuth remote connection has no query token to build a download
-        // URL. Fetch the bytes over the authenticated fs bridge instead.
-        if (isRemoteGateway() && /^file:/i.test(href)) {
-          await downloadGatewayMediaFile(href)
+        if (!artifact.href) {
+          return
+        }
+
+        // Gateway-local files must stay on the authenticated filesystem bridge.
+        // Never externalize mediaExternalUrl() download URLs because token-auth
+        // connections encode their bearer credential in the query string.
+        if (isRemoteGateway() && artifact.kind !== 'link' && !/^https?:/i.test(artifact.value)) {
+          await downloadGatewayMediaFile(artifact.value)
 
           return
         }
 
         if (window.hermesDesktop?.openExternal) {
-          await window.hermesDesktop.openExternal(href)
+          await window.hermesDesktop.openExternal(artifact.href)
         } else {
-          window.open(href, '_blank', 'noopener,noreferrer')
+          window.open(artifact.href, '_blank', 'noopener,noreferrer')
         }
       } catch (err) {
         notifyError(err, a.openFailed)
@@ -337,6 +351,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                       failedImage={failedImageIds.has(artifact.id)}
                       key={artifact.id}
                       onImageError={markImageFailed}
+                      onOpen={openArtifact}
                       onOpenChat={sessionId => navigate(sessionRoute(sessionId))}
                     />
                   ))}
@@ -425,13 +440,16 @@ interface ArtifactImageCardProps {
   artifact: ArtifactRecord
   failedImage: boolean
   onImageError: (id: string) => void
+  onOpen: (artifact: ArtifactRecord) => void | Promise<void>
   onOpenChat: (sessionId: string) => void
 }
 
-function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: ArtifactImageCardProps) {
+function ArtifactImageCard({ artifact, failedImage, onImageError, onOpen, onOpenChat }: ArtifactImageCardProps) {
   const { t } = useI18n()
   const a = t.artifacts
   const kindLabel = artifact.kind === 'image' ? a.kindImage : artifact.kind === 'file' ? a.kindFile : a.kindLink
+  const displayLabel = /^data:image\//i.test(artifact.value) ? a.embeddedImage : artifact.label
+  const displayValue = artifactDisplayValue(artifact.value)
   const [src, setSrc] = useState('')
 
   useEffect(() => {
@@ -463,9 +481,16 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
           failedImage && 'cursor-default'
         )}
       >
+        {(failedImage || !src) && (
+          <ArtifactPreviewThumbnail
+            ariaLabel={a.previewArtifact(displayLabel)}
+            artifact={artifact}
+            className="h-full w-full rounded-none border-0"
+          />
+        )}
         {!failedImage && src && (
           <ZoomableImage
-            alt={artifact.label}
+            alt={displayLabel}
             className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain"
             containerClassName="max-h-full"
             decoding="async"
@@ -483,10 +508,8 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
             <FileImage className="size-3" />
             {kindLabel}
           </div>
-          <div className="truncate text-[length:var(--conversation-caption-font-size)] font-medium">
-            {artifact.label}
-          </div>
-          <div className="mt-0.5 truncate text-[0.625rem] text-(--ui-text-tertiary)">{artifact.value}</div>
+          <div className="truncate text-[length:var(--conversation-caption-font-size)] font-medium">{displayLabel}</div>
+          <div className="mt-0.5 truncate text-[0.625rem] text-(--ui-text-tertiary)">{displayValue}</div>
         </div>
 
         <div className="truncate text-[0.625rem] text-(--ui-text-tertiary)">
@@ -494,6 +517,18 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
         </div>
 
         <div className="flex flex-wrap gap-1.5">
+          {artifact.href && (
+            <Button
+              aria-label={a.openArtifact(displayLabel)}
+              onClick={() => void onOpen(artifact)}
+              size="xs"
+              type="button"
+              variant="textStrong"
+            >
+              <Eye className="size-3" />
+              {a.open}
+            </Button>
+          )}
           <Button onClick={() => onOpenChat(artifact.sessionId)} size="xs" type="button" variant="textStrong">
             <FolderOpen className="size-3" />
             {a.chat}
@@ -508,11 +543,13 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
 // local actions render as <button>. Padding lives here, NOT on the <td>, so
 // the entire cell area is hoverable and clickable in both branches.
 function ArtifactCellAction({
+  ariaLabel,
   children,
   href,
   onClick,
   title
 }: {
+  ariaLabel?: string
   children: React.ReactNode
   href?: string
   onClick?: () => void
@@ -521,6 +558,7 @@ function ArtifactCellAction({
   if (href) {
     return (
       <ExternalLink
+        aria-label={ariaLabel}
         className="flex h-full w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) font-normal text-(--ui-text-secondary) no-underline underline-offset-4 decoration-current/20 transition-colors hover:text-foreground hover:underline"
         href={href}
         showExternalIcon={false}
@@ -531,8 +569,17 @@ function ArtifactCellAction({
     )
   }
 
+  if (!onClick) {
+    return (
+      <div className="flex h-full w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) font-normal text-(--ui-text-secondary)">
+        {children}
+      </div>
+    )
+  }
+
   return (
     <RowButton
+      aria-label={ariaLabel}
       className="flex h-full w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) font-normal text-(--ui-text-secondary) no-underline underline-offset-4 decoration-current/20 transition-colors hover:text-foreground hover:underline"
       onClick={onClick}
     >
@@ -542,23 +589,31 @@ function ArtifactCellAction({
 }
 
 function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
-  const isLink = artifact.kind === 'link'
-  const Icon = isLink ? Link2 : FileText
+  const { t } = useI18n()
+  const isLink = artifact.kind === 'link' && Boolean(artifact.href)
+  const canOpen = Boolean(artifact.href)
   const fetchedTitle = useLinkTitle(isLink ? artifact.href : null)
   const label = isLink ? fetchedTitle || urlSlugTitleLabel(artifact.href) : artifact.label
 
   return (
     <ArtifactCellAction
+      ariaLabel={canOpen ? t.artifacts.openArtifact(label) : undefined}
       href={isLink ? artifact.href : undefined}
-      onClick={isLink ? undefined : () => void ctx.onOpen(artifact.href)}
+      onClick={isLink ? undefined : artifact.href ? () => void ctx.onOpen(artifact) : undefined}
       title={label}
     >
-      <span className="mt-0.5 grid size-6 shrink-0 place-items-center self-start rounded-md bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">
-        <Icon className="size-3.5" />
-      </span>
-      <span className={cn('min-w-0 flex-1', isLink ? 'wrap-anywhere' : 'truncate')}>
-        {label}
-        {isLink && <ExternalLinkIcon />}
+      <ArtifactPreviewThumbnail ariaLabel={t.artifacts.previewArtifact(artifact.label)} artifact={artifact} />
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5 self-center">
+        <span className={cn('min-w-0', isLink ? 'wrap-anywhere' : 'truncate')}>
+          {label}
+          {isLink && <ExternalLinkIcon />}
+        </span>
+        {canOpen && (
+          <span className="flex items-center gap-1 text-[0.625rem] text-(--ui-text-tertiary)">
+            <Eye className="size-3" />
+            {t.artifacts.open}
+          </span>
+        )}
       </span>
     </ArtifactCellAction>
   )
@@ -615,7 +670,7 @@ const ARTIFACT_COLUMNS: readonly ArtifactColumn[] = [
     header: (filter, a) =>
       filter === 'link' ? a.colTitleLink : filter === 'file' ? a.colTitleFile : a.colTitleDefault,
     id: 'primary',
-    width: filter => (filter === 'link' ? 'w-[50%]' : 'w-[35%]')
+    width: filter => (filter === 'link' ? 'w-[50%]' : 'w-[40%]')
   },
   {
     Cell: LocationCell,
@@ -623,7 +678,7 @@ const ARTIFACT_COLUMNS: readonly ArtifactColumn[] = [
     header: (filter, a) =>
       filter === 'link' ? a.colLocationLink : filter === 'file' ? a.colLocationFile : a.colLocationDefault,
     id: 'location',
-    width: filter => (filter === 'link' ? 'w-[30%]' : 'w-[41%]')
+    width: filter => (filter === 'link' ? 'w-[30%]' : 'w-[36%]')
   },
   {
     Cell: SessionCell,
@@ -658,7 +713,7 @@ function ArtifactTable({
       </thead>
       <tbody>
         {artifacts.map(artifact => (
-          <tr className="group/artifact" key={artifact.id}>
+          <tr className="group/artifact border-b border-(--ui-stroke-tertiary) last:border-b-0" key={artifact.id}>
             {ARTIFACT_COLUMNS.map(col => {
               const Cell = col.Cell
 

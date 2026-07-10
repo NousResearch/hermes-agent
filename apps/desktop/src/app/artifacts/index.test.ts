@@ -67,7 +67,7 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
-  it('resolves remote image artifact thumbnails through the desktop fs bridge', async () => {
+  it('keeps an unprovenanced remote filesystem image on the typed fallback', async () => {
     const api = vi.fn(async ({ path }: { path: string }) => {
       if (path.startsWith('/api/fs/read-data-url?')) {
         return { dataUrl: 'data:image/jpeg;base64,cmVtb3Rl' }
@@ -80,12 +80,54 @@ describe('collectArtifactsForSession', () => {
     $connection.set({ baseUrl: 'https://gw', mode: 'remote', token: 'secret' } as never)
 
     const path = '/Users/me/.hermes/skills/work-esab/references/images/manual-step03.jpeg'
-    const downloadHref = `https://gw/api/files/download?path=${encodeURIComponent(path)}&token=secret`
+    await expect(artifactImageSrc(path, `file://${path}`)).resolves.toBe('')
+    expect(api).not.toHaveBeenCalled()
+  })
 
-    await expect(artifactImageSrc(path, downloadHref)).resolves.toBe('data:image/jpeg;base64,cmVtb3Rl')
+  it('keeps ambiguous historical /images routes on the typed fallback', async () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      { content: 'Generated /images/generated/chart.png', role: 'assistant', timestamp: 2000 }
+    ])
 
-    expect(api).toHaveBeenCalledWith({
-      path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2F.hermes%2Fskills%2Fwork-esab%2Freferences%2Fimages%2Fmanual-step03.jpeg'
-    })
+    expect(artifacts[0]?.href).toBe('')
+    await expect(artifactImageSrc('/images/generated/chart.png', '')).resolves.toBe('')
+  })
+
+  it.each([
+    ['https://example.com/output/report.pdf?download=1', 'file'],
+    ['./src/widget.tsx', 'file'],
+    ['/tmp/photo.avif', 'image']
+  ] as const)('keeps collector and preview extension classification aligned for %s', (value, kind) => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      { content: `Generated ${value}`, role: 'assistant', timestamp: 2000 }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]?.kind).toBe(kind)
+  })
+
+  it('keeps embedded image labels and identity bounded while preserving the render source', async () => {
+    const value = 'data:image/png;base64,c21hbGw='
+
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      { content: `![Embedded](${value})`, role: 'assistant', timestamp: 2000 }
+    ])
+
+    expect(artifacts[0]).toMatchObject({ href: '', kind: 'image', label: 'data:image' })
+    expect(artifacts[0]?.id).not.toContain('c21hbGw=')
+    await expect(artifactImageSrc(value, '')).resolves.toBe(value)
+  })
+
+  it('strips escaped line suffixes and rejects route-template false positives', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Generated /tmp/widget.tsx\\n92|const widget = true and /products/${product.id}',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({ kind: 'file', label: 'widget.tsx', value: '/tmp/widget.tsx' })
   })
 })

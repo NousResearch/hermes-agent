@@ -1,5 +1,3 @@
-import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
-import { filePathFromMediaPath, isRemoteGateway, mediaExternalUrl } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -21,8 +19,12 @@ const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
 const URL_RE = /https?:\/\/[^\s<>"')]+/g
 const PATH_RE = /(^|[\s("'`])((?:\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
-const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
-const FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|mp3|wav|mp4|mov)(?:\?.*)?$/i
+const IMAGE_EXT_RE = /\.(?:avif|png|jpe?g|gif|webp|svg|bmp)(?:[?#].*)?$/i
+
+const FILE_EXT_RE =
+  /\.(?:avif|png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|ya?ml|toml|ini|tsx?|jsx?|html?|css|s[ac]ss|sh|bash|zsh|py|rb|rs|go|java|c|cc|cpp|h|hpp|conf|log|lock|sql|xml|docx?|xlsx?|pptx?|zip|tar|gz|tgz|7z|rar|mp3|wav|m4a|ogg|flac|opus|mp4|webm|mov|mkv|avi)(?:[?#].*)?$/i
+
+const AMBIGUOUS_WEB_ROOT_RE = /^\/(?:assets|images|media|static|uploads)\//i
 const KEY_HINT_RE = /(path|file|url|image|artifact|output|download|result|target)/i
 
 function artifactSessionTitle(session: SessionInfo): string {
@@ -30,7 +32,9 @@ function artifactSessionTitle(session: SessionInfo): string {
 }
 
 function normalizeValue(value: string): string {
-  return value.trim().replace(/[),.;]+$/, '')
+  const firstLine = value.trim().split(/(?:\\n|[\r\n])/, 1)[0] || ''
+
+  return firstLine.replace(/[),.;]+$/, '')
 }
 
 function parseMaybeJson(value: string): unknown {
@@ -67,7 +71,7 @@ function looksLikeArtifact(value: string): boolean {
     return true
   }
 
-  return value.startsWith('/') && value.includes('.')
+  return false
 }
 
 function artifactKind(value: string): ArtifactKind {
@@ -85,34 +89,58 @@ function artifactKind(value: string): ArtifactKind {
     return 'file'
   }
 
+  if (/^https?:\/\//i.test(value) && FILE_EXT_RE.test(value)) {
+    return 'file'
+  }
+
   return 'link'
 }
 
 function artifactHref(value: string): string {
-  if (value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:')) {
+  if (value.startsWith('http://') || value.startsWith('https://')) {
     return value
   }
 
-  if (value.startsWith('file://') || value.startsWith('/')) {
-    return mediaExternalUrl(value)
+  if (
+    value.startsWith('data:') ||
+    value.startsWith('./') ||
+    value.startsWith('../') ||
+    value.startsWith('~/') ||
+    AMBIGUOUS_WEB_ROOT_RE.test(value)
+  ) {
+    return ''
+  }
+
+  if (value.startsWith('file://')) {
+    return value
+  }
+
+  if (value.startsWith('/')) {
+    return `file://${value}`
   }
 
   return value
 }
 
 export async function artifactImageSrc(value: string, href = artifactHref(value)): Promise<string> {
-  if (/^(?:https?|data):/i.test(value)) {
-    return href
+  // Historical text has no output provenance. Only already-renderable web/data
+  // sources may load automatically; filesystem paths stay typed fallbacks.
+  if (AMBIGUOUS_WEB_ROOT_RE.test(value)) {
+    return ''
   }
 
-  if (typeof window !== 'undefined' && window.hermesDesktop && isRemoteGateway()) {
-    return readDesktopFileDataUrl(filePathFromMediaPath(value))
+  if (/^data:image\//i.test(value)) {
+    return value
   }
 
-  return href
+  return /^https?:/i.test(value) ? href : ''
 }
 
 function artifactLabel(value: string): string {
+  if (/^data:image\//i.test(value)) {
+    return 'data:image'
+  }
+
   try {
     const url = new URL(value)
     const item = url.pathname.split('/').filter(Boolean).pop()
@@ -243,6 +271,21 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
   }
 }
 
+function boundedArtifactIdentity(value: string): string {
+  if (!/^data:image\//i.test(value)) {
+    return value
+  }
+
+  let hash = 2166136261
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+
+  return `data:image:${value.length}:${(hash >>> 0).toString(16)}`
+}
+
 export function collectArtifactsForSession(session: SessionInfo, messages: SessionMessage[]): ArtifactRecord[] {
   const found = new Map<string, ArtifactRecord>()
   const title = artifactSessionTitle(session)
@@ -259,7 +302,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         return
       }
 
-      const key = `${session.id}:${value}`
+      const key = `${session.id}:${boundedArtifactIdentity(value)}`
 
       if (found.has(key)) {
         return

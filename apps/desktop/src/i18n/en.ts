@@ -1505,6 +1505,10 @@ export const en: Translations = {
     kindImage: 'image',
     kindFile: 'file',
     kindLink: 'link',
+    open: 'Open',
+    openArtifact: label => `Open ${label}`,
+    previewArtifact: label => `Preview for ${label}`,
+    embeddedImage: 'Embedded image',
     chat: 'Chat',
     copyUrl: 'Copy URL',
     copyPath: 'Copy path'

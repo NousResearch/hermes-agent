@@ -1239,6 +1239,10 @@ export interface Translations {
     kindImage: string
     kindFile: string
     kindLink: string
+    open: string
+    openArtifact: (label: string) => string
+    previewArtifact: (label: string) => string
+    embeddedImage: string
     chat: string
     copyUrl: string
     copyPath: string

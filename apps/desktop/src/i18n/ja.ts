@@ -1450,6 +1450,10 @@ export const ja = defineLocale({
     kindImage: '画像',
     kindFile: 'ファイル',
     kindLink: 'リンク',
+    open: '開く',
+    openArtifact: label => `${label} を開く`,
+    previewArtifact: label => `${label} のプレビュー`,
+    embeddedImage: '埋め込み画像',
     chat: 'チャット',
     copyUrl: 'URL をコピー',
     copyPath: 'パスをコピー'

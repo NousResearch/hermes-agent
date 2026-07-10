@@ -1682,6 +1682,10 @@ export const zh: Translations = {
     kindImage: '图片',
     kindFile: '文件',
     kindLink: '链接',
+    open: '打开',
+    openArtifact: label => `打开 ${label}`,
+    previewArtifact: label => `${label} 的预览`,
+    embeddedImage: '嵌入图片',
     chat: '对话',
     copyUrl: '复制 URL',
     copyPath: '复制路径'

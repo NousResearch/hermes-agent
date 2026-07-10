@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -145,6 +146,49 @@ async def test_gateway_stop_settles_completion_batch_before_adapter_disconnect()
     assert await asyncio.wait_for(pending, timeout=1.0) is False
     assert call_order == ["batch_cancel_start", "batch_cancel_done", "disconnect"]
     assert runner._completion_notification_batch_flush_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_bounds_wedged_final_cleanup(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    """A wedged late cleanup must not keep launchd/service restarts alive."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    runner.config.shutdown_cleanup_timeout = 0.01
+    adapter.disconnect = AsyncMock()
+    entered_cleanup = threading.Event()
+    release_cleanup = threading.Event()
+
+    def _wedged_kill_all(task_id=None):
+        entered_cleanup.set()
+        release_cleanup.wait(timeout=5)
+        return 0
+
+    import tools.process_registry as _pr
+
+    monkeypatch.setattr(_pr.process_registry, "kill_all", _wedged_kill_all)
+
+    try:
+        with (
+            caplog.at_level("WARNING", logger="gateway.run"),
+            patch("gateway.status.remove_pid_file"),
+            patch("gateway.status.write_runtime_status"),
+        ):
+            await asyncio.wait_for(
+                runner.stop(restart=True, service_restart=True),
+                timeout=1,
+            )
+    finally:
+        release_cleanup.set()
+
+    assert entered_cleanup.is_set()
+    adapter.disconnect.assert_awaited_once()
+    assert runner._shutdown_event.is_set() is True
+    assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+    assert "Shutdown phase final-cleanup exceeded 0.0s" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -322,5 +366,3 @@ def test_pid_exists_zombie_via_psutil_returns_false(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
     assert status._pid_exists(4242) is False
-
-

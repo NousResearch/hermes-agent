@@ -106,8 +106,8 @@ describe('connecting overlay vs recovery surface', () => {
     // 2. The remote VPS socket drops (sleep/wake, remote restart, network).
     //    bootCompleted is true, so useGatewayBoot routes this through
     //    scheduleReconnect() — boot.error stays NULL.
-    setGatewayState('closed')
     await act(async () => {
+      setGatewayState('closed')
       rerender!(
         <>
           <GatewayConnectingOverlay />
@@ -124,8 +124,8 @@ describe('connecting overlay vs recovery surface', () => {
     // 3. Reconnect loops against the dead remote: gatewayState bounces closed
     //    → error → closed. Until the escalation path sets boot.error, the app
     //    remains usable instead of modal-blocked.
-    setGatewayState('error')
     await act(async () => {
+      setGatewayState('error')
       rerender!(
         <>
           <GatewayConnectingOverlay />
@@ -138,8 +138,9 @@ describe('connecting overlay vs recovery surface', () => {
     expect(isRecoveryShown()).toBe(false)
   })
 
-  it('soft gateway switch keeps the shell — no fullscreen CONNECTING', () => {
+  it('soft gateway switch keeps the shell — no fullscreen CONNECTING', async () => {
     setGatewayState('open')
+
     const { rerender } = render(
       <>
         <GatewayConnectingOverlay />
@@ -147,21 +148,23 @@ describe('connecting overlay vs recovery surface', () => {
       </>
     )
 
-    $gatewaySwitching.set(true)
-    $desktopBoot.set({
-      ...$desktopBoot.get(),
-      running: true,
-      visible: true,
-      progress: 4,
-      error: null
+    await act(async () => {
+      $gatewaySwitching.set(true)
+      $desktopBoot.set({
+        ...$desktopBoot.get(),
+        running: true,
+        visible: true,
+        progress: 4,
+        error: null
+      })
+      setGatewayState('closed')
+      rerender(
+        <>
+          <GatewayConnectingOverlay />
+          <BootFailureOverlay />
+        </>
+      )
     })
-    setGatewayState('closed')
-    rerender(
-      <>
-        <GatewayConnectingOverlay />
-        <BootFailureOverlay />
-      </>
-    )
 
     expect(isConnectingShown()).toBe(false)
     expect(isRecoveryShown()).toBe(false)

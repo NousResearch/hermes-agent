@@ -84,6 +84,7 @@ import sys
 import threading
 import logging
 import time
+import uuid
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -181,7 +182,7 @@ DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 
 # Grace added to a claim when a reclaim is deferred because the previous
-# host-local worker is still alive after a termination attempt. Releasing the
+# machine-local worker is still alive after a termination attempt. Releasing the
 # claim in that state would spawn a duplicate alongside the surviving worker —
 # the runaway seen when a cgroup memory.high throttle parks a worker in
 # uninterruptible (D) state, where a pending SIGKILL cannot be delivered until
@@ -388,6 +389,113 @@ def kanban_home() -> Path:
         return Path(override).expanduser()
     from hermes_constants import get_default_hermes_root
     return get_default_hermes_root()
+
+
+_MACHINE_ID_LOCK = threading.RLock()
+_MACHINE_ID_CACHE: dict[str, str] = {}
+
+
+def machine_id_path() -> Path:
+    """Return the machine-global identity file shared by every profile/board."""
+    return kanban_home() / "kanban" / "machine-id"
+
+
+def _parse_machine_id(raw: str, path: Path) -> str:
+    value = raw.strip()
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, AttributeError) as exc:
+        raise RuntimeError(
+            f"invalid Hermes Kanban machine identity at {path}: expected UUID"
+        ) from exc
+
+
+def get_machine_id() -> str:
+    """Return this machine's durable UUID, creating it atomically if absent.
+
+    The file lives under the machine-global Kanban root rather than an active
+    profile or board, so every local dispatcher, dashboard, and worker agrees
+    on one identity. Creation uses ``O_EXCL`` to prevent concurrent profile
+    startups from choosing different IDs. A malformed existing file fails
+    closed instead of silently rotating identity while workers may be alive.
+    """
+    path = machine_id_path()
+    cache_key = str(path.expanduser().absolute())
+    with _MACHINE_ID_LOCK:
+        cached = _MACHINE_ID_CACHE.get(cache_key)
+        if cached:
+            return cached
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            candidate = str(uuid.uuid4())
+            try:
+                fd = os.open(
+                    path,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+            except FileExistsError:
+                # Another process won creation. The retry loop below handles
+                # the tiny window before its UUID write becomes visible.
+                try:
+                    raw = path.read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    raw = ""
+            else:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(candidate + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                raw = candidate
+
+        # A racing process can observe the O_EXCL-created inode just before
+        # the winner flushes its UUID. Retry briefly for empty/partial data;
+        # a persistently malformed identity still fails closed.
+        for attempt in range(100):
+            try:
+                machine_id = _parse_machine_id(raw, path)
+                break
+            except RuntimeError:
+                if attempt == 99:
+                    raise
+                time.sleep(0.01)
+                try:
+                    raw = path.read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    raw = ""
+        _MACHINE_ID_CACHE[cache_key] = machine_id
+        return machine_id
+
+
+def _legacy_hostname() -> str:
+    """Return the pre-machine-ID claim owner used only for DB migration."""
+    import socket
+    try:
+        return socket.gethostname() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _claim_is_owned_by_this_machine(
+    owner_machine_id: Optional[str],
+    claim_lock: Optional[str],
+) -> bool:
+    """Return whether a task's PID belongs to this machine.
+
+    New rows use the explicit ``machine_id`` column. The claim-token prefixes
+    are consulted only for pre-migration running rows: first the durable UUID
+    form, then the legacy hostname form.
+    """
+    local_id = get_machine_id()
+    if owner_machine_id:
+        return str(owner_machine_id) == local_id
+    lock = str(claim_lock or "")
+    return lock.startswith(f"{local_id}:") or lock.startswith(
+        f"{_legacy_hostname()}:"
+    )
 
 
 def boards_root() -> Path:
@@ -854,6 +962,7 @@ class Task:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     tenant: Optional[str]
+    target_machine: Optional[str] = None
     branch_name: Optional[str] = None
     project_id: Optional[str] = None
     result: Optional[str] = None
@@ -867,6 +976,10 @@ class Task:
     # (Pre-rename column: ``spawn_failures``.)
     consecutive_failures: int = 0
     worker_pid: Optional[int] = None
+    # Durable identity of the machine that owns ``worker_pid`` for the active
+    # claim. Cleared when the task leaves ``running``; historical ownership is
+    # retained on the corresponding ``task_runs`` row.
+    machine_id: Optional[str] = None
     # Short excerpt of the last failure's error text (any outcome, not
     # just spawn). Pre-rename column: ``last_spawn_error``.
     last_failure_error: Optional[str] = None
@@ -945,6 +1058,9 @@ class Task:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
+            target_machine=(
+                row["target_machine"] if "target_machine" in keys else None
+            ),
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
@@ -956,6 +1072,7 @@ class Task:
                 else (row["spawn_failures"] if "spawn_failures" in keys else 0)
             ),
             worker_pid=row["worker_pid"] if "worker_pid" in keys else None,
+            machine_id=row["machine_id"] if "machine_id" in keys else None,
             last_failure_error=(
                 row["last_failure_error"] if "last_failure_error" in keys
                 # Same belt-and-suspenders fallback as consecutive_failures above.
@@ -1020,6 +1137,7 @@ class Run:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     worker_pid: Optional[int]
+    machine_id: Optional[str]
     max_runtime_seconds: Optional[int]
     last_heartbeat_at: Optional[int]
     started_at: int
@@ -1044,6 +1162,7 @@ class Run:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             worker_pid=row["worker_pid"],
+            machine_id=(row["machine_id"] if "machine_id" in row.keys() else None),
             max_runtime_seconds=row["max_runtime_seconds"],
             last_heartbeat_at=row["last_heartbeat_at"],
             started_at=int(row["started_at"]),
@@ -1113,6 +1232,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     project_id           TEXT,
     claim_lock           TEXT,
     claim_expires        INTEGER,
+    target_machine       TEXT,
     tenant               TEXT,
     result               TEXT,
     idempotency_key      TEXT,
@@ -1122,6 +1242,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- exceeds DEFAULT_FAILURE_LIMIT consecutive non-successes.
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     worker_pid           INTEGER,
+    -- Durable owner of worker_pid. Unlike the legacy claim_lock prefix this
+    -- survives hostname changes and cannot collide across machines.
+    machine_id           TEXT,
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
@@ -1184,6 +1307,30 @@ CREATE TABLE IF NOT EXISTS task_links (
     PRIMARY KEY (parent_id, child_id)
 );
 
+CREATE TABLE IF NOT EXISTS machines (
+    id           TEXT PRIMARY KEY,
+    hostname     TEXT,
+    last_seen_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS machine_profiles (
+    machine_id TEXT NOT NULL,
+    profile    TEXT NOT NULL,
+    PRIMARY KEY (machine_id, profile)
+);
+
+CREATE TABLE IF NOT EXISTS machine_capabilities (
+    machine_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    PRIMARY KEY (machine_id, capability)
+);
+
+CREATE TABLE IF NOT EXISTS task_capabilities (
+    task_id    TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    PRIMARY KEY (task_id, capability)
+);
+
 CREATE TABLE IF NOT EXISTS task_comments (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT NOT NULL,
@@ -1218,6 +1365,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
+    machine_id          TEXT,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
@@ -1267,6 +1415,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
+CREATE INDEX IF NOT EXISTS idx_machine_profiles_name ON machine_profiles(profile);
+CREATE INDEX IF NOT EXISTS idx_task_capabilities     ON task_capabilities(task_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
@@ -1863,6 +2013,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
     if "project_id" not in cols:
         _add_column_if_missing(conn, "tasks", "project_id", "project_id TEXT")
+    if "target_machine" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "target_machine", "target_machine TEXT"
+        )
     if "idempotency_key" not in cols:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
@@ -1903,6 +2057,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             )
     if "worker_pid" not in cols:
         _add_column_if_missing(conn, "tasks", "worker_pid", "worker_pid INTEGER")
+    if "machine_id" not in cols:
+        _add_column_if_missing(conn, "tasks", "machine_id", "machine_id TEXT")
     if "last_failure_error" not in cols:
         added = _add_column_if_missing(
             conn, "tasks", "last_failure_error", "last_failure_error TEXT"
@@ -2015,6 +2171,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "ON task_events(run_id, id)"
     )
 
+    # Attempt history keeps the machine owner even after active task claim
+    # fields are cleared. Fresh DBs get this from SCHEMA_SQL; legacy DBs need
+    # the same additive migration as ``tasks.machine_id``.
+    run_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+    }
+    if run_cols and "machine_id" not in run_cols:
+        _add_column_if_missing(
+            conn, "task_runs", "machine_id", "machine_id TEXT"
+        )
+
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
     ).fetchone() is not None
@@ -2039,8 +2206,32 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     ).fetchone() is not None
     if runs_exist:
         with write_txn(conn):
+            # Backfill only legacy claims that this machine can prove it owns.
+            # Foreign hostname claims remain NULL and therefore can never
+            # authorize a local PID operation during a rolling migration.
+            legacy_running = conn.execute(
+                "SELECT id, claim_lock, current_run_id FROM tasks "
+                "WHERE status = 'running' AND machine_id IS NULL"
+            ).fetchall()
+            local_machine_id = get_machine_id()
+            for legacy in legacy_running:
+                if not _claim_is_owned_by_this_machine(None, legacy["claim_lock"]):
+                    continue
+                conn.execute(
+                    "UPDATE tasks SET machine_id = ? "
+                    "WHERE id = ? AND status = 'running' AND machine_id IS NULL",
+                    (local_machine_id, legacy["id"]),
+                )
+                if legacy["current_run_id"] is not None:
+                    conn.execute(
+                        "UPDATE task_runs SET machine_id = ? "
+                        "WHERE id = ? AND machine_id IS NULL",
+                        (local_machine_id, int(legacy["current_run_id"])),
+                    )
+
             inflight = conn.execute(
                 "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
+                "       machine_id, "
                 "       max_runtime_seconds, last_heartbeat_at, started_at "
                 "FROM tasks "
                 "WHERE status = 'running' AND current_run_id IS NULL"
@@ -2051,14 +2242,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                     """
                     INSERT INTO task_runs (
                         task_id, profile, status,
-                        claim_lock, claim_expires, worker_pid,
+                        claim_lock, claim_expires, worker_pid, machine_id,
                         max_runtime_seconds, last_heartbeat_at,
                         started_at
-                    ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         row["id"], row["assignee"], row["claim_lock"],
-                        row["claim_expires"], row["worker_pid"],
+                        row["claim_expires"], row["worker_pid"], row["machine_id"],
                         row["max_runtime_seconds"], row["last_heartbeat_at"],
                         started,
                     ),
@@ -2136,7 +2327,7 @@ _REBUILD_SPECS = {
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
-        " worker_pid INTEGER, max_runtime_seconds INTEGER,"
+        " worker_pid INTEGER, machine_id TEXT, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
         " error TEXT)",
@@ -2361,13 +2552,190 @@ def _new_task_id() -> str:
 
 
 def _claimer_id() -> str:
-    """Return a ``host:pid`` string that identifies this claimer."""
-    import socket
+    """Return a ``machine-uuid:pid`` token that identifies this claimer."""
+    return f"{get_machine_id()}:{os.getpid()}"
+
+
+_CAPABILITY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+
+
+def _normalize_capabilities(values: Optional[Iterable[str]]) -> tuple[str, ...]:
+    capabilities: set[str] = set()
+    for raw in values or ():
+        value = str(raw).strip().lower()
+        if not value:
+            continue
+        if not _CAPABILITY_RE.fullmatch(value):
+            raise ValueError(f"invalid machine capability: {raw!r}")
+        capabilities.add(value)
+    return tuple(sorted(capabilities))
+
+
+def local_machine_capabilities() -> tuple[str, ...]:
+    """Return platform + operator-declared capabilities for this machine.
+
+    Machine routing is deliberately anchored to the default Hermes root's
+    ``config.yaml`` rather than the active profile config: whichever profile's
+    gateway wins the singleton dispatcher lock must advertise the same host.
+    """
+    platform_capability = (
+        "macos" if sys.platform == "darwin"
+        else "windows" if _IS_WINDOWS
+        else "linux"
+    )
+    configured: list[str] = []
+    config_path = kanban_home() / "config.yaml"
     try:
-        host = socket.gethostname() or "unknown"
-    except Exception:
-        host = "unknown"
-    return f"{host}:{os.getpid()}"
+        import yaml
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        kanban_cfg = raw.get("kanban", {}) if isinstance(raw, dict) else {}
+        values = kanban_cfg.get("machine_capabilities", [])
+        if isinstance(values, (list, tuple, set)):
+            configured = [str(v) for v in values]
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        _log.warning("kanban: could not read machine capabilities: %s", exc)
+    return _normalize_capabilities([platform_capability, *configured])
+
+
+def local_machine_profiles() -> tuple[str, ...]:
+    """Return spawnable profile names without loading full profile metadata."""
+    profiles = {"default"}
+    root = kanban_home() / "profiles"
+    try:
+        for entry in root.iterdir():
+            if (
+                entry.is_dir()
+                and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", entry.name)
+                and entry.name != "default"
+            ):
+                profiles.add(entry.name)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        _log.warning("kanban: could not enumerate local profiles: %s", exc)
+    return tuple(sorted(profiles))
+
+
+def register_machine(
+    conn: sqlite3.Connection,
+    machine_id: str,
+    *,
+    profiles: Iterable[str],
+    capabilities: Iterable[str],
+    hostname: Optional[str] = None,
+) -> str:
+    """Upsert a machine's advertised profiles and capabilities."""
+    machine_id = str(uuid.UUID(str(machine_id)))
+    normalized_profiles = tuple(sorted({_canonical_assignee(p) for p in profiles if p}))
+    normalized_capabilities = _normalize_capabilities(capabilities)
+    with write_txn(conn):
+        conn.execute(
+            "INSERT INTO machines (id, hostname, last_seen_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET hostname=excluded.hostname, "
+            "last_seen_at=excluded.last_seen_at",
+            (machine_id, hostname or _legacy_hostname(), int(time.time())),
+        )
+        conn.execute(
+            "DELETE FROM machine_profiles WHERE machine_id = ?", (machine_id,)
+        )
+        conn.executemany(
+            "INSERT INTO machine_profiles (machine_id, profile) VALUES (?, ?)",
+            [(machine_id, profile) for profile in normalized_profiles],
+        )
+        conn.execute(
+            "DELETE FROM machine_capabilities WHERE machine_id = ?", (machine_id,)
+        )
+        conn.executemany(
+            "INSERT INTO machine_capabilities (machine_id, capability) "
+            "VALUES (?, ?)",
+            [(machine_id, capability) for capability in normalized_capabilities],
+        )
+    return machine_id
+
+
+def register_local_machine(conn: sqlite3.Connection) -> str:
+    """Upsert this machine's presence, profiles, and capabilities."""
+    return register_machine(
+        conn,
+        get_machine_id(),
+        profiles=local_machine_profiles(),
+        capabilities=local_machine_capabilities(),
+        hostname=_legacy_hostname(),
+    )
+
+
+def record_worker_started(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    claim_lock: str,
+    worker_pid: int,
+) -> bool:
+    """Record a claimed worker process without trusting a foreign PID for control.
+
+    The PID is operational metadata: its owning machine reports it so the
+    coordinator/dashboard can display the live remote worker.  Process
+    inspection and termination remain machine-local, guarded by ``machine_id``.
+    """
+    if int(worker_pid) <= 0:
+        raise ValueError("worker_pid must be positive")
+    with write_txn(conn):
+        task = conn.execute(
+            "SELECT status, claim_lock, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if task is None or task["status"] != "running" or task["claim_lock"] != claim_lock:
+            return False
+        conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (int(worker_pid), task_id))
+        run_id = task["current_run_id"]
+        if run_id is not None:
+            conn.execute("UPDATE task_runs SET worker_pid = ? WHERE id = ?", (int(worker_pid), run_id))
+            _append_event(conn, task_id, "worker_started", {"worker_pid": int(worker_pid)}, run_id=run_id)
+    return True
+
+
+def task_capabilities(conn: sqlite3.Connection, task_id: str) -> tuple[str, ...]:
+    return tuple(
+        row["capability"] for row in conn.execute(
+            "SELECT capability FROM task_capabilities WHERE task_id = ? "
+            "ORDER BY capability",
+            (task_id,),
+        ).fetchall()
+    )
+
+
+def _routing_mismatch(
+    conn: sqlite3.Connection,
+    task_id: str,
+    machine_id: str,
+    *,
+    require_registered_profile: bool = False,
+) -> Optional[str]:
+    row = conn.execute(
+        "SELECT assignee, target_machine FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return "missing"
+    if row["target_machine"] and row["target_machine"] != machine_id:
+        return "target_machine"
+    if require_registered_profile and row["assignee"]:
+        has_profile = conn.execute(
+            "SELECT 1 FROM machine_profiles WHERE machine_id = ? AND profile = ?",
+            (machine_id, row["assignee"]),
+        ).fetchone()
+        if has_profile is None:
+            return "profile"
+    missing_capability = conn.execute(
+        "SELECT 1 FROM task_capabilities tc "
+        "WHERE tc.task_id = ? AND NOT EXISTS ("
+        "  SELECT 1 FROM machine_capabilities mc "
+        "  WHERE mc.machine_id = ? AND mc.capability = tc.capability"
+        ") LIMIT 1",
+        (task_id, machine_id),
+    ).fetchone()
+    return "capabilities" if missing_capability is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -2407,6 +2775,8 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    target_machine: Optional[str] = None,
+    required_capabilities: Optional[Iterable[str]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2432,6 +2802,9 @@ def create_task(
     translation skill regardless of the profile's default config).
     """
     assignee = _canonical_assignee(assignee)
+    if target_machine is not None:
+        target_machine = str(uuid.UUID(str(target_machine)))
+    required_capabilities_list = _normalize_capabilities(required_capabilities)
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -2635,8 +3008,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        target_machine
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2659,7 +3033,13 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        target_machine,
                     ),
+                )
+                conn.executemany(
+                    "INSERT INTO task_capabilities (task_id, capability) "
+                    "VALUES (?, ?)",
+                    [(task_id, cap) for cap in required_capabilities_list],
                 )
                 for pid in parents:
                     conn.execute(
@@ -2678,6 +3058,8 @@ def create_task(
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
+                        "target_machine": target_machine,
+                        "required_capabilities": list(required_capabilities_list),
                     },
                 )
             return task_id
@@ -3375,6 +3757,9 @@ def claim_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    machine_id: Optional[str] = None,
+    enforce_machine_routing: bool = False,
+    require_registered_profile: bool = False,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -3382,9 +3767,28 @@ def claim_task(
     already claimed (or is not in ``ready`` status).
     """
     now = int(time.time())
-    lock = claimer or _claimer_id()
+    owner_machine_id = (
+        str(uuid.UUID(str(machine_id))) if machine_id is not None
+        else get_machine_id()
+    )
+    lock = claimer or f"{owner_machine_id}:{os.getpid()}"
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if enforce_machine_routing:
+            mismatch = _routing_mismatch(
+                conn,
+                task_id,
+                owner_machine_id,
+                require_registered_profile=require_registered_profile,
+            )
+            if mismatch is not None:
+                _append_event(
+                    conn,
+                    task_id,
+                    "claim_rejected",
+                    {"reason": mismatch, "machine_id": owner_machine_id},
+                )
+                return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -3436,12 +3840,13 @@ def claim_task(
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
+                   machine_id    = ?,
                    started_at    = COALESCE(started_at, ?)
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
             """,
-            (lock, expires, now, task_id),
+            (lock, expires, owner_machine_id, now, task_id),
         )
         if cur.rowcount != 1:
             return None
@@ -3456,9 +3861,9 @@ def claim_task(
             """
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
-                claim_lock, claim_expires, max_runtime_seconds,
+                claim_lock, claim_expires, machine_id, max_runtime_seconds,
                 started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -3466,6 +3871,7 @@ def claim_task(
                 trow["current_step_key"] if trow else None,
                 lock,
                 expires,
+                owner_machine_id,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
             ),
@@ -3477,7 +3883,12 @@ def claim_task(
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {
+                "lock": lock,
+                "expires": expires,
+                "run_id": run_id,
+                "machine_id": owner_machine_id,
+            },
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
@@ -3497,6 +3908,7 @@ def claim_review_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    machine_id: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``review -> running``.
 
@@ -3511,7 +3923,11 @@ def claim_review_task(
     independently from the original worker run.
     """
     now = int(time.time())
-    lock = claimer or _claimer_id()
+    owner_machine_id = (
+        str(uuid.UUID(str(machine_id))) if machine_id is not None
+        else get_machine_id()
+    )
+    lock = claimer or f"{owner_machine_id}:{os.getpid()}"
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
         cur = conn.execute(
@@ -3520,12 +3936,13 @@ def claim_review_task(
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
+                   machine_id    = ?,
                    started_at    = COALESCE(started_at, ?)
              WHERE id = ?
                AND status = 'review'
                AND claim_lock IS NULL
             """,
-            (lock, expires, now, task_id),
+            (lock, expires, owner_machine_id, now, task_id),
         )
         if cur.rowcount != 1:
             return None
@@ -3538,9 +3955,9 @@ def claim_review_task(
             """
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
-                claim_lock, claim_expires, max_runtime_seconds,
+                claim_lock, claim_expires, machine_id, max_runtime_seconds,
                 started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -3548,6 +3965,7 @@ def claim_review_task(
                 trow["current_step_key"] if trow else None,
                 lock,
                 expires,
+                owner_machine_id,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
             ),
@@ -3559,8 +3977,13 @@ def claim_review_task(
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id,
-             "source_status": "review"},
+            {
+                "lock": lock,
+                "expires": expires,
+                "run_id": run_id,
+                "source_status": "review",
+                "machine_id": owner_machine_id,
+            },
             run_id=run_id,
         )
         return get_task(conn, task_id)
@@ -3597,6 +4020,109 @@ def heartbeat_claim(
         return False
 
 
+def renew_owned_leases(
+    conn: sqlite3.Connection,
+    *,
+    now: Optional[int] = None,
+) -> int:
+    """Proactively extend the claim leases of *this machine's* live workers.
+
+    This is the machine-driven counterpart to the reactive PID rescue inside
+    :func:`release_stale_claims`. That rescue only fires *after* a lease has
+    already expired, and — critically — only for a machine-local claim, so a
+    worker running on another machine can never be rescued: its healthy lease
+    expires on the TTL and the reclaim path spawns a duplicate beside it. The
+    fix is to stop letting healthy leases expire at all: each machine renews
+    the leases of the workers *it* owns, on a timer, before expiry. An expired
+    lease then means what a lease is supposed to mean — *the owning machine
+    stopped vouching for this task* — and reclaim becomes unambiguously safe.
+
+    Ownership is explicit (``tasks.machine_id`` == ours) and liveness is
+    ``_pid_alive(worker_pid)`` — exactly the signals the rescue branch uses,
+    because "is my worker alive?" is a question only the worker's own machine
+    can answer. A worker whose heartbeat is stale by more than
+    ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS`` is deliberately *not* renewed:
+    it is wedged (running but making no observable progress), and letting its
+    lease lapse hands it to ``release_stale_claims`` / ``detect_stale_running``
+    for reclaim — preserving the #29747 backstop.
+
+    To bound event churn a lease is only renewed after its first third has
+    elapsed (at most 2/3 of the TTL remains); a freshly claimed task is left
+    alone until then. Renewal cadence is therefore ~TTL/3, which is why the TTL
+    can safely drop far below the legacy 15 minutes once every machine renews.
+
+    Note the deliberately-omitted piece: *fencing*. When a coordinator can
+    reassign a running task to another machine, a failed renewal must become a
+    kill signal for the orphaned local worker. That requires a stable machine
+    identity (host prefixes collide and mutate) and a real reassignment path,
+    neither of which exists on a single local DB — a claim only ever fires from
+    ``ready`` here, so ownership never changes under a live worker. Fencing
+    therefore lands with the coordinator (Build 0.5), not with this change.
+
+    Returns the number of leases renewed this pass. Safe to call every tick.
+    """
+    now = int(time.time()) if now is None else int(now)
+    ttl = _resolve_claim_ttl_seconds()
+    # Renew after the first third has elapsed: remaining <= 2/3 TTL.
+    renew_below = (ttl * 2) // 3
+    candidates = conn.execute(
+        "SELECT id, claim_lock, worker_pid, machine_id, claim_expires, "
+        "       last_heartbeat_at "
+        "FROM tasks "
+        "WHERE status = 'running' AND claim_lock IS NOT NULL "
+        "  AND worker_pid IS NOT NULL",
+    ).fetchall()
+
+    renewed = 0
+    for row in candidates:
+        lock = row["claim_lock"] or ""
+        if not _claim_is_owned_by_this_machine(row["machine_id"], lock):
+            continue  # not ours — another machine renews its own
+        if not _pid_alive(row["worker_pid"]):
+            continue  # dead worker — leave it for the crash/reclaim paths
+        hb = row["last_heartbeat_at"]
+        heartbeat_stale = (
+            hb is not None
+            and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
+        )
+        if heartbeat_stale:
+            continue  # wedged — let the lease lapse so reclaim can act
+        # Only renew after the first third of the lease has elapsed.
+        cur_expires = row["claim_expires"]
+        if cur_expires is not None and (int(cur_expires) - now) > renew_below:
+            continue
+        new_expires = now + ttl
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET claim_expires = ? "
+                "WHERE id = ? AND status = 'running' AND claim_lock = ?",
+                (new_expires, row["id"], lock),
+            )
+            if cur.rowcount != 1:
+                continue  # row changed under us; nothing renewed
+            run_id = _current_run_id(conn, row["id"])
+            if run_id is not None:
+                conn.execute(
+                    "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                    (new_expires, run_id),
+                )
+            _append_event(
+                conn, row["id"], "claim_renewed",
+                {
+                    "reason": "owner_alive",
+                    "claim_lock": lock,
+                    "worker_pid": int(row["worker_pid"]),
+                    "claim_expires_was": (
+                        int(cur_expires) if cur_expires is not None else None
+                    ),
+                    "claim_expires_now": new_expires,
+                },
+                run_id=run_id,
+            )
+            renewed += 1
+    return renewed
+
+
 def release_stale_claims(
     conn: sqlite3.Connection,
     *,
@@ -3604,7 +4130,7 @@ def release_stale_claims(
 ) -> int:
     """Reset any ``running`` task whose claim has expired.
 
-    A stale-by-TTL claim whose host-local worker PID is still alive is
+    A stale-by-TTL claim whose machine-local worker PID is still alive is
     *extended* (with a ``claim_extended`` event) instead of being
     reclaimed. Reclaiming a live worker mid-flight produces the spawn-
     then-immediately-reclaim loop seen on slow models that spend longer
@@ -3629,9 +4155,9 @@ def release_stale_claims(
     """
     now = int(time.time())
     reclaimed = 0
-    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "SELECT id, claim_lock, worker_pid, machine_id, claim_expires, "
+        "       last_heartbeat_at "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?",
@@ -3639,7 +4165,9 @@ def release_stale_claims(
     ).fetchall()
     for row in stale:
         lock = row["claim_lock"] or ""
-        host_local = lock.startswith(host_prefix)
+        machine_local = _claim_is_owned_by_this_machine(
+            row["machine_id"], lock,
+        )
         hb = row["last_heartbeat_at"]
         # Heartbeat staleness backstop: if we have a heartbeat at all
         # and it's older than the max-stale threshold, the worker is
@@ -3650,7 +4178,7 @@ def release_stale_claims(
             and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
         )
         if (
-            host_local
+            machine_local
             and row["worker_pid"]
             and _pid_alive(row["worker_pid"])
             and not heartbeat_stale
@@ -3692,7 +4220,8 @@ def release_stale_claims(
             continue
 
         termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            row["worker_pid"], row["claim_lock"],
+            machine_id=row["machine_id"], signal_fn=signal_fn,
         )
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -3705,7 +4234,7 @@ def release_stale_claims(
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, machine_id = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
                 (row["id"], row["claim_lock"], now),
@@ -3730,7 +4259,10 @@ def release_stale_claims(
                     if row["last_heartbeat_at"] is not None else None
                 ),
                 "now": now,
-                "host_local": host_local,
+                # Keep the existing payload key for API compatibility; its
+                # value is now derived from the stable machine UUID.
+                "host_local": machine_local,
+                "machine_id": row["machine_id"],
                 "heartbeat_stale": bool(heartbeat_stale),
             }
             payload.update(termination)
@@ -3762,7 +4294,8 @@ def reclaim_task(
     reclaimable state (not running, or doesn't exist).
     """
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        "SELECT status, claim_lock, worker_pid, machine_id "
+        "FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if not row:
@@ -3772,12 +4305,13 @@ def reclaim_task(
         return False
     prev_lock = row["claim_lock"]
     termination = _terminate_reclaimed_worker(
-        row["worker_pid"], prev_lock, signal_fn=signal_fn,
+        row["worker_pid"], prev_lock,
+        machine_id=row["machine_id"], signal_fn=signal_fn,
     )
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
+            "claim_expires = NULL, worker_pid = NULL, machine_id = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
             "AND claim_lock IS ?",
             (task_id, prev_lock),
@@ -4053,6 +4587,7 @@ def complete_task(
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL,
+                       machine_id   = NULL,
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
@@ -4070,6 +4605,7 @@ def complete_task(
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL,
+                       machine_id   = NULL,
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
@@ -4606,6 +5142,7 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
+                       machine_id    = NULL,
                        block_kind    = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
@@ -4659,6 +5196,7 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
+                       machine_id    = NULL,
                        block_kind    = ?,
                        block_recurrences = ?
                  WHERE id = ?
@@ -4698,6 +5236,7 @@ def block_task(
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
+                           machine_id    = NULL,
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
@@ -4713,6 +5252,7 @@ def block_task(
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
+                           machine_id    = NULL,
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
@@ -5208,7 +5748,8 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
-            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "    machine_id = NULL "
             "WHERE id = ? AND status != 'archived'",
             (task_id,),
         )
@@ -5251,6 +5792,7 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM task_capabilities WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return cur.rowcount == 1
@@ -5274,6 +5816,7 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM task_capabilities WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
     recompute_ready(conn)
     return True
@@ -5605,7 +6148,8 @@ def schedule_task(
                SET status       = 'scheduled',
                    claim_lock   = NULL,
                    claim_expires= NULL,
-                   worker_pid   = NULL
+                   worker_pid   = NULL,
+                   machine_id   = NULL
              WHERE id = ?
                AND status IN ('todo', 'ready', 'running', 'blocked')
         """
@@ -5692,6 +6236,11 @@ class DispatchResult:
 
     reclaimed: int = 0
     promoted: int = 0
+    renewed: int = 0
+    """Count of this machine's own live leases proactively extended this tick
+    by ``renew_owned_leases`` — before expiry, so a busy worker is never
+    mistaken for a dead one. The machine-driven replacement for the reactive
+    post-expiry PID rescue in ``release_stale_claims``."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -5710,6 +6259,9 @@ class DispatchResult:
     operator-actionable failure. Tracked separately so health telemetry
     can distinguish "real stuck" (nothing spawned but spawnable work
     available) from "correctly idle" (nothing spawnable in the queue)."""
+    skipped_routing: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks ineligible for this machine as ``(task_id, reason)`` pairs.
+    They remain ready for another registered machine and are not failures."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """Tasks deferred this tick because their assignee is already at
     ``kanban.max_in_progress_per_profile`` (#21582). Each entry is
@@ -5916,9 +6468,10 @@ def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
     *,
+    machine_id: Optional[str] = None,
     signal_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort machine-local worker termination for reclaim paths."""
     import signal
 
     info: dict[str, Any] = {
@@ -5931,8 +6484,7 @@ def _terminate_reclaimed_worker(
     if not pid or pid <= 0 or not claim_lock:
         return info
 
-    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
-    if not str(claim_lock).startswith(host_prefix):
+    if not _claim_is_owned_by_this_machine(machine_id, claim_lock):
         return info
     info["host_local"] = True
 
@@ -5975,11 +6527,11 @@ def _terminate_reclaimed_worker(
 
 
 def _worker_survived_termination(termination: dict) -> bool:
-    """True when we tried to kill our own host-local worker and it is still alive.
+    """True when our own machine-local worker survived termination.
 
     Reclaiming in this state would release the claim and let the dispatcher
     spawn a second worker while the first is still running — the duplication
-    loop. Only host-local workers we actually signalled count: a non-local
+    loop. Only machine-local workers we actually signalled count: a non-local
     claim lock or a no-op attempt (no ``os.kill`` available) must fall through
     to the normal release path, since we cannot manage that worker anyway.
     """
@@ -6095,19 +6647,17 @@ def enforce_max_runtime(
     breaker has already given up, in which case the task stays blocked
     where ``_record_spawn_failure`` parked it.
 
-    Runs host-local: only tasks claimed by this host are candidates
+    Runs machine-local: only tasks owned by this machine are candidates
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
     test hook; defaults to ``os.kill`` on POSIX.
     """
     import signal
     timed_out: list[str] = []
     now = int(time.time())
-    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
-
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, t.machine_id "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
@@ -6116,7 +6666,7 @@ def enforce_max_runtime(
     ).fetchall()
     for row in rows:
         lock = row["claim_lock"] or ""
-        if not lock.startswith(host_prefix):
+        if not _claim_is_owned_by_this_machine(row["machine_id"], lock):
             continue
         # Runtime is per attempt, not lifetime-of-task. ``tasks.started_at``
         # intentionally records the first time a task ever started, so retries
@@ -6156,7 +6706,7 @@ def enforce_max_runtime(
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, machine_id = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
@@ -6221,7 +6771,7 @@ def detect_stale_running(
        ``_STALE_HEARTBEAT_GAP_SECONDS`` (or NULL — never sent a heartbeat).
 
     On reclaim the task is reset to ``ready``, the run is closed with
-    ``outcome='stale'``, and the host-local worker (if still running) is
+    ``outcome='stale'``, and the machine-local worker (if still running) is
     terminated.
 
     Only considers ``status='running'`` tasks. Blocked tasks are never
@@ -6236,11 +6786,11 @@ def detect_stale_running(
 
 
     now = int(time.time())
-    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.worker_pid, t.machine_id, t.last_heartbeat_at, "
+        "       t.claim_lock, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -6265,9 +6815,9 @@ def detect_stale_running(
         tid = row["id"]
         lock = row["claim_lock"] or ""
 
-        # Terminate the worker if it's still host-local.
+        # Terminate the worker if it belongs to this machine.
         termination = _terminate_reclaimed_worker(
-            pid, lock, signal_fn=signal_fn,
+            pid, lock, machine_id=row["machine_id"], signal_fn=signal_fn,
         )
 
         # Never release a claim while our own worker is still alive: that would
@@ -6282,7 +6832,7 @@ def detect_stale_running(
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, machine_id = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
@@ -6350,8 +6900,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     Different from ``release_stale_claims``: this checks liveness
     immediately rather than waiting for the claim TTL.
 
-    Only considers tasks claimed by *this host* — PIDs from other hosts
-    are meaningless here. The host-local check is enough because
+    Only considers tasks owned by *this machine* — PIDs from other machines
+    are meaningless here. The machine-ID check is enough because
     ``_default_spawn`` always runs the worker on the same host as the
     dispatcher (the whole design is single-host).
 
@@ -6382,14 +6932,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, machine_id, claim_lock, started_at "
+            "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
-        host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
         for row in rows:
-            # Only check liveness for claims owned by this host.
+            # Only check liveness for claims owned by this machine.
             lock = row["claim_lock"] or ""
-            if not lock.startswith(host_prefix):
+            if not _claim_is_owned_by_this_machine(row["machine_id"], lock):
                 continue
             # Skip liveness check inside the launch-window grace period
             # so a freshly-spawned worker isn't reclaimed before its PID
@@ -6457,7 +7007,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
 
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, machine_id = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
                 (row["id"], pid, row["claim_lock"]),
@@ -6616,7 +7166,7 @@ def _record_task_failure(
                 # Spawn path: still running, also clear claim state.
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, machine_id = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('running', 'ready')",
                     (failures, error[:500], task_id),
@@ -6664,7 +7214,7 @@ def _record_task_failure(
                 # Spawn path: transition running → ready + clear claim.
                 conn.execute(
                     "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, machine_id = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
                     (failures, error[:500], task_id),
@@ -7032,7 +7582,7 @@ def _dispatch_once_locked(
     Steps:
       1. Reclaim stale running tasks (TTL expired).
       2. Reclaim stale running tasks (no recent heartbeat).
-      3. Reclaim crashed running tasks (host-local PID no longer alive).
+      3. Reclaim crashed running tasks (machine-local PID no longer alive).
       3. Promote todo -> ready where all parents are done.
       4. For each ready task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
@@ -7060,6 +7610,12 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    # Renew this machine's own live leases BEFORE the reclaim scan, so a
+    # healthy worker's lease never appears expired to release_stale_claims
+    # (or, cross-machine, to another machine's dispatcher). This is what makes
+    # an expired lease mean "the owner stopped vouching" rather than merely
+    # "the TTL elapsed while the worker was busy".
+    result.renewed = renew_owned_leases(conn)
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -7083,6 +7639,7 @@ def _dispatch_once_locked(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    local_machine_id = register_local_machine(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -7158,6 +7715,12 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
+        routing_mismatch = _routing_mismatch(
+            conn, row["id"], local_machine_id,
+        )
+        if routing_mismatch is not None:
+            result.skipped_routing.append((row["id"], routing_mismatch))
+            continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
@@ -7270,7 +7833,13 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed = claim_task(
+            conn,
+            row["id"],
+            ttl_seconds=ttl_seconds,
+            machine_id=local_machine_id,
+            enforce_machine_routing=True,
+        )
         if claimed is None:
             continue
         try:

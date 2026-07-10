@@ -2703,6 +2703,16 @@ DEFAULT_CONFIG = {
     # each claimable ready task. One dispatcher per profile is sufficient;
     # running more than one on the same kanban.db will race for claims.
     "kanban": {
+        # Optional private coordinator endpoint for a shared Kanban board.
+        # Keep this in config.yaml because it is deployment behaviour, not a
+        # secret. The matching bearer token stays in the environment.
+        "coordinator_url": "",
+        # Extra capabilities advertised by this physical machine for Kanban
+        # routing (for example: ["xcode", "bluetooth"]). The platform
+        # capability (macos/linux/windows) is added automatically. Because
+        # this is machine-level state, only the default Hermes root's
+        # config.yaml value is consulted; named profile overrides are ignored.
+        "machine_capabilities": [],
         # Run the dispatcher inside the gateway process. On by default —
         # the cost is ~300µs every `dispatch_interval_seconds` when idle,
         # and gateway is the supervisor users already have. Set to false

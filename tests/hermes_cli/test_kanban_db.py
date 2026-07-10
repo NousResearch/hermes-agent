@@ -644,6 +644,160 @@ def test_stale_claim_released_when_worker_not_host_local(
         assert kb.get_task(conn, t).status == "ready"
 
 
+# ---------------------------------------------------------------------------
+# Machine-driven lease renewal (renew_owned_leases)
+# ---------------------------------------------------------------------------
+
+def test_renew_extends_live_lease_before_expiry(kanban_home, monkeypatch):
+    """A live host-local worker deep into its lease is renewed proactively,
+    so the lease never expires and release_stale_claims never sees it."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+
+        ttl = _kb._resolve_claim_ttl_seconds()
+        now = int(time.time())
+        # Lease is into its final third (only 10s of headroom left) but not
+        # yet expired: the reactive rescue would not fire, renewal should.
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?", (now + 10, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+
+        res = kb.renew_owned_leases(conn, now=now)
+        assert res == 1
+
+        task = kb.get_task(conn, t)
+        assert task.status == "running"
+        assert task.claim_expires >= now + ttl - 1
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "claim_renewed" in kinds
+
+
+def test_renew_skips_fresh_lease_to_bound_event_churn(kanban_home, monkeypatch):
+    """A freshly claimed lease (>2/3 TTL remaining) is left alone: renewing
+    every tick would spam claim_renewed events."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+
+        # claim_task just set expires ~ now + TTL, so plenty of headroom.
+        res = kb.renew_owned_leases(conn)
+        assert res == 0
+
+
+def test_renew_skips_remote_lease(kanban_home, monkeypatch):
+    """Another machine's claim is never renewed here — that machine renews
+    its own. This is the whole point: we only vouch for our own workers."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        # Claim owned by a *different* host.
+        kb.claim_task(
+            conn,
+            t,
+            claimer="other-host:worker",
+            machine_id="00000000-0000-4000-8000-000000000001",
+        )
+        kb._set_worker_pid(conn, t, 12345)
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?", (now + 10, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+
+        res = kb.renew_owned_leases(conn, now=now)
+        assert res == 0
+        # Lease left untouched -> release_stale_claims will reclaim it once it
+        # expires, which is the correct cross-machine behavior.
+        assert kb.get_task(conn, t).claim_expires == now + 10
+
+
+def test_renew_skips_dead_worker(kanban_home, monkeypatch):
+    """A host-local claim whose worker PID is gone is not renewed — the crash
+    and reclaim paths must be allowed to release it."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?", (now + 10, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+        res = kb.renew_owned_leases(conn, now=now)
+        assert res == 0
+
+
+def test_renew_skips_wedged_worker(kanban_home, monkeypatch):
+    """A live but wedged worker (heartbeat stale > max) is NOT renewed, so its
+    lease lapses and the stale/reclaim backstop (#29747) can act."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        now = int(time.time())
+        stale_hb = now - _kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS - 60
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (now + 10, stale_hb, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+
+        res = kb.renew_owned_leases(conn, now=now)
+        assert res == 0
+
+
+def test_dispatch_renews_owned_lease_before_reclaim(kanban_home, monkeypatch):
+    """The dispatch tick must renew before scanning expired claims.
+
+    A live local worker whose lease has just crossed expiry stays running
+    instead of being released and made eligible for a duplicate spawn.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?", (now - 1, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+
+        result = kb.dispatch_once(conn)
+
+        assert result.renewed == 1
+        assert result.reclaimed == 0
+        task = kb.get_task(conn, t)
+        assert task.status == "running"
+        assert task.claim_expires > now
+
+
 def test_detect_stale_defers_when_live_worker_survives(kanban_home, monkeypatch):
     """detect_stale_running must also hold the claim when the worker survives."""
     import hermes_cli.kanban_db as _kb

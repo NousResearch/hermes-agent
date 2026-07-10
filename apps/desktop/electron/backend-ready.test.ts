@@ -98,6 +98,17 @@ test('resolves with a HERMES_BACKEND_READY port (headless `serve`)', async () =>
   assert.equal(await p, 43210)
 })
 
+test('does not satisfy a new watcher from a previous child announcement', async () => {
+  const previous = makeFakeChild()
+  previous.stdout.emit('data', 'HERMES_BACKEND_READY port=43210\n')
+
+  const next = makeFakeChild()
+  await assert.rejects(
+    waitForDashboardPort(next, 20),
+    /Timed out waiting for Hermes backend port announcement \(20ms\)/
+  )
+})
+
 test('parses the port even when the line arrives split across chunks', async () => {
   const child = makeFakeChild()
   const p = waitForDashboardPort(child, 1000)

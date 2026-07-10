@@ -385,6 +385,49 @@ def test_admit_pipeline(case):
     assert adapter._admit(sender, message) == case["expected"]
 
 
+def test_mentions_self_ignores_feishu_at_all_placeholder():
+    adapter = make_adapter_skeleton(bot_open_id="ou_self", group_policy="open")
+    message = make_message(chat_type="group")
+    message.content = '{"text":"@_all 請留意"}'
+
+    assert adapter._mentions_self(message) is False
+
+
+def test_admit_rejects_group_at_all_when_explicit_mention_required():
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        require_mention=True,
+        group_policy="open",
+    )
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    message = make_message(chat_type="group")
+    message.content = '{"text":"@_all 請留意"}'
+
+    assert adapter._admit(sender, message) == "group_policy_rejected"
+
+
+def test_admit_accepts_explicit_bot_mention_when_mention_required():
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        require_mention=True,
+        group_policy="open",
+    )
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    message = make_message(
+        chat_type="group",
+        mentions=[
+            SimpleNamespace(
+                key="@_user_1",
+                id=SimpleNamespace(open_id="ou_self", user_id=""),
+                name="Hermes",
+            )
+        ],
+    )
+    message.content = '{"text":"@_user_1 幫我查"}'
+
+    assert adapter._admit(sender, message) is None
+
+
 # --- Mention call-count semantics ------------------------------------------
 
 

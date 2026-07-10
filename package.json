@@ -21,7 +21,8 @@
     "audit:fix:root": "npm audit fix --workspaces=false",
     "audit:fix:web": "npm audit fix --workspace web",
     "audit:fix:tui": "npm audit fix --workspace ui-tui",
-    "check": "npm run check --ws"
+    "check": "npm run --ws check",
+    "fix": "npm run --ws fix"
   },
   "repository": {
     "type": "git",

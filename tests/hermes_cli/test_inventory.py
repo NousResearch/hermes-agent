@@ -415,7 +415,25 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
         "gemini",
         "custom:lab",
     ]
+def test_include_unconfigured_keeps_current_provider_visible_without_credentials():
+    """If the saved provider is currently unauthenticated, keep a visible row
+    with the saved model so GUI pickers don't silently jump to another
+    authenticated provider."""
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx, include_unconfigured=True, picker_hints=True,
+        )
 
+    deepseek = next(r for r in payload["providers"] if r["slug"] == "deepseek")
+    assert deepseek["source"] == "configured-current"
+    assert deepseek["is_current"] is True
+    assert deepseek["authenticated"] is False
+    assert deepseek["models"] == ["deepseek-v4-pro"]
+    assert deepseek["total_models"] == 1
+    assert deepseek["auth_type"] == "api_key"
+    assert "DEEPSEEK_API_KEY" in deepseek["warning"]
+    assert "saved model only" in deepseek["warning"]
 
 def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
     rows = [
@@ -452,8 +470,6 @@ def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
 
     assert [row["slug"] for row in payload["providers"]] == ["moa"]
     assert payload["providers"][0]["models"] == ["review"]
-
-
 # ─── picker_hints ──────────────────────────────────────────────────────
 
 

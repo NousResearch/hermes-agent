@@ -7880,6 +7880,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if result.api_mode:
             self.api_mode = result.api_mode
 
+        # `/model` is a deliberate session-level user action. Replace the
+        # router-derived pin before attempting an in-place agent swap, so a
+        # later one-turn route directive restores this model—not the route
+        # chosen before the explicit switch.
+        self._set_explicit_session_model_pin(
+            result.new_model,
+            {
+                "provider": self.provider,
+                "base_url": self.base_url,
+                "api_mode": self.api_mode,
+                "command": self.acp_command,
+                "args": list(self.acp_args or []),
+            },
+        )
+
         if self.agent is not None:
             try:
                 self.agent.switch_model(
@@ -7890,17 +7905,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     api_mode=result.api_mode,
                 )
             except Exception as exc:
-                # The agent rolled itself back to the old working model/client.
-                # Roll the CLI's own staged fields back too and abort the rest
-                # of the commit (note + success print) so a failed switch is a
-                # no-op rather than a dead session (#50163).
-                for _k, _v in _cli_snapshot.items():
-                    setattr(self, _k, _v)
-                _cprint(
-                    f"  ⚠ Model switch to {result.new_model} failed ({exc}); "
-                    f"staying on {old_model}."
-                )
-                return
+                # A failed in-place swap may have partially mutated the agent.
+                # Discard it so the next turn builds a clean agent from the
+                # explicit session pin and compatible runtime settings.
+                self.agent = None
+                _cprint(f"  ⚠ Agent swap failed ({exc}); change will apply on next turn.")
 
         self._pending_model_switch_note = (
             f"[Note: model was just switched from {old_model} to {result.new_model} "
@@ -12111,6 +12120,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
             request_overrides=turn_route.get("request_overrides"),
+            router_ephemeral=turn_route.get("router_ephemeral", False),
         ):
             return None
         
@@ -12368,6 +12378,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         "error": _summary,
                     }
                 finally:
+                    # A route directive is intentionally one-turn only. Restore
+                    # the durable session model even if the temporary agent run
+                    # failed after creating its SessionDB row.
+                    self._restore_ephemeral_router_session_model(
+                        router_ephemeral=turn_route.get("router_ephemeral", False),
+                        restore_model=turn_route.get("router_restore_model"),
+                    )
                     # Surface any credit notices queued during the turn (cold-start
                     # seed / per-turn capture) now that the response is done — printing
                     # at this boundary paints cleanly above the prompt instead of being

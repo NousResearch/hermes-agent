@@ -180,7 +180,10 @@ class CLIAgentSetupMixin:
         API call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
-        from hermes_cli.model_router import select_model_for_session_turn
+        from hermes_cli.model_router import (
+            explicit_model_router_tier,
+            select_model_for_session_turn,
+        )
 
         pinned_model = None
         active_signature = getattr(self, "_active_agent_route_signature", None)
@@ -194,6 +197,7 @@ class CLIAgentSetupMixin:
             except Exception:
                 pass
 
+        explicit_router_tier = explicit_model_router_tier(user_message)
         effective_model, router_tier = select_model_for_session_turn(
             user_message, self.model, pinned_model=pinned_model
         )
@@ -209,6 +213,8 @@ class CLIAgentSetupMixin:
         route = {
             "model": effective_model,
             "router_tier": router_tier,
+            "router_ephemeral": explicit_router_tier is not None,
+            "router_restore_model": pinned_model or self.model,
             "runtime": runtime,
             "signature": (
                 effective_model,
@@ -232,7 +238,75 @@ class CLIAgentSetupMixin:
         route["request_overrides"] = overrides
         return route
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _set_active_agent_route_signature(
+        self,
+        effective_model: str,
+        runtime: dict,
+        *,
+        router_ephemeral: bool = False,
+    ) -> None:
+        """Persist the reusable route identity, excluding one-turn directives."""
+        if router_ephemeral:
+            self._active_agent_route_signature = None
+            return
+        self._active_agent_route_signature = (
+            effective_model,
+            runtime.get("provider"),
+            runtime.get("base_url"),
+            runtime.get("api_mode"),
+            runtime.get("command"),
+            tuple(runtime.get("args") or ()),
+        )
+
+    def _restore_ephemeral_router_session_model(
+        self, *, router_ephemeral: bool, restore_model: str | None
+    ) -> None:
+        """Keep a one-turn directive out of the durable CLI session pin."""
+        from cli import logger
+
+        if not router_ephemeral or not isinstance(restore_model, str) or not restore_model.strip():
+            return
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(getattr(self, "agent", None), "session_id", None) or getattr(
+            self, "session_id", None
+        )
+        if session_db is None or not session_id:
+            return
+        try:
+            session_db.update_session_model(session_id, restore_model.strip())
+        except Exception:
+            logger.debug(
+                "Could not restore CLI router session model after ephemeral route",
+                exc_info=True,
+            )
+
+    def _set_explicit_session_model_pin(self, model: str, runtime: dict) -> None:
+        """Make a deliberate `/model` selection beat any router-derived pin."""
+        self._set_active_agent_route_signature(model, runtime)
+        session_db = getattr(self, "_session_db", None)
+        # Compression can rotate the active agent's backing SessionDB row. Use
+        # that current row when present so the next ordinary turn restores the
+        # deliberate CLI selection rather than an older router-derived pin.
+        session_id = getattr(getattr(self, "agent", None), "session_id", None) or getattr(
+            self, "session_id", None
+        )
+        if session_db is None or not session_id:
+            return
+        try:
+            session_db.update_session_model(session_id, model)
+        except Exception:
+            from cli import logger
+
+            logger.debug("Could not persist explicit CLI model selection", exc_info=True)
+
+    def _init_agent(
+        self,
+        *,
+        model_override: str = None,
+        runtime_override: dict = None,
+        request_overrides: dict | None = None,
+        router_ephemeral: bool = False,
+    ) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
@@ -432,13 +506,14 @@ class CLIAgentSetupMixin:
                 seed_credits_at_session_start(self.agent)
             except Exception:
                 pass
-            self._active_agent_route_signature = (
+            # A copyable route directive is one-turn only. Keep the selected
+            # agent through this response, then force the next ordinary turn to
+            # rebuild from the durable session pin instead of inheriting this
+            # temporary model as its session route.
+            self._set_active_agent_route_signature(
                 effective_model,
-                runtime.get("provider"),
-                runtime.get("base_url"),
-                runtime.get("api_mode"),
-                runtime.get("command"),
-                tuple(runtime.get("args") or ()),
+                runtime,
+                router_ephemeral=router_ephemeral,
             )
 
             # Force-create DB row on /title intent, then apply title.

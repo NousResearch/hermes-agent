@@ -3903,8 +3903,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
-        from hermes_cli.model_router import select_model_for_session_turn
+        from hermes_cli.model_router import (
+            explicit_model_router_tier,
+            select_model_for_session_turn,
+        )
 
+        explicit_router_tier = explicit_model_router_tier(user_message)
         effective_model, router_tier = select_model_for_session_turn(
             user_message, model, pinned_model=pinned_model
         )
@@ -3921,6 +3925,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         route = {
             "model": effective_model,
             "router_tier": router_tier,
+            "router_ephemeral": explicit_router_tier is not None,
+            # A route directive may use a temporary model for this response;
+            # retain the prior durable pin (or primary base model for a new
+            # session) for the next ordinary turn.
+            "router_restore_model": pinned_model or model,
             "runtime": runtime,
             "signature": (
                 effective_model,
@@ -3991,6 +4000,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             db.update_session_meta(session_id, json.dumps(config), model=model)
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
+    def _restore_ephemeral_router_session_model(
+        self, session_id: Optional[str], turn_route: dict
+    ) -> None:
+        """Restore durable session routing after a one-turn model directive."""
+        if not turn_route.get("router_ephemeral") or not session_id:
+            return
+        restore_model = turn_route.get("router_restore_model")
+        if not isinstance(restore_model, str) or not restore_model.strip():
+            return
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return
+        try:
+            session_db.update_session_model(session_id, restore_model.strip())
+        except Exception:
+            logger.debug(
+                "Could not restore router session model after ephemeral route",
+                exc_info=True,
+            )
 
     def _get_explicit_session_model_override(
         self, session_key: Optional[str]
@@ -18917,6 +18945,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
+                # A one-turn directive must not become a durable model pin even
+                # when the delegated conversation raises before normal result
+                # handling. Agent compression may already have rotated its
+                # session_id, so restore against the agent's current row.
+                try:
+                    _ephemeral_agent = agent_holder[0]
+                    _ephemeral_session_id = getattr(
+                        _ephemeral_agent, "session_id", session_id
+                    )
+                    self._restore_ephemeral_router_session_model(
+                        _ephemeral_session_id, turn_route
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not restore ephemeral router session after run failure",
+                        exc_info=True,
+                    )
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,

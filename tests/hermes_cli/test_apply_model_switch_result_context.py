@@ -40,7 +40,14 @@ class _StubCLI:
     base_url = ""
     _explicit_base_url = ""
     api_mode = ""
+    acp_command = None
+    acp_args = []
     _pending_model_switch_note = ""
+
+    def _set_explicit_session_model_pin(self, model, runtime):
+        # Display-only tests do not have a SessionDB; retain enough state to
+        # model the session-level pin established by the real CLI mixin.
+        self._active_agent_route_signature = (model, runtime)
 
 
 def _run_display(monkeypatch, result):

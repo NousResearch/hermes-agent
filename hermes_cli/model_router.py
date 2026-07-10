@@ -133,8 +133,8 @@ def _as_keywords(router_cfg: Mapping[str, Any], key: str, default: tuple[str, ..
     return default
 
 
-def _explicit_tier(text: str) -> Optional[str]:
-    lowered = text.strip().lower()
+def _explicit_tier(value: Any) -> Optional[str]:
+    lowered = _extract_text(value).strip().lower()
     # Copyable overrides:
     #   /sol design this
     #   route:sol design this
@@ -225,6 +225,30 @@ def select_model_for_turn(
     return model, tier
 
 
+def explicit_model_router_tier(
+    user_message: Any, config: Optional[Mapping[str, Any]] = None
+) -> Optional[str]:
+    """Return a valid explicit routing tier, if this turn deliberately requests one.
+
+    Explicit directives are one-turn user actions. They are recognized only
+    while the router is enabled and only when the configured route supplies a
+    model, so callers can distinguish them from ordinary keyword selection.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+
+    router_cfg = _router_config(config)
+    if not _truthy(router_cfg.get("enabled")):
+        return None
+    tier = _explicit_tier(user_message)
+    return tier if tier and _route_model(router_cfg, tier) else None
+
+
 def select_model_for_session_turn(
     user_message: Any,
     base_model: str,
@@ -233,8 +257,8 @@ def select_model_for_session_turn(
 ) -> Tuple[str, Optional[str]]:
     """Select a model once, then preserve it for a session's later turns.
 
-    A previous effective session model wins while routing is enabled. Keeping a
-    model stable avoids rebuilding an agent (and its frozen system prompt/tool
+    A prior session pin wins after an explicit one-turn directive and even if
+    routing is later disabled. Keeping a model stable avoids
     schemas) merely because a follow-up message contains a different keyword.
     ``pinned_model`` may be a configured route or an explicit session model;
     in the latter case the tier is intentionally unknown (``None``).
@@ -248,23 +272,31 @@ def select_model_for_session_turn(
             config = {}
 
     router_cfg = _router_config(config)
-    if not _truthy(router_cfg.get("enabled")):
-        return base_model, None
+
+    router_enabled = _truthy(router_cfg.get("enabled"))
 
     # Copyable in-message router directives are deliberate per-turn actions.
-    # They may intentionally rebuild the agent; ordinary keyword classification
-    # below must remain session-pinned for cache stability.
-    explicit_tier = _explicit_tier(user_message)
-    if explicit_tier:
-        explicit_model = _route_model(router_cfg, explicit_tier)
-        if explicit_model:
-            return explicit_model, explicit_tier
+    # When routing is enabled they may intentionally rebuild the agent and must
+    # beat an ordinary session pin. Disabling routing still disables directives
+    # for new turns, matching the existing feature-off contract.
+    if router_enabled:
+        explicit_tier = explicit_model_router_tier(user_message, config)
+        if explicit_tier:
+            return _route_model(router_cfg, explicit_tier), explicit_tier
 
+    # Once a session has an effective model, preserve it even if routing is
+    # later disabled or reconfigured. Existing session context/tool schemas are
+    # model-specific and switching on a follow-up destroys prompt-cache
+    # stability. Disabling the router affects only sessions that have not yet
+    # selected a model.
     if isinstance(pinned_model, str) and pinned_model.strip():
         pinned = pinned_model.strip()
         for tier in ("quick", "standard", "complex"):
             if _route_model(router_cfg, tier) == pinned:
                 return pinned, tier
         return pinned, None
+
+    if not router_enabled:
+        return base_model, None
 
     return select_model_for_turn(user_message, base_model, config)

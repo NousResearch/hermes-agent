@@ -64,7 +64,8 @@ class FailoverReason(enum.Enum):
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
-    long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
+    long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate (429, long context)
+    subscription_exhausted = "subscription_exhausted"  # Anthropic OAuth subscription fully exhausted (400, "out of extra usage") — not retryable, wait for reset
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
 
@@ -666,6 +667,30 @@ def classify_api_error(
             FailoverReason.long_context_tier,
             retryable=True,
             should_compress=True,
+        )
+
+    # Anthropic subscription fully exhausted (HTTP 400 "out of extra usage").
+    # Fired when a Claude Max/Pro OAuth subscriber has consumed both their
+    # included monthly quota AND any "extra usage" add-on credits. This is a
+    # billing exhaustion — not retryable, not fixable by compressing context.
+    # Rotate credentials if a pool is available; otherwise surface a clear
+    # human-readable message so the user knows to wait for the quota reset or
+    # switch to an API key.
+    if (
+        status_code == 400
+        and "out of extra usage" in error_msg
+    ):
+        return _result(
+            FailoverReason.subscription_exhausted,
+            retryable=False,
+            should_fallback=True,
+            message=(
+                "Your Claude subscription usage has been exhausted for this period "
+                "(both the included quota and extra usage credits). "
+                "Options: (1) wait for your billing cycle to reset at claude.ai/settings/usage, "
+                "(2) add extra usage credits at claude.ai/settings/usage, "
+                "(3) switch to an Anthropic API key or a different provider in 'hermes model'."
+            ),
         )
 
     # Anthropic OAuth subscription rejects the 1M-context beta header.

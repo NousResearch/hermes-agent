@@ -1424,6 +1424,10 @@ def run_conversation(
                             error_details.append("response is None")
                         else:
                             error_details.append("Bedrock response invalid (no output or choices)")
+                elif agent.api_mode == "claude_code_subprocess":
+                    if response is None or not getattr(response, "content", None):
+                        response_invalid = True
+                        error_details.append("claude_code_subprocess returned no content")
                 else:
                     _ctv = agent._get_transport()
                     if not _ctv.validate_response(response):
@@ -1626,6 +1630,9 @@ def run_conversation(
                     _bt_fr = agent._get_transport()
                     _bedrock_result = _bt_fr.normalize_response(response)
                     finish_reason = _bedrock_result.finish_reason
+                elif agent.api_mode == "claude_code_subprocess":
+                    # Subprocess returns an Anthropic-like SimpleNamespace with stop_reason
+                    finish_reason = "stop" if getattr(response, "stop_reason", "end_turn") == "end_turn" else getattr(response, "stop_reason", "stop")
                 else:
                     _cc_fr = agent._get_transport()
                     _finish_result = _cc_fr.normalize_response(response)

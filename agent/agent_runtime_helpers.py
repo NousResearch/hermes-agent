@@ -793,7 +793,7 @@ def recover_with_credential_pool(
             )
         return False, has_retried_429
 
-    if effective_reason == FailoverReason.billing:
+    if effective_reason in (FailoverReason.billing, FailoverReason.subscription_exhausted):
         rotate_status = status_code if status_code is not None else 402
         next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
         if next_entry is not None:

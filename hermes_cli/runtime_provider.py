@@ -334,6 +334,10 @@ _VALID_API_MODES = {
     "codex_responses",
     "anthropic_messages",
     "bedrock_converse",
+    # Routes inference through the `claude` CLI subprocess so Claude Max/Pro
+    # subscribers can use their subscription quota without hitting OAuth token
+    # rate limits on the external API endpoint. Activated by provider: claude-code.
+    "claude_code_subprocess",
     # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
     # so terminal/file-ops/patching/sandboxing run inside Codex's own runtime
     # instead of Hermes' tool dispatch. Gated behind config key
@@ -426,6 +430,12 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "anthropic_messages"
         pconfig = PROVIDER_REGISTRY.get(provider)
         base_url = base_url or (pconfig.inference_base_url if pconfig else "")
+    elif provider == "claude-code":
+        # Use the `claude` CLI subprocess directly — no API calls, no OAuth token
+        # rate limits. Claude Max/Pro subscribers can use their subscription quota
+        # exactly as the Claude Code CLI does. Requires `claude` to be on PATH.
+        api_mode = "claude_code_subprocess"
+        base_url = ""
     elif provider == "anthropic":
         api_mode = "anthropic_messages"
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -1843,6 +1853,17 @@ def resolve_runtime_provider(
             "command": creds.get("command", ""),
             "args": list(creds.get("args") or []),
             "source": creds.get("source", "process"),
+            "requested_provider": requested_provider,
+        }
+
+    # Claude Code CLI subprocess — no API calls, uses Max/Pro subscription quota
+    if provider == "claude-code":
+        return {
+            "provider": "claude-code",
+            "api_mode": "claude_code_subprocess",
+            "base_url": "",
+            "api_key": "",
+            "source": "claude-code-subprocess",
             "requested_provider": requested_provider,
         }
 

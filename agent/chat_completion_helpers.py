@@ -30,6 +30,10 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
+
+# Modes that use the Anthropic Message response format (content list, stop_reason, etc.)
+# claude_code_subprocess returns the same structure via SimpleNamespace, so it's included.
+_ANTHROPIC_RESPONSE_MODES = frozenset({"anthropic_messages", "claude_code_subprocess"})
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
@@ -114,6 +118,86 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
         return sum(_chars(value) for value in api_payload.values()) // 4
 
     return _chars(api_payload) // 4
+
+
+def _call_claude_code_subprocess(api_kwargs: dict, agent=None):
+    """Run inference via the `claude` CLI subprocess.
+
+    Builds a flat text prompt from the Anthropic-format api_kwargs, calls
+    ``claude -p <prompt> --output-format text``, and returns a minimal
+    Anthropic-compatible Message-like object so the rest of the agent loop
+    works unchanged.
+
+    This path is used when ``provider: claude-code`` is set in config.yaml.
+    It uses the local Claude Code Max/Pro subscription quota directly,
+    bypassing the OAuth token rate limits on the external API endpoint.
+    Requires the ``claude`` CLI to be installed and authenticated.
+    """
+    import shutil
+    import subprocess as _sp
+
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        raise RuntimeError(
+            "claude CLI not found — install with: npm install -g @anthropic-ai/claude-code"
+        )
+
+    # Build a flat prompt from messages + optional system prompt
+    system = api_kwargs.get("system", "")
+    messages = api_kwargs.get("messages", [])
+    parts = []
+    if system:
+        if isinstance(system, list):
+            system_text = " ".join(
+                b.get("text", "") for b in system if isinstance(b, dict) and b.get("type") == "text"
+            )
+        else:
+            system_text = str(system)
+        parts.append(f"<system>\n{system_text}\n</system>")
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                c.get("text", "") for c in content
+                if isinstance(c, dict) and c.get("type") == "text"
+            )
+        parts.append(f"<{role}>\n{content}\n</{role}>")
+    prompt = "\n\n".join(parts)
+
+    timeout = 120
+    try:
+        proc = _sp.run(
+            [claude_bin, "-p", prompt, "--output-format", "text"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        text = proc.stdout.strip() if proc.returncode == 0 else (
+            proc.stderr.strip() or "claude CLI returned no output"
+        )
+    except _sp.TimeoutExpired:
+        text = "[Claude CLI timed out after 120s]"
+
+    # Return a minimal Anthropic Message-compatible namespace
+    model = api_kwargs.get("model", "claude-opus-4-8")
+    content_block = SimpleNamespace(type="text", text=text)
+    usage = SimpleNamespace(
+        input_tokens=max(1, len(prompt) // 4),
+        output_tokens=max(1, len(text) // 4),
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
+    return SimpleNamespace(
+        id="claude-code-sub-" + str(int(time.time() * 1000)),
+        type="message",
+        role="assistant",
+        model=model,
+        content=[content_block],
+        stop_reason="end_turn",
+        stop_sequence=None,
+        usage=usage,
+    )
 
 
 def _is_openai_codex_backend(agent) -> bool:
@@ -327,6 +411,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
             elif agent.api_mode == "anthropic_messages":
                 result["response"] = agent._anthropic_messages_create(api_kwargs)
+            elif agent.api_mode == "claude_code_subprocess":
+                # Route through the `claude` CLI subprocess — uses the local
+                # Claude Code Max/Pro subscription quota directly, bypassing
+                # OAuth token rate limits on the external API endpoint.
+                result["response"] = _call_claude_code_subprocess(
+                    api_kwargs, agent
+                )
             elif agent.api_mode == "bedrock_converse":
                 # Bedrock uses boto3 directly — no OpenAI client needed.
                 # normalize_converse_response produces an OpenAI-compatible
@@ -686,7 +777,14 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
-    if agent.api_mode == "anthropic_messages":
+    if agent.api_mode == "claude_code_subprocess":
+        # Subprocess mode needs no Anthropic transport — just build a minimal
+        # kwargs dict with system, messages, and model for _call_claude_code_subprocess.
+        anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
+        system = getattr(agent, "system_prompt", "") or ""
+        return {"model": agent.model, "messages": anthropic_messages, "system": system}
+
+    if agent.api_mode in _ANTHROPIC_RESPONSE_MODES:
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
         ctx_len = getattr(agent, "context_compressor", None)
@@ -2604,7 +2702,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 if agent._interrupt_requested:
                     raise InterruptedError("Agent interrupted before stream retry")
                 try:
-                    if agent.api_mode == "anthropic_messages":
+                    if agent.api_mode == "claude_code_subprocess":
+                        result["response"] = _call_claude_code_subprocess(api_kwargs, agent)
+                    elif agent.api_mode == "anthropic_messages":
                         agent._try_refresh_anthropic_client_credentials()
                         result["response"] = _call_anthropic()
                     else:

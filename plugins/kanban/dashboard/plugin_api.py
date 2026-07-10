@@ -119,19 +119,24 @@ def _resolve_board(board: Optional[str]) -> Optional[str]:
 def _conn(board: Optional[str] = None):
     """Open a kanban_db connection, creating the schema on first use.
 
-    Every handler that mutates the DB goes through this so the plugin
-    self-heals on a fresh install (no user-visible "no such table"
-    error if somebody hits POST /tasks before GET /board).
-    ``init_db`` is idempotent.
+    ``kanban_db.connect()`` auto-creates the schema and runs additive
+    migrations on the first open per process (its ``needs_init`` path), so the
+    plugin still self-heals on a fresh install (no "no such table" if somebody
+    hits POST /tasks before GET /board) without a separate ``init_db`` call.
+
+    This deliberately no longer calls ``kanban_db.init_db()`` on every request.
+    ``init_db`` discards kanban_db's per-path health-probe cache
+    (``_INITIALIZED_PATHS``), which forced a full read/write ``PRAGMA
+    integrity_check`` on *every* connect. On a corrupt DB that probe
+    re-checkpoints the WAL and re-quarantines a fresh ``.corrupt.*.bak`` on
+    each call — turning one corruption event into a storm of backups and log
+    lines (2026-07-09 incident). Relying on connect()'s own first-open init
+    keeps the fast-path cache intact.
 
     ``board`` is the query-param slug (already normalised by
     :func:`_resolve_board`). When ``None`` the active board is used
     via the resolution chain (env var → ``current`` file → ``default``).
     """
-    try:
-        kanban_db.init_db(board=board)
-    except Exception as exc:
-        log.warning("kanban init_db failed: %s", exc)
     return kanban_db.connect(board=board)
 
 
@@ -2432,8 +2437,27 @@ async def stream_events(ws: WebSocket):
             finally:
                 conn.close()
 
+        corrupt_backoff = 0.0
         while True:
-            cursor, events = await asyncio.to_thread(_fetch_new, cursor)
+            try:
+                cursor, events = await asyncio.to_thread(_fetch_new, cursor)
+            except kanban_db.KanbanDbCorruptError as exc:
+                # Corrupt board DB: do NOT let this kill the stream. If the
+                # handler exits, the browser reconnects immediately and
+                # re-enters here, and every connect() re-runs a read/write
+                # PRAGMA integrity_check that re-checkpoints the WAL and
+                # re-quarantines a .corrupt.*.bak. Hold the socket open and
+                # back off (1s→30s) so a single corruption can't become a
+                # probe/backup storm (2026-07-09 incident).
+                corrupt_backoff = min((corrupt_backoff * 2) or 1.0, 30.0)
+                log.warning(
+                    "Kanban event stream: board DB corrupt, backing off %.0fs: %s",
+                    corrupt_backoff,
+                    exc,
+                )
+                await asyncio.sleep(corrupt_backoff)
+                continue
+            corrupt_backoff = 0.0
             if events:
                 await ws.send_json({"events": events, "cursor": cursor})
             await asyncio.sleep(_EVENT_POLL_SECONDS)

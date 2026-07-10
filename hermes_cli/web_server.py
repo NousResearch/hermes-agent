@@ -84,7 +84,7 @@ from gateway.status import (
     parse_active_agents,
     read_runtime_status,
 )
-from utils import env_var_enabled
+from utils import env_var_enabled, is_truthy_value
 
 try:
     from fastapi import (
@@ -1227,6 +1227,58 @@ async def _status_active_sessions() -> int:
     except Exception as exc:
         _log.debug("/api/status active session count unavailable: %s", exc)
     return 0
+
+
+def _coerce_status_float(value: Any, default: float, *, min_value: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number < min_value:
+        return default
+    return number
+
+
+def _dashboard_session_sync_status_config(config: dict | None = None) -> dict[str, Any]:
+    root = load_config() if config is None else config
+    dashboard = root.get("dashboard") if isinstance(root, dict) else {}
+    if not isinstance(dashboard, dict):
+        dashboard = {}
+    session_sync = dashboard.get("session_sync")
+    if not isinstance(session_sync, dict):
+        session_sync = {}
+    defaults = DEFAULT_CONFIG["dashboard"]["session_sync"]
+    return {
+        "enabled": is_truthy_value(
+            session_sync.get("enabled"),
+            default=bool(defaults["enabled"]),
+        ),
+        "t_silence": _coerce_status_float(
+            session_sync.get("t_silence"),
+            float(defaults["t_silence"]),
+            min_value=0.0,
+        ),
+        "poll_interval": _coerce_status_float(
+            session_sync.get("poll_interval"),
+            float(defaults["poll_interval"]),
+            min_value=0.1,
+        ),
+        "refocus_debounce": _coerce_status_float(
+            session_sync.get("refocus_debounce"),
+            float(defaults["refocus_debounce"]),
+            min_value=0.0,
+        ),
+    }
+
+
+def _dashboard_state_db_path() -> Path:
+    return (Path(get_hermes_home()) / "state.db").expanduser().resolve()
+
+
+def _log_dashboard_state_db_path() -> Path:
+    path = _dashboard_state_db_path()
+    _log.info("Dashboard state.db path: %s", path)
+    return path
 
 
 # Image MIME types this endpoint will serve. Extension-allowlisted so an
@@ -2712,6 +2764,11 @@ async def get_status(profile: Optional[str] = None):
         except Exception:
             nous_session_valid = "unknown"
 
+        session_sync = _dashboard_session_sync_status_config(load_config())
+        capabilities = {}
+        if session_sync["enabled"]:
+            capabilities["session_changes"] = True
+
         # Always-public liveness + auth-gate shape. Safe for external uptime
         # probes (NAS's wildcard-subdomain liveness probe), the SPA's pre-login
         # bootstrap, and anyone who can curl the host — i.e. exactly the audience
@@ -2735,6 +2792,12 @@ async def get_status(profile: Optional[str] = None):
             "auth_required": auth_required,
             "auth_providers": auth_providers,
             "nous_session_valid": nous_session_valid,
+            "capabilities": capabilities,
+            "session_sync": {
+                "t_silence": session_sync["t_silence"],
+                "poll_interval": session_sync["poll_interval"],
+                "refocus_debounce": session_sync["refocus_debounce"],
+            },
         }
 
         # Profile + gateway topology: which profiles exist, whether one
@@ -17121,6 +17184,8 @@ def start_server(
     the banner announces the bind rather than a browser URL.
     """
     import uvicorn
+
+    _log_dashboard_state_db_path()
 
     try:
         from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive

@@ -698,14 +698,22 @@ function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {
   })
 }
 
+function storedMessageId(message: SessionMessage, fallback: string): string {
+  const id = message.id
+
+  return id === undefined || id === null || id === '' ? fallback : String(id)
+}
+
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   const result: ChatMessage[] = []
   let pendingToolParts: ChatMessagePart[] = []
+  let pendingToolMessageId: string | undefined
   let pendingToolTimestamp: number | undefined
   let activeAssistantIndex: null | number = null
 
   const clearPendingTools = () => {
     pendingToolParts = []
+    pendingToolMessageId = undefined
     pendingToolTimestamp = undefined
   }
 
@@ -735,7 +743,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     if (!appendPartsToActiveAssistant(pendingToolParts, pendingToolTimestamp)) {
       result.push({
-        id: `${pendingToolTimestamp || Date.now()}-${index}-tools`,
+        id: pendingToolMessageId ?? `${pendingToolTimestamp || Date.now()}-${index}-tools`,
         role: 'assistant',
         parts: pendingToolParts,
         timestamp: pendingToolTimestamp
@@ -761,6 +769,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       }
 
       pendingToolParts = [...pendingToolParts, storedToolMessagePart(message, index)]
+      pendingToolMessageId ??= storedMessageId(message, `${message.timestamp || Date.now()}-${index}-tools`)
       pendingToolTimestamp ??= message.timestamp
 
       return
@@ -801,6 +810,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     if (isToolOnlyAssistant) {
       pendingToolParts = [...pendingToolParts, ...parts]
+      pendingToolMessageId ??= storedMessageId(message, `${message.timestamp || Date.now()}-${index}-tools`)
       pendingToolTimestamp ??= message.timestamp
 
       return
@@ -834,7 +844,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     result.push({
-      id: `${message.timestamp || Date.now()}-${index}-${message.role}`,
+      id: storedMessageId(message, `${message.timestamp || Date.now()}-${index}-${message.role}`),
       role: message.role,
       parts,
       timestamp: message.timestamp

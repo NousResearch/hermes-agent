@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import re
 import sqlite3
 import time
 import json
@@ -73,6 +74,55 @@ def db(tmp_path):
     session_db = SessionDB(db_path=db_path)
     yield session_db
     session_db.close()
+
+
+def test_messages_cursor_query_uses_session_id_index(db):
+    db.create_session("s1", source="cli")
+    db.append_message("s1", "user", "one")
+
+    plan_rows = db._conn.execute(
+        """
+        EXPLAIN QUERY PLAN
+        SELECT * FROM messages
+        WHERE session_id = ? AND id > ?
+        ORDER BY id
+        """,
+        ("s1", 0),
+    ).fetchall()
+    plan = "\n".join(str(tuple(row)) for row in plan_rows)
+
+    assert "USING INDEX idx_messages_session_id" in plan
+
+
+def test_message_rendered_content_is_append_only_source_contract():
+    source = hermes_state.__file__
+    with open(source, encoding="utf-8") as f:
+        text = f.read()
+
+    rendered_columns = {
+        "content",
+        "tool_name",
+        "tool_calls",
+        "tool_call_id",
+        "reasoning",
+        "reasoning_content",
+        "reasoning_details",
+        "codex_reasoning_items",
+        "codex_message_items",
+        "platform_message_id",
+    }
+    statements = re.findall(
+        r"UPDATE\s+messages\s+SET\s+(.*?)(?:\s+WHERE\b|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    offenders = []
+    for statement in statements:
+        for column in rendered_columns:
+            if re.search(rf"\b{re.escape(column)}\s*=", statement, flags=re.IGNORECASE):
+                offenders.append(column)
+
+    assert offenders == []
 
 
 # =========================================================================

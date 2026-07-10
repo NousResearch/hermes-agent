@@ -37,6 +37,8 @@ interface MessageStreamOptions {
     storedSessionId?: string | null,
     runtimeSessionId?: string | null
   ) => Promise<void>
+  onTurnComplete?: (sessionId: string, payload: GatewayEventPayload | undefined) => void
+  onTurnFrame?: (sessionId: string) => void
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   refreshSessions: () => Promise<void>
@@ -56,6 +58,8 @@ interface QueuedStreamDeltas {
 export function useMessageStream({
   activeSessionIdRef,
   hydrateFromStoredSession,
+  onTurnComplete,
+  onTurnFrame,
   queryClient,
   refreshHermesConfig,
   refreshSessions,
@@ -520,6 +524,8 @@ export function useMessageStream({
     compactedTurnRef,
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
+    onTurnComplete,
+    onTurnFrame,
     completeAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,

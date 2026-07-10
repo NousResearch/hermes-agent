@@ -178,7 +178,7 @@ def _looks_secret_related(reason: str) -> bool:
 
 def _send(target: str, message: str, config: dict[str, Any]) -> None:
     hermes_exe = str(config.get("hermes_command") or os.environ.get("HERMES_CLI", "hermes"))
-    timeout = int(config.get("send_timeout_seconds", 30) or 30)
+    timeout = int(config.get("send_timeout_seconds", 10) or 10)
     subprocess.run(
         [hermes_exe, "send", "--to", target, "--quiet"],
         input=message,
@@ -190,9 +190,22 @@ def _send(target: str, message: str, config: dict[str, Any]) -> None:
     )
 
 
-def _dedupe_key(board: str | None, task_id: str, kind: str | None, reason: str) -> str:
+def _dedupe_key(
+    board: str | None,
+    task_id: str,
+    kind: str | None,
+    reason: str,
+    *,
+    event_id: Any = None,
+    run_id: Any = None,
+) -> str:
+    board_key = board or "default"
+    if event_id is not None:
+        return f"{board_key}:{task_id}:event:{event_id}"
+    if run_id is not None:
+        return f"{board_key}:{task_id}:run:{run_id}"
     reason_hash = hashlib.sha256(_sanitize(reason, 500).encode("utf-8")).hexdigest()[:20]
-    return f"{board or 'default'}:{task_id}:{kind or 'legacy'}:{reason_hash}"
+    return f"{board_key}:{task_id}:{kind or 'legacy'}:{reason_hash}"
 
 
 def _on_kanban_task_blocked(**kwargs: Any) -> None:
@@ -226,7 +239,14 @@ def _on_kanban_task_blocked(**kwargs: Any) -> None:
         config=config,
     )
     state_db = _state_db_path(config)
-    key = _dedupe_key(board, task_id, kind, reason)
+    key = _dedupe_key(
+        board,
+        task_id,
+        kind,
+        reason,
+        event_id=kwargs.get("event_id"),
+        run_id=kwargs.get("run_id"),
+    )
 
     for target in targets:
         if not _mark_sent_once(state_db, key, target):

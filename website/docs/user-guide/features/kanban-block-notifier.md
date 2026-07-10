@@ -46,8 +46,9 @@ Why it is not a cron/watchdog:
 
 - no periodic scan of all `blocked` tasks is performed;
 - the plugin runs only when a block transition happens;
-- deduplication is persisted in a tiny SQLite sidecar so repeated identical
-  blocker events do not spam the user.
+- deduplication is persisted in a tiny SQLite sidecar and keyed to the Kanban
+  block event/occurrence, so callback replay does not spam the user while a
+  later unblock → re-run → re-block for the same reason still notifies again.
 
 ## Routing rules
 
@@ -65,10 +66,12 @@ It suppresses:
 - `dependency` blocks;
 - `transient` blocks.
 
-Secret-related reasons are redacted before delivery. If the reason looks like a
-secret/token/access request, the message tells the user not to paste secrets into
-chat and includes `secure_drop_url` when configured; otherwise it explicitly says
-that secure-drop is not configured.
+Secret-related reasons are redacted before delivery. This is a baseline safety
+filter for common URL tokens, environment-variable assignments, long token-like
+strings, and English/Russian secret keywords; it is not a full DLP system. If the
+reason looks like a secret/token/access request, the message tells the user not
+to paste secrets into chat and includes `secure_drop_url` when configured;
+otherwise it explicitly says that secure-drop is not configured.
 
 ## Configuration
 
@@ -93,9 +96,19 @@ plugins:
         - capability
       suppress_review_required: true
       secure_drop_url: "https://your-secure-drop.example/one-time"
+      send_timeout_seconds: 10
       # Optional override; default is <kanban-home>/kanban/kanban-block-notifier.sqlite3
       # state_db: /path/to/kanban-block-notifier.sqlite3
 ```
+
+The default sidecar database path is:
+
+```text
+<kanban-home>/kanban/kanban-block-notifier.sqlite3
+```
+
+For a standard default profile this resolves under the shared Kanban home; for a
+profile or test run it follows `HERMES_KANBAN_HOME` / the active Hermes profile.
 
 `hermes send --to telegram` must work for the gateway/home Telegram target. Test
 it directly before enabling the plugin in production:
@@ -104,11 +117,29 @@ it directly before enabling the plugin in production:
 hermes send --to telegram "Kanban notifier smoke test"
 ```
 
+## Disable and rollback
+
+Disable the plugin without touching Kanban data:
+
+```bash
+hermes plugins disable kanban-block-notifier
+```
+
+Rollback plan:
+
+1. Run the disable command above in the profile where the plugin was enabled.
+2. Restart the gateway/profile process if it was already running, so plugin
+   registration is refreshed.
+3. Leave the sidecar database in place for audit/debugging, or move it aside
+   after confirming no rollback investigation needs it.
+4. Kanban task state is unaffected; only future blocker notification sends stop.
+
 ## Smoke/regression test
 
-On a temporary board/home, create a task, block it with `kind="needs_input"`, and
-assert exactly one send is attempted for two identical hook invocations. The unit
-suite covers this behavior in:
+On a temporary board/home, create a task, block it with `kind="needs_input"`,
+replay the same hook event, then unblock/re-block with the same reason. Assert
+that the replay is suppressed and the later real re-block sends another message.
+The unit suite covers this behavior in:
 
 ```bash
 scripts/run_tests.sh tests/plugins/test_kanban_block_notifier.py
@@ -117,9 +148,14 @@ scripts/run_tests.sh tests/plugins/test_kanban_block_notifier.py
 Manual production smoke test after review:
 
 1. Enable the plugin in the Telegram-orchestrator profile.
-2. Create a throwaway task on a non-production board.
-3. Run a worker or CLI action that blocks it with `kind="needs_input"`.
-4. Confirm a single Telegram message arrives.
-5. Re-run the same blocker and confirm no duplicate message arrives.
-6. Disable the plugin with `hermes plugins disable kanban-block-notifier` if it
+2. Verify delivery with `hermes send --to telegram "Kanban notifier smoke test"`.
+3. Create a throwaway task on a non-production/project board.
+4. Run a worker or CLI action that blocks it with `kind="needs_input"`.
+5. Confirm a single Telegram message arrives and includes the board slug.
+6. Replay the same hook/event in a test harness or repeat the same callback input
+   and confirm no duplicate message arrives.
+7. Unblock/promote the task, re-run/re-block it with the same reason, and confirm
+   a second Telegram message arrives.
+8. Block a throwaway task with `review-required:` and confirm it does not notify.
+9. Disable the plugin with `hermes plugins disable kanban-block-notifier` if it
    misbehaves; existing Kanban behavior remains unchanged.

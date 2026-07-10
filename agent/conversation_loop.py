@@ -2961,7 +2961,7 @@ def run_conversation(
                     _error_summary,
                 )
 
-                _provider = getattr(agent, "provider", "unknown")
+                _provider = getattr(agent, "requested_provider", None) or getattr(agent, "provider", "unknown")
                 _base = getattr(agent, "base_url", "unknown")
                 _model = getattr(agent, "model", "unknown")
                 _status_code_str = f" [HTTP {status_code}]" if status_code else ""

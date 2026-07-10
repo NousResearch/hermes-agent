@@ -262,6 +262,7 @@ def init_agent(
     base_url: str = None,
     api_key: str = None,
     provider: str = None,
+    requested_provider: str = None,
     api_mode: str = None,
     acp_command: str = None,
     acp_args: list[str] | None = None,
@@ -418,6 +419,20 @@ def init_agent(
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
+    # User-facing provider name as originally requested/configured, before
+    # runtime alias resolution collapses self-hosted/local endpoints (ollama,
+    # vllm, llamacpp, custom named providers, etc.) down to the internal
+    # "custom" transport label. Falls back to the resolved provider when the
+    # caller doesn't have (or doesn't pass) the pre-resolution name, so every
+    # existing call site behaves exactly as before. Consumed by status/error
+    # display code (see agent/conversation_loop.py) so users see what they
+    # configured, not the internal transport alias.
+    _requested_provider_name = (
+        requested_provider.strip().lower()
+        if isinstance(requested_provider, str) and requested_provider.strip()
+        else None
+    )
+    agent.requested_provider = _requested_provider_name or agent.provider
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
     if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:

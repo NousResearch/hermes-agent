@@ -8270,6 +8270,24 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     """
     from gateway.config import Platform
 
+    # Resolve plugin entries FIRST so enum members that originated from a
+    # plugin keep their registry metadata.  Configured plugin platforms get
+    # dynamically added to the Platform enum (load_gateway_config), so by the
+    # time this catalog is built they appear in BOTH sources — building their
+    # entry from the bare enum member would drop required_env / description /
+    # docs_url and the card renders as "no token needed" with every field
+    # optional.
+    plugin_by_name: dict[str, Any] = {}
+    try:
+        from gateway.platform_registry import platform_registry
+
+        plugin_by_name = {
+            plugin_entry.name: plugin_entry
+            for plugin_entry in platform_registry.plugin_entries()
+        }
+    except Exception:
+        _log.debug("plugin platform registry unavailable", exc_info=True)
+
     seen: set[str] = set()
     entries: list[dict[str, Any]] = []
 
@@ -8279,18 +8297,15 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         if member.value in seen:
             continue
         seen.add(member.value)
-        entries.append(_build_catalog_entry(member.value))
+        entries.append(
+            _build_catalog_entry(member.value, plugin_by_name.get(member.value))
+        )
 
-    try:
-        from gateway.platform_registry import platform_registry
-
-        for plugin_entry in platform_registry.plugin_entries():
-            if plugin_entry.name in seen:
-                continue
-            seen.add(plugin_entry.name)
-            entries.append(_build_catalog_entry(plugin_entry.name, plugin_entry))
-    except Exception:
-        _log.debug("plugin platform registry unavailable", exc_info=True)
+    for plugin_entry in plugin_by_name.values():
+        if plugin_entry.name in seen:
+            continue
+        seen.add(plugin_entry.name)
+        entries.append(_build_catalog_entry(plugin_entry.name, plugin_entry))
 
     order = {pid: idx for idx, pid in enumerate(_PLATFORM_ORDER)}
     entries.sort(
@@ -8395,13 +8410,23 @@ def _build_catalog_entry(
 
     description = override.get("description")
     if not description and plugin_entry is not None:
-        description = plugin_entry.install_hint or ""
+        # Prefer the dedicated description field; install_hint is a
+        # dependency hint ("pip install …") kept only as legacy fallback.
+        description = (
+            getattr(plugin_entry, "description", "")
+            or plugin_entry.install_hint
+            or ""
+        )
+
+    docs_url = override.get("docs_url", "")
+    if not docs_url and plugin_entry is not None:
+        docs_url = getattr(plugin_entry, "docs_url", "") or ""
 
     return {
         "id": platform_id,
         "name": name,
         "description": description or "",
-        "docs_url": override.get("docs_url", ""),
+        "docs_url": docs_url,
         "env_vars": env_vars,
         "required_env": required_env,
     }

@@ -8,6 +8,7 @@ Handles:
 - Dynamic system prompt injection (agent knows its context)
 """
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -958,6 +959,23 @@ def build_session_key(
     return ":".join(key_parts)
 
 
+class AsyncSessionStore:
+    """Async boundary for the synchronous, thread-safe SessionStore."""
+
+    def __init__(self, store: "SessionStore") -> None:
+        self._store = store
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._store, name)
+        if not callable(attr):
+            return attr
+
+        async def _offloaded(*args, **kwargs) -> Any:
+            return await asyncio.to_thread(attr, *args, **kwargs)
+
+        return _offloaded
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -1793,7 +1811,7 @@ class SessionStore:
         # ---- Phase 1b: no-lock I/O -- stale check + reset policy ----
         _is_stale = False
         _reset_reason = None
-        if _entry_for_checks is not None:
+        if _entry_for_checks is not None and _stale_session_id is not None:
             _is_stale = self._is_session_ended_in_db(_stale_session_id)
             if _entry_for_checks.suspended:
                 _reset_reason = "suspended"

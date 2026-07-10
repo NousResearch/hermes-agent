@@ -285,7 +285,7 @@ describe('OAuth onboarding', () => {
         return { ok: true, status: 'approved' }
       }
 
-      if (path === '/api/model/options') {
+      if (path.startsWith('/api/model/options')) {
         return {
           providers: [
             {
@@ -358,7 +358,7 @@ describe('OAuth onboarding', () => {
 
     expect(calls.some(c => c.path === '/api/model/set')).toBe(true)
 
-    const optionsIndex = calls.findIndex(c => c.path === '/api/model/options')
+    const optionsIndex = calls.findIndex(c => c.path.startsWith('/api/model/options'))
     const recommendedIndex = calls.findIndex(c => c.path.startsWith('/api/model/recommended-default'))
     const setIndex = calls.findIndex(c => c.path === '/api/model/set')
 
@@ -377,7 +377,7 @@ describe('OAuth onboarding', () => {
         return { ok: true, status: 'approved' }
       }
 
-      if (path === '/api/model/options') {
+      if (path.startsWith('/api/model/options')) {
         return {
           providers: [
             {
@@ -461,7 +461,7 @@ describe('API-key onboarding', () => {
         return { ok: true }
       }
 
-      if (path === '/api/model/options') {
+      if (path.startsWith('/api/model/options')) {
         return {
           providers: [
             {

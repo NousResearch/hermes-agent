@@ -1728,6 +1728,7 @@ export const ru = defineLocale({
       stopReading: 'Остановить',
       readAloud: 'Прочитать вслух',
       editMessage: 'Редактировать сообщение',
+      expandMessage: 'Развернуть сообщение',
       scrollToBottom: 'Прокрутить вниз',
       stop: 'Стоп',
       restorePrevious: 'Восстановить предыдущую точку',
@@ -1739,7 +1740,10 @@ export const ru = defineLocale({
       restoreNext: 'Следующая точка',
       goForward: 'Вперёд',
       sendEdited: 'Отправить изменённое сообщение',
-      attachingFile: 'Прикрепление…'
+      attachingFile: 'Прикрепление…',
+      dismissError: 'Скрыть ошибку',
+      resumeWhenBackgroundDone: count =>
+        `Продолжится после завершения ${countRu(count, 'фоновой задачи', 'фоновых задач', 'фоновых задач')}…`
     },
     approval: {
       gatewayDisconnected: 'Шлюз Hermes не подключён',
@@ -1763,7 +1767,8 @@ export const ru = defineLocale({
       loadingQuestion: 'Загрузка вопроса…',
       other: 'Другое (введите ответ)',
       placeholder: 'Введите ответ…',
-      skip: 'Пропустить'
+      skip: 'Пропустить',
+      continueLabel: 'Продолжить'
     },
     tool: {
       code: 'Код',
@@ -1787,7 +1792,80 @@ export const ru = defineLocale({
       statusRunning: 'Выполняется',
       statusError: 'Ошибка',
       statusRecovered: 'Восстановлено',
-      statusDone: 'Готово'
+      statusDone: 'Готово',
+      actions: {
+        read: 'Прочитано',
+        reading: 'Чтение',
+        opened: 'Открыто',
+        opening: 'Открытие',
+        failedToOpen: 'Не удалось открыть',
+        searched: 'Поиск завершён',
+        searching: 'Поиск',
+        ran: 'Выполнено',
+        running: 'Выполнение',
+        ranCode: 'Код выполнен',
+        runningCode: 'Выполнение кода'
+      },
+      prefixes: {
+        browser: 'Браузер',
+        web: 'Веб'
+      },
+      titleTemplates: {
+        actionCommand: (action, command) => `${action}: ${command}`,
+        actionQuoted: (action, value) => `${action} «${value}»`,
+        actionTarget: (action, target) => `${action}: ${target}`,
+        prefixedDone: (prefix, action) => `${prefix}: ${action}`,
+        runningPrefixedTool: (prefix, action) => `${prefix}: ${action}…`,
+        runningTool: action => `Выполнение: ${action}…`
+      },
+      titles: {
+        browser_click: {
+          done: 'Элемент страницы нажат',
+          pending: 'Нажатие элемента страницы…',
+          pendingAction: 'Нажатие'
+        },
+        browser_fill: {
+          done: 'Поле формы заполнено',
+          pending: 'Заполнение поля формы…',
+          pendingAction: 'Заполнение'
+        },
+        browser_navigate: { done: 'Страница открыта', pending: 'Открытие страницы…', pendingAction: 'Открытие' },
+        browser_snapshot: {
+          done: 'Снимок страницы получен',
+          pending: 'Получение снимка страницы…',
+          pendingAction: 'Получение'
+        },
+        browser_take_screenshot: {
+          done: 'Скриншот сделан',
+          pending: 'Создание скриншота…',
+          pendingAction: 'Создание'
+        },
+        browser_type: {
+          done: 'Текст введён на странице',
+          pending: 'Ввод текста на странице…',
+          pendingAction: 'Ввод'
+        },
+        clarify: { done: 'Вопрос задан', pending: 'Отправка вопроса…', pendingAction: 'Отправка' },
+        cronjob: { done: 'Cron-задача', pending: 'Планирование cron-задачи…', pendingAction: 'Планирование' },
+        edit_file: { done: 'Файл изменён', pending: 'Изменение файла…', pendingAction: 'Изменение' },
+        execute_code: { done: 'Код выполнен', pending: 'Выполнение кода…', pendingAction: 'Выполнение' },
+        image_generate: { done: 'Изображение создано', pending: 'Создание изображения…', pendingAction: 'Создание' },
+        list_files: { done: 'Список файлов получен', pending: 'Получение списка файлов…', pendingAction: 'Получение' },
+        patch: { done: 'Патч применён', pending: 'Применение патча…', pendingAction: 'Применение' },
+        read_file: { done: 'Файл прочитан', pending: 'Чтение файла…', pendingAction: 'Чтение' },
+        search_files: { done: 'Поиск по файлам завершён', pending: 'Поиск по файлам…', pendingAction: 'Поиск' },
+        session_search_recall: {
+          done: 'Поиск по истории сессий завершён',
+          pending: 'Поиск по истории сессий…',
+          pendingAction: 'Поиск'
+        },
+        terminal: { done: 'Команда выполнена', pending: 'Выполнение команды…', pendingAction: 'Выполнение' },
+        todo: { done: 'Список задач обновлён', pending: 'Обновление списка задач…', pendingAction: 'Обновление' },
+        vision_analyze: { done: 'Изображение проанализировано', pending: 'Анализ изображения…', pendingAction: 'Анализ' },
+        web_extract: { done: 'Веб-страница прочитана', pending: 'Чтение веб-страницы…', pendingAction: 'Чтение' },
+        web_search: { done: 'Веб-поиск завершён', pending: 'Веб-поиск…', pendingAction: 'Поиск' },
+        write_file: { done: 'Файл изменён', pending: 'Изменение файла…', pendingAction: 'Изменение' }
+      }
     }
   },
 

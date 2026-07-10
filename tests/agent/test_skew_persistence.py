@@ -182,13 +182,29 @@ class TestBoundaryClears:
         assert "s1" not in db.rows
         assert c._current_skew() == 1.0
 
-    def test_session_end_clears_persisted_history(self):
+    def test_session_end_keeps_persisted_history(self):
+        """GATEWAY SHUTDOWN calls on_session_end on cached agents
+        (shutdown_memory_provider) — NOT a real conversation boundary; the
+        same session resumes right after. Clearing the persisted row there
+        defeats the restart seed entirely (2026-07-10 restart-B live E2E:
+        row gone at boot, skew back to 1.0). In-memory resets; row survives."""
         db = FakeSessionDB()
         c = make_compressor(db, "s1")
         record_pair(c, 100_000, 75_000)
         c.on_session_end("s1", [])
-        assert "s1" not in db.rows
-        assert c._current_skew() == 1.0
+        assert "s1" in db.rows, "persisted row must survive shutdown-path session_end"
+        assert c._current_skew() == 1.0  # in-memory still resets
+
+    def test_shutdown_then_restart_seeds_again(self):
+        """Full incident sequence: pair recorded -> gateway shutdown fires
+        on_session_end -> new process binds same session -> seed works."""
+        db = FakeSessionDB()
+        c1 = make_compressor(db, "s1")
+        record_pair(c1, 767_000, 476_000)
+        c1.on_session_end("s1", [])  # gateway shutdown path
+        c2 = make_compressor(db, "s1")  # restart
+        assert c2._current_skew() < 1.0
+        assert c2.should_compress_calibrated(767_000) is False
 
     def test_greptile_111_cross_session_isolation_preserved(self):
         """A fresh session (reset) must NOT inherit the prior session's skew —

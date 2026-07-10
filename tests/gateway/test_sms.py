@@ -125,7 +125,7 @@ class TestSmsEchoPrevention:
         with patch.dict(os.environ, env):
             pc = PlatformConfig(enabled=True, api_key="tok")
             adapter = SmsAdapter(pc)
-            assert adapter._from_number == "+155****1111"
+            assert adapter._from_number == "+15550001111"
 
 
 # ── MessagingServiceSid vs From= ──────────────────────────────────────

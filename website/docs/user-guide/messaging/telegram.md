@@ -539,7 +539,7 @@ Hermes Agent works in Telegram group chats with a few considerations:
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
 - In groups with multiple Hermes bots, `telegram.exclusive_bot_mentions` keeps routing deterministic. When a message explicitly mentions one or more Telegram bot usernames, only the mentioned bot profiles process it; other Hermes bots ignore it before reply and wake-word fallbacks run. This is enabled by default.
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
-- If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
+- In Telegram group and supergroup chats, messages always require an explicit trigger: a bot @mention, a reply to the bot, or a configured mention pattern. Setting `require_mention` to false does not enable open-group message handling.
 
 ### Multiple Hermes bots in one group
 

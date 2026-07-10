@@ -62,6 +62,20 @@ if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
   EXTRA_PYTEST_PLUGINS="pytest_live_guard"
 fi
 
+# Docker image tests may target a daemon reached through a TLS context (for
+# example a task-local DinD service) rather than the default Unix socket.
+# Preserve only the connection selectors, and only when the caller explicitly
+# selected a pre-built test image. Certificate contents are never copied into
+# the test environment; DOCKER_CERT_PATH is a path to Docker-managed files.
+DOCKER_ENV=()
+if [ -n "${HERMES_TEST_IMAGE:-}" ]; then
+  for name in DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH; do
+    if [ -n "${!name:-}" ]; then
+      DOCKER_ENV+=("$name=${!name}")
+    fi
+  done
+fi
+
 
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
@@ -80,6 +94,8 @@ exec env -i \
   PYTHONHASHSEED=0 \
   PYTHONDONTWRITEBYTECODE=1 \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
+  ${HERMES_TEST_IMAGE:+HERMES_TEST_IMAGE="$HERMES_TEST_IMAGE"} \
+  "${DOCKER_ENV[@]}" \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

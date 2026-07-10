@@ -6,12 +6,11 @@ fails inside the published image and ``hermes dump`` used to report
 ``$HERMES_GIT_SHA`` build-arg to ``/opt/hermes/.hermes_build_sha`` and
 ``hermes_cli/build_info.py`` reads it as a fallback.
 
-CI (``.github/workflows/docker.yml``) always sets the build-arg
-to ``${{ github.sha }}``.  Local ``docker build`` (the ``built_image``
-fixture in ``tests/docker/conftest.py``) does NOT — so locally the file
-is absent and ``hermes dump`` correctly falls back to ``(unknown)``.
-
-This test handles both cases:
+CI (``.github/workflows/docker.yml``) sets the build-arg to
+``${{ github.sha }}``. The local ``built_image`` fixture in
+``tests/docker/conftest.py`` likewise bakes the checkout's exact ``HEAD`` so
+all lifecycle and build-identity assertions run against same-head source.
+Images supplied through ``HERMES_TEST_IMAGE`` retain their own baked identity.
 
 * If ``/opt/hermes/.hermes_build_sha`` exists in the image, assert that
   ``hermes dump`` surfaces its content as the version SHA (not

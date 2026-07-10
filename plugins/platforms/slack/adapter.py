@@ -62,6 +62,13 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 
 logger = logging.getLogger(__name__)
 
+_SOCKET_MODE_TASK_SETTLE_TIMEOUT_S = 5.0
+_SOCKET_MODE_CLIENT_TASK_ATTRS = (
+    "message_processor",
+    "current_session_monitor",
+    "message_receiver",
+)
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -501,12 +508,100 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_mode_task = task
         task.add_done_callback(self._on_socket_mode_task_done)
 
+    async def _quiesce_socket_mode_tasks(
+        self,
+        handler: Any,
+        outer_task: Optional[asyncio.Task],
+    ) -> None:
+        """Cancel and settle Socket Mode task owners before transport close.
+
+        slack-sdk 3.40.1 cancels its aiohttp task slots in ``close()`` but does
+        not await them before closing the shared ``ClientSession``. A reconnect
+        coroutine can therefore resume against that closed session and keep
+        retrying. Quiesce both Bolt's outer ``start_async()`` owner and the
+        feature-detected SDK task slots first. Clearing captured slots also
+        prevents the pinned SDK from cancelling the task currently performing
+        shutdown when lifecycle ownership overlaps during a reconnect race.
+        """
+        current_task = asyncio.current_task()
+        client = getattr(handler, "client", None)
+        seen: set[asyncio.Future[Any]] = set()
+        deadline = (
+            asyncio.get_running_loop().time() + _SOCKET_MODE_TASK_SETTLE_TIMEOUT_S
+        )
+
+        def collect_owned_tasks() -> None:
+            candidates = [outer_task]
+            if client is not None:
+                for attr in _SOCKET_MODE_CLIENT_TASK_ATTRS:
+                    candidate = getattr(client, attr, None)
+                    candidates.append(candidate)
+                    if isinstance(candidate, asyncio.Future):
+                        # Do not let the pinned SDK cancel the current shutdown
+                        # owner when close_async() runs after quiescence.
+                        if getattr(client, attr, None) is candidate:
+                            setattr(client, attr, None)
+
+            for candidate in candidates:
+                if (
+                    isinstance(candidate, asyncio.Future)
+                    and candidate is not current_task
+                ):
+                    seen.add(candidate)
+
+        collect_owned_tasks()
+        for task in seen:
+            if not task.done():
+                task.cancel()
+
+        while True:
+            pending = {task for task in seen if not task.done()}
+            if not pending:
+                if seen:
+                    await asyncio.gather(*seen, return_exceptions=True)
+                return
+
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                logger.warning(
+                    "[Slack] Socket Mode tasks did not settle before transport "
+                    "close (pending=%d)",
+                    len(pending),
+                )
+                return
+
+            done, pending = await asyncio.wait(pending, timeout=remaining)
+            if done:
+                await asyncio.gather(*done, return_exceptions=True)
+
+            # A reconnect coroutine can replace an SDK slot while cancellation
+            # is propagating. Capture and cancel that replacement under the
+            # same bounded deadline rather than allowing a new orphan owner.
+            previous_count = len(seen)
+            collect_owned_tasks()
+            for task in seen:
+                if not task.done():
+                    task.cancel()
+            if pending and len(seen) == previous_count:
+                logger.warning(
+                    "[Slack] Socket Mode tasks did not settle before transport "
+                    "close (pending=%d)",
+                    len(pending),
+                )
+                return
+
     async def _stop_socket_mode_handler(self) -> None:
         """Stop Socket Mode handler and task."""
         handler = self._handler
         task = self._socket_mode_task
         self._handler = None
         self._socket_mode_task = None
+
+        if handler is not None:
+            await self._quiesce_socket_mode_tasks(handler, task)
+        elif task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
         if handler is not None:
             try:
@@ -516,17 +611,6 @@ class SlackAdapter(BasePlatformAdapter):
                     "[Slack] Error while closing Socket Mode handler: %s",
                     e,
                     exc_info=True,
-                )
-
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # pragma: no cover - defensive logging
-                logger.debug(
-                    "[Slack] Socket Mode task failed while stopping", exc_info=True
                 )
 
     async def _socket_transport_connected(self) -> Optional[bool]:

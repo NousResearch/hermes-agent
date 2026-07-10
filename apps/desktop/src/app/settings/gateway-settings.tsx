@@ -199,12 +199,16 @@ export function GatewaySettings() {
   // cloud connection's remoteUrl), normalized for comparison against each
   // discovered agent's dashboardUrl so we can highlight the active one and hide
   // its Connect button. Empty unless the saved connection is a cloud one.
-  const connectedCloudUrl = state.mode === 'cloud' ? state.remoteUrl.trim().replace(/\/+$/, '') : ''
+  // The saved cloud URL was stored via the main-side normalizeRemoteBaseUrl
+  // (which lowercases the host through URL.toString()), but a discovered agent's
+  // dashboardUrl arrives raw from NAS — so normalize both sides the same way
+  // (trim, drop trailing slash, lowercase) or a host-casing difference would
+  // silently break the connected-highlight.
+  const normalizeCloudUrl = (url: string) => url.trim().replace(/\/+$/, '').toLowerCase()
+  const connectedCloudUrl = state.mode === 'cloud' ? normalizeCloudUrl(state.remoteUrl) : ''
 
   const isConnectedAgent = (agent: DesktopCloudAgent) =>
-    Boolean(
-      connectedCloudUrl && agent.dashboardUrl && agent.dashboardUrl.trim().replace(/\/+$/, '') === connectedCloudUrl
-    )
+    Boolean(connectedCloudUrl && agent.dashboardUrl && normalizeCloudUrl(agent.dashboardUrl) === connectedCloudUrl)
 
   useEffect(() => {
     if (state.mode !== 'remote' || !trimmedUrl || !/^https?:\/\//i.test(trimmedUrl)) {

@@ -841,6 +841,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         Formats markdown for WhatsApp, splits long messages into chunks
         that preserve code block boundaries, and sends each chunk sequentially.
+
+        Outbound mentions: a ``metadata["mentions"]`` list of user JIDs (or bare
+        phone numbers) is forwarded to the bridge ``/send`` route on the first
+        chunk only, so the message @-pings those participants in a group without
+        the ping repeating across continuation chunks.
         """
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
@@ -860,6 +865,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
 
+            mentions = _normalize_outbound_mentions((metadata or {}).get("mentions"))
+
             sent_message_ids: list[str] = []
             last_message_id = None
             for idx, chunk in enumerate(chunks):
@@ -871,6 +878,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     # Only reply-to on the first text chunk, even if the bridge
                     # response omits a parseable message id.
                     payload["replyTo"] = reply_to
+                if mentions and idx == 0:
+                    # Ping the mentioned participants once, on the first chunk.
+                    payload["mentions"] = mentions
 
                 async with self._http_session.post(
                     f"http://127.0.0.1:{self._bridge_port}/send",
@@ -1561,6 +1571,32 @@ def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> 
     return "document"
 
 
+def _normalize_outbound_mentions(mentions: Any) -> list:
+    """Validate an outbound mention list into bridge-ready JID strings.
+
+    The bridge ``/send`` route forwards ``mentions`` to Baileys as the message
+    ``mentions`` JID array (``buildTextSendPayload`` in
+    ``scripts/whatsapp-bridge/bridge_helpers.js``). Baileys needs each mention
+    as a fully-qualified JID that matches a group participant, so bare phone
+    numbers are normalized via :func:`to_whatsapp_jid`. Non-string, empty, and
+    duplicate entries are dropped so a malformed caller can never post a payload
+    Baileys would reject. Returns ``[]`` when there is nothing to mention.
+    """
+    if not isinstance(mentions, (list, tuple)):
+        return []
+    seen = set()
+    out = []
+    for candidate in mentions:
+        if not isinstance(candidate, str):
+            continue
+        jid = to_whatsapp_jid(candidate)
+        if not jid or jid in seen:
+            continue
+        seen.add(jid)
+        out.append(jid)
+    return out
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -1570,6 +1606,7 @@ async def _standalone_send(
     media_files=None,
     force_document=False,
     caption=None,
+    mentions=None,
 ):
     """Out-of-process WhatsApp delivery via the local bridge HTTP API.
 
@@ -1595,14 +1632,21 @@ async def _standalone_send(
         # A caption only applies to a single media file; guard defensively so
         # a caption is never silently repeated across a multi-file send.
         media_caption = caption if (caption and len(media) == 1) else None
+        normalized_mentions = _normalize_outbound_mentions(mentions)
         last_message_id = None
         async with aiohttp.ClientSession() as session:
             # 1) Text first (skip the /send call when this chunk is media-only
             #    or when the text is delivered as the media caption instead).
             if text.strip() and not media_caption:
+                send_payload: Dict[str, Any] = {
+                    "chatId": normalized_chat_id,
+                    "message": text,
+                }
+                if normalized_mentions:
+                    send_payload["mentions"] = normalized_mentions
                 async with session.post(
                     f"http://localhost:{bridge_port}/send",
-                    json={"chatId": normalized_chat_id, "message": text},
+                    json=send_payload,
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
                     if resp.status != 200:

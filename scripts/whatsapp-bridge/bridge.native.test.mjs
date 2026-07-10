@@ -49,6 +49,34 @@ import {
 }
 
 {
+  // Inbound mention routing consumes the raw `mentionedIds` array on the
+  // Python side (gateway/platforms/whatsapp_common.py `_message_mentions_bot`),
+  // so extractBridgeEvent only needs to surface those JIDs — no derived flag.
+  const botId = '15559998888@s.whatsapp.net';
+  const otherId = '15550001111@s.whatsapp.net';
+
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'm-1', remoteJid: 'chat@g.us', fromMe: false },
+      messageTimestamp: 123,
+      message: {
+        extendedTextMessage: {
+          text: 'hello @15559998888',
+          contextInfo: { mentionedJid: [botId] },
+        },
+      },
+    },
+    chatId: 'chat@g.us',
+    senderId: otherId,
+    senderNumber: '15550001111',
+    botIds: [botId],
+  });
+
+  assert.deepEqual(event.mentionedIds, [botId]);
+  console.log('  ✓ inbound mentionedIds are surfaced for group mention routing');
+}
+
+{
   const store = createBoundedMessageStore(2);
   const { content, options } = buildTextSendPayload('plain text', {
     chatId: '15551234567@s.whatsapp.net',
@@ -59,6 +87,18 @@ import {
   assert.deepEqual(content, { text: 'plain text' });
   assert.deepEqual(options, {});
   console.log('  ✓ unresolved replyTo falls back to plain text');
+}
+
+{
+  const mentions = ['15550001111@s.whatsapp.net'];
+  const { content } = buildTextSendPayload('hello', {
+    chatId: '15551234567@s.whatsapp.net',
+    mentions,
+  });
+
+  assert.equal(content.text, 'hello');
+  assert.deepEqual(content.mentions, mentions);
+  console.log('  ✓ outbound mentions are included in send payload');
 }
 
 // -- inbound quote/media/native metadata --------------------------------

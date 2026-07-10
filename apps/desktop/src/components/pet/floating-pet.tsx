@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
+import { PetHeartField } from '@/components/chat/vibe-hearts'
 import { persistString, storedString } from '@/lib/storage'
 import { $petAtRest, $petInfo, $petRoam, $petRoamDir, clearPetUnread, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
 import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
@@ -437,6 +438,9 @@ export function FloatingPet() {
       >
         <PetSprite info={info} rowOverride={walk.row} />
       </div>
+      {/* Hearts puff off the pet; its celebrate ("yay"/jump) pose is driven by
+          burstVibeHearts's router. */}
+      <PetHeartField petH={petH} petW={petW} />
     </div>
   )
 }

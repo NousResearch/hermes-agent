@@ -922,9 +922,32 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
     return run_codex_stream(agent, api_kwargs, client=client)
 
 
+def close_codex_session(agent) -> None:
+    """Close the Codex app-server session if it exists.
+
+    Ephemeral agents (e.g., cron jobs) need explicit cleanup to avoid
+    leaking the ``codex app-server`` subprocess. The session is closed on
+    the turn-crash, ``should_retire``, and compression-drop paths, but
+    cron's ``finally`` block tears down the agent via ``agent.close()``,
+    which does not include this cleanup.
+
+    This helper is safe to call multiple times — ``CodexAppServerSession.close()``
+    is idempotent.
+    """
+    session = getattr(agent, "_codex_session", None)
+    if session is None:
+        return
+    try:
+        session.close()
+    except Exception:
+        logger.debug("codex app-server session close failed", exc_info=True)
+    agent._codex_session = None
+
+
 __all__ = [
     "run_codex_app_server_turn",
     "run_codex_stream",
     "run_codex_create_stream_fallback",
     "_consume_codex_event_stream",
+    "close_codex_session",
 ]

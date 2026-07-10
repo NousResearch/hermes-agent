@@ -337,6 +337,23 @@ class _MatrixModelPickerPrompt:
     bot_reaction_events: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class _MatrixClarifyPrompt:
+    """Tracks a pending Matrix reaction-based clarify prompt (#46490)."""
+
+    chat_id: str
+    message_id: str
+    session_key: str
+    clarify_id: str
+    choices: list[str]
+    emoji_to_index: dict[str, int]  # number emoji -> choice index
+    other_emoji: str
+    requester_user_id: str | None = None
+    expires_at: float | None = None
+    resolved: bool = False
+    bot_reaction_events: dict[str, str] = field(default_factory=dict)
+
+
 # Matrix message size limit (4000 chars practical, spec has no hard limit
 # but clients render poorly above this).
 MAX_MESSAGE_LENGTH = 4000
@@ -954,6 +971,11 @@ class MatrixAdapter(BasePlatformAdapter):
         except ValueError:
             self._approval_timeout_seconds = 300
         self._model_picker_prompts_by_event: Dict[str, _MatrixModelPickerPrompt] = {}
+        # Matrix reaction-based clarify prompts (#46490): number emojis pick a
+        # choice, ✏️ arms free-text capture (resolved by the gateway
+        # text-intercept, exactly like a text-fallback "Other" reply).
+        self._clarify_other_emoji = "✏️"
+        self._clarify_prompts_by_event: Dict[str, _MatrixClarifyPrompt] = {}
         allowed_users_raw = os.getenv("MATRIX_ALLOWED_USERS", "")
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
@@ -2124,6 +2146,84 @@ class MatrixAdapter(BasePlatformAdapter):
                     prompt.bot_reaction_events[emoji] = str(reaction_event_id)
             except Exception as exc:
                 logger.debug("Matrix: failed to add model picker reaction %s: %s", emoji, exc)
+
+        return result
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a clarify prompt as reaction controls (#46490).
+
+        Multi-choice (``choices`` non-empty): post the question + a numbered
+        choice list, then self-react with 1️⃣..4️⃣ (one per choice) plus ✏️
+        for a free-text answer — mirroring the exec-approval / model-picker
+        reaction idiom.  A number reaction resolves the clarify primitive
+        directly; ✏️ flips the entry into text-capture mode so the gateway's
+        platform-agnostic text-intercept
+        (:meth:`GatewayRunner._maybe_intercept_clarify_text`) picks up the next
+        typed message — no Matrix-specific text machinery.  A typed reply
+        ("2" or the choice text) also resolves via that same intercept.
+
+        Open-ended (``choices`` empty): delegate to the base implementation,
+        which renders the plain question and arms the same text-intercept.
+        """
+        if not choices:
+            return await super().send_clarify(
+                chat_id=chat_id,
+                question=question,
+                choices=choices,
+                clarify_id=clarify_id,
+                session_key=session_key,
+                metadata=metadata,
+            )
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        # One number emoji per choice (clarify caps choices at 4; the model
+        # picker reaction tuple supplies 1️⃣..🔟 so a larger list degrades
+        # gracefully instead of raising).
+        number_emojis = _MATRIX_MODEL_PICKER_REACTIONS[: len(choices)]
+        emoji_to_index: dict[str, int] = {}
+        lines = [f"❓ **{question}**", ""]
+        for idx, choice in enumerate(choices):
+            emoji = number_emojis[idx]
+            emoji_to_index[emoji] = idx
+            lines.append(f"{emoji} {choice}")
+        other_emoji = self._clarify_other_emoji
+        lines.append(f"{other_emoji} Other (type your own answer)")
+        lines.append("")
+        lines.append("React to choose, or reply with the number or your own answer.")
+
+        result = await self.send(chat_id, "\n".join(lines), metadata=metadata)
+        if not result.success or not result.message_id:
+            return result
+
+        prompt = _MatrixClarifyPrompt(
+            chat_id=chat_id,
+            message_id=result.message_id,
+            session_key=session_key,
+            clarify_id=clarify_id,
+            choices=list(choices),
+            emoji_to_index=emoji_to_index,
+            other_emoji=other_emoji,
+            requester_user_id=str((metadata or {}).get("requester_user_id") or "") or None,
+            expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
+        )
+        self._clarify_prompts_by_event[result.message_id] = prompt
+
+        for emoji in list(emoji_to_index) + [other_emoji]:
+            try:
+                reaction_event_id = await self._send_reaction(chat_id, result.message_id, emoji)
+                if reaction_event_id:
+                    prompt.bot_reaction_events[emoji] = str(reaction_event_id)
+            except Exception as exc:
+                logger.debug("Matrix: failed to add clarify reaction %s: %s", emoji, exc)
 
         return result
 
@@ -3318,6 +3418,109 @@ class MatrixAdapter(BasePlatformAdapter):
                         reply_to=reacts_to,
                     )
                 return
+
+            # Check if this reaction resolves a pending clarify prompt (#46490).
+            clarify_prompt = self._clarify_prompts_by_event.get(reacts_to)
+            if clarify_prompt and not clarify_prompt.resolved:
+                if room_id != clarify_prompt.chat_id:
+                    return
+                if self._matrix_prompt_expired(clarify_prompt):
+                    await self._expire_matrix_clarify_prompt(room_id, reacts_to, clarify_prompt)
+                    return
+                if not await self._validate_matrix_prompt_reactor(
+                    room_id, reacts_to, sender, clarify_prompt, "clarify"
+                ):
+                    return
+                await self._resolve_matrix_clarify_reaction(
+                    room_id, reacts_to, sender, key, clarify_prompt
+                )
+                return
+
+    async def _resolve_matrix_clarify_reaction(
+        self,
+        room_id: str,
+        target_event_id: str,
+        sender: str,
+        key: str,
+        prompt: "_MatrixClarifyPrompt",
+    ) -> None:
+        """Resolve a clarify reaction: a number picks a choice, ✏️ arms text."""
+        from tools import clarify_gateway as _clarify_mod
+
+        # ✏️ → enter text-capture mode.  The gateway's platform-agnostic
+        # text-intercept resolves the clarify from the user's next typed
+        # message, so there is no Matrix-side text bookkeeping.
+        if key == prompt.other_emoji:
+            if not _clarify_mod.mark_awaiting_text(prompt.clarify_id):
+                # Entry evicted (clarify_timeout) or gateway restarted between
+                # ask and tap — a typed answer would go nowhere.
+                await self._finalize_expired_clarify(room_id, target_event_id, prompt)
+                return
+            await self._send_invalid_reaction_feedback(
+                room_id,
+                target_event_id,
+                "✏️ Type your answer and I'll use it as your response.",
+            )
+            return
+
+        idx = prompt.emoji_to_index.get(key)
+        if idx is None or not (0 <= idx < len(prompt.choices)):
+            await self._send_invalid_reaction_feedback(
+                room_id,
+                target_event_id,
+                "That reaction is not one of the available choices.",
+            )
+            return
+
+        choice_text = str(prompt.choices[idx])
+        try:
+            if _clarify_mod.resolve_gateway_clarify(prompt.clarify_id, choice_text):
+                prompt.resolved = True
+                self._clarify_prompts_by_event.pop(target_event_id, None)
+                logger.info(
+                    "Matrix reaction resolved clarify for session %s (choice=%r, user=%s)",
+                    prompt.session_key, choice_text, sender,
+                )
+                # Redact the bot's seed reactions, leaving only the user's.
+                await self._redact_bot_clarify_reactions(room_id, prompt)
+            else:
+                # Entry evicted / gateway restarted — surface expiry.
+                await self._finalize_expired_clarify(room_id, target_event_id, prompt)
+        except Exception as exc:
+            logger.error("Failed to resolve gateway clarify from Matrix reaction: %s", exc)
+
+    async def _expire_matrix_clarify_prompt(
+        self,
+        room_id: str,
+        target_event_id: str,
+        prompt: "_MatrixClarifyPrompt",
+    ) -> None:
+        await self._finalize_expired_clarify(room_id, target_event_id, prompt)
+
+    async def _finalize_expired_clarify(
+        self,
+        room_id: str,
+        target_event_id: str,
+        prompt: "_MatrixClarifyPrompt",
+    ) -> None:
+        prompt.resolved = True
+        self._clarify_prompts_by_event.pop(target_event_id, None)
+        await self._redact_bot_clarify_reactions(room_id, prompt)
+        await self._send_invalid_reaction_feedback(
+            room_id,
+            target_event_id,
+            "This clarify prompt has expired. Send a new request if you still want to answer.",
+        )
+
+    async def _redact_bot_clarify_reactions(
+        self,
+        room_id: str,
+        prompt: "_MatrixClarifyPrompt",
+    ) -> None:
+        """Redact the bot's seeded clarify reactions, leaving only the user's."""
+        for emoji, evt_id in prompt.bot_reaction_events.items():
+            self._schedule_reaction_redaction(room_id, evt_id, "clarify resolved")
+            logger.debug("Matrix: scheduled bot clarify reaction redaction %s (%s)", emoji, evt_id)
 
     def _matrix_prompt_expired(self, prompt: Any) -> bool:
         expires_at = getattr(prompt, "expires_at", None)

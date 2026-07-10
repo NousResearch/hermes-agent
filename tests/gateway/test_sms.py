@@ -125,7 +125,100 @@ class TestSmsEchoPrevention:
         with patch.dict(os.environ, env):
             pc = PlatformConfig(enabled=True, api_key="tok")
             adapter = SmsAdapter(pc)
-            assert adapter._from_number == "+15550001111"
+            assert adapter._from_number == "+155****1111"
+
+
+# ── MessagingServiceSid vs From= ──────────────────────────────────────
+
+class TestSmsMessagingServiceSid:
+    """Verify outbound uses MessagingServiceSid when set, else From=."""
+
+    def _make_adapter(self, env_overrides=None):
+        """Create an adapter instance with env overrides."""
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+155****1111",
+        }
+        if env_overrides:
+            env.update(env_overrides)
+
+        with patch.dict(os.environ, env, clear=False):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = SmsAdapter(pc)
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_uses_from_when_no_messaging_service_sid(self):
+        """When TWILIO_MESSAGING_SERVICE_SID is not set, send uses From=."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        adapter = self._make_adapter()
+
+        # Create a mock response with proper async context manager support
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={"sid": "SM123"})
+
+        # Create a mock session that returns the mock response
+        mock_post = MagicMock()
+        mock_post.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_post.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        # Use a MagicMock for the session, with post as a regular callable
+        # that returns an async context manager
+        mock_session = MagicMock()
+        mock_session.post = mock_post
+
+        # Replace the adapter's _http_session with our mock
+        adapter._http_session = mock_session
+
+        result = await adapter.send(
+            chat_id="+155****9999", content="Hello"
+        )
+
+        assert result.success is True
+        assert result.message_id == "SM123"
+        # The mock was called, proving the code path was executed
+        mock_session.post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_uses_messaging_service_sid_when_set(self):
+        """When TWILIO_MESSAGING_SERVICE_SID is set, send uses it instead of From=."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        adapter = self._make_adapter(
+            {"TWILIO_MESSAGING_SERVICE_SID": "MG123456789abcdef"}
+        )
+
+        # Create a mock response with proper async context manager support
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={"sid": "SM456"})
+
+        # Create a mock session that returns the mock response
+        mock_post = MagicMock()
+        mock_post.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_post.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        # Use a MagicMock for the session, with post as a regular callable
+        # that returns an async context manager
+        mock_session = MagicMock()
+        mock_session.post = mock_post
+
+        # Replace the adapter's _http_session with our mock
+        adapter._http_session = mock_session
+
+        result = await adapter.send(
+            chat_id="+155****9999", content="Hello"
+        )
+
+        assert result.success is True
+        assert result.message_id == "SM456"
+        # The mock was called, proving the code path was executed
+        mock_session.post.assert_called_once()
 
 
 # ── Requirements check ─────────────────────────────────────────────

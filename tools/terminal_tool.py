@@ -1266,8 +1266,11 @@ def _terminal_env_snapshot() -> Dict[str, str]:
         logger.debug("Could not bridge terminal config into env snapshot", exc_info=True)
         # Fail closed: wipe stale terminal env vars so a configured isolated
         # backend cannot be silently downgraded to host-local execution.
+        # Preserve TERMINAL_ENV — the user's explicit backend choice set in
+        # the process environment must survive so env-only configuration
+        # (no config.yaml) is not regressed.
         for key in list(env.keys()):
-            if key.startswith("TERMINAL_"):
+            if key.startswith("TERMINAL_") and key != "TERMINAL_ENV":
                 env.pop(key, None)
         env["_config_bridge_failed"] = "1"
 
@@ -1295,12 +1298,22 @@ def _get_env_config() -> Dict[str, Any]:
         # The config bridge failed and stripped stale TERMINAL_* values.
         # Check whether config.yaml intends an isolated backend; if so, fail
         # closed instead of silently downgrading to host-local execution.
+        config_readable = True
         try:
             from hermes_cli.config import load_config_readonly
             cfg = load_config_readonly()
             intended = cfg.get("terminal", {}).get("backend", "local")
         except Exception:
+            config_readable = False
             intended = "local"
+        if not config_readable:
+            # Cannot verify the intended backend — refuse to run rather
+            # than silently execute on the host.
+            raise RuntimeError(
+                "Terminal config bridge failed and config.yaml is unreadable. "
+                "Refusing to run terminal without confirmed backend. "
+                "Check hermes CLI config connectivity."
+            )
         if intended != "local":
             raise RuntimeError(
                 f"Terminal config bridge failed. Refusing to downgrade "

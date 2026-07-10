@@ -778,11 +778,12 @@ async def web_extract_tool(
     from agent.redact import _PREFIX_RE
     from urllib.parse import unquote
     normalized_urls: List[str] = []
-    invalid_urls: List[Dict[str, Any]] = []
+    normalized_indices: List[int] = []
+    invalid_urls: Dict[int, Dict[str, Any]] = {}
     for index, item in enumerate(urls):
         _url = _web_extract_url(item)
         if _url is None:
-            invalid_urls.append({
+            invalid_urls[index] = {
                 "url": "",
                 "title": "",
                 "content": "",
@@ -790,7 +791,7 @@ async def web_extract_tool(
                     f"Invalid URL item at index {index}: expected a URL string "
                     "or an object with a string 'url' or 'href' field"
                 ),
-            })
+            }
             continue
         normalized_url = normalize_url_for_request(_url)
         if (
@@ -816,6 +817,7 @@ async def web_extract_tool(
                 ),
             })
         normalized_urls.append(normalized_url)
+        normalized_indices.append(index)
 
     debug_call_data = {
         "parameters": {
@@ -837,15 +839,17 @@ async def web_extract_tool(
 
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
-        ssrf_blocked: List[Dict[str, Any]] = []
-        for url in normalized_urls:
+        safe_indices = []
+        ssrf_blocked: Dict[int, Dict[str, Any]] = {}
+        for index, url in zip(normalized_indices, normalized_urls):
             if not await async_is_safe_url(url):
-                ssrf_blocked.append({
+                ssrf_blocked[index] = {
                     "url": url, "title": "", "content": "",
                     "error": "Blocked: URL targets a private or internal network address",
-                })
+                }
             else:
                 safe_urls.append(url)
+                safe_indices.append(index)
 
         # Dispatch only safe URLs to the configured backend
         if not safe_urls:
@@ -939,9 +943,13 @@ async def web_extract_tool(
                     provider.extract, safe_urls, format=format
                 )
 
-        # Merge rejected and SSRF-blocked inputs back into the result envelope.
+        # Reconstruct the original input order across invalid, blocked, and
+        # provider-processed entries. Providers are expected to preserve the
+        # order of the safe URL list they receive.
         if invalid_urls or ssrf_blocked:
-            results = invalid_urls + ssrf_blocked + results
+            safe_results = dict(zip(safe_indices, results))
+            by_index = {**safe_results, **ssrf_blocked, **invalid_urls}
+            results = [by_index[index] for index in range(len(urls))]
 
         response = {"results": results}
         

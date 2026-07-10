@@ -12330,7 +12330,7 @@ def _plugin_cli_discovery_needed() -> bool:
     return True
 
 
-_AGENT_COMMANDS = {None, "chat", "acp", "rl"}
+_AGENT_COMMANDS = {None, "chat", "acp", "rl", "serve"}
 _AGENT_SUBCOMMANDS = {
     "cron": ("cron_command", {"run", "tick"}),
     "gateway": ("gateway_command", {"run"}),
@@ -12419,11 +12419,21 @@ def _prepare_agent_startup(args) -> None:
         from hermes_cli.config import load_config
         from agent.shell_hooks import register_from_config
 
+        # Issue #61806: surface hook-registration visibility at INFO so the
+        # operator can verify the registration actually happened. Without
+        # this, a process that fails-open silently (e.g. on `hermes serve`)
+        # leaves the operator with no way to confirm hooks are wired up.
         register_from_config(load_config(), accept_hooks=_accept_hooks)
+        logger.info(
+            "shell hooks registered (command=%s, accept_hooks=%s)",
+            getattr(args, "command", "<unknown>"),
+            _accept_hooks,
+        )
     except Exception:
-        logger.debug(
-            "shell-hook registration failed at CLI startup",
-            exc_info=True,
+        logger.warning(
+            "shell-hook registration failed at CLI startup (command=%s); "
+            "any pre_tool_call policies in config.yaml will NOT be enforced",
+            getattr(args, "command", "<unknown>"),
         )
 
 

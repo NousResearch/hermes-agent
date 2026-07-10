@@ -735,13 +735,27 @@ class MemoryStore:
         if not raw.strip():
             return None
 
+        # Issue #61523: signal #1 must be whitespace-insensitive in the same
+        # way the reader is, so that formatting variants which parse to
+        # identical entries (e.g. blank lines around §) do not trigger drift.
+        # We normalize raw the same way the reader normalizes parsed, so
+        # the comparison is structural: do these bytes describe the same
+        # entries or not, not "are these bytes byte-equal".
         parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
         roundtrip = ENTRY_DELIMITER.join(parsed)
+        # Whitespace-insensitive raw: same per-entry .strip() as the
+        # reader applies on load. Compared against the roundtrip (which is
+        # already whitespace-clean), this means signal #1 reduces to "is
+        # there a structural content change?", leaving data-loss protection
+        # to signal #2 (oversize entry).
+        normalized_raw = ENTRY_DELIMITER.join(
+            e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()
+        )
 
         char_limit = self._char_limit(target)
         max_entry_len = max((len(e) for e in parsed), default=0)
 
-        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
+        drift_detected = (normalized_raw != roundtrip) or (max_entry_len > char_limit)
         if not drift_detected:
             return None
 

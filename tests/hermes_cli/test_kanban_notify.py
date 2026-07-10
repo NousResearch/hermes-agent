@@ -661,7 +661,6 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
     from gateway.config import Platform
-    from tools import kanban_tools as kt
 
     # Allow ``tmp_path`` through the media-delivery safety filter. See the
     # companion test for the full explanation.
@@ -670,22 +669,23 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     real_pdf = tmp_path / "real.pdf"
     real_pdf.write_bytes(b"%PDF-fake")
 
+    # The completion tool validates artifact paths and rightly rejects a
+    # nonexistent one. This notifier test needs a legacy/external completion
+    # event that already contains a stale path, so write that event directly.
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="worker1")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="one real, one ghost",
+            metadata={
+                "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
+            },
+        )
     finally:
         conn.close()
-
-    import os
-    os.environ["HERMES_KANBAN_TASK"] = tid
-    try:
-        kt._handle_complete({
-            "summary": "one real, one ghost",
-            "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
-        })
-    finally:
-        os.environ.pop("HERMES_KANBAN_TASK", None)
 
     runner = object.__new__(GatewayRunner)
     runner._running = True

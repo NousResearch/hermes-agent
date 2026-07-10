@@ -84,7 +84,7 @@ def _finalize(
     final_response,
     exit_reason,
     api_call_count=60,
-    pending_continuation_response=None,
+    pending_verification_response=None,
 ):
     return finalize_turn(
         agent,
@@ -100,7 +100,7 @@ def _finalize(
         original_user_message="task",
         _should_review_memory=False,
         _turn_exit_reason=exit_reason,
-        _pending_continuation_response=pending_continuation_response,
+        _pending_verification_response=pending_verification_response,
     )
 
 
@@ -114,7 +114,7 @@ def test_pending_verify_response_is_preserved_for_cron_delivery(monkeypatch):
         agent,
         final_response=None,
         exit_reason="unknown",
-        pending_continuation_response=report,
+        pending_verification_response=report,
     )
 
     assert result["final_response"] == report
@@ -131,7 +131,7 @@ def test_pending_pre_verify_response_is_preserved_on_budget_exhaustion(monkeypat
         agent,
         final_response=None,
         exit_reason="budget_exhausted",
-        pending_continuation_response=report,
+        pending_verification_response=report,
     )
 
     assert result["final_response"] == report
@@ -193,7 +193,7 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
         agent,
         final_response=None,
         exit_reason="unknown",
-        pending_continuation_response="composed report",
+        pending_verification_response="composed report",
     )
 
     assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"

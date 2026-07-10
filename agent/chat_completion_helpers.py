@@ -1701,11 +1701,31 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             _provider_sort = _validated_openrouter_provider_sort(agent.provider_sort)
             if _provider_sort:
                 provider_preferences["sort"] = _provider_sort
-            if provider_preferences and (
-                (agent.provider or "").strip().lower() == "openrouter"
-                or agent._is_openrouter_url()
-            ):
-                summary_extra_body["provider"] = provider_preferences
+            if agent.provider_require_parameters:
+                provider_preferences["require_parameters"] = True
+            if agent.provider_data_collection:
+                provider_preferences["data_collection"] = agent.provider_data_collection
+            if provider_preferences:
+                profile_provider_preferences = None
+                try:
+                    from providers import get_provider_profile
+
+                    provider_profile = get_provider_profile(agent.provider)
+                    if provider_profile is not None:
+                        profile_extra_body = provider_profile.build_extra_body(
+                            provider_preferences=provider_preferences,
+                        )
+                        profile_provider_preferences = profile_extra_body.get("provider")
+                except Exception:
+                    pass
+
+                if profile_provider_preferences:
+                    summary_extra_body["provider"] = profile_provider_preferences
+                elif (
+                    (agent.provider or "").strip().lower() == "openrouter"
+                    or agent._is_openrouter_url()
+                ):
+                    summary_extra_body["provider"] = provider_preferences
 
             # Pareto Code router plugin — model-gated. Same shape as
             # the main-loop emission so summary calls on

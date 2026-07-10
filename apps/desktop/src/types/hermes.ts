@@ -368,6 +368,7 @@ export interface SessionMessage {
   codex_reasoning_items?: unknown
   content: unknown
   context?: unknown
+  id?: number | string
   name?: string
   reasoning?: null | string
   reasoning_content?: null | string

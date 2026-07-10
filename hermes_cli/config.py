@@ -2012,6 +2012,12 @@ DEFAULT_CONFIG = {
         # Config.yaml only: no env override, so the reconnect path remains inert
         # until an operator deliberately flips this key.
         "desktop_auto_resume": False,
+        "session_sync": {
+            "enabled": True,
+            "t_silence": 10.0,
+            "poll_interval": 2.5,
+            "refocus_debounce": 1.0,
+        },
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent

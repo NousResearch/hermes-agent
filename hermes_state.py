@@ -916,6 +916,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_desktop_resume_markers_expires ON desktop_resume_markers(expires_at);
 CREATE INDEX IF NOT EXISTS idx_desktop_resume_breakers_updated ON desktop_resume_breakers(updated_at);
@@ -4987,6 +4988,49 @@ class SessionDB:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
+                    msg["tool_calls"] = []
+            result.append(msg)
+        return result
+
+    def get_messages_after(
+        self,
+        session_id: str,
+        since_message_id: int,
+        include_inactive: bool = False,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """Load messages committed after ``since_message_id`` in id order."""
+        try:
+            since = int(since_message_id)
+        except (TypeError, ValueError):
+            since = 0
+        if since < 0:
+            since = 0
+        try:
+            row_limit = int(limit)
+        except (TypeError, ValueError):
+            row_limit = 500
+        if row_limit <= 0:
+            row_limit = 500
+
+        active_clause = "" if include_inactive else " AND active = 1"
+        sql = (
+            "SELECT * FROM messages WHERE session_id = ? AND id > ?"
+            f"{active_clause} ORDER BY id LIMIT ?"
+        )
+        with self._lock:
+            cursor = self._conn.execute(sql, (session_id, since, row_limit))
+            rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            msg = dict(row)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
+            if msg.get("tool_calls"):
+                try:
+                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to deserialize tool_calls in get_messages_after, falling back to []")
                     msg["tool_calls"] = []
             result.append(msg)
         return result

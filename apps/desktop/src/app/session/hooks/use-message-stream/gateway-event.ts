@@ -57,6 +57,8 @@ interface GatewayEventDeps {
   completeAssistantMessage: (sessionId: string, text: string) => void
   failAssistantMessage: (sessionId: string, errorMessage: string) => void
   flushQueuedDeltas: (sessionId?: string) => void
+  onTurnComplete?: (sessionId: string, payload: GatewayEventPayload | undefined) => void
+  onTurnFrame?: (sessionId: string) => void
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   sessionInterrupted: (sessionId: string) => boolean
@@ -82,6 +84,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     compactedTurnRef,
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
+    onTurnComplete,
+    onTurnFrame,
     completeAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,
@@ -103,6 +107,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
+
+      if (sessionId) {
+        onTurnFrame?.(sessionId)
+      }
 
       if (event.type === 'gateway.ready') {
         return
@@ -326,6 +334,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText)
+        onTurnComplete?.(sessionId, payload)
 
         if (isActiveEvent) {
           setTurnStartedAt(null)

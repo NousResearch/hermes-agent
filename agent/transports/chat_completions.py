@@ -16,6 +16,7 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from hermes_constants import project_reasoning_effort
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -52,24 +53,28 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if normalized_model.startswith("gemini-2.5-"):
         return thinking_config
 
-    if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
-        effort = "medium"
-
     # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
-    # is stricter (low/high). Clamp Hermes' wider effort set to what each
+    # is stricter (low/high). Project Hermes' wider effort set to what each
     # family accepts so we never forward an undocumented level verbatim.
     if normalized_model.startswith(("gemini-3", "gemini-3.1")):
         if "flash" in normalized_model:
-            if effort in {"minimal", "low"}:
-                thinking_config["thinkingLevel"] = "low"
-            elif effort in {"high", "xhigh"}:
-                thinking_config["thinkingLevel"] = "high"
-            else:
-                thinking_config["thinkingLevel"] = "medium"
+            supported_efforts = ("low", "medium", "high")
         elif "pro" in normalized_model:
-            thinking_config["thinkingLevel"] = (
-                "high" if effort in {"high", "xhigh"} else "low"
+            supported_efforts = ("low", "high")
+        else:
+            supported_efforts = ()
+
+        if supported_efforts:
+            projected_effort = (
+                "low"
+                if effort == "minimal"
+                else project_reasoning_effort(effort, supported_efforts)
             )
+            if projected_effort is None:
+                projected_effort = project_reasoning_effort(
+                    "medium", supported_efforts
+                )
+            thinking_config["thinkingLevel"] = projected_effort
 
     return thinking_config
 
@@ -371,6 +376,7 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs["max_tokens"] = anthropic_max_out
 
         # Kimi: top-level reasoning_effort (unless thinking disabled)
+        _kimi_projected_max = False
         if is_kimi:
             _kimi_thinking_off = bool(
                 reasoning_config
@@ -381,7 +387,14 @@ class ChatCompletionsTransport(ProviderTransport):
                 _kimi_effort = "medium"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
+                    if _e == "max":
+                        _projected_effort = project_reasoning_effort(
+                            _e, ("low", "medium", "high")
+                        )
+                        if _projected_effort is not None:
+                            _kimi_effort = _projected_effort
+                            _kimi_projected_max = True
+                    elif _e in {"low", "medium", "high"}:
                         _kimi_effort = _e
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
@@ -441,7 +454,7 @@ class ChatCompletionsTransport(ProviderTransport):
                     ]
 
         # Kimi extra_body.thinking
-        if is_kimi:
+        if is_kimi and not _kimi_projected_max:
             _kimi_thinking_enabled = True
             if reasoning_config and isinstance(reasoning_config, dict):
                 if reasoning_config.get("enabled") is False:

@@ -21,7 +21,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, project_reasoning_effort
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, normalize_proxy_env_vars
 
@@ -2641,7 +2641,6 @@ def build_anthropic_kwargs(
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
-            budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):
                 kwargs["thinking"] = {
                     "type": "adaptive",
@@ -2656,6 +2655,8 @@ def build_anthropic_kwargs(
                     "effort": adaptive_effort,
                 }
             else:
+                budget_effort = project_reasoning_effort(effort, THINKING_BUDGET)
+                budget = THINKING_BUDGET.get(budget_effort or "medium", 8000)
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 # Anthropic requires temperature=1 when thinking is enabled on older models
                 kwargs["temperature"] = 1

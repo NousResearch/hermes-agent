@@ -441,6 +441,31 @@ def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch
     assert "include" not in kwargs
 
 
+@pytest.mark.parametrize(
+    "supported_efforts, expected",
+    [
+        (["low", "medium", "high"], "high"),
+        (["low", "medium", "high", "xhigh"], "xhigh"),
+    ],
+)
+def test_build_api_kwargs_copilot_responses_projects_max_to_strongest_lower(
+    monkeypatch, supported_efforts, expected
+):
+    from hermes_cli import models
+
+    monkeypatch.setattr(
+        models,
+        "github_model_reasoning_efforts",
+        lambda _model: supported_efforts,
+    )
+    agent = _build_copilot_agent(monkeypatch)
+    agent.reasoning_config = {"enabled": True, "effort": "max"}
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["reasoning"] == {"effort": expected}
+
+
 def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_model(monkeypatch):
     agent = _build_copilot_agent(monkeypatch, model="gpt-4.1")
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])

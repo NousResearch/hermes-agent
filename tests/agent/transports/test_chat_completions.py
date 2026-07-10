@@ -5,12 +5,33 @@ from types import SimpleNamespace
 
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
+from hermes_constants import VALID_REASONING_EFFORTS, project_reasoning_effort
 
 
 @pytest.fixture
 def transport():
     import agent.transports.chat_completions  # noqa: F401
     return get_transport("chat_completions")
+
+
+class TestReasoningEffortProjection:
+    def test_preserves_each_exact_supported_effort(self):
+        for effort in VALID_REASONING_EFFORTS:
+            assert project_reasoning_effort(effort, VALID_REASONING_EFFORTS) == effort
+
+    @pytest.mark.parametrize(
+        "requested, supported, expected",
+        [
+            ("max", ["low", "medium", "high", "xhigh"], "xhigh"),
+            ("max", ["low", "medium", "high"], "high"),
+            ("xhigh", ["low", "medium", "high"], "high"),
+            ("medium", ["high"], None),
+        ],
+    )
+    def test_selects_nearest_supported_effort_not_above_request(
+        self, requested, supported, expected
+    ):
+        assert project_reasoning_effort(requested, supported) == expected
 
 
 class TestChatCompletionsBasic:
@@ -362,6 +383,34 @@ class TestChatCompletionsBuildKwargs:
         # Nous rejects enabled=false; reasoning omitted entirely
         assert "reasoning" not in kw.get("extra_body", {})
 
+    @pytest.mark.parametrize(
+        "supported_efforts, expected",
+        [
+            (["low", "medium", "high"], "high"),
+            (["low", "medium", "high", "xhigh"], "xhigh"),
+        ],
+    )
+    def test_copilot_profile_max_projects_to_strongest_lower(
+        self, transport, monkeypatch, supported_efforts, expected
+    ):
+        from hermes_cli import models
+        from providers import get_provider_profile
+
+        monkeypatch.setattr(
+            models,
+            "github_model_reasoning_efforts",
+            lambda _model: supported_efforts,
+        )
+        kw = transport.build_kwargs(
+            model="gpt-test",
+            messages=[{"role": "user", "content": "Hi"}],
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "max"},
+            provider_profile=get_provider_profile("copilot"),
+        )
+
+        assert kw["extra_body"]["reasoning"] == {"effort": expected}
+
     def test_ollama_num_ctx(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("custom")
@@ -409,6 +458,32 @@ class TestChatCompletionsBuildKwargs:
             "includeThoughts": True,
             "thinkingLevel": "high",
         }
+
+    @pytest.mark.parametrize(
+        "model",
+        ["gemini-3.1-pro-preview", "gemini-3-flash-preview"],
+    )
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://generativelanguage.googleapis.com/v1beta",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        ],
+    )
+    def test_gemini_max_projects_to_high(self, transport, model, base_url):
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_name="gemini",
+            base_url=base_url,
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+
+        if base_url.endswith("/openai"):
+            thinking_config = kw["extra_body"]["extra_body"]["google"]["thinking_config"]
+            assert thinking_config["thinking_level"] == "high"
+        else:
+            assert kw["extra_body"]["thinking_config"]["thinkingLevel"] == "high"
 
     def test_gemini_openai_compat_flash_reasoning_maps_to_nested_google_thinking_config(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
@@ -643,6 +718,30 @@ class TestChatCompletionsKimi:
         # Kimi requires reasoning_effort as a top-level parameter
         assert kw["reasoning_effort"] == "high"
 
+    def test_kimi_profile_max_projects_to_high(self, transport):
+        from providers import get_provider_profile
+
+        kw = transport.build_kwargs(
+            model="kimi-k2",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=get_provider_profile("kimi-coding"),
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+
+        assert kw["reasoning_effort"] == "high"
+        assert "thinking" not in kw.get("extra_body", {})
+
+    def test_kimi_legacy_max_projects_to_high(self, transport):
+        kw = transport.build_kwargs(
+            model="kimi-k2",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_kimi=True,
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+
+        assert kw["reasoning_effort"] == "high"
+        assert "thinking" not in kw.get("extra_body", {})
+
     def test_kimi_reasoning_effort_omitted_when_thinking_disabled(self, transport):
         kw = transport.build_kwargs(
             model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
@@ -725,13 +824,57 @@ class TestChatCompletionsKimi:
         assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
 
 
+class TestChatCompletionsTokenHub:
+    def test_max_never_reaches_tokenhub_wire(self, transport):
+        kw = transport.build_kwargs(
+            model="hy3-preview",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_tokenhub=True,
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+
+        assert kw["reasoning_effort"] == "high"
+        assert kw["reasoning_effort"] != "max"
+
+
 class TestChatCompletionsLmStudioReasoning:
-    """LM Studio publishes per-model reasoning ``allowed_options``. When the
-    user requests an effort the model can't honor (e.g. ``high`` on a
-    toggle-style ``["off","on"]`` model), the transport omits
-    ``reasoning_effort`` so LM Studio falls back to the model's default —
-    silently downgrading "high" to "low" would mislead the user.
-    """
+    """LM Studio clamps against each model's advertised allowed options."""
+
+    @pytest.mark.parametrize(
+        "allowed_options, expected",
+        [
+            (["off", "low", "medium", "high", "max"], "max"),
+            (["off", "low", "medium", "high"], "high"),
+        ],
+    )
+    def test_max_uses_strongest_advertised_effort(
+        self, transport, allowed_options, expected
+    ):
+        kw = transport.build_kwargs(
+            model="gpt-oss",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "max"},
+            lmstudio_reasoning_options=allowed_options,
+        )
+
+        assert kw["reasoning_effort"] == expected
+
+    @pytest.mark.parametrize("allowed_options", [None, []])
+    def test_max_without_catalog_keeps_legacy_default(
+        self, transport, allowed_options
+    ):
+        kw = transport.build_kwargs(
+            model="gpt-oss",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "max"},
+            lmstudio_reasoning_options=allowed_options,
+        )
+
+        assert kw["reasoning_effort"] == "medium"
 
     def test_omits_effort_when_high_not_allowed_toggle(self, transport):
         kw = transport.build_kwargs(

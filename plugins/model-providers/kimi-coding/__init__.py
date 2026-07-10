@@ -11,6 +11,7 @@ from typing import Any
 
 from providers import register_provider
 from providers.base import OMIT_TEMPERATURE, ProviderProfile
+from hermes_constants import project_reasoning_effort
 
 
 class KimiProfile(ProviderProfile):
@@ -46,7 +47,13 @@ class KimiProfile(ProviderProfile):
         # Enabled: prefer an explicit effort; only fall back to extra_body
         # thinking when no recognized effort is requested.
         effort = (reasoning_config.get("effort") or "").strip().lower()
-        if effort in {"low", "medium", "high"}:
+        if effort == "max":
+            projected_effort = project_reasoning_effort(
+                effort, ("low", "medium", "high")
+            )
+            if projected_effort is not None:
+                top_level["reasoning_effort"] = projected_effort
+        elif effort in {"low", "medium", "high"}:
             top_level["reasoning_effort"] = effort
         else:
             extra_body["thinking"] = {"type": "enabled"}

@@ -14,6 +14,7 @@ from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
+from hermes_constants import project_reasoning_effort
 
 
 class CopilotProfile(ProviderProfile):
@@ -34,11 +35,16 @@ class CopilotProfile(ProviderProfile):
 
                 supported_efforts = github_model_reasoning_efforts(model)
                 if supported_efforts and reasoning_config:
-                    effort = reasoning_config.get("effort", "medium")
-                    # Normalize non-standard effort levels to the nearest supported
-                    if effort == "xhigh":
+                    requested_effort = reasoning_config.get("effort", "medium")
+                    if requested_effort == "max":
+                        effort = project_reasoning_effort(
+                            requested_effort, supported_efforts
+                        )
+                    elif requested_effort == "xhigh":
                         effort = "high"
-                    if effort in supported_efforts:
+                    else:
+                        effort = requested_effort
+                    if effort is not None and effort in supported_efforts:
                         extra_body["reasoning"] = {"effort": effort}
                 elif supported_efforts:
                     extra_body["reasoning"] = {"effort": "medium"}

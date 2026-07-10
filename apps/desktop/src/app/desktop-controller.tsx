@@ -47,7 +47,7 @@ import {
 } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
-import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
+import { $startWorkSessionRequest, followActiveSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
   $activeSessionId,
@@ -57,7 +57,6 @@ import {
   $gatewayState,
   $messages,
   $messagingSessions,
-  $newChatWorkspaceTargetGeneration,
   $resumeExhaustedSessionId,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
@@ -66,12 +65,9 @@ import {
   sessionPinId,
   setAwaitingResponse,
   setBusy,
-  setCurrentBranch,
-  setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
   setMessages,
-  setNewChatWorkspaceTarget,
   setRememberedSessionId
 } from '../store/session'
 import { onSessionsChanged } from '../store/session-sync'
@@ -119,6 +115,7 @@ import { useRouteResume } from './session/hooks/use-route-resume'
 import { useSessionActions } from './session/hooks/use-session-actions'
 import { useSessionListActions } from './session/hooks/use-session-list-actions'
 import { useSessionStateCache } from './session/hooks/use-session-state-cache'
+import { startWorkspaceSession } from './session/workspace-session-target'
 import { AppShell } from './shell/app-shell'
 import { useOverlayRouting } from './shell/hooks/use-overlay-routing'
 import { useStatusSnapshot } from './shell/hooks/use-status-snapshot'
@@ -737,51 +734,15 @@ export function DesktopController() {
 
   const startSessionInWorkspace = useCallback(
     (path: null | string, explicitNoWorkspace = false) => {
-      // A worktree lane carries its own path; the trunk "+" can be path-less (the
-      // main checkout is implicit), so fall back to the active project's root
-      // instead of no-op'ing on null — that was "+ on main does nothing".
-      const target = explicitNoWorkspace ? null : path?.trim() || resolveNewSessionCwd()
-
-      startFreshSessionDraft({ workspaceTarget: target || null })
-
-      if (!target) {
-        return
-      }
-
-      const workspaceGeneration = $newChatWorkspaceTargetGeneration.get()
-
-      // The next message creates the backend session in $currentCwd, so seed
-      // it (and the branch) from the workspace the user clicked the + on.
-      setCurrentCwd(target)
-      void requestGateway<{ branch?: string; cwd?: string }>('config.get', { key: 'project', cwd: target })
-        .then(info => {
-          if ($newChatWorkspaceTargetGeneration.get() !== workspaceGeneration || activeSessionIdRef.current) {
-            return
-          }
-
-          const resolved = info.cwd || target
-
-          setCurrentCwd(resolved)
-          setNewChatWorkspaceTarget(resolved)
-          setCurrentBranch(info.branch || '')
-
-          // An EXPLICIT target (a worktree/lane path — e.g. just-created via
-          // "convert a branch" / "new worktree") drills the sidebar into that
-          // project so the new lane is visible at once. Without this, a brand-new
-          // worktree session is invisible from the all-projects overview (the
-          // live overlay skips `.worktrees` rows, and the session.info cwd-follow
-          // only fires on a same-session move, not a fresh session). The
-          // path-less trunk "+" keeps the current scope untouched.
-          if (path?.trim()) {
-            restoreWorktree(resolved)
-            void followActiveSessionCwd(resolved)
-          }
-        })
-        .catch(() => {
-          if ($newChatWorkspaceTargetGeneration.get() === workspaceGeneration && !activeSessionIdRef.current) {
-            setCurrentBranch('')
-          }
-        })
+      startWorkspaceSession({
+        activeSessionIdRef,
+        explicitNoWorkspace,
+        followActiveSessionCwd,
+        onExplicitWorkspace: restoreWorktree,
+        path,
+        requestGateway,
+        startFreshSessionDraft
+      })
     },
     [activeSessionIdRef, requestGateway, startFreshSessionDraft]
   )

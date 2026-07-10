@@ -127,6 +127,17 @@ def test_session_turn_pins_the_first_effective_model():
     ) == ("gpt-5.6-luna", "quick")
 
 
+def test_session_turn_explicit_directive_overrides_pinned_model():
+    from hermes_cli.model_router import select_model_for_session_turn
+
+    assert select_model_for_session_turn(
+        "route:sol draft an architecture plan",
+        "gpt-5.6-terra",
+        pinned_model="gpt-5.6-luna",
+        config=ROUTER_CONFIG,
+    ) == ("gpt-5.6-sol", "complex")
+
+
 def test_gateway_router_pin_uses_persisted_session_model():
     import gateway.run as gateway_run
 

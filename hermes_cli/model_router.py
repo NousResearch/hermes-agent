@@ -251,6 +251,15 @@ def select_model_for_session_turn(
     if not _truthy(router_cfg.get("enabled")):
         return base_model, None
 
+    # Copyable in-message router directives are deliberate per-turn actions.
+    # They may intentionally rebuild the agent; ordinary keyword classification
+    # below must remain session-pinned for cache stability.
+    explicit_tier = _explicit_tier(user_message)
+    if explicit_tier:
+        explicit_model = _route_model(router_cfg, explicit_tier)
+        if explicit_model:
+            return explicit_model, explicit_tier
+
     if isinstance(pinned_model, str) and pinned_model.strip():
         pinned = pinned_model.strip()
         for tier in ("quick", "standard", "complex"):

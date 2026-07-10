@@ -223,7 +223,7 @@ class TestProviderModelIds:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, size=-1):
                 return b'{"data": [{"id": "enterprise-claude"}]}'
 
         with patch(
@@ -286,7 +286,7 @@ class TestFetchApiModels:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, size=-1):
                 return b'{"data": [{"id": "local-model"}]}'
 
         calls = []
@@ -313,7 +313,7 @@ class TestFetchApiModels:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, size=-1):
                 return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "claude-sonnet-4.6", "model_picker_enabled": true, "supported_endpoints": ["/chat/completions"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
 
         with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()) as mock_urlopen:
@@ -332,7 +332,7 @@ class TestFetchApiModels:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, size=-1):
                 return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
 
         with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):

@@ -1206,7 +1206,7 @@ class TestNovitaProvider:
             def __exit__(self, *args):
                 return False
 
-            def read(self):
+            def read(self, size=-1):
                 import json as _json
                 return _json.dumps(fake_payload).encode()
 

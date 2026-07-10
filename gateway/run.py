@@ -3897,7 +3897,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.model_router import select_model_for_turn
 
+        effective_model, router_tier = select_model_for_turn(user_message, model)
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
             "base_url": runtime_kwargs.get("base_url"),
@@ -3909,10 +3911,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
         route = {
-            "model": model,
+            "model": effective_model,
+            "router_tier": router_tier,
             "runtime": runtime,
             "signature": (
-                model,
+                effective_model,
                 runtime["provider"],
                 runtime["base_url"],
                 runtime["api_mode"],

@@ -975,6 +975,26 @@ def _ensure_hermes_home_managed(home: Path):
 
 DEFAULT_CONFIG = {
     "model": "",
+    "model_router": {
+        "enabled": False,
+        "default": "standard",
+        "routes": {
+            "quick": {
+                "model": "",
+                "description": "Quick questions, reconnaissance, and low-level changes.",
+            },
+            "standard": {
+                "model": "",
+                "description": "Standard implementation and synthesis.",
+            },
+            "complex": {
+                "model": "",
+                "description": "Complex architecture, synthesis, planning, and advisor work.",
+            },
+        },
+        "quick_keywords": [],
+        "complex_keywords": [],
+    },
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
@@ -5203,7 +5223,7 @@ def check_config_version() -> Tuple[int, int]:
 
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
-    "_config_version", "model", "providers", "fallback_model",
+    "_config_version", "model", "model_router", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",

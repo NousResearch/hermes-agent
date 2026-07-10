@@ -180,7 +180,9 @@ class CLIAgentSetupMixin:
         API call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.model_router import select_model_for_turn
 
+        effective_model, router_tier = select_model_for_turn(user_message, self.model)
         runtime = {
             "api_key": self.api_key,
             "base_url": self.base_url,
@@ -191,10 +193,11 @@ class CLIAgentSetupMixin:
             "credential_pool": getattr(self, "_credential_pool", None),
         }
         route = {
-            "model": self.model,
+            "model": effective_model,
+            "router_tier": router_tier,
             "runtime": runtime,
             "signature": (
-                self.model,
+                effective_model,
                 runtime["provider"],
                 runtime["base_url"],
                 runtime["api_mode"],

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
+from pathlib import Path
 from typing import Any
 
 from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
@@ -12,6 +14,7 @@ from hermes_cli.proxy.server import (
     AIOHTTP_AVAILABLE,
     DEFAULT_HOST,
     DEFAULT_PORT,
+    load_client_keys,
     run_server,
 )
 
@@ -46,27 +49,42 @@ def cmd_proxy_start(args: Any) -> int:
     if not adapter.is_authenticated():
         auth_hint = getattr(adapter, "auth_hint", f"hermes auth add {adapter.name}")
         print(
-            f"Not logged into {adapter.display_name}. "
-            f"Run `{auth_hint}` first.",
+            f"Not logged into {adapter.display_name}. Run `{auth_hint}` first.",
             file=sys.stderr,
         )
         return 2
 
     host = getattr(args, "host", None) or DEFAULT_HOST
     port = getattr(args, "port", None) or DEFAULT_PORT
+    client_keys = None
+    key_file = getattr(args, "client_keys_file", None)
+    if key_file:
+        try:
+            client_keys = load_client_keys(Path(key_file))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"proxy: invalid client key file: {exc}", file=sys.stderr)
+            return 2
+    if adapter.name == "openai-codex" and not client_keys:
+        print("proxy: --client-keys-file is required for openai-codex", file=sys.stderr)
+        return 2
 
+    client_instruction = (
+        "Use a bearer token from the client key file."
+        if client_keys
+        else "Use any bearer token in the client — the proxy attaches your real credential."
+    )
     print(
         f"Starting Hermes proxy for {adapter.display_name}\n"
         f"  Listening on:  http://{host}:{port}/v1\n"
         f"  Forwarding to: (resolved per-request from your subscription)\n"
-        f"  Use any bearer token in the client — the proxy attaches your real credential.\n"
+        f"  {client_instruction}\n"
         f"\n"
         f"Press Ctrl+C to stop.",
         file=sys.stderr,
     )
 
     try:
-        asyncio.run(run_server(adapter, host=host, port=port))
+        asyncio.run(run_server(adapter, host=host, port=port, client_keys=client_keys))
     except KeyboardInterrupt:
         print("\nproxy: stopped", file=sys.stderr)
     except OSError as exc:
@@ -93,9 +111,7 @@ def cmd_proxy_status(args: Any) -> int:
             continue
         expires = f" (bearer expires {cred.expires_at})" if cred.expires_at else ""
         print(f"  [{name:8s}] {adapter.display_name} — ready{expires}")
-    print(
-        "\nStart the proxy with: hermes proxy start [--provider <name>]"
-    )
+    print("\nStart the proxy with: hermes proxy start [--provider <name>]")
     return 0
 
 

@@ -591,7 +591,9 @@ class CredentialPool:
             last_status_at=time.time(),
             last_error_code=status_code,
             last_error_reason=normalized_error.get("reason"),
-            last_error_message=normalized_error.get("message"),
+            # Upstream messages may echo request content or identifiers. Persist
+            # only structured status/reason/reset metadata.
+            last_error_message=None,
             last_error_reset_at=normalized_error.get("reset_at"),
         )
         self._replace_entry(entry, updated)
@@ -1610,6 +1612,21 @@ class CredentialPool:
     def try_refresh_current(self) -> Optional[PooledCredential]:
         with self._lock:
             return self._try_refresh_current_unlocked()
+
+    def try_refresh_credential(self, *, api_key_hint: str) -> Optional[PooledCredential]:
+        """Force-refresh the stable pool entry that supplied ``api_key_hint``."""
+        with self._lock:
+            entry = next(
+                (candidate for candidate in self._entries
+                 if candidate.runtime_api_key == api_key_hint),
+                None,
+            )
+            if entry is None:
+                return None
+            refreshed = self._refresh_entry(entry, force=True)
+            if refreshed is not None:
+                self._current_id = refreshed.id
+            return refreshed
 
     def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:
         entry = self.current()

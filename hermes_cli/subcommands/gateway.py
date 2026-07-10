@@ -337,6 +337,11 @@ def build_gateway_parser(
         default=None,
         help="Bind port (default: 8645)",
     )
+    proxy_start.add_argument(
+        "--client-keys-file",
+        default=None,
+        help="Path to a mode-0600 JSON object mapping client labels to bearer tokens",
+    )
 
     proxy_subparsers.add_parser(
         "status", help="Show which proxy upstreams are ready"

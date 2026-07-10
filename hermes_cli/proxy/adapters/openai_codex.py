@@ -81,9 +81,14 @@ class OpenAICodexAdapter(UpstreamAdapter):
             pool = self._pool or self._load_pool()
             if pool is None:
                 return None
-            if status_code == 401:
-                # Reuse the pool's serialized, single-use-token-safe refresh path.
-                refreshed_entry = pool.try_refresh_current()
+            if status_code == 401 and (
+                error_context is None or error_context.get("allow_refresh", True)
+            ):
+                # Refresh the exact entry that failed; pool.current is mutable
+                # across concurrent requests and may identify another account.
+                refreshed_entry = pool.try_refresh_credential(
+                    api_key_hint=failed_credential.bearer
+                )
                 if refreshed_entry is not None:
                     refreshed = self._credential_from_entry(refreshed_entry)
                     if refreshed.bearer != failed_credential.bearer:

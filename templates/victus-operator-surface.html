@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Victus · Operator Surface</title>
+<style>
+  :root{
+    --bg:#050505; --panel:#0a0a0f; --gold:#D4AF37; --gold-60:rgba(212,175,55,.65);
+    --neon:#00ffa3; --text:#e6e6e6; --muted:#9a9a9a; --border:#1f1f1f; --error:#ff7b72;
+    --ff:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:var(--ff);}
+  body{padding:18px;display:grid;grid-template-rows:auto 1fr auto;gap:14px;height:100vh;}
+  .hdr{display:flex;align-items:baseline;gap:14px;border-bottom:1px solid var(--border);padding-bottom:12px;}
+  .title{font-size:18px;font-weight:700;color:var(--gold);letter-spacing:.08em;}
+  .sub{font-size:12px;color:var(--muted);text-transform:lowercase;letter-spacing:.12em;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;overflow:auto;}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px;}
+  .card h3{margin:0;font-size:13px;color:var(--gold);letter-spacing:.06em;}
+  .card .meta{font-size:11px;color:var(--muted);}
+  .state{font-size:11px;color:var(--neon);}
+  .state.off{color:var(--muted);}
+  .state.err{color:var(--error);}
+  button{background:linear-gradient(135deg,rgba(212,175,55,.15),rgba(0,255,163,.08));border:1px solid var(--gold-60);color:var(--gold);padding:8px 10px;border-radius:8px;font:inherit;font-size:11px;cursor:pointer;}
+  button:hover{border-color:var(--gold);}
+  .term{background:#000;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:11px;color:var(--neon);white-space:pre-wrap;min-height:90px;max-height:150px;overflow:auto;}
+  .err{color:var(--error);}
+  .foot{font-size:11px;color:var(--muted);border-top:1px solid var(--border);padding-top:10px;display:flex;justify-content:space-between;}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <div class="title">Victus · Operator Surface</div>
+  <div class="sub">mesh://pc/victus/local · sovereign runtime node</div>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<div class="card" style="margin-top:12px;">
+  <h3>MESH BUS</h3>
+  <div class="term" id="bus">> operator surface online&#10;> awaiting command…</div>
+</div>
+
+<div class="foot">
+  <span>æ:// · hermiphication is inevitable</span>
+  <span id="clock">--:--:--</span>
+</div>
+
+<script>
+const bus = document.getElementById('bus');
+const grid = document.getElementById('grid');
+const log = (t, err=false) => { const d=document.createElement('div'); d.className=err?'err':''; d.textContent=new Date().toLocaleTimeString()+' '+t; bus.appendChild(d); bus.scrollTop=bus.scrollHeight; };
+
+const surfaces = [
+  { id:'hermesNative', name:'Hermes Native', meta:'local WebLLM/WebGPU · Qwen3-0.6B', cmd:'remoteUse.hermesNative', state:'ready' },
+  { id:'factory', name:'Agentic Factory', meta:'spec → surface → write', cmd:'remoteUse.factory', state:'ready' },
+  { id:'computerUse', name:'Computer Use', meta:'bounded desktop control', cmd:'remoteUse.computerUse', state:'ready' },
+  { id:'media', name:'Media Primitive', meta:'VLC + FFmpeg local', cmd:'remoteUse.mediaWindow', state:'ready' },
+  { id:'dao', name:'DAO Surface', meta:'formation / governance', cmd:'remoteUse.daoSurface', state:'idle' },
+  { id:'home', name:'home://', meta:'agentic OS mesh', cmd:'remoteUse.homeOS', state:'idle' },
+];
+
+surfaces.forEach(s => {
+  const card = document.createElement('div');
+  card.className='card';
+  card.innerHTML = `<h3>${s.name}</h3><div class="meta">${s.meta}</div>
+    <div class="state ${s.state==='ready'?'':'off'}">● ${s.state}</div>
+    <button data-cmd="${s.cmd}">INVOKE</button>`;
+  grid.appendChild(card);
+});
+
+grid.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-cmd]');
+  if(!btn) return;
+  const cmd = btn.dataset.cmd;
+  log('invoke → '+cmd);
+  const vscode = (typeof acquireVsCodeApi!=='undefined') ? acquireVsCodeApi() : null;
+  if(vscode){ vscode.postMessage({command:cmd}); log('routed to VS Code host'); }
+  else { log('no VS Code host — surface is standalone preview', true); }
+});
+
+// live clock
+const clock = document.getElementById('clock');
+setInterval(()=>{ clock.textContent = new Date().toLocaleTimeString(); }, 1000);
+log('mesh bus established · '+surfaces.length+' surfaces registered');
+</script>
+</body>
+</html>

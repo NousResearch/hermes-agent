@@ -1,9 +1,12 @@
 """
-gpu_mcp.py — GPU-MCP: expose the Victus local GPU + Rust/WASM hands over MCP.
+gpu_mcp.py - GPU-MCP: expose the local GPU + Rust/WASM hands over MCP.
 
-Canonical scheme: +æ://cc home://
-  (+æ = the sovereign agent protocol; cc = command & control; home = the local
-   Victus node — the protocol-native control surface for x86_64-pc-windows)
+Canonical scheme: ae://glocal-agent  (alias: +ae://cc home://)
+  ae://         = the sovereign agent protocol
+  glocal-agent  = the bounded, offline local agent primitive (+ae^glocal):
+                  a local brain (ollama) + local CUDA/Rust-WASM hands, exposed
+                  as a protocol-native command & control surface for any
+                  x86_64-pc-windows + NVIDIA node.
 
 A zero-dependency (stdlib-only) Model Context Protocol server over stdio.
 Exposes the LocalHostLoop hands as MCP tools so any MCP client (Claude Desktop,
@@ -12,7 +15,7 @@ Cursor, gemini-cli, etc.) can drive the local RTX 3050 / wasm toolchain:
   CUDA   : probe_gpu, compile_kernel, run_kernel
   Rust   : rust_build_wasm, rust_run_wasm
 
-The hands are imported from the existing, offline-verified modules — no logic
+The hands are imported from the existing, offline-verified modules: no logic
 duplicated. MCP here is just JSON-RPC over stdin/stdout (initialize, tools/list,
 tools/call), implemented with stdlib only to keep the sovereign stack air-gappable.
 

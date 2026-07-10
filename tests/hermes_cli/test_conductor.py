@@ -168,3 +168,21 @@ def test_cc_longer_prefix_outranks_bare_ae() -> None:
     bare = _dispatch("+æ://ops")
     assert cc["scheme_detail"] == "+æ://cc"
     assert bare["surface"]["kind"] == "dao"
+
+
+def test_glocal_agent_dispatch_routes_to_gpu_mcp() -> None:
+    """æ://glocal-agent is the canonical name for the sovereign local agent
+    primitive (+æ^glocal) -> local GPU-MCP (alias of +æ://cc home://)."""
+    result = _dispatch("æ://glocal-agent home://")
+    assert result["ok"] is True
+    assert result["scheme_detail"] == "æ://glocal-agent"
+    assert result["surface"]["kind"] == "mcp"
+    assert result["surface"]["address"] == "mcp://gpu-mcp"
+    assert result["surface"]["launch"] == "python environments/gpu_mcp.py"
+
+
+def test_glocal_agent_short_form_defaults_to_home() -> None:
+    result = _dispatch("æ://glocal-agent")
+    assert result["ok"] is True
+    assert result["scheme_detail"] == "æ://glocal-agent"
+    assert result["surface"]["node"] == "home://"

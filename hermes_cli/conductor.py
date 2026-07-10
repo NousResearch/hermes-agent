@@ -560,6 +560,27 @@ def _reachy_dispatch(raw: str) -> dict:
     }
 
 
+def _glocal_agent_dispatch(raw: str) -> dict:
+    """æ://glocal-agent — the canonical name for the sovereign local agent
+    primitive (+æ^glocal): an offline brain + local CUDA/Rust/WASM hands exposed
+    as a GPU-MCP control surface. Alias of +æ://cc home:// under one scheme."""
+    node = raw.split("glocal-agent", 1)[1].strip() or "home://"
+    return {
+        "ok": True,
+        "rc": 0,
+        "stdout": f"æ://glocal-agent {node} -> gpu-mcp (sovereign local agent)\n",
+        "stderr": "",
+        "scheme": "æ",
+        "scheme_detail": "æ://glocal-agent",
+        "surface": {
+            "kind": "mcp",
+            "address": "mcp://gpu-mcp",
+            "node": node,
+            "launch": "python environments/gpu_mcp.py",
+        },
+    }
+
+
 def _cc_dispatch(raw: str) -> dict:
     """+æ://cc — command & control surface. Routes to the local GPU-MCP server
     (environments/gpu_mcp.py), the protocol-native control surface for the
@@ -643,6 +664,7 @@ _DISPATCHER.register("NOUS://", _nous_dispatch)
 _DISPATCHER.register("reachy://", _reachy_dispatch)
 _DISPATCHER.register("mcp://", _mcp_dispatch)
 _DISPATCHER.register("+æ://cc", _cc_dispatch)
+_DISPATCHER.register("æ://glocal-agent", _glocal_agent_dispatch)
 _DISPATCHER.register("+æ://identity", _identity_dispatch)
 _DISPATCHER.register("+æ://media^ffmpeg", _media_dispatch)
 _DISPATCHER.register("+æ://conductor", _conductor_dispatch)

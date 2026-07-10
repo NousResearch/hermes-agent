@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 
 from agent.conversation_loop import _image_error_max_dimension
+from agent.conversation_compression import apply_image_url_replacements_in_messages
 from agent.error_classifier import FailoverReason, classify_api_error
 
 
@@ -226,6 +227,67 @@ class TestShrinkImagePartsHelper:
         changed = agent._try_shrink_image_parts_in_messages(msgs)
         assert changed is True
         assert msgs[0]["content"][1]["image_url"]["url"] == shrunk
+
+    def test_records_replacement_for_canonical_session_history(self, monkeypatch):
+        """A successful API repair must expose the exact canonical rewrite."""
+        agent = _make_agent()
+        oversized_url = _big_png_data_url(5000)
+        shrunk = "data:image/jpeg;base64," + "A" * 1000
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda *args, **kwargs: shrunk,
+            raising=False,
+        )
+        api_messages = [{
+            "role": "user",
+            "content": [{
+                "type": "image_url",
+                "image_url": {"url": oversized_url},
+            }],
+        }]
+        replacements: dict[str, str] = {}
+
+        assert agent._try_shrink_image_parts_in_messages(
+            api_messages,
+            replacements=replacements,
+        ) is True
+        assert replacements == {oversized_url: shrunk}
+
+    def test_applies_replacements_to_detached_session_history(self):
+        old_openai = "data:image/png;base64,OPENAI"
+        old_anthropic = "data:image/png;base64,ANTHROPIC"
+        new_openai = "data:image/jpeg;base64,SMALL-OPENAI"
+        new_anthropic = "data:image/webp;base64,SMALL-ANTHROPIC"
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": old_openai}},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "ANTHROPIC",
+                    },
+                },
+            ],
+        }]
+
+        changed = apply_image_url_replacements_in_messages(
+            messages,
+            {
+                old_openai: new_openai,
+                old_anthropic: new_anthropic,
+            },
+        )
+
+        assert changed == 2
+        assert messages[0]["content"][0]["image_url"]["url"] == new_openai
+        assert messages[0]["content"][1]["source"] == {
+            "type": "base64",
+            "media_type": "image/webp",
+            "data": "SMALL-ANTHROPIC",
+        }
 
     def test_many_image_dimension_limit_rewritten(self, monkeypatch):
         """A 2000px many-image rejection must shrink images below the cap."""

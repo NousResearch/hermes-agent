@@ -2650,10 +2650,22 @@ def run_conversation(
                 ):
                     _retry.image_shrink_retry_attempted = True
                     image_max_dimension = _image_error_max_dimension(api_error) or 8000
+                    image_replacements: dict[str, str] = {}
                     if agent._try_shrink_image_parts_in_messages(
                         api_messages,
                         max_dimension=image_max_dimension,
+                        replacements=image_replacements,
                     ):
+                        if image_replacements:
+                            from agent.conversation_compression import (
+                                apply_image_url_replacements_in_messages,
+                            )
+
+                            apply_image_url_replacements_in_messages(
+                                messages,
+                                image_replacements,
+                            )
+                            agent._persist_session(messages, conversation_history)
                         agent._vprint(
                             f"{agent.log_prefix}📐 Image(s) exceeded provider size limit — "
                             f"shrank and retrying...",

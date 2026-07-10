@@ -5142,12 +5142,14 @@ class AIAgent:
         api_messages: list,
         *,
         max_dimension: int = 8000,
+        replacements: Optional[Dict[str, str]] = None,
     ) -> bool:
         """Forwarder — see ``agent.conversation_compression.try_shrink_image_parts_in_messages``."""
         from agent.conversation_compression import try_shrink_image_parts_in_messages
         return try_shrink_image_parts_in_messages(
             api_messages,
             max_dimension=max_dimension,
+            replacements=replacements,
         )
 
     def _try_strip_image_parts_from_tool_messages(

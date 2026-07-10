@@ -11,6 +11,13 @@ import pytest
 from unittest.mock import patch
 
 from agent.model_metadata import is_local_endpoint
+from agent.chat_completion_helpers import (
+    _local_provider_first_chunk_timeout,
+    _local_provider_non_stream_stale_timeout,
+    _local_provider_stream_stale_timeout,
+    _mark_local_first_chunk_timeout,
+    resolve_stream_stale_timeout,
+)
 
 
 class TestLocalStreamReadTimeout:
@@ -71,6 +78,183 @@ class TestLocalStreamReadTimeout:
             if _stream_read_timeout == 120.0 and base_url and is_local_endpoint(base_url):
                 _stream_read_timeout = _base_timeout
             assert _stream_read_timeout == 120.0
+
+
+class TestLocalStaleTimeout:
+    """Local backends keep unbounded stale behavior by default, with an opt-in bound."""
+
+    @staticmethod
+    def _payload_for_estimated_tokens(tokens: int) -> dict[str, list[str]]:
+        return {"messages": ["x" * (tokens * 4)]}
+
+    def _make_agent(self, *, model="qwen3.6-27b-256k", base_url="http://127.0.0.1:8080/v1"):
+        from run_agent import AIAgent
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=131072):
+            return AIAgent(
+                api_key="sk-dummy",
+                base_url=base_url,
+                provider="taro",
+                model=model,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                platform="cli",
+            )
+
+    def test_opt_in_local_stream_stale_timeout_bounds_watchdog(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+        monkeypatch.setenv("HERMES_LOCAL_STALE_TIMEOUT", "75")
+
+        agent = self._make_agent()
+
+        timeout = resolve_stream_stale_timeout(
+            agent,
+            {"model": "qwen3.6-27b-256k", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+        assert timeout == 75.0
+
+    def test_local_stream_stale_timeout_is_opt_in(self, monkeypatch):
+        monkeypatch.delenv("HERMES_LOCAL_STALE_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", raising=False)
+
+        assert _local_provider_stream_stale_timeout({"messages": []}) is None
+
+    def test_generic_local_first_chunk_timeout_is_finite(self, monkeypatch):
+        monkeypatch.delenv("HERMES_LOCAL_FIRST_CHUNK_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_LOCAL_TTFB_TIMEOUT", raising=False)
+
+        timeout = _local_provider_first_chunk_timeout(
+            self._payload_for_estimated_tokens(6_000),
+            "qwen3.6-27b-256k",
+        )
+
+        assert timeout == 90.0
+
+    def test_generic_local_first_chunk_timeout_scales_for_large_context(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LOCAL_FIRST_CHUNK_TIMEOUT", "120")
+
+        timeout = _local_provider_first_chunk_timeout(
+            self._payload_for_estimated_tokens(66_000),
+            "qwen3.6-27b-256k",
+        )
+
+        assert timeout == 360.0
+
+    def test_local_first_chunk_timeout_marker_preserves_watchdog_metadata(self):
+        err = RuntimeError("Connection error.")
+
+        marked = _mark_local_first_chunk_timeout(
+            err,
+            elapsed=180.4,
+            threshold=180.0,
+            model="qwen3.6-27b-256k",
+            context_tokens=42000,
+        )
+
+        assert marked is err
+        assert getattr(err, "_hermes_local_first_chunk_timeout") is True
+        assert getattr(err, "_hermes_local_first_chunk_meta") == {
+            "elapsed": 180,
+            "threshold": 180,
+            "model": "qwen3.6-27b-256k",
+            "context_tokens": 42000,
+        }
+
+    def test_generic_local_stream_stale_timeout_still_disables_by_default(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+
+        agent = self._make_agent(model="qwen3.6-27b")
+
+        timeout = resolve_stream_stale_timeout(
+            agent,
+            {"model": "qwen3.6-27b", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+        assert timeout == float("inf")
+
+    def test_local_non_stream_stale_timeout_env_override(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+        monkeypatch.setenv("HERMES_LOCAL_NON_STREAM_STALE_TIMEOUT", "75")
+
+        agent = self._make_agent()
+
+        assert agent._compute_non_stream_stale_timeout({"messages": []}) == 75.0
+
+    def test_generic_local_non_stream_stale_timeout_is_finite(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_LOCAL_NON_STREAM_STALE_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_LOCAL_RESPONSE_TIMEOUT", raising=False)
+
+        agent = self._make_agent(model="qwen3.6-27b-256k")
+
+        assert agent._compute_non_stream_stale_timeout({"messages": []}) == 120.0
+
+    def test_generic_local_non_stream_stale_timeout_scales(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LOCAL_NON_STREAM_STALE_TIMEOUT", "120")
+
+        timeout = _local_provider_non_stream_stale_timeout(
+            self._payload_for_estimated_tokens(66_000),
+            "qwen3.6-27b-256k",
+        )
+
+        assert timeout == 360.0
+
+    def test_explicit_stream_stale_timeout_wins_over_local_opt_in(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "12")
+        monkeypatch.setenv("HERMES_LOCAL_STALE_TIMEOUT", "75")
+
+        agent = self._make_agent()
+
+        assert resolve_stream_stale_timeout(agent, {"model": "qwen3.6-27b-256k", "messages": []}) == 12.0
+
+    @pytest.mark.parametrize(
+        ("estimated_tokens", "expected_timeout"),
+        [
+            (10_000, 75.0),
+            (10_001, 90.0),
+            (25_000, 90.0),
+            (25_001, 150.0),
+            (50_000, 150.0),
+            (50_001, 240.0),
+            (100_000, 240.0),
+            (100_001, 300.0),
+        ],
+    )
+    def test_opt_in_local_stale_timeout_threshold_boundaries(
+        self,
+        monkeypatch,
+        estimated_tokens,
+        expected_timeout,
+    ):
+        monkeypatch.setenv("HERMES_LOCAL_STALE_TIMEOUT", "75")
+        monkeypatch.delenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", raising=False)
+
+        timeout = _local_provider_stream_stale_timeout(
+            self._payload_for_estimated_tokens(estimated_tokens),
+        )
+
+        assert timeout == expected_timeout
+
+    def test_non_positive_local_stale_timeout_disables_watchdog(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LOCAL_STALE_TIMEOUT", "0")
+
+        timeout = _local_provider_stream_stale_timeout(
+            self._payload_for_estimated_tokens(1),
+        )
+
+        assert timeout == float("inf")
 
 
 class TestIsLocalEndpoint:

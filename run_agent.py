@@ -1244,9 +1244,9 @@ class AIAgent:
              ``_compute_non_stream_stale_timeout``.
 
         Returns ``(timeout_seconds, uses_implicit_default)`` so the caller can
-        preserve legacy behaviors that only apply when the user has *not*
-        explicitly configured a stale timeout, such as auto-disabling the
-        detector for local endpoints.
+        apply behaviors that only make sense when the user has *not* explicitly
+        configured a stale timeout, such as using local-backend defaults for
+        loopback endpoints.
         """
         cfg = get_provider_stale_timeout(self.provider, self.model)
         if cfg is not None:
@@ -1271,6 +1271,18 @@ class AIAgent:
 
         return 90.0, True
 
+    def _has_explicit_api_call_stale_timeout(self) -> bool:
+        """Whether the user explicitly configured a non-stream stale timeout.
+
+        Explicit config = a provider/model ``stale_timeout_seconds`` value or the
+        ``HERMES_API_CALL_STALE_TIMEOUT`` env var.  The reasoning-model floor is
+        *not* explicit config: it must not suppress the finite local-endpoint
+        bound applied in :meth:`_compute_non_stream_stale_timeout`.
+        """
+        if get_provider_stale_timeout(self.provider, self.model) is not None:
+            return True
+        return os.getenv("HERMES_API_CALL_STALE_TIMEOUT") is not None
+
     def _compute_non_stream_stale_timeout(self, api_payload: Any) -> float:
         """Compute the effective non-stream stale timeout for this request.
 
@@ -1279,11 +1291,28 @@ class AIAgent:
         applies the same way to both shapes via
         :func:`agent.chat_completion_helpers.estimate_request_context_tokens`.
         """
-        stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
-        if uses_implicit_default and base_url and is_local_endpoint(base_url):
-            return float("inf")
+        # Local backends get a finite, context-scaled non-stream bound whenever
+        # the user has not *explicitly* configured a stale timeout.  Gate this on
+        # explicit config alone — NOT on ``uses_implicit_default``, which
+        # _resolved_api_call_stale_timeout_base also clears for the
+        # reasoning-model floor.  A reasoning model served from a local endpoint
+        # still needs the finite local bound so a stalled non-stream call can
+        # fall back, instead of inheriting the cloud reasoning floor.  (Mirrors
+        # the streaming path, whose implicit-default flag is derived from
+        # provider/env config only.)
+        if (
+            base_url
+            and is_local_endpoint(base_url)
+            and not self._has_explicit_api_call_stale_timeout()
+        ):
+            from agent.chat_completion_helpers import _local_provider_non_stream_stale_timeout
+            model = self.model
+            if isinstance(api_payload, dict):
+                model = api_payload.get("model") or model
+            return _local_provider_non_stream_stale_timeout(api_payload, model)
 
+        stale_base, _uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         from agent.chat_completion_helpers import estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:

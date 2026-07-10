@@ -56,6 +56,7 @@ class TestFailoverReason:
             "upstream_rate_limit",
             "overloaded", "server_error", "timeout",
             "ssl_cert_verification",
+            "local_first_chunk_timeout",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
             "invalid_encrypted_content",
@@ -975,6 +976,23 @@ class TestClassifyApiError:
         e = TimeoutError("timed out")
         result = classify_api_error(e)
         assert result.reason == FailoverReason.timeout
+
+    def test_local_first_chunk_timeout_marker_fails_over_without_retry(self):
+        e = ConnectError("Connection error.")
+        e._hermes_local_first_chunk_timeout = True
+        e._hermes_local_first_chunk_meta = {
+            "elapsed": 75,
+            "threshold": 75,
+            "model": "qwen3.6-27b-256k",
+            "context_tokens": 19956,
+        }
+
+        result = classify_api_error(e, provider="local", model="qwen3.6-27b-256k")
+
+        assert result.reason == FailoverReason.local_first_chunk_timeout
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.error_context["elapsed"] == 75
 
     def test_runtime_error_cli_turn_timed_out_classifies_as_timeout(self):
         # RuntimeError from a local claude-cli shim that wraps a subprocess

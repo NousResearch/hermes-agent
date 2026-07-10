@@ -7562,6 +7562,18 @@ class TestDeadRetryCode:
             f"but found {occurrences}"
         )
 
+    def test_local_first_chunk_timeout_fallback_precedes_primary_recovery(self):
+        import inspect
+        from agent.conversation_loop import run_conversation as _rc
+        source = inspect.getsource(_rc)
+
+        first_chunk_fallback = source.index(
+            "FailoverReason.local_first_chunk_timeout"
+        )
+        primary_recovery = source.index("agent._try_recover_primary_transport")
+
+        assert first_chunk_fallback < primary_recovery
+
 
 class TestSupportsReasoningExtraBody:
     def _make_agent(self):

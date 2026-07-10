@@ -12,7 +12,7 @@ import {
   parseWorktrees,
   sanitizeBranch,
   switchBranch
-} from './git-worktree-ops'
+} from './git-worktree-ops.ts'
 
 test('sanitizeBranch: spaces → hyphens, forbidden chars dropped, edges trimmed', () => {
   assert.equal(sanitizeBranch('beach vibes'), 'beach-vibes')

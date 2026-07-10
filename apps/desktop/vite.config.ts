@@ -28,6 +28,15 @@ const fsAllow = [
 export default defineConfig({
   base: './',
   plugins: [react(), tailwindcss()],
+  test: {
+    environmentOptions: {
+      jsdom: {
+        url: 'http://localhost/'
+      }
+    },
+    include: ['src/**/*.{test,spec}.{ts,tsx}', 'scripts/**/*.{test,spec}.mjs'],
+    setupFiles: ['./src/test/setup.ts']
+  },
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and

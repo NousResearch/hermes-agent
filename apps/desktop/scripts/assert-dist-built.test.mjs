@@ -1,8 +1,7 @@
-import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+import { expect, test } from 'vitest'
 
 import { checkDistBuilt } from '../scripts/assert-dist-built.mjs'
 
@@ -21,7 +20,7 @@ test('checkDistBuilt passes when index.html + an assets JS bundle exist', () => 
     fs.writeFileSync(path.join(d, 'assets', 'index-abc123.js'), 'console.log(1)', 'utf8')
   })
   try {
-    assert.deepEqual(checkDistBuilt(distDir), { ok: true })
+    expect(checkDistBuilt(distDir)).toEqual({ ok: true })
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
@@ -31,8 +30,8 @@ test('checkDistBuilt fails when the dist directory is absent', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-assert-dist-'))
   try {
     const result = checkDistBuilt(path.join(tempRoot, 'dist'))
-    assert.equal(result.ok, false)
-    assert.match(result.error, /no dist directory/)
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/no dist directory/)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
@@ -45,8 +44,8 @@ test('checkDistBuilt fails when index.html is missing', () => {
   })
   try {
     const result = checkDistBuilt(distDir)
-    assert.equal(result.ok, false)
-    assert.match(result.error, /index\.html is missing/)
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/index\.html is missing/)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
@@ -60,8 +59,8 @@ test('checkDistBuilt fails when index.html is empty', () => {
   })
   try {
     const result = checkDistBuilt(distDir)
-    assert.equal(result.ok, false)
-    assert.match(result.error, /index\.html is empty/)
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/index\.html is empty/)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
@@ -76,8 +75,8 @@ test('checkDistBuilt fails when assets/ has no JS bundle', () => {
   })
   try {
     const result = checkDistBuilt(distDir)
-    assert.equal(result.ok, false)
-    assert.match(result.error, /no built JS bundle/)
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/no built JS bundle/)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }

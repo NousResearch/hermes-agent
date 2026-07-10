@@ -21,7 +21,7 @@ import {
   shouldRemoveAppBundle,
   UNINSTALL_MODES,
   uninstallArgsForMode
-} from './desktop-uninstall'
+} from './desktop-uninstall.ts'
 
 // --- uninstallArgsForMode ---
 

@@ -739,9 +739,9 @@ export const zh: Translations = {
       cloudOrgRole: role => `角色：${role}`,
       cloudLoadingAgents: '正在加载你的智能体…',
       cloudNoAgents: {
-        before: '此账户下未找到智能体。请在',
-        linkText: 'Nous 门户',
-        after: '中创建一个，然后刷新。'
+        before: '此账户下未找到智能体。前往 ',
+        linkText: 'Hermes Cloud',
+        after: ' 创建一个，然后刷新。'
       },
       cloudRefresh: '刷新',
       cloudConnect: '连接',

@@ -550,8 +550,8 @@ export const en: Translations = {
       cloudOrgRole: role => `Role: ${role}`,
       cloudLoadingAgents: 'Loading your agents…',
       cloudNoAgents: {
-        before: 'No agents found on this account. Create one in the ',
-        linkText: 'Nous portal',
+        before: 'No agents found on this account. Create one in ',
+        linkText: 'Hermes Cloud',
         after: ', then refresh.'
       },
       cloudRefresh: 'Refresh',

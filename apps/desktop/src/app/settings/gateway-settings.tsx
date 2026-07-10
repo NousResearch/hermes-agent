@@ -119,6 +119,9 @@ export function GatewaySettings() {
   const [cloudAgents, setCloudAgents] = useState<DesktopCloudAgent[]>([])
   const [cloudDiscover, setCloudDiscover] = useState<CloudDiscoverStatus>('idle')
   const [cloudConnectingId, setCloudConnectingId] = useState<null | string>(null)
+  // Portal base URL echoed by cloud.status() — used to build the "create an
+  // agent" link so it honors HERMES_PORTAL_BASE_URL instead of a hardcoded host.
+  const [cloudPortalUrl, setCloudPortalUrl] = useState('')
   // Multi-org users: when discovery returns needsOrgSelection, we hold the org
   // list here and show a picker. `cloudOrg` is the chosen org slug/id (null =
   // not yet chosen / single-org user).
@@ -209,6 +212,11 @@ export function GatewaySettings() {
 
   const isConnectedAgent = (agent: DesktopCloudAgent) =>
     Boolean(connectedCloudUrl && agent.dashboardUrl && normalizeCloudUrl(agent.dashboardUrl) === connectedCloudUrl)
+
+  // "Create an agent" target: the Hermes Cloud instance-setup page, derived from
+  // the portal base URL (cloud.status echoes it) so it honors
+  // HERMES_PORTAL_BASE_URL; falls back to the canonical host before status lands.
+  const createCloudAgentUrl = `${(cloudPortalUrl || 'https://portal.nousresearch.com').replace(/\/+$/, '')}/cloud?setup=instance`
 
   useEffect(() => {
     if (state.mode !== 'remote' || !trimmedUrl || !/^https?:\/\//i.test(trimmedUrl)) {
@@ -526,6 +534,7 @@ export function GatewaySettings() {
           return
         }
 
+        setCloudPortalUrl(status.portalBaseUrl)
         setCloudSignedIn(status.signedIn)
 
         if (status.signedIn) {
@@ -864,7 +873,7 @@ export function GatewaySettings() {
                     <AlertCircle className="mt-0.5 size-4 shrink-0" />
                     <span>
                       {g.cloudNoAgents.before}
-                      <ExternalLink href="https://portal.nousresearch.com/agents" showExternalIcon={false}>
+                      <ExternalLink href={createCloudAgentUrl} showExternalIcon={false}>
                         {g.cloudNoAgents.linkText}
                       </ExternalLink>
                       {g.cloudNoAgents.after}

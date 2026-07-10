@@ -55,6 +55,40 @@ test('encryptDesktopSecret stores safeStorage base64 payload', () => {
   })
 })
 
+test('encryptDesktopSecret allows plain-text opt-in when encryption is unavailable', () => {
+  const secret = encryptDesktopSecret(
+    'token',
+    { isEncryptionAvailable: () => false, encryptString: () => Buffer.alloc(0) },
+    { allowPlainText: true }
+  )
+
+  assert.deepEqual(secret, { encoding: 'plain', value: 'token' })
+})
+
+test('encryptDesktopSecret keeps encrypting when available even with the plain-text opt-in', () => {
+  const secret = encryptDesktopSecret(
+    'token-123',
+    { isEncryptionAvailable: () => true, encryptString: value => Buffer.from(`enc:${value}`, 'utf8') },
+    { allowPlainText: true }
+  )
+
+  assert.deepEqual(secret, {
+    encoding: 'safeStorage',
+    value: Buffer.from('enc:token-123', 'utf8').toString('base64')
+  })
+})
+
+test('encryptDesktopSecret returns null for an empty value even with the plain-text opt-in', () => {
+  assert.equal(
+    encryptDesktopSecret(
+      '',
+      { isEncryptionAvailable: () => false, encryptString: () => Buffer.alloc(0) },
+      { allowPlainText: true }
+    ),
+    null
+  )
+})
+
 test('sensitiveFileBlockReason blocks obvious secret file patterns', () => {
   assert.match(String(sensitiveFileBlockReason('/tmp/.env')), /\.env/)
   assert.equal(sensitiveFileBlockReason('/tmp/.env.example'), null)

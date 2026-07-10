@@ -23,12 +23,17 @@ function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   return fallback
 }
 
-function encryptDesktopSecret(value, safeStorageApi) {
+function encryptDesktopSecret(value, safeStorageApi, options: { allowPlainText?: boolean } = {}) {
   const raw = String(value || '')
 
   if (!raw) {
     return null
   }
+
+  // Opt-in escape hatch for keyring-less Linux (e.g. Hyprland/Sway with no
+  // GNOME Keyring or KWallet): the renderer sets this once the user confirms
+  // the plain-text storage prompt in Settings → Gateway.
+  const allowPlainText = options?.allowPlainText === true
 
   let encryptionAvailable = false
 
@@ -39,9 +44,18 @@ function encryptDesktopSecret(value, safeStorageApi) {
   }
 
   if (!encryptionAvailable) {
+    // Only downgrade to plain text when the user has explicitly opted in;
+    // decryptDesktopSecret returns the raw value for any non-'safeStorage'
+    // encoding, so this round-trips without any decrypt-side change.
+    if (allowPlainText) {
+      return { encoding: 'plain', value: raw }
+    }
+
     throw new Error(
-      'Secure token storage is unavailable, so Hermes Desktop cannot save remote gateway tokens. ' +
-        'Set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment, or enable OS keychain access and try again.'
+      'Secure token storage is unavailable (no OS keyring service was found), so Hermes Desktop cannot save remote gateway tokens. ' +
+        'Either enable an OS keyring (e.g. GNOME Keyring or KWallet providing org.freedesktop.secrets) and try again, ' +
+        'confirm the plain-text storage option when prompted in Settings → Gateway, ' +
+        'or set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment.'
     )
   }
 

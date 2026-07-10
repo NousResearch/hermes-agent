@@ -91,7 +91,7 @@ MINIMAX_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:user_code"
 MINIMAX_OAUTH_GLOBAL_BASE = "https://api.minimax.io"
 MINIMAX_OAUTH_CN_BASE = "https://api.minimaxi.com"
 MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
-MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
+MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/v1"
 MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
@@ -337,7 +337,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="minimax-cn",
         name="MiniMax (China)",
         auth_type="api_key",
-        inference_base_url="https://api.minimaxi.com/anthropic",
+        inference_base_url="https://api.minimaxi.com/v1",
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),

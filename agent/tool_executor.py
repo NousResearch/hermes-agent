@@ -967,7 +967,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         tool_message = make_tool_result_message(name, _tool_content, tc.id)
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
-        if risk_metadata is not None and agent.tool_progress_callback:
+        if (
+            risk_metadata is not None
+            and risk_metadata.get("risk") != "low"
+            and agent.tool_progress_callback
+        ):
             try:
                 agent.tool_progress_callback(
                     "tool.output_risk",
@@ -1641,7 +1645,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
-        if risk_metadata is not None and agent.tool_progress_callback:
+        if (
+            risk_metadata is not None
+            and risk_metadata.get("risk") != "low"
+            and agent.tool_progress_callback
+        ):
             try:
                 agent.tool_progress_callback(
                     "tool.output_risk",

@@ -149,9 +149,44 @@ def start_nous_auth_keepalive(
     min_key_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     timeout_seconds: Optional[float] = None,
 ) -> Optional[threading.Thread]:
-    """Start the process-wide Nous auth keepalive thread."""
+    """Start the process-wide Nous auth keepalive thread.
+
+    Issue #61270: if Nous Portal auth is currently rate-limited (exhausted),
+    starting the keepalive at startup caused the gateway to appear to hang
+    because the keepalive's first refresh attempt was the rate-limited one.
+    We now check for an existing rate-limit window before starting the
+    keepalive; if exhausted, we log a clear warning and skip the keepalive
+    until the next gateway restart. The user sees a one-line warning instead
+    of a hung gateway.
+
+    MCE engine run note: the MCE predicted (P1=0.5) that the right fix
+    might be in the auxiliary client or conversation loop. On inspection
+    of agent/auxiliary_client.py:1976 and agent/conversation_loop.py:1109,
+    both already check nous_rate_limit_remaining() and skip Portal cleanly
+    at the call site. The actual missing check was at the keepalive level
+    (this fix). MCE's P1 was wrong here; the BASELINE's fix shape is the
+    right one.
+    """
     if interval_seconds <= 0:
         return None
+
+    try:
+        from agent.nous_rate_guard import (
+            format_remaining as _fmt_nous_remaining,
+            nous_rate_limit_remaining,
+        )
+        _remaining = nous_rate_limit_remaining()
+        if _remaining is not None and _remaining > 0:
+            logger.warning(
+                "Nous Portal auth is rate-limited (resets in %s). "
+                "Skipping auth keepalive at gateway startup; Portal "
+                "tools will be unavailable until the rate limit clears. "
+                "Recovery: `hermes auth reset nous && hermes auth add nous`.",
+                _fmt_nous_remaining(_remaining),
+            )
+            return None
+    except Exception as _exc:
+        logger.debug("Could not check Nous rate-limit state at startup: %s", _exc)
 
     global _keepalive_thread
     with _keepalive_lock:

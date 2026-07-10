@@ -171,7 +171,30 @@ _nb_install_bundled_node() {
             ;;
     esac
 
-    local index_url="https://nodejs.org/dist/latest-v${HERMES_NODE_TARGET_MAJOR}.x/"
+    # hc-476: honor HERMES_NODE_DIST_BASE (same env installNode() in
+    # scripts/install.sh reads) so CN mode's npmmirror Node mirror also covers
+    # this RUNTIME install path — not just the install-time one. Unset keeps
+    # the nodejs.org default byte-for-byte (zero change for global users).
+    #
+    # Runtime invocations (hermes_cli/main.py::_ensure_tui_node,
+    # hermes_constants.heal_hermes_managed_node) spawn bash from processes that
+    # never saw the installer's CN mirror env — it only lived inside the
+    # install-script process. Self-derive it from the sibling ApexNodes region
+    # lib when absent: post-install this reads the cached region decision
+    # ($HERMES_HOME/.apexnodes-region), so no fresh network probe in the common
+    # case. Best-effort — any failure keeps the upstream nodejs.org default.
+    if [ -z "${HERMES_NODE_DIST_BASE:-}" ]; then
+        local _nb_region_lib
+        _nb_region_lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)/apexnodes-region-detect.sh"
+        if [ -r "$_nb_region_lib" ]; then
+            # shellcheck source=/dev/null
+            . "$_nb_region_lib" 2>/dev/null || true
+            command -v apexnodes_resolve_region >/dev/null 2>&1 && apexnodes_resolve_region || true
+            command -v apexnodes_apply_cn_mirror_env >/dev/null 2>&1 && apexnodes_apply_cn_mirror_env || true
+        fi
+    fi
+    local node_dist_base="${HERMES_NODE_DIST_BASE:-https://nodejs.org/dist}"
+    local index_url="${node_dist_base%/}/latest-v${HERMES_NODE_TARGET_MAJOR}.x/"
     local tarball
     tarball=$(curl -fsSL "$index_url" \
         | grep -oE "node-v${HERMES_NODE_TARGET_MAJOR}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \

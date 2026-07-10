@@ -3,6 +3,7 @@
 # 不变量:大陆安装期 + 运行期 GitHub-free —— 这里每个产物都有域内(COS / CN-registry)源。
 # verify-environment.py 按此 HEAD-check COS 产物;CI(Phase 2)拦新的、未登记的墙外依赖。
 # 审计基准:hermes-agent scripts/install.{ps1,sh} + scripts/lib/apexnodes-region-detect.{ps1,sh}
+#         + scripts/lib/node-bootstrap.sh(运行期拉取点,hc-476 起并入基准)
 # 策略见 hermes-cloud docs/CHINA-LOCALIZATION-GFW-AUDIT.md。
 schema: 1
 cos_base: "https://apexnodes-runtime-202606250443-1300912302.cos.ap-guangzhou.myqcloud.com/runtime"
@@ -44,9 +45,26 @@ cos_artifacts:
 cn_registry:
   - {name: pypi,     foreign: "pypi.org",              env: "PIP_INDEX_URL/UV_INDEX_URL", mirror: "https://pypi.tuna.tsinghua.edu.cn/simple"}
   - {name: cpython,  foreign: "astral python-build-standalone (github)", env: "UV_PYTHON_INSTALL_MIRROR", mirror: "https://registry.npmmirror.com/-/binary/python-build-standalone"}
-  - {name: nodejs,   foreign: "nodejs.org",            env: "HERMES_NODE_DIST_BASE", mirror: "https://registry.npmmirror.com/-/binary/node"}
+  # nodejs mirror covers TWO consumers: the install-time Node install
+  # (installNode() in install.sh / Install-Node in install.ps1) and, since
+  # hc-476, the RUNTIME reinstall path (_nb_install_bundled_node() in
+  # scripts/lib/node-bootstrap.sh, invoked lazily by the TUI / WhatsApp bridge
+  # bootstrap when Node is missing/broken post-install).
+  - {name: nodejs,   foreign: "nodejs.org",            env: "HERMES_NODE_DIST_BASE", mirror: "https://registry.npmmirror.com/-/binary/node", consumer: "install.sh installNode / install.ps1 Install-Node / node-bootstrap.sh _nb_install_bundled_node (runtime)"}
   - {name: npm,      foreign: "registry.npmjs.org",    env: "npm_config_registry",   mirror: "https://registry.npmmirror.com"}
   - {name: electron, foreign: "github (electron releases)", env: "ELECTRON_MIRROR",  mirror: "https://npmmirror.com/mirrors/electron/"}
+  # hc-476: Playwright's Chromium download (~170MB) had no CN mirror wired —
+  # the #1 "install worked, day-N feature broke" complaint (browser tool /
+  # agent-browser). mirror = npmmirror's own official binary-mirror-config
+  # value (cnpm/binary-mirror-config, "china" ENVS block); env is read
+  # natively by `playwright install` itself (playwright.dev/docs/browsers),
+  # so every call site (install.sh/.ps1 AND the runtime autoinstall in
+  # tools/browser_tool.py::_maybe_autoinstall_chromium) picks it up once set.
+  # NOTE: unlike the other rows, this mirror is a download-HOST prefix that
+  # playwright's installer appends a versioned build path to — it has no
+  # directory index of its own, so verify's bare-HEAD reachability probe
+  # below shows 404 by design. Not a broken-mirror signal (still "仅参考").
+  - {name: playwright, foreign: "playwright.dev CDN (chromium, ~170MB)", env: "PLAYWRIGHT_DOWNLOAD_HOST", mirror: "https://cdn.npmmirror.com/binaries/playwright"}
 
 # ── 待审(NEEDS AUDIT)────────────────────────────────────────────────────────
 # install/runtime 引用到、但 CN 源尚未在本 manifest 确认的环境组件。下一切片。
@@ -54,6 +72,9 @@ cn_registry:
 needs_audit:
   - {name: ripgrep,   note: "工具二进制;源(pip/npm/bundled/github)未确认"}
   - {name: ffmpeg,    note: "媒体工具;源未确认"}
-  - {name: playwright-browsers, note: "PLAYWRIGHT_DOWNLOAD_HOST 镜像? chromium 下载"}
+  # chromium 经 `agent-browser install`(Install-AgentBrowser)另触发一次下载;
+  # agent-browser 大概率内部也走 Playwright,但其 npm 包是外部黑盒,未验证是否
+  # 同样吃 PLAYWRIGHT_DOWNLOAD_HOST——hc-476 只治理直接 `playwright install`
+  # 调用点,这行本票不动,留给下一次源码审计确认。
   - {name: chromium,  note: "agent-browser;Install-AgentBrowser 源未确认"}
   - {name: bun,       note: "源未确认"}

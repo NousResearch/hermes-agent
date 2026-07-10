@@ -138,3 +138,16 @@ def register(ctx) -> None:  # noqa: ARG001 — ctx unused; this is a boot hook
             )
     except Exception:
         logger.warning("apex-overlay: cn_im_messages seam failed to load", exc_info=True)
+
+    try:
+        from apex_overlay import cn_mirror_env
+
+        if not cn_mirror_env.apply():
+            logger.warning(
+                "apex-overlay: hc-476 runtime CN mirror env seam did not fully "
+                "apply (see prior error). Runtime lazy downloads (Playwright "
+                "Chromium autoinstall, managed-Node reinstall) may pull from "
+                "foreign hosts on mainland-China machines."
+            )
+    except Exception:
+        logger.warning("apex-overlay: cn_mirror_env seam failed to load", exc_info=True)

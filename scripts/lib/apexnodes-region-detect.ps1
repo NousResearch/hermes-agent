@@ -194,6 +194,11 @@ function Set-ApexCnMirrorEnv {
     if (-not $env:ELECTRON_MIRROR)          { $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/" }
     # Node.js dist tarballs -> npmmirror binary mirror (consumed by Install-Node).
     if (-not $env:HERMES_NODE_DIST_BASE)    { $env:HERMES_NODE_DIST_BASE = "https://registry.npmmirror.com/-/binary/node" }
+    # hc-476: Playwright's Chromium download (~170MB, no CN CDN) -> npmmirror's
+    # official binary-mirror-config value (cnpm/binary-mirror-config "china"
+    # ENVS). Read natively by `playwright install` itself, so this covers every
+    # call site (install.sh/.ps1 AND the runtime autoinstall in browser_tool.py).
+    if (-not $env:PLAYWRIGHT_DOWNLOAD_HOST) { $env:PLAYWRIGHT_DOWNLOAD_HOST = "https://cdn.npmmirror.com/binaries/playwright" }
 }
 
 # ===========================================================================

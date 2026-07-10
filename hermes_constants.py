@@ -364,7 +364,10 @@ def _heal_managed_node_windows() -> bool:
         return False
 
     home = get_hermes_home()
-    index_url = f"https://nodejs.org/dist/latest-v{_HERMES_NODE_TARGET_MAJOR}.x/"
+    # hc-476: honor HERMES_NODE_DIST_BASE (npmmirror in CN mode, injected into
+    # the running process by apex_overlay.cn_mirror_env). Unset keeps nodejs.org.
+    node_dist_base = (os.environ.get("HERMES_NODE_DIST_BASE") or "https://nodejs.org/dist").rstrip("/")
+    index_url = f"{node_dist_base}/latest-v{_HERMES_NODE_TARGET_MAJOR}.x/"
     try:
         with urllib.request.urlopen(index_url, timeout=60) as response:
             index_html = response.read().decode("utf-8", errors="replace")

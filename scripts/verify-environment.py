@@ -35,6 +35,31 @@ def load_manifest(path):
         return yaml.safe_load(f)
 
 
+def static_source_checks(manifest_path):
+    """hc-476: cheap static regression guards for runtime pull points that
+    have no HTTP endpoint of their own to HEAD-check (unlike cos_artifacts /
+    cn_registry, this isn't network reachability — it's "does the consumer
+    still read the env this manifest promises it does"). Intentionally NOT
+    the Phase-2 "flag any new unregistered foreign URL" gate the file header
+    mentions — that needs to enumerate every hardcoded literal across
+    install.sh/.ps1/node-bootstrap.sh, which is a bigger lift than one ticket;
+    this only guards the specific regression hc-476 just fixed.
+    """
+    repo_root = os.path.dirname(os.path.abspath(manifest_path))
+    checks = []
+
+    node_bootstrap = os.path.join(repo_root, "scripts", "lib", "node-bootstrap.sh")
+    try:
+        src = open(node_bootstrap, encoding="utf-8").read()
+        ok = "HERMES_NODE_DIST_BASE" in src
+    except OSError as e:
+        ok = False
+        node_bootstrap = f"{node_bootstrap} ({e})"
+    checks.append(("node-bootstrap.sh honors HERMES_NODE_DIST_BASE", ok, node_bootstrap))
+
+    return checks
+
+
 def cos_urls(m, commit):
     """yield (label, url|None) — 每个必须存在的 COS 产物。"""
     base = m["cos_base"].rstrip("/")
@@ -79,11 +104,15 @@ def main():
 
     reg = [(r["name"], head(r["mirror"].split("/simple")[0])) for r in m.get("cn_registry", [])]
 
+    static = static_source_checks(args.manifest)
+    ok = ok and all(s_ok for _, s_ok, _ in static)
+
     if args.json:
         print(json.dumps({
             "ok": ok,
             "cos": [{"name": n, "status": s, "url": u} for n, s, u in results],
             "cn_registry": [{"name": n, "http": c} for n, c in reg],
+            "static_checks": [{"name": n, "ok": s_ok, "detail": d} for n, s_ok, d in static],
         }, ensure_ascii=False, indent=2))
     else:
         print(f"=== COS 产物 (commit={args.commit or '<none>'}) ===")
@@ -92,6 +121,9 @@ def main():
         print("=== cn_registry 可达性(仅参考)===")
         for n, c in reg:
             print(f"  [{c}] {n}")
+        print("=== 静态回归守卫(源码断言,纳入闸)===")
+        for n, s_ok, d in static:
+            print(f"  [{'OK' if s_ok else 'FAIL':>9}] {n} ({d})")
         na = m.get("needs_audit", [])
         if na:
             print(f"=== needs_audit ({len(na)}) — 源未确认,未纳入闸 ===")

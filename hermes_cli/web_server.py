@@ -412,7 +412,63 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+def _normalize_allowed_host(value: str) -> str:
+    """Normalize one allowed-host entry to the ``host_only`` form.
+
+    Accepts a bare hostname, an ``host:port`` pair, a bracketed IPv6
+    literal, an FQDN with a trailing dot, or a full URL (``https://…``) —
+    and reduces it to the lowercase host the caller would see in a Host
+    header, matching what :func:`_is_accepted_host` computes. Returns ``""``
+    for empty / unusable input (callers drop those).
+    """
+    v = (value or "").strip()
+    if not v:
+        return ""
+    # Full URL form (e.g. copied from a browser bar): take the hostname.
+    if "://" in v:
+        v = (urllib.parse.urlparse(v).hostname or "").strip()
+        if not v:
+            return ""
+    # Strip a single trailing dot (FQDN root label).
+    if v.endswith("."):
+        v = v[:-1]
+    # Strip port / brackets, mirroring _is_accepted_host's host_only logic.
+    if v.startswith("["):
+        close = v.find("]")
+        v = v[1:close] if close != -1 else v.strip("[]")
+    else:
+        v = v.rsplit(":", 1)[0] if ":" in v else v
+    return v.lower().strip()
+
+
+def _resolve_allowed_hosts(cli_hosts=None) -> "frozenset[str]":
+    """Merge the additive allowed-host sources into a normalized set.
+
+    UNION of three sources (any may be empty):
+      1. ``cli_hosts`` — repeatable ``--allowed-host`` flags.
+      2. ``HERMES_DASHBOARD_ALLOWED_HOSTS`` env var (comma-separated).
+      3. ``dashboard.allowed_hosts`` in config.yaml (a list).
+
+    Every entry is passed through :func:`_normalize_allowed_host`; empties
+    are dropped. The result compares equal to the ``host_only`` value
+    :func:`_is_accepted_host` derives from an incoming Host header.
+    """
+    raw: list[str] = list(cli_hosts or [])
+    env_val = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    if env_val:
+        raw.extend(env_val.split(","))
+    try:
+        cfg_hosts = (load_config().get("dashboard") or {}).get("allowed_hosts") or []
+        if isinstance(cfg_hosts, list):
+            raw.extend(str(h) for h in cfg_hosts)
+    except Exception:
+        pass
+    return frozenset(n for n in (_normalize_allowed_host(h) for h in raw) if n)
+
+
+def _is_accepted_host(
+    host_header: str, bound_host: str, allowed_hosts: "frozenset[str]" = frozenset()
+) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
@@ -420,6 +476,10 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     - Loopback aliases when bound to loopback
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
+    - Any host in ``allowed_hosts`` (operator opt-in via --allowed-host /
+      HERMES_DASHBOARD_ALLOWED_HOSTS / config; e.g. a MagicDNS name in front
+      of a loopback `tailscale serve` bind). The empty default keeps every
+      existing caller's behavior unchanged.
     """
     if not host_header:
         return False
@@ -440,6 +500,14 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
     host_only = host_only.lower()
+
+    # Operator-allowlisted host (union of --allowed-host / env / config).
+    # Checked before the bind rules so it works for loopback binds too —
+    # that is exactly the `tailscale serve` case (loopback bind reached via
+    # a MagicDNS name). Setting any entry forces the auth gate on (see
+    # start_server), so this cannot silently expose an unauthenticated bind.
+    if host_only in allowed_hosts:
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -473,7 +541,8 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        allowed_hosts = getattr(app.state, "allowed_hosts", frozenset())
+        if not _is_accepted_host(host_header, bound_host, allowed_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -14364,8 +14433,9 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not bound_host:
         return None
 
+    allowed_hosts = getattr(app.state, "allowed_hosts", frozenset())
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    if not _is_accepted_host(host_header, bound_host, allowed_hosts):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
@@ -14382,7 +14452,7 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(parsed.netloc, bound_host, allowed_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
@@ -16964,6 +17034,7 @@ def start_server(
     allow_public: bool = False,
     initial_profile: str = "",
     headless: bool = False,
+    allowed_hosts=None,
 ):
     """Start the web UI server.
 
@@ -16985,11 +17056,24 @@ def start_server(
     except Exception as exc:
         _log.debug("Nous auth keepalive did not start: %s", exc)
 
+    # Resolve the operator allowed-host allowlist (union of the --allowed-host
+    # flags, HERMES_DASHBOARD_ALLOWED_HOSTS, and dashboard.allowed_hosts),
+    # normalized to host_only form for comparison against incoming Host headers.
+    allowed_hosts_set = _resolve_allowed_hosts(allowed_hosts)
+
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5
     # uses this to decide whether to refuse the bind, log the gate-on
     # banner, and enable uvicorn proxy_headers.
-    app.state.auth_required = should_require_auth(host)
+    #
+    # A non-empty allowlist FORCES the gate on regardless of bind address:
+    # allowlisting an external hostname means requests are expected to arrive
+    # from beyond this machine (e.g. through a tailnet proxy), and a loopback
+    # bind would otherwise serve the unauthenticated dashboard — with its
+    # injected session token — to everyone who can reach that proxy. We OR it
+    # in here rather than inside should_require_auth (other callers depend on
+    # its pure host semantics).
+    app.state.auth_required = should_require_auth(host) or bool(allowed_hosts_set)
 
     # ``--insecure`` no longer disables the auth gate (June 2026 hardening:
     # the hermes-0day MCP-persistence campaign abused unauthenticated public
@@ -17009,6 +17093,14 @@ def start_server(
         # provider to be registered, else fail closed — there is no longer an
         # escape hatch that serves the dashboard without authentication.
         from hermes_cli.dashboard_auth import list_providers
+        # Why the gate engaged — the fix-closed message names it so an
+        # allowlist-triggered gate on a loopback bind isn't confusing.
+        _gate_reason = (
+            "an allowed-hosts allowlist is set (which forces authentication "
+            "regardless of bind address)"
+            if allowed_hosts_set
+            else "the auth gate engages on non-loopback binds"
+        )
         if not list_providers():
             # Surface the *specific* reason any bundled provider declined
             # to register (e.g. missing HERMES_DASHBOARD_OAUTH_CLIENT_ID).
@@ -17041,18 +17133,16 @@ def start_server(
             )
             if skip_reasons:
                 raise SystemExit(
-                    f"Refusing to bind dashboard to {host} — the auth gate "
-                    f"engages on non-loopback binds, but no auth providers "
-                    f"are registered.\n\n"
+                    f"Refusing to bind dashboard to {host} — {_gate_reason}, "
+                    f"but no auth providers are registered.\n\n"
                     f"Bundled providers reported these issues:\n"
                     + "\n".join(skip_reasons)
                     + "\n\n"
                     + _fix_hint
                 )
             raise SystemExit(
-                f"Refusing to bind dashboard to {host} — the auth gate "
-                f"engages on non-loopback binds, but no auth providers are "
-                f"registered.\n\n" + _fix_hint
+                f"Refusing to bind dashboard to {host} — {_gate_reason}, but "
+                f"no auth providers are registered.\n\n" + _fix_hint
             )
         _log.info(
             "Dashboard binding to %s with auth gate enabled. Providers: %s",
@@ -17063,6 +17153,8 @@ def start_server(
     # Record the bound host so host_header_middleware can validate incoming
     # Host headers against it. Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
+    # Extra Host values the operator opted into accepting (see _is_accepted_host).
+    app.state.allowed_hosts = allowed_hosts_set
 
     # ── Start uvicorn with direct Server API ─────────────────────────
     # We use uvicorn.Server directly (not uvicorn.run) so we can split

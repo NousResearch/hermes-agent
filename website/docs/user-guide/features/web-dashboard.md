@@ -28,6 +28,7 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
+| `--allowed-host` | — | Accept an extra `Host` header value beyond the bound host (repeatable). Lets a loopback / Tailscale-IP bind be reached by its MagicDNS name. Setting any value **forces the auth gate on** (see the [remote-backend guide](#connecting-hermes-desktop-to-a-remote-backend)). Also settable via `HERMES_DASHBOARD_ALLOWED_HOSTS` (comma-separated) or `dashboard.allowed_hosts` in config — the three sources are merged as a union |
 | `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard |
 
 ```bash
@@ -142,7 +143,7 @@ The "remote backend" Desktop connects to **is** a `hermes dashboard` process run
 Desktop's "remote backend is ready" probe only hits `GET /api/status`, which is a public endpoint — it answers as soon as *any* dashboard is running on the host. The live chat connection is a **separate** WebSocket to `/api/ws` (and `/api/pty`), and that socket is gated by two more checks the status probe never touches:
 
 1. **You must be authenticated.** When the dashboard is bound to a non-loopback address it engages its auth gate. Protect it with a username and password (the bundled [username/password provider](#usernamepassword-provider-no-oauth-idp)); Desktop signs in once and reuses the resulting session for the WebSocket via a single-use ticket. Without a configured provider, a non-loopback dashboard **fails closed at startup**.
-2. **The bind host must allow the client and match the Host header.** A loopback bind (`127.0.0.1`) only accepts loopback clients, so a remote machine is rejected at the socket layer regardless of credentials. Bind to a non-loopback address (`--host 0.0.0.0`) so the peer-IP guard lets the remote client through. The remote URL you enter in Desktop must reach the dashboard by the same host it bound to — the DNS-rebinding guard requires the Host header to match.
+2. **The bind host must allow the client and match the Host header.** A loopback bind (`127.0.0.1`) only accepts loopback clients, so a remote machine is rejected at the socket layer regardless of credentials. Bind to a non-loopback address (`--host 0.0.0.0`) so the peer-IP guard lets the remote client through. The remote URL you enter in Desktop must reach the dashboard by the same host it bound to — the DNS-rebinding guard requires the Host header to match. If you reach the dashboard through a proxy that presents a different hostname (e.g. a Tailscale MagicDNS name in front of a loopback `tailscale serve`), opt that name into the allowlist with `--allowed-host` / `HERMES_DASHBOARD_ALLOWED_HOSTS` / `dashboard.allowed_hosts` — doing so also forces the auth gate on (see the [remote-backend guide](#connecting-hermes-desktop-to-a-remote-backend)).
 
 #### Remote dashboard setup
 
@@ -1029,6 +1030,22 @@ If you run the dashboard as a systemd service, `~/.hermes/.env` is picked up aut
 :::warning
 The dashboard reads and writes your `.env` (API keys, secrets) and can run agent commands. The **username/password** setup shown here is for a trusted network — never expose a password-protected dashboard directly to the open internet. Put it behind a VPN. [Tailscale](https://tailscale.com/) is the clean option: bind to the machine's tailscale IP (`--host <tailscale-ip>`) and use `http://<tailscale-ip>:9119` as the Remote URL. Only devices on your tailnet can reach it. To reach a backend over the public internet, use the **OAuth (Nous Portal)** provider instead.
 :::
+
+#### Reaching it by its MagicDNS name
+
+If you'd rather use the tailnet **MagicDNS** hostname instead of the raw IP — or you front a loopback bind with `tailscale serve` (which terminates TLS and proxies to `127.0.0.1`) — the incoming `Host` header (`box.tailnet.ts.net`) won't match the bound host, so the DNS-rebinding guard rejects it with a `400`. Opt the name in:
+
+```bash
+# Bind to the tailscale IP but also accept the MagicDNS name
+hermes dashboard --host <tailscale-ip> --allowed-host box.tailnet.ts.net
+
+# Or, behind `tailscale serve` on a loopback bind:
+hermes dashboard --host 127.0.0.1 --allowed-host box.tailnet.ts.net
+```
+
+Equivalent to `HERMES_DASHBOARD_ALLOWED_HOSTS=box.tailnet.ts.net` or `dashboard.allowed_hosts: [box.tailnet.ts.net]` in config; the three sources are merged as a union. Entries are normalized (port, case, IPv6 brackets, a trailing FQDN dot, and full `https://…` URLs are all accepted).
+
+**Setting any allowed host forces the auth gate on**, even on a loopback bind — allowlisting an external name means requests arrive from beyond this machine (through the tailnet proxy), and an unauthenticated loopback dashboard would otherwise serve its injected session token to anyone who can reach that proxy. Configure a provider (username/password or OAuth) or the bind fails closed at startup.
 
 ### In Hermes Desktop
 

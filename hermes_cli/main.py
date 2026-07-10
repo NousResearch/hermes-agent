@@ -12037,6 +12037,11 @@ def cmd_dashboard(args):
             reexec_argv.append("--insecure")
         if getattr(args, "skip_build", False):
             reexec_argv.append("--skip-build")
+        # Forward each --allowed-host (repeatable) or the allowlist is
+        # silently dropped on re-exec — which would also drop the auth-gate
+        # forcing it triggers, quietly re-opening a loopback bind.
+        for _allowed in getattr(args, "allowed_hosts", None) or []:
+            reexec_argv.extend(["--allowed-host", _allowed])
         env = os.environ.copy()
         # Pin the child to the machine ROOT, not the launching profile's
         # HERMES_HOME.  We must resolve the root explicitly instead of just
@@ -12190,6 +12195,7 @@ def cmd_dashboard(args):
         allow_public=getattr(args, "insecure", False),
         initial_profile=getattr(args, "open_profile", "") or "",
         headless=_headless_backend,
+        allowed_hosts=getattr(args, "allowed_hosts", None) or [],
     )
 
 

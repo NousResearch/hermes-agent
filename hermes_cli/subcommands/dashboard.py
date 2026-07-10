@@ -40,6 +40,22 @@ def _add_server_runtime_args(parser) -> None:
         ),
     )
     parser.add_argument(
+        "--allowed-host",
+        action="append",
+        dest="allowed_hosts",
+        default=[],
+        metavar="HOST",
+        help=(
+            "Accept this Host header value in addition to the bound host "
+            "(repeatable). Lets a loopback / Tailscale-IP bind be reached via "
+            "its MagicDNS name (e.g. box.tailnet.ts.net) without tripping the "
+            "DNS-rebinding guard. Merged as a union with "
+            "HERMES_DASHBOARD_ALLOWED_HOSTS and dashboard.allowed_hosts. "
+            "Setting ANY value FORCES the auth gate on regardless of bind "
+            "address (requires an auth provider)."
+        ),
+    )
+    parser.add_argument(
         "--skip-build",
         action="store_true",
         help=(

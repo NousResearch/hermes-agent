@@ -216,7 +216,16 @@ authorization model, but the rules below apply uniformly.
    break-glass operator decision (§3.2).** The dashboard and other
    plugin HTTP servers default to loopback; exposing them via
    `--host 0.0.0.0` or equivalent makes public-exposure hardening
-   (§4) the operator's responsibility.
+   (§4) the operator's responsibility. The dashboard also validates
+   the request `Host` header against the bound host to defend against
+   DNS rebinding; operators fronting it with a proxy on a different
+   hostname (e.g. a Tailscale MagicDNS name) can opt that name in with
+   the `--allowed-host` / `HERMES_DASHBOARD_ALLOWED_HOSTS` /
+   `dashboard.allowed_hosts` allowlist. Any non-empty allowlist
+   **forces the auth gate on regardless of bind address** — a
+   fail-closed default so a loopback bind fronted by a shared proxy
+   cannot serve the unauthenticated dashboard to everyone who can
+   reach that proxy.
 
 ---
 
@@ -309,7 +318,10 @@ that:
   credential file.
 - Do not expose the gateway or API to the public internet without
   VPN, Tailscale, or firewall protection. Under OpenShell, use the
-  network policy layer to restrict egress.
+  network policy layer to restrict egress. To reach the dashboard by
+  its Tailscale MagicDNS name, add it to the `--allowed-host`
+  allowlist (which also forces the dashboard auth gate on — configure
+  a provider or the bind fails closed).
 - Configure a caller allowlist for every network-exposed adapter
   you enable (§2.6).
 - Review third-party skills and plugins before install (§2.4,

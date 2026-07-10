@@ -1399,7 +1399,8 @@ class TestBuildAnthropicKwargs:
         assert kwargs["thinking"]["type"] == "enabled"
         assert kwargs["thinking"]["budget_tokens"] == 16000
         assert kwargs["temperature"] == 1
-        assert kwargs["max_tokens"] >= 16000 + 4096
+        # min() ensures user-specified max_tokens is respected
+        assert kwargs["max_tokens"] == 4096
         assert "output_config" not in kwargs
 
     def test_reasoning_config_maps_to_adaptive_thinking_for_4_6_models(self):

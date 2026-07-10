@@ -122,8 +122,6 @@ class TestTextBatching:
         assert "chunk 3" in text
 
     @pytest.mark.asyncio
-
-    @pytest.mark.asyncio
     async def test_forwarded_text_batch_keeps_per_message_context(self):
         """Forwarded Telegram text updates should keep context while batching."""
         adapter = _make_adapter()
@@ -160,6 +158,7 @@ class TestTextBatching:
         assert "first forwarded message" in dispatched.text
         assert "second forwarded message" in dispatched.text
 
+    @pytest.mark.asyncio
     async def test_different_chats_not_merged(self):
         """Messages from different chats should be separate batches."""
         adapter = _make_adapter()

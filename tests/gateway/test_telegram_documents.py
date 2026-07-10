@@ -553,8 +553,6 @@ class TestMediaGroups:
         assert len(event.media_types) == 2
 
     @pytest.mark.asyncio
-
-    @pytest.mark.asyncio
     async def test_photo_album_flush_waits_for_in_progress_download(self, adapter, monkeypatch):
         monkeypatch.setenv("HERMES_TELEGRAM_STARTUP_MEDIA_GRACE_SECONDS", "0.2")
         adapter.MEDIA_GROUP_WAIT_SECONDS = 0.01
@@ -592,6 +590,7 @@ class TestMediaGroups:
         flushed = adapter.handle_message.await_args.args[0]
         assert flushed.media_urls == ["/tmp/one.jpg", "/tmp/two.jpg"]
 
+    @pytest.mark.asyncio
     async def test_disconnect_cancels_pending_media_group_flush(self, adapter):
         first_photo = _make_photo(_make_file_obj(b"first"))
         msg = _make_message(caption="two images", media_group_id="album-2", photo=[first_photo])

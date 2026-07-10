@@ -212,8 +212,6 @@ class TestBusySessionAck:
         agent.interrupt.assert_called_once_with("Are you working?")
 
     @pytest.mark.asyncio
-
-    @pytest.mark.asyncio
     async def test_busy_image_followup_queues_without_interrupt_or_ack(self):
         """Image follow-ups should not trigger the busy interrupt acknowledgment."""
         runner, sentinel = _make_runner()
@@ -281,6 +279,7 @@ class TestBusySessionAck:
         agent.interrupt.assert_not_called()
         adapter._send_with_retry.assert_not_called()
 
+    @pytest.mark.asyncio
     async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):
         """When busy_input_mode is 'queue', message is queued WITHOUT interrupt."""
         runner, sentinel = _make_runner()

@@ -1200,6 +1200,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         _resolved = _resolve_path_for_task(path, task_id)
 
+        # ── User configured deny policy ───────────────────────────────
+        # permissions.deny.paths is a deny-wins floor for file tools. Check it
+        # immediately after path resolution, before structured-document
+        # extraction or any other path that could open the target.
+        block_error = _check_permissions_deny_path(str(_resolved), task_id)
+        if block_error:
+            return json.dumps({"error": block_error})
+
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
         # Malformed documents fall through to the normal path/binary guard.
@@ -1269,14 +1277,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                     "Use vision_analyze for images, or terminal to inspect binary files."
                 ),
             })
-
-        # ── User configured deny policy ───────────────────────────────
-        # permissions.deny.paths is a deny-wins floor for file tools. Check it
-        # before other read guards so the user-defined rule is visible in the
-        # error and no file content is read.
-        block_error = _check_permissions_deny_path(str(_resolved), task_id)
-        if block_error:
-            return json.dumps({"error": block_error})
 
         # ── Hermes internal path guard ────────────────────────────────
         # Prevent prompt injection via catalog or hub metadata files,

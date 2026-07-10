@@ -73,6 +73,26 @@ class TestPermissionsDenyFileTools:
         assert "do not read" not in result["error"]
         mock_get.assert_not_called()
 
+    def test_read_file_denied_extractable_document_before_extraction(self, monkeypatch, tmp_path):
+        secret = tmp_path / "secret.ipynb"
+        secret.write_text(
+            json.dumps({"cells": [{"cell_type": "markdown", "source": ["do not read"]}]}),
+            encoding="utf-8",
+        )
+        _install_permissions_config(monkeypatch, paths=[str(secret)])
+
+        with (
+            patch("tools.read_extract.extract_document_text") as mock_extract,
+            patch("tools.file_tools._get_file_ops") as mock_get,
+        ):
+            result = json.loads(file_tools.read_file_tool(str(secret), task_id="deny-ipynb"))
+
+        assert "error" in result
+        assert "permissions.deny.paths" in result["error"]
+        assert "do not read" not in result["error"]
+        mock_extract.assert_not_called()
+        mock_get.assert_not_called()
+
     def test_write_file_denied_before_file_ops(self, monkeypatch, tmp_path):
         secret = tmp_path / "secret.txt"
         _install_permissions_config(monkeypatch, paths=[str(secret)])

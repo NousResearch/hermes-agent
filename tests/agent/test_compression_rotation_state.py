@@ -24,7 +24,15 @@ from unittest.mock import MagicMock, patch
 from hermes_state import SessionDB
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegram"):
+def _build_agent_with_db(
+    db: SessionDB,
+    session_id: str,
+    platform: str = "telegram",
+    chat_id: str = None,
+    chat_type: str = None,
+    thread_id: str = None,
+    gateway_session_key: str = None,
+):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -38,6 +46,10 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegr
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            thread_id=thread_id,
+            gateway_session_key=gateway_session_key,
         )
 
     compressor = MagicMock()
@@ -130,3 +142,81 @@ class TestPlatformForwardedAtBoundary:
         kwargs = calls[-1].kwargs
         assert kwargs.get("platform") == "telegram"
         assert kwargs.get("boundary_reason") == "compression"
+
+
+class TestRoutingColumnsPersistOnRotation:
+    """The compression-rotation child session row must carry the same
+    chat_id/chat_type/thread_id/session_key as its parent at CREATE time.
+
+    Previously ``create_session()`` at the rotation boundary
+    (agent/conversation_compression.py) only passed session_id/source/model/
+    model_config/parent_session_id — never the gateway routing columns. The
+    routing peer record (chat_id/thread_id/session_key) was written in a
+    SEPARATE step later, in gateway/run.py's post-turn backfill, after the
+    agent result returns to the event loop. A process crash/kill landing in
+    that gap left the child row permanently unroutable: NULL chat_id/thread_id
+    survive forever, since nothing ever revisits an already-created row to
+    backfill them, and find_latest_gateway_session_for_peer's WHERE clause
+    can never match a NULL-routing row. The parent conversation becomes an
+    orphan and the next inbound message on that chat/thread spawns a brand
+    new, empty session instead of resuming.
+
+    This test drives the real rotation path end-to-end (real SessionDB, real
+    AIAgent, real compress_context) and asserts the child row already has
+    the routing columns immediately after create_session returns — i.e.
+    there is no gap for a crash to land in.
+    """
+
+    def test_child_row_has_routing_columns_immediately_after_rotation(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROUTING_ROT"
+        db.create_session(
+            parent,
+            source="telegram",
+            chat_id="170829464",
+            chat_type="dm",
+            thread_id="544520",
+            session_key="agent:main:telegram:dm:170829464:544520",
+        )
+        agent = _build_agent_with_db(
+            db,
+            parent,
+            platform="telegram",
+            chat_id="170829464",
+            chat_type="dm",
+            thread_id="544520",
+            gateway_session_key="agent:main:telegram:dm:170829464:544520",
+        )
+
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        child = agent.session_id
+        assert child != parent  # rotation happened
+
+        row = db.get_session(child)
+        assert row is not None, "child session row must exist immediately after rotation"
+        assert row["chat_id"] == "170829464"
+        assert row["chat_type"] == "dm"
+        assert row["thread_id"] == "544520"
+        assert row["session_key"] == "agent:main:telegram:dm:170829464:544520"
+
+    def test_no_routing_context_is_a_harmless_noop(self, tmp_path: Path):
+        """CLI/non-gateway sessions have no chat_id/thread_id/session_key at
+        all — the fix must not require them or break sessions that never had
+        routing metadata in the first place."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_NO_ROUTING_ROT"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent, platform="cli")
+
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        child = agent.session_id
+        assert child != parent
+
+        row = db.get_session(child)
+        assert row is not None
+        assert row["chat_id"] is None
+        assert row["chat_type"] is None
+        assert row["thread_id"] is None
+        assert row["session_key"] is None

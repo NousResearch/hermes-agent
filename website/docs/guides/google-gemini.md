@@ -18,6 +18,10 @@ Hermes Agent supports Google Gemini as a native provider using the **Google AI S
 Set `GOOGLE_API_KEY` or `GEMINI_API_KEY`. Hermes checks both names for the `gemini` provider.
 :::
 
+:::warning A Google AI subscription does not replace API setup
+Google AI Pro and Ultra benefits do **not** authorize Gemini use in Hermes. Hermes requires a [Gemini API key](https://ai.google.dev/gemini-api/docs/api-key), with [API quota and billing](https://ai.google.dev/gemini-api/docs/billing) managed separately. Do not purchase a consumer plan solely to unlock Hermes.
+:::
+
 ## Quick Start
 
 ```bash
@@ -205,6 +209,10 @@ GEMINI_API_KEY=...
 ```
 
 Then run `hermes model` again.
+
+### "Unknown provider 'gemini-oauth'" or "Unknown provider 'google-gemini-cli'"
+
+These provider IDs—and `google-antigravity`—are unsupported. Use `provider: gemini` with `GOOGLE_API_KEY` or `GEMINI_API_KEY`; subscription authentication cannot be reused by Hermes.
 
 ### "This Google API key is on the free tier"
 

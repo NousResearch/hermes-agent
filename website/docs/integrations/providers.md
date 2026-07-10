@@ -54,6 +54,10 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 
 For the official API-key path, see the dedicated [Google Gemini guide](/guides/google-gemini).
 
+:::warning Google AI Pro and Ultra
+Consumer subscriptions do not authorize the Hermes `gemini` provider. Hermes requires a Google AI Studio API key with separate API quota and billing. See the [Google Gemini guide](/guides/google-gemini).
+:::
+
 :::tip Model key alias
 In the `model:` config section, you can use either `default:` or `model:` as the key name for your model ID. Both `model: { default: my-model }` and `model: { model: my-model }` work identically.
 :::

@@ -3,7 +3,17 @@ import { cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelInfo } from '@/hermes'
-import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentModel,
+  $currentProvider,
+  $profileDefaultModel,
+  $profileDefaultProvider,
+  setCurrentModel,
+  setCurrentProvider,
+  setProfileDefaultModel,
+  setProfileDefaultProvider
+} from '@/store/session'
 
 import { useModelControls } from './use-model-controls'
 
@@ -56,6 +66,8 @@ describe('useModelControls', () => {
     $activeSessionId.set(null)
     setCurrentModel('')
     setCurrentProvider('')
+    setProfileDefaultModel('')
+    setProfileDefaultProvider('')
   })
 
   afterEach(() => {
@@ -64,6 +76,8 @@ describe('useModelControls', () => {
     $activeSessionId.set(null)
     setCurrentModel('')
     setCurrentProvider('')
+    setProfileDefaultModel('')
+    setProfileDefaultProvider('')
   })
 
   it('applies the global model when there is no active runtime session', async () => {
@@ -178,5 +192,28 @@ describe('useModelControls', () => {
     // A profile swap forces a reseed to the new profile's default.
     await result.current.refreshCurrentModel(true)
     expect($currentModel.get()).toBe('openai/gpt-5.5')
+  })
+
+  it('reads the global default even when a sticky composer pick must survive', async () => {
+    setCurrentModel('deepseek/deepseek-v4-flash')
+    setCurrentProvider('deepseek')
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'google/gemma-4-26b-a4b-it:free', provider: 'openrouter' })
+    vi.mocked(getGlobalModelInfo).mockClear()
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect(getGlobalModelInfo).toHaveBeenCalledOnce()
+    expect($currentModel.get()).toBe('deepseek/deepseek-v4-flash')
+    expect($currentProvider.get()).toBe('deepseek')
+    expect($profileDefaultModel.get()).toBe('google/gemma-4-26b-a4b-it:free')
+    expect($profileDefaultProvider.get()).toBe('openrouter')
   })
 })

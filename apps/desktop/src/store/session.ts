@@ -262,6 +262,11 @@ export const $resumeFailedSessionId = atom<string | null>(null)
 export const $resumeExhaustedSessionId = atom<string | null>(null)
 export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
+// Memory-only profile defaults used to distinguish an intentional composer
+// override from the model configured in Settings. The override remains sticky;
+// these mirrors make that difference visible instead of silently billable.
+export const $profileDefaultModel = atom('')
+export const $profileDefaultProvider = atom('')
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
@@ -318,6 +323,9 @@ export const setCurrentProvider = (next: Updater<string>) => {
   updateAtom($currentProvider, next)
   persistString(COMPOSER_PROVIDER_KEY, $currentProvider.get() || null)
 }
+
+export const setProfileDefaultModel = (next: Updater<string>) => updateAtom($profileDefaultModel, next)
+export const setProfileDefaultProvider = (next: Updater<string>) => updateAtom($profileDefaultProvider, next)
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)

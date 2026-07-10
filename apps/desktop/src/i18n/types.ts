@@ -1751,6 +1751,7 @@ export interface Translations {
       switchModel: string
       openModelPicker: string
       modelTitle: (provider: string, model: string) => string
+      modelOverrideTitle: (provider: string, model: string, defaultProvider: string, defaultModel: string) => string
       providerModelTitle: (provider: string, model: string) => string
     }
   }

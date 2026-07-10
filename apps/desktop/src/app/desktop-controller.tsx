@@ -70,6 +70,8 @@ import {
   setCurrentModel,
   setCurrentProvider,
   setMessages,
+  setProfileDefaultModel,
+  setProfileDefaultProvider,
   setRememberedSessionId
 } from '../store/session'
 import { onSessionsChanged } from '../store/session-sync'
@@ -1081,6 +1083,8 @@ export function DesktopController() {
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
             onMainModelChanged={(provider, model) => {
+              setProfileDefaultProvider(provider)
+              setProfileDefaultModel(model)
               setCurrentProvider(provider)
               setCurrentModel(model)
               updateModelOptionsCache(provider, model, true)

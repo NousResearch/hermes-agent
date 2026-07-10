@@ -4,7 +4,15 @@ import { useCallback } from 'react'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentModel,
+  $currentProvider,
+  setCurrentModel,
+  setCurrentProvider,
+  setProfileDefaultModel,
+  setProfileDefaultProvider
+} from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelSelection {
@@ -35,24 +43,31 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
     [activeSessionId, queryClient]
   )
 
-  // Seed the composer's model state from the profile default. `force` reseeds
-  // for a profile swap (the new profile has its own default); otherwise this
-  // only fills an EMPTY selection so a user's pick (plain UI state in
-  // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
-  // draft / session events. A live session owns the footer, so skip entirely.
+  // Track the profile default even when a sticky composer pick survives. The
+  // composer uses that mirror to disclose overrides; `force` still reseeds the
+  // actual selection for a profile swap. A live session owns the footer, so skip
+  // entirely rather than mixing global config into session state.
   const refreshCurrentModel = useCallback(async (force = false) => {
     try {
       if ($activeSessionId.get()) {
         return
       }
 
-      if (!force && $currentModel.get()) {
+      const result = await getGlobalModelInfo()
+
+      if ($activeSessionId.get()) {
         return
       }
 
-      const result = await getGlobalModelInfo()
+      if (typeof result.model === 'string') {
+        setProfileDefaultModel(result.model)
+      }
 
-      if ($activeSessionId.get() || (!force && $currentModel.get())) {
+      if (typeof result.provider === 'string') {
+        setProfileDefaultProvider(result.provider)
+      }
+
+      if (!force && $currentModel.get()) {
         return
       }
 

@@ -2282,6 +2282,8 @@ export const zh: Translations = {
       switchModel: '切换模型',
       openModelPicker: '打开模型选择器',
       modelTitle: (provider, model) => `模型 · ${provider}: ${model}`,
+      modelOverrideTitle: (provider, model, defaultProvider, defaultModel) =>
+        `输入框模型覆盖 · ${provider}: ${model}。默认: ${defaultProvider}: ${defaultModel}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }
   },

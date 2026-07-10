@@ -1998,6 +1998,8 @@ export const zhHant = defineLocale({
       switchModel: '切換模型',
       openModelPicker: '開啟模型選擇器',
       modelTitle: (provider, model) => `模型 · ${provider}：${model}`,
+      modelOverrideTitle: (provider, model, defaultProvider, defaultModel) =>
+        `輸入框模型覆寫 · ${provider}：${model}。預設：${defaultProvider}：${defaultModel}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }
   },

@@ -2060,6 +2060,8 @@ export const ja = defineLocale({
       switchModel: 'モデルを切り替え',
       openModelPicker: 'モデルピッカーを開く',
       modelTitle: (provider, model) => `モデル · ${provider}: ${model}`,
+      modelOverrideTitle: (provider, model, defaultProvider, defaultModel) =>
+        `作成欄の上書き · ${provider}: ${model}。デフォルト: ${defaultProvider}: ${defaultModel}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }
   },

@@ -2115,6 +2115,8 @@ export const en: Translations = {
       switchModel: 'Switch model',
       openModelPicker: 'Open model picker',
       modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
+      modelOverrideTitle: (provider, model, defaultProvider, defaultModel) =>
+        `Composer override · ${provider}: ${model}. Default: ${defaultProvider}: ${defaultModel}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }
   },

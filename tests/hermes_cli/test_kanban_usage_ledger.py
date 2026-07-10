@@ -1714,6 +1714,309 @@ class TestAggregationFullEventKey:
         assert agg["total_api_calls"] == 2
 
 
+class TestAggregationEventBoundaries:
+    """R4F: aggregation across event boundaries without double/under-count.
+
+    Stable event key = (board, task_id, run_id, call_kind, api_call_index).
+    Multi-parent associations must never multiply token or API-call totals.
+    Accepted-result NULL means unobserved; explicit 0 is observed zero.
+    """
+
+    def test_api_call_count_uses_full_stable_event_key(self, isolated_kanban):
+        """Same api_call_index across boards/tasks/runs/call_kinds are distinct."""
+        # Five events, all with local index 0 — undercounts if only DISTINCT index.
+        specs = [
+            dict(board="board_a", task_id="t_1", run_id=1, call_kind="primary"),
+            dict(board="board_b", task_id="t_1", run_id=1, call_kind="primary"),
+            dict(board="board_a", task_id="t_2", run_id=1, call_kind="primary"),
+            dict(board="board_a", task_id="t_1", run_id=2, call_kind="primary"),
+            dict(board="board_a", task_id="t_1", run_id=1, call_kind="auxiliary"),
+        ]
+        for i, spec in enumerate(specs):
+            ledger.record_run_usage(
+                isolated_kanban,
+                **_base_kwargs(
+                    **spec,
+                    api_call_index=0,
+                    input_tokens=10 * (i + 1),
+                    output_tokens=i + 1,
+                    token_source=(
+                        "incomplete" if spec["call_kind"] == "auxiliary"
+                        else "provider_authoritative"
+                    ),
+                ),
+            )
+
+        agg = ledger.aggregate_usage(isolated_kanban)
+        assert agg["record_count"] == 5
+        assert agg["total_api_calls"] == 5, (
+            "total_api_calls must use full stable event key, not bare api_call_index; "
+            f"got {agg['total_api_calls']}"
+        )
+        assert agg["total_input_tokens"] == 10 + 20 + 30 + 40 + 50
+        assert agg["total_output_tokens"] == 1 + 2 + 3 + 4 + 5
+
+    def test_board_filter_does_not_leak_other_boards(self, isolated_kanban):
+        """Board filter isolates aggregation."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(board="alpha", task_id="t_shared", input_tokens=100, output_tokens=10),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(board="beta", task_id="t_shared", input_tokens=200, output_tokens=20),
+        )
+        alpha = ledger.aggregate_usage(isolated_kanban, board="alpha", task_id="t_shared")
+        beta = ledger.aggregate_usage(isolated_kanban, board="beta", task_id="t_shared")
+        assert alpha["total_api_calls"] == 1
+        assert alpha["total_input_tokens"] == 100
+        assert beta["total_api_calls"] == 1
+        assert beta["total_input_tokens"] == 200
+
+    def test_retry_upsert_same_event_key_does_not_double_count(self, isolated_kanban):
+        """Retries that reuse the stable key update in place; aggregate once."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(input_tokens=100, output_tokens=50, cost_usd=0.1, cost_status="actual"),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(input_tokens=120, output_tokens=60, cost_usd=0.12, cost_status="actual"),
+        )
+        agg = ledger.aggregate_usage(isolated_kanban, task_id="t_abc", run_id=1)
+        assert agg["record_count"] == 1
+        assert agg["total_api_calls"] == 1
+        assert agg["total_input_tokens"] == 120
+        assert agg["total_output_tokens"] == 60
+        assert abs(agg["total_cost_usd"] - 0.12) < 1e-9
+
+    def test_repair_cycles_and_models_aggregate_without_undercount(self, isolated_kanban):
+        """Distinct API calls across repair cycles and models all count."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                api_call_index=0,
+                model="gpt-4",
+                provider="openrouter",
+                input_tokens=100,
+                output_tokens=50,
+                repair_cycle=0,
+                checker_result="FAIL",
+                accepted_result_tokens=None,
+            ),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                api_call_index=1,
+                model="claude-3",
+                provider="anthropic",
+                input_tokens=200,
+                output_tokens=100,
+                repair_cycle=1,
+                checker_result="PASS",
+                accepted_result_tokens=100,
+            ),
+        )
+        # Same model on a new run (retry run) is another event.
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                run_id=2,
+                api_call_index=0,
+                model="gpt-4",
+                provider="openrouter",
+                input_tokens=50,
+                output_tokens=25,
+                repair_cycle=0,
+                accepted_result_tokens=None,
+            ),
+        )
+
+        agg = ledger.aggregate_usage(isolated_kanban, task_id="t_abc")
+        assert agg["total_api_calls"] == 3
+        assert agg["record_count"] == 3
+        assert agg["total_input_tokens"] == 350
+        assert agg["total_output_tokens"] == 175
+        assert agg["total_accepted_result_tokens"] == 100
+
+        by_model = ledger.aggregate_usage(isolated_kanban, task_id="t_abc", model="gpt-4")
+        assert by_model["total_api_calls"] == 2
+        assert by_model["total_input_tokens"] == 150
+
+    def test_primary_and_auxiliary_aggregate_separately_and_together(self, isolated_kanban):
+        """Primary vs auxiliary boundaries stay distinct under full event key."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(call_kind="primary", api_call_index=0, input_tokens=100, output_tokens=40),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                call_kind="auxiliary",
+                api_call_index=0,
+                token_source="incomplete",
+                input_tokens=30,
+                output_tokens=10,
+            ),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                call_kind="auxiliary",
+                api_call_index=1,
+                token_source="runtime_reported",
+                input_tokens=20,
+                output_tokens=5,
+            ),
+        )
+
+        all_agg = ledger.aggregate_usage(isolated_kanban, run_id=1)
+        assert all_agg["total_api_calls"] == 3
+        assert all_agg["total_input_tokens"] == 150
+
+        pri = ledger.aggregate_usage(isolated_kanban, run_id=1, call_kind="primary")
+        assert pri["total_api_calls"] == 1
+        assert pri["total_input_tokens"] == 100
+
+        aux = ledger.aggregate_usage(isolated_kanban, run_id=1, call_kind="auxiliary")
+        assert aux["total_api_calls"] == 2
+        assert aux["total_input_tokens"] == 50
+
+    def test_multi_parent_does_not_multiply_tokens_or_api_calls(self, isolated_kanban):
+        """Two parents on one event must not double-count tokens or API calls."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                task_id="t_child",
+                input_tokens=100,
+                output_tokens=50,
+                cost_usd=1.5,
+                cost_status="actual",
+                accepted_result_tokens=50,
+                parent_task_id="t_parent_a",
+            ),
+        )
+        ledger.record_parent(
+            isolated_kanban,
+            board="default",
+            task_id="t_child",
+            run_id=1,
+            call_kind="primary",
+            api_call_index=0,
+            parent_task_id="t_parent_b",
+        )
+
+        agg = ledger.aggregate_usage(isolated_kanban, task_id="t_child")
+        assert agg["record_count"] == 1
+        assert agg["total_api_calls"] == 1
+        assert agg["total_input_tokens"] == 100
+        assert agg["total_output_tokens"] == 50
+        assert agg["total_accepted_result_tokens"] == 50
+        assert abs(agg["total_cost_usd"] - 1.5) < 1e-9
+
+        # Parent-scoped aggregation must include the event once per parent filter
+        # and must use join-table parents (not only denormalized first parent).
+        for parent in ("t_parent_a", "t_parent_b"):
+            by_parent = ledger.aggregate_usage(
+                isolated_kanban, task_id="t_child", parent_task_id=parent
+            )
+            assert by_parent["total_api_calls"] == 1, parent
+            assert by_parent["total_input_tokens"] == 100, parent
+            assert by_parent["total_accepted_result_tokens"] == 50, parent
+
+    def test_accepted_result_null_unobserved_vs_explicit_zero(self, isolated_kanban):
+        """Unobserved accepted_result stays NULL; explicit 0 is observed zero."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(api_call_index=0, accepted_result_tokens=None, input_tokens=10, output_tokens=1),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(api_call_index=1, accepted_result_tokens=0, input_tokens=10, output_tokens=1),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(api_call_index=2, accepted_result_tokens=25, input_tokens=10, output_tokens=1),
+        )
+
+        rows = ledger.query_usage(isolated_kanban, run_id=1)
+        by_idx = {r["api_call_index"]: r["accepted_result_tokens"] for r in rows}
+        assert by_idx[0] is None
+        assert by_idx[1] == 0
+        assert by_idx[2] == 25
+
+        # NULL does not contribute; 0 + 25 = 25
+        agg = ledger.aggregate_usage(isolated_kanban, run_id=1)
+        assert agg["total_api_calls"] == 3
+        assert agg["total_accepted_result_tokens"] == 25
+
+        # All-unobserved filter: no fabricated accepted total from empty SUM.
+        unobs = ledger.aggregate_usage(isolated_kanban, run_id=1, model="no-such-model")
+        assert unobs["record_count"] == 0
+        assert unobs["total_api_calls"] == 0
+        assert unobs["total_accepted_result_tokens"] in (0, None)
+
+        # Only the NULL row (filter won't isolate easily by accepted); write a task
+        # with solely unobserved accepted_result and require NULL/0 unobserved total.
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                task_id="t_unobs_only",
+                run_id=9,
+                accepted_result_tokens=None,
+                input_tokens=5,
+                output_tokens=1,
+            ),
+        )
+        only_null = ledger.aggregate_usage(isolated_kanban, task_id="t_unobs_only")
+        assert only_null["record_count"] == 1
+        assert only_null["total_api_calls"] == 1
+        # Unobserved-only: must not invent positive accepted tokens.
+        assert only_null["total_accepted_result_tokens"] in (0, None)
+        assert (only_null["total_accepted_result_tokens"] or 0) == 0
+
+    def test_unobserved_cost_stays_null_observed_costs_sum(self, isolated_kanban):
+        """Cost NULL (unobserved) preserved; mixed observed costs sum without inventing zeros."""
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                api_call_index=0,
+                cost_usd=None,
+                cost_status=None,
+                input_tokens=10,
+                output_tokens=1,
+            ),
+        )
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                api_call_index=1,
+                cost_usd=0.25,
+                cost_status="actual",
+                input_tokens=10,
+                output_tokens=1,
+            ),
+        )
+        mix = ledger.aggregate_usage(isolated_kanban, run_id=1)
+        assert mix["total_api_calls"] == 2
+        assert abs(mix["total_cost_usd"] - 0.25) < 1e-9
+
+        ledger.record_run_usage(
+            isolated_kanban,
+            **_base_kwargs(
+                task_id="t_no_cost",
+                run_id=3,
+                cost_usd=None,
+                input_tokens=5,
+                output_tokens=1,
+            ),
+        )
+        none = ledger.aggregate_usage(isolated_kanban, task_id="t_no_cost")
+        assert none["total_api_calls"] == 1
+        assert none["total_cost_usd"] is None
+
+
 class TestNormalConversationRuntimeBoundary:
     """R4C: real normal conversation model-call boundary (not helper-only).
 

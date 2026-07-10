@@ -38,6 +38,14 @@ VALID_TOKEN_SOURCES = {
     "unknown",
 }
 
+# Stable usage-event identity for aggregation (must match run_usage PK).
+# COUNT(DISTINCT api_call_index) alone undercounts when the same local index
+# appears on different boards/tasks/runs/call_kinds.
+_USAGE_EVENT_KEY_SQL = (
+    "board || '|' || task_id || '|' || run_id || '|' || call_kind || '|' || "
+    "CAST(api_call_index AS TEXT)"
+)
+
 
 def _check_for_secrets(field: str, value: str) -> None:
     """Raise ValueError if value matches secret patterns."""
@@ -426,8 +434,14 @@ def aggregate_usage(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     call_kind: Optional[str] = None,
+    parent_task_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Aggregate usage statistics with optional filters.
+
+    Aggregation is always over distinct usage events keyed by
+    ``(board, task_id, run_id, call_kind, api_call_index)``. Parent
+    associations live in ``run_usage_parents``; filtering by parent uses
+    an EXISTS subquery so multi-parent events are never multiplied.
 
     Args:
         conn: Database connection
@@ -437,6 +451,10 @@ def aggregate_usage(
         profile: Filter by profile (optional)
         provider: Filter by provider (optional)
         model: Filter by model (optional)
+        call_kind: Filter by call kind primary/auxiliary (optional)
+        parent_task_id: Filter events associated with this parent (optional).
+            Matches denormalized ``run_usage.parent_task_id`` or any row in
+            ``run_usage_parents`` without JOIN-multiplying token totals.
 
     Returns:
         Dict with aggregated totals:
@@ -452,10 +470,12 @@ def aggregate_usage(
             "total_aux_cache_write_tokens": int,
             "total_cost_usd": float or None,
             "record_count": int,
+            "total_api_calls": int,
+            "total_accepted_result_tokens": int,
         }
     """
     where_clauses = []
-    params = []
+    params: list[Any] = []
 
     if board is not None:
         where_clauses.append("board = ?")
@@ -478,6 +498,25 @@ def aggregate_usage(
     if call_kind is not None:
         where_clauses.append("call_kind = ?")
         params.append(call_kind)
+    if parent_task_id is not None:
+        # EXISTS (not JOIN) so multi-parent events count once. Also honor the
+        # denormalized parent_task_id column for rows that predate the join table.
+        where_clauses.append(
+            """(
+                parent_task_id = ?
+                OR EXISTS (
+                    SELECT 1 FROM run_usage_parents p
+                    WHERE p.board = run_usage.board
+                      AND p.task_id = run_usage.task_id
+                      AND p.run_id = run_usage.run_id
+                      AND p.call_kind = run_usage.call_kind
+                      AND p.api_call_index = run_usage.api_call_index
+                      AND p.parent_task_id = ?
+                )
+            )"""
+        )
+        params.append(parent_task_id)
+        params.append(parent_task_id)
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
@@ -494,7 +533,7 @@ def aggregate_usage(
             COALESCE(SUM(aux_cache_write_tokens), 0) as total_aux_cache_write,
             SUM(cost_usd) as total_cost,
             COUNT(*) as record_count,
-            COUNT(DISTINCT board || '|' || task_id || '|' || run_id || '|' || call_kind || '|' || api_call_index) as total_api_calls,
+            COUNT(DISTINCT {_USAGE_EVENT_KEY_SQL}) as total_api_calls,
             COALESCE(SUM(accepted_result_tokens), 0) as total_accepted_result_tokens
         FROM run_usage
         WHERE {where_sql}

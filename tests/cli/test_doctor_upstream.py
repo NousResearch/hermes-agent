@@ -109,6 +109,26 @@ def gitrepo(tmp_path: Path):
     )
 
 
+def _make_feature_tracking_fork(gitrepo, *, branch: str = "feat/canonical"):
+    """Create one local feature commit published to a fork-tracking branch."""
+    gitrepo.git(["checkout", "-q", "-b", branch], gitrepo.cwd)
+    for index in range(1, 5):
+        (gitrepo.cwd / f"feature_{index}.txt").write_text(f"feature {index}\n")
+    gitrepo.git(["add", "."], gitrepo.cwd)
+    gitrepo.git(["commit", "-q", "-m", "feature four files"], gitrepo.cwd)
+
+    fork = gitrepo.cwd.parent / "jrgros-ops.git"
+    fork.mkdir()
+    gitrepo.git(["init", "--bare", "-q"], fork)
+    gitrepo.git(["remote", "add", "jrgros-ops", str(fork)], gitrepo.cwd)
+    gitrepo.git(["push", "-q", "-u", "jrgros-ops", f"HEAD:{branch}"], gitrepo.cwd)
+    return SimpleNamespace(
+        branch=branch,
+        publish_ref=f"jrgros-ops/{branch}",
+        canonical_ref="origin/main",
+    )
+
+
 # =========================================================================== #
 # T1 — synchronized
 # =========================================================================== #
@@ -324,6 +344,7 @@ def test_T11_no_mutating_git_commands() -> None:
     assert "symbolic-ref" in READONLY_GIT_SUBCOMMANDS
     assert "config" in READONLY_GIT_SUBCOMMANDS
     assert "remote" in READONLY_GIT_SUBCOMMANDS
+    assert "status" in READONLY_GIT_SUBCOMMANDS
 
 
 # =========================================================================== #
@@ -551,6 +572,86 @@ def test_T19_implicit_branch_switch_passes_with_confirmation(gitrepo) -> None:
 
 
 # =========================================================================== #
+# R1-R6 — canonical upstream must be separate from fork publish tracking.
+# =========================================================================== #
+
+
+def test_R1_feature_tracks_fork_but_canonical_origin_main_counts_scope(gitrepo) -> None:
+    fixture = _make_feature_tracking_fork(gitrepo)
+    result = run_upstream_health(cwd=str(gitrepo.cwd))
+
+    assert result.branch_health.upstream.ref == fixture.canonical_ref
+    assert result.branch_health.tracking.upstream_ref == fixture.publish_ref
+    assert result.branch_health.tracking.publish_ref == fixture.publish_ref
+    assert result.branch_health.tracking.published_ahead == 0
+    assert result.branch_health.tracking.published_behind == 0
+    assert result.branch_health.tracking.fully_published is True
+    assert result.branch_health.ahead_behind.ahead == 1
+    assert result.branch_health.ahead_behind.behind == 0
+    assert result.branch_health.scope.unique_local_commits == 1
+    assert result.branch_health.scope.changed_files == 4
+    assert sorted(result.branch_health.mutual.local_paths) == [
+        "feature_1.txt",
+        "feature_2.txt",
+        "feature_3.txt",
+        "feature_4.txt",
+    ]
+
+
+def test_R2_tracking_branch_does_not_replace_canonical_origin_main(gitrepo) -> None:
+    fixture = _make_feature_tracking_fork(gitrepo)
+    result = run_upstream_health(cwd=str(gitrepo.cwd))
+
+    assert result.branch_health.tracking.upstream_ref == fixture.publish_ref
+    assert result.branch_health.upstream.ref == fixture.canonical_ref
+    assert result.branch_health.upstream.ref != result.branch_health.tracking.upstream_ref
+
+
+def test_R3_merge_base_equal_head_has_no_oldest_unique_commit(gitrepo) -> None:
+    result = run_upstream_health(cwd=str(gitrepo.cwd))
+
+    assert result.branch_health.divergence.merge_base_sha == result.branch_health.head_sha
+    assert result.branch_health.divergence.oldest_unique_commit_sha is None
+    assert result.branch_health.divergence.oldest_unique_commit_timestamp is None
+    assert result.branch_health.divergence.divergence_age_days == 0
+
+
+def test_R4_fully_published_feature_confirmed_but_not_canonical_synced(gitrepo) -> None:
+    fixture = _make_feature_tracking_fork(gitrepo)
+    result = run_upstream_health(cwd=str(gitrepo.cwd))
+
+    assert result.branch_health.tracking.fully_published is True
+    assert result.update_safety.decision == UpdateSafetyDecision.UPDATE_SAFETY_PASS
+    assert result.update_safety.requires_manual_confirmation is True
+    assert result.branch_health.upstream.ref == fixture.canonical_ref
+    assert result.branch_health.ahead_behind.ahead == 1
+    assert result.branch_health.ahead_behind.behind == 0
+
+
+def test_R5_compact_output_reports_canonical_divergence(gitrepo) -> None:
+    _make_feature_tracking_fork(gitrepo)
+    result = run_upstream_health(cwd=str(gitrepo.cwd))
+    line = render_compact(result)
+
+    assert "canonical=origin/main" in line
+    assert "publish=jrgros-ops/feat/canonical" in line
+    assert "ahead=1" in line
+    assert "behind=0" in line
+
+
+def test_R6_json_exposes_publish_and_canonical_refs_separately(gitrepo) -> None:
+    fixture = _make_feature_tracking_fork(gitrepo)
+    result = run_upstream_health(cwd=str(gitrepo.cwd))
+    parsed = json.loads(serialize_json(result))
+    branch_health = parsed["branch_health"]
+
+    assert branch_health["canonical_upstream"]["ref"] == fixture.canonical_ref
+    assert branch_health["tracking"]["publish_ref"] == fixture.publish_ref
+    assert branch_health["tracking"]["fully_published"] is True
+    assert branch_health["ahead_behind"] == {"ahead": 1, "behind": 0}
+
+
+# =========================================================================== #
 # Renderers / JSON sanity.
 # =========================================================================== #
 
@@ -562,7 +663,8 @@ def test_render_text_contains_required_lines(gitrepo) -> None:
     text = render_text(result)
     assert "branch:" in text
     assert "head:" in text
-    assert "upstream:" in text
+    assert "canonical_upstream:" in text
+    assert "tracking:" in text
     assert "branch_health:" in text
     assert "update_safety:" in text
     assert "exit_code:" in text

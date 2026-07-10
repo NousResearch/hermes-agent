@@ -54,6 +54,7 @@ READONLY_GIT_SUBCOMMANDS: frozenset[str] = frozenset({
     "symbolic-ref",
     "config",
     "remote",
+    "status",
 })
 
 # Subcommands explicitly forbidden even if someone extends the allowlist
@@ -241,6 +242,10 @@ class TrackingInfo:
     remote: Optional[str]
     merge_ref: Optional[str]
     resolution: str  # "explicit" | "config_fallback" | "none"
+    publish_ref: Optional[str] = None
+    published_ahead: int = 0
+    published_behind: int = 0
+    fully_published: bool = False
 
 
 @dataclass(frozen=True)
@@ -310,12 +315,24 @@ class BranchHealthReport:
                 "resolution_chain": list(self.upstream.resolution_chain),
                 "error": self.upstream.error,
             },
+            "canonical_upstream": {
+                "resolved": self.upstream.resolved,
+                "ref": self.upstream.ref,
+                "remote": self.upstream.remote,
+                "branch": self.upstream.branch,
+                "resolution_chain": list(self.upstream.resolution_chain),
+                "error": self.upstream.error,
+            },
             "tracking": {
                 "has_upstream": self.tracking.has_upstream,
                 "upstream_ref": self.tracking.upstream_ref,
+                "publish_ref": self.tracking.publish_ref,
                 "remote": self.tracking.remote,
                 "merge_ref": self.tracking.merge_ref,
                 "resolution": self.tracking.resolution,
+                "published_ahead": self.tracking.published_ahead,
+                "published_behind": self.tracking.published_behind,
+                "fully_published": self.tracking.fully_published,
             },
             "ahead_behind": {
                 "ahead": self.ahead_behind.ahead,
@@ -466,50 +483,82 @@ def _resolve_branch(cwd: Optional[str] = None) -> str:
 
 
 def _resolve_upstream_reference(
-    *, branch: str, cwd: Optional[str] = None
+    *, branch: str, cwd: Optional[str] = None,
+    canonical_upstream_ref: Optional[str] = None,
 ) -> UpstreamReference:
-    """Resolve the upstream ref using the contract's chain.
+    """Resolve the canonical repository upstream ref.
 
     Order:
-      1) ``git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}'``
-      2) ``refs/remotes/<remote>/HEAD``
+      1) explicit ``canonical_upstream_ref`` argument (tests/internal callers)
+      2) ``refs/remotes/origin/HEAD``
       3) ``refs/remotes/origin/main``
       4) ``refs/remotes/origin/master``
       5) structured error
+
+    The branch's ``@{upstream}`` is publish tracking and is intentionally
+    resolved separately by :func:`_resolve_tracking`; it must not replace the
+    canonical upstream when a feature branch tracks a fork.
     """
+    _ = branch  # kept for API symmetry and future branch-specific checks.
     chain: list[str] = []
 
-    out, err = _safe_stdout(
-        _run_git,
-        ("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"),
-        cwd=cwd,
-    )
-    if not err and out:
-        ref = out.strip()
-        if ref and not ref.endswith("@{upstream}"):
-            chain.append("tracking")
+    if canonical_upstream_ref:
+        chain.append("argument")
+        out, err = _safe_stdout(
+            _run_git,
+            ("rev-parse", "--verify", "--quiet", canonical_upstream_ref),
+            cwd=cwd,
+        )
+        if not err and out:
+            remote = canonical_upstream_ref.split("/", 1)[0] if "/" in canonical_upstream_ref else None
+            branch_name = canonical_upstream_ref.split("/", 1)[1] if "/" in canonical_upstream_ref else canonical_upstream_ref
             return UpstreamReference(
                 resolved=True,
-                ref=ref,
-                remote=ref.split("/", 1)[0] if "/" in ref else None,
-                branch=ref,
+                ref=canonical_upstream_ref,
+                remote=remote,
+                branch=branch_name,
                 resolution_chain=chain,
             )
+        return UpstreamReference(
+            resolved=False,
+            ref=None,
+            remote=None,
+            branch=None,
+            resolution_chain=chain,
+            error=f"canonical upstream reference not found: {canonical_upstream_ref}",
+        )
 
-    # Chain steps 2-4 — try known remote-tracking hints.
+    # Try known canonical remote-tracking refs.
     for hint in (
         "refs/remotes/origin/HEAD",
         "refs/remotes/origin/main",
         "refs/remotes/origin/master",
     ):
         chain.append(hint)
+        if hint.endswith("/HEAD"):
+            out, err = _safe_stdout(_run_git, ("symbolic-ref", "--quiet", "--short", hint), cwd=cwd)
+            if not err and out:
+                ref = out.strip()
+                if ref:
+                    return UpstreamReference(
+                        resolved=True,
+                        ref=ref,
+                        remote=ref.split("/", 1)[0] if "/" in ref else "origin",
+                        branch=ref.split("/", 1)[1] if "/" in ref else ref,
+                        resolution_chain=chain,
+                    )
+            # Local test repos and some clones do not materialize
+            # origin/HEAD. Fall through to origin/main/master.
+            continue
+
         out, err = _safe_stdout(_run_git, ("rev-parse", "--verify", "--quiet", hint), cwd=cwd)
         if not err and out:
+            ref = hint[len("refs/remotes/"):]
             return UpstreamReference(
                 resolved=True,
-                ref=out.strip(),
+                ref=ref,
                 remote="origin",
-                branch=hint.split("/", 2)[-1],
+                branch=ref.split("/", 1)[1] if "/" in ref else ref,
                 resolution_chain=chain,
             )
 
@@ -519,7 +568,7 @@ def _resolve_upstream_reference(
         remote=None,
         branch=None,
         resolution_chain=chain,
-        error="upstream reference not found",
+        error="canonical upstream reference not found",
     )
 
 
@@ -579,6 +628,28 @@ def _resolve_tracking(branch: str, cwd: Optional[str] = None) -> TrackingInfo:
     )
 
 
+def _with_publish_metrics(tracking: TrackingInfo, *, cwd: Optional[str] = None) -> TrackingInfo:
+    """Attach publication metrics computed against ``@{upstream}`` only."""
+    publish_ref = tracking.upstream_ref if tracking.has_upstream else None
+    published = _ahead_behind(cwd=cwd, upstream_ref=publish_ref)
+    return TrackingInfo(
+        has_upstream=tracking.has_upstream,
+        upstream_ref=tracking.upstream_ref,
+        remote=tracking.remote,
+        merge_ref=tracking.merge_ref,
+        resolution=tracking.resolution,
+        publish_ref=publish_ref,
+        published_ahead=published.ahead,
+        published_behind=published.behind,
+        fully_published=tracking.has_upstream and published.ahead == 0,
+    )
+
+
+def _working_tree_clean(cwd: Optional[str]) -> bool:
+    out, err = _safe_stdout(_run_git, ("status", "--porcelain"), cwd=cwd)
+    return not err and out is not None and out.strip() == ""
+
+
 def _ahead_behind(cwd: Optional[str], upstream_ref: Optional[str]) -> AheadBehind:
     if not upstream_ref:
         return AheadBehind(ahead=0, behind=0)
@@ -629,29 +700,20 @@ def _timestamp_for(sha: Optional[str], cwd: Optional[str]) -> Optional[int]:
         return None
 
 
-def _oldest_unique_commit(cwd: Optional[str], upstream_ref: Optional[str]) -> tuple[Optional[str], Optional[int]]:
-    """Oldest commit reachable from HEAD but not from upstream_ref."""
-    if not upstream_ref:
+def _oldest_unique_commit(
+    cwd: Optional[str], merge_base_sha: Optional[str], head_sha: Optional[str]
+) -> tuple[Optional[str], Optional[int]]:
+    """Oldest commit reachable from HEAD after the canonical merge base."""
+    if not merge_base_sha or not head_sha:
         return None, None
-    list_out, list_err = _safe_stdout(
-        _run_git, ("rev-list", "--reverse", f"HEAD^{upstream_ref}..HEAD"), cwd=cwd
-    ) if False else (None, None)  # revision syntax differs; use a portable form
-    # Portable: list unique-local commits via rev-list with not-other-ref.
+    if merge_base_sha == head_sha:
+        return None, None
     out, err = _safe_stdout(
-        _run_git, ("rev-list", "--reverse", f"HEAD^{upstream_ref}..HEAD"), cwd=cwd
+        _run_git, ("rev-list", "--reverse", f"{merge_base_sha}..HEAD"), cwd=cwd
     )
-    _ = list_out  # silence linters; kept for clarity in contract evolution.
-    _ = list_err
     if err or out is None:
-        # Fall back to plain unique local listing (works on all git versions).
-        out2, err2 = _safe_stdout(
-            _run_git, ("rev-list", "--reverse", "HEAD"), cwd=cwd
-        )
-        if err2 or out2 is None:
-            return None, None
-    else:
-        out2 = out
-    lines = [line.strip() for line in (out2 or "").splitlines() if line.strip()]
+        return None, None
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
     if not lines:
         return None, None
     oldest_sha = lines[0]
@@ -661,12 +723,16 @@ def _oldest_unique_commit(cwd: Optional[str], upstream_ref: Optional[str]) -> tu
 
 def _divergence_info(cwd: Optional[str], upstream_ref: Optional[str]) -> DivergenceInfo:
     merge_base_sha = _merge_base(cwd, upstream_ref)
+    head_out, head_err = _safe_stdout(_run_git, ("rev-parse", "HEAD"), cwd=cwd)
+    head_sha = head_out.strip() if not head_err and head_out else None
     head_ts = _timestamp_for("HEAD", cwd=cwd)
     merge_base_ts = _timestamp_for(merge_base_sha, cwd=cwd)
-    oldest_sha, oldest_ts = _oldest_unique_commit(cwd, upstream_ref)
+    oldest_sha, oldest_ts = _oldest_unique_commit(cwd, merge_base_sha, head_sha)
 
     age_days: Optional[int] = None
-    if head_ts is not None and oldest_ts is not None:
+    if merge_base_sha and head_sha and merge_base_sha == head_sha:
+        age_days = 0
+    elif head_ts is not None and oldest_ts is not None:
         diff_seconds = max(0, head_ts - oldest_ts)
         age_days = diff_seconds // 86_400
 
@@ -680,13 +746,17 @@ def _divergence_info(cwd: Optional[str], upstream_ref: Optional[str]) -> Diverge
     )
 
 
-def _diff_name_only(cwd: Optional[str], ref1: str, ref2: str) -> list[str]:
+def _diff_name_only_range(cwd: Optional[str], revision_range: str) -> list[str]:
     out, err = _safe_stdout(
-        _run_git, ("diff", "--name-only", f"{ref1}..{ref2}"), cwd=cwd
+        _run_git, ("diff", "--name-only", revision_range), cwd=cwd
     )
     if err or out is None:
         return []
     return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _diff_name_only(cwd: Optional[str], ref1: str, ref2: str) -> list[str]:
+    return _diff_name_only_range(cwd, f"{ref1}..{ref2}")
 
 
 def _shortstat(cwd: Optional[str], ref: Optional[str]) -> tuple[int, int, int]:
@@ -753,7 +823,9 @@ def _scope_health(cwd: Optional[str], upstream_ref: Optional[str]) -> ScopeHealt
     if not upstream_ref:
         return ScopeHealth(0, 0, 0, 0)
     unique_local = _rev_count(cwd, upstream_ref, "HEAD")
-    changed, ins, dele = _shortstat(cwd, upstream_ref)
+    changed_paths = _diff_name_only_range(cwd, f"{upstream_ref}...HEAD")
+    shortstat_changed, ins, dele = _shortstat(cwd, upstream_ref)
+    changed = len(changed_paths) if changed_paths else shortstat_changed
     return ScopeHealth(
         unique_local_commits=unique_local,
         changed_files=changed,
@@ -804,8 +876,11 @@ def classify_branch_health(
 # --------------------------------------------------------------------------- #
 
 
-def collect_branch_health(*, cwd: Optional[str] = None,
-                         repo_root: Optional[str] = None) -> BranchHealthReport:
+def collect_branch_health(
+    *, cwd: Optional[str] = None,
+    repo_root: Optional[str] = None,
+    canonical_upstream_ref: Optional[str] = None,
+) -> BranchHealthReport:
     """Read-only collection of BranchHealth components UH1–UH5 + UH9."""
     reasons: list[str] = []
     raw_error: Optional[str] = None
@@ -834,12 +909,16 @@ def collect_branch_health(*, cwd: Optional[str] = None,
     try:
         branch = _resolve_branch(cwd=repo)
         head_sha, head_short = _resolve_head(cwd=repo)
-        upstream = _resolve_upstream_reference(branch=branch, cwd=repo)
-        tracking = _resolve_tracking(branch=branch, cwd=repo)
+        upstream = _resolve_upstream_reference(
+            branch=branch,
+            cwd=repo,
+            canonical_upstream_ref=canonical_upstream_ref,
+        )
+        tracking = _with_publish_metrics(_resolve_tracking(branch=branch, cwd=repo), cwd=repo)
         # UH1 collect
         if not upstream.resolved:
-            reasons.append("UH1: upstream reference unresolved")
-        # UH3 ahead/behind only when we have an upstream
+            reasons.append("UH1: canonical upstream reference unresolved")
+        # UH3 ahead/behind only when we have a canonical upstream
         effective_upstream = upstream.ref if upstream.resolved else None
         ab = _ahead_behind(cwd=repo, upstream_ref=effective_upstream)
         # UH4 divergence
@@ -1143,10 +1222,14 @@ def render_text(result: UpstreamHealthResult) -> str:
     lines.append(f"  branch:    {bh.branch}")
     lines.append(f"  head:      {bh.head_short}")
     if bh.upstream.resolved:
-        lines.append(f"  upstream:  {bh.upstream.ref}")
+        lines.append(f"  canonical_upstream: {bh.upstream.ref}")
     else:
-        lines.append(f"  upstream:  (unresolved — {bh.upstream.error or 'no candidate'})")
-    lines.append(f"  tracking:  {bh.tracking.resolution}")
+        lines.append(f"  canonical_upstream: (unresolved — {bh.upstream.error or 'no candidate'})")
+    lines.append(
+        f"  tracking:  publish_ref={bh.tracking.publish_ref or '(none)'} "
+        f"fully_published={'yes' if bh.tracking.fully_published else 'no'} "
+        f"published_ahead/behind={bh.tracking.published_ahead}/{bh.tracking.published_behind}"
+    )
     lines.append(
         f"  ahead/behind: {bh.ahead_behind.ahead}/{bh.ahead_behind.behind}"
     )
@@ -1193,7 +1276,8 @@ def render_compact(result: UpstreamHealthResult) -> str:
     confirm = "confirm" if us.requires_manual_confirmation else "auto"
     return (
         f"upstream-health health={bh.health.value} "
-        f"safety={us.decision.value} ahead={bh.ahead_behind.ahead} "
+        f"safety={us.decision.value} canonical={bh.upstream.ref or 'unresolved'} "
+        f"publish={bh.tracking.publish_ref or 'none'} ahead={bh.ahead_behind.ahead} "
         f"behind={bh.ahead_behind.behind} confirmation={confirm} "
         f"behavior={us.behavior_name.value}"
     )
@@ -1213,8 +1297,9 @@ def run_upstream_health(
     *,
     cwd: Optional[str] = None,
     behavior: UpdateBehaviorProfile = CURRENT_UPDATE_BEHAVIOR,
-    is_published_clean_feature: bool = False,
+    is_published_clean_feature: Optional[bool] = None,
     is_untracked_target_with_unique_commits: bool = False,
+    canonical_upstream_ref: Optional[str] = None,
 ) -> UpstreamHealthResult:
     """Single READONLY entry point used by ``hermes doctor --upstream``.
 
@@ -1223,11 +1308,21 @@ def run_upstream_health(
       2) ``update_safety_check``  (UH10) — pure decision over (1) + profile.
       3) ``aggregate_exit_code``  — frozen rule, see :func:`aggregate_exit_code`.
     """
-    bh = collect_branch_health(cwd=cwd)
+    bh = collect_branch_health(cwd=cwd, canonical_upstream_ref=canonical_upstream_ref)
+    published_clean = (
+        bool(
+            bh.branch != "HEAD"
+            and bh.branch != (bh.upstream.branch or "")
+            and bh.tracking.fully_published
+            and _working_tree_clean(bh.repo_root)
+        )
+        if is_published_clean_feature is None
+        else is_published_clean_feature
+    )
     safety = update_safety_check(
         bh,
         behavior=behavior,
-        is_published_clean_feature=is_published_clean_feature,
+        is_published_clean_feature=published_clean,
         is_untracked_target_with_unique_commits=is_untracked_target_with_unique_commits,
     )
     exit_code = aggregate_exit_code(bh, safety)

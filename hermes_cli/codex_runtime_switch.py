@@ -264,6 +264,10 @@ def apply(
             "Hermes tools available via MCP callback)."
         )
         msg_lines.append(
+            "Native Codex Computer Use app grants are routed through "
+            "Hermes approvals when the bundled plugin is installed."
+        )
+        msg_lines.append(
             "Effective on next session — current cached agent keeps "
             "the prior runtime to preserve prompt cache."
         )

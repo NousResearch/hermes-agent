@@ -65,6 +65,15 @@ from agent.redact import redact_sensitive_text
 logger = logging.getLogger(__name__)
 
 
+def _approval_event_choices(*, allow_permanent: bool = True) -> list[str]:
+    """Choices advertised to API/desktop approval clients."""
+    choices = ["once", "session"]
+    if allow_permanent:
+        choices.append("always")
+    choices.append("deny")
+    return choices
+
+
 def _hermes_version() -> str:
     """Return the hermes-agent version string, or "dev" if it can't be resolved.
 
@@ -4312,7 +4321,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         "event": "approval.request",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "choices": ["once", "session", "always", "deny"],
+                        "choices": _approval_event_choices(
+                            allow_permanent=event.get("allow_permanent", True)
+                            is not False
+                        ),
                     })
                     self._set_run_status(
                         run_id,

@@ -1069,6 +1069,15 @@ class TestBuildApprovalKeyboard:
         assert len(kb.content.rows) == 1
         assert len(kb.content.rows[0].buttons) == 3
 
+    def test_permanent_button_is_omitted_when_unsupported(self):
+        from gateway.platforms.qqbot.keyboards import build_approval_keyboard
+
+        kb = build_approval_keyboard("session-1", allow_permanent=False)
+        buttons = kb.content.rows[0].buttons
+
+        assert [button.id for button in buttons] == ["allow", "deny"]
+        assert all("allow-always" not in button.action.data for button in buttons)
+
     def test_button_data_embeds_session_key(self):
         from gateway.platforms.qqbot.keyboards import build_approval_keyboard
         kb = build_approval_keyboard("agent:main:qqbot:c2c:UID")
@@ -1819,6 +1828,25 @@ class TestSendExecApproval:
             chat_id="u", command="ls", session_key="s",
             metadata={"thread_id": "ignored", "anything": "else"},
         )
+
+    @pytest.mark.asyncio
+    async def test_metadata_disables_permanent_approval(self):
+        adapter = self._make_adapter()
+        captured = []
+
+        async def fake_send_approval(chat_id, req, reply_to=None):
+            from gateway.platforms.base import SendResult
+            captured.append(req)
+            return SendResult(success=True)
+
+        adapter.send_approval_request = fake_send_approval  # type: ignore[assignment]
+
+        await adapter.send_exec_approval(
+            chat_id="u", command="ls", session_key="s",
+            metadata={"allow_permanent": False},
+        )
+
+        assert captured[0].allow_permanent is False
 
 
 class TestSendUpdatePrompt:

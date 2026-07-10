@@ -2635,7 +2635,7 @@ class QQAdapter(BasePlatformAdapter):
             req: ApprovalRequest,
             reply_to: Optional[str] = None,
     ) -> SendResult:
-        """Send a 3-button approval request (``allow-once / allow-always / deny``).
+        """Send an approval request with only the supported scope buttons.
 
         The rendered text comes from :func:`build_approval_text`; callers can
         override by passing a custom :class:`ApprovalRequest`.
@@ -2648,7 +2648,10 @@ class QQAdapter(BasePlatformAdapter):
         return await self.send_with_keyboard(
             chat_id,
             build_approval_text(req),
-            build_approval_keyboard(req.session_key),
+            build_approval_keyboard(
+                req.session_key,
+                allow_permanent=req.allow_permanent,
+            ),
             reply_to=reply_to,
         )
 
@@ -2676,7 +2679,7 @@ class QQAdapter(BasePlatformAdapter):
         :func:`tools.approval.resolve_gateway_approval` — dispatched by the
         adapter's interaction callback (:meth:`_default_interaction_dispatch`).
         """
-        del metadata  # QQ doesn't have thread_id / DM targeting overrides.
+        allow_permanent = (metadata or {}).get("allow_permanent", True) is not False
 
         # Use the reply-to message for passive-message context when we have one.
         # QQ requires a msg_id on outbound messages to a user we've never
@@ -2689,6 +2692,7 @@ class QQAdapter(BasePlatformAdapter):
             description=description,
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
+            allow_permanent=allow_permanent,
         )
         return await self.send_approval_request(
             chat_id, req, reply_to=msg_id,

@@ -18549,6 +18549,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                allow_permanent = approval_data.get("allow_permanent", True) is not False
 
                 # Redact credentials from the command before displaying it in
                 # the approval prompt — Tirith's findings are already redacted,
@@ -18563,13 +18564,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # false positives from MagicMock auto-attribute creation in tests.
                 if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
                     try:
+                        approval_metadata = dict(_status_thread_metadata or {})
+                        approval_metadata["allow_permanent"] = allow_permanent
                         _approval_fut = safe_schedule_threadsafe(
                             _status_adapter.send_exec_approval(
                                 chat_id=_status_chat_id,
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=approval_metadata,
                             ),
                             _loop_for_step,
                             logger=logger,
@@ -18595,12 +18598,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Slack threads and reserved by Matrix clients.
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                scope_instructions = (
+                    f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
+                    f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
+                    if allow_permanent
+                    else (
+                        f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
+                        f"for the session, or `{_p}deny` to cancel."
+                    )
+                )
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
-                    f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
-                    f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
+                    f"{scope_instructions}"
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(

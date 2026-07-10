@@ -1480,8 +1480,18 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
+        candidates = list(queue) if resolve_all else [queue[0]]
+        # Approval UIs can intentionally hide permanent approval for requests
+        # whose underlying protocol does not support it. Enforce that scope at
+        # the resolver too so a crafted API request or typed command cannot
+        # submit a choice the user was never offered.
+        if choice == "always" and any(
+            entry.data.get("allow_permanent") is False
+            for entry in candidates
+        ):
+            return 0
         if resolve_all:
-            targets = list(queue)
+            targets = candidates
             queue.clear()
         else:
             targets = [queue.pop(0)]
@@ -3155,15 +3165,15 @@ def check_execute_code_guard(code: str, env_type: str,
 # MCP elicitation entry point
 # =========================================================================
 
-def request_elicitation_consent(
+def request_elicitation_choice(
     message: str,
     description: str,
     *,
     timeout_seconds: int | None = None,
+    allow_permanent: bool = False,
     surface: str = "mcp-elicitation",
 ) -> str:
-    """Route an MCP elicitation request to whichever approval surface owns
-    the active session and return a normalized result.
+    """Route an MCP elicitation and preserve the user's approval scope.
 
     Gateway sessions (Telegram, Slack, Discord, etc.) go through
     ``_await_gateway_decision`` so the notify_cb posts a message and the
@@ -3171,16 +3181,18 @@ def request_elicitation_consent(
     CLI/TUI sessions go through ``prompt_dangerous_approval``.
 
     Always fails closed: missing notify_cb in a gateway session, timeouts,
-    and exceptions all map to ``"decline"`` so a server treats them as
+    and exceptions all map to ``"deny"`` so a server treats them as
     "user did not approve" rather than retrying or hanging.
 
-    Returns one of ``"accept" | "decline" | "cancel"``.
+    Returns one of ``"once" | "session" | "always" | "deny" | "cancel"``.
+    Keeping the scope is important for protocols such as Codex Computer Use,
+    whose elicitation response can persist an app grant across sessions.
     """
     try:
         session_key = get_current_session_key()
     except Exception as exc:  # pragma: no cover -- defensive
         logger.warning("Elicitation consent: session lookup failed: %s", exc)
-        return "decline"
+        return "deny"
 
     if _is_gateway_approval_context():
         with _lock:
@@ -3191,13 +3203,14 @@ def request_elicitation_consent(
                 "notify_cb is registered — failing closed",
                 session_key,
             )
-            return "decline"
+            return "deny"
 
         approval_data = {
             "command": message,
             "description": description,
             "pattern_key": "mcp_elicitation",
             "pattern_keys": ["mcp_elicitation"],
+            "allow_permanent": allow_permanent,
         }
         try:
             decision = _await_gateway_decision(
@@ -3207,34 +3220,76 @@ def request_elicitation_consent(
             logger.error(
                 "Elicitation gateway dispatch failed: %s", exc, exc_info=True,
             )
-            return "decline"
+            return "deny"
 
         if decision.get("notify_failed"):
-            return "decline"
+            return "deny"
         if not decision.get("resolved"):
             return "cancel"
         choice = decision.get("choice")
         if choice in ("once", "session", "always"):
-            return "accept"
-        return "decline"
+            return choice
+        return "deny"
 
-    # CLI / TUI path. allow_permanent=False because elicitation is a
-    # per-call confirmation — there is no pattern to remember.
+    # CLI / TUI path. A detached app-server/cron process has no visible stdin
+    # approval surface; fail closed immediately instead of waiting on an
+    # invisible input() prompt until timeout.
+    try:
+        if not sys.stdin.isatty():
+            logger.warning(
+                "Elicitation requested without an interactive approval "
+                "surface — failing closed"
+            )
+            return "deny"
+    except Exception:
+        return "deny"
+
+    # Most elicitations are per-call confirmations, but a
+    # protocol may explicitly advertise durable persistence (for example,
+    # Codex Computer Use app grants). Only those callers set
+    # allow_permanent=True.
     try:
         choice = prompt_dangerous_approval(
             message,
             description,
             timeout_seconds=timeout_seconds,
-            allow_permanent=False,
+            allow_permanent=allow_permanent,
         )
     except Exception as exc:
         logger.error(
             "Elicitation CLI prompt failed: %s", exc, exc_info=True,
         )
-        return "decline"
+        return "deny"
 
     if choice in ("once", "session", "always"):
+        return choice
+    return "deny"
+
+
+def request_elicitation_consent(
+    message: str,
+    description: str,
+    *,
+    timeout_seconds: int | None = None,
+    surface: str = "mcp-elicitation",
+) -> str:
+    """Backward-compatible normalized MCP elicitation result.
+
+    Existing MCP SDK callers only understand accept/decline/cancel. New
+    transports that can carry persistence metadata should call
+    :func:`request_elicitation_choice` instead.
+    """
+    choice = request_elicitation_choice(
+        message,
+        description,
+        timeout_seconds=timeout_seconds,
+        allow_permanent=False,
+        surface=surface,
+    )
+    if choice in ("once", "session", "always"):
         return "accept"
+    if choice == "cancel":
+        return "cancel"
     return "decline"
 
 

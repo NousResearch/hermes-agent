@@ -1279,6 +1279,128 @@ class TestExportImport:
         assert not absolute_target.exists()
         assert not get_profile_dir("coder").exists()
 
+    def test_import_preserves_safe_relative_symlinks(self, profile_env, tmp_path):
+        if os.name == "nt":
+            probe = tmp_path / "symlink-probe"
+            try:
+                probe.symlink_to("symlink-target")
+            except OSError:
+                pytest.skip("Windows symlink creation requires optional privileges")
+            else:
+                probe.unlink()
+
+        archive_path = tmp_path / "export" / "symlinks.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            link = tarfile.TarInfo("coder/data/link.txt")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "target.txt"
+            tf.addfile(link)
+
+            dangling = tarfile.TarInfo("coder/data/dangling.txt")
+            dangling.type = tarfile.SYMTYPE
+            dangling.linkname = "missing.txt"
+            tf.addfile(dangling)
+
+            data = b"profile data"
+            target = tarfile.TarInfo("coder/data/target.txt")
+            target.size = len(data)
+            tf.addfile(target, io.BytesIO(data))
+
+        imported = import_profile(str(archive_path), name="coder")
+
+        link_path = imported / "data" / "link.txt"
+        dangling_path = imported / "data" / "dangling.txt"
+        assert link_path.is_symlink()
+        assert link_path.read_bytes() == b"profile data"
+        assert os.readlink(link_path) == "target.txt"
+        assert dangling_path.is_symlink()
+        assert not dangling_path.exists()
+        assert os.readlink(dangling_path) == "missing.txt"
+
+    @pytest.mark.parametrize(
+        "linkname",
+        ["/outside", "C:\\outside", "C:outside", "\\outside"],
+    )
+    def test_import_rejects_unsafe_symlink_target(
+        self, profile_env, tmp_path, linkname
+    ):
+        archive_path = tmp_path / "export" / "unsafe-link.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            link = tarfile.TarInfo("coder/link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = linkname
+            tf.addfile(link)
+
+        with pytest.raises(ValueError, match="Unsafe archive link target"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not get_profile_dir("coder").exists()
+
+    def test_import_rejects_hardlink_member(self, profile_env, tmp_path):
+        archive_path = tmp_path / "export" / "hardlink.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            data = b"profile data"
+            target = tarfile.TarInfo("coder/target.txt")
+            target.size = len(data)
+            tf.addfile(target, io.BytesIO(data))
+
+            link = tarfile.TarInfo("coder/link.txt")
+            link.type = tarfile.LNKTYPE
+            link.linkname = "coder/target.txt"
+            tf.addfile(link)
+
+        with pytest.raises(ValueError, match="Unsupported archive member type"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not get_profile_dir("coder").exists()
+
+    @pytest.mark.parametrize(
+        "duplicate_name",
+        ["coder/config.yaml", "coder/Config.yaml"],
+    )
+    def test_import_rejects_duplicate_member_path(
+        self, profile_env, tmp_path, duplicate_name
+    ):
+        archive_path = tmp_path / "export" / "duplicate.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for member_name, data in (
+                ("coder/config.yaml", b"first"),
+                (duplicate_name, b"second"),
+            ):
+                member = tarfile.TarInfo(member_name)
+                member.size = len(data)
+                tf.addfile(member, io.BytesIO(data))
+
+        with pytest.raises(ValueError, match="Duplicate archive member path"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not get_profile_dir("coder").exists()
+
+    def test_import_rejects_symlink_target_outside_profile_root(
+        self, profile_env, tmp_path
+    ):
+        archive_path = tmp_path / "export" / "escaping-link.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            link = tarfile.TarInfo("coder/nested/link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../../outside"
+            tf.addfile(link)
+
+        with pytest.raises(ValueError, match="Unsafe archive link target"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not get_profile_dir("coder").exists()
+
     def test_export_nonexistent_raises(self, profile_env, tmp_path):
         with pytest.raises(FileNotFoundError):
             export_profile("nonexistent", str(tmp_path / "out.tar.gz"))

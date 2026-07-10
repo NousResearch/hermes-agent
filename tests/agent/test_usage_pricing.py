@@ -8,9 +8,11 @@ from agent.usage_pricing import (
     has_known_pricing,
     is_notional_anthropic_provider,
     is_notional_subscription_bridge,
+    is_notional_xai_provider,
     normalize_usage,
     resolve_billing_route,
 )
+from agent.usage_pricing import _infer_vendor_from_model
 
 
 # Representative notional-Anthropic provider keys: the exact base members PLUS a
@@ -315,6 +317,93 @@ def test_notional_anthropic_has_known_pricing():
     members and claude-pool, since it routes through resolve_billing_route."""
     for provider in _REPRESENTATIVE_NOTIONAL:
         assert has_known_pricing("claude-opus-4-8", provider=provider), provider
+
+
+# --- xAI Grok (SuperGrok/Premium+ OAuth notional + metered api.x.ai) ------------
+# xai-oauth fronts Grok on a flat subscription (marginal cash $0) → priced at
+# xAI official rates, status "estimated". The metered direct-API provider ("xai")
+# prices from the SAME snapshot but bills real dollars. Single-vendor: everything
+# routes to the fixed "xai" vendor (contrast the poly-vendor gemini-bridge).
+_XAI_GROK_CASES = [
+    # (model, in$/Mtok, out$/Mtok)  — 1M in + 1M out = in+out
+    ("grok-build-0.1", 1.00, 2.00),
+    ("grok-4.5", 2.00, 6.00),
+    ("grok-4.3", 1.25, 2.50),
+    ("grok-4.20", 1.25, 2.50),
+    ("grok-4.20-multi-agent", 1.25, 2.50),
+]
+
+
+def test_notional_xai_predicate_matches_only_oauth():
+    assert is_notional_xai_provider("xai-oauth")
+    assert is_notional_xai_provider("XAI-OAUTH")  # normalized
+    # the metered direct-API key and unrelated providers are NOT notional
+    assert not is_notional_xai_provider("xai")
+    assert not is_notional_xai_provider("openai")
+    assert not is_notional_xai_provider("")
+    assert not is_notional_xai_provider(None)
+
+
+def test_xai_oauth_route_resolves_to_xai_billing():
+    """resolve_billing_route rewrites xai-oauth AND the metered xai/x-ai/xai-api
+    provider keys to provider 'xai' with the docs-snapshot billing mode."""
+    for provider in ("xai-oauth", "xai", "x-ai", "xai-api"):
+        route = resolve_billing_route("grok-build-0.1", provider=provider)
+        assert route.provider == "xai", provider
+        assert route.billing_mode == "official_docs_snapshot", provider
+        assert route.model == "grok-build-0.1", provider
+
+
+def test_xai_metered_route_resolves_via_base_url():
+    """The metered direct API is also reachable by base_url host match
+    (api.x.ai) with no explicit provider — it must still route to 'xai'."""
+    route = resolve_billing_route(
+        "grok-build-0.1", provider="", base_url="https://api.x.ai/v1"
+    )
+    assert route.provider == "xai"
+    assert route.billing_mode == "official_docs_snapshot"
+    assert route.model == "grok-build-0.1"
+
+
+def test_xai_grok_prices_at_official_rates():
+    """Every Grok model in the catalog must price at its exact xAI official rate
+    (status 'estimated', never 'unknown'/$0) through BOTH the notional OAuth relay
+    and the metered direct-API provider."""
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    for model, in_rate, out_rate in _XAI_GROK_CASES:
+        expected = round(in_rate + out_rate, 6)
+        for provider in ("xai-oauth", "xai"):
+            result = estimate_usage_cost(model, usage, provider=provider)
+            assert result.status == "estimated", f"{provider}/{model}: {result.status}"
+            assert result.amount_usd is not None, f"{provider}/{model} priced None"
+            assert float(result.amount_usd) == expected, (
+                f"{provider}/{model}: {result.amount_usd} != {expected}"
+            )
+
+
+def test_grok_vendor_inferred_from_model_id():
+    """A bare grok-* id with no/unknown provider must still price via the M1
+    vendor-inference fallback (grok- → xai) — mirrors claude-*/gpt-*/gemini-*."""
+    assert _infer_vendor_from_model("grok-build-0.1") == "xai"
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    for provider in ("", None):
+        result = estimate_usage_cost("grok-build-0.1", usage, provider=provider)
+        assert result.status == "estimated", f"provider={provider!r}: {result.status}"
+        assert float(result.amount_usd) == 3.00, f"provider={provider!r}: {result.amount_usd}"
+
+
+def test_unsupported_grok_model_stays_unpriced():
+    """A grok-* id with no pricing entry must NOT masquerade as priced — it stays
+    unknown/None rather than inventing a rate."""
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    result = estimate_usage_cost("grok-nonexistent-99", usage, provider="xai-oauth")
+    assert result.amount_usd is None
+    assert result.status == "unknown"
+
+
+def test_xai_has_known_pricing():
+    for provider in ("xai-oauth", "xai"):
+        assert has_known_pricing("grok-build-0.1", provider=provider), provider
 
 
 # --- gemini-bridge (Google AI Ultra sub via agy) notional pricing ---------------

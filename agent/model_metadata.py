@@ -764,6 +764,69 @@ def _localhost_to_ipv4(url: str) -> str:
     )
 
 
+def _is_lmstudio_models_payload(response: Any) -> bool:
+    """Return True only if an `/api/v1/models` 200 is genuinely LM Studio.
+
+    LM Studio's native listing is `{"data": [{...lm-studio fields...}]}` (its
+    REST API nests under `data`, but each entry carries LM Studio-native fields
+    the OpenAI envelope never has: `loaded_instances`, `max_context_length`,
+    `arch`, a publisher-qualified `key`, or a `type` like "llm"/"embeddings"
+    paired with a `state`). A generic OpenAI-compatible server (e.g. a loopback
+    Claude/Anthropic proxy that answers `/api/v1/models` for model-name
+    validation) returns `{"object":"list","data":[{"id","object":"model",...}]}`
+    with NONE of those fields. Distinguishing on the entry SHAPE — not a bare
+    200 — stops the misdetection that routed such proxies into the LM Studio
+    metadata parser and collapsed their context_length to a probe-tier default.
+
+    Fails closed: any parse error or unrecognized shape returns False (the
+    caller then continues its detection waterfall / OpenAI-compat path).
+    """
+    # Strong LM Studio-native markers: a single one is decisive. `state`/`type`
+    # are individually too generic (common in arbitrary JSON), so they only
+    # count TOGETHER (an entry that carries both a `type` and a `state`), never
+    # on their own — this avoids classifying a bespoke proxy whose entries
+    # happen to carry a lone `type`/`state` as LM Studio.
+    _LMSTUDIO_STRONG_MARKERS = (
+        "loaded_instances",
+        "max_context_length",
+        "arch",
+        "publisher",
+        "key",  # publisher-qualified id, e.g. "qwen/qwen3-4b"
+    )
+    try:
+        data = response.json()
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    # An explicit OpenAI list envelope is a strong NEGATIVE signal — LM Studio's
+    # native payload does not stamp object="list". This rejects every standard
+    # OpenAI-compatible server (vLLM, Ollama's OpenAI-compat layer, our Claude
+    # proxy, …) regardless of what entry fields it carries.
+    if data.get("object") == "list":
+        return False
+    # LM Studio's native listing keys entries under `data`; some builds use
+    # `models`. Prefer a `models`-keyed list as itself a positive signal (the
+    # OpenAI envelope never uses that key), then fall back to `data`.
+    lmstudio_keyed = isinstance(data.get("models"), list)
+    entries = data.get("models") if lmstudio_keyed else data.get("data")
+    if not isinstance(entries, list):
+        return False
+    if not entries:
+        # An idle LM Studio (started, no model loaded) returns an empty list.
+        # Accept it ONLY on the LM Studio-native `models` key — an empty
+        # `{"data": []}` is too ambiguous (an idle OpenAI server looks identical
+        # once the `object:"list"` envelope is absent), so fail closed there.
+        return lmstudio_keyed
+    first = entries[0]
+    if not isinstance(first, dict):
+        return False
+    if any(marker in first for marker in _LMSTUDIO_STRONG_MARKERS):
+        return True
+    # `type` + `state` together (neither alone) is an acceptable weaker signal.
+    return "type" in first and "state" in first
+
+
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
@@ -796,10 +859,26 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     result: Optional[str] = None
     try:
         with httpx.Client(timeout=2.0, headers=headers) as client:
-            # LM Studio exposes /api/v1/models — check first (most specific)
+            # LM Studio exposes /api/v1/models — check first (most specific).
+            #
+            # A 200 alone is NOT sufficient: other OpenAI-compatible local
+            # servers (e.g. a loopback Anthropic/Claude proxy that also answers
+            # `/api/v1/models` so harness model-name validation works) return a
+            # 200 here too, with the standard OpenAI listing shape
+            # (`{"object":"list","data":[{"id",...}]}`). Classifying those as
+            # LM Studio sends the caller down the LM Studio metadata parser,
+            # which looks for the LM Studio-native shape and finds nothing — so
+            # context_length resolves to None and the caller falls back to a
+            # probe-tier default (the 128K-on-a-1M-model over-compaction bug).
+            #
+            # LM Studio's native `/api/v1/models` is distinguishable: it returns
+            # a top-level `models` array whose entries carry LM Studio-specific
+            # fields (`loaded_instances`, a `state`, and a `type` like "llm"),
+            # NOT the OpenAI `{"object":"list","data":[...]}` envelope. Require
+            # that signature so a generic OpenAI listing can't be misdetected.
             try:
                 r = client.get(f"{lmstudio_url}/api/v1/models")
-                if r.status_code == 200:
+                if r.status_code == 200 and _is_lmstudio_models_payload(r):
                     result = "lm-studio"
             except Exception:
                 pass
@@ -1854,8 +1933,19 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             resp = client.get(f"{server_url}/v1/models/{model}")
             if resp.status_code == 200:
                 data = resp.json()
-                # vLLM returns max_model_len
-                ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
+                # Read genuine context-WINDOW fields only. `max_tokens` is
+                # excluded on purpose: on an Anthropic-style /v1/models/{id}
+                # passthrough it is the max *output* tokens (e.g. 128000 for a
+                # 1M-context model), NOT the context window — reading it here
+                # collapses the window and triggers premature auto-compaction.
+                # `max_input_tokens` IS the input/context ceiling, so it's kept.
+                ctx = (
+                    data.get("max_model_len")
+                    or data.get("context_length")
+                    or data.get("context_window")
+                    or data.get("max_input_tokens")
+                    or data.get("max_position_embeddings")
+                )
                 if ctx and isinstance(ctx, (int, float)):
                     return int(ctx)
 
@@ -1867,7 +1957,14 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                 models_list = data.get("data", [])
                 for m in models_list:
                     if _model_id_matches(m.get("id", ""), model):
-                        ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
+                        # Context-window fields only (see the max_tokens note above).
+                        ctx = (
+                            m.get("max_model_len")
+                            or m.get("context_length")
+                            or m.get("context_window")
+                            or m.get("max_input_tokens")
+                            or m.get("max_position_embeddings")
+                        )
                         if ctx and isinstance(ctx, (int, float)):
                             return int(ctx)
     except Exception:

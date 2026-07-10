@@ -161,7 +161,19 @@ class TestDetectLocalServerTypeCache:
 
         lmstudio_resp = MagicMock()
         lmstudio_resp.status_code = 200
-        lmstudio_resp.json.return_value = {"data": []}
+        # Realistic LM Studio native /api/v1/models entry (carries LM
+        # Studio-specific fields the OpenAI envelope never has). Detection now
+        # requires this signature, not a bare 200 (see the misdetection test
+        # below), so the mock must look genuinely LM Studio-native.
+        lmstudio_resp.json.return_value = {
+            "data": [{
+                "id": "qwen/qwen3-4b",
+                "type": "llm",
+                "state": "loaded",
+                "max_context_length": 32768,
+                "loaded_instances": [{"config": {"context_length": 32768}}],
+            }]
+        }
         swap_client = MagicMock()
         swap_client.__enter__ = lambda s: swap_client
         swap_client.__exit__ = MagicMock(return_value=False)
@@ -175,6 +187,106 @@ class TestDetectLocalServerTypeCache:
         swap_client.get.side_effect = _get
         with patch("httpx.Client", return_value=swap_client):
             assert detect_local_server_type("http://127.0.0.1:11434") == "lm-studio"
+
+    def test_openai_compat_proxy_not_misdetected_as_lmstudio(self):
+        """Regression: an OpenAI-compatible server (e.g. a loopback Claude/
+        Anthropic proxy) that answers /api/v1/models with a 200 must NOT be
+        classified as LM Studio just because the status is 200.
+
+        The bug: such a proxy returns the standard OpenAI listing shape
+        ({"object":"list","data":[{"id","object":"model",...}]}); the old
+        detector accepted any 200 on /api/v1/models as LM Studio, so the caller
+        went down the LM Studio metadata parser, found none of its fields, and
+        resolved context_length to None → probe-tier fallback (128K on a 1M
+        model → auto-compaction at ~96K). Detection must inspect the entry
+        SHAPE. The proxy also answers /api/tags with {"models":[...]}, so it
+        legitimately classifies as ollama here — the KEY assertion is simply
+        `!= "lm-studio"` (which is what breaks the metadata parse)."""
+        from agent import model_metadata
+        from agent.model_metadata import detect_local_server_type
+
+        model_metadata._endpoint_probe_path_cache.clear()
+
+        # OpenAI listing shape — exactly what claude-apx / claude-bpx return.
+        openai_models = MagicMock()
+        openai_models.status_code = 200
+        openai_models.json.return_value = {
+            "object": "list",
+            "data": [
+                {"id": "claude-fable-5", "object": "model", "created": 1,
+                 "owned_by": "anthropic", "context_length": 1000000},
+            ],
+        }
+        openai_tags = MagicMock()
+        openai_tags.status_code = 200
+        openai_tags.json.return_value = {
+            "models": [{"name": "claude-fable-5", "model": "claude-fable-5",
+                        "context_length": 1000000, "details": {}}],
+        }
+
+        client = MagicMock()
+        client.__enter__ = lambda s: client
+        client.__exit__ = MagicMock(return_value=False)
+
+        def _get(url, *a, **k):
+            if url.endswith("/api/v1/models"):
+                return openai_models
+            if url.endswith("/api/tags"):
+                return openai_tags
+            miss = MagicMock(); miss.status_code = 404
+            return miss
+
+        client.get.side_effect = _get
+        with patch("httpx.Client", return_value=client):
+            detected = detect_local_server_type("http://127.0.0.1:18801/anthropic")
+
+        assert detected != "lm-studio", (
+            f"OpenAI-compat proxy must not be misdetected as lm-studio; got {detected!r} "
+            "(this is the misdetection that collapsed context_length to a probe-tier default)"
+        )
+
+    def test_is_lmstudio_models_payload_shape_discrimination(self):
+        """Unit-level: the shape discriminator accepts genuine LM Studio
+        payloads and rejects the OpenAI envelope."""
+        from agent.model_metadata import _is_lmstudio_models_payload
+
+        def _resp(payload):
+            r = MagicMock(); r.json.return_value = payload; return r
+
+        # Genuine LM Studio native entries (any one strong marker suffices).
+        assert _is_lmstudio_models_payload(_resp(
+            {"data": [{"id": "m", "loaded_instances": []}]}))
+        assert _is_lmstudio_models_payload(_resp(
+            {"models": [{"key": "pub/m"}]}))
+        assert _is_lmstudio_models_payload(_resp(
+            {"data": [{"id": "m", "max_context_length": 32768}]}))
+        # `key` alone is now a decisive marker (docstring↔tuple consistency).
+        assert _is_lmstudio_models_payload(_resp(
+            {"data": [{"key": "publisher/model-a"}]}))
+        # `type`+`state` together is an acceptable weaker signal.
+        assert _is_lmstudio_models_payload(_resp(
+            {"data": [{"id": "m", "type": "llm", "state": "loaded"}]}))
+        # An idle LM Studio (no models) on the native `models` key is accepted.
+        assert _is_lmstudio_models_payload(_resp({"models": []}))
+        # OpenAI envelope — must be rejected.
+        assert not _is_lmstudio_models_payload(_resp(
+            {"object": "list", "data": [{"id": "m", "object": "model", "owned_by": "anthropic"}]}))
+        # Even without object=="list", a bare OpenAI-ish entry with no LM Studio
+        # markers is rejected (fail-closed).
+        assert not _is_lmstudio_models_payload(_resp(
+            {"data": [{"id": "m", "object": "model", "created": 1, "owned_by": "x"}]}))
+        # A lone generic `type` or `state` (no strong marker, not both) is NOT
+        # enough — avoids false-positiving a bespoke proxy.
+        assert not _is_lmstudio_models_payload(_resp(
+            {"data": [{"id": "m", "type": "chat"}]}))
+        assert not _is_lmstudio_models_payload(_resp(
+            {"data": [{"id": "m", "state": "ready"}]}))
+        # An ambiguous empty `{"data": []}` (no native `models` key) fails closed.
+        assert not _is_lmstudio_models_payload(_resp({"data": []}))
+        # Malformed / empty → False, never raises.
+        assert not _is_lmstudio_models_payload(_resp({}))
+        bad = MagicMock(); bad.json.side_effect = ValueError("no json")
+        assert not _is_lmstudio_models_payload(bad)
 
 
 class TestLocalhostIPv4SiblingSites:

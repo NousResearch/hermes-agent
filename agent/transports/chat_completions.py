@@ -19,6 +19,34 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+def _normalize_developer_role(
+    sanitized: list[dict[str, Any]], model_lower: str
+) -> list[dict[str, Any]]:
+    """Swap the first message's role system<->developer to match the target model.
+
+    Forward (GPT-5/Codex): system -> developer, giving those models' stronger
+    instruction-following weight for the 'developer' role.
+
+    Reverse (BUILD-345): a stale 'developer' role can arrive here when a
+    message list built for a GPT-5/Codex lane is replayed against a different
+    provider on failover (the lane swapped it in via the forward case above;
+    the persisted history keeps the swapped copy across a provider switch).
+    Strict providers (DeepSeek) only accept system/user/assistant/tool and
+    reject 'developer' with HTTP 400 — downgrade it back to 'system'.
+    """
+    if not (sanitized and isinstance(sanitized[0], dict)):
+        return sanitized
+    role = sanitized[0].get("role")
+    wants_developer = any(p in model_lower for p in DEVELOPER_ROLE_MODELS)
+    if role == "system" and wants_developer:
+        sanitized = list(sanitized)
+        sanitized[0] = {**sanitized[0], "role": "developer"}
+    elif role == "developer" and not wants_developer:
+        sanitized = list(sanitized)
+        sanitized[0] = {**sanitized[0], "role": "system"}
+    return sanitized
+
+
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if reasoning_config is None or not isinstance(reasoning_config, dict):
@@ -289,16 +317,9 @@ class ChatCompletionsTransport(ProviderTransport):
         # Reached only when get_provider_profile() returned None.
         # Known providers always go through the profile path above.
 
-        # Developer role swap for GPT-5/Codex models
+        # Developer role swap for GPT-5/Codex models (see _normalize_developer_role)
         model_lower = params.get("model_lower", (model or "").lower())
-        if (
-            sanitized
-            and isinstance(sanitized[0], dict)
-            and sanitized[0].get("role") == "system"
-            and any(p in model_lower for p in DEVELOPER_ROLE_MODELS)
-        ):
-            sanitized = list(sanitized)
-            sanitized[0] = {**sanitized[0], "role": "developer"}
+        sanitized = _normalize_developer_role(sanitized, model_lower)
 
         api_kwargs: dict[str, Any] = {
             "model": model,
@@ -479,15 +500,9 @@ class ChatCompletionsTransport(ProviderTransport):
         sanitized = profile.prepare_messages(sanitized)
 
         # Developer role swap — model-name-based, applies to all providers
+        # (see _normalize_developer_role)
         _model_lower = (model or "").lower()
-        if (
-            sanitized
-            and isinstance(sanitized[0], dict)
-            and sanitized[0].get("role") == "system"
-            and any(p in _model_lower for p in DEVELOPER_ROLE_MODELS)
-        ):
-            sanitized = list(sanitized)
-            sanitized[0] = {**sanitized[0], "role": "developer"}
+        sanitized = _normalize_developer_role(sanitized, _model_lower)
 
         api_kwargs: dict[str, Any] = {
             "model": model,

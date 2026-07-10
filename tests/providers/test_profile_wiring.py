@@ -256,6 +256,35 @@ class TestDeveloperRoleParity:
         )
         assert kw["messages"][0]["role"] == "system"
 
+    def test_profile_path_downgrades_developer_for_deepseek(self, transport):
+        """A stale 'developer' role (e.g. replayed from a Codex/GPT-5 lane's
+        history after a mid-conversation failover) must downgrade to 'system'
+        for deepseek — it only accepts system/user/assistant/tool and
+        returns HTTP 400 'unknown variant developer' otherwise. (BUILD-345)"""
+        msgs = [{"role": "developer", "content": "Be helpful"}, {"role": "user", "content": "hi"}]
+        kw = transport.build_kwargs(
+            model="deepseek-chat", messages=msgs, tools=None,
+            provider_profile=get_provider_profile("deepseek"),
+        )
+        assert kw["messages"][0]["role"] == "system"
+
+    def test_legacy_path_downgrades_developer_for_non_gpt5(self, transport):
+        msgs = [{"role": "developer", "content": "Be helpful"}, {"role": "user", "content": "hi"}]
+        kw = transport.build_kwargs(
+            model="deepseek-chat", messages=msgs, tools=None,
+        )
+        assert kw["messages"][0]["role"] == "system"
+
+    def test_profile_path_keeps_developer_for_gpt5(self, transport):
+        """Already-'developer' input to a gpt-5/codex model passes through
+        unchanged — the downgrade must not touch providers that support it."""
+        msgs = [{"role": "developer", "content": "Be helpful"}, {"role": "user", "content": "hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=msgs, tools=None,
+            provider_profile=get_provider_profile("openrouter"),
+        )
+        assert kw["messages"][0]["role"] == "developer"
+
 
 class TestRequestOverridesParity:
     """request_overrides with extra_body must merge identically on both paths."""

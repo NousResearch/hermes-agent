@@ -278,8 +278,17 @@ def _tool_defs_cache_key(
     )
 
 
-def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, disable: bool) -> None:
-    """Add (or subtract) every toolset in *names* to/from *tools*, printing the selection unless quiet."""
+def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, disable: bool,
+                             keep_enabled_overlap: bool = False) -> None:
+    """Add (or subtract) every toolset in *names* to/from *tools*, printing the selection unless quiet.
+
+    ``keep_enabled_overlap`` (only meaningful with ``disable``) subtracts just the
+    tools no already-selected toolset provides, so disabling a composite such as
+    ``debugging`` — or the legacy ``file_tools`` alias — cannot strip tools the
+    caller explicitly enabled (#58281). Callers that pass no ``enabled_toolsets``
+    keep the historical full subtraction (#17309), where a disabled toolset is
+    stripped even when a composite re-lists it.
+    """
     from toolsets import bundle_non_core_tools, get_toolset
     verb, icon = ("Disabled", "🚫") if disable else ("Enabled", "✅")
     for name in names:
@@ -306,7 +315,22 @@ def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, 
             if not quiet_mode:
                 print(f"⚠️  Unknown toolset: {name}")
             continue
-        (tools.difference_update if disable else tools.update)(resolved)
+        to_apply = resolved
+        if disable and keep_enabled_overlap:
+            # Only the tools this disabled toolset does NOT share with an
+            # explicitly enabled toolset are subtracted; anything it merely
+            # re-lists would empty the caller's schema (#58281).
+            exclusive = set(resolved) - tools
+            to_apply = sorted(exclusive)
+            if exclusive != set(resolved) and not quiet_mode:
+                preserved = set(resolved) - exclusive
+                logger.info(
+                    "disabled_toolsets includes '%s' which overlaps with enabled "
+                    "toolsets; %d tools are preserved because they are provided by "
+                    "enabled toolsets: %s",
+                    name, len(preserved), ", ".join(sorted(preserved)),
+                )
+        (tools.difference_update if disable else tools.update)(to_apply)
         if not quiet_mode:
             print(f"{icon} {label} '{name}': {', '.join(resolved) if resolved else 'no tools'}")
 
@@ -336,7 +360,8 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
-        _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
+        _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True,
+                                 keep_enabled_overlap=enabled_toolsets is not None)
     return tools
 
 

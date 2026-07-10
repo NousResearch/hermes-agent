@@ -147,16 +147,20 @@ Remove merge + baseline worktrees, temp files, state. Prints rollback SHAs one l
 
 ## Merge-trap AST lint (stage 3)
 
-**v1 ships ONE linter — unbound-name**: a `Name` load in a function with no matching
-binding in scope (caught the stray `known_tool_ids.discard()` after the set→Counter
-migration on 2026-07-10). Cheap `ast`-module check, run only on merge-changed .py files.
-
-Three further linters are **deferred until their escape class recurs** (documented here
-so the next sync's postmortem can promote them):
-- dead-code-after-return (unreachable cron-gate in `check_dangerous_command`)
-- getattr-lambda-fallback (removed `should_defer_preflight_to_real_usage` silently
-  returning False)
-- duplicate-function-bodies (two dispatch bodies in scheduler)
+**All FOUR linters ship active** (2026-07-10: the three originally deferred were
+promoted at closeout on Ace's call — `lint_merge_traps.py`):
+- **unbound-name** (`lint_unbound.py`): a `Name` load in a function with no matching
+  binding in scope (the stray `known_tool_ids.discard()` after the set→Counter migration)
+- **dead-code-after-return**: statements after an unconditional return/raise in the same
+  block (the unreachable cron-gate in `check_dangerous_command`); empty-generator
+  `return`+`yield` idiom and trailing docstrings excluded
+- **getattr-lambda-fallback**: `getattr(obj, "name", <callable fallback>)` where `name`
+  is defined NOWHERE in the scanned tree (the removed `should_defer_preflight_to_real_usage`
+  silently returning False); repo-wide name collection so cross-file methods don't false-fire
+- **duplicate-function-bodies**: two structurally-identical sibling function bodies
+  (positions/docstrings normalized, <4-stmt bodies skipped) — the scheduler's two
+  dispatch bodies; ~27 pre-existing findings in the current tree are review-list
+  warnings, not failures
 
 False positives allowed — output is a REVIEW list, not a hard fail (stage passes with
 warnings unless `--strict`). Each finding prints file:line + the incident class.

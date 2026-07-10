@@ -5,7 +5,7 @@ import subprocess
 from io import StringIO
 from pathlib import Path
 
-from scripts.hermes_parity import bisect, buckets, cli, forkdelta, gates, gitops, lint_unbound, state
+from scripts.hermes_parity import bisect, buckets, cli, forkdelta, gates, gitops, lint_merge_traps, lint_unbound, state
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> str:
@@ -307,3 +307,122 @@ def test_forkdelta_trigger_is_merge_touched_not_full_fork_delta(tmp_path: Path) 
 
     assert "fork_only_dropped.py" in report.uncovered_paths
     assert "fork_only_kept.py" not in report.uncovered_paths
+
+
+def test_merge_trap_dead_code_after_return() -> None:
+    """The check_dangerous_command incident: merge concatenated fork+upstream
+    bodies, an early return orphaned the fork's cron-gate block."""
+    issues = lint_merge_traps.lint_source(
+        """
+def check(cmd):
+    return _run_approval_gate(cmd)
+    if is_cron_session():
+        return "denied"
+""".lstrip()
+    )
+    assert [(i.kind, i.line) for i in issues] == [("dead-code-after-return", 3)]
+
+    clean = lint_merge_traps.lint_source(
+        """
+def check(cmd):
+    if bad(cmd):
+        return "denied"
+    return _run_approval_gate(cmd)
+""".lstrip()
+    )
+    assert clean == []
+
+
+def test_merge_trap_getattr_lambda_fallback() -> None:
+    """The should_defer_preflight incident: getattr with a callable fallback
+    naming a method no side defines anymore silently returns the fallback."""
+    issues = lint_merge_traps.lint_source(
+        """
+def guard(compressor, tokens):
+    fn = getattr(compressor, "should_defer_preflight_to_real_usage", lambda _t: False)
+    return fn(tokens)
+""".lstrip()
+    )
+    assert [(i.kind, i.line) for i in issues] == [("getattr-lambda-fallback", 2)]
+
+    # Defined somewhere in the scanned set -> no issue.
+    clean = lint_merge_traps.lint_source(
+        """
+class C:
+    def known_method(self):
+        return 1
+
+def guard(obj):
+    fn = getattr(obj, "known_method", lambda: False)
+    return fn()
+""".lstrip()
+    )
+    assert clean == []
+
+    # Non-callable fallback (plain default) is not the incident class.
+    clean2 = lint_merge_traps.lint_source(
+        """
+def guard(obj):
+    return getattr(obj, "whatever_setting", None)
+""".lstrip()
+    )
+    assert clean2 == []
+
+
+def test_merge_trap_duplicate_function_bodies() -> None:
+    """The scheduler two-dispatch-bodies incident: merge kept both sides'
+    structurally identical function bodies under different names."""
+    body = """
+    job = claim(x)
+    if job is None:
+        return None
+    result = dispatch(job)
+    record(result)
+    return result
+"""
+    issues = lint_merge_traps.lint_source(
+        f"def _process_one_job(x):{body}\ndef run_one_job(x):{body}"
+    )
+    assert [(i.kind,) for i in issues] == [("duplicate-function-bodies",)]
+
+    # Different bodies -> no issue; trivial identical getters -> no issue.
+    clean = lint_merge_traps.lint_source(
+        """
+def a(self):
+    return self._x
+
+def b(self):
+    return self._x
+""".lstrip()
+    )
+    assert clean == []
+
+
+def test_merge_trap_repo_wide_defined_names(tmp_path: Path) -> None:
+    """getattr-fallback must consider names defined in OTHER files."""
+    (tmp_path / "impl.py").write_text(
+        "class Compressor:\n    def cross_file_method(self):\n        return 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "caller.py").write_text(
+        "def guard(c):\n    return getattr(c, \"cross_file_method\", lambda: False)()\n",
+        encoding="utf-8",
+    )
+    issues = lint_merge_traps.lint_paths(
+        [tmp_path / "impl.py", tmp_path / "caller.py"], repo=tmp_path
+    )
+    assert issues == []
+
+
+def test_merge_trap_empty_generator_idiom_not_flagged() -> None:
+    """`return` followed by `yield` is the empty-async-generator idiom."""
+    clean = lint_merge_traps.lint_source(
+        """
+def history(self):
+    async def _empty():
+        return
+        yield
+    return _empty()
+""".lstrip()
+    )
+    assert clean == []

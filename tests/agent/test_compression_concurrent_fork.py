@@ -237,13 +237,36 @@ def test_compression_restores_user_turn_when_compressor_drops_all_users(tmp_path
 
 
 def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypatch) -> None:
-    """The owning compression call must keep its lease alive while it runs."""
+    """The owning compression call must keep its lease alive while it runs.
+
+    Event-driven (no wall-clock sleeps): the probe fires only after the
+    refresher has demonstrably refreshed the lease enough times to be past
+    the initial TTL (5 refreshes x >=0.25s interval > 1.0s TTL), and the
+    owner holds the lock until the main thread releases it — so a starved
+    CI runner slows the test down instead of flipping its verdict.
+    """
     real_try_acquire = SessionDB.try_acquire_compression_lock
 
     def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
         return real_try_acquire(self, session_id, holder, ttl_seconds=1.0)
 
     monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
+
+    refreshes_past_ttl = threading.Event()
+    refresh_count = [0]
+    real_refresh = SessionDB.refresh_compression_lock
+
+    def _counting_refresh(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
+        ok = real_refresh(self, session_id, holder, ttl_seconds=ttl_seconds)
+        if ok:
+            refresh_count[0] += 1
+            # 5 successful refreshes at a >=0.25s interval means the lease has
+            # provably been kept alive well past the initial 1.0s TTL.
+            if refresh_count[0] >= 5:
+                refreshes_past_ttl.set()
+        return ok
+
+    monkeypatch.setattr(SessionDB, "refresh_compression_lock", _counting_refresh)
 
     db = SessionDB(db_path=tmp_path / "state.db")
 
@@ -254,8 +277,12 @@ def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypa
     agent_a._compression_lock_ttl_seconds = 1.0
     agent_a._compression_lock_refresh_interval = 0.25
 
+    release_gate = threading.Event()
+
     def _slow_compress(*_a, **_kw):
-        time.sleep(2.0)
+        # Hold the lock until the main thread has probed it (bounded so a
+        # broken test can't hang the suite).
+        release_gate.wait(timeout=30.0)
         return [
             {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
             {"role": "user", "content": "tail"},
@@ -269,14 +296,24 @@ def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypa
 
     t_a = threading.Thread(target=run, args=(agent_a,), name="refresh_owner")
     t_a.start()
-    deadline = time.time() + 2.0
-    while db.get_compression_lock_holder(parent_sid) is None and time.time() < deadline:
-        time.sleep(0.05)
-    assert db.get_compression_lock_holder(parent_sid) is not None
-    time.sleep(1.2)
-    assert db.try_acquire_compression_lock(
-        parent_sid, "refresh_probe", ttl_seconds=1.0
-    ) is False, "live owner lease expired and was reclaimable before compression finished"
+    try:
+        deadline = time.time() + 10.0
+        while db.get_compression_lock_holder(parent_sid) is None and time.time() < deadline:
+            time.sleep(0.05)
+        assert db.get_compression_lock_holder(parent_sid) is not None
+
+        # Wait for PROOF the lease outlived its initial TTL (>=5 refreshes),
+        # instead of sleeping and hoping the refresher thread got scheduled.
+        assert refreshes_past_ttl.wait(timeout=15.0), (
+            "lock refresher never refreshed the lease past the initial TTL"
+        )
+        # Probe immediately after an observed refresh: a live owner's lease
+        # must not be reclaimable.
+        assert db.try_acquire_compression_lock(
+            parent_sid, "refresh_probe", ttl_seconds=1.0
+        ) is False, "live owner lease expired and was reclaimable before compression finished"
+    finally:
+        release_gate.set()
     t_a.join(timeout=10)
 
     assert not t_a.is_alive()

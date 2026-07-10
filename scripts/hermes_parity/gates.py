@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import forkdelta, gitops, lint_unbound, state
+from . import forkdelta, gitops, lint_merge_traps, lint_unbound, state
 
 
 @dataclass(frozen=True)
@@ -82,12 +82,23 @@ def gate_imports(repo: Path) -> GateResult:
 
 def gate_unbound(repo: Path, *, strict: bool = False) -> GateResult:
     def run() -> tuple[bool, str, dict[str, object]]:
-        issues = lint_unbound.lint_paths(python_files(repo), repo=repo)
+        files = python_files(repo)
+        issues = lint_unbound.lint_paths(files, repo=repo)
+        trap_issues = lint_merge_traps.lint_paths(files, repo=repo)
         samples = [
             f"{issue.path}:{issue.line}:{issue.column}: {issue.name}"
             for issue in issues[:50]
         ]
-        return (not issues or not strict, f"{len(issues)} unbound issue(s)", {"samples": samples, "strict": strict})
+        trap_samples = [
+            f"{issue.path}:{issue.line}: [{issue.kind}] {issue.detail}"
+            for issue in trap_issues[:50]
+        ]
+        total = len(issues) + len(trap_issues)
+        return (
+            total == 0 or not strict,
+            f"{len(issues)} unbound + {len(trap_issues)} merge-trap issue(s)",
+            {"samples": samples, "trap_samples": trap_samples, "strict": strict},
+        )
 
     return _timed("traps", "python3.11 -m hermes_parity gates --stage traps --strict", run)
 

@@ -351,6 +351,12 @@ class _SlashWorker:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # Force UTF-8 with lossy decoding so child output containing bytes
+            # that are invalid in the system locale (e.g. GBK on Chinese
+            # Windows) can't raise UnicodeDecodeError inside the drain threads
+            # and crash the gateway. See #53137.
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             cwd=os.getcwd(),
             env=env,
@@ -11705,6 +11711,9 @@ def _(rid, params: dict) -> dict:
         try:
             res = subprocess.run(
                 argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                # Force UTF-8 + lossy decode so non-UTF-8 child output can't
+                # crash the gateway thread on locale-mismatched Windows (#53137).
+                encoding="utf-8", errors="replace",
                 creationflags=windows_hide_flags(),
             )
         except subprocess.TimeoutExpired:
@@ -14179,9 +14188,15 @@ def _(rid, params: dict) -> dict:
         from hermes_cli._subprocess_compat import windows_hide_flags
 
         r = subprocess.run(
-            [sys.executable, "-m", "hermes_cli.main", *argv],
+            [
+                sys.executable, "-m", "hermes_cli.main", *argv
+            ],
             capture_output=True,
             text=True,
+            # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash
+            # the gateway thread on locale-mismatched Windows. See #53137.
+            encoding="utf-8",
+            errors="replace",
             timeout=min(int(params.get("timeout", 240)), 600),
             cwd=os.getcwd(),
             # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
@@ -14255,6 +14270,9 @@ def _(rid, params: dict) -> dict:
                 shell=True,
                 capture_output=True,
                 text=True,
+                # Force UTF-8 + lossy decode so non-UTF-8 child output can't
+                # crash the gateway thread on locale-mismatched Windows (#53137).
+                encoding="utf-8", errors="replace",
                 timeout=30,
                 stdin=subprocess.DEVNULL,
                 env=sanitized_env,
@@ -17348,6 +17366,9 @@ def _(rid, params: dict) -> dict:
 
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash
+            # the gateway thread on locale-mismatched Windows (#53137).
+            encoding="utf-8", errors="replace",
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
         )

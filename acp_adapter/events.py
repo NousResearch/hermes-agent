@@ -19,6 +19,7 @@ from acp.schema import AgentPlanUpdate, PlanEntry
 from .tools import (
     build_tool_complete,
     build_tool_start,
+    get_tool_kind,
     make_tool_call_id,
 )
 
@@ -108,6 +109,57 @@ def _send_update(
 
 
 # ------------------------------------------------------------------
+# Tool generation callback
+# ------------------------------------------------------------------
+
+def make_tool_gen_cb(
+    conn: acp.Client,
+    session_id: str,
+    loop: asyncio.AbstractEventLoop,
+    tool_call_ids: Dict[str, Deque[str]],
+    tool_call_meta: Dict[str, Dict[str, Any]],
+) -> Callable:
+    """Create a ``tool_gen_callback`` for AIAgent.
+
+    AIAgent fires this callback as soon as the model stream has produced a
+    complete tool name, before the tool input JSON has necessarily finished
+    streaming. Emit a lightweight ToolCallStart with empty arguments so ACP
+    clients can show that a tool call is being prepared instead of appearing
+    idle while large tool inputs are still being generated.
+
+    The later ``tool_progress_callback("tool.started", ...)`` reuses this
+    reserved tool-call id and fills in the real argument metadata for the
+    eventual completion update.
+    """
+
+    def _tool_gen(name: str, *args: Any, **kwargs: Any) -> None:
+        if not name:
+            return
+
+        queue = tool_call_ids.get(name)
+        if queue is None:
+            queue = deque()
+            tool_call_ids[name] = queue
+        elif isinstance(queue, str):
+            queue = deque([queue])
+            tool_call_ids[name] = queue
+
+        for existing_id in queue:
+            meta = tool_call_meta.get(existing_id, {})
+            if meta.get("generated"):
+                return
+
+        tc_id = make_tool_call_id()
+        queue.append(tc_id)
+        tool_call_meta[tc_id] = {"args": {}, "snapshot": None, "generated": True}
+
+        update = build_tool_start(tc_id, name, {})
+        _send_update(conn, session_id, loop, update)
+
+    return _tool_gen
+
+
+# ------------------------------------------------------------------
 # Tool progress callback
 # ------------------------------------------------------------------
 
@@ -143,7 +195,6 @@ def make_tool_progress_cb(
         if not isinstance(args, dict):
             args = {}
 
-        tc_id = make_tool_call_id()
         queue = tool_call_ids.get(name)
         if queue is None:
             queue = deque()
@@ -151,7 +202,18 @@ def make_tool_progress_cb(
         elif isinstance(queue, str):
             queue = deque([queue])
             tool_call_ids[name] = queue
-        queue.append(tc_id)
+
+        tc_id = None
+        if queue:
+            candidate = queue[0]
+            meta = tool_call_meta.get(candidate, {})
+            if meta.get("generated"):
+                tc_id = candidate
+
+        already_started = tc_id is not None
+        if tc_id is None:
+            tc_id = make_tool_call_id()
+            queue.append(tc_id)
 
         snapshot = None
         if name in {"write_file", "patch", "skill_manage"}:
@@ -176,8 +238,17 @@ def make_tool_progress_cb(
             except Exception:
                 logger.debug("Failed to prepare auto-approved ACP edit diff for %s", name, exc_info=True)
 
-        update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)
-        _send_update(conn, session_id, loop, update)
+        if already_started:
+            update = acp.update_tool_call(
+                tc_id,
+                kind=get_tool_kind(name),
+                status="pending",
+                raw_input=args,
+            )
+            _send_update(conn, session_id, loop, update)
+        else:
+            update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)
+            _send_update(conn, session_id, loop, update)
 
     return _tool_progress
 

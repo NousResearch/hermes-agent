@@ -68,6 +68,7 @@ from acp_adapter.events import (
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
+    make_tool_gen_cb,
     make_tool_progress_cb,
 )
 from acp_adapter.permissions import make_approval_callback
@@ -1410,6 +1411,7 @@ class HermesACPAgent(acp.Agent):
             )
             reasoning_cb = make_thinking_cb(conn, session_id, loop)
             step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+            tool_gen_cb = make_tool_gen_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             message_cb = make_message_cb(conn, session_id, loop)
 
             def stream_delta_cb(text: str) -> None:
@@ -1434,6 +1436,7 @@ class HermesACPAgent(acp.Agent):
             tool_progress_cb = None
             reasoning_cb = None
             step_cb = None
+            tool_gen_cb = None
             stream_delta_cb = None
             approval_cb = None
 
@@ -1445,6 +1448,7 @@ class HermesACPAgent(acp.Agent):
         agent.thinking_callback = None
         agent.reasoning_callback = reasoning_cb
         agent.step_callback = step_cb
+        agent.tool_gen_callback = tool_gen_cb
         agent.stream_delta_callback = stream_delta_cb
 
         # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).

@@ -17,6 +17,7 @@ from acp_adapter.events import (
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
+    make_tool_gen_cb,
     make_tool_progress_cb,
 )
 
@@ -35,6 +36,72 @@ def event_loop_fixture():
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
+
+
+# ---------------------------------------------------------------------------
+# Tool generation callback
+# ---------------------------------------------------------------------------
+
+
+class TestToolGenerationCallback:
+    def test_emits_placeholder_tool_call_start(self, mock_conn, event_loop_fixture):
+        """Tool generation should surface an early placeholder tool call."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-gen"), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb("web_search")
+
+        assert list(tool_call_ids["web_search"]) == ["tc-gen"]
+        assert tool_call_meta["tc-gen"] == {"args": {}, "snapshot": None, "generated": True}
+        mock_send.assert_called_once()
+        update = mock_send.call_args.args[3]
+        assert getattr(update, "session_update", None) == "tool_call"
+
+    def test_tool_started_reuses_generated_tool_call_id(self, mock_conn, event_loop_fixture):
+        """The real tool.started event should complete the early placeholder."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        gen_cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+        progress_cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-gen"), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            gen_cb("web_search")
+            progress_cb("tool.started", "web_search", "searching", {"query": "hermes"})
+
+        assert list(tool_call_ids["web_search"]) == ["tc-gen"]
+        assert tool_call_meta["tc-gen"] == {
+            "args": {"query": "hermes"},
+            "snapshot": None,
+        }
+        updates = [call.args[3] for call in mock_send.call_args_list]
+        assert [getattr(update, "session_update", None) for update in updates] == [
+            "tool_call",
+            "tool_call_update",
+        ]
+
+    def test_ignores_duplicate_generation_for_same_tool(self, mock_conn, event_loop_fixture):
+        """Repeated generation callbacks for the same tool should be idempotent."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-gen"), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb("read_file")
+            cb("read_file")
+
+        assert list(tool_call_ids["read_file"]) == ["tc-gen"]
+        assert mock_send.call_count == 1
 
 
 # ---------------------------------------------------------------------------

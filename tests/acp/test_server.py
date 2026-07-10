@@ -1045,6 +1045,7 @@ class TestPrompt:
         assert resp.stop_reason == "end_turn"
         state.agent.run_conversation.assert_called_once()
         assert state.agent.tool_progress_callback is not None
+        assert state.agent.tool_gen_callback is not None
         assert state.agent.step_callback is not None
         assert state.agent.stream_delta_callback is not None
         assert state.agent.reasoning_callback is not None

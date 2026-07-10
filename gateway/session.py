@@ -1254,6 +1254,34 @@ class SessionStore:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
+    def _save_entries(self, entries_snapshot: Dict[str, "SessionEntry"]) -> None:
+        """Persist a caller-captured snapshot of entries (callable off-lock).
+
+        Same write logic as :meth:`_save` but operates on a snapshot dict
+        instead of reading ``self._entries`` live.  This avoids
+        ``RuntimeError: dictionary changed size during iteration`` when
+        another thread mutates ``_entries`` concurrently.
+        """
+        data = {key: entry.to_dict() for key, entry in entries_snapshot.items()}
+
+        db_saved = False
+        _db = getattr(self, "_db", None)
+        if _db:
+            replacer = getattr(_db, "replace_gateway_routing_entries", None)
+            if callable(replacer):
+                try:
+                    replacer(
+                        {k: json.dumps(v) for k, v in data.items()},
+                        scope=self._routing_scope(),
+                    )
+                    db_saved = True
+                except Exception as exc:
+                    logger.warning(
+                        "gateway.session: state.db routing save failed: %s", exc
+                    )
+
+        if getattr(self, "_write_sessions_json", True) or not db_saved:
+            self._save_sessions_json(data)
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Return the profile namespace for session keys, or None when off.
 
@@ -1395,6 +1423,39 @@ class SessionStore:
             now=now,
         )
 
+    def _query_recoverable_session(self, *, session_key, source, now):
+        """DB-only half of _recover_session_from_db (no lock needed).
+
+        Returns a SessionEntry or None.  Caller assigns _entries[key] under lock.
+        """
+        if not self._db:
+            return None
+        finder = getattr(self._db, "find_latest_gateway_session_for_peer", None)
+        if not callable(finder):
+            return None
+        try:
+            recovered = finder(
+                source=source.platform.value,
+                user_id=source.user_id,
+                session_key=session_key,
+                chat_id=source.chat_id,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+            )
+        except Exception as exc:
+            logger.debug("Gateway session DB recovery failed for %s: %s",
+                         session_key, exc)
+            return None
+        if not recovered:
+            return None
+        try:
+            self._db.reopen_session(str(recovered["id"]))
+        except Exception as exc:
+            logger.debug("Gateway session DB reopen failed for %s: %s",
+                         session_key, exc)
+        return self._create_entry_from_recovered_row(
+            row=recovered, session_key=session_key, source=source, now=now,
+        )
     def _record_gateway_session_peer(
         self,
         session_id: str,
@@ -1689,21 +1750,23 @@ class SessionStore:
         source: SessionSource,
         force_new: bool = False
     ) -> SessionEntry:
-        """
-        Get an existing session or create a new one.
+        """Get an existing session or create a new one.
 
         Evaluates reset policy to determine if the existing session is stale.
         Creates a session record in SQLite when a new session starts.
+
+        All blocking I/O (SQLite SELECTs, routing-index rewrite + ``os.fsync``,
+        recovery DB queries) is performed *outside* ``self._lock``.  The lock
+        protects only ``_entries`` / ``_loaded`` mutations.
         """
         session_key = self._generate_session_key(source)
         now = _now()
 
-        # SQLite calls are made outside the lock to avoid holding it during I/O.
-        # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
         db_create_kwargs = None
         existing_session_id = None
 
+        # ---- Phase 0: lock read -- existing session_id for compression tip ----
         if not force_new:
             with self._lock:
                 self._ensure_loaded_locked()
@@ -1711,12 +1774,50 @@ class SessionStore:
                 if entry is not None:
                     existing_session_id = entry.session_id
 
-        # Look up the compression continuation outside the lock (DB I/O).
+        # Compression tip lookup outside the lock (DB I/O).
         canonical_existing_session_id = (
             self._compression_tip_for_session_id(existing_session_id)
             if existing_session_id
             else None
         )
+
+        # ---- Phase 1: lock read -- get entry snapshot for stale/reset checks ----
+        _stale_session_id = None
+        _entry_for_checks = None
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries and not force_new:
+                _entry_for_checks = self._entries[session_key]
+                _stale_session_id = _entry_for_checks.session_id
+
+        # ---- Phase 1b: no-lock I/O -- stale check + reset policy ----
+        _is_stale = False
+        _reset_reason = None
+        if _entry_for_checks is not None:
+            _is_stale = self._is_session_ended_in_db(_stale_session_id)
+            if _entry_for_checks.suspended:
+                _reset_reason = "suspended"
+            elif _entry_for_checks.resume_pending:
+                _reset_reason = self._should_reset(_entry_for_checks, source)
+                if not _reset_reason:
+                    _fw = auto_continue_freshness_window()
+                    _ref_time = (
+                        _entry_for_checks.last_resume_marked_at
+                        or _entry_for_checks.updated_at
+                    )
+                    if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
+                        _reset_reason = "resume_pending_expired"
+            else:
+                _reset_reason = self._should_reset(_entry_for_checks, source)
+
+        # ---- Phase 2: lock write -- apply decisions to _entries ----
+        _needs_save = False
+        _needs_recover = False
+        _entries_snapshot: Optional[Dict[str, SessionEntry]] = None
+        entry: Optional[SessionEntry] = None
+        was_auto_reset = False
+        auto_reset_reason = None
+        reset_had_activity = False
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -1727,25 +1828,13 @@ class SessionStore:
                     entry, existing_session_id, canonical_existing_session_id
                 )
 
-                # Self-heal stale routing: if this session_key still points at
-                # a session that has ALREADY been ended in state.db (end_reason
-                # set), the in-memory sessions.json entry is stale.  Reusing it
-                # would route every incoming message into a closed session and
-                # silently drop it — with no log, no error, no response — until
-                # the gateway restarts and _prune_stale_sessions_locked() clears
-                # it (#54878 — the live-gateway variant of #52804/FM9, which
-                # only the startup prune previously caught).
-                #
-                # Drop the stale entry and fall through to the recovery path
-                # below.  Leaving db_end_session_id None routes us into
-                # _recover_session_from_db, whose finder
-                # (hermes_state.find_latest_gateway_session_for_peer) selects
-                # rows WHERE `ended_at IS NULL OR end_reason = 'agent_close'`
-                # — so it REOPENS gateway-cleanup-ended ('agent_close') rows and
-                # resumes the SAME session_id (transcript preserved), but returns
-                # None for any other end_reason (e.g. /new), which then correctly
-                # starts a fresh session.
-                if self._is_session_ended_in_db(entry.session_id):
+                if _is_stale and entry.session_id == _stale_session_id:
+                    # Stale routing self-heal (#54878): the in-memory entry
+                    # points at a session that has ALREADY been ended in
+                    # state.db.  Drop it and fall through to recovery/create.
+                    # Recovery finder reopens ``agent_close`` rows (preserving
+                    # the transcript) but returns None for other end_reasons
+                    # (e.g. /new), starting a fresh session.
                     logger.warning(
                         "gateway.session: routing key %r -> %s is ended in "
                         "state.db but still live in sessions.json; dropping "
@@ -1754,81 +1843,47 @@ class SessionStore:
                         session_key, entry.session_id,
                     )
                     self._entries.pop(session_key, None)
-                    was_auto_reset = False
-                    auto_reset_reason = None
-                    reset_had_activity = False
-                    # Fall through to the recovery/create path below; the
-                    # stale entry is gone so we must NOT consult its
-                    # suspended/resume/reset state.
+                    entry = None
+                    _needs_recover = True
+                elif entry.session_id != _stale_session_id:
+                    # Another thread handled this entry during our lock-free
+                    # window.  Treat as healthy -- bump updated_at and save.
+                    entry.updated_at = now
+                    _needs_save = True
                 else:
-                    # Auto-reset sessions marked as suspended (e.g. after /stop
-                    # broke a stuck loop — #7536).  ``suspended`` is the hard
-                    # forced-wipe signal and always wins over ``resume_pending``,
-                    # so repeated interrupted restarts that escalate via the
-                    # existing ``.restart_failure_counts`` stuck-loop counter
-                    # still converge to a clean slate.
-                    if entry.suspended:
-                        reset_reason = "suspended"
-                    elif entry.resume_pending:
-                        # Restart-interrupted session: preserve the session_id
-                        # and return the existing entry so the transcript reloads
-                        # intact, but still honour normal daily/idle reset policy.
-                        #
-                        # Freshness gate (#46934): the idle/daily policy checks
-                        # ``updated_at``, which is bumped to ``now`` on every
-                        # message — so a zombie session that keeps receiving
-                        # messages never trips it and would resume stale context
-                        # forever.  ``last_resume_marked_at`` is set once when
-                        # resume was marked and never bumped per-message, so it
-                        # correctly measures how long resume has been pending.
-                        # If that exceeds the auto-continue freshness window, the
-                        # recovery turn either never ran or failed — treat the
-                        # session as a zombie and fall through to auto-reset.
-                        reset_reason = self._should_reset(entry, source)
-                        if not reset_reason:
-                            _fw = auto_continue_freshness_window()
-                            _ref_time = entry.last_resume_marked_at or entry.updated_at
-                            if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
-                                reset_reason = "resume_pending_expired"
-                            else:
-                                entry.updated_at = now
-                                self._save()
-                                return entry
-                    else:
-                        reset_reason = self._should_reset(entry, source)
-                    if not reset_reason:
-                        entry.updated_at = now
-                        self._save()
-                        return entry
-                    else:
-                        # Session is being auto-reset.
+                    # Stale check clean.  Apply reset decision.
+                    if _reset_reason:
                         was_auto_reset = True
-                        auto_reset_reason = reset_reason
-                        # Track whether the expired session had any real
-                        # conversation.  total_tokens is never written (token
-                        # counts migrated to agent-direct persistence) so it is
-                        # always 0 — use last_prompt_tokens, updated every turn.
+                        auto_reset_reason = _reset_reason
                         reset_had_activity = entry.last_prompt_tokens > 0
                         db_end_session_id = entry.session_id
+                        self._entries.pop(session_key, None)
+                        entry = None
+                        _needs_recover = True
+                    else:
+                        entry.updated_at = now
+                        _needs_save = True
             else:
-                was_auto_reset = False
-                auto_reset_reason = None
-                reset_had_activity = False
+                if not force_new:
+                    _needs_recover = True
 
-            if not force_new and not db_end_session_id:
-                recovered_entry = self._recover_session_from_db(
-                    session_key=session_key,
-                    source=source,
-                    now=now,
-                )
-                if recovered_entry is not None:
-                    self._entries[session_key] = recovered_entry
-                    self._save()
-                    return recovered_entry
+            _entries_snapshot = dict(self._entries)
 
-            # Create new session
+        # ---- Phase 3: no-lock I/O -- recovery + create + save + DB ops ----
+        if _needs_recover:
+            recovered = self._query_recoverable_session(
+                session_key=session_key, source=source, now=now,
+            )
+            if recovered is not None:
+                with self._lock:
+                    self._entries[session_key] = recovered
+                    _entries_snapshot = dict(self._entries)
+                entry = recovered
+                _needs_save = True
+
+        if entry is None:
+            # Create new session.
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-
             entry = SessionEntry(
                 session_key=session_key,
                 session_id=session_id,
@@ -1842,9 +1897,10 @@ class SessionStore:
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
             )
-
-            self._entries[session_key] = entry
-            self._save()
+            with self._lock:
+                self._entries[session_key] = entry
+                _entries_snapshot = dict(self._entries)
+            _needs_save = True
             db_create_kwargs = {
                 "session_id": session_id,
                 "source": source.platform.value,
@@ -1855,7 +1911,11 @@ class SessionStore:
                 "thread_id": source.thread_id,
             }
 
-        # SQLite operations outside the lock
+        # Persist routing index from snapshot (was _save under lock).
+        if _needs_save and _entries_snapshot is not None:
+            self._save_entries(_entries_snapshot)
+
+        # SQLite operations outside the lock (unchanged).
         if self._db and db_end_session_id:
             try:
                 self._db.end_session(db_end_session_id, "session_reset")

@@ -2214,6 +2214,30 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._polling_error_task = loop.create_task(
                     self._handle_polling_network_error(probe_err)
                 )
+            # Issue #62047: PTB 22.6 raises telegram.error.NetworkError
+            # (and telegram.error.TimedOut, which inherits from
+            # NetworkError) on connectivity failures. These are NOT
+            # OSError, so they fall through the except clause above
+            # and would otherwise be silently swallowed by the
+            # generic except Exception below.
+            except Exception as probe_err:
+                # Only PTB connectivity-class exceptions trigger the
+                # reconnect ladder; everything else falls through to
+                # the existing generic except Exception so non-
+                # connectivity errors (TelegramError 401, etc.) are
+                # still handled by PTB's own error_callback.
+                from telegram.error import NetworkError, TimedOut as _TimedOutErr
+                if isinstance(probe_err, (NetworkError, _TimedOutErr)):
+                    logger.warning(
+                        "[%s] Polling heartbeat probe failed (PTB %s: %s); triggering reconnect",
+                        self.name, type(probe_err).__name__, probe_err,
+                    )
+                    if self._polling_error_task and not self._polling_error_task.done():
+                        continue
+                    loop = asyncio.get_running_loop()
+                    self._polling_error_task = loop.create_task(
+                        self._handle_polling_network_error(probe_err)
+                    )
             except Exception:
                 # Non-connectivity errors (e.g. TelegramError 401) are not
                 # CLOSE-WAIT symptoms — let PTB's own handlers surface them.

@@ -50,7 +50,7 @@ async def test_exec_approval_mentions_allowed_users_when_enabled(monkeypatch):
     assert channel.sent_kwargs["content"].startswith("<@111> <@222>\n")
     assert "make check" in channel.sent_kwargs["content"]
     assert "allowed_mentions" in channel.sent_kwargs
-    assert channel.sent_kwargs["embed"].title.endswith("Command Approval Required")
+    assert "embed" not in channel.sent_kwargs
 
 
 @pytest.mark.asyncio

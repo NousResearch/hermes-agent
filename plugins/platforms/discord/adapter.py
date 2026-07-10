@@ -5620,19 +5620,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
             content = f"{prompt_prefix}{content_cmd_display}{prompt_tail}"
 
-            # Preserve the richer embed path and its larger description budget
-            # for clients where embeds render correctly.
-            max_embed_desc = 4088
-            embed_cmd_display = str(command or "")
-            if len(embed_cmd_display) > max_embed_desc:
-                embed_cmd_display = embed_cmd_display[: max_embed_desc - 3] + "..."
-            embed = discord.Embed(
-                title="⚠️ Command Approval Required",
-                description=f"```\n{embed_cmd_display}\n```",
-                color=discord.Color.orange(),
-            )
-            embed.add_field(name="Reason", value=reason_display, inline=False)
-
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(
                 getattr(self.config, "extra", None)
             )
@@ -5644,7 +5631,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 admin_user_ids=admin_user_ids,
             )
 
-            send_kwargs: Dict[str, Any] = {"content": content, "embed": embed, "view": view}
+            send_kwargs: Dict[str, Any] = {"content": content, "view": view}
             if mention_content:
                 allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
                 if allowed_mentions_cls is not None:
@@ -6850,6 +6837,17 @@ def _define_discord_view_classes() -> None:
             }
             self.resolved = False
 
+        @staticmethod
+        def _with_status(status: str, original_content: str) -> str:
+            """Prefix a decision while keeping the Discord content edit valid."""
+            prefix = f"{status}\n\n"
+            content_limit = DiscordAdapter.MAX_MESSAGE_LENGTH
+            if len(prefix) + len(original_content) <= content_limit:
+                return f"{prefix}{original_content}" if original_content else status
+            truncated_suffix = "\n... [truncated]"
+            budget = max(0, content_limit - len(prefix) - len(truncated_suffix))
+            return f"{prefix}{original_content[:budget]}{truncated_suffix}"
+
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized.
 
@@ -6884,10 +6882,9 @@ def _define_discord_view_classes() -> None:
             return False
 
         async def _resolve(
-            self, interaction: discord.Interaction, choice: str,
-            color: discord.Color, label: str,
+            self, interaction: discord.Interaction, choice: str, label: str,
         ):
-            """Resolve the approval via the gateway approval queue and update the embed."""
+            """Resolve the approval, update the message, and unblock the agent."""
             if self.resolved:
                 await interaction.response.send_message(
                     "This approval has already been resolved~", ephemeral=True
@@ -6902,17 +6899,21 @@ def _define_discord_view_classes() -> None:
 
             self.resolved = True
 
-            # Update the embed with the decision
-            embed = interaction.message.embeds[0] if interaction.message.embeds else None
-            if embed:
-                embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+            # Keep the decision visible in the same plain-content payload used
+            # for the prompt; embeds are intentionally omitted because Discord
+            # clients have rendered legacy embed-plus-button messages unreliably.
+            original_content = str(getattr(interaction.message, "content", "") or "")
+            decision = f"✅ {label} by {interaction.user.display_name}"
+            content = self._with_status(decision, original_content)
 
-            # Disable all buttons
+            # Disable all buttons.
             for child in self.children:
                 child.disabled = True
 
-            await interaction.response.edit_message(embed=embed, view=self)
+            try:
+                await interaction.response.edit_message(content=content, view=self)
+            except Exception as exc:
+                logger.warning("Failed to update resolved Discord approval: %s", exc)
 
             # Unblock the waiting agent thread via the gateway approval queue
             try:
@@ -6929,25 +6930,25 @@ def _define_discord_view_classes() -> None:
         async def allow_once(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
+            await self._resolve(interaction, "once", "Approved once")
 
         @discord.ui.button(label="Allow Session", style=discord.ButtonStyle.grey)
         async def allow_session(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "session", discord.Color.blue(), "Approved for session")
+            await self._resolve(interaction, "session", "Approved for session")
 
         @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
         async def allow_always(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "always", discord.Color.purple(), "Approved permanently")
+            await self._resolve(interaction, "always", "Approved permanently")
 
         @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
         async def deny(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "deny", discord.Color.red(), "Denied")
+            await self._resolve(interaction, "deny", "Denied")
 
         async def on_timeout(self):
             """Handle view timeout -- disable buttons and mark as expired."""
@@ -6958,11 +6959,10 @@ def _define_discord_view_classes() -> None:
             msg = getattr(self, '_message', None)
             if msg:
                 try:
-                    embed = msg.embeds[0] if msg.embeds else None
-                    if embed:
-                        embed.color = discord.Color.greyple()
-                        embed.set_footer(text="⏱ Prompt expired — no action taken")
-                    await msg.edit(embed=embed, view=self)
+                    original_content = str(getattr(msg, "content", "") or "")
+                    decision = "⏱ Prompt expired — no action taken"
+                    content = self._with_status(decision, original_content)
+                    await msg.edit(content=content, view=self)
                 except Exception:
                     pass  # message deleted or too old to edit
 

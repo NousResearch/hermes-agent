@@ -52,6 +52,32 @@ function copyGlobByExt(srcDir, destDir, extensions) {
 }
 
 /**
+ * Recursively copies a directory by walking it and copying each file with a
+ * non-recursive cpSync.
+ *
+ * We deliberately avoid `cpSync(src, dest, { recursive: true })`: on Windows
+ * its native cpSyncCopyDir binding (Node 22.x) is unreliable — it throws
+ * "EIO: Access is denied." on the `\\?\`-prefixed destination for plain
+ * directory copies, and can hard-crash the whole process (exit 0xC0000409 /
+ * STATUS_STACK_BUFFER_OVERRUN) while copying node-pty's conpty payload. That
+ * crash is silent and killed the packaged desktop build at the stage step.
+ * Per-file copies use a different codepath that works reliably; this mirrors
+ * the manual walk copyGlobByExt already relies on.
+ */
+export function copyDirRecursive(srcDir, destDir) {
+  mkdirSync(destDir, { recursive: true })
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const src = join(srcDir, entry.name)
+    const dest = join(destDir, entry.name)
+    if (entry.isDirectory()) {
+      copyDirRecursive(src, dest)
+    } else {
+      cpSync(src, dest)
+    }
+  }
+}
+
+/**
  * Copies the locally-compiled build/Release output (used when no prebuild
  * was available and node-pty was built from source for the host machine).
  *
@@ -68,7 +94,7 @@ function copyBuildRelease(srcDir, destDir) {
   mkdirSync(destDir, { recursive: true })
   for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name), { recursive: true })
+      copyDirRecursive(join(srcDir, entry.name), join(destDir, entry.name))
       continue
     }
     if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
@@ -106,7 +132,7 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
     mkdirSync(destPrebuild, { recursive: true })
     for (const entry of readdirSync(prebuildDir, { withFileTypes: true })) {
       if (entry.name === 'conpty' && entry.isDirectory()) {
-        cpSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'), { recursive: true })
+        copyDirRecursive(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'))
         continue
       }
       if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {

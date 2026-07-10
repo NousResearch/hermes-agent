@@ -75,12 +75,43 @@ Assert-Equal -Expected $noTilde -Actual (ConvertTo-LongPath $noTilde) -Label "ti
 $fakeShort = "C:\Users\FIRST~1.LAS\does\not\exist"
 Assert-Equal -Expected $fakeShort -Actual (ConvertTo-LongPath $fakeShort) -Label "nonexistent 8.3 path falls back to input"
 
+# --- Load Normalize-ProfileEnvVars (the accented-username fix, GH #52842) ---
+$normAst = $ast.FindAll(
+    {
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Normalize-ProfileEnvVars'
+    }, $true) | Select-Object -First 1
+
+if (-not $normAst) {
+    throw "Normalize-ProfileEnvVars not found in install.ps1 -- did the helper get renamed/removed?"
+}
+. ([scriptblock]::Create($normAst.Extent.Text))
+
+# --- Tests for Normalize-ProfileEnvVars ---
+# On a host where ConvertTo-LongPath can't resolve a short alias (COM/PInvoke
+# both unavailable, e.g. non-Windows pwsh), the function must at least not
+# throw and must leave an already-long path untouched.
+Write-Host ""
+Write-Host "-- Normalize-ProfileEnvVars --"
+
+# A long, non-short path must survive the call unchanged (no spurious mutation).
+$env:HermesTest_TMP = "C:\Users\Renombrado\AppData\Local\Temp"
+Normalize-ProfileEnvVars
+Assert-Equal -Expected "C:\Users\Renombrado\AppData\Local\Temp" -Actual $env:HermesTest_TMP -Label "long profile path unchanged by normalization" -ea Stop
+
+# The function must enumerate the documented set of profile-rooted vars without
+# error and without touching unrelated vars.
+$env:HermesTest_MARKER = "untouched"
+Normalize-ProfileEnvVars
+Assert-Equal -Expected "untouched" -Actual $env:HermesTest_MARKER -Label "unrelated env var left untouched"
+
 # --- Summary ---
 Write-Host ""
 if ($failures -gt 0) {
     Write-Host "FAILED: $failures assertion(s) failed" -ForegroundColor Red
     exit 1
 } else {
-    Write-Host "All ConvertTo-LongPath tests passed." -ForegroundColor Green
+    Write-Host "All install.ps1 path-normalization tests passed." -ForegroundColor Green
     exit 0
 }

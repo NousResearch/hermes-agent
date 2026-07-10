@@ -91,27 +91,60 @@ try {
 # ============================================================================
 # 8.3 short-path normalization
 # ============================================================================
-# When the Windows user-profile folder name contains a space (e.g.
-# "First Last"), Windows generates an 8.3 short alias for it (e.g. FIRST~1.LAS)
-# and may expose %TEMP%/%TMP% in that short form:
-#   C:\Users\FIRST~1.LAS\AppData\Local\Temp
+# Windows generates an 8.3 short alias (e.g. RUBN~1, FIRST~1.LAS) for user
+# profile folders whose name contains an accented character (Rubén) or a space
+# ("First Last"). It may expose %TEMP%, %LOCALAPPDATA%, %APPDATA%,
+# %USERPROFILE% (and any path derived from them, including the default
+# HERMES_HOME / InstallDir) in that short form:
+#   C:\Users\RUBN~1\AppData\Local\Temp
 # PowerShell's FileSystem provider mishandles the "~1.ext" component when such a
-# path is handed to a provider cmdlet like `Tee-Object -FilePath` /
-# `Out-File -FilePath`, throwing:
-#   "An object at the specified path C:\Users\FIRST~1.LAS does not exist."
-# Every Node/Electron build+install stage streams its log to %TEMP% via
-# Tee-Object, so they all abort with that error, while the Python/uv stages --
-# which never write a side log to %TEMP% through a provider cmdlet -- complete
-# fine. Expanding %TEMP%/%TMP% back to their long form once, up front, lets
-# every downstream cmdlet (and child process) see a path the provider can
-# resolve. (GH: Windows desktop installer fails at Node/Electron stages.)
+# path reaches a provider cmdlet (`Tee-Object -FilePath`, `Out-File`,
+# `New-Item`, `Test-Path`), throwing "No existe ningún objeto en la ruta de
+# acceso especificada" (es) / "An object at the specified path does not
+# exist" (en). Every Node/Electron build+install stage streams its log to
+# %TEMP% via Tee-Object and the desktop stage probes the produced binary under
+# the profile-derived InstallDir, so a short profile root aborts the whole
+# bootstrap even when the artifact built fine.
+#
+# We expand every profile-rooted env var (and the install-derived paths) back to
+# their long Unicode form ONCE, up front, so every downstream cmdlet and child
+# process sees a path the provider can resolve. This fixes the accented-username
+# class of failures (GH #52842), not just the space class.
+
+# Define the P/Invoke helper once (guarded; harmless on non-Windows where the
+# type simply won't exist and ConvertTo-LongPath falls back to COM/original).
+try {
+    Add-Type -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern int GetLongPathNameW(string lpszShortPath, System.Text.StringBuilder lpszLongPath, int cchBuffer);
+'@ -Name 'MossLongPath' -Namespace 'HermesInstall' -ErrorAction SilentlyContinue
+} catch { }
 
 function ConvertTo-LongPath {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
-    # Only 8.3 short names carry a tilde+digit ("~1"); skip the COM round-trip
-    # for ordinary long paths.
+    # Only 8.3 short names carry a tilde+digit ("~1"); skip the resolution
+    # round-trip for ordinary long paths (and for UNC paths, which the API
+    # does not canonicalize the same way).
     if ($Path -notmatch '~\d') { return $Path }
+    try {
+        # Prefer the kernel32 API: it expands ANY 8.3 short component,
+        # including accented-username aliases like C:\Users\RUBN~1 that the COM
+        # Scripting.FileSystemObject fails to expand on some non-English
+        # locales (the root cause of GH #52842).
+        $sb = New-Object System.Text.StringBuilder 4096
+        $len = [HermesInstall.MossLongPath]::GetLongPathNameW($Path, $sb, $sb.Capacity)
+        if ($len -gt $sb.Capacity) {
+            $sb = New-Object System.Text.StringBuilder $len
+            $len = [HermesInstall.MossLongPath]::GetLongPathNameW($Path, $sb, $sb.Capacity)
+        }
+        if ($len -gt 0) {
+            $long = $sb.ToString()
+            if ($long -and $long -ne $Path) { return $long }
+        }
+    } catch {
+        # P/Invoke unavailable / type not defined / denied — fall through.
+    }
     try {
         $fso = New-Object -ComObject Scripting.FileSystemObject
         if ($fso.FolderExists($Path)) { return $fso.GetFolder($Path).Path }
@@ -122,14 +155,43 @@ function ConvertTo-LongPath {
     return $Path
 }
 
-foreach ($tmpVar in @('TEMP', 'TMP')) {
-    $current = [Environment]::GetEnvironmentVariable($tmpVar)
-    if ($current) {
-        $expanded = ConvertTo-LongPath $current
-        if ($expanded -and $expanded -ne $current) {
-            Set-Item -Path "Env:$tmpVar" -Value $expanded
+# Normalize every profile-rooted env var (temp roots + the profile roots that
+# feed HERMES_HOME / InstallDir / the desktop binary probe). Defined as a
+# function so it can be unit-tested in isolation (see
+# scripts/tests/test-install-ps1-longpath.ps1) without running the whole
+# installer.
+function Normalize-ProfileEnvVars {
+    foreach ($var in @('TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE')) {
+        $current = [Environment]::GetEnvironmentVariable($var)
+        if ($current) {
+            $expanded = ConvertTo-LongPath $current
+            if ($expanded -and $expanded -ne $current) {
+                Set-Item -Path "Env:$var" -Value $expanded
+            }
         }
     }
+}
+
+Normalize-ProfileEnvVars
+
+# Re-derive the install paths from the (now long) env vars. If the user passed
+# explicit -HermesHome / -InstallDir values we still normalize them in place
+# (they may carry a short component), but we never overwrite an explicit value
+# with the default. $PSBoundParameters is only meaningful at the script scope,
+# so this re-derivation stays in the body rather than inside a function.
+if (-not $PSBoundParameters.ContainsKey('HermesHome')) {
+    $HermesHome = ConvertTo-LongPath $(
+        if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
+    )
+} else {
+    $HermesHome = ConvertTo-LongPath $HermesHome
+}
+if (-not $PSBoundParameters.ContainsKey('InstallDir')) {
+    $InstallDir = ConvertTo-LongPath $(
+        if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }
+    )
+} else {
+    $InstallDir = ConvertTo-LongPath $InstallDir
 }
 
 # ============================================================================

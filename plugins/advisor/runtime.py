@@ -132,15 +132,25 @@ class AdvisorRuntime:
         from utils import atomic_json_write
 
         with self._state_lock:
-            for session_id, state in self._session_states.items():
+            # Clear in-memory session states and track which disk files we cover
+            cleared_digests: set[str] = set()
+            for key, state in self._session_states.items():
                 state.held_notes = []
-                self._save_session_state(session_id, state)
+                self._save_session_state(key, state)
+                cleared_digests.add(self._session_path(key).name)
+
+            # Catch orphaned session files not yet loaded into memory
             for path in self.sessions_dir.glob("*.json"):
+                if path.name in cleared_digests:
+                    continue  # already handled above
                 try:
-                    data = json.loads(path.read_text())
-                    data["held_notes"] = []
-                    atomic_json_write(path, data, indent=2, mode=0o600)
-                except (json.JSONDecodeError, OSError, TypeError) as exc:
+                    atomic_json_write(
+                        path,
+                        {"session_id": "(migrated)", "held_notes": []},
+                        indent=2,
+                        mode=0o600,
+                    )
+                except (OSError, TypeError) as exc:
                     logger.warning("Advisor: could not clear %s: %s", path, exc)
 
     # ── hook: end of each agent turn ─────────────────────────────────────

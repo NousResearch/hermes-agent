@@ -30,6 +30,7 @@
  * backend-command.ts.
  */
 
+import fs from 'node:fs'
 import path from 'node:path'
 
 /**
@@ -77,6 +78,86 @@ export function buildPathExtCandidates(pathext: string | undefined, isWindows: b
  */
 export function chooseUpdaterArgs(haveRealInstall: boolean, branch: string): string[] {
   return haveRealInstall ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+}
+
+/**
+ * Resolve the site-packages directory entries for a Python venv.
+ *
+ * On Windows, venv layout is `<venvRoot>/Lib/site-packages`.
+ * On POSIX, it's `<venvRoot>/lib/python<version>/site-packages` where
+ * `<version>` (e.g. `3.12`) is read from the venv's `pyvenv.cfg`
+ * `version_info` field.
+ *
+ * Returns only directories that actually exist on disk. Returns an empty
+ * array when `venvRoot` is falsy or no matching site-packages dir is found.
+ *
+ * Extracted from main.ts so the platform branching can be tested without
+ * reading source text. `isWindows` and `directoryExists` are injectable;
+ * `readFile` defaults to `fs.readFileSync` but can be overridden for tests.
+ */
+export function getVenvSitePackagesEntries(
+  venvRoot: string | undefined | null,
+  opts: {
+    isWindows?: boolean
+    directoryExists?: (p: string) => boolean
+    readFile?: (p: string) => string | undefined
+  } = {}
+): string[] {
+  const entries: string[] = []
+
+  if (!venvRoot) {
+    return entries
+  }
+
+  const isWindows = opts.isWindows ?? process.platform === 'win32'
+
+  const directoryExists = opts.directoryExists ?? ((p: string) => {
+    try {
+      return fs.statSync(p).isDirectory()
+    } catch {
+      return false
+    }
+  })
+
+  const readFile = opts.readFile ?? ((p: string) => {
+    try {
+      return fs.readFileSync(p, 'utf8')
+    } catch {
+      return undefined
+    }
+  })
+
+  if (isWindows) {
+    const sitePackages = path.join(venvRoot, 'Lib', 'site-packages')
+
+    if (directoryExists(sitePackages)) {
+      entries.push(sitePackages)
+    }
+
+    return entries
+  }
+
+  const cfg = readFile(path.join(venvRoot, 'pyvenv.cfg'))
+
+  const version = (() => {
+    if (!cfg) {
+      return null
+    }
+
+    const match = cfg.match(/^version_info\s*=\s*(\d+\.\d+)/im)
+
+    return match ? match[1].trim() : null
+  })()
+
+  if (version) {
+    const sitePackages = path.join(venvRoot, 'lib', `python${version}`, 'site-packages')
+
+    if (directoryExists(sitePackages)) {
+      entries.push(sitePackages)
+    }
+  }
+
+  return entries
 }
 
 export interface ResolveVenvHermesCommandDeps {

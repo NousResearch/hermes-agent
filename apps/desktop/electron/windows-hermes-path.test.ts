@@ -13,9 +13,11 @@
 //      re-selected forever instead of falling through to bootstrap.
 
 import assert from 'node:assert/strict'
+import path from 'node:path'
+
 import { test } from 'vitest'
 
-import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } from './windows-hermes-path'
+import { buildPathExtCandidates, chooseUpdaterArgs, getVenvSitePackagesEntries, resolveVenvHermesCommand } from './windows-hermes-path'
 
 test('buildPathExtCandidates: Windows tries PATHEXT extensions before the empty extension', () => {
   const extensions = buildPathExtCandidates('.COM;.EXE;.BAT;.CMD', true)
@@ -136,4 +138,72 @@ test('resolveVenvHermesCommand: is case-insensitive on hermes.exe and the Script
 
   assert.ok(resolveVenvHermesCommand('/root/venv/Scripts/HERMES.EXE', [], deps))
   assert.ok(resolveVenvHermesCommand('/root/venv/SCRIPTS/hermes.exe', [], deps))
+})
+
+// ── getVenvSitePackagesEntries ─────────────────────────────────────────────
+
+test('getVenvSitePackagesEntries: returns Lib/site-packages on Windows when it exists', () => {
+  const expected = path.join('C:\\venv', 'Lib', 'site-packages')
+
+  const result = getVenvSitePackagesEntries('C:\\venv', {
+    isWindows: true,
+    directoryExists: p => p === expected
+  })
+
+  assert.deepEqual(result, [expected])
+})
+
+test('getVenvSitePackagesEntries: returns empty on Windows when site-packages does not exist', () => {
+  const result = getVenvSitePackagesEntries('C:\\venv', {
+    isWindows: true,
+    directoryExists: () => false
+  })
+
+  assert.deepEqual(result, [])
+})
+
+test('getVenvSitePackagesEntries: reads pyvenv.cfg version on POSIX and resolves lib/pythonX.Y/site-packages', () => {
+  const result = getVenvSitePackagesEntries('/venv', {
+    isWindows: false,
+    directoryExists: p => p === '/venv/lib/python3.12/site-packages',
+    readFile: () => 'version_info = 3.12.1\n'
+  })
+
+  assert.deepEqual(result, ['/venv/lib/python3.12/site-packages'])
+})
+
+test('getVenvSitePackagesEntries: returns empty on POSIX when pyvenv.cfg is missing', () => {
+  const result = getVenvSitePackagesEntries('/venv', {
+    isWindows: false,
+    directoryExists: () => true,
+    readFile: () => undefined
+  })
+
+  assert.deepEqual(result, [])
+})
+
+test('getVenvSitePackagesEntries: returns empty on POSIX when pyvenv.cfg has no version_info', () => {
+  const result = getVenvSitePackagesEntries('/venv', {
+    isWindows: false,
+    directoryExists: () => true,
+    readFile: () => 'home = /usr/bin\n'
+  })
+
+  assert.deepEqual(result, [])
+})
+
+test('getVenvSitePackagesEntries: returns empty on POSIX when version is present but site-packages dir is absent', () => {
+  const result = getVenvSitePackagesEntries('/venv', {
+    isWindows: false,
+    directoryExists: () => false,
+    readFile: () => 'version_info = 3.11\n'
+  })
+
+  assert.deepEqual(result, [])
+})
+
+test('getVenvSitePackagesEntries: returns empty for a falsy venvRoot', () => {
+  assert.deepEqual(getVenvSitePackagesEntries('', { isWindows: true, directoryExists: () => true }), [])
+  assert.deepEqual(getVenvSitePackagesEntries(null, { isWindows: true, directoryExists: () => true }), [])
+  assert.deepEqual(getVenvSitePackagesEntries(undefined, { isWindows: true, directoryExists: () => true }), [])
 })

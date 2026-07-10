@@ -308,6 +308,15 @@ class TestRequestOverridesInvalidKeys:
         assert "system" not in kw
         assert kw["messages"] == _msgs()
 
+    def test_legacy_path_drops_invalid_system_key(self, transport):
+        """Unregistered providers use the legacy build path and need the same guard."""
+        kw = transport.build_kwargs(
+            model="custom/unregistered", messages=_msgs(), tools=None,
+            request_overrides={"system": "ignored prompt"},
+        )
+        assert "system" not in kw
+        assert kw["messages"] == _msgs()
+
     def test_extra_body_override_still_merges(self, transport):
         kw = transport.build_kwargs(
             model="gpt-5.4", messages=_msgs(), tools=None,

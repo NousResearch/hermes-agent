@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>æ:// — Local Surface System</title>
+<style>
+  :root {
+    --void: #050505; --gold: #d4af37; --neon: #00ff9d;
+    --ink: #f0ece4; --muted: rgba(240,236,228,0.38);
+    --border: rgba(212,175,55,0.16); --border-hot: rgba(212,175,55,0.5);
+    --bg: #030303; --panel: #090909; --panel-2: #0b0b0b;
+    --glow: rgba(212,175,55,0.08); --err: #ff4444;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: var(--void); color: var(--ink);
+    font-family: ui-monospace, 'JetBrains Mono', Menlo, monospace;
+    min-height: 100vh; overflow: hidden;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9999;
+    opacity: 0.03; background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(212,175,55,0.12) 2px, rgba(212,175,55,0.12) 4px);
+  }
+  .wrap { height: 100vh; display: grid; grid-template-rows: auto auto auto 1fr auto; gap: 1px; background: var(--border); }
+  .statusbar { background: var(--panel); padding: 7px 14px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-hot); }
+  .statusbar .grp { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .chip { padding: 4px 10px; border: 1px solid var(--border); color: var(--muted); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; background: var(--panel-2); display: flex; gap: 8px; align-items: center; }
+  .chip.hot { color: var(--gold); border-color: var(--border-hot); box-shadow: 0 0 12px var(--glow); }
+  .chip .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--neon); animation: pulse 1.8s infinite; flex-shrink: 0; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  header { background: var(--panel); padding: 12px 16px; display: flex; gap: 12px; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); }
+  .brand { display: flex; gap: 12px; align-items: center; }
+  .glyph { width: 38px; height: 38px; border: 1px solid var(--border-hot); display: grid; place-items: center; color: var(--gold); font-weight: 800; background: var(--panel-2); box-shadow: 0 0 18px var(--glow); }
+  .brand h1 { margin: 0; font-size: 15px; letter-spacing: 0.14em; color: var(--gold); text-transform: uppercase; }
+  .brand p { margin: 2px 0 0; font-size: 10px; color: var(--muted); letter-spacing: 0.18em; text-transform: uppercase; }
+  .tabbar { background: var(--panel); display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+  .tab { padding: 9px 16px; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+  .tab:hover { color: var(--ink); }
+  .tab.active { color: var(--gold); border-bottom-color: var(--gold); }
+  .tab .badge { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--neon); margin-left: 6px; vertical-align: middle; }
+  main { background: var(--bg); overflow: hidden; display: grid; grid-template-columns: 320px 1fr; }
+  .side { border-right: 1px solid var(--border); overflow-y: auto; padding: 12px; }
+  .side h2 { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+  .surfaces-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+  .surface-card { border: 1px solid var(--border); padding: 11px 12px; background: var(--panel-2); transition: all 0.2s; cursor: pointer; }
+  .surface-card:hover { border-color: var(--border-hot); background: rgba(212,175,55,0.05); }
+  .surface-card.active { border-color: var(--gold); box-shadow: 0 0 14px var(--glow); }
+  .surface-name { font-size: 12px; color: var(--gold); font-weight: 700; letter-spacing: 0.08em; display: flex; justify-content: space-between; align-items: center; }
+  .surface-name .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--neon); }
+  .surface-meta { font-size: 10px; color: var(--muted); margin-top: 5px; line-height: 1.5; word-break: break-word; }
+  .surface-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .surface-btn { background: transparent; border: 1px solid var(--border); color: var(--ink); font-family: inherit; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; padding: 5px 8px; cursor: pointer; }
+  .surface-btn:hover { border-color: var(--gold); color: var(--gold); }
+  .surface-btn.primary { border-color: var(--border-hot); color: var(--gold); }
+  .stage { position: relative; overflow: hidden; background: var(--void); }
+  .stage iframe { width: 100%; height: 100%; border: 0; background: var(--void); }
+  .stage .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; text-align: center; padding: 20px; }
+  .dock { background: var(--panel); border-top: 1px solid var(--border); display: grid; grid-template-rows: auto 1fr; height: 150px; }
+  .dock-bar { display: flex; justify-content: space-between; align-items: center; padding: 5px 12px; border-bottom: 1px solid var(--border); }
+  .dock-bar .t { font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
+  .dock-history { font-size: 10px; line-height: 1.6; color: var(--muted); overflow-y: auto; padding: 6px 12px; white-space: pre-wrap; }
+  .dock-history .ok { color: var(--neon); } .dock-history .err { color: var(--err); } .dock-history .gold { color: var(--gold); }
+  .term { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--border); }
+  .term .p { color: var(--gold); font-weight: 700; font-size: 11px; }
+  .term input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--ink); font-family: inherit; font-size: 11px; }
+  ::-webkit-scrollbar { width: 2px; } ::-webkit-scrollbar-track { background: var(--void); } ::-webkit-scrollbar-thumb { background: var(--border-hot); border-radius: 1px; }
+  @media (max-width: 720px) { main { grid-template-columns: 1fr; } .side { max-height: 200px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="statusbar">
+    <div class="grp">
+      <span class="chip hot"><span class="live-dot"></span>æ:// HERMES</span>
+      <span class="chip" id="os-chip">$OS · --:--:--</span>
+      <span class="chip hot">● LIVE</span>
+    </div>
+    <div class="grp">
+      <span class="chip" id="bridge-status">bridge: …</span>
+      <span class="chip">local · pc://mesh/victus/local</span>
+    </div>
+  </div>
+
+  <header>
+    <div class="brand">
+      <div class="glyph">æ</div>
+      <div>
+        <h1>Local Surface System</h1>
+        <p>one hub · all sovereign surfaces</p>
+      </div>
+    </div>
+    <div class="grp">
+      <button class="surface-btn primary" onclick="openCommand('remoteUse.surfaces')">↻ RELOAD HUB</button>
+    </div>
+  </header>
+
+  <div class="tabbar" id="tabbar">
+    <div class="tab active" data-tab="surfaces">Surfaces<span class="badge"></span></div>
+    <div class="tab" data-tab="inference">Inference</div>
+    <div class="tab" data-tab="factory">Factory</div>
+    <div class="tab" data-tab="computer">Computer</div>
+    <div class="tab" data-tab="media">Media</div>
+    <div class="tab" data-tab="secret">Secret</div>
+    <div class="tab" data-tab="boot">Boot</div>
+  </div>
+
+  <main>
+    <aside class="side">
+      <h2 id="side-title">◈ Local Surfaces</h2>
+      <div class="surfaces-grid" id="surfaces-grid"></div>
+    </aside>
+    <section class="stage" id="stage">
+      <div class="empty">select a surface to mount</div>
+    </section>
+  </main>
+
+  <div class="dock">
+    <div class="dock-bar"><span class="t">dock · >_æ|</span><span class="t" id="dock-count">0 events</span></div>
+    <pre class="dock-history" id="dock-history"></pre>
+    <div class="term"><span class="p">&gt;_æ|</span><input id="termInput" placeholder="surf <name> · cmd <remoteUse.*> · help" autocomplete="off" /></div>
+  </div>
+</div>
+
+<script>
+const SURFACES = [
+  { id: 'agentic',  name: 'Agentic Hub',      meta: 'Omniverse-ready engineering shell', file: 'C:/æ/hermes-fork/templates/agentic.html', cmd: 'remoteUse.agenticHtmlViewport', tab: 'surfaces' },
+  { id: 'victus',   name: 'Victus Operator',  meta: 'sovereign mesh node · 6 surfaces',  file: 'C:/æ/hermes-fork/templates/victus-operator-surface.html', cmd: 'remoteUse.operatorSurface', tab: 'surfaces' },
+  { id: 'webllm',   name: 'Hermes Native',    meta: 'WebLLM/WebGPU · Qwen3-0.6B',        file: 'C:/æ/hermes-fork/vscode-remote-use/templates/web-llm.html', cmd: 'remoteUse.hermesNative', tab: 'inference' },
+  { id: 'factory',  name: 'Agentic Factory',  meta: 'spec → surface → write',            file: 'C:/æ/hermes-fork/vscode-remote-use/templates/factory.html', cmd: 'remoteUse.factory', tab: 'factory' },
+  { id: 'computer', name: 'Computer Use',     meta: 'bounded desktop control',           file: '', cmd: 'remoteUse.computerUse', tab: 'computer' },
+  { id: 'media',    name: 'Media Primitive',  meta: 'VLC + FFmpeg local',                file: 'C:/æ/hermes-fork/templates/vlc-llm-store.html', cmd: 'remoteUse.mediaWindow', tab: 'media' },
+  { id: 'secret',   name: 'Secret Bridge',    meta: 'privateclient.ai · 127.0.0.1:7890', file: 'C:/æ/site/secret-source-bridge.html', cmd: '', tab: 'secret' },
+  { id: 'boot',     name: 'StartABusiness',   meta: 'æ://#startabusiness boot sequence', file: 'C:/Users/yaelm/OneDrive/BEFORE 2023/Desktop/Y-L.com/startabusiness.html', cmd: '', tab: 'boot' },
+];
+
+const TAB_TITLES = { surfaces: '◈ Local Surfaces', inference: '◈ Inference', factory: '◈ Factory', computer: '◈ Computer Use', media: '◈ Media', secret: '◈ Secret Bridge', boot: '◈ Boot Sequence' };
+let dockCount = 0;
+
+function log(msg, cls) {
+  const el = document.getElementById('dock-history');
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  const ts = new Date().toISOString().slice(11, 19);
+  line.textContent = '[' + ts + '] ' + msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+  dockCount++;
+  document.getElementById('dock-count').textContent = dockCount + ' events';
+}
+
+function hasVsCode() {
+  try { return !!(window.acquireVsCodeApi && window.acquireVsCodeApi()); } catch (e) { return false; }
+}
+
+function openCommand(id) {
+  log('command=' + id, 'gold');
+  if (hasVsCode()) {
+    try { window.acquireVsCodeApi().postMessage({ command: id }); log('posted to host', 'ok'); return; }
+    catch (e) { log('post failed=' + e, 'err'); }
+  }
+  log('no host context (browser) — open manually: ' + id);
+}
+
+function openFile(path) {
+  if (!path) return;
+  log('open file=' + path, 'gold');
+  window.open('file:///' + path.replace(/\\/g, '/'), '_blank', 'noopener');
+}
+
+function mountSurface(s) {
+  const stage = document.getElementById('stage');
+  document.querySelectorAll('.surface-card').forEach(c => c.classList.toggle('active', c.dataset.id === s.id));
+  if (s.file) {
+    stage.innerHTML = '<iframe src="file:///' + s.file.replace(/\\/g, '/') + '" sandbox="allow-scripts allow-same-origin"></iframe>';
+    log('mounted ' + s.name + ' → ' + s.file, 'ok');
+  } else {
+    stage.innerHTML = '<div class="empty">no local html — dispatch via command<br><br><button class="surface-btn primary" onclick="openCommand(\'' + s.cmd + '\')">' + s.cmd + '</button></div>';
+    log('no file for ' + s.name + ' — use command', 'gold');
+  }
+}
+
+function renderTab(tab) {
+  document.getElementById('side-title').textContent = TAB_TITLES[tab] || TAB_TITLES.surfaces;
+  const grid = document.getElementById('surfaces-grid');
+  grid.innerHTML = '';
+  const list = SURFACES.filter(s => tab === 'surfaces' ? true : s.tab === tab);
+  list.forEach(s => {
+    const card = document.createElement('div');
+    card.className = 'surface-card'; card.dataset.id = s.id;
+    card.innerHTML = '<div class="surface-name">' + s.name + '<span class="dot"></span></div>' +
+      '<div class="surface-meta">' + s.meta + '</div>' +
+      '<div class="surface-actions">' +
+        (s.file ? '<button class="surface-btn" onclick="openFile(\'' + s.file + '\')">FILE</button>' : '') +
+        (s.cmd ? '<button class="surface-btn primary" onclick="openCommand(\'' + s.cmd + '\')">CMD</button>' : '') +
+      '</div>';
+    card.onclick = () => mountSurface(s);
+    grid.appendChild(card);
+  });
+  log('tab=' + tab + ' · ' + list.length + ' surface(s)');
+}
+
+function refreshBridgeStatus() {
+  const chip = document.getElementById('bridge-status');
+  fetch('http://127.0.0.1:7890/health', { cache: 'no-store' }).then(r => {
+    chip.textContent = 'bridge: ' + (r.ok ? 'local' : 'offline');
+    chip.className = 'chip ' + (r.ok ? 'hot' : '');
+  }).catch(() => { chip.textContent = 'bridge: offline'; chip.className = 'chip'; });
+}
+
+function tickClock() {
+  const d = new Date();
+  document.getElementById('os-chip').textContent = '$OS · ' + d.toTimeString().slice(0, 8);
+}
+
+document.getElementById('tabbar').addEventListener('click', e => {
+  const t = e.target.closest('.tab'); if (!t) return;
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
+  renderTab(t.dataset.tab);
+});
+
+document.getElementById('termInput').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const v = e.target.value.trim(); e.target.value = '';
+  if (!v) return;
+  const [cmd, arg] = v.split(/\s+/);
+  if (cmd === 'help') { log('surf <id> · cmd <remoteUse.*> · file <id> · tabs', 'gold'); }
+  else if (cmd === 'surf') { const s = SURFACES.find(x => x.id === arg); s ? mountSurface(s) : log('unknown surface: ' + arg, 'err'); }
+  else if (cmd === 'cmd') { openCommand(arg); }
+  else if (cmd === 'file') { const s = SURFACES.find(x => x.id === arg); s ? openFile(s.file) : log('unknown: ' + arg, 'err'); }
+  else if (cmd === 'tabs') { log('tabs: ' + SURFACES.map(s => s.tab).filter((v,i,a) => a.indexOf(v) === i).join(' '), 'gold'); }
+  else { log('unknown: ' + v + ' (help)', 'err'); }
+});
+
+// boot
+log('surface system online · ' + SURFACES.length + ' surfaces registered', 'ok');
+renderTab('surfaces');
+tickClock(); setInterval(tickClock, 1000);
+if (hasVsCode()) { log('host context: VS Code webview', 'ok'); } else { log('host context: standalone browser', 'gold'); }
+window.addEventListener('load', refreshBridgeStatus);
+</script>
+</body>
+</html>

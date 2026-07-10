@@ -1188,23 +1188,20 @@ export function activate(context: vscode.ExtensionContext) {
     });
   });
 
-  const htmlSurfaceCmd = vscode.commands.registerCommand('remoteUse.htmlSurface', async () => {
+  const surfacesHubCmd = vscode.commands.registerCommand('remoteUse.surfaces', async () => {
     const repo = getHermesRepoPath();
-    const configuredCandidates = [
-      `${repo}/templates/agentic.html`,
-      `${repo}/index.html`,
-      repo ? `C:/æ/site/index.html` : '',
-      repo ? `C:/æ/site/secret-source-bridge.html` : '',
-      repo ? `C:/Users/yaelm/OneDrive/BEFORE 2023/Desktop/Y-L.com/startabusiness.html` : '',
-    ];
-    const boardingCandidates = configuredCandidates;
-    for (const candidate of boardingCandidates) {
-      const path = String(candidate || '').trim();
-      if (!path) continue;
-      openHtmlSurface(require('path').basename(path), path);
-      return;
-    }
-    vscode.window.showWarningMessage('Remote Use: no local HTML surface candidates available.');
+    const hub = `${repo}/templates/surfaces/index.html`;
+    const panel = vscode.window.createWebviewPanel(
+      'remoteUseSurfaces',
+      'Remote Use: Local Surface System',
+      vscode.ViewColumn.One,
+      { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.file(`${repo}/templates/surfaces`), vscode.Uri.file(`${repo}/templates`), vscode.Uri.file('C:/æ/site'), vscode.Uri.file('C:/Users/yaelm/OneDrive/BEFORE 2023/Desktop/Y-L.com')] }
+    );
+    panel.webview.html = require('fs').readFileSync(hub, 'utf8');
+  });
+
+  const htmlSurfaceCmd = vscode.commands.registerCommand('remoteUse.htmlSurface', async () => {
+    await vscode.commands.executeCommand('remoteUse.surfaces');
   });
 
   const commandPromptCmd = vscode.commands.registerCommand('remoteUse.commandPrompt', async () => {
@@ -1305,6 +1302,7 @@ export function activate(context: vscode.ExtensionContext) {
     factoryCmd,
     computerUseCmd,
     htmlSurfaceCmd,
+    surfacesHubCmd,
     commandPromptCmd,
     homeOSCmd
   );

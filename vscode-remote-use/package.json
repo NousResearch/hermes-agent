@@ -75,6 +75,10 @@
       {
         "command": "remoteUse.htmlSurface",
         "title": "Remote Use: Open Local HTML Surface"
+      },
+      {
+        "command": "remoteUse.surfaces",
+        "title": "Remote Use: Local Surface System"
       }
     ],
     "themes": [

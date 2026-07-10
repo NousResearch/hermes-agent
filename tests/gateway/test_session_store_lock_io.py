@@ -126,7 +126,7 @@ class TestStaleCheckOutsideLock:
                 calls_under_lock.append(sid)
             return orig(sid)
 
-        store._is_session_ended_in_db = tracking
+        store._is_session_ended_in_db = tracking  # type: ignore[method-assign]
 
         store.get_or_create_session(source)
 
@@ -153,7 +153,7 @@ class TestSaveOutsideLock:
                 save_calls_under_lock.append(True)
             orig_save()
 
-        store._save = tracking_save
+        store._save = tracking_save  # type: ignore[method-assign]
 
         # force_new bypasses the existing-entry path, goes straight to create.
         store.get_or_create_session(source, force_new=True)
@@ -182,11 +182,11 @@ class TestRecoverOutsideLock:
         orig = store._recover_session_from_db
 
         def tracking(**kw):
-            if lock.held:
+            if getattr(lock, "held", False):
                 recover_calls_under_lock.append(True)
             return orig(**kw)
 
-        store._recover_session_from_db = tracking
+        store._recover_session_from_db = tracking  # type: ignore[method-assign]
 
         store.get_or_create_session(source)
 

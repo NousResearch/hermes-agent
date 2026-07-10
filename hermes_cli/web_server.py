@@ -3228,7 +3228,11 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     else:
         popen_kwargs["start_new_session"] = True
 
-    proc = subprocess.Popen(cmd, **popen_kwargs)
+    try:
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+    except Exception:
+        log_file.close()
+        raise
     # The child inherits its own duplicated fd for stdout/stderr, so the
     # parent's handle can be released immediately — otherwise we leak one
     # fd per spawned action.

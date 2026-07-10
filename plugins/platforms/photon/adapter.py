@@ -1487,7 +1487,7 @@ class PhotonAdapter(BasePlatformAdapter):
             return SendResult(
                 success=False,
                 error=error,
-                retryable=self._is_retryable_sidecar_error(error),
+                retryable=self._is_retryable_error(error),
             )
         self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
@@ -1541,7 +1541,7 @@ class PhotonAdapter(BasePlatformAdapter):
             return SendResult(
                 success=False,
                 error=error,
-                retryable=self._is_retryable_sidecar_error(error),
+                retryable=self._is_retryable_error(error),
             )
         self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))

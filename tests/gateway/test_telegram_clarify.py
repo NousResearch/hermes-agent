@@ -1,4 +1,4 @@
-from gateway.platforms.telegram import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def test_telegram_clarify_choice_split_label_and_description():

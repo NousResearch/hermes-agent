@@ -38,6 +38,8 @@ class TestGatewayLifecyclePattern:
 
     @pytest.mark.parametrize("text", [
         "launchctl kickstart gui/501/ai.hermes.gateway",
+        "launchctl bootout gui/501/ai.hermes.gateway",
+        "launchctl bootstrap gui/501 ~/Library/LaunchAgents/ai.hermes.gateway.plist",
         "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist",
         "launchctl stop ai.hermes.gateway",
         "systemctl restart hermes-gateway",
@@ -188,6 +190,68 @@ class TestCronCreateLifecycleBlock:
         # the error message is about prompt/skill, NOT about "Blocked".
         out = capsys.readouterr().out
         assert "Blocked" not in out
+
+    def test_api_create_blocks_gateway_lifecycle_prompt(self):
+        from cron.jobs import create_job
+
+        with pytest.raises(ValueError, match="restart loops"):
+            create_job(
+                prompt="Run launchctl bootout gui/501/ai.hermes.gateway",
+                schedule="30m",
+            )
+
+    def test_api_create_blocks_gateway_lifecycle_script(self, tmp_path, monkeypatch):
+        from cron.jobs import create_job
+        import cron.jobs as jobs
+
+        hermes_home = tmp_path / "home"
+        scripts_dir = hermes_home / "scripts"
+        scripts_dir.mkdir(parents=True)
+        script = scripts_dir / "restart_gateway.sh"
+        script.write_text("#!/usr/bin/env bash\nlaunchctl kickstart -k gui/501/ai.hermes.gateway\n")
+        monkeypatch.setattr(jobs, "HERMES_DIR", hermes_home)
+        monkeypatch.setattr(jobs, "CRON_DIR", hermes_home / "cron")
+        monkeypatch.setattr(jobs, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", hermes_home / "cron" / "output")
+
+        with pytest.raises(ValueError, match="restart loops"):
+            create_job(
+                prompt="",
+                schedule="30m",
+                script="restart_gateway.sh",
+                no_agent=True,
+            )
+
+    def test_scheduler_runtime_blocks_gateway_lifecycle_script(self, tmp_path, monkeypatch):
+        import cron.scheduler as scheduler
+
+        hermes_home = tmp_path / "home"
+        scripts_dir = hermes_home / "scripts"
+        scripts_dir.mkdir(parents=True)
+        script = scripts_dir / "late_restart.sh"
+        script.write_text("#!/usr/bin/env bash\nhermes gateway restart\n")
+        monkeypatch.setattr(scheduler, "_hermes_home", hermes_home)
+
+        ok, output = scheduler._run_job_script("late_restart.sh")
+
+        assert ok is False
+        assert "Blocked" in output
+        assert "restart loops" in output
+
+    def test_scheduler_runtime_blocks_legacy_gateway_lifecycle_prompt(self):
+        import cron.scheduler as scheduler
+
+        ok, doc, final, err = scheduler.run_job({
+            "id": "legacybad001",
+            "name": "legacy bad restart job",
+            "prompt": "run hermes gateway restart",
+            "no_agent": False,
+        })
+
+        assert ok is False
+        assert final == ""
+        assert "Blocked" in doc
+        assert "restart loops" in str(err)
 
 
 # ---------------------------------------------------------------------------

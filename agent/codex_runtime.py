@@ -357,13 +357,25 @@ def run_codex_app_server_turn(
         should_review_skills = True
         agent._iters_since_skill = 0
 
+    final_text = turn.final_text
+    if final_text and not turn.interrupted:
+        try:
+            from agent.thewon_precheck import apply_precheck_response_block
+
+            final_text = apply_precheck_response_block(
+                final_text,
+                getattr(agent, "_thewon_precheck_bundle", None),
+            )
+        except Exception:
+            logger.debug("TheWon precheck response block failed on codex app-server path", exc_info=True)
+
     # External memory provider sync (mirrors line ~15439). Skipped on
     # interrupt/error to avoid feeding partial transcripts to memory.
     if not turn.interrupted and turn.error is None:
         try:
             agent._sync_external_memory_for_turn(
                 original_user_message=original_user_message,
-                final_response=turn.final_text,
+                final_response=final_text,
                 interrupted=False,
                 messages=messages,
             )
@@ -374,7 +386,7 @@ def run_codex_app_server_turn(
     # path (line ~15449). Only fires when a trigger actually tripped AND
     # we have a real final response.
     if (
-        turn.final_text
+        final_text
         and not turn.interrupted
         and (should_review_memory or should_review_skills)
     ):
@@ -388,7 +400,7 @@ def run_codex_app_server_turn(
             logger.debug("background review spawn raised", exc_info=True)
 
     return {
-        "final_response": turn.final_text,
+        "final_response": final_text,
         "messages": messages,
         "api_calls": api_calls,
         "completed": not turn.interrupted and turn.error is None,

@@ -61,6 +61,7 @@ class FakeTextChannel:
         self.name = name
         self.guild = SimpleNamespace(name=guild_name)
         self.topic = None
+        self.fetch_message = AsyncMock()
 
 
 class FakeThread:
@@ -71,12 +72,26 @@ class FakeThread:
         self.parent_id = getattr(parent, "id", None)
         self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
         self.topic = None
+        self.join = AsyncMock()
+        self.history = AsyncMock(return_value=[])
 
 
 @pytest.fixture
 def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+    for env_name in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_AUTO_THREAD",
+        "DISCORD_REQUIRE_MENTION",
+        "DISCORD_THREAD_REQUIRE_MENTION",
+        "DISCORD_ALLOW_BOTS",
+        "DISCORD_HISTORY_BACKFILL",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
@@ -279,6 +294,75 @@ async def test_no_thread_with_auto_thread_disabled_is_noop(adapter, monkeypatch)
 
     adapter._auto_create_thread.assert_not_awaited()
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handoff_thread_created_from_self_message_is_joined_and_hydrated(adapter, monkeypatch):
+    """Other-agent auto-thread replies to our starter message are replayed."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL", "false")
+
+    self_user = adapter._client.user
+    self_user.bot = True
+    self_user.display_name = "Vanila"
+    parent = FakeTextChannel(channel_id=800, name="ops")
+    starter = make_message(
+        channel=parent,
+        content="<@1518118944009883858> 루나 테스트",
+        mentions=[SimpleNamespace(id=1518118944009883858, bot=True)],
+    )
+    starter.id = 999
+    starter.author = self_user
+    parent.fetch_message = AsyncMock(return_value=starter)
+
+    lunar = SimpleNamespace(id=1518118944009883858, bot=True, display_name="Lunar", name="Lunar")
+    thread = FakeThread(channel_id=999, name="루나 테스트", parent=parent)
+    thread.join = AsyncMock()
+    reply = make_message(
+        channel=thread,
+        content="<@999> VANILA_LUNA_RETEST_OK",
+        mentions=[self_user],
+    )
+    reply.id = 1001
+    reply.author = lunar
+
+    thread.history = AsyncMock(return_value=[reply])
+
+    await adapter._maybe_join_and_hydrate_handoff_thread(thread)
+
+    thread.join.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "VANILA_LUNA_RETEST_OK"
+    assert event.source.chat_type == "thread"
+    assert event.source.chat_id == "999"
+    assert event.source.parent_chat_id == "800"
+    assert event.source.is_bot is True
+
+
+@pytest.mark.asyncio
+async def test_handoff_thread_ignores_unrelated_threads(adapter, monkeypatch):
+    """Random public threads should not be joined or replayed."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+
+    self_user = adapter._client.user
+    parent = FakeTextChannel(channel_id=800, name="ops")
+    other_user = SimpleNamespace(id=123, bot=False, display_name="Other", name="Other")
+    starter = make_message(channel=parent, content="not for us", mentions=[])
+    starter.id = 1234
+    starter.author = other_user
+    parent.fetch_message = AsyncMock(return_value=starter)
+
+    thread = FakeThread(channel_id=1234, name="unrelated", parent=parent)
+    thread.join = AsyncMock()
+    thread.history = AsyncMock(return_value=[])
+
+    await adapter._maybe_join_and_hydrate_handoff_thread(thread)
+
+    thread.join.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
 
 
 # ── config.py bridging ───────────────────────────────────────────────

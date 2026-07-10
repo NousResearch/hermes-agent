@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
 from utils import atomic_replace
+from cron.gateway_lifecycle_guard import assert_no_gateway_lifecycle_command
 
 try:
     from croniter import croniter
@@ -197,6 +198,39 @@ def _coerce_job_text(value: Any, fallback: str = "") -> str:
     if value is None:
         return fallback
     return str(value)
+
+
+def _read_cron_script_for_lifecycle_scan(script: Optional[str]) -> str:
+    """Best-effort read of a cron script for gateway lifecycle validation."""
+    if not script:
+        return ""
+    try:
+        scripts_dir = (HERMES_DIR / "scripts").resolve()
+        raw = Path(str(script)).expanduser()
+        path = raw.resolve() if raw.is_absolute() else (scripts_dir / raw).resolve()
+        path.relative_to(scripts_dir)
+        if path.is_file():
+            return path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        # Missing/unreadable scripts are handled elsewhere. This guard is a
+        # safety net, not a replacement for existing path/existence validation.
+        return ""
+    return ""
+
+
+def _assert_job_has_no_gateway_lifecycle(job: Dict[str, Any]) -> None:
+    """Reject cron records that would restart/stop the gateway from cron."""
+    combined = "\n".join(
+        part
+        for part in (
+            _coerce_job_text(job.get("prompt")),
+            _coerce_job_text(job.get("name")),
+            _coerce_job_text(job.get("script")),
+            _read_cron_script_for_lifecycle_scan(job.get("script")),
+        )
+        if part
+    )
+    assert_no_gateway_lifecycle_command(combined)
 
 
 def _schedule_display_for_job(job: Dict[str, Any]) -> str:
@@ -974,6 +1008,8 @@ def create_job(
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
 
+    _assert_job_has_no_gateway_lifecycle(job)
+
     with _jobs_lock():
         jobs = load_jobs()
         jobs.append(job)
@@ -1088,6 +1124,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
             if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
                 updated["next_run_at"] = compute_next_run(updated["schedule"])
+
+            if updated.get("enabled", True) and updated.get("state") != "paused":
+                _assert_job_has_no_gateway_lifecycle(updated)
 
             jobs[i] = updated
             save_jobs(jobs)

@@ -979,6 +979,28 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_routes_task_to_machine_capabilities(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    machine_id = "a0aa0000-0000-4000-8000-000000000001"
+    out = json.loads(kt._handle_create({
+        "title": "Mac-only child",
+        "assignee": "peer",
+        "target_machine": machine_id,
+        "required_capabilities": ["macos", "xcode"],
+    }))
+    assert out["ok"] is True
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, out["task_id"])
+        assert child.target_machine == machine_id
+        assert kb.task_capabilities(conn, child.id) == ("macos", "xcode")
+    finally:
+        conn.close()
+
+
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     """A worker scoped to a dir: task that spawns a child without a
     workspace arg inherits the dir, not scratch (so follow-up code-gen

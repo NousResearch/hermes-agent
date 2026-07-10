@@ -858,6 +858,16 @@ def _handle_create(args: dict, **kw) -> str:
     # CLI / dashboard paths and on legacy hosts that don't set the env.
     session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
     priority = args.get("priority")
+    target_machine = args.get("target_machine")
+    required_capabilities = args.get("required_capabilities")
+    if isinstance(required_capabilities, str):
+        required_capabilities = [required_capabilities]
+    if required_capabilities is not None and not isinstance(
+        required_capabilities, (list, tuple),
+    ):
+        return tool_error(
+            "required_capabilities must be a list of capability names"
+        )
     # Resolve workspace. If the caller passed one explicitly, honor it.
     # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)
     # inherits its own running task's workspace, so a worker editing a
@@ -920,6 +930,10 @@ def _handle_create(args: dict, **kw) -> str:
                 parents=tuple(parents),
                 tenant=tenant,
                 priority=int(priority) if priority is not None else 0,
+                target_machine=(
+                    str(target_machine).strip() if target_machine else None
+                ),
+                required_capabilities=required_capabilities,
                 workspace_kind=str(workspace_kind),
                 workspace_path=workspace_path,
                 project_id=project_id,
@@ -1448,6 +1462,23 @@ KANBAN_CREATE_SCHEMA = {
                 "description": (
                     "Dispatcher tiebreaker. Higher = picked sooner "
                     "when multiple ready tasks share an assignee."
+                ),
+            },
+            "target_machine": {
+                "type": "string",
+                "description": (
+                    "Optional stable machine UUID pin. Use only when the "
+                    "caller already knows the exact registered worker."
+                ),
+            },
+            "required_capabilities": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Machine capabilities required to claim this task. "
+                    "Use ['macos'] to route work to a Mac worker and add "
+                    "'xcode' for Xcode work; use ['linux'] for a Linux "
+                    "worker. Leave empty when any eligible machine may run it."
                 ),
             },
             "workspace_kind": {

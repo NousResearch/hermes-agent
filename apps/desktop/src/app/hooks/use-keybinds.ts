@@ -44,7 +44,7 @@ import {
 import { openNewSessionInNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
+import { requestComposerFocus, requestDictationToggle, requestVoiceToggle } from '../chat/composer/focus'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 import {
   AGENTS_ROUTE,
@@ -119,6 +119,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'composer.focus': () => requestComposerFocus('main'),
     'composer.modelPicker': () => setModelPickerOpen(true),
     'composer.voice': requestVoiceToggle,
+    'composer.dictation': requestDictationToggle,
 
     'nav.commandPalette': toggleCommandPalette,
     'nav.commandCenter': deps.toggleCommandCenter,

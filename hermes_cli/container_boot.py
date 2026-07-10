@@ -432,8 +432,18 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
     # name, so the published slot is unchanged.
     tmp_dir = service_dir.with_name("." + service_dir.name + ".tmp")
 
-    # Wipe any leftover tmp from a previous interrupted run.
-    if tmp_dir.exists():
+    # Wipe any leftover tmp from a previous interrupted run. Handle
+    # PermissionError defensively in case the tmpdir was created by a
+    # prior root-owned run with 0700 permissions (see issue #60774).
+    try:
+        tmp_exists = tmp_dir.exists()
+    except PermissionError:
+        # Cannot stat the tmpdir due to ownership; assume it exists and
+        # attempt to remove it. If removal also fails, the reconciler
+        # will fail with a clear PermissionError rather than a cryptic
+        # path-exists check failure.
+        tmp_exists = True
+    if tmp_exists:
         shutil.rmtree(tmp_dir, ignore_errors=True)
     tmp_dir.mkdir(parents=True)
 

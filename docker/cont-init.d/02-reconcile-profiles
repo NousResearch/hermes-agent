@@ -25,8 +25,9 @@
 set -e
 
 # Make the dynamic scandir hermes-writable. The directory itself
-# starts root-owned by s6-overlay.
-chown hermes:hermes /run/service 2>/dev/null || true
+# starts root-owned by s6-overlay. Recursive to handle leftover .tmp
+# directories from interrupted runs (see issue #60774).
+chown -R hermes:hermes /run/service 2>/dev/null || true
 
 # Make the svscan control FIFO hermes-writable so s6-svscanctl -a
 # / -an work for the hermes user. The FIFO is created by s6-svscan

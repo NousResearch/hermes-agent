@@ -345,6 +345,9 @@ def _write_crash_diagnostic(
             + "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
             + "\n"
         )
+        # Crash messages can contain credentials. This bypasses logging by
+        # design, so force the canonical redactor before either raw sink.
+        block = _redact_gateway_user_facing_secrets(block)
         try:
             log_path = _hermes_home / "logs" / "gateway-crash-diag.log"
             log_path.parent.mkdir(parents=True, exist_ok=True)

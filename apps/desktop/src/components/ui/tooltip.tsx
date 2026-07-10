@@ -3,8 +3,23 @@ import * as React from 'react'
 
 import { cn } from '@/lib/utils'
 
-function TooltipProvider({ delayDuration = 0, ...props }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
-  return <TooltipPrimitive.Provider data-slot="tooltip-provider" delayDuration={delayDuration} {...props} />
+function TooltipProvider({
+  delayDuration = 0,
+  // Tips are labels, not interactive surfaces. Hoverable content + Radix's
+  // pointer-grace bridge is what leaves tips stuck open — especially over
+  // Electron `-webkit-app-region: drag` chrome where pointermove never fires
+  // to clear the grace area. Default off so open state tracks the trigger only.
+  disableHoverableContent = true,
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
+  return (
+    <TooltipPrimitive.Provider
+      data-slot="tooltip-provider"
+      delayDuration={delayDuration}
+      disableHoverableContent={disableHoverableContent}
+      {...props}
+    />
+  )
 }
 
 function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
@@ -28,7 +43,9 @@ function TooltipContent({
         // span so `box-decoration-break: clone` gives a marker-style background
         // that hugs EACH wrapped line (bg only on the text, ragged right — no
         // rectangular dead space). Instant, no transition (delayDuration=0).
-        className={cn('z-[200] w-fit max-w-64 select-none', className)}
+        // pointer-events-none: the tip must never steal hover/clicks from the
+        // chrome underneath (titlebar tools, adjacent tabs, etc.).
+        className={cn('pointer-events-none z-[200] w-fit max-w-64 select-none', className)}
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         {...props}
@@ -53,15 +70,15 @@ interface TipProps extends Omit<React.ComponentProps<typeof TooltipPrimitive.Con
 // Drop-in replacement for native `title=`: wrap any single element. Instant,
 // position-aware, themed. Self-contained (carries its own Provider) so it works
 // anywhere without a provider ancestor. Renders the child untouched when label
-// is falsy.
+// is falsy. Open state is trigger-hover only — never sticky, never click-blocking.
 function Tip({ label, children, delayDuration = 0, ...props }: TipProps) {
   if (!label) {
     return <>{children}</>
   }
 
   return (
-    <TooltipProvider delayDuration={delayDuration}>
-      <Tooltip>
+    <TooltipProvider delayDuration={delayDuration} disableHoverableContent>
+      <Tooltip disableHoverableContent>
         <TooltipTrigger asChild>{children}</TooltipTrigger>
         <TooltipContent {...props}>{label}</TooltipContent>
       </Tooltip>

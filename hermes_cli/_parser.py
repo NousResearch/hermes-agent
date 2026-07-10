@@ -448,6 +448,12 @@ def build_top_level_parser():
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)",
     )
+    chat_parser.add_argument(
+        "--no-streaming",
+        action="store_true",
+        default=False,
+        help="Disable streaming output; wait for the full response before displaying",
+    )
     _inherited_flag(
         chat_parser,
         "--yolo",

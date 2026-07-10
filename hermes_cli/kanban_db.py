@@ -974,6 +974,10 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # True when the workspace kind was explicitly chosen at creation
+    # (e.g. ``--workspace scratch``). Pinned workspaces are never
+    # auto-upgraded to a worktree at create or dispatch time.
+    workspace_pinned: bool = False
     # Typed block reason (one of VALID_BLOCK_KINDS) or None for legacy/un-typed
     # blocks. Set by ``block_task``; preserved across unblock so a re-block for
     # the same kind is recognisable as an unblock↔re-block loop.
@@ -1072,6 +1076,11 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            workspace_pinned=(
+                bool(row["workspace_pinned"])
+                if "workspace_pinned" in keys and row["workspace_pinned"]
+                else False
             ),
             block_kind=(
                 row["block_kind"] if "block_kind" in keys and row["block_kind"] else None
@@ -1470,6 +1479,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
     session_id           TEXT,
+    -- 1 when the workspace kind was explicitly chosen at creation
+    -- (e.g. ``--workspace scratch``). Pinned workspaces are never
+    -- auto-upgraded to a worktree at create or dispatch time.
+    workspace_pinned     INTEGER NOT NULL DEFAULT 0,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -2274,6 +2287,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "goal_max_turns", "goal_max_turns INTEGER"
         )
 
+    if "workspace_pinned" not in cols:
+        # Explicit workspace choice marker. 0 (the default) preserves the
+        # behaviour existing rows had before the column existed: eligible
+        # for auto-upgrade to a worktree on git-backed boards.
+        _add_column_if_missing(
+            conn, "tasks", "workspace_pinned",
+            "workspace_pinned INTEGER NOT NULL DEFAULT 0"
+        )
+
     if "session_id" not in cols:
         # Originating agent/chat session id, populated when the task is
         # created from within an agent loop that propagated
@@ -2752,6 +2774,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    workspace_pinned: bool = False,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2855,6 +2878,7 @@ def create_task(
         and workspace_path is None
         and workspace_kind == "scratch"
         and not goal_mode
+        and not workspace_pinned
     ):
         try:
             _board_slug = board if board else get_current_board()
@@ -3032,8 +3056,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, brand, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        workspace_pinned
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3057,6 +3082,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        1 if workspace_pinned else 0,
                     ),
                 )
                 for pid in parents:
@@ -4711,6 +4737,62 @@ def _block_completion(conn: sqlite3.Connection, task_id: str, kind: str, message
     raise CompletionGateError(message, details=payload)
 
 
+_NOCODE_WAIVER_SUFFIXES = (".md", ".markdown", ".txt", ".rst")
+_CHECKPOINT_COMMIT_PREFIX = "wip: kanban worker checkpoint"
+
+
+def _completion_nocode_waiver(
+    repo_root: Path, branch_name: str, base_ref: str
+) -> Optional[dict]:
+    """Detect a no-code task branch and return waiver details, else None.
+
+    The CI + merge completion gates exist to stop unverified *code*
+    handoffs. Research/spec/ops cards routed through a worktree produce
+    no reviewable code: their branch carries at most the auto commit(s)
+    made by the pre-handoff checkpoint guard, touching documentation
+    files only. Blocking those cards forces operators to fabricate
+    vacuous CI verdicts, so they are waived instead — with an audit
+    event recording exactly what was skipped.
+
+    A branch qualifies only when BOTH hold:
+    - every commit in ``base_ref..branch`` is an auto checkpoint
+      (``wip: kanban worker checkpoint …``), i.e. the worker authored
+      no commits of its own; and
+    - the cumulative diff vs the merge base touches only documentation
+      files (``_NOCODE_WAIVER_SUFFIXES``).
+    An already-merged branch with zero extra commits qualifies
+    trivially (empty commit list, empty diff).
+    """
+    subjects = subprocess.run(
+        [
+            "git", "-C", str(repo_root),
+            "log", "--format=%s", f"{base_ref}..{branch_name}",
+        ],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    if subjects.returncode != 0:
+        return None
+    commit_subjects = [s for s in (subjects.stdout or "").splitlines() if s.strip()]
+    if any(not s.startswith(_CHECKPOINT_COMMIT_PREFIX) for s in commit_subjects):
+        return None
+    files = subprocess.run(
+        [
+            "git", "-C", str(repo_root),
+            "diff", "--name-only", f"{base_ref}...{branch_name}",
+        ],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    if files.returncode != 0:
+        return None
+    changed = [f for f in (files.stdout or "").splitlines() if f.strip()]
+    if any(not f.casefold().endswith(_NOCODE_WAIVER_SUFFIXES) for f in changed):
+        return None
+    return {
+        "checkpoint_commits": len(commit_subjects),
+        "changed_files": changed,
+    }
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4836,31 +4918,54 @@ def complete_task(
             )
         assert repo_root is not None
         base_ref = (getattr(task, "workspace_base_ref", None) or "main").strip() or "main"
-        if not _git_is_ancestor(repo_root, branch_name, base_ref):
-            _block_completion(
-                conn,
-                task_id,
-                "unmerged_branch",
-                f"completion blocked: branch {branch_name!r} is not merged into {base_ref!r} yet",
-                {
-                    "workspace_path": str(worktree_path),
-                    "branch_name": branch_name,
-                    "base_ref": base_ref,
-                },
-            )
-        ci_ok, ci_message = _completion_ci_green(metadata)
-        if not ci_ok:
-            _block_completion(
-                conn,
-                task_id,
-                "ci_failure",
-                ci_message,
-                {
-                    "workspace_path": str(worktree_path),
-                    "branch_name": branch_name,
-                    "base_ref": base_ref,
-                },
-            )
+        nocode_waiver = _completion_nocode_waiver(repo_root, branch_name, base_ref)
+        if nocode_waiver is not None and isinstance(metadata, dict) and metadata.get("ci") is not None:
+            # The waiver excuses MISSING verdicts on no-code branches; it
+            # never overrides a worker-reported CI verdict. An explicitly
+            # red verdict still blocks below.
+            ci_ok, _ = _completion_ci_green(metadata)
+            if not ci_ok:
+                nocode_waiver = None
+        if nocode_waiver is not None:
+            # No worker-authored code on the branch: the CI + merge gates
+            # are not applicable. Record the waiver so the skip is
+            # auditable, then fall through to normal completion.
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "completion_gate_waived_nocode",
+                    {
+                        "workspace_path": str(worktree_path),
+                        "branch_name": branch_name,
+                        "base_ref": base_ref,
+                        **nocode_waiver,
+                    },
+                )
+        else:
+            if not _git_is_ancestor(repo_root, branch_name, base_ref):
+                _block_completion(
+                    conn,
+                    task_id,
+                    "unmerged_branch",
+                    f"completion blocked: branch {branch_name!r} is not merged into {base_ref!r} yet",
+                    {
+                        "workspace_path": str(worktree_path),
+                        "branch_name": branch_name,
+                        "base_ref": base_ref,
+                    },
+                )
+            ci_ok, ci_message = _completion_ci_green(metadata)
+            if not ci_ok:
+                _block_completion(
+                    conn,
+                    task_id,
+                    "ci_failure",
+                    ci_message,
+                    {
+                        "workspace_path": str(worktree_path),
+                        "branch_name": branch_name,
+                        "base_ref": base_ref,
+                    },
+                )
 
     with write_txn(conn):
         if expected_run_id is None:
@@ -5932,6 +6037,14 @@ def decompose_triage_task(
             child_ws_kind = child.get("workspace_kind") or root_ws_kind
             if child.get("workspace_path"):
                 child_ws_path = child.get("workspace_path")
+            elif child_ws_kind == "worktree":
+                # Never share one worktree checkout between siblings: the
+                # root's literal path would put every child in the same
+                # directory on the first-dispatched sibling's branch, with
+                # no lock. Leave the path unset so dispatch materializes a
+                # fresh <repo>/.worktrees/<child-id> per child from the
+                # board anchor.
+                child_ws_path = None
             elif child_ws_kind == root_ws_kind:
                 child_ws_path = root_ws_path
             else:
@@ -6672,9 +6785,30 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     if requested.exists() and _is_linked_worktree_checkout(requested):
         actual_branch = _git_current_branch(requested)
         if actual_branch != branch_name:
-            raise ValueError(
-                f"task {task.id} worktree path {task.workspace_path!r} is already on branch {actual_branch or '(detached)'} but expected {branch_name}"
+            # Another task's checkout occupies this path (decompose children
+            # used to inherit the root's workspace_path verbatim, so siblings
+            # collide here; stale rows still carry shared paths). Rather than
+            # failing the spawn — or silently reusing the other task's
+            # branch, which cross-contaminates provenance — fall back to a
+            # fresh worktree of our own under the same repo.
+            fallback_root = _repo_root_for_worktree_target(requested)
+            fallback = (
+                fallback_root / ".worktrees" / task.id
+                if fallback_root is not None
+                else None
             )
+            if (
+                fallback is None
+                or fallback.resolve(strict=False) == requested_resolved
+            ):
+                # No repo to anchor a fallback on, or the occupied path IS
+                # this task's own canonical worktree — that is real
+                # corruption; keep failing loudly.
+                raise ValueError(
+                    f"task {task.id} worktree path {task.workspace_path!r} is already on branch {actual_branch or '(detached)'} but expected {branch_name}"
+                )
+            _ensure_git_worktree(fallback_root, fallback, branch_name, base_ref)
+            return _finish(fallback.resolve(strict=False), branch_name, fallback_root)
         repo_root = _repo_root_for_worktree_target(requested.parent)
         if repo_root is None:
             raise ValueError(
@@ -8452,7 +8586,9 @@ def _dispatch_once_locked(
         # explicit workspace_kind=worktree still wins for the rare goal card
         # that genuinely edits code.
         use_worktree = claimed.workspace_kind == "worktree" or (
-            _board_is_git_backed(board) and not getattr(claimed, "goal_mode", False)
+            _board_is_git_backed(board)
+            and not getattr(claimed, "goal_mode", False)
+            and not getattr(claimed, "workspace_pinned", False)
         )
         try:
             if use_worktree:
@@ -8559,7 +8695,9 @@ def _dispatch_once_locked(
         # explicit workspace_kind=worktree still wins for the rare goal card
         # that genuinely edits code.
         use_worktree = claimed.workspace_kind == "worktree" or (
-            _board_is_git_backed(board) and not getattr(claimed, "goal_mode", False)
+            _board_is_git_backed(board)
+            and not getattr(claimed, "goal_mode", False)
+            and not getattr(claimed, "workspace_pinned", False)
         )
         try:
             if use_worktree:

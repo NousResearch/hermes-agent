@@ -1391,6 +1391,31 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+        elif function_name == "plan_ready":
+            # Plan-mode approval rides the clarify callback, exactly like the
+            # clarify tool above. The sequential executor dispatches inline (it
+            # does NOT go through agent_runtime_helpers.invoke_tool), so the
+            # plan_ready branch must be wired here too or the registry handler
+            # runs with callback=None (interactive CLI regression).
+            def _execute(next_args: dict) -> Any:
+                from tools.plan_ready_tool import plan_ready_tool as _plan_ready_tool
+                return _plan_ready_tool(
+                    session_id=agent.session_id or "",
+                    plan_path=next_args.get("plan_path"),
+                    summary=next_args.get("summary"),
+                    callback=agent.clarify_callback,
+                )
+            function_result, function_args = _run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('plan_ready', function_args, tool_duration, result=function_result)}")
         elif function_name == "read_terminal":
             def _execute(next_args: dict) -> Any:
                 from tools.read_terminal_tool import read_terminal_tool as _read_terminal_tool

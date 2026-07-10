@@ -7,6 +7,8 @@ Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 
 import contextlib
 import copy
+from contextvars import ContextVar
+from dataclasses import dataclass
 import json
 import logging
 import shutil
@@ -62,6 +64,8 @@ except ImportError:
 # the default root: that re-breaks per-profile isolation. See also the dynamic
 # `_get_hermes_home()` / `_get_lock_paths()` resolution in cron/scheduler.py.
 HERMES_DIR = get_hermes_home().resolve()
+# Module-level defaults for the process HERMES_HOME. Cross-profile callers
+# must scope storage with use_cron_store() instead of mutating these globals.
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 # Heartbeat file the in-process ticker touches on every loop iteration. The
@@ -95,6 +99,50 @@ _jobs_lock_state = threading.local()
 _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+
+@dataclass(frozen=True)
+class _CronStorePaths:
+    cron_dir: Path
+    jobs_file: Path
+    output_dir: Path
+
+
+_cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
+    "cron_store_override",
+    default=None,
+)
+
+
+def _current_cron_store() -> _CronStorePaths:
+    """Return cron paths pinned to this execution context's profile."""
+    override = _cron_store_override.get()
+    if override is not None:
+        return override
+    return _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+
+
+@contextlib.contextmanager
+def use_cron_store(home: Union[str, Path]):
+    """Route cron storage to ``home`` without mutating process globals."""
+    cron_dir = Path(home).expanduser().resolve() / "cron"
+    token = _cron_store_override.set(
+        _CronStorePaths(
+            cron_dir=cron_dir,
+            jobs_file=cron_dir / "jobs.json",
+            output_dir=cron_dir / "output",
+        )
+    )
+    try:
+        yield
+    finally:
+        _cron_store_override.reset(token)
+
+
+def get_cron_output_dir() -> Path:
+    """Return the output directory for the active cron store context."""
+    return _current_cron_store().output_dir
+
 
 # Fallback stale-recovery window for a one-shot's running-claim (#59229) when
 # the cron inactivity timeout is disabled (HERMES_CRON_TIMEOUT=0 → unlimited),
@@ -145,7 +193,7 @@ def _oneshot_run_claim_ttl_seconds() -> float:
 
 def _jobs_lock_file() -> Path:
     """Return the advisory lock path for the current cron directory."""
-    return CRON_DIR / ".jobs.lock"
+    return _current_cron_store().cron_dir / ".jobs.lock"
 
 
 @contextlib.contextmanager
@@ -265,7 +313,7 @@ def _job_output_dir(job_id: str) -> Path:
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
     if Path(text).is_absolute() or Path(text).drive:
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
-    return OUTPUT_DIR / text
+    return _current_cron_store().output_dir / text
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -372,10 +420,11 @@ def _secure_file(path: Path):
 
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
-    CRON_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    _secure_dir(CRON_DIR)
-    _secure_dir(OUTPUT_DIR)
+    store = _current_cron_store()
+    store.cron_dir.mkdir(parents=True, exist_ok=True)
+    store.output_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir(store.cron_dir)
+    _secure_dir(store.output_dir)
 
 
 # =============================================================================
@@ -685,7 +734,7 @@ def _atomic_write_epoch(path: Path) -> None:
     torn/truncated file. Best-effort: failures are swallowed by callers.
     """
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(CRON_DIR), suffix=".tmp", prefix=".hb_")
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".hb_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(str(time.time()))
@@ -751,20 +800,21 @@ def get_ticker_success_age() -> Optional[float]:
 
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
+    jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
-    if not JOBS_FILE.exists():
+    if not jobs_file.exists():
         return []
 
     _strict_retry = False  # track whether we used the strict=False fallback
 
     try:
-        with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+        with open(jobs_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         _strict_retry = True
         try:
-            with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+            with open(jobs_file, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
         except Exception as e:
             logger.error("Failed to auto-repair jobs.json: %s", e)
@@ -799,15 +849,16 @@ def load_jobs() -> List[Dict[str, Any]]:
 
 def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage. Caller must hold _jobs_lock()."""
+    jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
+    fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, JOBS_FILE)
-        _secure_file(JOBS_FILE)
+        atomic_replace(tmp_path, jobs_file)
+        _secure_file(jobs_file)
     except BaseException:
         try:
             os.unlink(tmp_path)

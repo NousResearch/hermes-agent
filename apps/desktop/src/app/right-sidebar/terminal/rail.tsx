@@ -33,7 +33,7 @@ const RAIL_ACTION =
 /** Tooltip label with a trailing hotkey hint (the user's live binding). */
 function hintLabel(text: string, combo?: string) {
   return combo ? (
-    <span className="flex items-center gap-2">
+    <span className="inline-flex items-center gap-2">
       <span>{text}</span>
       <span className="opacity-55">{formatCombo(combo)}</span>
     </span>

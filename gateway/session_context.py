@@ -39,6 +39,10 @@ needs to replace the import + call site:
 from contextvars import ContextVar
 from typing import Any
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
 # When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
 # When it holds "" (after clear_session_vars resets it), we return "" — no fallback.
@@ -237,9 +241,22 @@ def set_session_vars(
 
 
 def restore_session_vars(tokens: list) -> None:
-    """Restore a nested session binding from ContextVar reset tokens."""
+    """Restore a nested session binding from ContextVar reset tokens.
+
+    Best-effort per token: a single bad token (reused, or created in a
+    different Context on a retry path) must not abort restoration of the
+    REMAINING vars — a partial restore would leave a mixed identity, the
+    exact state this module exists to prevent.
+    """
     for token in reversed(tokens or []):
-        token.var.reset(token)
+        try:
+            token.var.reset(token)
+        except Exception:
+            logger.warning(
+                "session-context: failed to reset %s during nested restore",
+                getattr(getattr(token, "var", None), "name", "<unknown>"),
+                exc_info=True,
+            )
 
 
 def clear_session_vars(tokens: list) -> None:

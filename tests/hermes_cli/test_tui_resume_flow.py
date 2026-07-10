@@ -588,7 +588,17 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
     import hermes_cli.config as config_mod
 
     monkeypatch.setattr(
-        sys, "argv", ["hermes", "-z", "hello", "--toolsets", "web,terminal"]
+        sys,
+        "argv",
+        [
+            "hermes",
+            "-z",
+            "hello",
+            "--toolsets",
+            "web,terminal",
+            "--usage-file",
+            "usage.json",
+        ],
     )
     monkeypatch.setitem(
         sys.modules,
@@ -634,7 +644,7 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
         "model": None,
         "provider": None,
         "toolsets": "web,terminal",
-        "usage_file": None,
+        "usage_file": "usage.json",
     }
 
 

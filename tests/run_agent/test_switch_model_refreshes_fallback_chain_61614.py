@@ -10,7 +10,10 @@ the next 429 attempted the old fallback entry instead of the current config.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.agent_runtime_helpers import switch_model
+from agent.chat_completion_helpers import try_activate_fallback
 
 
 def _make_agent(current_provider="zai", current_model="glm-5.2"):
@@ -49,6 +52,26 @@ def _make_agent(current_provider="zai", current_model="glm-5.2"):
     return agent
 
 
+def _switch_to_zenmux(agent, *, config=None, config_error=None):
+    config_patch = (
+        patch("hermes_cli.config.load_config_readonly", side_effect=config_error)
+        if config_error is not None
+        else patch("hermes_cli.config.load_config_readonly", return_value=config)
+    )
+    with (
+        patch("agent.credential_pool.load_pool", return_value=MagicMock(provider="custom:zenmux")),
+        config_patch,
+    ):
+        switch_model(
+            agent,
+            new_model="anthropic/claude-fable-5-free",
+            new_provider="custom:zenmux",
+            api_key="zenmux-key",
+            base_url="https://zenmux.ai/api/v1",
+            api_mode="chat_completions",
+        )
+
+
 def test_switch_model_refreshes_fallback_chain_from_current_config_before_pruning():
     """A stale cached chain must be replaced by the current config on switch.
 
@@ -68,9 +91,47 @@ def test_switch_model_refreshes_fallback_chain_from_current_config_before_prunin
         ]
     }
 
+    _switch_to_zenmux(agent, config=current_config)
+
+    assert [entry["model"] for entry in agent._fallback_chain] == [
+        "gpt-5.6",
+        "grok-4.5",
+        "glm-5.2",
+    ]
+    assert agent._fallback_model == agent._fallback_chain[0]
+    assert agent._fallback_index == 0
+
+
+def test_switch_model_clears_cached_chain_after_successful_empty_config_read():
+    """Removing fallback_providers must clear a live agent's stale chain."""
+    agent = _make_agent()
+    _switch_to_zenmux(agent, config={})
+
+    assert agent._fallback_chain == []
+    assert agent._fallback_model is None
+
+
+def test_switch_model_keeps_cached_chain_when_config_read_fails():
+    """A transient read failure must preserve the last-known-good chain."""
+    agent = _make_agent()
+    cached_chain = list(agent._fallback_chain)
+    _switch_to_zenmux(agent, config_error=OSError("mid-write"))
+
+    assert agent._fallback_chain == cached_chain
+    assert agent._fallback_model == cached_chain[0]
+
+
+@pytest.mark.parametrize("config_text", ["fallback_providers: [", "- not-a-mapping\n"])
+def test_switch_model_keeps_cached_chain_when_config_parse_fails(tmp_path, config_text):
+    """Malformed or structurally invalid YAML must not clear cached fallback state."""
+    agent = _make_agent()
+    cached_chain = list(agent._fallback_chain)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(config_text, encoding="utf-8")
+
     with (
         patch("agent.credential_pool.load_pool", return_value=MagicMock(provider="custom:zenmux")),
-        patch("hermes_cli.config.load_config_readonly", return_value=current_config),
+        patch("hermes_cli.config.get_config_path", return_value=config_path),
     ):
         switch_model(
             agent,
@@ -81,10 +142,63 @@ def test_switch_model_refreshes_fallback_chain_from_current_config_before_prunin
             api_mode="chat_completions",
         )
 
-    assert [entry["model"] for entry in agent._fallback_chain] == [
-        "gpt-5.6",
-        "grok-4.5",
-        "glm-5.2",
-    ]
-    assert agent._fallback_model == agent._fallback_chain[0]
-    assert agent._fallback_index == 0
+    assert agent._fallback_chain == cached_chain
+    assert agent._fallback_model == cached_chain[0]
+
+
+def test_switch_model_clears_unavailable_memo_when_fresh_chain_changes():
+    """A config edit must make previously unavailable entries retryable."""
+    agent = _make_agent()
+    agent._unavailable_fallback_keys = {("openai-codex", "gpt-5.5", "")}
+    current_config = {
+        "fallback_providers": [
+            {"provider": "openai-codex", "model": "gpt-5.5"},
+            {"provider": "xai-oauth", "model": "grok-4.5"},
+        ]
+    }
+
+    _switch_to_zenmux(agent, config=current_config)
+
+    assert agent._unavailable_fallback_keys == set()
+
+
+def test_switched_agent_walks_current_chain_past_unavailable_first_entry():
+    """Activation must walk the refreshed chain, not the launch-time chain."""
+    agent = _make_agent()
+    current_config = {
+        "fallback_providers": [
+            {"provider": "nous", "model": "anthropic/claude-sonnet-4.6"},
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+        ]
+    }
+
+    _switch_to_zenmux(agent, config=current_config)
+
+    fallback_client = MagicMock()
+    fallback_client.api_key = "openrouter-key"
+    fallback_client.base_url = "https://openrouter.ai/api/v1"
+    fallback_client._custom_headers = None
+    fallback_client.default_headers = None
+    agent._rate_limited_until = 0
+    agent._is_azure_openai_url = MagicMock(return_value=False)
+    agent._is_direct_openai_url = MagicMock(return_value=False)
+    agent._provider_model_requires_responses_api = MagicMock(return_value=False)
+    agent._try_activate_fallback = lambda reason=None: try_activate_fallback(agent, reason)
+
+    with (
+        patch("hermes_cli.auth.get_provider_auth_state", return_value={}),
+        patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fallback_client, "anthropic/claude-sonnet-4.6"),
+        ),
+        patch(
+            "hermes_cli.model_normalize.normalize_model_for_provider",
+            side_effect=lambda model, provider: model,
+        ),
+    ):
+        activated = agent._try_activate_fallback(None)
+
+    assert activated is True
+    assert agent.provider == "openrouter"
+    assert agent.model == "anthropic/claude-sonnet-4.6"
+    assert agent._fallback_index == 2

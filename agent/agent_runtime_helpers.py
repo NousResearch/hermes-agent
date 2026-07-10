@@ -2403,24 +2403,36 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # In-place switches happen on long-lived agents (gateway, dashboard/TUI,
     # desktop).  Their in-memory chain may predate a config edit; if we prune
     # that stale chain here, the next 429 can walk old fallbacks even though the
-    # profile's current ``fallback_providers`` is different (#61614).  Prefer a
-    # non-empty fresh config chain when available, falling back to the agent's
-    # current chain when config cannot be read or has no fallback entries.
+    # profile's current ``fallback_providers`` is different (#61614).  A
+    # successful config read is authoritative even when the chain is empty;
+    # only a read/parse failure keeps the agent's last-known-good chain.
     old_norm = (old_provider or "").strip().lower()
     new_norm = (new_provider or "").strip().lower()
+    old_fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
     fallback_chain_from_config = False
+    fallback_chain_changed_from_config = False
     try:
-        from hermes_cli.config import load_config_readonly
+        import yaml as _yaml
+
+        from hermes_cli.config import get_config_path, load_config_readonly
         from hermes_cli.fallback_config import get_fallback_chain
 
-        fresh_chain = list(get_fallback_chain(load_config_readonly()) or [])
-        if fresh_chain:
-            fallback_chain = fresh_chain
-            fallback_chain_from_config = True
-        else:
-            fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
+        # ``load_config_readonly`` intentionally swallows YAML parse failures and
+        # returns defaults. Validate the raw file first so malformed YAML does not
+        # become indistinguishable from a deliberate empty fallback config.
+        try:
+            with open(get_config_path(), encoding="utf-8") as config_file:
+                raw_config = _yaml.safe_load(config_file)
+            if raw_config is not None and not isinstance(raw_config, dict):
+                raise ValueError("config.yaml root must be a mapping")
+        except FileNotFoundError:
+            pass
+
+        fallback_chain = list(get_fallback_chain(load_config_readonly()) or [])
+        fallback_chain_from_config = True
+        fallback_chain_changed_from_config = fallback_chain != old_fallback_chain
     except Exception:
-        fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
+        fallback_chain = old_fallback_chain
 
     if old_norm and new_norm and old_norm != new_norm:
         # If we only have the agent's launch-time chain, keep the old defensive
@@ -2437,6 +2449,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         ]
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
+    if fallback_chain_changed_from_config:
+        unavailable = getattr(agent, "_unavailable_fallback_keys", None)
+        if unavailable:
+            unavailable.clear()
 
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",

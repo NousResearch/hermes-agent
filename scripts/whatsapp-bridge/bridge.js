@@ -31,6 +31,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { createIngressReceipts } from './ingress_receipts.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -261,6 +262,15 @@ const logger = pino({ level: 'warn' });
 // Message queue for polling
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 100;
+
+// Durable ingress dedup: Baileys redelivers messages on reconnects and
+// history sync (especially right after a re-pair), and each duplicate that
+// reaches the adapter becomes a model-facing event with real token cost.
+// Receipts live OUTSIDE the session dir so re-pairing keeps them.
+const ingressReceipts = createIngressReceipts({
+  filePath: process.env.WHATSAPP_INGRESS_RECEIPTS_FILE
+    || path.join(path.dirname(SESSION_DIR), 'ingress-receipts.log'),
+});
 
 // Track recently sent message IDs.  Two purposes:
 //   1. Prevent echo-back loops with media in self-chat mode.
@@ -542,6 +552,19 @@ async function startSocket() {
         senderId: redactWhatsAppId(senderId),
         messageKeys: Object.keys(msg.message || {}),
       });
+
+      // Drop redelivered messages before any further work (media download,
+      // gates, queueing). The receipt is recorded durably on first sight, so
+      // reconnect storms and post-re-pair history replay cost nothing.
+      if (msg.key.id && !ingressReceipts.record(chatId, msg.key.id)) {
+        emitDebugEvent({
+          stage: 'ignored',
+          reason: 'duplicate_ingress',
+          chatId: redactWhatsAppId(chatId),
+          messageId: msg.key.id,
+        });
+        continue;
+      }
 
       // Handle fromMe messages based on mode
       let fromOwner = false;

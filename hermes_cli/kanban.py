@@ -277,6 +277,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                       help="Hard-delete the board directory instead of archiving it. "
                            "Default is to move it to boards/_archived/ so it's recoverable.")
 
+    b_restore = boards_sub.add_parser(
+        "restore",
+        aliases=["unarchive"],
+        help="Restore a board previously archived by `boards rm`",
+    )
+    b_restore.add_argument("slug", help="Slug of the archived board to restore")
+    b_restore.add_argument(
+        "--from",
+        dest="from_path",
+        default=None,
+        help="Explicit path under boards/_archived/ (default: newest match)",
+    )
+
     b_switch = boards_sub.add_parser(
         "switch", aliases=["use"],
         help="Set the active board for subsequent CLI calls",
@@ -1031,6 +1044,8 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_rename(args)
     if sub == "set-default-workdir":
         return _cmd_boards_set_default_workdir(args)
+    if sub in {"restore", "unarchive"}:
+        return _cmd_boards_restore(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -1128,10 +1143,33 @@ def _cmd_boards_rm(args: argparse.Namespace) -> int:
         return 1
     if res["action"] == "archived":
         print(f"Board {res['slug']!r} archived → {res['new_path']}")
-        print("Recover by moving the directory back to "
-              "<root>/kanban/boards/<slug>/.")
+        print(
+            "Recover with "
+            f"`hermes kanban boards restore {res['slug']}` "
+            "(preferred) or by moving the directory back to "
+            "<root>/kanban/boards/<slug>/."
+        )
     else:
         print(f"Board {res['slug']!r} deleted.")
+    return 0
+
+
+def _cmd_boards_restore(args: argparse.Namespace) -> int:
+    """Restore a board previously archived by ``boards rm``.
+
+    Prefer this over manually moving directories: it refuses to clobber a
+    live board and picks the newest matching archive by default.
+    """
+    archive_path = getattr(args, "from_path", None) or None
+    try:
+        res = kb.restore_board(args.slug, archive_path=archive_path)
+    except ValueError as exc:
+        print(f"kanban boards restore: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"Board {res['slug']!r} restored from {res['from_path']} → {res['new_path']}"
+    )
+    print(f"  Use `hermes kanban boards switch {res['slug']}` to make it current.")
     return 0
 
 

@@ -831,6 +831,114 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         return {"slug": normed, "action": "deleted", "new_path": ""}
 
 
+def list_archived_board_dirs(slug: str | None = None) -> list[Path]:
+    """Return archived board directories under ``boards/_archived/``.
+
+    When ``slug`` is given, only entries whose name starts with
+    ``"<slug>-"`` (the prefix used by :func:`remove_board`) are returned.
+    Newest (lexicographically last / timestamped last) is first.
+    """
+    archive_root = boards_root() / "_archived"
+    if not archive_root.is_dir():
+        return []
+    prefix = None
+    if slug is not None:
+        normed = _normalize_board_slug(slug)
+        if not normed:
+            return []
+        prefix = f"{normed}-"
+    entries: list[Path] = []
+    for child in archive_root.iterdir():
+        if not child.is_dir():
+            continue
+        if prefix is not None and not child.name.startswith(prefix):
+            continue
+        # Require something that looks like a board (db or metadata).
+        if not ((child / "kanban.db").exists() or (child / "board.json").exists()):
+            continue
+        entries.append(child)
+    # Timestamps are embedded in the dir name (`slug-<unix>`); sort desc.
+    entries.sort(key=lambda p: p.name, reverse=True)
+    return entries
+
+
+def restore_board(slug: str, *, archive_path: str | Path | None = None) -> dict:
+    """Restore a board archived by :func:`remove_board`.
+
+    Moves the newest (or explicitly named) ``boards/_archived/<slug>-*``
+    directory back to ``boards/<slug>/``.
+
+    Raises :class:`ValueError` when:
+    - the slug is invalid / is ``default``
+    - a live board already exists at ``boards/<slug>/``
+    - no matching archive directory is found
+    """
+    normed = _normalize_board_slug(slug)
+    if not normed:
+        raise ValueError("board slug is required")
+    if normed == DEFAULT_BOARD:
+        raise ValueError("the 'default' board cannot be restored from _archived")
+
+    live = board_dir(normed)
+    if live.exists() and (
+        (live / "kanban.db").exists() or (live / "board.json").exists()
+    ):
+        raise ValueError(
+            f"board {normed!r} already exists at {live}. "
+            f"Remove or rename it before restoring an archive."
+        )
+
+    if archive_path is not None:
+        src = Path(archive_path).expanduser()
+        if not src.is_dir():
+            raise ValueError(f"archive path does not exist: {src}")
+        if not src.name.startswith(f"{normed}-"):
+            raise ValueError(
+                f"archive path {src.name!r} does not match slug {normed!r} "
+                f"(expected a directory named '{normed}-<timestamp>')"
+            )
+    else:
+        candidates = list_archived_board_dirs(normed)
+        if not candidates:
+            raise ValueError(
+                f"no archived board found for slug {normed!r} under "
+                f"{boards_root() / '_archived'}"
+            )
+        src = candidates[0]
+
+    # Drop any stale init cache for the live path in case a concurrent
+    # process fabricated an empty db after the archive.
+    live_db = live / "kanban.db"
+    try:
+        _INITIALIZED_PATHS.discard(str(live_db.resolve()))
+    except Exception:
+        _INITIALIZED_PATHS.discard(str(live_db))
+
+    if live.exists() and not any(live.iterdir()):
+        # Empty shell left by a concurrent mkdir; remove so rename works.
+        live.rmdir()
+    elif live.exists():
+        # Non-board junk or partial path — refuse rather than clobber.
+        raise ValueError(
+            f"live path {live} already exists and is non-empty; "
+            f"move it aside before restoring"
+        )
+
+    live.parent.mkdir(parents=True, exist_ok=True)
+    src.rename(live)
+    return {
+        "slug": normed,
+        "action": "restored",
+        "from_path": str(src),
+        "new_path": str(live),
+    }
+
+
+def has_archived_board(slug: str) -> bool:
+    """True if ``boards/_archived/`` holds at least one directory for ``slug``."""
+    return bool(list_archived_board_dirs(slug))
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------

@@ -856,6 +856,7 @@ def init_agent(
         agent.client = MoAClient(
             agent.model or "default",
             reference_callback=_moa_reference_relay,
+            reasoning_config=agent.reasoning_config,
         )
         agent._client_kwargs = {}
         agent.api_key = api_key or "moa-virtual-provider"

@@ -49,7 +49,7 @@ def _aggregator_call(calls):
 def test_acting_aggregator_receives_parent_reasoning_config(
     captured_calls, monkeypatch
 ):
-    from agent.moa_loop import MoAChatCompletions
+    from run_agent import AIAgent
 
     monkeypatch.setattr(
         "hermes_cli.moa_config.resolve_moa_preset",
@@ -65,10 +65,19 @@ def test_acting_aggregator_receives_parent_reasoning_config(
         },
     )
 
-    MoAChatCompletions("software-dev").create(
-        messages=[{"role": "user", "content": "review this change"}],
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="software-dev",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        max_iterations=1,
         reasoning_config=MAX_REASONING,
     )
+    agent.run_conversation("review this change")
 
     assert _aggregator_call(captured_calls)["reasoning_config"] == MAX_REASONING
 

@@ -103,6 +103,21 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+def _web_extract_url(value: Any) -> Optional[str]:
+    """Return a usable URL from a model-supplied extract item.
+
+    Models sometimes forward a complete web-search result instead of its URL.
+    Accept the two common URL keys, but reject missing/non-string values rather
+    than stringifying arbitrary objects into misleading fetch targets.
+    """
+    if isinstance(value, dict):
+        value = value.get("url") or value.get("href")
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
 def _env_value(name: str) -> str:
@@ -726,7 +741,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
 
 async def web_extract_tool(
-    urls: List[str],
+    urls: List[Any],
     format: str = None,
     char_limit: Optional[int] = None,
 ) -> str:
@@ -742,7 +757,8 @@ async def web_extract_tool(
     ``[IMAGE: alt]`` placeholders (real image URLs are preserved as links).
 
     Args:
-        urls (List[str]): List of URLs to extract content from
+        urls (List[Any]): URL strings or search-result objects containing a
+            string ``url`` or ``href`` field
         format (str): Desired output format ("markdown" or "html", optional)
         char_limit (Optional[int]): Per-page char budget sent to the model
             (default: web.extract_char_limit or 15000). Larger pages truncate.
@@ -762,12 +778,20 @@ async def web_extract_tool(
     from agent.redact import _PREFIX_RE
     from urllib.parse import unquote
     normalized_urls: List[str] = []
-    for _url in urls:
-        # Handle dict objects from web_search results
-        if isinstance(_url, dict):
-            _url = _url.get("url") or _url.get("href") or ""
-        elif not isinstance(_url, str):
-            _url = str(_url)
+    invalid_urls: List[Dict[str, Any]] = []
+    for index, item in enumerate(urls):
+        _url = _web_extract_url(item)
+        if _url is None:
+            invalid_urls.append({
+                "url": "",
+                "title": "",
+                "content": "",
+                "error": (
+                    f"Invalid URL item at index {index}: expected a URL string "
+                    "or an object with a string 'url' or 'href' field"
+                ),
+            })
+            continue
         normalized_url = normalize_url_for_request(_url)
         if (
             _PREFIX_RE.search(_url)
@@ -915,9 +939,9 @@ async def web_extract_tool(
                     provider.extract, safe_urls, format=format
                 )
 
-        # Merge any SSRF-blocked results back in
-        if ssrf_blocked:
-            results = ssrf_blocked + results
+        # Merge rejected and SSRF-blocked inputs back into the result envelope.
+        if invalid_urls or ssrf_blocked:
+            results = invalid_urls + ssrf_blocked + results
 
         response = {"results": results}
         

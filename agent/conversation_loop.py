@@ -5173,6 +5173,11 @@ def run_conversation(
                     # terminal. Keep a debug breadcrumb in agent.log for tracing.
                     logger.debug("verification stop-loop nudge issued (attempt %d)",
                                  agent._verification_stop_nudges)
+                    # The attempted answer lives in ``final_msg`` / ``messages`` for
+                    # the verify loop; do not keep a stale ``final_response`` that
+                    # would skip turn_finalizer's iteration-limit normalization.
+                    # (#61631)
+                    final_response = None
                     continue
 
                 # User verification-loop gate: when the agent edited code this
@@ -5224,6 +5229,7 @@ def run_conversation(
                     agent._session_messages = messages
                     logger.debug("pre_verify nudge issued (attempt %d)",
                                  agent._pre_verify_nudges)
+                    final_response = None
                     continue
 
                 messages.append(final_msg)

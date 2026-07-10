@@ -121,6 +121,24 @@ def finalize_turn(
                     exc_info=True,
                 )
 
+    elif (
+        final_response is not None
+        and (
+            api_call_count >= agent.max_iterations
+            or agent.iteration_budget.remaining <= 0
+        )
+        and not str(_turn_exit_reason).startswith("text_response(")
+        and not str(_turn_exit_reason).startswith("max_iterations_reached(")
+    ):
+        # verify-on-stop can assign ``final_response`` then ``continue`` the
+        # loop until the iteration budget is gone, leaving a composed answer
+        # with a non-success exit reason (``unknown``, ``budget_exhausted``).
+        # Normalize so cron's graceful-delivery exemption can match.
+        # (#61631)
+        _turn_exit_reason = (
+            f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+        )
+
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")
     completed = (

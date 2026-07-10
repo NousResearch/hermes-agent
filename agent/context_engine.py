@@ -139,6 +139,42 @@ class ContextEngine(ABC):
         self._last_rough_sent = 0
         self.rough_at_last_real = 0
 
+    def seed_skew_calibration(self, ratios: "list[float]") -> None:
+        """Seed the skew history from persisted per-session state (restart resume).
+
+        Only applies when the in-memory history is empty (a live history is
+        fresher than any persisted snapshot) and only accepts sane ratios
+        (0 < r <= 1.0; rough never under-counts). Invalid input is ignored —
+        seeding is an optimization, never a correctness requirement.
+        """
+        if getattr(self, "_recent_skews", None):
+            return
+        clean = []
+        for r in ratios or []:
+            try:
+                f = float(r)
+            except (TypeError, ValueError):
+                continue
+            if 0.0 < f <= 1.0:
+                clean.append(f)
+        if clean:
+            self._recent_skews = clean[-self._SKEW_HISTORY:]
+
+    def _persist_skew_history(self) -> None:
+        """Write the current skew history to the bound session row (best-effort).
+
+        Uses the same session binding as the durable compression-failure
+        cooldown (``bind_session_state``). No binding → silently skip.
+        """
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        if not session_db or not session_id:
+            return
+        writer = getattr(session_db, "record_compression_skew_history", None)
+        if writer is None:
+            return
+        writer(session_id, list(getattr(self, "_recent_skews", []) or []))
+
     def note_rough_sent(self, rough_tokens: int) -> None:
         """Stash the rough estimate of the request about to be sent so the next
         ``record_skew_from_real``/``update_from_response`` pairs it with the real
@@ -173,6 +209,14 @@ class ContextEngine(ABC):
             # note_rough_sent records nothing (bounds cross-turn/session mispairing
             # to ≤1 on the process-global singleton).
             self._last_rough_sent = 0
+            # Persist the updated history so a process restart can seed the
+            # calibration instead of reverting to skew=1.0 (raw rough) on the
+            # first post-restart preflight (2026-07-10 false-fire incident).
+            # Best-effort: persistence failure must never touch the live turn.
+            try:
+                self._persist_skew_history()
+            except Exception:
+                pass
             # T1: skew telemetry — one COMPACTION_SKEW line per FRESH pair, so a skew
             # distribution is buildable from logs. Best-effort: a logging failure or a
             # missing attribute must NEVER propagate into the live turn (INV-2).

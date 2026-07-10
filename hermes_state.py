@@ -843,6 +843,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_error TEXT,
     compression_failure_cooldown_until REAL,
     compression_failure_error TEXT,
+    compression_skew_history TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     -- Intentionally asymmetric: rewind_count bumps per rewind_to_message call;
     -- redo_count bumps once per /redo command, regardless of M.
@@ -2733,6 +2734,91 @@ class SessionDB:
     # the compress() call plus the rotation. ``holder`` identifies the
     # current owner (pid:tid:nonce) for diagnostics; the lock is recovered
     # via ``expires_at`` if the holder process crashed without releasing.
+
+    def record_compression_skew_history(
+        self,
+        session_id: str,
+        skew_history: "list[float]",
+    ) -> None:
+        """Persist the P2 skew-calibration history for a session (JSON list).
+
+        The skew median lives in process memory on the singleton engine; a
+        gateway restart wipes it, so the first post-restart preflight ran with
+        skew=1.0 (raw rough) and could false-fire compression on a large
+        session whose rough estimate over-counts (2026-07-10 live incident:
+        raw ~767k vs real ~476k on a 1M window, 750k threshold). Persisting
+        the last-k ratios lets a resumed session seed its calibration instead
+        of re-learning from scratch.
+        """
+        if not session_id:
+            return
+        try:
+            payload = json.dumps([round(float(r), 6) for r in (skew_history or [])])
+        except (TypeError, ValueError):
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_skew_history = ? WHERE id = ?",
+                (payload, session_id),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.debug(
+                "record_compression_skew_history(%s) failed: %s", session_id, exc,
+            )
+
+    def get_compression_skew_history(self, session_id: str) -> "list[float]":
+        """Return the persisted skew history for ``session_id`` ([] if none)."""
+        if not session_id:
+            return []
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT compression_skew_history FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+        except sqlite3.Error:
+            return []
+        if row is None:
+            return []
+        raw = row["compression_skew_history"] if isinstance(row, sqlite3.Row) else row[0]
+        if not raw:
+            return []
+        try:
+            vals = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        out = []
+        for v in vals if isinstance(vals, list) else []:
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                continue
+            if 0.0 < f <= 1.0:
+                out.append(f)
+        return out
+
+    def clear_compression_skew_history(self, session_id: str) -> None:
+        """Delete the persisted skew history (real session boundary)."""
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_skew_history = NULL WHERE id = ?",
+                (session_id,),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.debug(
+                "clear_compression_skew_history(%s) failed: %s", session_id, exc,
+            )
+
     def refresh_compression_lock(
         self,
         session_id: str,

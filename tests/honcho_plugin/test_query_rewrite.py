@@ -147,6 +147,17 @@ def test_query_rewriter_runs_once_for_a_multi_pass_dialectic_cycle():
     assert provider._manager.dialectic_query.call_count == 2
 
 
+def test_empty_first_pass_retries_with_rewritten_query():
+    rewritten = "What prior deployment decisions did the user make?"
+    provider = _provider(lambda message: rewritten, depth=2)
+    provider._manager.dialectic_query.side_effect = ["", "grounded synthesis"]
+
+    provider._run_dialectic_depth("What should we deploy?")
+
+    prompts = [call.args[1] for call in provider._manager.dialectic_query.call_args_list]
+    assert prompts == [rewritten, rewritten]
+
+
 def test_session_prewarm_can_skip_query_rewrite():
     rewriter = MagicMock(return_value="unused")
     provider = _provider(rewriter)

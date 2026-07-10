@@ -7,9 +7,11 @@ SQLite header.
 
 The fix has two prongs:
 
-1. ``force_close_tcp_sockets`` no longer calls ``sock.close()`` — only
-   ``shutdown(SHUT_RDWR)``. Shutdown unblocks the worker's pending
-   ``recv``/``send`` without releasing the FD.
+1. ``force_close_tcp_sockets`` defaults to ``shutdown(SHUT_RDWR)`` only —
+   no ``sock.close()``. Shutdown unblocks the worker's pending
+   ``recv``/``send`` without releasing the FD. Owning-thread dispose
+   opts into ``release_fds=True`` so already-shutdown sockets do not
+   accumulate as kernel CLOSED fds (#61979).
 
 2. ``_close_request_client_once`` is thread-aware: a stranger thread (the
    interrupt-check / stale-call loop) only aborts the sockets and leaves
@@ -61,11 +63,10 @@ def _build_fake_client(sock):
 
 
 def test_force_close_tcp_sockets_shutdown_only_no_close():
-    """The smoking-gun guarantee: shutdown is called, close is NOT.
+    """Default path: shutdown is called, close is NOT.
 
-    If a future refactor reintroduces ``sock.close()`` here, the
-    FD-recycling race that corrupted ``kanban.db`` (issue #29507) will
-    re-open. Pin the contract explicitly.
+    Stranger-thread abort (#29507) relies on this default. Releasing the
+    FD from a non-owning thread re-opens the TLS→SQLite corruption race.
     """
     from agent.agent_runtime_helpers import force_close_tcp_sockets
 
@@ -77,9 +78,28 @@ def test_force_close_tcp_sockets_shutdown_only_no_close():
     assert n == 1
     assert sock.shutdown_calls == 1, "shutdown() must run — it's how we unblock the worker"
     assert sock.close_calls == 0, (
-        "close() must NOT run from this helper — releasing the FD here is the "
+        "close() must NOT run by default — releasing the FD here is the "
         "race that wrote TLS bytes into kanban.db (#29507)"
     )
+
+
+def test_force_close_tcp_sockets_release_fds_closes_after_shutdown():
+    """Owning-thread dispose path (#61979): shutdown then close.
+
+    httpx does not reliably ``os.close()`` sockets that were already
+    shutdown, so owner-thread close must release FDs explicitly or they
+    accumulate in kernel CLOSED state under long-lived gateways.
+    """
+    from agent.agent_runtime_helpers import force_close_tcp_sockets
+
+    sock = _FakeSocket()
+    client = _build_fake_client(sock)
+
+    n = force_close_tcp_sockets(client, release_fds=True)
+
+    assert n == 1
+    assert sock.shutdown_calls == 1
+    assert sock.close_calls == 1
 
 
 def test_force_close_tcp_sockets_uses_shut_rdwr():
@@ -115,13 +135,34 @@ def test_force_close_tcp_sockets_swallows_oserror_on_shutdown():
         def shutdown(self, _how):
             raise OSError("not connected")
 
-        def close(self):  # pragma: no cover — must not run
+        def close(self):  # pragma: no cover — must not run on default path
             raise AssertionError("close() must not be called")
 
     client = _build_fake_client(_AlreadyShut())
 
     # No exception escapes; the helper still counts the socket as handled.
     assert force_close_tcp_sockets(client) == 1
+
+
+def test_force_close_tcp_sockets_release_fds_swallows_oserror_on_close():
+    """Already-closed sockets must not abort the owning-thread sweep."""
+    from agent.agent_runtime_helpers import force_close_tcp_sockets
+
+    class _CloseRaises:
+        def __init__(self):
+            self.shutdown_calls = 0
+
+        def shutdown(self, _how):
+            self.shutdown_calls += 1
+
+        def close(self):
+            raise OSError("Bad file descriptor")
+
+    sock = _CloseRaises()
+    client = _build_fake_client(sock)
+
+    assert force_close_tcp_sockets(client, release_fds=True) == 1
+    assert sock.shutdown_calls == 1
 
 
 def test_force_close_tcp_sockets_handles_multiple_pool_entries():
@@ -142,6 +183,20 @@ def test_force_close_tcp_sockets_handles_multiple_pool_entries():
     for s in socks:
         assert s.shutdown_calls == 1
         assert s.close_calls == 0
+
+    # Owning-thread dispose releases every pool entry's FD.
+    socks2 = [_FakeSocket(), _FakeSocket(), _FakeSocket()]
+    entries2 = [
+        SimpleNamespace(_connection=SimpleNamespace(_network_stream=SimpleNamespace(_sock=s)))
+        for s in socks2
+    ]
+    client2 = SimpleNamespace(
+        _client=SimpleNamespace(_transport=SimpleNamespace(_pool=SimpleNamespace(_connections=entries2)))
+    )
+    assert force_close_tcp_sockets(client2, release_fds=True) == 3
+    for s in socks2:
+        assert s.shutdown_calls == 1
+        assert s.close_calls == 1
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +445,38 @@ def test_agent_abort_request_openai_client_does_not_call_client_close(caplog):
         and "deferred_close=stranger_thread" in m
         for m in msgs
     ), f"missing abort log line; got: {msgs!r}"
+
+
+def test_agent_close_openai_client_releases_fds(caplog):
+    """Owning-thread ``_close_openai_client`` must release pool FDs (#61979).
+
+    After #29507 the helper defaulted to shutdown-only; combined with
+    httpx not closing already-shutdown sockets, gateway processes leaked
+    CLOSED fds until rlimit. The owner dispose path must opt into
+    ``release_fds=True``.
+    """
+    from run_agent import AIAgent
+
+    sock = _FakeSocket()
+    client = _build_fake_client(sock)
+    client.close = MagicMock()
+
+    agent = AIAgent.__new__(AIAgent)
+    agent._client_log_context = lambda: "provider=test"
+
+    with caplog.at_level(logging.INFO, logger="run_agent"):
+        agent._close_openai_client(client, reason="replace:test", shared=True)
+
+    assert sock.shutdown_calls == 1
+    assert sock.close_calls == 1
+    client.close.assert_called_once()
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any(
+        "OpenAI client closed (replace:test" in m
+        and "tcp_force_closed=1" in m
+        for m in msgs
+    ), f"missing close log line; got: {msgs!r}"
 
 
 def test_agent_abort_request_openai_client_null_client_is_noop():

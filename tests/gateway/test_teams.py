@@ -896,6 +896,28 @@ class TestTeamsMessageHandling:
         assert adapter._conversation_responds_to_all(activity.conversation.id) is False
 
     @pytest.mark.anyio
+    async def test_mode_command_allows_existing_teams_allowlist_fallback(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "aad-456")
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+        ))
+        self._ready_app(adapter)
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="<at>Hermes</at> /teams-mode all",
+            conversation_type="channel",
+            entities=[self._bot_mention_entity()],
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._app.send.assert_awaited_once()
+        assert adapter._conversation_responds_to_all(activity.conversation.id) is True
+
+    @pytest.mark.anyio
     async def test_unmentioned_mode_command_is_consumed_in_shared_space(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id",

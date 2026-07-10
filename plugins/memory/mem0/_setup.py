@@ -189,7 +189,14 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     existing_lines: list[str] = []
     if env_path.exists():
-        existing_lines = env_path.read_text().splitlines()
+        # Read as UTF-8 (BOM-tolerant), matching the canonical .env readers in
+        # hermes_cli/config.py. read_text() with no encoding falls back to the
+        # system locale (cp1252/GBK on Windows): it mangles or crashes on
+        # non-ASCII values while copying existing lines through, and a BOM'd
+        # first line would fail the key match and get duplicated.
+        existing_lines = env_path.read_text(
+            encoding="utf-8-sig"
+        ).splitlines()
 
     updated_keys: set[str] = set()
     new_lines: list[str] = []
@@ -204,7 +211,7 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
         if k not in updated_keys:
             new_lines.append(f"{k}={v}")
 
-    env_path.write_text("\n".join(new_lines) + "\n")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
 def _save_mem0_json(hermes_home: str, data: dict) -> None:

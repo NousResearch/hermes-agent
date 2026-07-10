@@ -164,6 +164,26 @@ class TestWriteEnv:
         assert "OTHER=keep" in content
         assert "old" not in content
 
+    def test_preserves_non_ascii_existing_lines(self, tmp_path):
+        """Existing non-ASCII .env content must survive the read-modify-write
+        as UTF-8 (the locale codec would crash/mangle it on Windows)."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("PROXY_NOTE=café-zürich-完了\n".encode("utf-8"))
+        _write_env(env_path, {"OPENAI_API_KEY": "sk-test"})
+        content = env_path.read_text(encoding="utf-8")
+        assert "PROXY_NOTE=café-zürich-完了" in content
+        assert "OPENAI_API_KEY=sk-test" in content
+
+    def test_updates_first_key_with_bom(self, tmp_path):
+        """A Notepad-edited .env carries a BOM; the first key must still be
+        matched/updated in place, not duplicated."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("﻿OPENAI_API_KEY=old\n".encode("utf-8"))
+        _write_env(env_path, {"OPENAI_API_KEY": "new"})
+        content = env_path.read_text(encoding="utf-8")
+        assert content.count("OPENAI_API_KEY=") == 1
+        assert "OPENAI_API_KEY=new" in content
+
 
 class TestPostSetup:
 

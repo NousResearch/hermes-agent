@@ -2119,6 +2119,50 @@ def test_runtime_unusable_local_token_recomputes_shared_routing(
     assert creds["api_key"] == refreshed_token
 
 
+def test_runtime_refresh_persists_routing_before_jwt_validation_failure(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    """Rotated tokens and routing survive a later runtime JWT rejection."""
+    from hermes_cli import auth as auth_mod
+
+    profile_b = tmp_path / "profile_b"
+    _setup_nous_auth(
+        profile_b,
+        access_token="local-unusable",
+        refresh_token="local-refresh",
+        expires_at="2000-01-01T00:00:00+00:00",
+        expires_in=0,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+
+    rotated_refresh = "rotated-refresh"
+    refreshed_url = auth_mod.DEFAULT_NOUS_INFERENCE_URL
+    monkeypatch.setattr(
+        auth_mod,
+        "_refresh_access_token",
+        lambda **_kwargs: {
+            "access_token": "refreshed-but-not-jwt",
+            "refresh_token": rotated_refresh,
+            "expires_in": 3600,
+            "scope": auth_mod.DEFAULT_NOUS_SCOPE,
+            "inference_base_url": refreshed_url,
+        },
+    )
+
+    with pytest.raises(AuthError):
+        auth_mod.resolve_nous_runtime_credentials()
+
+    profile_state = auth_mod.get_provider_auth_state("nous")
+    assert profile_state is not None
+    assert profile_state["refresh_token"] == rotated_refresh
+    assert profile_state["inference_base_url"] == refreshed_url
+
+    shared_state = auth_mod._read_shared_nous_state()
+    assert shared_state is not None
+    assert shared_state["refresh_token"] == rotated_refresh
+    assert shared_state["inference_base_url"] == refreshed_url
+
+
 def test_runtime_shared_recovery_honors_inference_env_override(
     tmp_path, monkeypatch, shared_store_env,
 ):

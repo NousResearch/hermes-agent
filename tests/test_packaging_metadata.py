@@ -342,3 +342,92 @@ def test_security_pins_present_in_mirrored_lazy_features():
         "pyproject extras — the lazy install path would not enforce the "
         "CVE-patched floor:\n  " + "\n  ".join(problems)
     )
+
+
+# ---------------------------------------------------------------------------
+# Mirrored dependency: hindsight-client
+#
+# The exact-pin lockstep tests above compare pyproject with tools/lazy_deps.py,
+# but plugin.yaml and the provider-managed requirement are separate hand-kept
+# sources. A bump that misses either one makes the installed version depend on
+# the setup path. Compare the complete requirement across all four sources.
+# ---------------------------------------------------------------------------
+
+_HINDSIGHT_DIST = "hindsight-client"
+
+
+def _specifier_of(specs, dist):
+    """Return the version specifier for *dist* as an order-insensitive set.
+
+    Clauses are split on commas, whitespace-stripped, and collected into a
+    frozenset. Returns None when *dist* is absent from *specs*.
+    """
+    canon = _canonical(dist)
+    for spec in specs:
+        name = _distribution_name(spec)  # already lowercased, PEP 508 aware
+        if _canonical(name) != canon:
+            continue
+        no_marker = spec.split(";", 1)[0]  # drop environment markers
+        # Strip the leading name and optional [extra] prefix, leaving clauses.
+        version_part = re.sub(
+            r"^\s*[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[^\]]*\])?\s*", "", no_marker
+        )
+        clauses = [c.replace(" ", "") for c in version_part.split(",") if c.strip()]
+        return frozenset(clauses)
+    return None
+
+
+def _plugin_yaml_pip_deps():
+    """Extract the quoted requirement strings from the hindsight plugin.yaml.
+
+    plugin.yaml's ``pip_dependencies`` is a plain YAML list of quoted specs;
+    a narrow regex avoids adding a PyYAML dependency to this packaging test.
+    """
+    text = (
+        REPO_ROOT / "plugins" / "memory" / "hindsight" / "plugin.yaml"
+    ).read_text(encoding="utf-8")
+    return re.findall(r'^\s*-\s*["\']([^"\']+)["\']', text, flags=re.MULTILINE)
+
+
+def _provider_pinned_client_version():
+    """Read the provider pin without importing plugin runtime dependencies."""
+    source = (
+        REPO_ROOT / "plugins" / "memory" / "hindsight" / "__init__.py"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"^_PINNED_CLIENT_VERSION\s*=\s*['\"]([^'\"]+)['\"]\s*$",
+        source,
+        flags=re.MULTILINE,
+    )
+    assert match, "could not find _PINNED_CLIENT_VERSION in hindsight provider"
+    return match.group(1)
+
+
+def test_hindsight_client_specifier_is_consistent_across_mirrors():
+    """Every install surface must use the same exact client requirement."""
+    pyproject_extras = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]["optional-dependencies"]
+    pyproject = _specifier_of(pyproject_extras.get("hindsight", []), _HINDSIGHT_DIST)
+    lazy = _specifier_of(
+        _lazy_deps_by_feature().get("memory.hindsight", []), _HINDSIGHT_DIST
+    )
+    plugin = _specifier_of(_plugin_yaml_pip_deps(), _HINDSIGHT_DIST)
+    provider = frozenset({f"=={_provider_pinned_client_version()}"})
+
+    assert pyproject, "hindsight-client missing from the [hindsight] extra in pyproject.toml"
+    assert lazy, "hindsight-client missing from memory.hindsight in tools/lazy_deps.py"
+    assert plugin, "hindsight-client missing from plugins/memory/hindsight/plugin.yaml"
+
+    assert len(pyproject) == 1 and next(iter(pyproject)).startswith("=="), (
+        f"hindsight-client must remain exact-pinned: {sorted(pyproject)}"
+    )
+
+    assert pyproject == lazy == plugin == provider, (
+        "hindsight-client requirement drifted across its mirrors — keep the "
+        "exact spec in lockstep:\n"
+        f"  pyproject [hindsight]: {sorted(pyproject)}\n"
+        f"  tools/lazy_deps.py:    {sorted(lazy)}\n"
+        f"  plugin.yaml:           {sorted(plugin)}\n"
+        f"  provider pin:          {sorted(provider)}"
+    )

@@ -52,8 +52,12 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
-# Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
-_MIN_CLIENT_VERSION = "0.8.4"
+# Keep in sync with the [hindsight] extra in pyproject.toml, tools/lazy_deps.py
+# ("memory.hindsight"), and plugin.yaml. tests/test_packaging_metadata.py
+# enforces the four-way lockstep without importing this provider.
+_PINNED_CLIENT_VERSION = "0.8.5"
+# Single source of truth for every provider-managed install/repair path.
+_CLIENT_REQUIREMENT = f"hindsight-client=={_PINNED_CLIENT_VERSION}"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
@@ -169,6 +173,21 @@ def _meets_minimum_version(actual: str | None, required: str) -> bool:
     try:
         from packaging.version import Version
         return Version(actual) >= Version(required)
+    except Exception:
+        return False
+
+
+def _client_version_supported(actual: str | None) -> bool:
+    """True only when the installed client matches the reviewed exact pin.
+
+    A missing, malformed, older, or newer version is unsupported so the caller
+    converges every provider-managed environment on the same known-good client.
+    """
+    if not actual:
+        return False
+    try:
+        from packaging.version import Version
+        return Version(actual) == Version(_PINNED_CLIENT_VERSION)
     except Exception:
         return False
 
@@ -791,10 +810,12 @@ class HindsightMemoryProvider(MemoryProvider):
         env_writes: dict = {}
 
         # Step 2: Install/upgrade deps for selected mode
-        cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION}"
+        cloud_dep = _CLIENT_REQUIREMENT
         local_dep = "hindsight-all"
         if mode == "local_embedded":
-            deps_to_install = [local_dep]
+            # The current hindsight-all release only requires
+            # hindsight-client>=0.0.7, so constrain it in the same solve.
+            deps_to_install = [local_dep, cloud_dep]
         elif mode == "local_external":
             deps_to_install = [cloud_dep]
         else:
@@ -1199,6 +1220,45 @@ class HindsightMemoryProvider(MemoryProvider):
             return self._session_id, "append"
         return fallback_document_id, None
 
+    def _ensure_supported_client(self) -> None:
+        """Re-pin hindsight-client when it differs from the reviewed version.
+
+        Packaging metadata governs fresh resolver installs, but an existing
+        environment may carry an older or newer client from another install.
+        Converge any such drift on ``_CLIENT_REQUIREMENT`` via uv. Best-effort:
+        failures are logged and initialization proceeds so a transient install
+        hiccup cannot wedge the session.
+        """
+        try:
+            from importlib.metadata import version as pkg_version
+            installed = pkg_version("hindsight-client")
+        except Exception:
+            return  # metadata unavailable — let any real import error surface later
+        if _client_version_supported(installed):
+            return
+        logger.warning(
+            "hindsight-client %s does not match the pinned version (need %s), "
+            "attempting to reinstall...", installed, _CLIENT_REQUIREMENT,
+        )
+        import shutil
+        import subprocess
+        import sys
+        uv_path = shutil.which("uv")
+        if not uv_path:
+            logger.warning("uv not found. Run: pip install '%s'", _CLIENT_REQUIREMENT)
+            return
+        try:
+            subprocess.run(
+                [uv_path, "pip", "install", "--python", sys.executable,
+                 "--quiet", "--upgrade", _CLIENT_REQUIREMENT],
+                check=True, timeout=120, capture_output=True,
+                stdin=subprocess.DEVNULL,
+            )
+            logger.info("hindsight-client re-pinned to %s", _CLIENT_REQUIREMENT)
+        except Exception as e:
+            logger.warning("Auto-reinstall failed: %s. Run: uv pip install '%s'",
+                           e, _CLIENT_REQUIREMENT)
+
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = str(session_id or "").strip()
         self._parent_session_id = str(kwargs.get("parent_session_id", "") or "").strip()
@@ -1211,34 +1271,8 @@ class HindsightMemoryProvider(MemoryProvider):
         start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self._document_id = f"{self._session_id}-{start_ts}"
 
-        # Check client version and auto-upgrade if needed
-        try:
-            from importlib.metadata import version as pkg_version
-            from packaging.version import Version
-            installed = pkg_version("hindsight-client")
-            if Version(installed) < Version(_MIN_CLIENT_VERSION):
-                logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
-                               installed, _MIN_CLIENT_VERSION)
-                import shutil
-                import subprocess
-                import sys
-                uv_path = shutil.which("uv")
-                if uv_path:
-                    try:
-                        subprocess.run(
-                            [uv_path, "pip", "install", "--python", sys.executable,
-                             "--quiet", "--upgrade", f"hindsight-client>={_MIN_CLIENT_VERSION}"],
-                            check=True, timeout=120, capture_output=True,
-                            stdin=subprocess.DEVNULL,
-                        )
-                        logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
-                    except Exception as e:
-                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
-                                       e, _MIN_CLIENT_VERSION)
-                else:
-                    logger.warning("uv not found. Run: pip install 'hindsight-client>=%s'", _MIN_CLIENT_VERSION)
-        except Exception:
-            pass  # packaging not available or other issue — proceed anyway
+        # Keep the installed client within the supported bounded range.
+        self._ensure_supported_client()
 
         self._config = _load_config()
         self._platform = str(kwargs.get("platform") or "").strip()

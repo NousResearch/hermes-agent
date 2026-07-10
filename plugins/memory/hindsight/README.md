@@ -144,4 +144,4 @@ Available in `hybrid` and `tools` memory modes:
 
 ## Client Version
 
-Requires `hindsight-client >= 0.8.4`. The plugin auto-upgrades on session start if an older version is detected.
+Requires `hindsight-client==0.8.5`. The plugin re-pins the client to that reviewed version on session start if a different version is installed. Local embedded setup installs `hindsight-all` alongside the same exact client constraint.

@@ -1,5 +1,6 @@
 """Tests for the hermes_cli models module."""
 
+import urllib.request
 from unittest.mock import patch, MagicMock
 
 from hermes_cli.nous_account import NousPortalAccountInfo
@@ -78,6 +79,7 @@ class TestFetchOpenRouterModels:
             ("qwen/qwen3.7-max", ""),
             ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
         ]
+
 
     def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
@@ -969,3 +971,43 @@ class TestCodexSoftAcceptPlausibilityGate:
         r = validate_requested_model("gpt-5.5", "openai-codex")
         assert r["accepted"] is True
         assert r["recognized"] is True
+
+
+class TestModelCatalogRedirectCredentialStripping:
+    def test_cross_host_redirect_strips_provider_credentials(self):
+        req = urllib.request.Request("https://models.example.test/v1/models")
+        req.add_header("Authorization", "Bearer sk-model-secret")
+        req.add_header("x-api-key", "anthropic-secret")
+        req.add_header("Cookie", "session=secret")
+        req.add_header("User-Agent", "hermes-test")
+
+        handler = _models_mod._StripCredentialRedirectHandler("models.example.test")
+        redirected = handler.redirect_request(
+            req, None, 302, "Found", {}, "https://attacker.example.test/leak"
+        )
+
+        redirected_headers = {
+            key.lower(): value
+            for key, value in redirected.header_items()
+        }
+        assert "authorization" not in redirected_headers
+        assert "x-api-key" not in redirected_headers
+        assert "cookie" not in redirected_headers
+        assert redirected_headers["user-agent"] == "hermes-test"
+
+    def test_same_host_redirect_preserves_provider_credentials(self):
+        req = urllib.request.Request("https://models.example.test/v1/models")
+        req.add_header("Authorization", "Bearer sk-model-secret")
+        req.add_header("x-api-key", "anthropic-secret")
+
+        handler = _models_mod._StripCredentialRedirectHandler("models.example.test")
+        redirected = handler.redirect_request(
+            req, None, 302, "Found", {}, "https://models.example.test/v1/models/"
+        )
+
+        redirected_headers = {
+            key.lower(): value
+            for key, value in redirected.header_items()
+        }
+        assert redirected_headers["authorization"] == "Bearer sk-model-secret"
+        assert redirected_headers["x-api-key"] == "anthropic-secret"

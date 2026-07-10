@@ -423,13 +423,38 @@ def _compute_tool_definitions(
                             ", ".join(resolved) if resolved else "none",
                         )
                 else:
-                    resolved = resolve_toolset(toolset_name)
-                    tools_to_include.difference_update(resolved)
+                    resolved = set(resolve_toolset(toolset_name))
+                    if enabled_toolsets is not None:
+                        # When explicitly-enabled toolsets are set, only
+                        # subtract the tools of the disabled composite that
+                        # are NOT also contributed by an enabled toolset.
+                        # Otherwise disabling a composite like "coding"
+                        # strips every terminal + file tool and the model
+                        # receives zero tools with no warning (#58281).
+                        exclusive = resolved - tools_to_include
+                        if exclusive != resolved and not quiet_mode:
+                            preserved = resolved - exclusive
+                            logger.info(
+                                "disabled_toolsets includes '%s' which overlaps "
+                                "with enabled toolsets; %d tools are preserved "
+                                "because they are provided by enabled toolsets: %s",
+                                toolset_name, len(preserved),
+                                ", ".join(sorted(preserved)),
+                            )
+                        tools_to_include.difference_update(exclusive)
+                    else:
+                        tools_to_include.difference_update(resolved)
+                resolved_display = sorted(resolved)
                 if not quiet_mode:
-                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved_display) if resolved_display else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
-                tools_to_include.difference_update(legacy_tools)
+                if enabled_toolsets is not None:
+                    legacy_set = set(legacy_tools)
+                    exclusive = legacy_set - tools_to_include
+                    tools_to_include.difference_update(exclusive)
+                else:
+                    tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
             elif not quiet_mode:

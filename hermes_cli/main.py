@@ -8164,8 +8164,11 @@ def _update_node_dependencies() -> None:
 
     from hermes_constants import get_default_hermes_root
 
-    hermes_root = get_default_hermes_root()
-    if not _npm_lockfile_changed(hermes_root):
+    # This cache describes PROJECT_ROOT/node_modules, which is shared by every
+    # Hermes profile using this checkout. Keep one per-checkout cache under the
+    # shared Hermes root rather than rerunning npm once per named profile.
+    shared_hermes_root = get_default_hermes_root()
+    if not _npm_lockfile_changed(shared_hermes_root):
         logger.info("npm lockfile unchanged, skipping npm install")
         return
 
@@ -8213,7 +8216,7 @@ def _update_node_dependencies() -> None:
         env=nixos_env,
     )
     if ws_result.returncode == 0:
-        _record_npm_lockfile_hash(hermes_root)
+        _record_npm_lockfile_hash(shared_hermes_root)
         print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
     else:
         print("  ⚠ npm workspace install failed")

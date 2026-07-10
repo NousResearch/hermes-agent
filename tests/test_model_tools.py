@@ -663,19 +663,29 @@ class TestDisabledCompositeToolsetOverlap:
         assert "read_file" in names
 
     def test_default_enabled_toolsets_full_subtraction_still_works(self):
-        """When enabled_toolsets is None (default=all), full subtraction still works."""
+        """When enabled_toolsets is None (default=all), the default
+        full-subtraction path still removes a disabled toolset's tools.
+
+        This intentionally disables an *atomic* toolset (``file``) rather than
+        the ``coding`` posture toolset: every ``coding`` tool is also a shared
+        core tool, so disabling ``coding`` correctly preserves them (#57315,
+        TestDisabledToolsetsPostureToolset) and removes nothing -- it cannot
+        exercise the full-subtraction path this test guards."""
         from model_tools import get_tool_definitions
 
         tools_all = get_tool_definitions(quiet_mode=True)
-        tools_no_coding = get_tool_definitions(
-            disabled_toolsets=["coding"],
+        tools_no_file = get_tool_definitions(
+            disabled_toolsets=["file"],
             quiet_mode=True,
         )
         names_all = {t["function"]["name"] for t in tools_all}
-        names_no_coding = {t["function"]["name"] for t in tools_no_coding}
+        names_no_file = {t["function"]["name"] for t in tools_no_file}
 
-        removed = names_all - names_no_coding
+        removed = names_all - names_no_file
         assert removed, "expected tools to be removed when all toolsets are enabled"
+        # file tools are atomic (not shared posture/core re-lists), so the
+        # default (enabled_toolsets=None) path fully subtracts them.
+        assert "write_file" not in names_no_file
 
     def test_legacy_toolset_disabled_preserves_enabled_overlap(self):
         """Disabling legacy 'file_tools' preserves file tools from enabled 'terminal' + 'file'."""

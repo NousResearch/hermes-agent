@@ -3180,6 +3180,31 @@ class TestStaleBaseUrlWarning:
 
 
 class TestAuxiliaryTaskExtraBody:
+    def test_sync_call_maps_reasoning_config_to_request_body(self):
+        client = MagicMock()
+        client.base_url = "https://chatgpt.com/backend-api/codex"
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+
+        with patch("hermes_cli.config.load_config", return_value={}), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "gpt-5.6-sol"),
+        ):
+            result = call_llm(
+                task="moa_aggregator",
+                provider="openai-codex",
+                model="gpt-5.6-sol",
+                messages=[{"role": "user", "content": "review this"}],
+                reasoning_config={"enabled": True, "effort": "max"},
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["reasoning"] == {
+            "enabled": True,
+            "effort": "max",
+        }
+
     def test_sync_call_merges_task_extra_body_from_config(self):
         client = MagicMock()
         client.base_url = "https://api.example.com/v1"
@@ -3869,6 +3894,14 @@ class TestCodexAdapterReasoningTranslation:
             extra_body={"reasoning": {"effort": "high"}},
         )
         assert captured.get("reasoning") == {"effort": "high", "summary": "auto"}
+
+    def test_reasoning_effort_max_passed_through(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "max"}},
+        )
+        assert captured.get("reasoning") == {"effort": "max", "summary": "auto"}
 
     def test_reasoning_disabled_omits_reasoning_and_include(self):
         adapter, captured = self._build_adapter()

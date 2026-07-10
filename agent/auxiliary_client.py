@@ -6388,6 +6388,7 @@ def call_llm(
     messages: list,
     temperature: Optional[float] = None,
     max_tokens: int = None,
+    reasoning_config: Optional[Dict[str, Any]] = None,
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
@@ -6411,6 +6412,7 @@ def call_llm(
         messages: Chat messages list.
         temperature: Sampling temperature (None = provider default).
         max_tokens: Max output tokens (handles max_tokens vs max_completion_tokens).
+        reasoning_config: Reasoning configuration to apply to this call.
         tools: Tool definitions (for function calling).
         timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
         extra_body: Additional request body fields.
@@ -6434,6 +6436,8 @@ def call_llm(
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
+    if reasoning_config is not None:
+        effective_extra_body["reasoning"] = dict(reasoning_config)
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(

@@ -577,6 +577,7 @@ def aggregate_moa_context(
     temperature: float | None = None,
     aggregator_temperature: float | None = None,
     max_tokens: int | None = None,
+    reasoning_config: dict[str, Any] | None = None,
 ) -> str:
     """Run configured reference models and synthesize their advice.
 
@@ -593,6 +594,10 @@ def aggregate_moa_context(
     like max_tokens, ``call_llm`` omits temperature when None so the
     provider default applies — matching single-model agent behavior. Presets
     may still pin explicit values.
+
+    ``reasoning_config`` applies only to the aggregator. Reference models keep
+    their provider defaults because they are advisory slots, not the acting
+    parent agent.
     """
     reference_outputs: list[tuple[str, str, Any]] = []
     ref_messages = _reference_messages(api_messages)
@@ -638,6 +643,7 @@ def aggregate_moa_context(
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=max_tokens,
+            reasoning_config=reasoning_config,
             **agg_runtime,
         )
         synthesis = _extract_text(response)
@@ -1015,6 +1021,7 @@ class MoAChatCompletions:
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=agg_kwargs.get("max_tokens"),
+            reasoning_config=agg_kwargs.get("reasoning_config"),
             tools=agg_kwargs.get("tools"),
             extra_body=agg_kwargs.get("extra_body"),
             **stream_kwargs,

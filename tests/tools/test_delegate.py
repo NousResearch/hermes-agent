@@ -1055,6 +1055,76 @@ class TestSubagentCostRollup(unittest.TestCase):
         self.assertEqual(parent.session_estimated_cost_usd, 0.10)
         self.assertEqual(len(result["results"]), 1)
 
+    def test_subagent_cost_persisted_to_session_db(self):
+        """After in-memory rollup, the cost delta must be flushed to the
+        state DB (#32220). Without this, hermes insights undercounts spend
+        for any session that used delegate_task."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.10)
+        parent.session_id = "parent-session-abc"
+        mock_db = MagicMock()
+        parent._session_db = mock_db
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 2,
+                "duration_seconds": 1.0,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.42,
+            }
+            delegate_task(goal="bill me", parent_agent=parent)
+
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.52, places=6)
+        mock_db.update_token_counts.assert_called_once()
+        args, kwargs = mock_db.update_token_counts.call_args
+        self.assertEqual(args[0], "parent-session-abc")
+        self.assertAlmostEqual(kwargs["estimated_cost_usd"], 0.42, places=6)
+        self.assertEqual(kwargs["cost_status"], "estimated")
+        self.assertEqual(kwargs["cost_source"], "subagent")
+
+    def test_subagent_cost_db_skipped_when_no_session_db(self):
+        """Fixtures / ACP paths with no _session_db must not crash."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.00)
+        parent.session_id = "no-db-session"
+        parent._session_db = None
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.25,
+            }
+            delegate_task(goal="acp path", parent_agent=parent)
+
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.25, places=6)
+
+    def test_zero_cost_children_do_not_call_session_db(self):
+        """Additive DB update must not fire when there is nothing to add."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.00)
+        parent.session_id = "parent-session-zero"
+        mock_db = MagicMock()
+        parent._session_db = mock_db
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.0,
+            }
+            delegate_task(goal="free local", parent_agent=parent)
+
+        mock_db.update_token_counts.assert_not_called()
+
 
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):

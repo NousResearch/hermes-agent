@@ -2236,10 +2236,12 @@ def list_authenticated_providers(
             if default_model and default_model not in groups[group_key]["models"]:
                 groups[group_key]["models"].append(default_model)
 
-            for model_id in _declared_model_ids(entry.get("models", {})):
+            declared_models = _declared_model_ids(entry.get("models", {}))
+            if declared_models:
+                groups[group_key]["has_explicit_models"] = True
+            for model_id in declared_models:
                 if model_id not in groups[group_key]["models"]:
                     groups[group_key]["models"].append(model_id)
-                    groups[group_key]["has_explicit_models"] = True
 
         _section4_emitted_slugs: set = set()
         _current_base_url_group_count = sum(

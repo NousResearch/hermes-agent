@@ -206,6 +206,32 @@ def test_decompose_children_stay_scratch_when_root_scratch(kanban_home):
     assert t.workspace_path is None
 
 
+def test_decompose_children_inherit_board_default_workdir(kanban_home):
+    """Scratch root with board default_workdir → children land in project dir."""
+    proj = "/data/ai-branch"
+    kb.write_board_metadata(board=None, default_workdir=proj)
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="scratch root no path", assignee="worker",
+            workspace_kind="scratch", triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="orchestrator",
+            children=[{"title": "c1"}, {"title": "c2"}],
+            author="decomposer",
+        )
+    assert child_ids and len(child_ids) == 2
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        for cid in child_ids:
+            t = kb.get_task(conn, cid)
+            assert t.workspace_kind == "dir", f"child {cid} should be dir, got {t.workspace_kind}"
+            assert t.workspace_path == proj, f"child {cid} workspace_path mismatch"
+    # Root itself is also upgraded so its orchestration run lands in the project dir.
+    assert root.workspace_kind == "dir"
+    assert root.workspace_path == proj
+
+
 def test_decompose_per_child_workspace_override(kanban_home):
     """An explicit per-child workspace beats inheritance."""
     proj = "/home/teknium/myproject"

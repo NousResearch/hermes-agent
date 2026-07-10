@@ -5006,6 +5006,7 @@ def decompose_triage_task(
     children: list[dict],
     author: Optional[str] = None,
     auto_promote: bool = True,
+    board: Optional[str] = None,
 ) -> Optional[list[str]]:
     """Fan a triage task out into child tasks and promote the root to ``todo``.
 
@@ -5106,6 +5107,27 @@ def decompose_triage_task(
         # override with its own 'workspace_kind' / 'workspace_path'.
         root_ws_kind = root_row["workspace_kind"] or "scratch"
         root_ws_path = root_row["workspace_path"]
+        # When the root task was created with the default scratch workspace
+        # (no explicit path), fall back to the board's default_workdir so
+        # children land in the project directory rather than a throwaway
+        # kanban scratch dir. The root itself is also upgraded so its
+        # orchestration run shares the same directory.
+        _board_ws_upgraded = False
+        if root_ws_kind == "scratch" and not root_ws_path:
+            # Resolve the board ONCE and thread it explicitly, matching
+            # every other board-aware function here. Falling back to the
+            # ambient get_current_board() only when no board was passed
+            # would let a concurrent `boards switch` (or an outer
+            # HERMES_KANBAN_BOARD override) point the lookup at a
+            # different board than the caller's connection is scoped to,
+            # silently upgrading children into an unrelated project dir.
+            _resolved_board = board if board is not None else get_current_board()
+            _board_meta = read_board_metadata(_resolved_board)
+            _board_default = _board_meta.get("default_workdir")
+            if _board_default:
+                root_ws_kind = "dir"
+                root_ws_path = str(_board_default)
+                _board_ws_upgraded = True
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -5124,6 +5146,15 @@ def decompose_triage_task(
             child_ws_kind = child.get("workspace_kind") or root_ws_kind
             if child.get("workspace_path"):
                 child_ws_path = child.get("workspace_path")
+            elif child_ws_kind == "worktree":
+                # Never share one worktree checkout between siblings: the
+                # root's literal path would put every child in the same
+                # directory on the first-dispatched sibling's branch, with
+                # no lock — siblings can be promoted and dispatched
+                # concurrently. Leave the path unset so dispatch
+                # materializes a fresh <repo>/.worktrees/<child-id> per
+                # child from the board anchor.
+                child_ws_path = None
             elif child_ws_kind == root_ws_kind:
                 child_ws_path = root_ws_path
             else:
@@ -5178,11 +5209,18 @@ def decompose_triage_task(
             )
 
         # Flip the root: triage -> todo, set assignee to the orchestrator.
+        # Also persist the resolved board workspace so the orchestration
+        # run lands in the project directory (not a kanban scratch dir).
         sets = ["status = 'todo'"]
         params: list[Any] = []
         if root_assignee is not None:
             sets.append("assignee = ?")
             params.append(root_assignee)
+        if _board_ws_upgraded:
+            sets.append("workspace_kind = ?")
+            sets.append("workspace_path = ?")
+            params.append(root_ws_kind)
+            params.append(root_ws_path)
         params.append(task_id)
         conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
@@ -5419,12 +5457,41 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
 
 
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
-    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+    """Materialize ``target`` as a linked git worktree under ``repo_root``.
+
+    When ``target`` already exists as a linked worktree of ``repo_root``,
+    reuse it — but only after confirming it is checked out on
+    ``branch_name``. A previous failed/interrupted dispatch of the same
+    task can leave the canonical ``.worktrees/<id>`` path on a stale or
+    unrelated branch; silently reusing it would run this task's work on
+    the wrong branch. If the branch differs, switch it back (creating the
+    branch if needed) so the reused checkout matches the requested branch.
+    """
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None:
         target_common = _git_common_dir(target)
         if target_common == repo_common:
+            if _git_current_branch(target) == branch_name:
+                return
+            # Reused worktree is on the wrong branch — realign it.
+            if _git_branch_exists(repo_root, branch_name):
+                switch_cmd = ["git", "-C", str(target), "checkout", branch_name]
+            else:
+                switch_cmd = ["git", "-C", str(target), "checkout", "-b", branch_name]
+            switch = subprocess.run(
+                switch_cmd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if switch.returncode != 0:
+                stderr = (switch.stderr or switch.stdout or "").strip()
+                raise RuntimeError(
+                    f"git checkout {branch_name} failed for reused worktree "
+                    f"{target}: {stderr}"
+                )
             return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
@@ -5501,6 +5568,24 @@ def _resolve_worktree_workspace(
 
     if requested.exists() and _is_linked_worktree_checkout(requested):
         actual_branch = _git_current_branch(requested)
+        if actual_branch == branch_name:
+            return requested_resolved, actual_branch
+        # The requested path is an existing checkout of a DIFFERENT
+        # task's branch. Decompose children inherit the root's
+        # workspace_path verbatim, so siblings all point here; reusing
+        # the checkout as-is would run this task on the other task's
+        # branch — silent cross-task provenance corruption, and unsafe
+        # when siblings run concurrently. Fall back to a fresh worktree
+        # of our own under the same repo.
+        fallback_root = _repo_root_for_worktree_target(requested.parent)
+        if fallback_root is not None:
+            fallback = fallback_root / ".worktrees" / task.id
+            if fallback.resolve(strict=False) != requested_resolved:
+                _ensure_git_worktree(fallback_root, fallback, branch_name)
+                return fallback.resolve(strict=False), branch_name
+        # No repo to anchor a fallback on (or the occupied path IS this
+        # task's own canonical worktree): keep the legacy reuse rather
+        # than failing dispatch.
         return requested_resolved, actual_branch or branch_name
 
     repo_root = _git_toplevel(requested)

@@ -281,7 +281,11 @@ def decompose_task(
     configured, API error, malformed response, decomposer returned
     fanout=true with empty task list) — those surface via ``ok=False``.
     """
-    with kb.connect_closing() as conn:
+    # Resolve the active board ONCE, up front, so the connection and the
+    # decompose upgrade's default_workdir lookup can't disagree if a
+    # concurrent `boards switch` moves the ambient board mid-call.
+    board = kb.get_current_board()
+    with kb.connect_closing(board=board) as conn:
         task = kb.get_task(conn, task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, "unknown task id")
@@ -370,7 +374,7 @@ def decompose_task(
             return DecomposeOutcome(
                 task_id, False, "decomposer returned fanout=false with no title/body",
             )
-        with kb.connect_closing() as conn:
+        with kb.connect_closing(board=board) as conn:
             ok = kb.specify_triage_task(
                 conn,
                 task_id,
@@ -439,7 +443,7 @@ def decompose_task(
         })
 
     try:
-        with kb.connect_closing() as conn:
+        with kb.connect_closing(board=board) as conn:
             child_ids = kb.decompose_triage_task(
                 conn,
                 task_id,
@@ -447,6 +451,7 @@ def decompose_task(
                 children=children,
                 author=audit_author,
                 auto_promote=auto_promote,
+                board=board,
             )
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")

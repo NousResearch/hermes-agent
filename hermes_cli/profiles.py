@@ -1967,23 +1967,74 @@ def _normalize_profile_archive_parts(member_name: str) -> List[str]:
     return parts
 
 
+def _normalize_profile_archive_link(
+    member_parts: List[str], link_name: str
+) -> Tuple[str, List[str]]:
+    normalized_name = link_name.replace("\\", "/")
+    posix_path = PurePosixPath(normalized_name)
+    windows_path = PureWindowsPath(link_name)
+
+    if (
+        not normalized_name
+        or posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or len(member_parts) < 2
+    ):
+        raise ValueError(f"Unsafe archive link target: {link_name}")
+
+    resolved_parts = list(member_parts[:-1])
+    for part in posix_path.parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if len(resolved_parts) <= 1:
+                raise ValueError(f"Unsafe archive link target: {link_name}")
+            resolved_parts.pop()
+        else:
+            resolved_parts.append(part)
+
+    if not resolved_parts or resolved_parts[0] != member_parts[0]:
+        raise ValueError(f"Unsafe archive link target: {link_name}")
+    return normalized_name, resolved_parts
+
+
 def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
-    """Extract a profile archive without allowing path escapes or links."""
+    """Extract regular members and profile-confined relative symlinks."""
     import tarfile
 
     with tarfile.open(archive, "r:gz") as tf:
+        regular_members = []
+        symlink_members = []
+        seen_paths: set[Tuple[str, ...]] = set()
+
         for member in tf.getmembers():
             parts = _normalize_profile_archive_parts(member.name)
+            member_path = tuple(part.casefold() for part in parts)
+            if member_path in seen_paths:
+                raise ValueError(f"Duplicate archive member path: {member.name}")
+            seen_paths.add(member_path)
+
+            if member.issym():
+                link_name, resolved_parts = _normalize_profile_archive_link(
+                    parts, member.linkname
+                )
+                symlink_members.append(
+                    (member, parts, link_name, resolved_parts)
+                )
+                continue
+            if not (member.isdir() or member.isfile()):
+                raise ValueError(
+                    f"Unsupported archive member type: {member.name}"
+                )
+            regular_members.append((member, parts))
+
+        for member, parts in regular_members:
             target = destination.joinpath(*parts)
 
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
                 continue
-
-            if not member.isfile():
-                raise ValueError(
-                    f"Unsupported archive member type: {member.name}"
-                )
 
             target.parent.mkdir(parents=True, exist_ok=True)
             extracted = tf.extractfile(member)
@@ -1997,6 +2048,23 @@ def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
                 os.chmod(target, member.mode & 0o777)
             except OSError:
                 pass
+
+        for member, parts, link_name, resolved_parts in symlink_members:
+            target = destination.joinpath(*parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if os.path.lexists(target):
+                raise ValueError(f"Duplicate archive member path: {member.name}")
+
+            link_target = destination.joinpath(*resolved_parts)
+            try:
+                target.symlink_to(
+                    link_name,
+                    target_is_directory=link_target.is_dir(),
+                )
+            except OSError as exc:
+                raise ValueError(
+                    f"Cannot create archive symlink: {member.name}"
+                ) from exc
 
 
 def _inspect_profile_archive_roots(archive: Path) -> set[str]:

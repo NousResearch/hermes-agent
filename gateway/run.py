@@ -4000,6 +4000,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             db.update_session_meta(session_id, json.dumps(config), model=model)
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
+
+    def _capture_ephemeral_router_system_prompt(
+        self, session_id: Optional[str], turn_route: dict
+    ) -> None:
+        """Preserve the durable prompt before a temporary model rebuild writes it."""
+        if not turn_route.get("router_ephemeral") or not session_id:
+            return
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return
+        try:
+            row = session_db.get_session(session_id)
+            prompt = row.get("system_prompt") if row else None
+            if isinstance(prompt, str) and prompt:
+                turn_route["router_restore_system_prompt"] = prompt
+        except Exception:
+            logger.debug(
+                "Could not snapshot router system prompt before ephemeral route",
+                exc_info=True,
+            )
+
     def _restore_ephemeral_router_session_model(
         self, session_id: Optional[str], turn_route: dict
     ) -> None:
@@ -4009,14 +4030,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         restore_model = turn_route.get("router_restore_model")
         if not isinstance(restore_model, str) or not restore_model.strip():
             return
+        restore_prompt = turn_route.pop("router_restore_system_prompt", None)
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
             return
         try:
             session_db.update_session_model(session_id, restore_model.strip())
+            if isinstance(restore_prompt, str) and restore_prompt:
+                session_db.update_system_prompt(session_id, restore_prompt)
         except Exception:
             logger.debug(
-                "Could not restore router session model after ephemeral route",
+                "Could not restore router session state after ephemeral route",
                 exc_info=True,
             )
 
@@ -16368,6 +16392,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
 
+    def _cache_agent_for_turn(
+        self,
+        session_key: str,
+        agent: Any,
+        signature: tuple,
+        message_count: Optional[int],
+        *,
+        router_ephemeral: bool,
+    ) -> None:
+        """Cache reusable agents, never a one-turn routing override."""
+        if router_ephemeral:
+            return
+        lock = getattr(self, "_agent_cache_lock", None)
+        cache = getattr(self, "_agent_cache", None)
+        if lock is None or cache is None:
+            return
+        with lock:
+            cache[session_key] = (
+                agent,
+                signature,
+                message_count,
+                getattr(agent, "session_id", None),
+            )
+            self._enforce_agent_cache_cap()
+
     def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
         """Fire on_session_end extraction before soft-evicting a live agent.
 
@@ -18187,6 +18236,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime_kwargs,
                 pinned_model=_pinned_router_model,
             )
+            self._capture_ephemeral_router_system_prompt(session_id, turn_route)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -18222,7 +18272,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
 
             _xproc_evicted_agent = None
-            if _cache_lock and _cache is not None:
+            if not turn_route.get("router_ephemeral") and _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
@@ -18358,17 +18408,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
-                if _cache_lock and _cache is not None:
-                    with _cache_lock:
-                        # Record the session_id the snapshot was taken for
-                        # alongside the message_count, so the cross-process
-                        # guard can skip the (meaningless) count comparison
-                        # when the active session_id later switches under
-                        # the same session_key (#54947).
-                        _cache[session_key] = (
-                            agent, _sig, _current_msg_count, session_id,
-                        )
-                        self._enforce_agent_cache_cap()
+                self._cache_agent_for_turn(
+                    session_key,
+                    agent,
+                    _sig,
+                    _current_msg_count,
+                    router_ephemeral=turn_route.get("router_ephemeral", False),
+                )
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 
             # Per-message state — callbacks and reasoning config change every
@@ -18957,6 +19003,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._restore_ephemeral_router_session_model(
                         _ephemeral_session_id, turn_route
                     )
+                    if turn_route.get("router_ephemeral"):
+                        self._release_evicted_agent_soft(_ephemeral_agent)
                 except Exception:
                     logger.debug(
                         "Could not restore ephemeral router session after run failure",

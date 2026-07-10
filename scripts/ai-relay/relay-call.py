@@ -267,7 +267,10 @@ def classify(exit_code, stdout, stderr):
         # → โดนตีเป็น auth ปลอม 4 ครั้ง ทั้งที่ login ติดปกติ
         if (len(out_clean.strip()) <= 250 and STRONG_AUTH_RE.search(out_clean)) or STRONG_AUTH_RE.search(err_clean):
             return "auth"
-        if QUOTA_RE.search(out_clean) or QUOTA_RE.search(err_clean):
+        # quota ใช้ตัวกันความยาวแบบเดียวกับ auth — เคสจริง 2026-07-10 (QAQC review):
+        # งานรีวิวที่ "เนื้อหาพูดถึง" quota/rate limit (เช่นตรวจดีไซน์หมวด Quota / Rate-limit)
+        # ตอบยาวปกติ exit 0 แต่โดนตีเป็น quota ปลอม → codex/gemini ถูกทิ้งคำตอบทั้งที่ทำงานสำเร็จ
+        if (len(out_clean.strip()) <= 250 and QUOTA_RE.search(out_clean)) or QUOTA_RE.search(err_clean):
             return "quota"
         if len(out_clean.strip()) < 40 and AUTH_RE.search(err_clean):
             return "auth"
@@ -281,7 +284,8 @@ def classify(exit_code, stdout, stderr):
         return "quota"
     if AUTH_RE.search(out_clean):
         return "auth"
-    if QUOTA_RE.search(out_clean):
+    # ตัวกันความยาวเดียวกับฝั่ง exit 0 — คำตอบยาวที่ "พูดถึง" quota แล้วพังกลางทาง = crash ไม่ใช่ quota
+    if len(out_clean.strip()) <= 250 and QUOTA_RE.search(out_clean):
         return "quota"
     return "crash"
 

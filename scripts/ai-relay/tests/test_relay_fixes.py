@@ -450,6 +450,30 @@ def test_classify_stdout_session_limit_is_quota():
     assert relay_call.classify(1, "You've hit your session limit · resets 6:10am (UTC)", "") == "quota"
 
 
+def test_classify_work_review_mentioning_quota_terms_is_ok():
+    # เคสจริง 2026-07-10 (QAQC review): กรรมการรีวิวดีไซน์ที่ "เนื้อหาพูดถึง" quota/rate limit
+    # (เพราะโจทย์คือตรวจหมวด Quota/Rate-limit ของ taxonomy) ตอบยาวปกติ exit 0
+    # เดิม QUOTA_RE จับ stdout ยาวโดยไม่มีตัวกันความยาวแบบ auth → codex+gemini โดน quota ปลอม คำตอบถูกทิ้งฟรี
+    out = ("ผลรีวิวตารางแม่: หมวด Q03 มีหัวข้อ Quota / Limit และ Billing ครบถ้วนดี · "
+           "หมวด Q04 ข้อ Rate limit / brute force ควรระบุเครื่องมือตรวจให้ชัดขึ้น · "
+           "กติกาเมื่อ AI โดน usage limit แล้วสลับสายสำรองออกแบบถูกต้องตามหลัก fail-over · "
+           "โดยรวมไม่พบข้อ blocking · Verdict: proceed เพราะโครงหมวดครบและกันซ้ำรอยระบบเก่าได้จริง")
+    assert len(out.strip()) > 250  # ต้องยาวพอเป็นคำตอบงานจริง (จุดที่บั๊กเดิมจับผิด)
+    assert relay_call.classify(0, out, "") == "ok"
+
+
+def test_classify_nonzero_long_stdout_quota_words_is_crash_not_quota():
+    # คำตอบยาวที่พูดถึง quota แต่ CLI พังกลางทาง (exit != 0) = crash ไม่ใช่ quota
+    out = ("รีวิวไปได้ครึ่งทาง: หมวด Quota / Rate limit ตรวจแล้ว 8 หัวข้อ พบประเด็น usage limit "
+           "ในดีไซน์สายสำรอง 2 จุดที่ควรเข้มกว่านี้ แล้วยังเหลือหมวด Q10-Q16 ที่ยังไม่ได้ไล่ตรวจอีกทั้งหมด "
+           "แต่กระบวนการถูกตัดกลางคันก่อนถึงขั้นสรุป Verdict สุดท้าย ทำให้รายงานฉบับนี้ไม่สมบูรณ์ "
+           "และต้องเริ่มรีวิวใหม่ตั้งแต่หมวดที่ค้างในรอบถัดไปจึงจะปิดงานได้ครบทุกหมวดตามใบสั่งงาน")
+    assert len(out.strip()) > 250
+    assert relay_call.classify(1, out, "") == "crash"
+    # ของจริงที่สั้น (ข้อความ limit จาก CLI เอง) ต้องยังเป็น quota เหมือนเดิม
+    assert relay_call.classify(1, "You've hit your usage limit.", "") == "quota"
+
+
 def test_summarize_final_failure_preserves_all_quota_result():
     status, reason, exit_code = relay_call.summarize_final_failure(["opus:quota"])
     assert status == "quota"

@@ -41,6 +41,7 @@ This skill loads standard reusable prompts from HermesAgent. The v2 prompt files
 | `Use Create Design System` / `Use Design System` | `use-create-design-system`, `Create Design System`, `create-design-system`, `Use Design System`, `use-design-system`, `ใช้ Design System`, `ใช้ Create Design System`, `สร้าง Design System`, `ทำ Design System มาตรฐาน`, `วาง Design System ให้โปรเจกต์` | `references/use-create-design-system.md` |
 | `Use Hermes Structure` | `use-hermes-structure`, `Hermes Structure`, `ใช้ Hermes Structure`, `มาตรฐานกลาง Hermes` | `references/use-hermes-structure.md` |
 | `Use Create Content` | `use-create-content`, `Create Content`, `create-content`, `ใช้ Create Content`, `สร้างคอนเทนต์จากแชท`, `แปลงแชทเป็นคอนเทนต์`, `ทำ Content Master` | `references/use-create-content.md` |
+| `Use QA QC` / `Use QC QA` | `use-qa-qc`, `use-qc-qa`, `Use QAQC`, `Use QCQA`, `QA QC`, `QC QA`, `ใช้ QA QC`, `ใช้ QC QA`, `ตรวจคุณภาพงาน`, `สแกนคุณภาพโปรเจกต์`, `สแกน QA`, `ตรวจงานก่อนส่งมอบ` | `references/use-qa-qc.md` |
 
 ## How To Use
 
@@ -110,6 +111,8 @@ For `Use Hermes Structure`, route the owner to the Hermes standard workflow and 
 
 For `Use Create Content`, convert the current chat or source material into a privacy-reviewed Content Master draft, then hand off to Blog Auto or the content factory without publishing.
 
+For `Use QA QC` (or `Use QC QA`), open a two-axis quality-scan menu (project progress 25/50/75/100% × 16 check categories Q01-Q16, multi-select, Scan All last behind a confirm gate), run a cross-vendor scan pipeline (primary scanner + counter-scanner from a different vendor, fixer = third AI, reviewer ≠ fixer, verified = gate-run rows only), produce a severity table, then write `.project/qaqc-scan.md` before any fixes.
+
 ## Source Files
 
 - `Prompt Shortcuts.md`: Obsidian index note for all shortcuts.
@@ -144,6 +147,7 @@ For `Use Create Content`, convert the current chat or source material into a pri
 - `references/use-create-design-system.md`: full prompt for `Use Create Design System`.
 - `references/use-hermes-structure.md`: full prompt for `Use Hermes Structure`.
 - `references/use-create-content.md`: full prompt for `Use Create Content`.
+- `references/use-qa-qc.md`: full prompt for `Use QA QC` / `Use QC QA`.
 
 ## Graph Links
 

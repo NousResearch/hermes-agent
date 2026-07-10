@@ -1,10 +1,12 @@
 > memory-schema: v1.2
-> อ่านตามลำดับ: plan.md (plan_id: GRD) → decisions.md → hermes-standard/REQUIREMENTS.md (บัญชีความต้องการ 66 ข้อ)
+> อ่านตามลำดับ: plan.md (plan_id: QAQC — active · shortcut Use QA QC) → plan-grd.md (แผน GRD จบแล้ว + คิว GRD-P5..P9) → decisions.md → hermes-standard/REQUIREMENTS.md (บัญชีความต้องการ 66 ข้อ)
 
 # Overview & Progress — Hermes Agent
 อัปเดตล่าสุด: 2026-07-08 (รอบเช้า · เก็บของค้าง) · branch งาน: `feature/p12b-shortcut-guard` · main HEAD `8bd9aa5e0` · ป้าย: [fact] เว้นแต่ระบุ
 
 ## สถานะล่าสุด
+- **2026-07-10: shortcut `Use QA QC` v1.1 เปิดใช้แล้ว (active · ทะเบียน 29→30)** — เจ้าของสั่งจบด้วย Fable ไม่รอกรรมการ · ตารางแม่ 16 หมวด/178 หัวข้อ + วินิจฉัย ViberQC อยู่ในคลัง (`AI-Security-Testing/`) · New Chat v2.0 + Close Chat v2.3 ผูกไฟล์กลาง `.project/qaqc-scan.md` แล้ว · branch งาน: `feature/use-qa-qc` (แผน active ใหม่ plan_id: QAQC · GRD ย้ายไป plan-grd.md) [fact]
+- 2026-07-10: ซ่อม relay-call quota ปลอม (คำตอบยาวที่พูดถึง quota โดนตีเป็นโควต้าหมด) — scoped pytest 68/69 (1 แดง = เทสต์ timeout พังก่อนแก้ พิสูจน์แล้ว) · แก้ adapter grok (CLI v1.0.1 ตัด flag เก่า) · **grok headless ต้องมี API key = งานคนค้าง** · กรรมการรีวิวรวบ P1-P4 ยังไม่สำเร็จ (โควต้า/บั๊กวันเดียวกัน 3 ตัว) เลื่อนเป็น hardening [fact]
 - **แผน GRD merged เข้า main แล้ว — PR #16 (`8bd9aa5e0`)** · ระบบกันแผนหาย/กัน AI มั่ว ใช้งานจริงบน main [fact]
 - เก็บของค้างเช้า 2026-07-08: commit ไฟล์กฎกลาง 3 ไฟล์ในคลัง Obsidian (commit คลัง 7b52e4b — คนละ repo กับตัวนี้ · re-anchor v2.9/v4.2/v1.9) · push branch `feature/p12b-shortcut-guard` + เปิด **PR #17** (install guard กันเขียนทับไฟล์คลังที่ใหม่กว่า) [fact]
 - memory-audit รันจริงบน repo: schema/SHA/ไฟล์ความจำ ✅ ครบ · เตือนเลขงานกำพร้า 33 ตัว (งานตั้งค่าจร ไม่ใช่บั๊ก) [fact]

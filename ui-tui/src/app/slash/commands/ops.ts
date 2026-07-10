@@ -326,6 +326,16 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['learning', 'memory-graph'],
+    help: 'open your learning journey — skills + memories on a timeline',
+    name: 'journey',
+    run: (_arg, ctx) => {
+      void ctx
+      patchOverlayState({ journey: true })
+    }
+  },
+
+  {
     help: 'replay a completed spawn tree · `/replay [N|last|list|load <path>]`',
     name: 'replay',
     run: (arg, ctx) => {

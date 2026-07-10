@@ -19,11 +19,12 @@ interface TerminalInstanceProps {
   cwd: string
   active: boolean
   onAddSelectionToChat: (text: string, label?: string) => void
+  reviveBuffer?: string
 }
 
 /** One persistent xterm+PTY. Every open tab stays mounted (so its shell and
  *  scrollback survive tab switches); only the active one is shown. */
-export function TerminalInstance({ id, active, cwd, onAddSelectionToChat }: TerminalInstanceProps) {
+export function TerminalInstance({ id, active, cwd, onAddSelectionToChat, reviveBuffer }: TerminalInstanceProps) {
   const { t } = useI18n()
 
   const { addSelectionToChat, hostRef, selection, selectionStyle, status } = useTerminalSession({
@@ -31,6 +32,7 @@ export function TerminalInstance({ id, active, cwd, onAddSelectionToChat }: Term
     cwd,
     active,
     onAddSelectionToChat,
+    reviveBuffer,
     onShell: shell => reportTerminalShell(id, shell)
   })
 
@@ -42,7 +44,12 @@ export function TerminalInstance({ id, active, cwd, onAddSelectionToChat }: Term
     >
       {status === 'starting' && (
         <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center">
-          <Loader className="size-8 text-(--ui-text-tertiary)" pathSteps={180} strokeScale={0.68} type="spiral-search" />
+          <Loader
+            className="size-8 text-(--ui-text-tertiary)"
+            pathSteps={180}
+            strokeScale={0.68}
+            type="spiral-search"
+          />
         </div>
       )}
       {selection.trim() && (

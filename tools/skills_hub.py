@@ -46,18 +46,78 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
+# Resolved per-call (not frozen at import) so the profile override is honored;
+# import-time constants leaked across profiles in single-process multi-profile
+# runtimes. Legacy names (SKILLS_DIR, ...) are re-exposed via __getattr__ below
+# so external `from tools.skills_hub import SKILLS_DIR` callers still work.
 
-HERMES_HOME = get_hermes_home()
-SKILLS_DIR = HERMES_HOME / "skills"
-HUB_DIR = SKILLS_DIR / ".hub"
-LOCK_FILE = HUB_DIR / "lock.json"
-QUARANTINE_DIR = HUB_DIR / "quarantine"
-AUDIT_LOG = HUB_DIR / "audit.log"
-TAPS_FILE = HUB_DIR / "taps.json"
-INDEX_CACHE_DIR = HUB_DIR / "index-cache"
-
-# Cache duration for remote index fetches
 INDEX_CACHE_TTL = 3600  # 1 hour
+
+
+# _override lets a test-injected real module attribute (patch.object/monkeypatch
+# on SKILLS_DIR etc.) win over dynamic resolution; None means resolve live.
+def _override(name: str):
+    return globals().get(name)
+
+
+def _hermes_home() -> Path:
+    return get_hermes_home()
+
+
+def _skills_dir() -> Path:
+    forced = _override("SKILLS_DIR")
+    return Path(forced) if forced is not None else _hermes_home() / "skills"
+
+
+def _hub_dir() -> Path:
+    forced = _override("HUB_DIR")
+    return Path(forced) if forced is not None else _skills_dir() / ".hub"
+
+
+def _lock_file() -> Path:
+    forced = _override("LOCK_FILE")
+    return Path(forced) if forced is not None else _hub_dir() / "lock.json"
+
+
+def _quarantine_dir() -> Path:
+    forced = _override("QUARANTINE_DIR")
+    return Path(forced) if forced is not None else _hub_dir() / "quarantine"
+
+
+def _audit_log() -> Path:
+    forced = _override("AUDIT_LOG")
+    return Path(forced) if forced is not None else _hub_dir() / "audit.log"
+
+
+def _taps_file() -> Path:
+    forced = _override("TAPS_FILE")
+    return Path(forced) if forced is not None else _hub_dir() / "taps.json"
+
+
+def _index_cache_dir() -> Path:
+    forced = _override("INDEX_CACHE_DIR")
+    return Path(forced) if forced is not None else _hub_dir() / "index-cache"
+
+
+_DYNAMIC_PATH_RESOLVERS = {
+    "HERMES_HOME": _hermes_home,
+    "SKILLS_DIR": _skills_dir,
+    "HUB_DIR": _hub_dir,
+    "LOCK_FILE": _lock_file,
+    "QUARANTINE_DIR": _quarantine_dir,
+    "AUDIT_LOG": _audit_log,
+    "TAPS_FILE": _taps_file,
+    "INDEX_CACHE_DIR": _index_cache_dir,
+}
+
+
+def __getattr__(name: str):
+    """Resolve legacy path constants dynamically (PEP 562) so they reflect the
+    active profile override; a test's patch.object-set real attribute shadows it."""
+    resolver = _DYNAMIC_PATH_RESOLVERS.get(name)
+    if resolver is not None:
+        return resolver()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SKILL_FETCH_REDIRECTS = 5
@@ -176,9 +236,10 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
        and ``rmtree(SKILLS_DIR)`` would wipe every installed skill.
     """
     normalized = _normalize_lock_install_path(install_path, skill_name)
-    skills_root = SKILLS_DIR.resolve()
+    skills_dir = _skills_dir()
+    skills_root = skills_dir.resolve()
 
-    target = SKILLS_DIR
+    target = skills_dir
     for part in normalized.split("/"):
         target = target / part
         if _is_path_redirect(target):
@@ -848,12 +909,13 @@ class GitHubSource(SkillSource):
     def _download_directory_recursive(self, repo: str, path: str) -> Dict[str, str]:
         """Recursively download via Contents API (fallback)."""
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
-        try:
-            resp = httpx.get(url, headers=self.auth.get_headers(), timeout=15, follow_redirects=True)
-            if resp.status_code != 200:
-                logger.debug("Contents API returned %d for %s/%s", resp.status_code, repo, path)
-                return {}
-        except httpx.HTTPError:
+        # Route through _github_get so directory listing gets the same
+        # 429/403-rate-limit retry + backoff as file fetches (#3033).
+        resp = self._github_get(url)
+        if resp is None:
+            return {}
+        if resp.status_code != 200:
+            logger.debug("Contents API returned %d for %s/%s", resp.status_code, repo, path)
             return {}
 
         entries = resp.json()
@@ -973,7 +1035,7 @@ class GitHubSource(SkillSource):
 
     def _read_cache(self, key: str) -> Optional[list]:
         """Read cached index if not expired."""
-        cache_file = INDEX_CACHE_DIR / f"{key}.json"
+        cache_file = _index_cache_dir() / f"{key}.json"
         if not cache_file.exists():
             return None
         try:
@@ -986,8 +1048,9 @@ class GitHubSource(SkillSource):
 
     def _write_cache(self, key: str, data: list) -> None:
         """Write index data to cache."""
-        INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cache_file = INDEX_CACHE_DIR / f"{key}.json"
+        index_cache_dir = _index_cache_dir()
+        index_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = index_cache_dir / f"{key}.json"
         try:
             cache_file.write_text(json.dumps(data, ensure_ascii=False))
         except OSError as e:
@@ -2990,6 +3053,8 @@ class OptionalSkillSource(SkillSource):
     (search / install / inspect) and labelled "official" with "builtin" trust.
     """
 
+    OFFICIAL_REPO = "NousResearch/hermes-agent"
+
     def __init__(self):
         from hermes_constants import get_optional_skills_dir
 
@@ -3028,7 +3093,8 @@ class OptionalSkillSource(SkillSource):
         # Guard against path traversal (e.g. "official/../../etc")
         try:
             resolved = skill_dir.resolve()
-            if not str(resolved).startswith(str(self._optional_dir.resolve())):
+            optional_root = self._optional_dir.resolve()
+            if not resolved.is_relative_to(optional_root):
                 return None
         except (OSError, ValueError):
             return None
@@ -3120,7 +3186,7 @@ class OptionalSkillSource(SkillSource):
                 if isinstance(hermes_meta, dict):
                     tags = hermes_meta.get("tags", [])
 
-            rel_path = str(parent.relative_to(self._optional_dir))
+            rel_path = parent.relative_to(self._optional_dir).as_posix()
 
             results.append(SkillMeta(
                 name=name,
@@ -3128,7 +3194,9 @@ class OptionalSkillSource(SkillSource):
                 source="official",
                 identifier=f"official/{rel_path}",
                 trust_level="builtin",
-                path=rel_path,
+                repo=self.OFFICIAL_REPO,
+                # The centralized skills index consumes repo-root-relative paths.
+                path=f"optional-skills/{rel_path}",
                 tags=tags if isinstance(tags, list) else [],
             ))
 
@@ -3156,7 +3224,7 @@ class OptionalSkillSource(SkillSource):
 
 def _read_index_cache(key: str) -> Optional[Any]:
     """Read cached data if not expired."""
-    cache_file = INDEX_CACHE_DIR / f"{key}.json"
+    cache_file = _index_cache_dir() / f"{key}.json"
     if not cache_file.exists():
         return None
     try:
@@ -3170,17 +3238,18 @@ def _read_index_cache(key: str) -> Optional[Any]:
 
 def _write_index_cache(key: str, data: Any) -> None:
     """Write data to cache."""
-    INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    index_cache_dir = _index_cache_dir()
+    index_cache_dir.mkdir(parents=True, exist_ok=True)
     # Ensure .ignore exists so ripgrep (and tools respecting .ignore) skip
     # this directory.  Cache files contain unvetted community content that
     # could include adversarial text (prompt injection via catalog entries).
-    ignore_file = HUB_DIR / ".ignore"
+    ignore_file = _hub_dir() / ".ignore"
     if not ignore_file.exists():
         try:
             ignore_file.write_text("# Exclude hub internals from search tools\n*\n")
         except OSError:
             pass
-    cache_file = INDEX_CACHE_DIR / f"{key}.json"
+    cache_file = index_cache_dir / f"{key}.json"
     try:
         cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str))
     except OSError as e:
@@ -3209,8 +3278,8 @@ def _skill_meta_to_dict(meta: SkillMeta) -> dict:
 class HubLockFile:
     """Manages skills/.hub/lock.json — tracks provenance of installed hub skills."""
 
-    def __init__(self, path: Path = LOCK_FILE):
-        self.path = path
+    def __init__(self, path: Optional[Path] = None):
+        self.path = path if path is not None else _lock_file()
 
     def load(self) -> dict:
         if not self.path.exists():
@@ -3281,8 +3350,8 @@ class HubLockFile:
 class TapsManager:
     """Manages the taps.json file — custom GitHub repo sources."""
 
-    def __init__(self, path: Path = TAPS_FILE):
-        self.path = path
+    def __init__(self, path: Optional[Path] = None):
+        self.path = path if path is not None else _taps_file()
 
     def load(self) -> List[dict]:
         if not self.path.exists():
@@ -3326,14 +3395,15 @@ class TapsManager:
 def append_audit_log(action: str, skill_name: str, source: str,
                      trust_level: str, verdict: str, extra: str = "") -> None:
     """Append a line to the audit log."""
-    AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    audit_log = _audit_log()
+    audit_log.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     parts = [timestamp, action, skill_name, f"{source}:{trust_level}", verdict]
     if extra:
         parts.append(extra)
     line = " ".join(parts) + "\n"
     try:
-        with open(AUDIT_LOG, "a", encoding="utf-8") as f:
+        with open(audit_log, "a", encoding="utf-8") as f:
             f.write(line)
     except OSError as e:
         logger.debug("Could not write audit log: %s", e)
@@ -3345,15 +3415,19 @@ def append_audit_log(action: str, skill_name: str, source: str,
 
 def ensure_hub_dirs() -> None:
     """Create the .hub directory structure if it doesn't exist."""
-    HUB_DIR.mkdir(parents=True, exist_ok=True)
-    QUARANTINE_DIR.mkdir(exist_ok=True)
-    INDEX_CACHE_DIR.mkdir(exist_ok=True)
-    if not LOCK_FILE.exists():
-        LOCK_FILE.write_text('{"version": 1, "installed": {}}\n')
-    if not AUDIT_LOG.exists():
-        AUDIT_LOG.touch()
-    if not TAPS_FILE.exists():
-        TAPS_FILE.write_text('{"taps": []}\n')
+    hub_dir = _hub_dir()
+    lock_file = _lock_file()
+    audit_log = _audit_log()
+    taps_file = _taps_file()
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    _quarantine_dir().mkdir(exist_ok=True)
+    _index_cache_dir().mkdir(exist_ok=True)
+    if not lock_file.exists():
+        lock_file.write_text('{"version": 1, "installed": {}}\n')
+    if not audit_log.exists():
+        audit_log.touch()
+    if not taps_file.exists():
+        taps_file.write_text('{"taps": []}\n')
 
 
 def quarantine_bundle(bundle: SkillBundle) -> Path:
@@ -3365,7 +3439,7 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         safe_rel_path = _validate_bundle_rel_path(rel_path)
         validated_files.append((safe_rel_path, file_content))
 
-    dest = QUARANTINE_DIR / skill_name
+    dest = _quarantine_dir() / skill_name
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
@@ -3392,7 +3466,7 @@ def install_from_quarantine(
     safe_skill_name = _validate_skill_name(skill_name)
     safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
-    quarantine_root = QUARANTINE_DIR.resolve()
+    quarantine_root = _quarantine_dir().resolve()
     if not quarantine_resolved.is_relative_to(quarantine_root):
         raise ValueError(f"Unsafe quarantine path: {quarantine_path}")
 
@@ -3452,7 +3526,7 @@ def install_from_quarantine(
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
         skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(SKILLS_DIR)),
+        install_path=str(install_dir.relative_to(_skills_dir())),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,
     )
@@ -3581,8 +3655,11 @@ def check_for_skill_updates(
 # ---------------------------------------------------------------------------
 
 HERMES_INDEX_URL = "https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
-HERMES_INDEX_CACHE_FILE = INDEX_CACHE_DIR / "hermes-index.json"
 HERMES_INDEX_TTL = 6 * 3600  # 6 hours
+
+
+def _hermes_index_cache_file() -> Path:
+    return _index_cache_dir() / "hermes-index.json"
 
 
 def _load_hermes_index() -> Optional[dict]:
@@ -3593,23 +3670,56 @@ def _load_hermes_index() -> Optional[dict]:
     downloads within a session.
     """
     # Check local cache
-    if HERMES_INDEX_CACHE_FILE.exists():
+    hermes_index_cache_file = _hermes_index_cache_file()
+    if hermes_index_cache_file.exists():
         try:
-            age = time.time() - HERMES_INDEX_CACHE_FILE.stat().st_mtime
+            age = time.time() - hermes_index_cache_file.stat().st_mtime
             if age < HERMES_INDEX_TTL:
-                return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+                return json.loads(hermes_index_cache_file.read_text())
         except (OSError, json.JSONDecodeError):
             pass
 
-    # Fetch from docs site
-    try:
-        resp = httpx.get(HERMES_INDEX_URL, timeout=15, follow_redirects=True)
-        if resp.status_code != 200:
-            logger.debug("Hermes index fetch returned %d", resp.status_code)
+    # Fetch from docs site.
+    #
+    # We deliberately DON'T let httpx negotiate Brotli here.  The index is a
+    # large body (tens of MB); httpx's streaming Brotli decoder, backed by
+    # brotlicffi 1.2.0.1 (pinned for Discord attachment decoding), trips over
+    # its own output_buffer_limit on payloads this size and raises
+    # DecodingError("brotli: decoder process called with data when
+    # 'can_accept_more_data()' is False").  That surfaces as an empty Skills
+    # Hub (blank Browse-hub landing, index contributes 0 search hits) because
+    # the error is caught below and we silently fall back to a (often absent)
+    # stale cache.  Requesting gzip/deflate sidesteps the broken decoder while
+    # still compressing the transfer.  The identity retry is belt-and-braces
+    # for any future proxy that ignores the header and returns Brotli anyway.
+    data = None
+    for accept_encoding in ("gzip, deflate", "identity"):
+        try:
+            resp = httpx.get(
+                HERMES_INDEX_URL,
+                timeout=15,
+                follow_redirects=True,
+                headers={"Accept-Encoding": accept_encoding},
+            )
+            if resp.status_code != 200:
+                logger.debug("Hermes index fetch returned %d", resp.status_code)
+                return _load_stale_index_cache()
+            data = resp.json()
+            break
+        except httpx.DecodingError as e:
+            # Content-Encoding decode failed — retry once uncompressed before
+            # giving up on the network path entirely.
+            logger.debug(
+                "Hermes index decode failed (Accept-Encoding=%s): %s",
+                accept_encoding,
+                e,
+            )
+            continue
+        except (httpx.HTTPError, json.JSONDecodeError) as e:
+            logger.debug("Hermes index fetch failed: %s", e)
             return _load_stale_index_cache()
-        data = resp.json()
-    except (httpx.HTTPError, json.JSONDecodeError) as e:
-        logger.debug("Hermes index fetch failed: %s", e)
+
+    if data is None:
         return _load_stale_index_cache()
 
     # Validate structure
@@ -3618,8 +3728,8 @@ def _load_hermes_index() -> Optional[dict]:
 
     # Cache locally
     try:
-        HERMES_INDEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        HERMES_INDEX_CACHE_FILE.write_text(json.dumps(data))
+        hermes_index_cache_file.parent.mkdir(parents=True, exist_ok=True)
+        hermes_index_cache_file.write_text(json.dumps(data))
     except OSError:
         pass
 
@@ -3628,9 +3738,10 @@ def _load_hermes_index() -> Optional[dict]:
 
 def _load_stale_index_cache() -> Optional[dict]:
     """Fall back to stale cache when the network fetch fails."""
-    if HERMES_INDEX_CACHE_FILE.exists():
+    hermes_index_cache_file = _hermes_index_cache_file()
+    if hermes_index_cache_file.exists():
         try:
-            return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+            return json.loads(hermes_index_cache_file.read_text())
         except (OSError, json.JSONDecodeError):
             pass
     return None
@@ -3927,8 +4038,11 @@ def parallel_search_sources(
     # worker finishes — so a single slow source (e.g. ClawHub) keeps the
     # caller blocked for minutes and renders ``overall_timeout`` a no-op.
     # Manage the executor manually and shut it down with ``wait=False`` so
-    # the timeout is actually honoured.
-    pool = ThreadPoolExecutor(max_workers=min(len(active), 8))
+    # the timeout is actually honoured.  Daemon workers (tools.daemon_pool):
+    # an abandoned slow source must not block interpreter exit either —
+    # stdlib workers are joined unconditionally by the atexit hook.
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+    pool = DaemonThreadPoolExecutor(max_workers=min(len(active), 8))
     futures = {}
     for src in active:
         lim = per_source_limits.get(src.source_id(), 50)

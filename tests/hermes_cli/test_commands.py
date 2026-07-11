@@ -2226,21 +2226,22 @@ class TestPluginCommandEnumeration:
         bot command descriptions with a 400 Bad Request, silently preventing
         the entire command menu from updating (issue #2927).
         """
-        from hermes_cli.commands import _COMMANDS, CommandDef, telegram_menu_commands
+        from hermes_cli.commands import COMMAND_REGISTRY, CommandDef, telegram_menu_commands
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text("")
 
         # Inject a built-in command whose description contains both dash forms.
-        _COMMANDS["test_em_en_dash"] = CommandDef(
+        fixture = CommandDef(
             name="test_em_en_dash",
             description="Fast\u2014em dash \u2013 en dash here",
-            handler=lambda _a: None,
+            category="Session",
         )
+        COMMAND_REGISTRY.append(fixture)
         try:
             menu, _ = telegram_menu_commands(max_commands=100)
         finally:
-            _COMMANDS.pop("test_em_en_dash", None)
+            COMMAND_REGISTRY.remove(fixture)
 
         descs = {name: desc for name, desc in menu}
         assert "test_em_en_dash" in descs

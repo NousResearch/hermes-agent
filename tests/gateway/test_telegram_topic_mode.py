@@ -977,6 +977,46 @@ async def test_operator_declared_topic_is_not_auto_renamed(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_dynamic_topic_is_auto_renamed(tmp_path):
+    """Dynamic/user-created topics (where is_static is False) are auto-renamed."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id="sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=build_session_key(_make_source(thread_id="17585")),
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    class _FakeAdapter:
+        def _get_dm_topic_info(self, chat_id, thread_id):
+            return {"name": "Old Name", "is_static": False}
+
+        async def rename_dm_topic(self, **kwargs):
+            return None
+
+    fake = _FakeAdapter()
+    fake.rename_dm_topic = AsyncMock()
+    runner.adapters[Platform.TELEGRAM] = fake
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="17585"),
+        "sess-topic",
+        "New Auto-generated Title",
+    )
+
+    fake.rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="17585",
+        name="New Auto-generated Title",
+    )
+
+
+@pytest.mark.asyncio
 async def test_disable_topic_auto_rename_extra_skips_rename(tmp_path):
     """extra.disable_topic_auto_rename=True must short-circuit auto-rename."""
     db = SessionDB(db_path=tmp_path / "state.db")

@@ -1366,6 +1366,77 @@ class SessionDB:
                             "reconcile %s.%s: %s", table_name, col_name, exc,
                         )
 
+    def _heal_gateway_routing_schema(self, cursor: sqlite3.Cursor) -> None:
+        """Rebuild a legacy ``gateway_routing`` table to the canonical schema.
+
+        Pre-#9006 databases created ``gateway_routing`` with the old
+        (platform, peer_id, session_id) columns and a ``PRIMARY KEY
+        (platform, peer_id)``.  The current code stores one row per routing
+        key as (scope, session_key, entry_json, updated_at) and inserts
+        without ``platform``.  ``_reconcile_columns()`` bolts the new columns
+        on via ADD COLUMN but can neither drop the legacy ``platform``/
+        ``peer_id`` NOT NULL columns nor change the primary key, so every
+        routing save on such a DB fails with
+        ``NOT NULL constraint failed: gateway_routing.platform``.
+
+        ``CREATE TABLE IF NOT EXISTS`` never touches an existing table, so
+        this drift is permanent until we rebuild.  Detect the legacy layout
+        (a ``platform`` column is present) and recreate the table with only
+        the canonical columns, preserving any rows that already carry
+        session_key/entry_json.  Runs unconditionally on every open — like
+        the NULL-``active`` heal above — so affected DBs self-repair without
+        a version bump, and it is a cheap no-op on healthy DBs.
+        """
+        try:
+            rows = cursor.execute(
+                'PRAGMA table_info("gateway_routing")'
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return  # Table doesn't exist yet; SCHEMA_SQL created it fresh.
+        live_cols = {
+            (row[1] if isinstance(row, (tuple, list)) else row["name"])
+            for row in rows
+        }
+        if "platform" not in live_cols:
+            return  # Already canonical — nothing to do.
+
+        logger.warning(
+            "state.db: rebuilding legacy gateway_routing table "
+            "(had columns %s) to canonical (scope, session_key, entry_json, "
+            "updated_at) schema — legacy platform/peer_id PK broke routing "
+            "saves with NOT NULL constraint failed: gateway_routing.platform",
+            sorted(live_cols),
+        )
+        now = time.time()
+        cursor.execute("DROP TABLE IF EXISTS gateway_routing_canonical")
+        cursor.execute(
+            """CREATE TABLE gateway_routing_canonical (
+                   scope TEXT NOT NULL DEFAULT '',
+                   session_key TEXT NOT NULL,
+                   entry_json TEXT NOT NULL,
+                   updated_at REAL NOT NULL,
+                   PRIMARY KEY (scope, session_key)
+               )"""
+        )
+        # Carry over any rows already written in the new shape; legacy
+        # platform-only rows have NULL session_key/entry_json and are dropped
+        # (they predate the routing-index rewrite and hold no recoverable
+        # mapping).  INSERT OR IGNORE guards against duplicate (scope,
+        # session_key) keys from partially-migrated data.
+        cursor.execute(
+            """INSERT OR IGNORE INTO gateway_routing_canonical
+                   (scope, session_key, entry_json, updated_at)
+               SELECT COALESCE(scope, ''), session_key, entry_json,
+                      COALESCE(updated_at, ?)
+               FROM gateway_routing
+               WHERE session_key IS NOT NULL AND entry_json IS NOT NULL""",
+            (now,),
+        )
+        cursor.execute("DROP TABLE gateway_routing")
+        cursor.execute(
+            "ALTER TABLE gateway_routing_canonical RENAME TO gateway_routing"
+        )
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.
 
@@ -1423,6 +1494,12 @@ class SessionDB:
             )
         except sqlite3.OperationalError:
             pass
+
+        # Rebuild any pre-#9006 gateway_routing table stuck with the legacy
+        # platform/peer_id NOT NULL primary key, which breaks every routing
+        # save.  Presence-based + idempotent, so it heals on open regardless
+        # of schema_version.
+        self._heal_gateway_routing_schema(cursor)
 
         fts5_available = self._sqlite_supports_fts5(cursor)
         fts_migrations_complete = True

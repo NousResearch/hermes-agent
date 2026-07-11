@@ -1238,15 +1238,24 @@ def format_token_count_compact(value: int) -> str:
 
     sign = "-" if value < 0 else ""
     units = ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K"))
-    for threshold, suffix in units:
+
+    def _mantissa(scaled: float) -> str:
+        if scaled < 10:
+            return f"{scaled:.2f}"
+        if scaled < 100:
+            return f"{scaled:.1f}"
+        return f"{scaled:.0f}"
+
+    for i, (threshold, suffix) in enumerate(units):
         if abs_value >= threshold:
-            scaled = abs_value / threshold
-            if scaled < 10:
-                text = f"{scaled:.2f}"
-            elif scaled < 100:
-                text = f"{scaled:.1f}"
-            else:
-                text = f"{scaled:.0f}"
+            text = _mantissa(abs_value / threshold)
+            # Rounding the mantissa to display precision can push it to 1000
+            # (e.g. 999_999 -> "1000K", 999_999_999 -> "1000M"). When that
+            # happens and a larger unit exists, promote so the mantissa stays
+            # within the formatter's [1, 1000) contract.
+            if float(text) >= 1_000 and i > 0:
+                threshold, suffix = units[i - 1]
+                text = _mantissa(abs_value / threshold)
             if "." in text:
                 text = text.rstrip("0").rstrip(".")
             return f"{sign}{text}{suffix}"

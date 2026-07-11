@@ -1215,7 +1215,7 @@ class TestNovitaProvider:
             return _FakeResp()
 
         monkeypatch.setattr(
-            models_mod.urllib.request, "urlopen", fake_urlopen
+            models_mod, "_urlopen_model_catalog_request", fake_urlopen
         )
 
         # First call hits the network.

@@ -43,6 +43,24 @@ function isValidTheme(value: unknown): value is DesktopTheme {
   return REQUIRED_COLOR_KEYS.every(key => typeof colors[key] === 'string')
 }
 
+// Pick a slug that collides with neither a built-in nor an already-taken user
+// slug, so a migrated theme keeps a stable, resolvable name.
+function freeSlug(base: string, taken: ReadonlySet<string>): string {
+  const isFree = (slug: string) => !BUILTIN_THEMES[slug] && !taken.has(slug)
+
+  if (isFree(`${base}-imported`)) {
+    return `${base}-imported`
+  }
+
+  let n = 2
+
+  while (!isFree(`${base}-imported-${n}`)) {
+    n++
+  }
+
+  return `${base}-imported-${n}`
+}
+
 function readStored(): Record<string, DesktopTheme> {
   try {
     const raw = window.localStorage.getItem(USER_THEMES_KEY)
@@ -60,8 +78,19 @@ function readStored(): Record<string, DesktopTheme> {
     const out: Record<string, DesktopTheme> = {}
 
     for (const [key, value] of Object.entries(parsed)) {
-      // Never let a stored theme shadow a built-in name.
-      if (!BUILTIN_THEMES[key] && isValidTheme(value)) {
+      if (!isValidTheme(value)) {
+        continue
+      }
+
+      // A previously-installed user theme can collide with a built-in name if a
+      // later release ships a built-in with that slug (the merged registry keys
+      // on name, so the built-in would otherwise silently shadow it). Rather
+      // than drop the user's theme, migrate it to a conflict-free slug so it
+      // stays available in the picker.
+      if (BUILTIN_THEMES[key]) {
+        const slug = freeSlug(key, new Set(Object.keys(out)))
+        out[slug] = { ...value, name: slug, label: `${value.label} (imported)` }
+      } else {
         out[key] = value
       }
     }

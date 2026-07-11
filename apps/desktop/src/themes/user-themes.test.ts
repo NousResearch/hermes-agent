@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BUILTIN_THEMES, DEFAULT_SKIN_NAME } from './presets'
 import {
@@ -71,6 +71,34 @@ describe('user theme registry', () => {
     broken.colors = { background: '#000000' }
 
     expect(() => installUserTheme(broken)).toThrow(/colors/)
+  })
+
+  it('migrates a stored theme whose slug now collides with a built-in', async () => {
+    // A user installed a theme named after a slug that a later release ships as
+    // a built-in (e.g. "aurora"). It must survive the update, not vanish.
+    const builtinName = Object.keys(BUILTIN_THEMES)[0]
+    const legacy = makeTheme('Legacy')
+    legacy.name = builtinName
+    legacy.label = 'My Aurora'
+    window.localStorage.setItem(
+      'hermes-desktop-user-themes-v1',
+      JSON.stringify({ [builtinName]: legacy })
+    )
+
+    // Re-run the module's init so the atom re-reads localStorage from scratch.
+    // resetModules gives a fresh module graph, so compare against that graph's
+    // own BUILTIN_THEMES, not the statically-imported instance.
+    vi.resetModules()
+    const mod = await import('./user-themes')
+    const presets = await import('./presets')
+
+    const migrated = Object.values(mod.$userThemes.get())
+    expect(migrated).toHaveLength(1)
+    expect(migrated[0].name).not.toBe(builtinName)
+    expect(migrated[0].name).toContain('imported')
+    expect(migrated[0].label).toBe('My Aurora (imported)')
+    // The built-in still resolves to the built-in, not the migrated user theme.
+    expect(mod.resolveTheme(builtinName)).toBe(presets.BUILTIN_THEMES[builtinName])
   })
 })
 

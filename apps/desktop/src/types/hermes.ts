@@ -769,6 +769,8 @@ export interface SessionSearchResult {
   session_started: number | null
   snippet: string
   source: string | null
+  /** Session title when the hit came from the title-match lane. */
+  title?: string | null
 }
 
 export interface SessionSearchResponse {

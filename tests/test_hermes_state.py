@@ -2051,6 +2051,63 @@ class TestSearchSessions:
         assert page1[0]["id"] != page2[0]["id"]
 
 
+class TestSearchSessionsByTitle:
+    def test_substring_case_insensitive(self, db):
+        db.create_session(session_id="s1", source="discord")
+        db.set_session_title("s1", "DNS Blocking Portal Investigation")
+        db.create_session(session_id="s2", source="cli")
+        db.set_session_title("s2", "Unrelated work")
+
+        hits = db.search_sessions_by_title("blocking portal")
+        assert [h["id"] for h in hits] == ["s1"]
+        assert hits[0]["title"] == "DNS Blocking Portal Investigation"
+        assert hits[0]["source"] == "discord"
+
+    def test_ranking_exact_prefix_substring(self, db):
+        db.create_session(session_id="sub", source="cli")
+        db.set_session_title("sub", "About deploy stuff")
+        db.create_session(session_id="pre", source="cli")
+        db.set_session_title("pre", "Deploy pipeline")
+        db.create_session(session_id="exact", source="cli")
+        db.set_session_title("exact", "Deploy")
+
+        hits = db.search_sessions_by_title("deploy")
+        assert [h["id"] for h in hits] == ["exact", "pre", "sub"]
+
+    def test_untitled_and_nonmatching_excluded(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.set_session_title("s2", "Something else entirely")
+
+        assert db.search_sessions_by_title("needle") == []
+
+    def test_like_wildcards_escaped(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.set_session_title("s1", "100% coverage plan")
+        db.create_session(session_id="s2", source="cli")
+        db.set_session_title("s2", "1000 things")
+
+        hits = db.search_sessions_by_title("100%")
+        assert [h["id"] for h in hits] == ["s1"]
+
+    def test_subagent_children_hidden(self, db):
+        db.create_session(session_id="parent", source="cli")
+        db.set_session_title("parent", "Visible needle session")
+        db.create_session(
+            session_id="child", source="subagent", parent_session_id="parent"
+        )
+        db.set_session_title("child", "Hidden needle child")
+
+        hits = db.search_sessions_by_title("needle")
+        assert [h["id"] for h in hits] == ["parent"]
+
+    def test_empty_query_returns_nothing(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.set_session_title("s1", "Anything")
+        assert db.search_sessions_by_title("") == []
+        assert db.search_sessions_by_title("   ") == []
+
+
 # =========================================================================
 # Counts
 # =========================================================================

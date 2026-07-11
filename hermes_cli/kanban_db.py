@@ -6976,6 +6976,22 @@ def dispatch_once(
     boards tick in parallel. See :func:`_dispatch_tick_lock` for the
     cross-process / cross-platform mechanics.
     """
+    # Optional fleet/render gate: while HERMES_KANBAN_DISPATCH_PAUSE_FILE exists,
+    # every dispatch path (gateway, CLI, dashboard) skips the tick. Unset = no-op.
+    # dry_run is exempt so previews still work.
+    _pause_file = os.environ.get("HERMES_KANBAN_DISPATCH_PAUSE_FILE", "")
+    if _pause_file and not dry_run:
+        try:
+            os.stat(_pause_file)
+            _paused = True
+        except OSError:
+            _paused = False
+        if _paused:
+            print(
+                f"kanban dispatch: pause file {_pause_file} present — tick skipped",
+                file=sys.stderr,
+            )
+            return DispatchResult()
     try:
         db_path = kanban_db_path(board=board)
     except Exception:

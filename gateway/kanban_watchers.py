@@ -25,6 +25,27 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+
+# --- Dispatch-pause file (optional fleet/render gate) ---
+# When HERMES_KANBAN_DISPATCH_PAUSE_FILE is set, the dispatcher defers NEW
+# spawns while that file exists. Unset (default) => no behavior change.
+# Intended use: point at a GPU park / brain-swap flag so workers are not
+# spawned into a sleeping LLM provider (spawn-time resolution can pin them
+# to a CPU failback for the life of the worker).
+_DISPATCH_PAUSE_FILE = os.environ.get("HERMES_KANBAN_DISPATCH_PAUSE_FILE", "")
+
+
+def _dispatch_paused() -> bool:
+    """Return True if the configured dispatch-pause file exists."""
+    if not _DISPATCH_PAUSE_FILE:
+        return False
+    try:
+        os.stat(_DISPATCH_PAUSE_FILE)
+        return True
+    except OSError:
+        return False
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -939,6 +960,7 @@ class GatewayKanbanWatchersMixin:
         # usually means broken PATH, missing venv, or credential loss.
         HEALTH_WINDOW = 6
         bad_ticks = 0
+        pause_was_active = False  # edge-detect pause file for transition logs
         last_warn_at = 0
         # Avoid hot-looping corrupt-looking board DBs, but do not suppress
         # same-fingerprint retries forever: transient WAL/open races can
@@ -1226,6 +1248,27 @@ class GatewayKanbanWatchersMixin:
                 logger.exception("kanban dispatcher: zombie reaper failed")
 
             try:
+                # Dispatch-pause file (optional render/park gate): defer the whole
+                # tick while present so neither auto-decompose nor spawns run against
+                # an unstable/parked brain. No-op when env unset.
+                if _dispatch_paused():
+                    if not pause_was_active:
+                        pause_was_active = True
+                        logger.info(
+                            "kanban dispatcher: pause file %s present — deferring spawns",
+                            _DISPATCH_PAUSE_FILE,
+                        )
+                    try:
+                        await asyncio.sleep(min(1.0, interval))
+                    except asyncio.CancelledError:
+                        raise
+                    continue
+                elif pause_was_active:
+                    pause_was_active = False
+                    logger.info(
+                        "kanban dispatcher: pause file cleared — resuming spawns"
+                    )
+
                 # Re-read the auto-decompose toggle live each tick so a user
                 # flipping kanban.auto_decompose=false to STOP runaway fan-out
                 # takes effect on the next tick, not on gateway restart (#49638).

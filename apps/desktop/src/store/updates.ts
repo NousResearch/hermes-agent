@@ -1072,7 +1072,15 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
 let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let connectionUnsub: (() => void) | null = null
-let lastConnectionMode: string | undefined
+let lastConnectionKey: string | undefined
+
+// mode alone can't tell two remote backends apart — switching directly from
+// remote profile A to remote profile B leaves mode === 'remote' both times.
+// Key on the actual backend target so a target change re-checks even when
+// the mode doesn't.
+function connectionKey(conn: HermesConnection | null): string {
+  return conn?.mode === 'remote' ? `remote:${conn.baseUrl}` : String(conn?.mode)
+}
 
 export const BACKGROUND_UPDATE_CHECK_MS = 24 * 60 * 60 * 1000
 const FOCUS_RECHECK_KEY = 'hermes.updates.last-passive-check'
@@ -1108,13 +1116,16 @@ export function startUpdatePoller(): void {
 
   // The poller starts at mount, before the gateway connects — so the first
   // backend check above sees mode≠remote and no-ops. Re-check once the
-  // connection resolves to remote.
+  // connection resolves to remote, and again whenever the remote target
+  // itself changes (switching between two remote profiles).
   connectionUnsub = $connection.subscribe((conn: HermesConnection | null): void => {
-    if (conn?.mode === lastConnectionMode) {
+    const key = connectionKey(conn)
+
+    if (key === lastConnectionKey) {
       return
     }
 
-    lastConnectionMode = conn?.mode
+    lastConnectionKey = key
 
     if (conn?.mode === 'remote') {
       void checkBackendUpdates()
@@ -1133,7 +1144,7 @@ export function stopUpdatePoller(): void {
 
   connectionUnsub?.()
   connectionUnsub = null
-  lastConnectionMode = undefined
+  lastConnectionKey = undefined
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }

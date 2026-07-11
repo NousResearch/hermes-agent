@@ -3571,12 +3571,20 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
 
 
 def bundle_content_hash(bundle: SkillBundle) -> str:
-    """Compute a deterministic hash for an in-memory skill bundle."""
+    """Compute a deterministic hash for an in-memory skill bundle.
+
+    Must stay symmetric with ``tools.skills_guard.content_hash`` — both
+    functions need to produce the same digest for the same skill. See
+    content_hash() for the normalization contract.
+    """
     h = hashlib.sha256()
-    for rel_path in sorted(bundle.files):
-        # Include the path so swapping file contents between two paths
-        # changes the hash (avoids filename-swap evading update detection).
-        h.update(rel_path.encode("utf-8"))
+    # Normalize path separators and sort by the normalized path to ensure
+    # deterministic ordering across platforms (Windows backslashes vs POSIX
+    # forward slashes). The normalized path is mixed into the hash so that
+    # swapping file contents between two paths changes the hash.
+    for rel_path in sorted(bundle.files, key=lambda p: p.replace("\\", "/")):
+        normalized = rel_path.replace("\\", "/")
+        h.update(normalized.encode("utf-8"))
         h.update(b"\x00")
         content = bundle.files[rel_path]
         if isinstance(content, bytes):

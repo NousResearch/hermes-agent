@@ -5981,6 +5981,42 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(raw_agent, dict) and raw_agent.get("verify_on_stop") is True:
             raw_agent["verify_on_stop"] = False
             config["agent"] = raw_agent
+            # Issue #62723: defensive preserve. The v32 migration only
+            # touches `agent.verify_on_stop`, but earlier observations
+            # of "platforms section silently dropped in multi-profile
+            # setups" suggest the migration write path can lose data
+            # when _strip_default_values encounters user-authored
+            # sections that don't appear in DEFAULT_CONFIG. To be safe,
+            # merge in any platforms/feishu/agent-style sections the
+            # raw config has but the modified `config` dict lost.
+            # The merge is defensive — it only ADDS keys, never removes
+            # them, so the migration's verify_on_stop flip is
+            # preserved.
+            try:
+                from utils import atomic_yaml_write  # noqa: F401
+                import copy as _copy
+                _raw_for_keys = read_raw_config()
+                if _raw_for_keys:
+                    # Preserve top-level sections that are common
+                    # user-authored integration points: platforms,
+                    # feishu (top-level feishu block, separate from
+                    # platforms.feishu), toolsets, custom_providers,
+                    # credential_pool_strategies. These are NOT in
+                    # DEFAULT_CONFIG and were being lost in some
+                    # migration paths.
+                    _PROTECTED_SECTIONS = (
+                        "platforms", "feishu", "toolsets",
+                        "custom_providers", "credential_pool_strategies",
+                        "providers", "fallback_providers",
+                        "mcp_servers", "models",
+                    )
+                    for _section in _PROTECTED_SECTIONS:
+                        if _section in _raw_for_keys and _section not in config:
+                            config[_section] = _copy.deepcopy(
+                                _raw_for_keys[_section]
+                            )
+            except Exception:
+                pass
             _persist_migration(config)
             results["config_added"].append("agent.verify_on_stop=false")
             if not quiet:

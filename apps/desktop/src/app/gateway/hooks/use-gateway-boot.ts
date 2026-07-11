@@ -48,10 +48,13 @@ import {
 import type { RpcEvent } from '@/types/hermes'
 
 import { hydrateFromRenderCache, reconcileRenderCache } from '../../render-cache-hydration'
+import { preloadTranscripts } from '../../transcript-preload'
 
 // One boot sweep per app LAUNCH (not per hook mount): the I4b orphan cull only
 // needs to run once against the first live list; re-mounts must not re-sweep.
 const renderCacheSweptRef = { current: false }
+// One transcript-preload pass per launch, same reasoning.
+const transcriptPreloadStartedRef = { current: false }
 
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
 // raise a recoverable boot error. Otherwise a dropped remote gateway loops the
@@ -525,6 +528,23 @@ export function useGatewayBoot({
 
         completeDesktopBoot()
         bootCompleted = true
+
+        // Transcript preload (follow-up, 2026-07-11): once boot has fully
+        // settled, gently warm the render cache with the transcripts of
+        // pinned + visible sessions so switching to any of them (and the next
+        // cold launch) paints instantly. Strictly sequential + paced; runs at
+        // most once per launch; stops if the gateway drops or we unmount.
+        if (!transcriptPreloadStartedRef.current) {
+          transcriptPreloadStartedRef.current = true
+          const preloadUrl = hydration.gatewayUrl ?? conn?.baseUrl ?? null
+          setTimeout(() => {
+            void preloadTranscripts({
+              gatewayUrl: preloadUrl,
+              sessions: $sessions.get(),
+              shouldStop: () => cancelled || !gatewayOpen()
+            }).catch(() => undefined)
+          }, 5_000)
+        }
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)

@@ -130,6 +130,11 @@ def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
     return parsed
 
 
+def _coerce_dict(value: Any) -> Dict[str, Any]:
+    """Return *value* when it is a mapping, otherwise an empty dict."""
+    return value if isinstance(value, dict) else {}
+
+
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
     """Normalize unauthorized DM behavior to a supported value."""
     if isinstance(value, str):
@@ -414,6 +419,7 @@ class SessionResetPolicy:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
+        data = _coerce_dict(data)
         # Handle both missing keys and explicit null values (YAML null → None)
         mode = data.get("mode")
         at_hour = data.get("at_hour")
@@ -523,24 +529,26 @@ class PlatformConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
+        data = _coerce_dict(data)
         home_channel = None
-        if "home_channel" in data:
+        if isinstance(data.get("home_channel"), dict):
             home_channel = HomeChannel.from_dict(data["home_channel"])
 
         # gateway_restart_notification may be bridged into extra via the
         # shared-key loop in load_gateway_config(); check both top-level
         # and extra so YAML ``discord: gateway_restart_notification: false``
         # works without needing a separate platforms: block.
+        extra = _coerce_dict(data.get("extra", {}))
         _grn = data.get("gateway_restart_notification")
         if _grn is None:
-            _grn = data.get("extra", {}).get("gateway_restart_notification")
+            _grn = extra.get("gateway_restart_notification")
 
         # typing_indicator mirrors gateway_restart_notification: it may arrive
         # top-level or bridged into extra by the shared-key loop in
         # load_gateway_config(), so check both.
         _typing = data.get("typing_indicator")
         if _typing is None:
-            _typing = data.get("extra", {}).get("typing_indicator")
+            _typing = extra.get("typing_indicator")
 
         channel_overrides: Dict[str, ChannelOverride] = {}
         raw_overrides = data.get("channel_overrides") or {}
@@ -558,7 +566,7 @@ class PlatformConfig:
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
             channel_overrides=channel_overrides,
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 
@@ -617,7 +625,7 @@ class StreamingConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
-        if not data:
+        if not isinstance(data, dict) or not data:
             return cls()
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
@@ -863,8 +871,12 @@ class GatewayConfig:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GatewayConfig":
+        data = _coerce_dict(data)
         platforms = {}
-        for platform_name, platform_data in data.get("platforms", {}).items():
+        platforms_data = _coerce_dict(data.get("platforms", {}))
+        for platform_name, platform_data in platforms_data.items():
+            if not isinstance(platform_data, dict):
+                continue
             try:
                 platform = Platform(platform_name)
                 platforms[platform] = PlatformConfig.from_dict(platform_data)
@@ -872,11 +884,11 @@ class GatewayConfig:
                 pass  # Skip unknown platforms
         
         reset_by_type = {}
-        for type_name, policy_data in data.get("reset_by_type", {}).items():
+        for type_name, policy_data in _coerce_dict(data.get("reset_by_type", {})).items():
             reset_by_type[type_name] = SessionResetPolicy.from_dict(policy_data)
         
         reset_by_platform = {}
-        for platform_name, policy_data in data.get("reset_by_platform", {}).items():
+        for platform_name, policy_data in _coerce_dict(data.get("reset_by_platform", {})).items():
             try:
                 platform = Platform(platform_name)
                 reset_by_platform[platform] = SessionResetPolicy.from_dict(policy_data)
@@ -1093,6 +1105,8 @@ def load_gateway_config() -> GatewayConfig:
             if "stt_echo_transcripts" in yaml_cfg:
                 gw_data["stt_echo_transcripts"] = yaml_cfg["stt_echo_transcripts"]
 
+            gateway_cfg = yaml_cfg.get("gateway")
+
             if "group_sessions_per_user" in yaml_cfg:
                 gw_data["group_sessions_per_user"] = yaml_cfg["group_sessions_per_user"]
 
@@ -1120,7 +1134,11 @@ def load_gateway_config() -> GatewayConfig:
             if not isinstance(streaming_cfg, dict):
                 # Fall back to nested gateway.streaming written by
                 # ``hermes config set gateway.streaming.*``
-                streaming_cfg = yaml_cfg.get("gateway", {}).get("streaming")
+                streaming_cfg = (
+                    gateway_cfg.get("streaming")
+                    if isinstance(gateway_cfg, dict)
+                    else None
+                )
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
 
@@ -1160,7 +1178,6 @@ def load_gateway_config() -> GatewayConfig:
             # ``gateway.platforms`` are loaded the same way as top-level
             # ``platforms``. Merge nested first so top-level config keeps
             # precedence, matching the existing gateway.streaming fallback.
-            gateway_cfg = yaml_cfg.get("gateway")
             gateway_platforms = gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
             platforms_data = gw_data.setdefault("platforms", {})
             if not isinstance(platforms_data, dict):

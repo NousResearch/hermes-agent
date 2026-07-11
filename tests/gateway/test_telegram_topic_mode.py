@@ -81,7 +81,7 @@ def _make_runner(session_db=None):
         group_sessions_per_user=getattr(runner.config, "group_sessions_per_user", True),
         thread_sessions_per_user=getattr(runner.config, "thread_sessions_per_user", False),
     )
-    runner.session_store.get_or_create_session.side_effect = lambda source, force_new=False: SessionEntry(
+    runner.session_store.get_or_create_session.side_effect = lambda source, force_new=False, **_kwargs: SessionEntry(
         session_key=build_session_key(
             source,
             group_sessions_per_user=getattr(runner.config, "group_sessions_per_user", True),

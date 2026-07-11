@@ -123,7 +123,7 @@ def _mark_pending(runner: GatewayRunner, entry, reason: str = "restart_interrupt
 
 
 @pytest.mark.asyncio
-async def test_t1_prompt_default_keeps_note_and_schedule_log_byte_identical(
+async def test_t1_prompt_default_keeps_note_bytes_and_adds_taxonomy_log(
     tmp_path, monkeypatch, caplog
 ):
     monkeypatch.delenv("HERMES_RESUME_INTERRUPTED_TURNS", raising=False)
@@ -157,7 +157,7 @@ async def test_t1_prompt_default_keeps_note_and_schedule_log_byte_identical(
     ]
     assert schedule_logs == [
         f"PHASE=boot_resume_scheduled key={entry.session_key} "
-        "reason=restart_interrupted platform=telegram"
+        "reason=restart_interrupted platform=telegram kind=self"
     ]
     assert "mode=" not in schedule_logs[0]
 

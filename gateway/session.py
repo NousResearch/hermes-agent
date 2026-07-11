@@ -718,6 +718,9 @@ class SessionEntry:
     resume_pending: bool = False
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
+    resume_kind: Optional[str] = None
+    resume_handoff: Optional[str] = None
+    resume_request_id: Optional[str] = None
 
     # Session-scoped /reasoning override persisted so it survives a gateway
     # restart (the harness event the user didn't cause) — the in-memory
@@ -777,6 +780,9 @@ class SessionEntry:
             "suspended": self.suspended,
             "resume_pending": self.resume_pending,
             "resume_reason": self.resume_reason,
+            "resume_kind": self.resume_kind,
+            "resume_handoff": self.resume_handoff,
+            "resume_request_id": self.resume_request_id,
             "last_resume_marked_at": (
                 self.last_resume_marked_at.isoformat()
                 if self.last_resume_marked_at
@@ -860,6 +866,9 @@ class SessionEntry:
             suspended=data.get("suspended", False),
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
+            resume_kind=data.get("resume_kind"),
+            resume_handoff=data.get("resume_handoff"),
+            resume_request_id=data.get("resume_request_id"),
             last_resume_marked_at=last_resume_marked_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
             was_auto_reset=data.get("was_auto_reset", False),
@@ -2192,6 +2201,10 @@ class SessionStore:
         self,
         session_key: str,
         reason: str = "restart_timeout",
+        *,
+        resume_kind: Optional[str] = None,
+        resume_handoff: Optional[str] = None,
+        resume_request_id: Optional[str] = None,
     ) -> bool:
         """Mark a session as resumable after a restart interruption.
 
@@ -2204,18 +2217,64 @@ class SessionStore:
         """
         with self._lock:
             self._ensure_loaded_locked()
-            if session_key in self._entries:
-                entry = self._entries[session_key]
-                # Never override an explicit ``suspended`` — that is a hard
-                # forced-wipe signal (from /stop or stuck-loop escalation).
-                if entry.suspended:
-                    return False
-                entry.resume_pending = True
-                entry.resume_reason = reason
-                entry.last_resume_marked_at = _now()
+            if self._mark_resume_pending_in_memory_locked(
+                session_key,
+                reason,
+                resume_kind=resume_kind,
+                resume_handoff=resume_handoff,
+                resume_request_id=resume_request_id,
+            ):
                 self._save()
                 return True
         return False
+
+    def _mark_resume_pending_in_memory_locked(
+        self,
+        session_key: str,
+        reason: str,
+        *,
+        resume_kind: Optional[str] = None,
+        resume_handoff: Optional[str] = None,
+        resume_request_id: Optional[str] = None,
+    ) -> bool:
+        """Apply a resume mark without persistence while ``_lock`` is held."""
+        entry = self._entries.get(session_key)
+        # Never override explicit suspension (/stop or breaker escalation).
+        if entry is None or entry.suspended:
+            return False
+        entry.resume_pending = True
+        entry.resume_reason = reason
+        entry.resume_kind = resume_kind
+        entry.resume_handoff = resume_handoff
+        entry.resume_request_id = resume_request_id
+        entry.last_resume_marked_at = _now()
+        return True
+
+    def mark_resume_pending_in_memory(
+        self,
+        session_key: str,
+        reason: str,
+        *,
+        resume_kind: Optional[str] = None,
+        resume_handoff: Optional[str] = None,
+        resume_request_id: Optional[str] = None,
+    ) -> bool:
+        """Boot-sweep mutation half; caller must immediately call ``flush``."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            return self._mark_resume_pending_in_memory_locked(
+                session_key,
+                reason,
+                resume_kind=resume_kind,
+                resume_handoff=resume_handoff,
+                resume_request_id=resume_request_id,
+            )
+
+    def flush(self) -> None:
+        """Synchronously persist current in-memory session entries."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            self._save()
 
     def clear_resume_pending(self, session_key: str) -> bool:
         """Clear the resume-pending flag after a successful resumed turn.
@@ -2233,6 +2292,9 @@ class SessionStore:
                 return False
             entry.resume_pending = False
             entry.resume_reason = None
+            entry.resume_kind = None
+            entry.resume_handoff = None
+            entry.resume_request_id = None
             entry.last_resume_marked_at = None
             self._save()
             return True

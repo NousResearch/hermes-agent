@@ -114,6 +114,11 @@ def sweep_resume_requests(
         path = directory / name
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
+            # Typed deferred SELF restarts have a persisted multi-stage
+            # lifecycle owned by gateway.deferred_restart. The legacy tuple
+            # sweep must never unlink them.
+            if payload.get("kind") == "deferred_restart":
+                continue
             session_key = str(payload["session_key"])
             reason = str(payload.get("reason") or "restart_interrupted")
             requested_at = float(payload.get("requested_at") or 0.0)

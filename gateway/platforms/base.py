@@ -2372,6 +2372,10 @@ class BasePlatformAdapter(ABC):
         # deliveries generation-aware and avoid stale runs clearing callbacks
         # registered by a fresher run for the same session.
         self._post_delivery_callbacks: Dict[str, Any] = {}
+        # Stronger one-shot barrier used by deferred SELF restart. Unlike
+        # _post_delivery_callbacks (which fire from the handler's finally
+        # block), these fire only after SendResult.success from the final send.
+        self._delivery_ack_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Optional authorization check, registered by GatewayRunner. Used by
@@ -4091,6 +4095,49 @@ class BasePlatformAdapter(ABC):
         else:
             self._post_delivery_callbacks[session_key] = (int(generation), callback)
 
+    def register_delivery_ack_callback(
+        self,
+        session_key: str,
+        callback: Callable,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        """Register a one-shot callback for successful final-send acceptance."""
+        if not session_key or not callable(callback):
+            return
+        if generation is None:
+            self._delivery_ack_callbacks[session_key] = callback
+        else:
+            self._delivery_ack_callbacks[session_key] = (int(generation), callback)
+
+    def acknowledge_response_delivery(
+        self,
+        session_key: str,
+        *,
+        generation: int | None = None,
+    ) -> bool:
+        """Fire the matching strong delivery barrier after SendResult.success."""
+        entry = self._delivery_ack_callbacks.get(session_key)
+        if entry is None:
+            return False
+        if isinstance(entry, tuple) and len(entry) == 2:
+            entry_generation, callback = entry
+            if generation is None or int(entry_generation) != int(generation):
+                return False
+        else:
+            if generation is not None:
+                return False
+            callback = entry
+        self._delivery_ack_callbacks.pop(session_key, None)
+        if not callable(callback):
+            return False
+        try:
+            callback()
+            return True
+        except Exception:
+            logger.debug("Delivery acknowledgement callback failed", exc_info=True)
+            return False
+
     def pop_post_delivery_callback(
         self,
         session_key: str,
@@ -5126,6 +5173,15 @@ class BasePlatformAdapter(ABC):
                         metadata=_final_thread_metadata,
                     )
                     _record_delivery(result)
+                    if result.success:
+                        self.acknowledge_response_delivery(
+                            session_key,
+                            generation=getattr(
+                                interrupt_event,
+                                "_hermes_run_generation",
+                                None,
+                            ),
+                        )
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors

@@ -1,8 +1,15 @@
 """Safety helpers for gateway interrupted-turn auto-continuation.
 
-This module supports the existing boot-resume scheduler in ``gateway.run``.  It
-classifies persisted tool-call tails and stores the once-ever auto-resume credit;
-it does not schedule turns itself.
+There are two distinct resume kinds:
+
+* SIBLING auto-continue resumes a different session amputated by a gateway
+  drain timeout.
+* SELF resume-handoff starts a fresh synthesized turn for the session that
+  intentionally initiated the restart, preserving its handoff note.
+
+This module supports the existing boot-resume scheduler in ``gateway.run``. It
+classifies persisted tool-call tails, names the taxonomy, and stores the
+once-ever SIBLING auto-resume credit; it does not schedule turns itself.
 """
 
 from __future__ import annotations
@@ -20,6 +27,21 @@ from typing import Any, Callable, Iterable
 from agent.replay_cleanup import is_interrupted_tool_result
 
 logger = logging.getLogger(__name__)
+
+RESUME_KIND_SIBLING = "sibling"
+RESUME_KIND_SELF = "self"
+
+_SELF_RESUME_REASONS = frozenset(
+    {
+        "restart_interrupted",
+        "restart_consumed_interrupted",
+    }
+)
+
+
+def resume_kind_for_reason(reason: str | None) -> str:
+    """Return the authority-table resume kind for a persisted reason."""
+    return RESUME_KIND_SELF if reason in _SELF_RESUME_REASONS else RESUME_KIND_SIBLING
 
 AUTO_RESUME_ATTEMPT_TTL_SECONDS = 7 * 24 * 60 * 60
 _STORE_VERSION = 1

@@ -757,6 +757,8 @@ def _build_resume_pending_message(
     reason_phrase: str,
     resume_mode: str = "prompt",
     auto_fallback_reason: str | None = None,
+    resume_kind: str | None = None,
+    resume_handoff: str | None = None,
 ) -> tuple[str, bool]:
     """Build the API-only resume note without moving its injection site.
 
@@ -778,7 +780,15 @@ def _build_resume_pending_message(
         "acceptance-criteria, docs, git, mem0, loose-ends) and prove any "
         "user-visible/acoustic/visual claim with real captured evidence."
     )
-    if resume_mode == "auto" and not message:
+    if resume_kind == "self" and not message:
+        _resume_guidance = (
+            "Resume kind=self is a fresh SELF resume-handoff turn, not replay "
+            "of an amputated SIBLING turn. Continue from this handoff now: "
+            f"{resume_handoff or 'continue from the completed pre-restart turn'}. "
+            "Do NOT re-execute the restart command."
+        ) + _closeout_nudge
+        _tail = ""
+    elif resume_mode == "auto" and not message:
         _resume_guidance = (
             "Auto-continuation mode=auto is active: continue your interrupted "
             "work now. Do NOT re-execute tool calls that already returned "
@@ -825,6 +835,8 @@ def _build_resume_pending_message(
         f"Any restart/shutdown command in the history has already "
         f"run — do NOT re-execute or verify it. {_resume_guidance}"
     )
+    if resume_kind and resume_kind != "self":
+        note += f" Resume kind={resume_kind}."
     if _tail:
         note += f" {_tail}"
     if auto_fallback_reason:
@@ -7179,26 +7191,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     clean_marks.append(float(mark))
                 except (TypeError, ValueError):
                     continue
+            request_ids = value.get("replay_request_ids", [])
+            if not isinstance(request_ids, list):
+                request_ids = []
             return {
                 "count": max(0, count),
                 "replay_marks": clean_marks,
+                "replay_request_ids": [str(item) for item in request_ids if item],
                 "armed": bool(value.get("armed", False)),
             }
         try:
             count = int(value or 0)
         except (TypeError, ValueError):
             count = 0
-        return {"count": max(0, count), "replay_marks": [], "armed": False}
+        return {
+            "count": max(0, count),
+            "replay_marks": [],
+            "replay_request_ids": [],
+            "armed": False,
+        }
 
     @classmethod
     def _encode_restart_failure_entry(cls, entry: dict) -> Any:
         count = int(entry.get("count", 0) or 0)
         replay_marks = entry.get("replay_marks") or []
+        replay_request_ids = entry.get("replay_request_ids") or []
         armed = bool(entry.get("armed", False))
-        if replay_marks or armed:
+        if replay_marks or replay_request_ids or armed:
             return {
                 "count": count,
                 "replay_marks": replay_marks,
+                "replay_request_ids": replay_request_ids,
                 "armed": armed,
             }
         return count
@@ -7225,6 +7248,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for key, value in counts.items()
             if int(value.get("count", 0) or 0) > 0
             or value.get("replay_marks")
+            or value.get("replay_request_ids")
             or value.get("armed")
         }
         try:
@@ -7520,7 +7544,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return suspended
 
-    def _record_restart_replay_mark(self, session_key: str, *, now: Optional[float] = None) -> bool:
+    def _record_restart_replay_mark(
+        self,
+        session_key: str,
+        *,
+        now: Optional[float] = None,
+        request_id: Optional[str] = None,
+    ) -> bool:
         """Record an auto-resumed session being drain-marked again.
 
         Returns True when this call newly arms the replay-loop breaker and
@@ -7534,6 +7564,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cutoff = timestamp - window
         counts = self._load_restart_failure_counts()
         entry = counts.get(session_key, {"count": 0, "replay_marks": [], "armed": False})
+        request_ids = [
+            str(value) for value in entry.get("replay_request_ids", []) if value
+        ]
+        if request_id and request_id in request_ids:
+            return False
         marks = [
             float(mark)
             for mark in entry.get("replay_marks", [])
@@ -7541,6 +7576,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ]
         marks.append(timestamp)
         entry["replay_marks"] = marks
+        if request_id:
+            request_ids.append(request_id)
+            entry["replay_request_ids"] = request_ids[-100:]
         alert = False
         if len(marks) >= threshold:
             try:
@@ -7569,6 +7607,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not entry:
             return
         entry["replay_marks"] = []
+        entry["replay_request_ids"] = []
         entry["armed"] = False
         counts[session_key] = entry
         self._save_restart_failure_counts(counts)
@@ -7606,7 +7645,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         breadcrumb is ALWAYS consumed (read+unlink) even when the flag is already
         True — assign both, then OR (never ``flag or consume(...)``, whose short-
         circuit would leave the breadcrumb on disk to mark a later turn, I-3).
+
+        Exception: a typed deferred SELF request reserves breadcrumb consumption
+        for the release chokepoint. That path clears the old resume mark here,
+        then records the new request-id replay mark before its new SELF mark.
         """
+        try:
+            deferred = any(
+                request.session_key == session_key and request.state == "submitted"
+                for request in self._get_deferred_restart_coordinator().scan()
+            )
+        except Exception:
+            deferred = False
+        if deferred:
+            getattr(self, "_session_initiated_restart", {}).pop(session_key, None)
+            self.session_store.clear_resume_pending(session_key)
+            return
+
         flag = bool(
             getattr(self, "_session_initiated_restart", {}).pop(session_key, False)
         )
@@ -8230,6 +8285,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._auto_resume_attempt_store = store
         return store
 
+    def _reconcile_deferred_restarts_at_boot(self) -> int:
+        """Fold surviving SELF requests before any resume candidate snapshot."""
+        if getattr(self, "_deferred_boot_reconciled", False):
+            return 0
+        from gateway.deferred_restart import reconcile_deferred_restarts_at_boot
+
+        self.session_store._ensure_loaded()
+
+        def _entry(request):
+            return self.session_store._entries.get(request.session_key)
+
+        def _has_durable_mark(request) -> bool:
+            entry = _entry(request)
+            return bool(
+                entry
+                and entry.resume_pending
+                and entry.resume_request_id == request.request_id
+            )
+
+        reconciled = reconcile_deferred_restarts_at_boot(
+            _hermes_home,
+            current_boot_id=self._current_boot_id(),
+            boot_started_at=getattr(self, "_boot_started_at", time.time()),
+            session_exists=lambda request: _entry(request) is not None,
+            has_durable_mark=_has_durable_mark,
+            record_replay=lambda request: self._record_restart_replay_mark(
+                request.session_key,
+                request_id=request.request_id,
+            ),
+            mark_in_memory=lambda request: self.session_store.mark_resume_pending_in_memory(
+                request.session_key,
+                "restart_interrupted",
+                resume_kind="self",
+                resume_handoff=request.handoff,
+                resume_request_id=request.request_id,
+            ),
+            flush_sessions=self.session_store.flush,
+            signal_restart=lambda: None,
+        )
+        self._deferred_boot_reconciled = True
+        if reconciled:
+            logger.warning(
+                "Reconciled %d deferred SELF restart request(s) at boot",
+                reconciled,
+            )
+        return reconciled
+
     async def _prepare_auto_resume_decisions(self, platform=None) -> int:
         """Read and classify candidate transcript tails off the gateway loop.
 
@@ -8239,6 +8341,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         every existing routing/freshness/authorization gate passes.
         """
         self._auto_resume_decisions = {}
+        self._reconcile_deferred_restarts_at_boot()
         if _resume_interrupted_turns_mode() != "auto":
             return 0
 
@@ -8404,6 +8507,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._startup_restore_in_progress = False
         if drained:
             logger.info("Drained %d inbound message(s) queued during startup restore", drained)
+
+    async def _restore_resume_pending_sessions_at_startup(self) -> int:
+        """Run the binding prepare→snapshot→schedule startup sequence."""
+        await self._prepare_auto_resume_decisions()
+        scheduled = self._schedule_resume_pending_sessions()
+        await self._finish_startup_restore()
+        return scheduled
 
     @staticmethod
     def _log_background_resume_result(task: "asyncio.Task") -> None:
@@ -8615,7 +8725,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             resume_mode = "prompt"
             fallback_reason = None
             pending_attempt = None
-            if requested_mode == "auto":
+            if requested_mode == "auto" and getattr(entry, "resume_kind", None) == "self":
+                # SELF is a fresh synthesized handoff, not replay of an
+                # interrupted assistant row. It never consumes the SIBLING
+                # once-ever attempt credit or tail-classification gate.
+                resume_mode = "auto"
+            elif requested_mode == "auto":
                 assessment = prepared.get(entry.session_key)
                 if assessment is None:
                     fallback_reason = "the persisted tail was not classified at schedule time"
@@ -8681,19 +8796,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # raised gateway.run log threshold. Fail-open (INV-3): a broken log
             # sink must not abort the resume.
             try:
+                from gateway.auto_resume import resume_kind_for_reason
+
+                _resume_kind = getattr(entry, "resume_kind", None) or resume_kind_for_reason(
+                    getattr(entry, "resume_reason", None)
+                )
                 if resume_mode == "auto":
                     logger.warning(
-                        "PHASE=boot_resume_scheduled key=%s reason=%s platform=%s mode=auto",
+                        "PHASE=boot_resume_scheduled key=%s reason=%s platform=%s kind=%s mode=auto",
                         entry.session_key,
                         getattr(entry, "resume_reason", None),
                         getattr(getattr(source, "platform", None), "value", None),
+                        _resume_kind,
                     )
                 else:
                     logger.warning(
-                        "PHASE=boot_resume_scheduled key=%s reason=%s platform=%s",
+                        "PHASE=boot_resume_scheduled key=%s reason=%s platform=%s kind=%s",
                         entry.session_key,
                         getattr(entry, "resume_reason", None),
                         getattr(getattr(source, "platform", None), "value", None),
+                        _resume_kind,
                     )
             except Exception:
                 pass
@@ -8754,6 +8876,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Returns True if at least one adapter connected successfully.
         """
         logger.info("Starting Hermes Gateway...")
+        # Persisted deferred requests can span an OS reboot, so their ordering
+        # must use the same stable wall-clock epoch as request intent_ts.
+        self._boot_started_at = time.time()
         try:
             self._gateway_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -9374,9 +9499,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
         # by the normal successful-turn path, so a failed auto-resume remains
         # visible for manual recovery on the next user message.
-        await self._prepare_auto_resume_decisions()
-        self._schedule_resume_pending_sessions()
-        await self._finish_startup_restore()
+        await self._restore_resume_pending_sessions_at_startup()
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
@@ -18641,6 +18764,86 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         override = self._session_model_overrides.get(session_key)
         return override is not None and override.get("model") == agent_model
 
+    def _get_deferred_restart_coordinator(self):
+        coordinator = getattr(self, "_deferred_restart_coordinator", None)
+        current_boot_id = self._current_boot_id()
+        if coordinator is None or coordinator.boot_id != current_boot_id:
+            from gateway.deferred_restart import DeferredRestartCoordinator
+
+            coordinator = DeferredRestartCoordinator(_hermes_home, boot_id=current_boot_id)
+            self._deferred_restart_coordinator = coordinator
+        return coordinator
+
+    def _arm_deferred_restart_after_release(
+        self,
+        session_key: str,
+        *,
+        generation: Optional[int],
+    ) -> None:
+        """Arm one SELF request after ownership teardown, then await delivery."""
+        coordinator = self._get_deferred_restart_coordinator()
+        entry = self.session_store._entries.get(session_key)
+        source = getattr(entry, "origin", None)
+        adapter = self._adapter_for_source(source) if source is not None else None
+        delivered = asyncio.Event()
+
+        def _mark_self(request) -> bool:
+            return self.session_store.mark_resume_pending(
+                request.session_key,
+                "restart_interrupted",
+                resume_kind="self",
+                resume_handoff=request.handoff,
+                resume_request_id=request.request_id,
+            )
+
+        state = coordinator.arm_for_session(
+            session_key,
+            consume_breadcrumb=self._consume_restart_initiated_breadcrumb,
+        )
+        if state != "armed":
+            return
+
+        # Establish task ownership immediately after the durable arm. Callback
+        # registration is fallible; if it fails, the owned task proceeds with
+        # UNKNOWN delivery instead of leaving an orphaned armed request.
+        task = coordinator.schedule_armed(
+            session_key,
+            delivery_event=delivered,
+            delivery_timeout=30.0 if adapter is not None else 0.0,
+            record_replay=lambda request: self._record_restart_replay_mark(
+                request.session_key,
+                request_id=request.request_id,
+            ),
+            mark_self=_mark_self,
+            signal_restart=lambda: self.request_restart(via_service=True),
+        )
+        background = getattr(self, "_background_tasks", None)
+        if background is None:
+            background = set()
+            self._background_tasks = background
+        background.add(task)
+        task.add_done_callback(background.discard)
+        if adapter is not None:
+            try:
+                adapter.register_delivery_ack_callback(
+                    session_key,
+                    delivered.set,
+                    generation=generation,
+                )
+            except Exception:
+                logger.warning(
+                    "SELF restart delivery callback registration failed for %s; "
+                    "delivery state is UNKNOWN",
+                    session_key,
+                    exc_info=True,
+                )
+                delivered.set()
+        else:
+            logger.warning(
+                "SELF restart has no adapter delivery barrier for %s; delivery state is UNKNOWN",
+                session_key,
+            )
+
     def _release_running_agent_state(
         self,
         session_key: str,
@@ -18719,6 +18922,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # between lifecycle transitions.  Preserves gateway_state (see
         # _persist_active_agents).
         self._persist_active_agents()
+        if self._draining:
+            # Another shutdown already owns this bounce. Leave submitted SELF
+            # intent for the mandatory cross-boot reconciliation rule; arming
+            # here would create a new shutdown task during teardown.
+            return True
+        try:
+            self._arm_deferred_restart_after_release(
+                session_key,
+                generation=run_generation,
+            )
+        except Exception:
+            logger.warning(
+                "Deferred SELF restart arm failed for %s",
+                session_key,
+                exc_info=True,
+            )
         return True
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
@@ -21547,6 +21766,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     reason_phrase=_reason_phrase,
                     resume_mode=_resume_disposition.get("mode", "prompt"),
                     auto_fallback_reason=_resume_disposition.get("reason"),
+                    resume_kind=getattr(_resume_entry, "resume_kind", None),
+                    resume_handoff=getattr(_resume_entry, "resume_handoff", None),
                 )
                 if _surface_and_ask:
                     agent._resume_summary_only = True
@@ -22858,6 +23079,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _final,
                 previewed=_previewed,
             )
+            if _streamed or _content_delivered:
+                delivery_adapter = self._adapter_for_source(source)
+                if delivery_adapter is not None:
+                    delivery_adapter.acknowledge_response_delivery(
+                        session_key,
+                        generation=run_generation,
+                    )
             if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
                 logger.info(
                     "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",

@@ -172,6 +172,32 @@ class TestAcpClientFactory(unittest.TestCase):
                     assert _devin_local_credentials_present() is False
 
 
+class TestAcpErrorClassification(unittest.TestCase):
+    def test_missing_cli_is_non_retryable(self):
+        from agent.error_classifier import FailoverReason, classify_api_error
+
+        err = RuntimeError(
+            "Could not start Devin ACP command 'devin'. "
+            "Install Devin CLI and run `devin auth login`."
+        )
+        result = classify_api_error(err, provider="devin-acp")
+        assert result.retryable is False
+        assert result.reason in {
+            FailoverReason.format_error,
+            FailoverReason.auth_permanent,
+        }
+
+    def test_wrong_argv_is_non_retryable(self):
+        from agent.error_classifier import FailoverReason, classify_api_error
+
+        err = RuntimeError(
+            "Devin ACP process exited early: error: unexpected argument '--acp' found"
+        )
+        result = classify_api_error(err, provider="devin-acp")
+        assert result.retryable is False
+        assert result.reason == FailoverReason.format_error
+
+
 class TestOneshotAcpWiring(unittest.TestCase):
     def test_oneshot_forwards_runtime_command_and_args(self):
         """hermes -z must pass ACP command/args into AIAgent (P0 regression)."""
@@ -483,6 +509,38 @@ class TestAcpProcessReuse(unittest.TestCase):
             assert procs[0].poll() is None
             client.interrupt()
             assert procs[0].poll() is not None
+
+    def test_stream_true_yields_iterable_deltas(self):
+        from agent.copilot_acp_client import CopilotACPClient
+
+        def _popen(*_a, **_k):
+            return _ScriptedAcpProcess()
+
+        with patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_popen):
+            client = CopilotACPClient(
+                command="fake-acp",
+                args=["--stdio"],
+                acp_cwd="/tmp",
+            )
+            client._reuse_enabled = True
+            stream = client._create_chat_completion(
+                model="devin-acp",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=True,
+                timeout=5,
+            )
+            assert not hasattr(stream, "choices")  # must be iterable, not final response
+            chunks = list(stream)
+            client.close()
+
+        contents = []
+        for ch in chunks:
+            if not ch.choices:
+                continue
+            delta = ch.choices[0].delta
+            if getattr(delta, "content", None):
+                contents.append(delta.content)
+        assert "".join(contents) == "ok-1" or any(c == "ok-1" for c in contents)
 
 
 if __name__ == "__main__":

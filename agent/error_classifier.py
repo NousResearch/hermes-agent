@@ -623,6 +623,35 @@ def classify_api_error(
             should_fallback=True,
         )
 
+    # Local ACP subprocess backends (copilot-acp / devin-acp): permanent
+    # setup/config failures must not burn api_max_retries (each attempt
+    # re-spawns a CLI). Match narrow install/argv/pipe messages only.
+    if (
+        "could not start" in error_msg
+        and "acp" in error_msg
+        and ("command" in error_msg or "cli" in error_msg)
+    ) or (
+        "acp" in error_msg
+        and "did not expose stdin/stdout" in error_msg
+    ) or (
+        "unexpected argument" in error_msg
+        and ("--acp" in error_msg or "acp" in error_msg)
+    ):
+        return _result(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
+        )
+    if (
+        "devin auth login" in error_msg
+        or ("acp" in error_msg and "not logged in" in error_msg)
+    ):
+        return _result(
+            FailoverReason.auth_permanent,
+            retryable=False,
+            should_fallback=False,
+        )
+
     # Anthropic thinking block recovery (400).  Two distinct failure modes,
     # same recovery (strip all reasoning_details and retry without thinking
     # blocks — see the thinking_signature handler in conversation_loop.py):

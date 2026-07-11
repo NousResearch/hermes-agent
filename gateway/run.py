@@ -8091,7 +8091,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if task is not None:
                 await asyncio.shield(task)
         finally:
-            active.discard(session_key)
+            # Marker ownership belongs to the TURN lifecycle, not this wrapper
+            # (2026-07-10 20:17 live failure: the wrapper's await chain can
+            # detach from the actual agent turn — task-entry rotation in the
+            # adapter's _session_tasks map, or cancellation of this wrapper
+            # while the shielded turn continues — and an unconditional discard
+            # here stripped protection from a live recovery turn, letting a
+            # user follow-up interrupt it at iteration 1).
+            # _release_running_agent_state clears the marker when the turn
+            # actually ends.  Here, discard only when no live turn holds the
+            # slot (never started, or already finished) — belt-and-suspenders
+            # against a leaked marker without early-stripping a running one.
+            occupant = self._running_agents.get(session_key)
+            if occupant is None or occupant is _AGENT_PENDING_SENTINEL:
+                active.discard(session_key)
             # _schedule_resume_pending_sessions pre-claims the runner slot
             # before spawning this task.  If adapter.handle_message raises
             # before _handle_message takes ownership, release that pre-claim;
@@ -18431,6 +18444,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         getattr(self, "_running_agent_tasks", {}).pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
+        # Boot-resume protection marker is owned by the turn lifecycle: this
+        # is the single chokepoint every turn-exit path funnels through, so
+        # clearing it here guarantees marker-lifetime == turn-lifetime.  The
+        # wrapper (_run_startup_resume_event) deliberately does NOT clear it
+        # while a live turn holds the slot (2026-07-10 20:17 live failure).
+        _sra = getattr(self, "_startup_resume_active", None)
+        if _sra is not None:
+            try:
+                _sra.discard(session_key)
+            except Exception:
+                pass
         # Turn boundary: a running-agent slot was just released.  Persist the
         # new (lower) in-flight count so the dashboard readout stays current
         # between lifecycle transitions.  Preserves gateway_state (see

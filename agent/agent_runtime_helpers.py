@@ -23,6 +23,7 @@ Methods covered:
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import logging
 import re
@@ -40,6 +41,19 @@ from agent.error_classifier import FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+
+def _fallback_chain_after_switch(chain, old_provider, new_provider, *, prune=True):
+    """Return fallback entries retained after a primary route change."""
+    fallback_chain = list(chain or [])
+    old_norm = (old_provider or "").strip().lower()
+    new_norm = (new_provider or "").strip().lower()
+    if prune and old_norm and new_norm and old_norm != new_norm:
+        fallback_chain = [
+            entry for entry in fallback_chain
+            if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
+        ]
+    return fallback_chain
 
 
 # Max consecutive successful credential-pool token refreshes of the SAME entry
@@ -1769,7 +1783,249 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+_SWITCH_MISSING = object()
+_SWITCH_STATE_FIELDS = (
+    "model",
+    "provider",
+    "base_url",
+    "_base_url_lower",
+    "api_mode",
+    "api_key",
+    "client",
+    "_client_kwargs",
+    "_anthropic_client",
+    "_anthropic_api_key",
+    "_anthropic_base_url",
+    "_is_anthropic_oauth",
+    "_config_context_length",
+    "_credential_pool",
+    "_use_prompt_caching",
+    "_use_native_cache_layout",
+    "_cached_system_prompt",
+    "_primary_runtime",
+    "_fallback_activated",
+    "_fallback_index",
+    "_fallback_chain",
+    "_fallback_model",
+    "_transport_cache",
+)
+def _copy_switch_graph_preserving_resources(value):
+    """Deep-copy container state while retaining client/transport identities."""
+    memo = {}
+    seen = set()
+
+    def preserve_resources(item):
+        item_id = id(item)
+        if item_id in seen:
+            return
+        seen.add(item_id)
+        if isinstance(item, dict):
+            for key, nested in item.items():
+                preserve_resources(key)
+                preserve_resources(nested)
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            for nested in item:
+                preserve_resources(nested)
+        elif not isinstance(item, (str, bytes, int, float, bool, type(None))):
+            memo[item_id] = item
+
+    preserve_resources(value)
+    return copy.deepcopy(value, memo)
+
+
+def _snapshot_model_switch_state(agent):
+    raw_state = {
+        name: getattr(agent, name, _SWITCH_MISSING)
+        for name in _SWITCH_STATE_FIELDS
+    }
+    compressor = getattr(agent, "context_compressor", None)
+    raw_compressor_state = (
+        dict(compressor.__dict__)
+        if compressor is not None and hasattr(compressor, "__dict__")
+        else None
+    )
+    copied = _copy_switch_graph_preserving_resources(
+        {"state": raw_state, "compressor_state": raw_compressor_state}
+    )
+    return copied["state"], compressor, copied["compressor_state"]
+
+
+def _collect_closable_resources(value):
+    resources = []
+    seen = set()
+
+    def visit(item):
+        item_id = id(item)
+        if item_id in seen:
+            return
+        seen.add(item_id)
+        if isinstance(item, dict):
+            for key, nested in item.items():
+                visit(key)
+                visit(nested)
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            for nested in item:
+                visit(nested)
+        elif callable(getattr(item, "close", None)):
+            resources.append(item)
+
+    visit(value)
+    return resources
+
+
+def _close_failed_switch_clients(agent, state):
+    closed_ids = set()
+    old_client = state.get("client", _SWITCH_MISSING)
+    current_client = getattr(agent, "client", _SWITCH_MISSING)
+    if (
+        current_client is not _SWITCH_MISSING
+        and current_client is not old_client
+        and current_client is not None
+    ):
+        try:
+            agent._close_openai_client(
+                current_client, reason="switch_model_rollback", shared=True
+            )
+            closed_ids.add(id(current_client))
+        except Exception:
+            logger.debug("failed to close OpenAI client during switch rollback", exc_info=True)
+
+    old_anthropic = state.get("_anthropic_client", _SWITCH_MISSING)
+    current_anthropic = getattr(agent, "_anthropic_client", _SWITCH_MISSING)
+    if (
+        current_anthropic is not _SWITCH_MISSING
+        and current_anthropic is not old_anthropic
+        and current_anthropic is not None
+    ):
+        try:
+            close = getattr(current_anthropic, "close", None)
+            if callable(close):
+                close()
+                closed_ids.add(id(current_anthropic))
+        except Exception:
+            logger.debug("failed to close Anthropic client during switch rollback", exc_info=True)
+
+    old_transport_ids = {
+        id(resource)
+        for resource in _collect_closable_resources(
+            state.get("_transport_cache", _SWITCH_MISSING)
+        )
+    }
+    for resource in _collect_closable_resources(
+        getattr(agent, "_transport_cache", _SWITCH_MISSING)
+    ):
+        if id(resource) in old_transport_ids or id(resource) in closed_ids:
+            continue
+        try:
+            resource.close()
+            closed_ids.add(id(resource))
+        except Exception:
+            logger.debug("failed to close transport during switch rollback", exc_info=True)
+
+
+def _close_committed_switch_resources(agent, state):
+    """Dispose pre-switch resources only after every switch step succeeds."""
+    closed_ids = set()
+    old_client = state.get("client", _SWITCH_MISSING)
+    current_client = getattr(agent, "client", _SWITCH_MISSING)
+    if (
+        old_client is not _SWITCH_MISSING
+        and old_client is not current_client
+        and old_client is not None
+    ):
+        try:
+            agent._close_openai_client(
+                old_client, reason="switch_model_commit", shared=True
+            )
+            closed_ids.add(id(old_client))
+        except Exception:
+            logger.debug("failed to close replaced OpenAI client", exc_info=True)
+
+    old_anthropic = state.get("_anthropic_client", _SWITCH_MISSING)
+    current_anthropic = getattr(agent, "_anthropic_client", _SWITCH_MISSING)
+    if (
+        old_anthropic is not _SWITCH_MISSING
+        and old_anthropic is not current_anthropic
+        and old_anthropic is not None
+    ):
+        try:
+            close = getattr(old_anthropic, "close", None)
+            if callable(close):
+                close()
+                closed_ids.add(id(old_anthropic))
+        except Exception:
+            logger.debug("failed to close replaced Anthropic client", exc_info=True)
+
+    current_transport_ids = {
+        id(resource)
+        for resource in _collect_closable_resources(
+            getattr(agent, "_transport_cache", _SWITCH_MISSING)
+        )
+    }
+    for resource in _collect_closable_resources(
+        state.get("_transport_cache", _SWITCH_MISSING)
+    ):
+        if id(resource) in current_transport_ids or id(resource) in closed_ids:
+            continue
+        try:
+            resource.close()
+            closed_ids.add(id(resource))
+        except Exception:
+            logger.debug("failed to close replaced transport", exc_info=True)
+
+
+def _restore_model_switch_state(agent, snapshot):
+    state, compressor, compressor_state = snapshot
+    _close_failed_switch_clients(agent, state)
+    restored = _copy_switch_graph_preserving_resources(
+        {"state": state, "compressor_state": compressor_state}
+    )
+    restored_state = restored["state"]
+    for name, value in restored_state.items():
+        if value is _SWITCH_MISSING:
+            try:
+                delattr(agent, name)
+            except AttributeError:
+                pass
+            continue
+        setattr(agent, name, value)
+    if compressor is not None and restored["compressor_state"] is not None:
+        compressor.__dict__.clear()
+        compressor.__dict__.update(restored["compressor_state"])
+
+
+def _transactional_model_switch(func):
+    """Rollback the complete model switch if any late finalization step fails."""
+
+    @functools.wraps(func)
+    def wrapped(agent, *args, **kwargs):
+        snapshot = _snapshot_model_switch_state(agent)
+        try:
+            result = func(agent, *args, **kwargs)
+        except Exception:
+            _restore_model_switch_state(agent, snapshot)
+            raise
+        try:
+            _close_committed_switch_resources(agent, snapshot[0])
+        except Exception:
+            # Cleanup failure must not roll back a successfully committed route.
+            logger.debug("model switch commit cleanup failed", exc_info=True)
+        # Reset the stale-stream breaker only after the complete switch body
+        # has committed. A late finalization failure must leave the old route's
+        # breaker state intact for the caller to retry or recover explicitly.
+        from agent.chat_completion_helpers import _reset_stale_streak
+
+        _reset_stale_streak(agent)
+        return result
+
+    return wrapped
+
+
+@_transactional_model_switch
+def switch_model(
+    agent, new_model, new_provider, api_key='', base_url='', api_mode='', *,
+    prune_fallback_chain=True,
+):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -1840,6 +2096,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # restore the original pool (issue #52727: pool reload is part of this
     # switch and must be reversible on rollback).
     _snapshot["_credential_pool"] = getattr(agent, "_credential_pool", _MISSING)
+    _new_anthropic_client = None
 
     try:
         # Clear the per-config context_length override so the new model's
@@ -1925,6 +2182,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
             agent.client = MoAClient(agent.model or "default")
+            agent._anthropic_client = None
+            agent._anthropic_api_key = ""
+            agent._anthropic_base_url = None
+            agent._is_anthropic_oauth = False
         elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,
@@ -1955,10 +2216,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
-            agent._anthropic_client = build_anthropic_client(
+            _new_anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url,
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
             )
+            agent._anthropic_client = _new_anthropic_client
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
             agent.client = None
             agent._client_kwargs = {}
@@ -2000,7 +2262,30 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 reason="switch_model",
                 shared=True,
             )
+            # The OpenAI-compatible route is now fully constructed. Drop the
+            # stale Anthropic handle so the transaction commit phase can close
+            # it exactly once; rollback restores it if later finalization fails.
+            agent._anthropic_client = None
+            agent._anthropic_api_key = ""
+            agent._anthropic_base_url = None
+            agent._is_anthropic_oauth = False
     except Exception:
+        # An Anthropic client can be constructed before a later token/OAuth
+        # classification step raises. Close that newly owned handle before the
+        # inner compatibility rollback hides it from the outer transaction.
+        if (
+            _new_anthropic_client is not None
+            and _new_anthropic_client is not _snapshot.get("_anthropic_client")
+        ):
+            try:
+                close = getattr(_new_anthropic_client, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                logger.debug(
+                    "failed to close Anthropic client during inner switch rollback",
+                    exc_info=True,
+                )
         # Rollback every mutated field to the pre-swap snapshot so the agent
         # is left consistent (old model + old provider + old client) and the
         # caller's exception handler can surface a meaningful warning.  The
@@ -2068,14 +2353,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
 
-    # ── Reset the cross-turn stale-call circuit breaker (#58962) ──
-    # The breaker's error text tells the user to "switch models ... then
-    # retry"; without this reset the streak stays latched and the freshly
-    # selected (healthy) provider would keep short-circuiting before any
-    # stream is even attempted.
-    from agent.chat_completion_helpers import _reset_stale_streak
-    _reset_stale_streak(agent)
-
     # ── Update _primary_runtime so the change persists across turns ──
     _cc = agent.context_compressor if hasattr(agent, "context_compressor") and agent.context_compressor else None
     agent._primary_runtime = {
@@ -2113,14 +2390,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # primary silently re-activates the provider the user just rejected,
     # which is exactly what was reported during TUI v2 blitz testing
     # ("switched to anthropic, tui keeps trying openrouter").
-    old_norm = (old_provider or "").strip().lower()
-    new_norm = (new_provider or "").strip().lower()
-    fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
-    if old_norm and new_norm and old_norm != new_norm:
-        fallback_chain = [
-            entry for entry in fallback_chain
-            if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
-        ]
+    fallback_chain = _fallback_chain_after_switch(
+        getattr(agent, "_fallback_chain", []), old_provider, new_provider,
+        prune=prune_fallback_chain,
+    )
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
 

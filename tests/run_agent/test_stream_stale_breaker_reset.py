@@ -129,6 +129,32 @@ def test_switch_model_failure_does_not_reset_streak():
     assert agent._consecutive_stale_streams == 7
 
 
+def test_switch_model_late_finalization_failure_keeps_stale_streak():
+    """The breaker resets only after every fallible switch step commits."""
+    agent = _make_agent_openrouter()
+    agent._consecutive_stale_streams = 7
+    agent._create_openai_client = MagicMock(return_value=MagicMock(name="NewClient"))
+    agent._close_openai_client = MagicMock()
+
+    with (
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+        patch(
+            "agent.agent_runtime_helpers._fallback_chain_after_switch",
+            side_effect=RuntimeError("late fallback finalization failure"),
+        ),
+        pytest.raises(RuntimeError, match="late fallback finalization failure"),
+    ):
+        agent.switch_model(
+            new_model="openai/gpt-5",
+            new_provider="openrouter",
+            api_key="or-key-new",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
+
+    assert agent._consecutive_stale_streams == 7
+
+
 def test_fallback_activation_resets_stale_streak():
     """Automatic provider fallback swaps to a different backend; the streak
     measured the OLD provider and must not wedge the new one."""

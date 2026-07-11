@@ -3188,7 +3188,7 @@ def _sync_session_key_after_compress(
             pass
 
 
-def _get_usage(agent) -> dict:
+def _get_usage(agent, session: dict | None = None) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
         "model": getattr(agent, "model", "") or "",
@@ -3245,7 +3245,139 @@ def _get_usage(agent) -> dict:
                 usage["dev_credits_spent_micros"] = int(spent)
         except Exception:
             pass
+    _attach_block_logic_usage(usage, agent, session)
     return usage
+
+
+def _attach_block_logic_usage(usage: dict, agent, session: dict | None) -> None:
+    """Attach a Block Logic decision to live usage without authorizing writes.
+
+    The host integration is deliberately fail-open and transition-latched. In
+    ``observe_only`` mode it records level changes but never emits a user notice.
+    Temporary rescue remains advisory; canonical writes are always forbidden by
+    the pure evaluator.
+    """
+    if agent is None or not isinstance(session, dict):
+        return
+
+    raw = getattr(agent, "_block_logic_threshold_config", None)
+    if raw is None:
+        try:
+            from hermes_cli.config import load_config
+
+            loaded = load_config()
+            raw = (
+                loaded.get("block_logic_threshold", {})
+                if isinstance(loaded, dict)
+                else {}
+            )
+        except Exception:
+            raw = {}
+        agent._block_logic_threshold_config = raw
+    if not isinstance(raw, dict) or not raw.get("enabled", False):
+        return
+
+    context_used = int(usage.get("context_used") or 0)
+    context_limit = int(usage.get("context_max") or 0)
+    if context_used <= 0 or context_limit <= 0:
+        return
+
+    try:
+        from agent.block_logic_threshold import (
+            SessionMetrics,
+            ThresholdConfig,
+            ThresholdLevel,
+            evaluate,
+        )
+
+        extra = dict(session.get("block_logic_metrics") or {})
+        if "changed_files" not in extra:
+            cached = session.get("_block_logic_git_metrics")
+            now = time.monotonic()
+            if not isinstance(cached, tuple) or now - cached[0] >= 300.0:
+                porcelain = _git(_session_cwd(session), "status", "--porcelain")
+                changed_files = len(
+                    [line for line in porcelain.splitlines() if line.strip()]
+                )
+                cached = (now, changed_files)
+                session["_block_logic_git_metrics"] = cached
+            extra["changed_files"] = cached[1]
+        if "model_handoffs" not in extra:
+            extra["model_handoffs"] = sum(
+                1
+                for item in session.get("history") or []
+                if "active model for this chat has changed"
+                in str(item.get("content") or "").lower()
+            )
+        elapsed_hours = max(
+            0.0,
+            (time.time() - float(session.get("created_at") or time.time())) / 3600.0,
+        )
+        decision = evaluate(
+            SessionMetrics(
+                context_used=context_used,
+                context_limit=context_limit,
+                elapsed_hours=elapsed_hours,
+                message_count=len(session.get("history") or []),
+                decision_count=int(extra.get("decision_count") or 0),
+                changed_files=int(extra.get("changed_files") or 0),
+                compression_events=int(usage.get("compressions") or 0),
+                model_handoffs=int(extra.get("model_handoffs") or 0),
+            ),
+            ThresholdConfig.from_mapping(raw),
+        )
+    except Exception:
+        logger.debug("Block Logic threshold evaluation failed", exc_info=True)
+        return
+
+    mode = str(raw.get("mode") or "observe_only").strip().lower()
+    payload = decision.to_dict()
+    payload["mode"] = mode
+    usage["block_logic"] = payload
+
+    current_level = decision.level.value
+    previous_level = session.get("_block_logic_last_level")
+    if previous_level == current_level:
+        return
+    session["_block_logic_last_level"] = current_level
+
+    log_path = str(raw.get("log_path") or "").strip()
+    if log_path:
+        try:
+            from pathlib import Path
+
+            target = Path(log_path).expanduser()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "timestamp": time.time(),
+                "session_id": str(session.get("session_id") or ""),
+                **payload,
+            }
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            logger.debug("Block Logic threshold log write failed", exc_info=True)
+
+    if mode not in {"prompt", "active"} or not decision.should_notify:
+        return
+
+    callback = getattr(agent, "notice_callback", None)
+    if not callable(callback):
+        return
+    try:
+        from agent.credits_tracker import AgentNotice
+
+        level = "error" if decision.level is ThresholdLevel.RESCUE else "warn"
+        callback(
+            AgentNotice(
+                text=f"{decision.headline}. {decision.message}",
+                level=level,
+                kind="sticky",
+                key="block_logic.threshold",
+            )
+        )
+    except Exception:
+        logger.debug("Block Logic threshold notice emission failed", exc_info=True)
 
 
 def _probe_credentials(agent) -> str:
@@ -6476,7 +6608,7 @@ def _(rid, params: dict) -> dict:
         return err
     agent = session.get("agent")
     usage: dict = (
-        _get_usage(agent)
+        _get_usage(agent, session)
         if agent is not None
         else {"calls": 0, "input": 0, "output": 0, "total": 0}
     )
@@ -9144,7 +9276,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 raw = str(result)
                 status = "complete"
 
-            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            payload = {"text": raw, "usage": _get_usage(agent, session), "status": status}
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:

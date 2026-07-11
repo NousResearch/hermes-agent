@@ -659,18 +659,15 @@ def test_resolve_timeout_coder_and_brain():
 
 
 def test_run_once_returns_timeout_mark_on_timeout():
-    def fake_run(cmd, **kwargs):
-        raise relay_call.subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-
-    orig = relay_call.subprocess.run
-    relay_call.subprocess.run = fake_run
-    try:
-        code, out, err = relay_call.run_once({"cmd": ["grok", "-p", "hi"]}, "hi", Path("/tmp"), "", timeout=1)
-    finally:
-        relay_call.subprocess.run = orig
+    # run_once ใช้ subprocess.Popen + polling loop (ไม่ใช่ subprocess.run แล้วตั้งแต่ v2.6 "นาฬิกาปลุกกันค้าง")
+    # การ mock subprocess.run จึงไม่ถูกเรียก → ทดสอบด้วย process ที่ค้างจริง (sleep) + timeout สั้นแทน
+    # ต้องคืน 124 + TIMEOUT_MARK แล้ว classify จับเป็น "timeout"
+    started = time.monotonic()
+    code, out, err = relay_call.run_once({"cmd": ["sh", "-c", "sleep 30"]}, "hi", Path("/tmp"), "", timeout=1)
     assert code == 124
-    assert err == relay_call.TIMEOUT_MARK
+    assert relay_call.TIMEOUT_MARK in err
     assert relay_call.classify(code, out, err) == "timeout"
+    assert time.monotonic() - started < 10
 
 
 def test_run_once_kills_group_on_timeout(tmp_path):

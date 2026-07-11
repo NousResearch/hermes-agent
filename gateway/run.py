@@ -6321,6 +6321,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
             )
             effective_mode = "queue"
+        # Boot-resume protection (2026-07-10 live incident): a user message
+        # arriving seconds after a gateway restart must not abort the
+        # recovery turn — that turn is replaying work the restart
+        # interrupted (handoff verification, deferred deliverables). Same
+        # demotion pattern as subagents/compression above; explicit /stop
+        # remains the escape hatch.
+        demoted_for_startup_resume = (
+            effective_mode == "interrupt"
+            and self._session_in_startup_resume(session_key)
+        )
+        if demoted_for_startup_resume:
+            logger.info(
+                "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
+                "because a boot-resume recovery turn is running",
+                session_key,
+            )
+            effective_mode = "queue"
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
@@ -6457,6 +6474,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message = (
                 f"⏳ Subagent working{status_detail} — your message is queued for "
                 f"when it finishes (use /stop to cancel everything)."
+            )
+        elif is_queue_mode and demoted_for_startup_resume:
+            # Tell the user the truth: a restart happened and recovery is
+            # running. The generic "Interrupting current task" ack hid both
+            # facts (2026-07-10).
+            message = (
+                f"🔄 Gateway restarted — I'm resuming the work that was "
+                f"interrupted{status_detail}. Your message is queued and "
+                f"folds in right after (use /stop to cancel the recovery)."
             )
         elif is_queue_mode and demoted_for_compression:
             message = (
@@ -8024,6 +8050,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         message can race the restore turn immediately after ``handle_message``
         returns.
         """
+        # Mark this session as running a boot-resume recovery turn for the
+        # duration of the turn.  The busy-input path consults this to demote
+        # ``interrupt`` to ``queue`` (same pattern as the subagent/#30170 and
+        # compression/#56391 demotions): a user message arriving seconds
+        # after a restart must not abort the recovery turn at iteration 1 —
+        # that turn is replaying interrupted work and its handoff
+        # verification (2026-07-10 live incident: "how's it going?" killed
+        # the recovery turn and the generic "Interrupting current task" ack
+        # never told the user a restart had even happened).
+        active = getattr(self, "_startup_resume_active", None)
+        if active is None:
+            active = set()
+            self._startup_resume_active = active
+        active.add(session_key)
         try:
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
@@ -8031,12 +8071,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if task is not None:
                 await asyncio.shield(task)
         finally:
+            active.discard(session_key)
             # _schedule_resume_pending_sessions pre-claims the runner slot
             # before spawning this task.  If adapter.handle_message raises
             # before _handle_message takes ownership, release that pre-claim;
             # otherwise the real run's normal cleanup owns the slot.
             if self._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
                 self._release_running_agent_state(session_key)
+
+    def _session_in_startup_resume(self, session_key: str) -> bool:
+        """True while ``session_key``'s running turn is a boot-resume turn."""
+        active = getattr(self, "_startup_resume_active", None)
+        try:
+            return bool(active) and session_key in active
+        except Exception:
+            return False
 
     def _queue_startup_restore_event(self, event: MessageEvent) -> None:
         queue = getattr(self, "_startup_restore_queue", None)

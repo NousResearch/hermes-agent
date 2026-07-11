@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from types import SimpleNamespace
 
 import pytest
 
@@ -57,6 +58,60 @@ def test_remote_worker_retries_coordinator_with_bounded_backoff(monkeypatch):
         )
 
     assert sleeps == [2]
+
+
+def test_remote_worker_fences_child_when_renewal_is_rejected(monkeypatch):
+    class Process:
+        pid = 1234
+        returncode = None
+        terminated = False
+        waited = False
+
+        def poll(self):
+            return 1 if self.terminated else None
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            self.waited = True
+            return self.returncode
+
+        def kill(self):
+            raise AssertionError("graceful termination should have reaped child")
+
+    process = Process()
+
+    class Client:
+        base_url = "http://coordinator"
+        token = "secret"
+
+        def build_worker_context(self, _conn, _task_id):
+            return "context"
+
+        def record_worker_started(self, *_args, **_kwargs):
+            return True
+
+        def heartbeat_claim(self, *_args, **_kwargs):
+            return False
+
+    monkeypatch.setattr(
+        kanban_remote_worker.subprocess, "Popen", lambda *_a, **_kw: process
+    )
+    monkeypatch.setattr(
+        kanban_remote_worker.kb, "_resolve_hermes_argv", lambda: ["hermes"]
+    )
+
+    kanban_remote_worker._run_task(
+        Client(),
+        SimpleNamespace(id="t_remote", current_run_id=1, claim_lock="lock"),
+        profile="ios",
+        machine_id="machine-id",
+    )
+
+    assert process.terminated is True
+    assert process.waited is True
 
 
 def _parse_kanban(argv: list[str]):

@@ -17,6 +17,20 @@ from hermes_cli.kanban_remote import RemoteKanban
 
 log = logging.getLogger(__name__)
 
+
+def _terminate_and_reap(proc: subprocess.Popen) -> None:
+    """Fence a child that no longer owns its coordinator claim."""
+    if proc.poll() is not None:
+        proc.wait()
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def _worker_workspace(task_id: str) -> Path:
     path = kb.kanban_home() / "remote-workspaces" / task_id
     path.mkdir(parents=True, exist_ok=True)
@@ -45,11 +59,13 @@ def _run_task(client: RemoteKanban, task, *, profile: str, machine_id: str) -> N
     proc = subprocess.Popen(
         [
             *kb._resolve_hermes_argv(),
-            "-p", profile,
+            "-p",
+            profile,
             "--cli",
             "--accept-hooks",
             "chat",
-            "-q", prompt,
+            "-q",
+            prompt,
         ],
         cwd=str(workspace),
         env=env,
@@ -57,6 +73,7 @@ def _run_task(client: RemoteKanban, task, *, profile: str, machine_id: str) -> N
     )
     reported_started = False
     while proc.poll() is None:
+        rejected_reason: Optional[str] = None
         try:
             if not reported_started:
                 reported_started = client.record_worker_started(
@@ -64,10 +81,27 @@ def _run_task(client: RemoteKanban, task, *, profile: str, machine_id: str) -> N
                     claim_lock=task.claim_lock or "",
                     worker_pid=proc.pid,
                 )
-            client.heartbeat_claim(None, task.id, claimer=task.claim_lock)
+                if not reported_started:
+                    rejected_reason = "worker start"
+            if rejected_reason is None:
+                renewed = client.heartbeat_claim(
+                    None,
+                    task.id,
+                    claimer=task.claim_lock,
+                )
+                if not renewed:
+                    rejected_reason = "lease renewal"
         except Exception:
             # The coordinator lease remains the authority; retry next poll.
             pass
+        if rejected_reason is not None:
+            log.error(
+                "coordinator rejected %s for %s; fencing child",
+                rejected_reason,
+                task.id,
+            )
+            _terminate_and_reap(proc)
+            return
         time.sleep(20)
     # A normal worker closes its task through kanban_complete or kanban_block.
     # Do not leave a terminated remote process holding a lease until its TTL.
@@ -140,7 +174,9 @@ def run(
     if not token:
         raise RuntimeError(f"set {token_env} before starting the worker")
 
-    merged_capabilities = sorted(set(kb.local_machine_capabilities()) | set(capabilities))
+    merged_capabilities = sorted(
+        set(kb.local_machine_capabilities()) | set(capabilities)
+    )
     client = RemoteKanban(url, token)
     try:
         run_worker_loop(

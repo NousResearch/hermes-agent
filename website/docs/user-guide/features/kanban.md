@@ -931,9 +931,22 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 
 `hermes kanban tail <id>` shows these for a single task. `hermes kanban watch` streams them board-wide.
 
-## Out of scope
+## Multi-host boards
 
-Kanban is deliberately single-host. `~/.hermes/kanban.db` is a local SQLite file and the dispatcher spawns workers on the same machine. Running a shared board across two hosts is not supported — there's no coordination primitive for "worker X on host A, worker Y on host B," and the crash-detection path assumes PIDs are host-local. If you need multi-host, run an independent board per host and use `delegate_task` / a message queue to bridge them.
+Kanban remains single-host by default: the local dispatcher owns `kanban.db`
+and spawns workers on that machine. For a shared private board, run
+`hermes kanban coordinator` on the machine that owns the database and
+`hermes kanban remote-worker` on each additional machine. Remote workers
+register their profiles and capabilities, claim only eligible tasks, and renew
+coordinator-issued leases while their local child is alive.
+
+The coordinator is the only database owner and recovers expired leases. Worker
+PIDs remain host-local: the coordinator never attempts to signal a PID reported
+by another machine, and a remote supervisor terminates its own child as soon as
+the coordinator rejects lease renewal. Bind the coordinator only to a trusted
+private network such as Tailscale and configure a bearer token through
+`HERMES_KANBAN_COORDINATOR_TOKEN`; this API is not intended for the public
+internet.
 
 ## Design spec
 

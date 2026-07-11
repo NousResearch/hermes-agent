@@ -878,3 +878,32 @@ def test_plan_without_plan_id_keeps_old_behavior(tmp_path):
     assert exit_code == 0
     assert payload["status"] == "ok"
     assert tool_calls == 1
+
+
+def test_classify_exit0_long_stderr_echoed_conversation_with_quota_words_is_ok():
+    # DEC-036 รูที่ 2 (2026-07-11): codex CLI สะท้อนบทสนทนาทั้งหมด (prompt+คำตอบ) ลง stderr
+    # งาน P14 ทั้งเฟสพูดเรื่อง rate limit / usage limit ของ API วัดผล → stderr ยาวมีคำ quota เต็มไปหมด
+    # เดิม QUOTA_RE.search(err_clean) ไม่มีตัวกันความยาว → quota ปลอม ทั้งที่ exit 0 งานสำเร็จ
+    err = ("thinking: ผู้ใช้ขอให้เขียน fetcher ดึงสถิติจาก DEV.to และ YouTube · "
+           "ต้องระวัง rate limit ของแต่ละ API · YouTube quota คือ 10000 units/day · "
+           "DEV.to ไม่มี usage limit ชัดเจน · Facebook Graph API v25 มี rate limit ต่อ token · "
+           "เขียน retry เมื่อเจอ 429 too many requests · เสร็จแล้วรัน typecheck ผ่าน") * 2
+    assert len(err.strip()) > 250  # stderr ยาว = บทสนทนาสะท้อน ไม่ใช่ error จริง (จุดที่บั๊กรูที่ 2 จับผิด)
+    assert relay_call.classify(0, "RELAYOK · fetchers เขียนเสร็จ typecheck ผ่าน", err) == "ok"
+
+
+def test_classify_exit0_short_stderr_real_quota_still_quota():
+    # error โควต้าจริงของ CLI สั้น (≤250) → ต้องยังจับเป็น quota เหมือนเดิม (regression กันแก้เกิน)
+    assert relay_call.classify(0, "", "Error: 429 rate limit exceeded · resets in 2h") == "quota"
+
+
+def test_classify_exit0_long_stderr_echoed_conversation_with_auth_words_is_ok():
+    # รูที่ 2 ฝั่ง auth: บทสนทนายาวใน stderr ที่บังเอิญมีวลี auth ต้องไม่โดนตีเป็น auth ปลอม
+    # หมายเหตุ: เคสจริงเมื่อ codex สำเร็จ stdout จะยาว (คำตอบงาน) จึงไม่ชนกฎ stdout<40 (บรรทัด 275)
+    out = ("แก้หน้า login เสร็จเรียบร้อย: เพิ่มการแสดงข้อความสถานะให้ผู้ใช้เห็นชัดเจน "
+           "ปรับ flow ให้ครบทุกกรณี เพิ่มเทสต์ครอบคลุม และรัน typecheck ผ่านทั้งหมดแล้ว")
+    err = ("thinking: งานคือแก้หน้า login ให้แสดงข้อความ you are not authenticated "
+           "อย่างถูกต้อง · ตรวจสอบว่า organization has disabled subscription access "
+           "ถูกจับเป็น auth ตามสเปค · เพิ่มเทสต์ครบ · เขียนโค้ดเสร็จ typecheck ผ่านทั้งหมด") * 2
+    assert len(out.strip()) >= 40 and len(err.strip()) > 250
+    assert relay_call.classify(0, out, err) == "ok"

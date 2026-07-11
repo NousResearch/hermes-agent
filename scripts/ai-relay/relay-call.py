@@ -265,12 +265,16 @@ def classify(exit_code, stdout, stderr):
         #  - stderr ตรวจได้เสมอ แต่หลังตัดบรรทัด log ปน (hook:/MCP) แล้วเท่านั้น
         # เคสจริง 2026-07-05: codex ทำงาน P2/P3 เสร็จ แต่สรุปงานมีคำ "organization has disabled ..."
         # → โดนตีเป็น auth ปลอม 4 ครั้ง ทั้งที่ login ติดปกติ
-        if (len(out_clean.strip()) <= 250 and STRONG_AUTH_RE.search(out_clean)) or STRONG_AUTH_RE.search(err_clean):
+        # รูที่ 2 (DEC-036 · 2026-07-11): stderr ต้องมีตัวกันความยาวแบบเดียวกับ stdout ด้วย
+        #  codex CLI สะท้อนบทสนทนาทั้งหมด (prompt+คำตอบ) ลง stderr → งาน P14 ทั้งเฟสพูดเรื่อง
+        #  rate limit/quota ของ API วัดผล ทำให้ err_clean ยาวเต็มไปด้วยคำต้องห้าม → quota/auth ปลอม
+        #  error จริงของ CLI สั้น (~110 ตัว ≤250) ยังจับได้ · บทสนทนายาว (>250) ไม่โดนตีปลอม
+        if (len(out_clean.strip()) <= 250 and STRONG_AUTH_RE.search(out_clean)) or (len(err_clean.strip()) <= 250 and STRONG_AUTH_RE.search(err_clean)):
             return "auth"
         # quota ใช้ตัวกันความยาวแบบเดียวกับ auth — เคสจริง 2026-07-10 (QAQC review):
         # งานรีวิวที่ "เนื้อหาพูดถึง" quota/rate limit (เช่นตรวจดีไซน์หมวด Quota / Rate-limit)
         # ตอบยาวปกติ exit 0 แต่โดนตีเป็น quota ปลอม → codex/gemini ถูกทิ้งคำตอบทั้งที่ทำงานสำเร็จ
-        if (len(out_clean.strip()) <= 250 and QUOTA_RE.search(out_clean)) or QUOTA_RE.search(err_clean):
+        if (len(out_clean.strip()) <= 250 and QUOTA_RE.search(out_clean)) or (len(err_clean.strip()) <= 250 and QUOTA_RE.search(err_clean)):
             return "quota"
         if len(out_clean.strip()) < 40 and AUTH_RE.search(err_clean):
             return "auth"

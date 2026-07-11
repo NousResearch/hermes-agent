@@ -49,6 +49,7 @@ import threading
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.backend import (
     ActionResult,
     CaptureResult,
@@ -165,6 +166,7 @@ def _resolve_mcp_invocation(
             [driver_cmd, "manifest"],
             capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
             # cua-driver is a third-party binary — never hand it provider
             # API keys via inherited env (same policy as the MCP and CLI
             # fallback spawns below; #53503/#55709/#58889 lineage).
@@ -259,6 +261,7 @@ def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]
             # stdin-reading mode rather than erroring — DEVNULL gives them EOF
             # so they exit fast instead of blocking until the timeout.
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
             # Sanitized like every other cua-driver spawn: third-party
             # binary, no inherited provider keys (#53503/#55709/#58889).
             env=_sanitize_subprocess_env(cua_driver_child_env()),
@@ -921,6 +924,7 @@ class _CuaDriverSession:
                 try:
                     proc = _subprocess.run(
                         cmd, capture_output=True, text=True, timeout=max(15.0, timeout),
+                        creationflags=windows_hide_flags(),
                         env=_sanitize_subprocess_env(cua_driver_child_env()),
                     )
                 except Exception as e:  # pragma: no cover - subprocess spawn failure

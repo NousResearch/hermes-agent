@@ -1442,6 +1442,156 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
   })
 })
 
+describe('usePromptActions submit new-chat first message (drift re-baseline)', () => {
+  const NEW_RUNTIME_ID = 'rt-new-session'
+  const NEW_STORED_ID = 'stored-new-session'
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('does not self-abort the first message of a new chat when createBackendSessionForSend updates the stored id and route', async () => {
+    // Regression: createBackendSessionForSend navigates to the new session's
+    // URL and updates selectedStoredSessionIdRef to the new stored id. The
+    // drift guard must treat these as the new baseline, not as a user
+    // switching sessions — otherwise the first message of every new chat is
+    // silently dropped (the "window jumps blank" bug).
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    let routeTokenValue = '/new'
+    const getRouteToken = () => routeTokenValue
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      // Simulate what the real createBackendSessionForSend does: update refs
+      // and navigate to the new session route.
+      activeSessionIdRef.current = NEW_RUNTIME_ID
+      selectedStoredSessionIdRef.current = NEW_STORED_ID
+      routeTokenValue = `/chat/${NEW_STORED_ID}`
+
+      return NEW_RUNTIME_ID
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={getRouteToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const ok = await handle!.submitText('first message of a new chat')
+
+    expect(ok).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    // The prompt must reach the gateway — the self-abort bug would skip this.
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(true)
+    expect(calls.find(c => c.method === 'prompt.submit')?.params).toEqual({
+      session_id: NEW_RUNTIME_ID,
+      text: 'first message of a new chat'
+    })
+  })
+
+  it('still aborts when the user genuinely switches sessions after createBackendSessionForSend', async () => {
+    // The re-baseline must not mask a REAL session switch: if the user clicks
+    // a different session after createBackendSessionForSend lands but before
+    // the pipeline completes, the drift check must still fire and abort.
+    // We use a file attachment so syncAttachmentsForSubmit has an await point
+    // (file.attach RPC), giving us a window to simulate the switch.
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    let routeTokenValue = '/new'
+    const getRouteToken = () => routeTokenValue
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = NEW_RUNTIME_ID
+      selectedStoredSessionIdRef.current = NEW_STORED_ID
+      routeTokenValue = `/chat/${NEW_STORED_ID}`
+
+      return NEW_RUNTIME_ID
+    })
+
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let releaseFileAttach: () => void = () => {}
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach') {
+        // Block here so the user can switch sessions mid-sync.
+        await new Promise<void>(resolve => {
+          releaseFileAttach = resolve
+        })
+
+        return {
+          attached: true,
+          ref_text: '@file:.hermes/desktop-attachments/test.pdf',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    $composerAttachments.set([
+      { id: 'file:test', kind: 'file', label: 'test.pdf', path: '/abs/test.pdf' }
+    ])
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={getRouteToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const submitting = handle!.submitText('message before the switch')
+    await waitFor(() => expect(calls.some(c => c.method === 'file.attach')).toBe(true))
+
+    // Simulate a user switching to a different session after the new session
+    // was created and the sync phase started.
+    selectedStoredSessionIdRef.current = 'stored-other-session'
+    routeTokenValue = '/chat/stored-other-session'
+    releaseFileAttach()
+
+    expect(await submitting).toBe(false)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
+
+    $composerAttachments.set([])
+    $connection.set(null)
+  })
+})
+
 describe('usePromptActions eager attachment upload (drop-time)', () => {
   afterEach(() => {
     cleanup()

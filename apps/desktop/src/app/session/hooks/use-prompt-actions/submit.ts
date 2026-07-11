@@ -122,9 +122,18 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
 
+      // The drift baseline is mutable: createBackendSessionForSend legitimately
+      // mutates selectedStoredSessionIdRef and the route (it navigates to the
+      // new session's URL). That is NOT a user-initiated session switch — it's
+      // the normal new-chat flow. Without re-baselining, the post-create drift
+      // check fires on the very session we just created and self-aborts the
+      // first message of every new chat (the "window jumps blank" bug).
+      let driftBaselineStoredId = startingStoredSessionId
+      let driftBaselineRouteToken = startingRouteToken
+
       const sessionContextDrifted = (): boolean =>
-        selectedStoredSessionIdRef.current !== startingStoredSessionId ||
-        getRouteToken() !== startingRouteToken
+        selectedStoredSessionIdRef.current !== driftBaselineStoredId ||
+        getRouteToken() !== driftBaselineRouteToken
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
@@ -280,6 +289,18 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
           return false
         }
+
+        // createBackendSessionForSend legitimately mutates
+        // selectedStoredSessionIdRef and the route (it navigates to the new
+        // session's URL). That is NOT a user-initiated session switch — it's
+        // the normal new-chat flow. Re-baseline BEFORE the drift check so the
+        // guard doesn't self-abort on the very session we just created.
+        // createBackendSessionForSend has its own internal drift check (it
+        // returns null if the user switched mid-create), so a null return
+        // already carries the "user switched" signal — no need to re-check
+        // here against the pre-create baseline.
+        driftBaselineStoredId = selectedStoredSessionIdRef.current
+        driftBaselineRouteToken = getRouteToken()
 
         if (sessionContextDrifted()) {
           return abortForSessionSwitch(sessionId)

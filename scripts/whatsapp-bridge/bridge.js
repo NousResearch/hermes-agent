@@ -268,8 +268,8 @@ const MAX_QUEUE_SIZE = 100;
 // reaches the adapter becomes a model-facing event with real token cost.
 // Receipts live OUTSIDE the session dir so re-pairing keeps them.
 const ingressReceipts = createIngressReceipts({
-  filePath: process.env.WHATSAPP_INGRESS_RECEIPTS_FILE
-    || path.join(path.dirname(SESSION_DIR), 'ingress-receipts.log'),
+  dirPath: process.env.WHATSAPP_INGRESS_RECEIPTS_DIR
+    || path.join(path.dirname(SESSION_DIR), 'ingress-receipts'),
 });
 
 // Track recently sent message IDs.  Two purposes:

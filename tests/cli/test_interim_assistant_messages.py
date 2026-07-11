@@ -82,3 +82,25 @@ def test_respects_already_streamed_when_enabled():
     with patch("cli._cprint") as mock_print:
         cli._on_interim_assistant("streaming handled this", already_streamed=True)
     mock_print.assert_not_called()
+
+
+def test_init_agent_threads_interim_assistant_callback():
+    """The mixin's _init_agent passes interim_assistant_callback to AIAgent.
+
+    Regression guard: the one-line wiring change at
+    ``cli_agent_setup_mixin.py:391`` (AIAgent constructor kwarg) must survive
+    refactors.  Uses source inspection rather than a full mixin construction
+    because ``_init_agent`` has ~35 internal dependencies and calls
+    ``_ensure_runtime_credentials``, ``wait_for_mcp_discovery``, session-DB
+    loads, etc. that would require heavy mocking.
+
+    Mirrors the pattern in ``test_cli_active_agent_ref_wiring.py``
+    (``test_mixin_does_not_use_bare_global``).
+    """
+    import inspect
+    from hermes_cli import cli_agent_setup_mixin as mixin_mod
+
+    src = inspect.getsource(mixin_mod)
+    assert "interim_assistant_callback=self._on_interim_assistant" in src, (
+        "mixin no longer wires interim_assistant_callback into AIAgent constructor"
+    )

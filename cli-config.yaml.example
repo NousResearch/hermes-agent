@@ -1265,14 +1265,12 @@ display:
   #         cleanup_progress: true
   cleanup_progress: false
 
-  # Natural mid-turn assistant updates.
-  # On gateway platforms, when true, completed assistant status messages are
-  # sent as separate chat messages. On the Desktop app, when true, mid-turn
-  # assistant narration streamed between tool calls is kept in the transcript
-  # instead of the bubble collapsing to only the final message on completion.
-  # Independent of tool_progress and gateway streaming.
-  #   true:  Keep/send mid-turn assistant updates (default)
-  #   false: Only keep/send the final response
+  # Natural mid-turn assistant updates (CLI and gateway).
+  # When true, mid-turn assistant commentary appears as inline frames in the
+  # CLI or as separate messages in chat platforms. This is independent of
+  # tool_progress, streaming, and final responses.
+  #   true:  Show intermediate assistant messages (default)
+  #   false: Only show the final response
   interim_assistant_messages: true
 
   # Gateway-only long-running status heartbeats.

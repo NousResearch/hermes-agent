@@ -1089,15 +1089,25 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
         return False, _read_json_file(lock_path)
+
+    created_stat = os.fstat(fd)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(record, handle)
     except Exception:
         try:
-            lock_path.unlink(missing_ok=True)
+            if os.path.samestat(created_stat, lock_path.stat()):
+                lock_path.unlink(missing_ok=True)
         except OSError:
             pass
         raise
+
+    try:
+        if not os.path.samestat(created_stat, lock_path.stat()):
+            return False, _read_json_file(lock_path)
+    except OSError:
+        return False, _read_json_file(lock_path)
+
     return True, None
 
 

@@ -929,6 +929,65 @@ class TestScopedLocks:
         assert payload["pid"] == os.getpid()
         assert payload["metadata"]["platform"] == "slack"
 
+    def test_acquire_scoped_lock_does_not_allow_dual_ownership_during_initial_write(self, tmp_path, monkeypatch):
+        """A contender must not unlink a lock file that is still being initialized."""
+        import threading
+
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+
+        original_dump = status.json.dump
+        first_writer_started = threading.Event()
+        allow_first_writer = threading.Event()
+        second_writer_finished = threading.Event()
+        call_count = 0
+        call_count_lock = threading.Lock()
+
+        def coordinated_dump(obj, handle, *args, **kwargs):
+            nonlocal call_count
+            with call_count_lock:
+                call_count += 1
+                call_number = call_count
+
+            if call_number == 1:
+                first_writer_started.set()
+                assert allow_first_writer.wait(timeout=5)
+            else:
+                original_dump(obj, handle, *args, **kwargs)
+                second_writer_finished.set()
+                return
+
+            original_dump(obj, handle, *args, **kwargs)
+
+        monkeypatch.setattr(status.json, "dump", coordinated_dump)
+
+        results = []
+
+        def acquire():
+            results.append(
+                status.acquire_scoped_lock(
+                    "slack-app-token",
+                    "secret",
+                    metadata={"platform": "slack"},
+                )
+            )
+
+        first = threading.Thread(target=acquire)
+        second = threading.Thread(target=acquire)
+
+        first.start()
+        assert first_writer_started.wait(timeout=5)
+
+        second.start()
+        assert second_writer_finished.wait(timeout=5)
+
+        allow_first_writer.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert sum(acquired for acquired, _ in results) == 1
+
     def test_acquire_scoped_lock_recovers_corrupt_lock_file(self, tmp_path, monkeypatch):
         """Lock file with invalid JSON should be treated as stale."""
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))

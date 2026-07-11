@@ -70,14 +70,22 @@ class TestMentionStrippedCommandDispatch:
         await dispatch(discord_adapter, msg)
         assert get_response_text(discord_adapter) is None
 
-    async def test_dm_no_mention_needed(self, discord_adapter):
-        """DMs don't require @mention — /help works directly."""
+    async def test_dm_command_reaches_gateway_before_delivery_boundary(self, discord_adapter):
+        """Inbound parsing remains separate from the outbound DM prohibition."""
         dm = make_fake_dm_channel()
         msg = make_discord_message(content="/help", channel=dm, mentions=[])
         await dispatch(discord_adapter, msg)
         response = get_response_text(discord_adapter)
         assert response is not None
-        assert "/new" in response
+
+    async def test_real_adapter_send_blocks_dm_channel(self, discord_adapter):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        dm = make_fake_dm_channel()
+        discord_adapter._client.get_channel = lambda _id: dm
+        result = await DiscordAdapter.send(discord_adapter, str(dm.id), "forbidden")
+        assert result.success is False
+        assert "DMs" in result.error
 
 
 class TestAutoThreadingPreservesCommand:

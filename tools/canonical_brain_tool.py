@@ -14,8 +14,6 @@ import importlib.util
 import json
 import os
 import pathlib
-import urllib.error
-import urllib.request
 import uuid
 from typing import Any, Dict, Optional
 
@@ -26,10 +24,6 @@ except Exception:  # pragma: no cover - import-safe for tool discovery
 
 from tools.registry import registry, tool_error
 
-from gateway.support_ops_routing import (
-    lint_and_resolve_discord_content,
-    lint_discord_target_for_content,
-)
 from gateway.support_ops_team_registry import (
     SKYVISION_CONTROL_TOWER_CHANNEL_ID,
     TeamMember,
@@ -39,8 +33,8 @@ from gateway.support_ops_team_registry import (
 CANONICAL_BRAIN_ROOT = pathlib.Path("/opt/adventico-ai-platform/canonical-brain")
 CLOUD_SQL_HELPER = CANONICAL_BRAIN_ROOT / "bin" / "cloud_sql_synthetic_write_gate.py"
 EVENT_TABLE = "canonical_event_log"
-DISCORD_API_BASE = "https://discord.com/api/v10"
 MAX_ROUTE_BACK_MESSAGE_CHARS = 1900
+_ROUTE_BACK_RECEIPT_CAPABILITY = object()
 ALLOWED_EVENT_TYPES = {
     "case.note",
     "handoff.created",
@@ -55,6 +49,7 @@ ALLOWED_EVENT_TYPES = {
     "semantic_interpreter.failed",
     "semantic_interpreter.skipped",
     "semantic_event.drafted",
+    "person.alias.learned",
 }
 RECEIPT_REQUIRED_EVENT_TYPES = {"route_back.sent"}
 FORBIDDEN_ROUTE_BACK_DM_KEYS = {
@@ -259,6 +254,7 @@ def _validate_append_request(
     actors: Dict[str, Any],
     payload: Dict[str, Any],
     safety: Dict[str, Any],
+    receipt_capability: object | None = None,
 ) -> None:
     if event_type not in ALLOWED_EVENT_TYPES:
         raise ValueError(f"event_type_not_allowed:{event_type}")
@@ -278,10 +274,15 @@ def _validate_append_request(
         safety=safety,
     )
     if event_type in RECEIPT_REQUIRED_EVENT_TYPES:
+        if receipt_capability is not _ROUTE_BACK_RECEIPT_CAPABILITY:
+            raise ValueError("route_back.sent may only be emitted by route_back_execute after an adapter receipt")
         receipt = payload.get("receipt") if isinstance(payload, dict) else None
         if not isinstance(receipt, dict) or not receipt.get("message_id"):
             raise ValueError("route_back.sent requires payload.receipt.message_id")
         _validate_no_route_back_dm_refs(payload)
+    if event_type == "person.alias.learned":
+        if not str(payload.get("alias") or "").strip() or not str(payload.get("member_key") or "").strip():
+            raise ValueError("person.alias.learned requires payload.alias and payload.member_key")
 
 
 def _contains_forbidden_dm_route_ref(value: Any) -> bool:
@@ -330,6 +331,7 @@ def canonical_event_append_tool(
     payload: Optional[Dict[str, Any]] = None,
     safety: Optional[Dict[str, Any]] = None,
     idempotency_key: Optional[str] = None,
+    _receipt_capability: object | None = None,
 ) -> str:
     """Append one canonical operational event to Cloud SQL.
 
@@ -350,6 +352,7 @@ def canonical_event_append_tool(
             actors=actors,
             payload=payload,
             safety=safety,
+            receipt_capability=_receipt_capability,
         )
         if not idempotency_key:
             idempotency_key = f"{case_id}:{event_type}:{_hash({'source_refs': source_refs, 'payload': payload})[:24]}"
@@ -363,7 +366,7 @@ def canonical_event_append_tool(
         actor = actors.get("actor") or {"type": "agent", "id": "hermes"}
         subject = actors.get("subject") or {"type": "case", "id": case_id}
         evidence = _normalize_list(payload.get("evidence"), "payload.evidence") if isinstance(payload.get("evidence"), list) else [
-            {"label": "hermes_semantic_decision", "verified": True, "source_refs_hash": _hash(source_refs)[:16]}
+            {"label": "hermes_semantic_decision", "verified": False, "source_refs_hash": _hash(source_refs)[:16]}
         ]
         decision = {
             "kind": "hermes_semantic_operational_persistence",
@@ -430,7 +433,7 @@ LIMIT 1;
                     pass
         finally:
             password = ""
-        return json.dumps({
+        response = {
             "success": True,
             "status": "CANONICAL_EVENT_APPEND_PASS",
             "event_id": event_id,
@@ -441,7 +444,15 @@ LIMIT 1;
             "readback": readback,
             "inserted": tag == "INSERT 0 1",
             "deduped": tag == "INSERT 0 0",
-        }, ensure_ascii=False, sort_keys=True)
+        }
+        if event_type == "person.alias.learned":
+            from gateway.support_ops_team_registry import learn_team_member_alias
+
+            response["alias"] = learn_team_member_alias(
+                str(payload.get("alias")),
+                str(payload.get("member_key")),
+            )
+        return json.dumps(response, ensure_ascii=False, sort_keys=True)
     except Exception as exc:
         return tool_error(f"CANONICAL_EVENT_APPEND_FAIL: {exc}")
 
@@ -455,6 +466,7 @@ def route_back_tool(
     receipt: Optional[Dict[str, Any]] = None,
     blocker_reason: Optional[str] = None,
     idempotency_key: Optional[str] = None,
+    _receipt_capability: object | None = None,
 ) -> str:
     """Record route-back required/sent/blocked state.
 
@@ -465,7 +477,9 @@ def route_back_tool(
         target_ref = _normalize_dict(target_ref, "target_ref")
         source_refs = _normalize_dict(source_refs, "source_refs")
         receipt = _normalize_dict(receipt, "receipt")
-        allowed_modes = {"record_required_only", "queue_intent", "record_sent_receipt", "record_blocked"}
+        allowed_modes = {"record_required_only", "queue_intent", "record_blocked"}
+        if _receipt_capability is _ROUTE_BACK_RECEIPT_CAPABILITY:
+            allowed_modes.add("record_sent_receipt")
         if mode not in allowed_modes:
             raise ValueError(f"mode_not_allowed:{mode}")
         if not target_ref.get("id") and not target_ref.get("mention") and not target_ref.get("lane"):
@@ -518,6 +532,7 @@ def route_back_tool(
             payload=base_payload,
             safety={"contains_secret": False, "contains_payment_credential": False},
             idempotency_key=idempotency_key,
+            _receipt_capability=_receipt_capability,
         )
         try:
             data = json.loads(result)
@@ -569,11 +584,11 @@ def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, A
         if resolution.status == "ambiguous":
             raise ValueError("route_back_execute target_ref ambiguous; ask requester to clarify the public target")
 
-    if resolved_member is not None and resolved_member.key == "emil_lomliev":
+    if resolved_member is not None:
         return {
-            "channel_id": SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+            "channel_id": resolved_member.default_channel_id,
             "channel_type": "public_channel",
-            "target_kind": "owner_public_channel",
+            "target_kind": "member_default_public_channel",
             "target_member_key": resolved_member.key,
             "target_member_id": resolved_member.discord_user_id,
             "target_mention": resolved_member.mention,
@@ -589,34 +604,40 @@ def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, A
             "target_mention": "<@1279454038731264061>",
         }
 
-    raise ValueError(
-        "route_back_execute currently supports only exact approved public owner targets; "
-        "record route_back.blocked and ask for clarification for any other target"
-    )
+    if channel_id:
+        from gateway.channel_directory import is_discord_public_target
+
+        if not is_discord_public_target(channel_id):
+            raise ValueError("route_back_execute requires a directory-confirmed public Discord channel/thread")
+        return {
+            "channel_id": channel_id,
+            "channel_type": "public_channel_or_thread",
+            "target_kind": "exact_public_directory_target",
+            "target_member_key": None,
+            "target_member_id": None,
+            "target_mention": None,
+        }
+
+    raise ValueError("route_back_execute target is unresolved; ask the requester to clarify the public channel/thread")
 
 
 def _discord_post_message(channel_id: str, content: str, *, timeout: int = 15) -> Dict[str, Any]:
-    token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError("discord_bot_token_not_configured")
+    from gateway.config import Platform
+    from gateway.run import _gateway_runner_ref
+    from model_tools import _run_async
 
-    url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
-    data = json.dumps({"content": content}, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bot {token}",
-            "Content-Type": "application/json",
-            "User-Agent": "Hermes-Agent (https://github.com/NousResearch/hermes-agent)",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"discord_send_http_error:{exc.code}") from exc
+    runner = _gateway_runner_ref()
+    adapter = runner.adapters.get(Platform.DISCORD) if runner is not None else None
+    if adapter is None:
+        raise RuntimeError("live_discord_adapter_unavailable")
+    result = _run_async(adapter.send(str(channel_id), content))
+    if not getattr(result, "success", False):
+        raise RuntimeError(str(getattr(result, "error", None) or "discord_adapter_send_failed"))
+    return {
+        "id": str(getattr(result, "message_id", None) or ""),
+        "channel_id": str(channel_id),
+        "adapter_receipt": True,
+    }
 
 
 def _route_back_record_blocked(
@@ -706,61 +727,22 @@ def route_back_execute_tool(
 
         resolved_target_ref = {
             **target_ref,
-            "id": target_ref.get("id") or public_target["target_member_id"],
-            "mention": target_ref.get("mention") or public_target["target_mention"],
+            "id": target_ref.get("id") or public_target.get("target_member_id") or public_target["channel_id"],
+            "mention": target_ref.get("mention") or public_target.get("target_mention"),
             "channel_id": public_target["channel_id"],
             "channel_type": public_target["channel_type"],
             "target_kind": public_target["target_kind"],
         }
 
-        content_lint = lint_and_resolve_discord_content(message)
-        if not content_lint.ok:
-            blocked = _route_back_record_blocked(
-                case_id=case_id,
-                target_ref=resolved_target_ref,
-                message_summary=message_summary,
-                source_refs=source_refs,
-                blocker_reason=f"content_guard:{content_lint.blocked_reason}",
-                idempotency_key=idempotency_key,
-            )
-            return json.dumps({
-                "success": True,
-                "status": "ROUTE_BACK_EXECUTE_BLOCKED",
-                "blocker_reason": f"content_guard:{content_lint.blocked_reason}",
-                "route_back_record": blocked,
-            }, ensure_ascii=False, sort_keys=True)
-
-        target_lint = lint_discord_target_for_content(
-            content_lint.content,
-            chat_id=public_target["channel_id"],
-            parent_chat_id=public_target["channel_id"],
-        )
-        if not target_lint.ok:
-            blocked = _route_back_record_blocked(
-                case_id=case_id,
-                target_ref=resolved_target_ref,
-                message_summary=message_summary,
-                source_refs=source_refs,
-                blocker_reason=f"target_guard:{target_lint.blocked_reason}",
-                idempotency_key=idempotency_key,
-            )
-            return json.dumps({
-                "success": True,
-                "status": "ROUTE_BACK_EXECUTE_BLOCKED",
-                "blocker_reason": f"target_guard:{target_lint.blocked_reason}",
-                "expected_channel_id": target_lint.expected_channel_id,
-                "route_back_record": blocked,
-            }, ensure_ascii=False, sort_keys=True)
-
         _block_secret_like_fields(
             target_ref=resolved_target_ref,
-            message=content_lint.content,
+            message=message,
             message_summary=message_summary,
             source_refs=source_refs,
         )
 
         try:
-            delivery = _discord_post_message(public_target["channel_id"], content_lint.content)
+            delivery = _discord_post_message(public_target["channel_id"], message)
         except Exception as exc:
             blocked = _route_back_record_blocked(
                 case_id=case_id,
@@ -810,6 +792,7 @@ def route_back_execute_tool(
             mode="record_sent_receipt",
             receipt=receipt,
             idempotency_key=idempotency_key,
+            _receipt_capability=_ROUTE_BACK_RECEIPT_CAPABILITY,
         )
         try:
             record_data = json.loads(result)
@@ -835,6 +818,85 @@ def route_back_execute_tool(
         }, ensure_ascii=False, sort_keys=True)
     except Exception as exc:
         return tool_error(f"ROUTE_BACK_EXECUTE_FAIL: {exc}")
+
+
+def canonical_brain_query_tool(
+    *,
+    case_id: str = "",
+    thread_id: str = "",
+    limit: int = 80,
+) -> str:
+    """Read exact Canonical events and mechanically fold current case state."""
+    try:
+        case_id = str(case_id or "").strip()
+        thread_id = str(thread_id or "").strip()
+        if bool(case_id) == bool(thread_id):
+            raise ValueError("provide exactly one of case_id or thread_id")
+        if case_id and not case_id.startswith("case:"):
+            raise ValueError("case_id must start with case:")
+        limit = int(limit)
+        if limit < 1 or limit > 200:
+            raise ValueError("limit must be between 1 and 200")
+
+        helper = _load_helper()
+        password = helper.get_secret_value()
+        try:
+            sock = helper.connect(password)
+            try:
+                if case_id:
+                    where = f"case_id = {helper.sql_quote(case_id)}"
+                else:
+                    ref = helper.sql_quote(thread_id)
+                    where = f"""(
+ source->'source_refs'->>'thread_id' = {ref}
+ OR source->'source_refs'->>'chat_id' = {ref}
+ OR payload->'route_back'->'target_ref'->>'thread_id' = {ref}
+ OR payload->'route_back'->'target_ref'->>'channel_id' = {ref}
+ OR payload->'route_back'->'receipt'->>'thread_id' = {ref}
+ OR payload->'route_back'->'receipt'->>'channel_id' = {ref}
+)"""
+                sql = f"""
+SELECT event_id::text, event_type, case_id, occurred_at::text,
+       source, status, next_action, payload
+FROM {EVENT_TABLE}
+WHERE {where}
+ORDER BY occurred_at DESC, event_id DESC
+LIMIT {limit};
+"""
+                result = helper.query(sock, sql)
+                rows = result.get("rows", []) if isinstance(result, dict) else []
+            finally:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+        finally:
+            password = ""
+
+        columns = [
+            "event_id", "event_type", "case_id", "occurred_at",
+            "source", "status", "next_action", "payload",
+        ]
+        normalized_rows = []
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict):
+                normalized_rows.append(row)
+            elif isinstance(row, (list, tuple)):
+                normalized_rows.append(dict(zip(columns, row)))
+
+        from gateway.canonical_brain_projection import fold_case_events
+
+        cases = fold_case_events(normalized_rows)
+        return json.dumps({
+            "success": True,
+            "status": "CANONICAL_BRAIN_QUERY_PASS",
+            "query": {"case_id": case_id or None, "thread_id": thread_id or None, "limit": limit},
+            "event_count": len(normalized_rows),
+            "case_count": len(cases),
+            "cases": cases,
+        }, ensure_ascii=False, sort_keys=True)
+    except Exception as exc:
+        return tool_error(f"CANONICAL_BRAIN_QUERY_FAIL: {exc}")
 
 
 def check_canonical_brain_requirements() -> bool:
@@ -871,7 +933,7 @@ CANONICAL_EVENT_APPEND_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "event_type": {"type": "string", "enum": sorted(ALLOWED_EVENT_TYPES)},
+            "event_type": {"type": "string", "enum": sorted(ALLOWED_EVENT_TYPES - RECEIPT_REQUIRED_EVENT_TYPES)},
             "case_id": {"type": "string", "description": "Canonical case id, must start with case:"},
             "summary": {"type": "string", "description": "Short operational summary"},
             "source_refs": {"type": "object", "description": "Exact source refs: platform + message/thread/event/manual ref"},
@@ -887,9 +949,8 @@ CANONICAL_EVENT_APPEND_SCHEMA = {
 ROUTE_BACK_SCHEMA = {
     "name": "route_back_state",
     "description": (
-        "Record route-back state in private/runtime Canonical Brain after Hermes decides a target notification "
-        "is required, queued, sent, or blocked. This tool does not secretly send messages. "
-        "Use record_sent_receipt only after a real delivery result with message_id."
+        "Record route-back required, queued, or blocked state in private/runtime Canonical Brain. "
+        "This tool never records sent state. Use route_back_execute for atomic public send + attested receipt."
     ),
     "parameters": {
         "type": "object",
@@ -898,8 +959,7 @@ ROUTE_BACK_SCHEMA = {
             "target_ref": {"type": "object", "description": "Target person/lane/mention/channel refs"},
             "message_summary": {"type": "string"},
             "source_refs": {"type": "object"},
-            "mode": {"type": "string", "enum": ["record_required_only", "queue_intent", "record_sent_receipt", "record_blocked"], "default": "record_required_only"},
-            "receipt": {"type": "object", "description": "Delivery receipt; required for record_sent_receipt"},
+            "mode": {"type": "string", "enum": ["record_required_only", "queue_intent", "record_blocked"], "default": "record_required_only"},
             "blocker_reason": {"type": "string", "description": "Required for record_blocked"},
             "idempotency_key": {"type": "string"},
         },
@@ -911,9 +971,9 @@ ROUTE_BACK_EXECUTE_SCHEMA = {
     "name": "route_back_execute",
     "description": (
         "Execute an exact approved public route-back for private/runtime Canonical Brain cases. "
-        "Use this when the route-back target is already known and public, especially owner/Emil "
-        "route-backs that must go to the approved public control-tower channel, not DM and not the "
-        "requester's current thread. The tool sends first, then records route_back.sent with the real "
+        "Use this when the route-back target is already known and is a directory-confirmed public "
+        "Discord channel/thread or an exact registered teammate public lane. The tool sends first "
+        "through the live adapter, then records route_back.sent with the real "
         "Discord receipt/message_id. If it cannot send safely, it records route_back.blocked and returns "
         "that terminal outcome instead of leaving route_back.required pending."
     ),
@@ -930,6 +990,35 @@ ROUTE_BACK_EXECUTE_SCHEMA = {
         "required": ["case_id", "target_ref", "message", "message_summary", "source_refs"],
     },
 }
+
+CANONICAL_BRAIN_QUERY_SCHEMA = {
+    "name": "canonical_brain_query",
+    "description": (
+        "Read exact Canonical Brain events by case_id or Discord thread_id and return a mechanical "
+        "current-state fold. No keyword search, classification, prioritization, or routing is performed."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "case_id": {"type": "string", "description": "Exact canonical case id"},
+            "thread_id": {"type": "string", "description": "Exact Discord source/target thread id"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 80},
+        },
+    },
+}
+
+registry.register(
+    name="canonical_brain_query",
+    toolset="canonical_brain",
+    schema=CANONICAL_BRAIN_QUERY_SCHEMA,
+    handler=lambda args, **kw: canonical_brain_query_tool(
+        case_id=args.get("case_id", ""),
+        thread_id=args.get("thread_id", ""),
+        limit=args.get("limit", 80),
+    ),
+    check_fn=check_canonical_brain_requirements,
+    emoji="🧠",
+)
 
 registry.register(
     name="canonical_event_append",

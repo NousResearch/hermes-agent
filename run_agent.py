@@ -1551,19 +1551,6 @@ class AIAgent:
 
         return not self._has_natural_response_ending(visible_text)
 
-    def _looks_like_codex_intermediate_ack(
-        self,
-        user_message: str,
-        assistant_content: str,
-        messages: List[Dict[str, Any]],
-        require_workspace: bool = True,
-    ) -> bool:
-        """Forwarder — see ``agent.agent_runtime_helpers.looks_like_codex_intermediate_ack``."""
-        from agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
-        return looks_like_codex_intermediate_ack(
-            self, user_message, assistant_content, messages, require_workspace
-        )
-
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """Forwarder — see ``agent.agent_runtime_helpers.extract_reasoning``."""
         from agent.agent_runtime_helpers import extract_reasoning

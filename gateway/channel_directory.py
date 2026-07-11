@@ -481,9 +481,24 @@ def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
     """Return the channel ``type`` string (e.g. ``"channel"``, ``"forum"``) for *chat_id*, or *None* if unknown."""
     directory = load_directory()
     for ch in directory.get("platforms", {}).get(platform_name, []):
-        if ch.get("id") == chat_id:
+        if ch.get("id") == chat_id or ch.get("thread_id") == chat_id:
             return ch.get("type")
     return None
+
+
+_DISCORD_NON_PUBLIC_TYPES = frozenset({
+    "dm", "group", "group_dm", "private", "private_channel",
+})
+
+
+def is_discord_public_target(chat_id: str) -> bool:
+    """Return True only for a directory-confirmed guild channel/thread.
+
+    Unknown targets fail closed: a numeric Discord ID alone does not prove
+    whether it is a public guild surface or a DM.
+    """
+    channel_type = str(lookup_channel_type("discord", str(chat_id or "")) or "").strip().lower()
+    return bool(channel_type) and channel_type not in _DISCORD_NON_PUBLIC_TYPES
 
 
 def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
@@ -497,6 +512,12 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     """
     directory = load_directory()
     channels = directory.get("platforms", {}).get(platform_name, [])
+    if platform_name == "discord":
+        channels = [
+            channel for channel in channels
+            if str(channel.get("type") or "").strip().lower() not in _DISCORD_NON_PUBLIC_TYPES
+            and str(channel.get("type") or "").strip()
+        ]
     if not channels:
         return None
 
@@ -580,11 +601,6 @@ def format_directory_for_display() -> str:
             for guild_name, guild_channels in sorted(guilds.items()):
                 lines.append(f"Discord ({guild_name}):")
                 for ch in sorted(guild_channels, key=lambda c: c["name"]):
-                    suffix = _format_alias_suffix(ch)
-                    lines.append(f"  discord:{_channel_target_name(plat_name, ch)}{suffix}")
-            if dms:
-                lines.append("Discord (DMs):")
-                for ch in dms:
                     suffix = _format_alias_suffix(ch)
                     lines.append(f"  discord:{_channel_target_name(plat_name, ch)}{suffix}")
             lines.append("")

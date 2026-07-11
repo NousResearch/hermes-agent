@@ -263,7 +263,7 @@ def test_loop_finalize_nudge_when_judge_done_but_open(monkeypatch):
     )
     assert res["outcome"] == "completed_by_worker"
     assert len(turns) == 1
-    assert "still open" in turns[0]
+    assert "call kanban_complete or kanban_block" in turns[0]
 
 
 def test_loop_blocks_when_judge_done_but_never_finalizes(monkeypatch):
@@ -282,7 +282,7 @@ def test_loop_blocks_when_judge_done_but_never_finalizes(monkeypatch):
         first_response="looks done",
     )
     assert res["outcome"] == "blocked_budget"
-    assert "finalize" in blocked["reason"].lower()
+    assert "turn budget" in blocked["reason"].lower()
 
 
 def test_loop_stops_if_task_reclaimed(monkeypatch):

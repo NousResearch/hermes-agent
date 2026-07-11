@@ -248,19 +248,8 @@ def test_guard_gateway_missing_notify_is_pending(gw_session):
     assert res["status"] == "pending_approval"
 
 
-def test_guard_smart_mode(gw_session, monkeypatch):
+def test_retired_smart_mode_falls_through_to_owner_approval(gw_session, monkeypatch):
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
-
-    monkeypatch.setattr(A, "_smart_approve", lambda c, d: "approve")
-    res = A.check_execute_code_guard("import os", "local")
-    assert res["approved"] is True and res.get("smart_approved") is True
-
-    monkeypatch.setattr(A, "_smart_approve", lambda c, d: "deny")
-    res = A.check_execute_code_guard("import os", "local")
-    assert res["approved"] is False and res.get("smart_denied") is True
-
-    # escalate → falls through to manual gateway approval
-    monkeypatch.setattr(A, "_smart_approve", lambda c, d: "escalate")
     _register_resolver(gw_session, "once")
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is True

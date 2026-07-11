@@ -64,6 +64,7 @@ async def test_send_retries_without_reference_when_reply_target_is_system_messag
         return sent_msg
 
     channel = SimpleNamespace(
+        guild=SimpleNamespace(id=1),
         fetch_message=AsyncMock(return_value=ref_msg),
         send=AsyncMock(side_effect=fake_send),
     )
@@ -101,6 +102,7 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
         return sent_msgs[len(send_calls) - 2]
 
     channel = SimpleNamespace(
+        guild=SimpleNamespace(id=1),
         fetch_message=AsyncMock(return_value=ref_msg),
         send=AsyncMock(side_effect=fake_send),
     )
@@ -142,6 +144,7 @@ async def test_send_does_not_retry_on_unrelated_errors():
         )
 
     channel = SimpleNamespace(
+        guild=SimpleNamespace(id=1),
         fetch_message=AsyncMock(return_value=ref_msg),
         send=AsyncMock(side_effect=fake_send),
     )
@@ -212,6 +215,7 @@ async def test_send_to_forum_creates_thread_post():
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999
     forum_channel.name = "ideas"
+    forum_channel.guild = SimpleNamespace(id=1)
     forum_channel.create_thread = AsyncMock(return_value=thread)
     adapter._client = SimpleNamespace(
         get_channel=lambda _chat_id: forum_channel,
@@ -246,6 +250,7 @@ async def test_send_to_forum_sends_remaining_chunks():
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999
     forum_channel.name = "ideas"
+    forum_channel.guild = SimpleNamespace(id=1)
     forum_channel.create_thread = AsyncMock(return_value=thread)
     adapter._client = SimpleNamespace(
         get_channel=lambda _chat_id: forum_channel,
@@ -267,6 +272,7 @@ async def test_send_to_forum_create_thread_failure():
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999
     forum_channel.name = "ideas"
+    forum_channel.guild = SimpleNamespace(id=1)
     forum_channel.create_thread = AsyncMock(side_effect=Exception("rate limited"))
     adapter._client = SimpleNamespace(
         get_channel=lambda _chat_id: forum_channel,
@@ -301,6 +307,7 @@ async def test_send_to_forum_follow_up_chunk_failures_collected_as_warnings():
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999
     forum_channel.name = "ideas"
+    forum_channel.guild = SimpleNamespace(id=1)
     forum_channel.create_thread = AsyncMock(return_value=thread)
     adapter._client = SimpleNamespace(
         get_channel=lambda _chat_id: forum_channel,

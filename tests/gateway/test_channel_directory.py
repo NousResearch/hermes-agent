@@ -16,6 +16,7 @@ from gateway.channel_directory import (
     _apply_channel_aliases,
     _build_from_sessions,
     _build_slack,
+    is_discord_public_target,
 )
 
 
@@ -55,6 +56,19 @@ class TestLoadDirectory:
         with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
             result = load_directory()
         assert result["platforms"]["telegram"][0]["name"] == "John"
+
+    def test_discord_dm_is_hidden_and_not_resolvable(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {
+            "discord": [
+                {"id": "dm-1", "name": "Private", "type": "dm", "guild": None},
+                {"id": "public-1", "name": "ops", "type": "channel", "guild": "Guild"},
+            ]
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            assert resolve_channel_name("discord", "Private") is None
+            assert "Discord (DMs)" not in format_directory_for_display()
+            assert is_discord_public_target("dm-1") is False
+            assert is_discord_public_target("public-1") is True
 
     def test_corrupt_file(self, tmp_path):
         cache_file = tmp_path / "channel_directory.json"
@@ -270,7 +284,7 @@ class TestResolveChannelName:
                 == "1504852553031221391:1514503390321967184"
             )
 
-    def test_discord_stale_self_parent_thread_id_does_not_shadow_alias(self, tmp_path):
+    def test_unverified_discord_alias_cannot_override_known_public_thread(self, tmp_path):
         platforms = {
             "discord": [
                 {
@@ -293,10 +307,7 @@ class TestResolveChannelName:
         alias_file.write_text(json.dumps(aliases))
         with self._setup(tmp_path, platforms), \
              patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", alias_file):
-            assert (
-                resolve_channel_name("discord", "1514503390321967184")
-                == "1504852553031221391:1514503390321967184"
-            )
+            assert resolve_channel_name("discord", "1514503390321967184") == "1514503390321967184"
 
     def test_discord_stale_self_parent_thread_id_falls_back_to_bare_thread(self, tmp_path):
         platforms = {

@@ -2166,7 +2166,7 @@ def test_run_conversation_codex_continues_after_commentary_phase_message(monkeyp
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 
-def test_run_conversation_codex_continues_after_ack_stop_message(monkeypatch):
+def test_run_conversation_does_not_classify_ack_stop_message(monkeypatch):
     agent = _build_agent(monkeypatch)
     responses = [
         _codex_ack_message_response(
@@ -2192,22 +2192,16 @@ def test_run_conversation_codex_continues_after_ack_stop_message(monkeypatch):
     result = agent.run_conversation("look into ~/openclaw-studio and tell me how it works")
 
     assert result["completed"] is True
-    assert result["final_response"] == "Architecture summary complete."
-    assert any(
-        msg.get("role") == "assistant"
-        and msg.get("finish_reason") == "incomplete"
-        and "inspect ~/openclaw-studio" in (msg.get("content") or "")
+    assert result["final_response"].startswith("Absolutely")
+    assert len(responses) == 2
+    assert not any(msg.get("role") == "tool" for msg in result["messages"])
+    assert not any(
+        msg.get("role") == "user" and "Continue now" in (msg.get("content") or "")
         for msg in result["messages"]
     )
-    assert any(
-        msg.get("role") == "user"
-        and "Continue now. Execute the required tool calls" in (msg.get("content") or "")
-        for msg in result["messages"]
-    )
-    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 
-def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt(monkeypatch):
+def test_run_conversation_does_not_keyword_route_directory_ack(monkeypatch):
     agent = _build_agent(monkeypatch)
     responses = [
         _codex_ack_message_response(
@@ -2233,19 +2227,13 @@ def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt
     result = agent.run_conversation("look at current directory and list 3 notable things")
 
     assert result["completed"] is True
-    assert result["final_response"] == "Directory summary complete."
-    assert any(
-        msg.get("role") == "assistant"
-        and msg.get("finish_reason") == "incomplete"
-        and "current directory" in (msg.get("content") or "")
+    assert result["final_response"].startswith("I'll check")
+    assert len(responses) == 2
+    assert not any(msg.get("role") == "tool" for msg in result["messages"])
+    assert not any(
+        msg.get("role") == "user" and "Continue now" in (msg.get("content") or "")
         for msg in result["messages"]
     )
-    assert any(
-        msg.get("role") == "user"
-        and "Continue now. Execute the required tool calls" in (msg.get("content") or "")
-        for msg in result["messages"]
-    )
-    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 
 def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):

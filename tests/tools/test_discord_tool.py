@@ -636,8 +636,9 @@ class TestCreateThread:
         )
 
     @patch("tools.discord_tool._discord_request")
-    def test_create_thread_blocks_backend_resolver_title_outside_backend_lane(self, mock_req, monkeypatch):
+    def test_create_thread_keeps_backend_title_opaque_without_structured_target(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [{"id": "810"}, {"id": "starter-810"}]
 
         result = json.loads(discord_core(
             action="create_thread",
@@ -646,14 +647,14 @@ class TestCreateThread:
             initial_message="@Alex моля провери старите линкове.",
         ))
 
-        assert "error" in result
-        assert "blocked_salutation_person_wrong_discord_lane_requires_structured_target_person" in result["error"]
-        assert SKYVISION_BACKEND_CHANNEL_ID in result["error"]
-        mock_req.assert_not_called()
+        assert result["success"] is True
+        assert result["thread_id"] == "810"
+        assert mock_req.call_count == 2
 
     @patch("tools.discord_tool._discord_request")
-    def test_create_thread_blocks_owner_handoff_title_outside_control_tower(self, mock_req, monkeypatch):
+    def test_create_thread_keeps_owner_handoff_text_opaque_without_structured_target(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [{"id": "811"}, {"id": "starter-811"}]
 
         result = json.loads(discord_core(
             action="create_thread",
@@ -662,10 +663,8 @@ class TestCreateThread:
             initial_message="Емо, Пламенка предлага корекция за SkyAI.",
         ))
 
-        assert "error" in result
-        assert "blocked_salutation_person_wrong_discord_lane_requires_structured_target_person" in result["error"]
-        assert "1504852355588423801" in result["error"]
-        mock_req.assert_not_called()
+        assert result["success"] is True
+        assert result["thread_id"] == "811"
 
     @patch("tools.discord_tool._discord_request")
     def test_create_thread_blocks_unknown_target_person_with_clarification_guidance(self, mock_req, monkeypatch):
@@ -703,8 +702,9 @@ class TestCreateThread:
         mock_req.assert_not_called()
 
     @patch("tools.discord_tool._discord_request")
-    def test_create_thread_blocks_conversational_unknown_person_with_guidance(self, mock_req, monkeypatch):
+    def test_create_thread_does_not_classify_unknown_person_from_prose(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [{"id": "812"}, {"id": "starter-812"}]
 
         result = json.loads(discord_core(
             action="create_thread",
@@ -713,14 +713,13 @@ class TestCreateThread:
             initial_message="Моля пиши на Иван Х.",
         ))
 
-        assert "error" in result
-        assert "blocked_unresolved_requested_person_requires_clarification" in result["error"]
-        assert "Не изпратих съобщението" in result["error"]
-        mock_req.assert_not_called()
+        assert result["success"] is True
+        assert result["thread_id"] == "812"
 
     @patch("tools.discord_tool._discord_request")
-    def test_create_thread_blocks_learned_owner_alias_in_wrong_lane(self, mock_req, monkeypatch):
+    def test_create_thread_does_not_route_from_learned_alias_in_prose(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [{"id": "813"}, {"id": "starter-813"}]
 
         result = json.loads(discord_core(
             action="create_thread",
@@ -729,14 +728,13 @@ class TestCreateThread:
             initial_message="Моля пиши директно на Емо Л в неговия канал.",
         ))
 
-        assert "error" in result
-        assert "blocked_requested_person_wrong_discord_lane" in result["error"]
-        assert "1504852355588423801" in result["error"]
-        mock_req.assert_not_called()
+        assert result["success"] is True
+        assert result["thread_id"] == "813"
 
     @patch("tools.discord_tool._discord_request")
-    def test_create_thread_blocks_known_person_without_structured_target_person_wrong_lane(self, mock_req, monkeypatch):
+    def test_create_thread_requires_structured_target_for_lane_validation(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [{"id": "814"}, {"id": "starter-814"}]
 
         result = json.loads(discord_core(
             action="create_thread",
@@ -745,10 +743,8 @@ class TestCreateThread:
             initial_message="Емо, Пламенка предлага корекция за SkyAI.",
         ))
 
-        assert "error" in result
-        assert "blocked_salutation_person_wrong_discord_lane_requires_structured_target_person" in result["error"]
-        assert "target_person='emil_lomliev'" in result["error"]
-        mock_req.assert_not_called()
+        assert result["success"] is True
+        assert result["thread_id"] == "814"
 
     @patch("tools.discord_tool._discord_request")
     def test_create_thread_allows_owner_handoff_title_in_control_tower(self, mock_req, monkeypatch):
@@ -783,8 +779,9 @@ class TestCreateThread:
         )
 
     @patch("tools.discord_tool._discord_request")
-    def test_create_thread_blocks_backend_resolver_title_without_starter_message(self, mock_req, monkeypatch):
+    def test_create_thread_title_does_not_require_inferred_starter_message(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "815"}
 
         result = json.loads(discord_core(
             action="create_thread",
@@ -792,9 +789,9 @@ class TestCreateThread:
             name="Алекс: Игрите на града — стари линкове",
         ))
 
-        assert "error" in result
-        assert "blocked_backend_resolver_thread_missing_initial_message" in result["error"]
-        mock_req.assert_not_called()
+        assert result["success"] is True
+        assert result["thread_id"] == "815"
+        assert result["starter_message_sent"] is False
 
     @patch("tools.discord_tool._discord_request")
     def test_create_thread_allows_backend_resolver_title_in_backend_lane(self, mock_req, monkeypatch):

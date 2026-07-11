@@ -104,10 +104,8 @@ def test_pre_verify_preserves_composed_report_at_budget_limit(agent, monkeypatch
     assert result["messages"][2]["_pre_verify_synthetic"] is True
 
 
-def test_intermediate_ack_uses_summary_instead_of_premature_text(agent, monkeypatch):
+def test_free_text_ack_is_not_keyword_classified_or_synthetically_continued(agent, monkeypatch):
     agent.valid_tool_names = ["web_search"]
-    agent._intent_ack_continuation = True
-    agent._looks_like_codex_intermediate_ack = MagicMock(return_value=True)
     agent._interruptible_api_call = lambda _kwargs: _response("I'll inspect the files now")
     agent._handle_max_iterations = MagicMock(return_value="verified summary.")
     monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "0")
@@ -118,9 +116,9 @@ def test_intermediate_ack_uses_summary_instead_of_premature_text(agent, monkeypa
     ):
         result = agent.run_conversation("inspect /tmp/project")
 
-    assert result["final_response"] == "verified summary."
-    assert result["turn_exit_reason"] == "max_iterations_reached(1/1)"
-    agent._handle_max_iterations.assert_called_once()
+    assert result["final_response"] == "I'll inspect the files now"
+    assert result["turn_exit_reason"] == "text_response(finish_reason=stop)"
+    agent._handle_max_iterations.assert_not_called()
 
 
 def test_later_verified_response_supersedes_pending_report(agent, monkeypatch):

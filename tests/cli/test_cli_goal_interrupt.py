@@ -179,7 +179,7 @@ class TestHealthyTurnStillRuns:
         assert "Continuing toward your standing goal" in queued
         assert mgr.state.status == "active"
 
-    def test_clean_response_marks_done_when_judge_says_done(self, hermes_home):
+    def test_clean_response_marks_done_when_primary_model_records_completion(self, hermes_home):
         sid = f"sid-done-{uuid.uuid4().hex}"
         cli, mgr = _make_cli_with_goal(sid)
         cli._last_turn_interrupted = False
@@ -187,11 +187,8 @@ class TestHealthyTurnStillRuns:
             {"role": "assistant", "content": "all finished, here's the result"},
         ]
 
-        with patch(
-            "hermes_cli.goals.judge_goal",
-            return_value=("done", "goal satisfied", False, None),
-        ):
-            cli._maybe_continue_goal_after_turn()
+        mgr.record_model_outcome("complete", "goal satisfied")
+        cli._maybe_continue_goal_after_turn()
 
         assert cli._pending_input.empty()
         assert mgr.state.status == "done"

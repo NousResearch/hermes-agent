@@ -125,7 +125,6 @@ from gateway.platforms.base import (
     utf16_len,
     validate_inbound_media_size,
 )
-from gateway.support_ops_routing import lint_and_resolve_discord_content
 from tools.url_safety import is_safe_url
 
 
@@ -2004,16 +2003,6 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        lint = lint_and_resolve_discord_content(content)
-        if not lint.ok:
-            logger.warning(
-                "[%s] Blocking Discord send with unresolved teammate mention placeholder: %s",
-                self.name,
-                lint.blocked_reason,
-            )
-            return SendResult(success=False, error=lint.blocked_reason or "blocked_unresolved_mention")
-        content = lint.content
-
         try:
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
@@ -2035,6 +2024,19 @@ class DiscordAdapter(BasePlatformAdapter):
                     channel = await self._client.fetch_channel(int(chat_id))
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
+
+            dm_types = tuple(
+                t for t in (
+                    getattr(discord, "DMChannel", None),
+                    getattr(discord, "GroupChannel", None),
+                )
+                if isinstance(t, type)
+            )
+            if (dm_types and isinstance(channel, dm_types)) or getattr(channel, "guild", None) is None:
+                return SendResult(
+                    success=False,
+                    error="Discord DMs and group DMs are forbidden; use an approved public guild channel/thread.",
+                )
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):

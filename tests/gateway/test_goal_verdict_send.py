@@ -98,7 +98,7 @@ def _make_runner_with_adapter(session_id: str = None):
 
 @pytest.mark.asyncio
 async def test_goal_verdict_done_sent_via_adapter_send(hermes_home):
-    """When the judge says done, the '✓ Goal achieved' message must reach
+    """When the primary model records completion, the achieved message reaches
     the user through the adapter's ``send()`` method."""
     runner, adapter, session_entry, src = _make_runner_with_adapter()
 
@@ -106,15 +106,15 @@ async def test_goal_verdict_done_sent_via_adapter_send(hermes_home):
 
     mgr = GoalManager(session_entry.session_id)
     mgr.set("ship the feature")
+    mgr.record_model_outcome("complete", "the feature shipped")
 
-    with patch("hermes_cli.goals.judge_goal", return_value=("done", "the feature shipped", False, None)):
-        await runner._post_turn_goal_continuation(
-            session_entry=session_entry,
-            source=src,
-            final_response="I shipped the feature.",
-        )
-        # fire-and-forget create_task — give the loop a tick
-        await asyncio.sleep(0.05)
+    await runner._post_turn_goal_continuation(
+        session_entry=session_entry,
+        source=src,
+        final_response="I shipped the feature.",
+    )
+    # fire-and-forget create_task — give the loop a tick
+    await asyncio.sleep(0.05)
 
     assert len(adapter.sends) == 1, f"expected 1 send, got {len(adapter.sends)}: {adapter.sends}"
     msg = adapter.sends[0]

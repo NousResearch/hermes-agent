@@ -19,7 +19,7 @@ from typing import Dict, Any, List, Optional
 
 
 # Valid status values for todo items
-VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
+VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled", "blocked"}
 
 # Bounds on persisted todo state. The todo list is a planning aid the model
 # re-reads after every context-compression event (see format_for_injection),
@@ -108,6 +108,19 @@ class TodoStore:
         """Check if there are any items in the list."""
         return bool(self._items)
 
+    def has_active_items(self) -> bool:
+        """Return whether the model-owned plan still requires execution.
+
+        The runtime does not interpret task meaning.  It only observes the
+        structured statuses chosen by the model.  ``pending`` and
+        ``in_progress`` require another tool call; ``blocked`` is terminal for
+        the current turn so the model can ask for genuinely unavailable input.
+        """
+        return any(
+            item["status"] in {"pending", "in_progress"}
+            for item in self._items
+        )
+
     def format_for_injection(self) -> Optional[str]:
         """
         Render the todo list for post-compression injection.
@@ -124,6 +137,7 @@ class TodoStore:
             "in_progress": "[>]",
             "pending": "[ ]",
             "cancelled": "[~]",
+            "blocked": "[!]",
         }
 
         # Only inject pending/in_progress items — completed/cancelled ones
@@ -200,6 +214,10 @@ def todo_tool(
     todos: Optional[List[Dict[str, Any]]] = None,
     merge: bool = False,
     store: Optional[TodoStore] = None,
+    plan_approval: Optional[Dict[str, Any]] = None,
+    goal_outcome: Optional[Dict[str, Any]] = None,
+    session_key: str = "",
+    user_id: str = "",
 ) -> str:
     """
     Single entry point for the todo tool. Reads or writes depending on params.
@@ -235,8 +253,9 @@ def todo_tool(
     in_progress = sum(1 for i in items if i["status"] == "in_progress")
     completed = sum(1 for i in items if i["status"] == "completed")
     cancelled = sum(1 for i in items if i["status"] == "cancelled")
+    blocked = sum(1 for i in items if i["status"] == "blocked")
 
-    return json.dumps({
+    result = {
         "todos": items,
         "summary": {
             "total": len(items),
@@ -244,8 +263,39 @@ def todo_tool(
             "in_progress": in_progress,
             "completed": completed,
             "cancelled": cancelled,
+            "blocked": blocked,
         },
-    }, ensure_ascii=False)
+    }
+    if plan_approval is not None:
+        if not isinstance(plan_approval, dict):
+            return tool_error("plan_approval must be an object")
+        try:
+            from tools.approval import grant_plan_capability
+
+            result["plan_capability"] = grant_plan_capability(
+                session_key=session_key,
+                plan_id=plan_approval.get("plan_id", ""),
+                exact_commands=plan_approval.get("exact_commands") or [],
+                approved_by_user_id=user_id,
+                ttl_seconds=plan_approval.get("ttl_seconds", 3600),
+                max_uses_per_command=plan_approval.get("max_uses_per_command", 3),
+            )
+        except Exception as exc:
+            return tool_error(f"plan capability not granted: {exc}")
+    if goal_outcome is not None:
+        if not isinstance(goal_outcome, dict):
+            return tool_error("goal_outcome must be an object")
+        try:
+            from hermes_cli.goals import GoalManager
+
+            recorded = GoalManager(session_key).record_model_outcome(
+                goal_outcome.get("status", ""),
+                goal_outcome.get("reason", ""),
+            )
+            result["goal_outcome"] = {"recorded": recorded}
+        except Exception as exc:
+            return tool_error(f"goal outcome not recorded: {exc}")
+    return json.dumps(result, ensure_ascii=False)
 
 
 def check_todo_requirements() -> bool:
@@ -270,10 +320,11 @@ TODO_SCHEMA = {
         "- merge=false (default): replace the entire list with a fresh plan\n"
         "- merge=true: update existing items by id, add any new ones\n\n"
         "Each item: {id: string, content: string, "
-        "status: pending|in_progress|completed|cancelled}\n"
+        "status: pending|in_progress|completed|cancelled|blocked}\n"
         "List order is priority. Only ONE item in_progress at a time.\n"
-        "Mark items completed immediately when done. If something fails, "
-        "cancel it and add a revised item.\n\n"
+        "Mark items completed immediately when done. If one approach fails, "
+        "add a revised item and keep working. Use blocked only when every safe "
+        "available approach is exhausted and user/external input is genuinely required.\n\n"
         "Always returns the full current list."
     ),
     "parameters": {
@@ -295,7 +346,7 @@ TODO_SCHEMA = {
                         },
                         "status": {
                             "type": "string",
-                            "enum": ["pending", "in_progress", "completed", "cancelled"],
+                            "enum": ["pending", "in_progress", "completed", "cancelled", "blocked"],
                             "description": "Current status"
                         }
                     },
@@ -310,7 +361,34 @@ TODO_SCHEMA = {
                 ),
                 "default": False
             }
-        },
+            },
+            "plan_approval": {
+                "type": "object",
+                "description": (
+                    "Use only after the authenticated owner explicitly approves this plan. "
+                    "Hermes decides approval meaning; runtime grants only exact expiring commands."
+                ),
+                "properties": {
+                    "plan_id": {"type": "string"},
+                    "exact_commands": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 64},
+                    "ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 28800},
+                    "max_uses_per_command": {"type": "integer", "minimum": 1, "maximum": 10},
+                },
+                "required": ["plan_id", "exact_commands"],
+            },
+            "goal_outcome": {
+                "type": "object",
+                "description": (
+                    "When a standing /goal is active, record your own outcome for this turn. "
+                    "Use complete only with concrete verification. Use blocked only after all "
+                    "safe available approaches are exhausted; otherwise continue."
+                ),
+                "properties": {
+                    "status": {"type": "string", "enum": ["continue", "complete", "blocked"]},
+                    "reason": {"type": "string"},
+                },
+                "required": ["status", "reason"],
+            },
         "required": []
     }
 }
@@ -324,7 +402,9 @@ registry.register(
     toolset="todo",
     schema=TODO_SCHEMA,
     handler=lambda args, **kw: todo_tool(
-        todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")),
+        todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store"),
+        goal_outcome=args.get("goal_outcome"),
+        session_key=str(kw.get("session_key") or "")),
     check_fn=check_todo_requirements,
     emoji="📋",
 )

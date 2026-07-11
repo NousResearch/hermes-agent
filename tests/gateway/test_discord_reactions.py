@@ -189,7 +189,7 @@ async def test_reaction_helper_failures_do_not_break_message_flow(adapter):
 
 
 @pytest.mark.asyncio
-async def test_discord_final_response_reports_owner_route_back_block_outside_control_tower(adapter):
+async def test_discord_final_response_does_not_rewrite_model_authored_target_meaning(adapter):
     raw_message = SimpleNamespace(
         add_reaction=AsyncMock(),
         remove_reaction=AsyncMock(),
@@ -217,9 +217,7 @@ async def test_discord_final_response_reports_owner_route_back_block_outside_con
     adapter.send.assert_awaited_once()
     _, kwargs = adapter.send.await_args
     assert kwargs["chat_id"] == "1504852553031221391"
-    assert "Не изпратих финалния отговор" in kwargs["content"]
-    assert "blocked_owner_route_back_mention_wrong_discord_lane" in kwargs["content"]
-    assert EMIL_OWNER_MENTION not in kwargs["content"]
+    assert kwargs["content"] == f"{EMIL_OWNER_MENTION} Емо, Пламенка върна корекцията за SkyAI."
 
 
 @pytest.mark.asyncio

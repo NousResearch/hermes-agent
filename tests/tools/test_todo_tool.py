@@ -47,6 +47,13 @@ class TestHasItems:
         store.write([{"id": "1", "content": "x", "status": "pending"}])
         assert store.has_items() is True
 
+    def test_only_pending_and_in_progress_require_continuation(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "x", "status": "pending"}])
+        assert store.has_active_items() is True
+        store.write([{"id": "1", "content": "x", "status": "blocked"}])
+        assert store.has_active_items() is False
+
 
 class TestFormatForInjection:
     def test_empty_returns_none(self):

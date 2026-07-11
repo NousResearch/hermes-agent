@@ -248,7 +248,7 @@ class ResponsesApiTransport(ProviderTransport):
         }
         if response_tools:
             kwargs["tools"] = response_tools
-            kwargs["tool_choice"] = "auto"
+            kwargs["tool_choice"] = params.get("tool_choice") or "auto"
             kwargs["parallel_tool_calls"] = True
 
         session_id = params.get("session_id")

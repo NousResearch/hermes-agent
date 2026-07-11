@@ -1440,7 +1440,6 @@ def init_agent(
     # the historical gate), true (all api_modes), false (never), or a list of
     # model-name substrings.  Resolved against the active api_mode/model in the
     # conversation loop's intent-ack block.
-    agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
 
     # Universal task-completion guidance toggle.  Default True.  Surfaced
     # as a separate flag from tool_use_enforcement because the guidance

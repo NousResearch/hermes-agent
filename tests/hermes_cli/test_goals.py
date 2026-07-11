@@ -302,15 +302,14 @@ class TestGoalManager:
         assert mgr2.is_active()
 
     def test_evaluate_after_turn_done(self, hermes_home):
-        """Judge says done → status=done, no continuation."""
-        from hermes_cli import goals
+        """Primary model says complete → status=done, no continuation."""
         from hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="eval-sid-1")
         mgr.set("ship it")
 
-        with patch.object(goals, "judge_goal", return_value=("done", "shipped", False, None)):
-            decision = mgr.evaluate_after_turn("I shipped the feature.")
+        mgr.record_model_outcome("complete", "shipped")
+        decision = mgr.evaluate_after_turn("I shipped the feature.")
 
         assert decision["verdict"] == "done"
         assert decision["should_continue"] is False
@@ -412,6 +411,7 @@ def test_goal_command_dispatches_in_cli_registry_helpers():
 # ──────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.skip(reason="auxiliary goal judge retired; primary model owns goal outcomes")
 class TestJudgeParseFailureAutoPause:
     """Regression: weak judge models (e.g. deepseek-v4-flash) that return
     empty strings or non-JSON prose must auto-pause the loop after N turns
@@ -1005,8 +1005,7 @@ class TestWaitBarrier:
 
 
 class TestJudgeDrivenWait:
-    """The judge returns a `wait` verdict (given live background-process
-    context) and the loop parks automatically — no manual /goal wait."""
+    """Explicit mechanical wait barriers park the model-owned goal loop."""
 
     @staticmethod
     def _spawn_sleeper():
@@ -1021,19 +1020,9 @@ class TestJudgeDrivenWait:
         try:
             mgr = GoalManager(session_id="jw-pid", default_max_turns=10)
             mgr.set("ship the PR")
-            # Judge sees the running process and says wait-on-pid.
-            with patch.object(
-                goals, "judge_goal",
-                return_value=("wait", "CI watcher still running", False, {"pid": proc.pid}),
-            ):
-                decision = mgr.evaluate_after_turn(
-                    "Pushed the PR, watching CI.",
-                    background_processes=[{
-                        "pid": proc.pid, "command": "wait_for_pr_green.sh",
-                        "status": "running", "uptime_seconds": 12,
-                    }],
-                )
-            assert decision["verdict"] == "wait"
+            mgr.wait_on(proc.pid, "CI watcher still running")
+            decision = mgr.evaluate_after_turn("Pushed the PR, watching CI.")
+            assert decision["verdict"] == "waiting"
             assert decision["should_continue"] is False
             assert decision["continuation_prompt"] is None
             assert mgr.state.waiting_on_pid == proc.pid
@@ -1056,12 +1045,9 @@ class TestJudgeDrivenWait:
 
         mgr = GoalManager(session_id="jw-secs", default_max_turns=10)
         mgr.set("retry after backoff")
-        with patch.object(
-            goals, "judge_goal",
-            return_value=("wait", "rate limited", False, {"seconds": 120}),
-        ):
-            decision = mgr.evaluate_after_turn("Hit a 429, backing off.")
-        assert decision["verdict"] == "wait"
+        mgr.wait_for_seconds(120, "rate limited")
+        decision = mgr.evaluate_after_turn("Hit a 429, backing off.")
+        assert decision["verdict"] == "waiting"
         assert decision["should_continue"] is False
         assert mgr.state.waiting_until > 0
         assert mgr.state.waiting_on_pid is None
@@ -1154,19 +1140,9 @@ class TestSessionTriggerBarrier:
         s, reg = self._inject("proc_t4", watch_patterns=["BUILD SUCCESSFUL"])
         mgr = GoalManager(session_id="st-goal", default_max_turns=10)
         mgr.set("wait for the build to succeed")
-        with patch.object(
-            goals, "judge_goal",
-            return_value=("wait", "blocked on build", False, {"session_id": "proc_t4"}),
-        ):
-            decision = mgr.evaluate_after_turn(
-                "Started the build watcher.",
-                background_processes=[{
-                    "session_id": "proc_t4", "pid": 4242, "command": "watcher.sh",
-                    "status": "running", "watch_patterns": ["BUILD SUCCESSFUL"],
-                    "watch_hit": False,
-                }],
-            )
-        assert decision["verdict"] == "wait"
+        mgr.wait_on_session("proc_t4", "blocked on build")
+        decision = mgr.evaluate_after_turn("Started the build watcher.")
+        assert decision["verdict"] == "waiting"
         assert mgr.state.waiting_on_session == "proc_t4"
         assert mgr.is_waiting() is True
 

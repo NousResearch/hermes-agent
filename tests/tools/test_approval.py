@@ -5,7 +5,6 @@ import os
 import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
 import tools.approval as approval_module
@@ -13,7 +12,6 @@ from hermes_constants import get_hermes_home
 from tools.approval import (
     _get_approval_mode,
     _normalize_approval_mode,
-    _smart_approve,
     approve_session,
     detect_dangerous_command,
     detect_hardline_command,
@@ -34,11 +32,11 @@ class TestApprovalModeParsing:
 
     def test_valid_modes_pass_through(self):
         assert _normalize_approval_mode("manual") == "manual"
-        assert _normalize_approval_mode("smart") == "smart"
+        assert _normalize_approval_mode("smart") == "manual"
         assert _normalize_approval_mode("off") == "off"
 
     def test_valid_mode_is_case_insensitive_and_trimmed(self):
-        assert _normalize_approval_mode("  SMART  ") == "smart"
+        assert _normalize_approval_mode("  SMART  ") == "manual"
 
     def test_unknown_mode_defaults_to_manual_with_warning(self):
         with mock_patch.object(approval_module.logger, "warning") as warn:
@@ -52,21 +50,6 @@ class TestApprovalModeParsing:
 
     def test_yaml_bool_true_maps_to_manual(self):
         assert _normalize_approval_mode(True) == "manual"
-
-
-class TestSmartApproval:
-    def test_smart_approval_uses_call_llm(self):
-        response = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
-        )
-        with mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
-            result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
-
-        assert result == "approve"
-        mock_call.assert_called_once()
-        assert mock_call.call_args.kwargs["task"] == "approval"
-        assert mock_call.call_args.kwargs["temperature"] == 0
-        assert mock_call.call_args.kwargs["max_tokens"] == 16
 
 
 class TestDetectDangerousRm:
@@ -999,19 +982,19 @@ class TestPatternKeyUniqueness:
         )
         _clear_session(session)
 
-    def test_legacy_find_key_still_approves_find_exec(self):
-        """Old allowlist entry 'find' should keep approving the matching command."""
+    def test_legacy_find_key_no_longer_permanently_approves_find_exec(self):
+        """Broad dangerous-pattern keys are not durable owner approval."""
         _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
         with mock_patch.object(approval_module, "_permanent_approved", set()):
             load_permanent({"find"})
-            assert is_approved("legacy-find", key_exec) is True
+            assert is_approved("legacy-find", key_exec) is False
 
-    def test_legacy_find_key_still_approves_find_delete(self):
-        """Old colliding allowlist entry 'find' should remain backwards compatible."""
+    def test_legacy_find_key_no_longer_permanently_approves_find_delete(self):
+        """Broad permanent classes cannot bypass plan-scoped approval."""
         _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")
         with mock_patch.object(approval_module, "_permanent_approved", set()):
             load_permanent({"find"})
-            assert is_approved("legacy-find", key_delete) is True
+            assert is_approved("legacy-find", key_delete) is False
 
 
 class TestFullCommandAlwaysShown:

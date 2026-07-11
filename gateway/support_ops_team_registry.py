@@ -10,6 +10,9 @@ are consistent.
 from __future__ import annotations
 
 import re
+import json
+import os
+import pathlib
 import unicodedata
 from dataclasses import dataclass
 from typing import Iterable, Literal
@@ -140,6 +143,71 @@ def _alias_entries() -> list[tuple[str, TeamMember]]:
 ALIAS_ENTRIES = _alias_entries()
 
 
+def _learned_alias_path() -> pathlib.Path:
+    try:
+        from hermes_constants import get_hermes_home
+
+        root = pathlib.Path(get_hermes_home())
+    except Exception:
+        root = pathlib.Path.home() / ".hermes"
+    return root / "state" / "team-member-aliases.json"
+
+
+def _load_learned_aliases(path: pathlib.Path | None = None) -> dict[str, str]:
+    target = path or _learned_alias_path()
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    aliases = raw.get("aliases") if isinstance(raw, dict) else None
+    if not isinstance(aliases, dict):
+        return {}
+    return {
+        _normalize(alias): str(member_key).strip()
+        for alias, member_key in aliases.items()
+        if _normalize(alias) and str(member_key).strip() in TEAM_MEMBERS_BY_KEY
+    }
+
+
+def learn_team_member_alias(
+    alias: str,
+    member_key: str,
+    *,
+    path: pathlib.Path | None = None,
+) -> dict[str, str]:
+    """Persist one exact model-confirmed alias mapping atomically.
+
+    This function never infers a person from text.  The caller supplies the
+    alias and canonical member key after Hermes has clarified the ambiguity.
+    """
+    normalized = _normalize(alias)
+    member_key = str(member_key or "").strip()
+    if not normalized:
+        raise ValueError("alias is required")
+    if member_key not in TEAM_MEMBERS_BY_KEY:
+        raise ValueError("unknown member_key")
+
+    existing_resolution = resolve_team_member(normalized)
+    if (
+        existing_resolution.status == "resolved"
+        and existing_resolution.member is not None
+        and existing_resolution.member.key != member_key
+    ):
+        raise ValueError("alias already resolves to a different member")
+
+    target = path or _learned_alias_path()
+    aliases = _load_learned_aliases(target)
+    aliases[normalized] = member_key
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps({"schema": "hermes.team_member_aliases.v1", "aliases": aliases}, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp, target)
+    return {"alias": normalized, "member_key": member_key}
+
+
 def get_team_member(key: str) -> TeamMember | None:
     return TEAM_MEMBERS_BY_KEY.get(str(key or "").strip())
 
@@ -160,6 +228,10 @@ def resolve_team_member(value: str) -> TeamMemberResolution:
     if f"<@{normalized}>" in TEAM_MEMBERS_BY_MENTION:
         return TeamMemberResolution(status="resolved", member=TEAM_MEMBERS_BY_MENTION[f"<@{normalized}>"])
 
+    learned_member_key = _load_learned_aliases().get(normalized)
+    if learned_member_key:
+        return TeamMemberResolution(status="resolved", member=TEAM_MEMBERS_BY_KEY[learned_member_key])
+
     matches = {
         member
         for alias, member in ALIAS_ENTRIES
@@ -170,75 +242,6 @@ def resolve_team_member(value: str) -> TeamMemberResolution:
     if len(matches) > 1:
         return TeamMemberResolution(status="ambiguous", candidates=tuple(sorted(matches, key=lambda m: m.key)))
     return TeamMemberResolution(status="unknown")
-
-
-def infer_requested_person_phrase(text: str) -> str | None:
-    """Extract a conversational "write/tell/send to X" phrase if present.
-
-    This is only used to produce a helpful fail-closed clarification. It is not
-    a route authority and never creates a target by itself.
-    """
-
-    normalized = _titleish(text)
-    patterns = (
-        r"(?:пиши|прати|изпрати|кажи|докладвай|върни|насочи)"
-        r"(?:\s+(?:директно|нов|нова|ново|тред|thread|съобщение))*"
-        r"\s+(?:на|до|към)\s+(.+?)(?:$|\s+(?:че|за|относно|в|:))",
-        r"(?:write|send|tell|route|report)"
-        r"(?:\s+(?:directly|new|thread|message))*"
-        r"\s+(?:to\s+)?(.+?)(?:$|\s+(?:that|about|in|:))",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, normalized, flags=re.IGNORECASE)
-        if match:
-            phrase = match.group(1).strip()
-            phrase = re.sub(r"\s+", " ", phrase)
-            return phrase or None
-    return None
-
-
-def infer_salutation_team_member(text: str) -> TeamMember | None:
-    """Resolve a leading "Name, ..." / "Name: ..." handoff salutation."""
-
-    for raw_line in str(text or "").splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        match = re.match(r"^([^,:—–-]{2,40})\s*[,：:—–-]", line, flags=re.UNICODE)
-        if not match:
-            continue
-        resolution = resolve_team_member(match.group(1))
-        if resolution.status == "resolved":
-            return resolution.member
-        return None
-    return None
-
-
-def infer_team_members_from_text(text: str) -> tuple[TeamMember, ...]:
-    """Return non-overlapping registry alias matches in already-authored text.
-
-    This is not a business classifier. It only detects known people aliases so a
-    caller can fail closed when ``target_person`` is missing or ambiguous.
-    """
-
-    normalized = f" {_normalize(text)} "
-    occupied: list[range] = []
-    matches: list[TeamMember] = []
-
-    for alias, member in ALIAS_ENTRIES:
-        if not alias or len(alias) < 3:
-            continue
-        pattern = re.compile(rf"(?<!\w){re.escape(alias)}(?!\w)", re.UNICODE)
-        for match in pattern.finditer(normalized):
-            span = range(match.start(), match.end())
-            if any(set(span) & set(existing) for existing in occupied):
-                continue
-            occupied.append(span)
-            if member not in matches:
-                matches.append(member)
-            break
-
-    return tuple(matches)
 
 
 def format_resolution_candidates(candidates: Iterable[TeamMember]) -> str:

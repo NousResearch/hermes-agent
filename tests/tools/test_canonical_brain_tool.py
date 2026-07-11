@@ -7,7 +7,7 @@ import pytest
 from tools import canonical_brain_tool as cbt
 
 
-def test_route_back_sent_requires_receipt_message_id():
+def test_route_back_sent_cannot_be_recorded_directly():
     out = cbt.route_back_tool(
         case_id="case:test",
         target_ref={"id": "emil"},
@@ -17,7 +17,7 @@ def test_route_back_sent_requires_receipt_message_id():
         receipt={},
     )
     data = json.loads(out)
-    assert "requires receipt.message_id" in data["error"]
+    assert "mode_not_allowed:record_sent_receipt" in data["error"]
 
 
 @pytest.mark.parametrize(
@@ -81,7 +81,7 @@ def test_route_back_sent_blocks_dm_receipt_before_helper(monkeypatch):
     )
     data = json.loads(out)
 
-    assert "route_back.sent forbids direct-message/DM delivery receipts" in data["error"]
+    assert "may only be emitted by route_back_execute" in data["error"]
     assert called["helper"] is False
 
 
@@ -107,14 +107,7 @@ def test_route_back_pending_modes_return_non_terminal_guard(monkeypatch, mode):
     assert "Do not present this as delivered or complete" in data["route_back"]["final_answer_guard"]
 
 
-@pytest.mark.parametrize(
-    ("mode", "kwargs"),
-    [
-        ("record_sent_receipt", {"receipt": {"message_id": "delivered-1"}}),
-        ("record_blocked", {"blocker_reason": "missing target channel permission"}),
-    ],
-)
-def test_route_back_terminal_modes_return_terminal_outcome(monkeypatch, mode, kwargs):
+def test_route_back_blocked_returns_terminal_outcome(monkeypatch):
     fake = _FakeHelper()
     monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
 
@@ -123,14 +116,14 @@ def test_route_back_terminal_modes_return_terminal_outcome(monkeypatch, mode, kw
         target_ref={"id": "plamenka-thread"},
         message_summary="forward this status to Plamenka",
         source_refs={"platform": "discord", "message_id": "m1"},
-        mode=mode,
-        idempotency_key=f"idem-{mode}",
-        **kwargs,
+        mode="record_blocked",
+        blocker_reason="missing target channel permission",
+        idempotency_key="idem-record-blocked",
     )
     data = json.loads(out)
 
     assert data["success"] is True
-    assert data["route_back"]["mode"] == mode
+    assert data["route_back"]["mode"] == "record_blocked"
     assert data["route_back"]["terminal_outcome"] is True
     assert data["route_back"]["required_next_step"] == "none"
     assert "final_answer_guard" not in data["route_back"]
@@ -201,13 +194,14 @@ def test_route_back_execute_send_failure_records_blocked(monkeypatch):
     assert "discord_send_failed:RuntimeError" in sql
 
 
-def test_route_back_execute_unknown_public_target_records_blocked_without_send(monkeypatch):
+def test_route_back_execute_registered_teammate_uses_public_default_lane(monkeypatch):
     fake = _FakeHelper()
     called = {"send": False}
 
     def fake_post(channel_id, content, *, timeout=15):
         called["send"] = True
-        raise AssertionError("must not send to unresolved targets")
+        called["channel_id"] = channel_id
+        return {"id": "discord-msg-alex", "channel_id": channel_id}
 
     monkeypatch.setattr(cbt, "_discord_post_message", fake_post)
     monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
@@ -216,17 +210,17 @@ def test_route_back_execute_unknown_public_target_records_blocked_without_send(m
         case_id="case:test",
         target_ref={"id": "1282940511962791959"},
         message="forward this",
-        message_summary="unknown route-back target",
+        message_summary="route-back to Alex",
         source_refs={"platform": "discord", "message_id": "m1"},
     )
     data = json.loads(out)
 
     assert data["success"] is True
-    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
-    assert data["blocker_reason"] == "target_not_approved_or_unresolved:ValueError"
-    assert data["route_back_record"]["route_back"]["mode"] == "record_blocked"
-    assert called == {"send": False}
-    assert "route_back.blocked" in "\n".join(fake.queries)
+    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT"
+    assert called["send"] is True
+    assert called["channel_id"] == "1504852408227069993"
+    assert data["route_back_record"]["route_back"]["mode"] == "record_sent_receipt"
+    assert "route_back.sent" in "\n".join(fake.queries)
 
 
 def test_canonical_event_append_blocks_keyword_authority_secret_like_payload():
@@ -310,7 +304,7 @@ def test_append_blocks_structured_secret_keys_before_helper(monkeypatch, kwargs,
     [
         ({"message_summary": "token=abc123456789012345"}, "message_summary"),
         ({"target_ref": {"id": "emil", "note": "secret=abc123456789012345"}}, "target_ref"),
-        ({"mode": "record_sent_receipt", "receipt": {"message_id": "m1", "audit": "password=abc123456789012345"}}, "receipt"),
+        ({"mode": "queue_intent", "receipt": {"message_id": "m1", "audit": "password=abc123456789012345"}}, "receipt"),
     ],
 )
 def test_route_back_blocks_secret_like_fields_before_helper(monkeypatch, kwargs, blocked_field):
@@ -340,9 +334,9 @@ def test_route_back_blocks_secret_like_fields_before_helper(monkeypatch, kwargs,
     ("kwargs", "blocked_field"),
     [
         ({"target_ref": {"id": "emil", "token": "abc"}}, "target_ref"),
-        ({"receipt": {"message_id": "m1", "authorization": "Bearer abc"}, "mode": "record_sent_receipt"}, "receipt"),
+        ({"receipt": {"message_id": "m1", "authorization": "Bearer abc"}, "mode": "queue_intent"}, "receipt"),
         ({"target_ref": {"id": "emil", "credentials": {"password": "abc"}}}, "target_ref"),
-        ({"receipt": {"message_id": "m1", "trail": [{"private_key": "abc"}]}, "mode": "record_sent_receipt"}, "receipt"),
+        ({"receipt": {"message_id": "m1", "trail": [{"private_key": "abc"}]}, "mode": "queue_intent"}, "receipt"),
         ({"blocker_reason": {"payment_credential": "abc"}, "mode": "record_blocked"}, "blocker_reason"),
     ],
 )

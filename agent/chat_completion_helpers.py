@@ -777,6 +777,14 @@ def interruptible_api_call(agent, api_kwargs: dict):
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
+    todo_store = getattr(agent, "_todo_store", None)
+    plan_tool_choice = (
+        "required"
+        if tools_for_api
+        and todo_store is not None
+        and todo_store.has_active_items()
+        else None
+    )
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
@@ -798,6 +806,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             base_url=getattr(agent, "_anthropic_base_url", None),
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+            tool_choice=plan_tool_choice,
         )
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -879,6 +888,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             replay_encrypted_reasoning=bool(
                 getattr(agent, "_codex_reasoning_replay_enabled", True)
             ),
+            tool_choice=plan_tool_choice,
         )
 
     # ── chat_completions (default) ─────────────────────────────────────
@@ -983,6 +993,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
+            tool_choice=plan_tool_choice,
         )
 
     # ── Legacy flag path ────────────────────────────────────────────
@@ -1030,6 +1041,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
+        tool_choice=plan_tool_choice,
     )
 
 

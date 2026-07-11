@@ -607,7 +607,6 @@ def run_conversation(
     final_response = None
     interrupted = False
     failed = False
-    codex_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
@@ -5084,43 +5083,6 @@ def run_conversation(
                 agent._emit_pending_fallback_notice()
                 agent._clear_status_buffer()
 
-                from agent.agent_runtime_helpers import (
-                    intent_ack_continuation_mode,
-                )
-
-                _ack_mode = intent_ack_continuation_mode(agent)
-                if (
-                    _ack_mode != "off"
-                    and agent.valid_tool_names
-                    and codex_ack_continuations < 2
-                    and agent._looks_like_codex_intermediate_ack(
-                        user_message=user_message,
-                        assistant_content=final_response,
-                        messages=messages,
-                        require_workspace=(_ack_mode == "codex_only"),
-                    )
-                ):
-                    codex_ack_continuations += 1
-                    interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
-                    messages.append(interim_msg)
-                    agent._emit_interim_assistant_message(interim_msg)
-
-                    continue_msg = {
-                        "role": "user",
-                        "content": (
-                            "[System: Continue now. Execute the required tool calls and only "
-                            "send your final answer after completing the task.]"
-                        ),
-                    }
-                    messages.append(continue_msg)
-                    agent._session_messages = messages
-                    # An acknowledgment is explicitly non-final. Do not let its
-                    # text suppress iteration-limit summarization if this
-                    # continuation consumes the remaining budget.
-                    final_response = None
-                    continue
-
-                codex_ack_continuations = 0
 
                 if truncated_response_parts:
                     final_response = "".join(truncated_response_parts) + final_response

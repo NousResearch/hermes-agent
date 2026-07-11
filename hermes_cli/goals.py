@@ -1,11 +1,9 @@
 """Persistent session goals — the Ralph loop for Hermes.
 
-A goal is a free-form user objective that stays active across turns. After
-each turn completes, a small judge call asks an auxiliary model "is this
-goal satisfied by the assistant's last response?". If not, Hermes feeds a
-continuation prompt back into the same session and keeps working until the
-goal is done, turn budget is exhausted, the user pauses/clears it, or the
-user sends a new message (which takes priority and pauses the goal loop).
+A goal is a free-form user objective that stays active across turns. The
+primary model records its structured outcome through the todo tool. Hermes
+then continues mechanically until that model reports verified completion,
+the turn budget is exhausted, or the user pauses/clears the goal.
 
 State is persisted in SessionDB's ``state_meta`` table keyed by
 ``goal:<session_id>`` so ``/resume`` picks it up.
@@ -395,10 +393,12 @@ class GoalState:
     max_turns: int = DEFAULT_MAX_TURNS
     created_at: float = 0.0
     last_turn_at: float = 0.0
-    last_verdict: Optional[str] = None        # "done" | "continue" | "skipped"
+    last_verdict: Optional[str] = None        # model-owned structured outcome
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
+    pending_model_outcome: Optional[str] = None
+    pending_model_reason: Optional[str] = None
     # User-added criteria appended mid-loop via the /subgoal command.
     # When non-empty the judge prompt and continuation prompt both
     # include them so the agent works toward them and the judge factors
@@ -457,6 +457,8 @@ class GoalState:
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
+            pending_model_outcome=data.get("pending_model_outcome"),
+            pending_model_reason=data.get("pending_model_reason"),
             subgoals=subgoals,
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
@@ -1213,6 +1215,26 @@ class GoalManager:
         self._state.last_reason = reason
         save_goal(self.session_id, self._state)
 
+    def record_model_outcome(self, outcome: str, reason: str) -> bool:
+        """Persist the primary model's structured decision for this turn.
+
+        This deliberately contains no semantic inference.  The model chooses
+        the outcome through the todo tool; the runtime validates the enum and
+        later applies it mechanically.
+        """
+        if not self.is_active():
+            return False
+        outcome = str(outcome or "").strip().lower()
+        if outcome not in {"continue", "complete", "blocked"}:
+            raise ValueError("goal outcome must be continue, complete, or blocked")
+        reason = str(reason or "").strip()
+        if not reason:
+            raise ValueError("goal outcome requires a reason")
+        self._state.pending_model_outcome = outcome
+        self._state.pending_model_reason = reason
+        save_goal(self.session_id, self._state)
+        return True
+
     # --- /subgoal user controls ---------------------------------------
 
     def add_subgoal(self, text: str) -> str:
@@ -1441,13 +1463,17 @@ class GoalManager:
         state.turns_used += 1
         state.last_turn_at = time.time()
 
-        verdict, reason, parse_failed, wait_directive = judge_goal(
-            state.goal,
-            last_response,
-            subgoals=state.subgoals or None,
-            background_processes=background_processes,
-            contract=state.contract if state.has_contract() else None,
-        )
+        # The primary model owns the decision.  No auxiliary model, keyword
+        # classifier, or response-text heuristic is allowed to decide whether
+        # the goal is complete.  Missing structured state fails open to
+        # continuation so an omitted bookkeeping call cannot stop the work.
+        model_outcome = state.pending_model_outcome or "continue"
+        reason = state.pending_model_reason or "primary model has not recorded completion"
+        state.pending_model_outcome = None
+        state.pending_model_reason = None
+        verdict = "done" if model_outcome == "complete" else model_outcome
+        parse_failed = False
+        wait_directive = None
         state.last_verdict = verdict
         state.last_reason = reason
 
@@ -1494,6 +1520,19 @@ class GoalManager:
                 "verdict": "done",
                 "reason": reason,
                 "message": f"✓ Goal achieved: {reason}",
+            }
+
+        if verdict == "blocked":
+            state.status = "paused"
+            state.paused_reason = reason
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "blocked",
+                "reason": reason,
+                "message": f"⏸ Goal blocked after model-exhausted approaches: {reason}",
             }
 
         # Auto-pause when the judge model can't produce the expected JSON
@@ -1670,8 +1709,6 @@ def run_kanban_goal_loop(
     last_response = first_response or ""
     # The first turn already consumed one unit of budget.
     turns_used = 1
-    nudged_to_finalize = False
-
     while True:
         # Did the worker terminate the task itself this turn?
         try:
@@ -1691,32 +1728,12 @@ def run_kanban_goal_loop(
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
             return {"outcome": "stopped", "turns_used": turns_used, "reason": f"status={status}"}
 
-        # Still open — judge whether the latest response satisfies the card.
-        # The kanban worker loop has no wait-barrier concept (workers finish
-        # via kanban_complete / kanban_block, not by parking), so a WAIT
-        # verdict is treated as CONTINUE here.
-        verdict, reason, _parse_failed, _wait = judge_goal(goal_text, last_response)
-        if verdict == "wait":
-            verdict = "continue"
-        _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
-
-        if verdict == "done":
-            if nudged_to_finalize:
-                # Already asked once to call kanban_complete and it still
-                # didn't — block for review rather than spin.
-                _log(f"kanban goal loop: task {task_id} judged done but worker won't finalize; blocking")
-                try:
-                    block_fn(
-                        f"Goal-mode worker's output looked complete but it never "
-                        f"called kanban_complete after a finalize nudge ({reason})."
-                    )
-                except Exception as exc:
-                    _log(f"kanban goal loop: block_fn failed ({exc})")
-                return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "judged done, never finalized"}
-            prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
-            nudged_to_finalize = True
-        else:
-            prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
+        # Still open: only the primary worker can close or block its task via
+        # the structured lifecycle tools.  No auxiliary model interprets its
+        # prose or overrides its completion decision.
+        reason = "task remains open; call kanban_complete or kanban_block"
+        _log(f"kanban goal loop: turn {turns_used}/{max_turns} status={status}")
+        prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=reason)
 
         # Budget check BEFORE spending another turn.
         if turns_used >= max_turns:
@@ -1725,7 +1742,7 @@ def run_kanban_goal_loop(
                 block_fn(
                     f"Goal-mode worker exhausted its turn budget "
                     f"({turns_used}/{max_turns}) without completing the task. "
-                    f"Last judge verdict: {_truncate(reason, 300)}"
+                    f"Last lifecycle state: {status}."
                 )
             except Exception as exc:
                 _log(f"kanban goal loop: block_fn failed ({exc})")

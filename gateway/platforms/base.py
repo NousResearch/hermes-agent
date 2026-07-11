@@ -1821,41 +1821,6 @@ class TextDebounceState:
     last_ts: float
 
 
-_PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?gateway[.!?\s]*$", re.IGNORECASE),
-    re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?hermes\s+gateway[.!?\s]*$", re.IGNORECASE),
-    re.compile(r"^(?:please\s+)?restart\s+hermes[.!?\s]*$", re.IGNORECASE),
-)
-
-
-def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
-    """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
-
-    This keeps high-impact operational phrases like ``restart gateway`` out of
-    the LLM/tool path, where they can trigger a self-restart from inside the
-    currently running agent and leave the gateway stuck in ``draining`` while it
-    waits for that same agent to finish.
-
-    Scope is intentionally narrow: DM text messages only, exact restart-style
-    phrases only. Group chats keep natural-language semantics.
-    """
-    try:
-        if event is None or event.message_type != MessageType.TEXT:
-            return
-        text = (event.text or "").strip()
-        if not text or text.startswith("/"):
-            return
-        source = getattr(event, "source", None)
-        if getattr(source, "chat_type", None) != "dm":
-            return
-        for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS:
-            if pattern.match(text):
-                event.text = "/restart"
-                return
-    except Exception:
-        return
-
-
 @dataclass
 class SendResult:
     """Result of sending a message."""
@@ -4664,7 +4629,6 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
 
-        coerce_plaintext_gateway_command(event)
 
         # Rewrite ``event.source.thread_id`` via the installed recovery hook
         # (Telegram DM topic mode) so the session key, guard checks, and
@@ -5082,46 +5046,6 @@ class BasePlatformAdapter(ABC):
                             pass
 
                 # Send the text portion
-                if text_content and not _tts_caption_delivered:
-                    if self.platform == Platform.DISCORD:
-                        try:
-                            from gateway.support_ops_routing import lint_discord_target_for_content
-
-                            _target_lint = lint_discord_target_for_content(
-                                text_content,
-                                chat_id=str(event.source.chat_id or ""),
-                                thread_id=str(getattr(event.source, "thread_id", "") or "") or None,
-                                parent_chat_id=str(getattr(event.source, "parent_chat_id", "") or "") or None,
-                                source_user_id=str(getattr(event.source, "user_id", "") or "") or None,
-                            )
-                        except Exception as _lint_err:
-                            logger.warning(
-                                "[%s] Discord Support Ops final-response target lint failed for %s: %s",
-                                self.name,
-                                event.source.chat_id,
-                                _lint_err,
-                            )
-                            _target_lint = None
-                        if _target_lint is not None and not _target_lint.ok:
-                            logger.warning(
-                                "[%s] Discord Support Ops final-response target lint blocked delivery to %s/%s: %s expected_channel_id=%s",
-                                self.name,
-                                event.source.chat_id,
-                                getattr(event.source, "thread_id", None),
-                                _target_lint.blocked_reason,
-                                _target_lint.expected_channel_id,
-                            )
-                            expected = (
-                                f" Очакван канал: `{_target_lint.expected_channel_id}`."
-                                if _target_lint.expected_channel_id
-                                else ""
-                            )
-                            text_content = (
-                                "Не изпратих финалния отговор, защото routing guard блокира доставката: "
-                                f"`{_target_lint.blocked_reason}`.{expected} "
-                                "Моля уточнете правилния канал/получател или повторете задачата с точен target."
-                            )
-
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)

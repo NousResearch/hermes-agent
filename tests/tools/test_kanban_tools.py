@@ -590,9 +590,8 @@ def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
     assert ok.get("ok") is True
 
 
-def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
-    """Goal-mode tasks must pass the auxiliary judge before completion.
-    Regression for #38367: workers bypassing the judge via early kanban_complete."""
+def test_complete_goal_mode_uses_primary_worker_lifecycle(monkeypatch, tmp_path):
+    """No auxiliary model may override the primary worker's structured completion."""
     from pathlib import Path as _Path
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
@@ -618,38 +617,23 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
 
-    # Mock the judge to reject the completion. The gate only runs when a
-    # judge is reachable, so force the availability probe True as well.
-    def mock_judge_goal(goal, last_response, *, timeout=30.0, subgoals=None):
-        return "continue", "missing verification evidence", False
-
-    monkeypatch.setattr("tools.kanban_tools.judge_goal", mock_judge_goal)
-    monkeypatch.setattr("tools.kanban_tools._goal_judge_available", lambda: True)
-
-    # Attempt to complete should be rejected
+    # Structured completion is authoritative; acceptance evidence is part of
+    # the worker's summary and normal lifecycle audit trail.
     out = kt._handle_complete({"summary": "I did some stuff but not X"})
     d = json.loads(out)
-    assert "error" in d
-    assert "Goal completion rejected by judge" in d["error"]
-    assert "missing verification evidence" in d["error"]
-    assert f"parents=[{goal_task_id}]" in d["error"]
+    assert d.get("ok") is True
 
     # Verify the task is NOT completed in the DB
     conn2 = kb.connect()
     try:
         task = kb.get_task(conn2, goal_task_id)
-        assert task.status == "running"  # Should still be running, not done
+        assert task.status == "done"
     finally:
         conn2.close()
 
 
-def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path):
-    """Fail-open: an unreachable judge must not wedge a goal_mode worker.
-
-    judge_goal returns a "continue" verdict when no auxiliary model is
-    configured, which is indistinguishable from a real "not done" judgment.
-    The gate probes availability first, so completion proceeds rather than
-    being rejected forever when no judge can be reached."""
+def test_complete_goal_mode_has_no_auxiliary_dependency(monkeypatch, tmp_path):
+    """Goal completion does not depend on auxiliary model availability."""
     from pathlib import Path as _Path
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
@@ -673,14 +657,6 @@ def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path)
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
-
-    # No judge reachable. judge_goal must not even be consulted; if it were,
-    # this stub would reject — so reaching "done" proves the probe short-circuit.
-    def fail_if_called(goal, last_response, *, timeout=30.0, subgoals=None):
-        raise AssertionError("judge_goal must not run when no judge is available")
-
-    monkeypatch.setattr("tools.kanban_tools.judge_goal", fail_if_called)
-    monkeypatch.setattr("tools.kanban_tools._goal_judge_available", lambda: False)
 
     out = kt._handle_complete({"summary": "done enough"})
     d = json.loads(out)

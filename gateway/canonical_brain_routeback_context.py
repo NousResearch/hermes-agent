@@ -222,16 +222,34 @@ def lookup_routeback_cases_for_thread(current_thread_id: str) -> list[RouteBackC
             continue
         source = _coerce_mapping(_row_get(row, columns, "source"))
         payload = _coerce_mapping(_row_get(row, columns, "payload"))
-        entry = grouped.setdefault(case_id, {"is_target": False, "source_threads": []})
-        if _row_targets_current_thread(source, payload, current_thread_id):
-            entry["is_target"] = True
+        entry = grouped.setdefault(
+            case_id,
+            {"latest_route_is_target": None, "source_threads": []},
+        )
+        event_type = str(_row_get(row, columns, "event_type") or "")
+        is_route_lifecycle = event_type in {
+                "route_back.required",
+                "route_back.intent.created",
+                "route_back.sent",
+                "route_back.blocked",
+            } or bool(_route_back_target(payload) or _receipt(payload))
+        if (
+            is_route_lifecycle
+            and entry["latest_route_is_target"] is None
+        ):
+            # SQL rows are newest-first. Only the latest route-back lifecycle
+            # event may attach a case to this thread; an older historical
+            # target must not resurrect a case after it was routed elsewhere.
+            entry["latest_route_is_target"] = _row_targets_current_thread(
+                source, payload, current_thread_id
+            )
         source_thread = _row_source_thread(source)
         if source_thread and source_thread != current_thread_id:
             entry["source_threads"].append(source_thread)
 
     contexts: list[RouteBackCaseContext] = []
     for case_id, data in grouped.items():
-        if not data.get("is_target"):
+        if data.get("latest_route_is_target") is not True:
             continue
         source_threads = list(dict.fromkeys(data.get("source_threads") or []))
         if not source_threads:

@@ -2320,9 +2320,12 @@ def terminal_tool(
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command required approval ({desc}) and was approved by the user."
                 _approved_run = True
-            elif approval.get("smart_approved"):
-                desc = approval.get("description", "flagged as dangerous")
-                approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
+            elif approval.get("plan_capability"):
+                approval_note = (
+                    "Command was authorized by exact owner-approved plan capability "
+                    f"{approval['plan_capability']}."
+                )
+                _approved_run = True
 
         # Validate workdir against shell injection
         if workdir:

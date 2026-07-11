@@ -84,19 +84,20 @@ class TestSlashCommands:
         assert "verbose" in response_text.lower() or "tool_progress" in response_text
 
     @pytest.mark.asyncio
-    async def test_plaintext_restart_gateway_routes_to_safe_restart_command(self, adapter, runner, platform, monkeypatch):
+    async def test_plaintext_restart_gateway_stays_model_owned(self, adapter, runner, platform, monkeypatch):
         if platform != Platform.TELEGRAM:
             pytest.skip("Plaintext restart shortcut is intentionally DM/Telegram-focused")
 
         monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
         runner.request_restart = MagicMock(return_value=True)
+        runner._handle_message_with_agent = AsyncMock(return_value="agent-handled")
 
         send = await send_and_capture(adapter, "restart gateway", platform)
 
         send.assert_called_once()
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
-        assert "restart" in response_text.lower() or "draining" in response_text.lower()
-        runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+        assert response_text == "agent-handled"
+        runner.request_restart.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_plaintext_restart_gateway_in_group_stays_plain_text(self, adapter, runner, platform, monkeypatch):

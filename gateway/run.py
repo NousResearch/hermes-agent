@@ -20308,25 +20308,7 @@ async def _await_thread_exit(
 
 
 def _resolve_stderr_level(requested: int, stream: Any) -> int:
-    """Return the effective stderr log level.
-
-    If ``HERMES_STDERR_LOG_LEVEL`` is set, it takes precedence (accepts a
-    numeric level or a standard Python logging level name). Otherwise, on
-    macOS, cap non-TTY streams at ``CRITICAL`` so routine WARNING/ERROR records
-    do not duplicate into launchd's unbounded ``StandardErrorPath`` file.
-    Other platforms keep the requested level because systemd and container
-    deployments intentionally expose stderr through their managed log streams.
-    """
-    env = os.environ.get("HERMES_STDERR_LOG_LEVEL")
-    if env:
-        name = env.strip().upper()
-        level = getattr(logging, name, None)
-        if isinstance(level, int):
-            return level
-        try:
-            return int(env)
-        except ValueError:
-            logger.warning("Ignoring invalid HERMES_STDERR_LOG_LEVEL=%r", env)
+    """Cap macOS non-TTY stderr without changing foreground or other-platform logging."""
     try:
         is_tty = stream.isatty()
     except Exception:
@@ -20524,8 +20506,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception as _audit_exc:
         logger.debug("Startup security audit failed (non-fatal): %s", _audit_exc)
 
-    # Optional stderr handler — level driven by -v/-q flags on the CLI or the
-    # HERMES_STDERR_LOG_LEVEL override.
+    # Optional stderr handler — level driven by -v/-q flags on the CLI.
     # verbosity=None (-q/--quiet): no stderr output
     # verbosity=0    (default):    WARNING and above
     # verbosity=1    (-v):         INFO and above

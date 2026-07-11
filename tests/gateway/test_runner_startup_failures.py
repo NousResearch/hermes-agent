@@ -611,9 +611,8 @@ class _CleanExitRunner:
 
 
 @pytest.fixture(autouse=True)
-def _clear_fake_handler_instances(monkeypatch):
+def _clear_fake_handler_instances():
     """Ensure the fake handler registry is clean for each test."""
-    monkeypatch.delenv("HERMES_STDERR_LOG_LEVEL", raising=False)
     root = logging.getLogger()
     for handler in list(root.handlers):
         if isinstance(handler, _FakeStreamHandler):
@@ -674,35 +673,6 @@ def test_resolve_stderr_level_keeps_tty_level():
     assert _resolve_stderr_level(logging.INFO, _FakeStderrStream(tty=True)) == logging.INFO
 
 
-def test_resolve_stderr_level_env_override_names(monkeypatch):
-    from gateway.run import _resolve_stderr_level
-
-    monkeypatch.setenv("HERMES_STDERR_LOG_LEVEL", "INFO")
-    assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=False)) == logging.INFO
-
-    monkeypatch.setenv("HERMES_STDERR_LOG_LEVEL", "warning")
-    assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=False)) == logging.WARNING
-
-
-def test_resolve_stderr_level_env_override_numeric(monkeypatch):
-    from gateway.run import _resolve_stderr_level
-
-    monkeypatch.setenv("HERMES_STDERR_LOG_LEVEL", "25")
-    assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=False)) == 25
-
-
-def test_resolve_stderr_level_invalid_env_falls_back(monkeypatch, caplog):
-    from gateway.run import _resolve_stderr_level
-
-    monkeypatch.setattr("gateway.run.sys.platform", "darwin")
-    monkeypatch.setenv("HERMES_STDERR_LOG_LEVEL", "not-a-level")
-    with caplog.at_level("WARNING"):
-        assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=False)) == logging.CRITICAL
-        assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=True)) == logging.WARNING
-
-    assert "Ignoring invalid HERMES_STDERR_LOG_LEVEL" in caplog.text
-
-
 def test_resolve_stderr_level_isatty_exception_treated_as_macos_non_tty(monkeypatch):
     from gateway.run import _resolve_stderr_level
 
@@ -715,22 +685,17 @@ def test_resolve_stderr_level_isatty_exception_treated_as_macos_non_tty(monkeypa
 
 
 @pytest.mark.parametrize(
-    ("platform", "tty", "env_level", "expected"),
+    ("platform", "tty", "expected"),
     [
-        ("darwin", False, None, logging.CRITICAL),
-        ("darwin", True, None, logging.WARNING),
-        ("linux", False, None, logging.WARNING),
-        ("win32", False, None, logging.WARNING),
-        ("darwin", False, "INFO", logging.INFO),
+        ("darwin", False, logging.CRITICAL),
+        ("darwin", True, logging.WARNING),
+        ("linux", False, logging.WARNING),
+        ("win32", False, logging.WARNING),
     ],
 )
 @pytest.mark.asyncio
-async def test_start_gateway_stderr_handler_level(
-    monkeypatch, tmp_path, platform, tty, env_level, expected
-):
+async def test_start_gateway_stderr_handler_level(monkeypatch, tmp_path, platform, tty, expected):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    if env_level is not None:
-        monkeypatch.setenv("HERMES_STDERR_LOG_LEVEL", env_level)
     monkeypatch.setattr("gateway.run.sys.platform", platform)
     monkeypatch.setattr("sys.stderr", _FakeStderrStream(tty=tty))
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)

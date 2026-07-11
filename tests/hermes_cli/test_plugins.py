@@ -1091,6 +1091,82 @@ class TestResolvePreToolBlock:
                 approval._pending.clear()
                 approval._pending_by_session.clear()
 
+    def test_plugin_fallback_generates_distinct_ids_for_same_turn(self, monkeypatch):
+        import tools.approval as approval
+        from hermes_cli.plugins import resolve_pre_tool_block
+
+        session = "same-turn-plugin-session"
+        with approval._lock:
+            approval._gateway_queues.clear()
+            approval._gateway_notify_cbs.clear()
+            approval._session_approved.clear()
+            approval._permanent_approved.clear()
+            approval._pending.clear()
+            approval._pending_by_session.clear()
+        token = approval.set_current_session_key(session)
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+        monkeypatch.setattr(approval, "is_approved", lambda *args: False)
+        monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "approve", "message": "why"}],
+        )
+        try:
+            for path in ("one", "two"):
+                assert resolve_pre_tool_block(
+                    "write_file",
+                    {"path": path},
+                    session_id=session,
+                    turn_id="shared-turn",
+                    api_request_id="shared-api-request",
+                ) is not None
+
+            request_ids = approval._pending_by_session[session]
+            assert len(request_ids) == 2
+            assert len(set(request_ids)) == 2
+            assert set(request_ids).isdisjoint({"shared-turn", "shared-api-request"})
+        finally:
+            approval.reset_current_session_key(token)
+            with approval._lock:
+                approval._gateway_queues.clear()
+                approval._gateway_notify_cbs.clear()
+                approval._session_approved.clear()
+                approval._permanent_approved.clear()
+                approval._pending.clear()
+                approval._pending_by_session.clear()
+
+    def test_pending_request_id_collision_is_rejected_across_sessions(self):
+        import tools.approval as approval
+
+        request = approval.submit_pending(
+            "session-one",
+            {
+                "request_id": "shared-request",
+                "operation": "write_file",
+                "tool_name": "write_file",
+                "arguments": {"path": "one"},
+            },
+        )
+        try:
+            collision = approval.submit_pending(
+                "session-two",
+                {
+                    "request_id": "shared-request",
+                    "operation": "write_file",
+                    "tool_name": "write_file",
+                    "arguments": {"path": "two"},
+                },
+            )
+            assert collision is None
+            request = approval.get_pending_approval("shared-request")
+            assert request is not None
+            assert request["session_key"] == "session-one"
+        finally:
+            with approval._lock:
+                approval._pending.clear()
+                approval._pending_by_session.clear()
+
     def test_approve_gate_exception_fails_closed(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block
         monkeypatch.setattr(

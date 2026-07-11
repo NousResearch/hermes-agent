@@ -2266,7 +2266,8 @@ def resolve_pre_tool_block(
                 arguments=args,
                 requester=session_id,
                 channel=task_id,
-                request_id=tool_call_id or api_request_id or turn_id,
+                # turn/API IDs can cover multiple calls; submit_pending mints UUIDs.
+                request_id=tool_call_id,
             )
         except Exception:
             # Fail-closed: if the gate itself errors, block rather than

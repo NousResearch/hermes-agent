@@ -32,6 +32,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
+from hermes_cli.urllib_security import open_credentialed_url
+
 DEFAULT_PORTAL_BASE_URL = "https://portal.nousresearch.com"
 
 # Default HTTP timeout (seconds). Charge/poll calls are quick; keep this tight so
@@ -294,7 +296,7 @@ def _request(
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_credentialed_url(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as exc:

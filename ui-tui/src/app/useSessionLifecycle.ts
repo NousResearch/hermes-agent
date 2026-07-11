@@ -261,7 +261,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
 
             const nextTitle = (result.title ?? requestedTitle).trim()
-            const suffix = result.pending ? ' (queued while session initializes)' : ''
+            const suffix = result.pending ? ti('session.titleQueuedSuffix') : ''
             sys(ti('session.titleSet', { title: nextTitle, suffix }))
           })
           .catch((err: unknown) => {
@@ -285,7 +285,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const newLiveSession = useCallback(
-    (msg = 'new live session started', title?: string) => {
+    (msg = ti('sys.newLiveSessionStarted'), title?: string) => {
       patchOverlayState({ sessions: false })
 
       return startNewSession(msg, title, true)
@@ -303,7 +303,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           const r = asRpcResult<SessionActivateResponse>(raw)
 
           if (!r) {
-            sys('error: invalid response: session.activate')
+            sys(ti('errors.invalidResponse', { method: 'session.activate' }))
 
             return patchUiState({ status: 'ready' })
           }
@@ -328,7 +328,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
         .catch((e: Error) => {
-          sys(`error: ${e.message}`)
+          sys(ti('errors.rpc', { message: e.message }))
           patchUiState({ status: 'ready' })
         })
     },
@@ -385,7 +385,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             if (previousSid && previousSid !== r.session_id) {
               void closeSession(previousSid)
             }
-
           })
           .catch((e: Error) => {
             sys(ti('errors.rpc', { message: e.message }))

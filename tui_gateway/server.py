@@ -2085,10 +2085,25 @@ def resolve_skin() -> dict:
 
 
 def resolve_language() -> str:
-    """Resolve the language code used by TUI-facing gateway metadata."""
+    """Resolve live language state for TUI-facing gateway metadata.
+
+    ``agent.i18n.get_language()`` intentionally caches config reads for hot
+    translation paths. TUI command catalogs are different: the Dashboard can
+    update ``display.language`` while this process stays alive, and
+    ``_load_cfg`` already provides an mtime-aware cache for that contract.
+    Keep the environment override authoritative, then read the live config.
+    """
     try:
-        from agent.i18n import get_language
-        return get_language()
+        from agent.i18n import normalize_language
+
+        env_language = os.environ.get("HERMES_LANGUAGE")
+        if env_language:
+            return normalize_language(env_language)
+
+        cfg = _load_cfg()
+        display = cfg.get("display") if isinstance(cfg, dict) else None
+        language = display.get("language") if isinstance(display, dict) else None
+        return normalize_language(language)
     except Exception:
         return "en"
 
@@ -11617,16 +11632,12 @@ _TUI_EXTRA_META: dict[str, dict[str, str]] = {
     "/sessions": {"en": "Switch between live TUI sessions", "zh": "切换实时 TUI 会话"},
 }
 
-_TUI_EXTRA: list[tuple[str, str, str]] = [
-    ("/compact", "Toggle compact display mode", "TUI"),
-    ("/details", "Control agent detail visibility", "TUI"),
-    ("/logs", "Show recent gateway log lines", "TUI"),
-    (
-        "/mouse",
-        "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]",
-        "TUI",
-    ),
-    ("/sessions", "Switch between live TUI sessions", "TUI"),
+_TUI_EXTRA: list[tuple[str, str]] = [
+    ("/compact", "TUI"),
+    ("/details", "TUI"),
+    ("/logs", "TUI"),
+    ("/mouse", "TUI"),
+    ("/sessions", "TUI"),
 ]
 
 
@@ -11694,7 +11705,7 @@ def _(rid, params: dict) -> dict:
                 cat_order.append(cat)
             cat_map[cat].append([c, desc])
 
-        for name, _desc, cat in _TUI_EXTRA:
+        for name, cat in _TUI_EXTRA:
             desc = _tui_extra_meta(name)
             all_pairs.append([name, desc])
             if cat not in cat_map:

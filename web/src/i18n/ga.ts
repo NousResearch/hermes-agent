@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const ga: Translations = {
+export const ga: TranslationOverlay = {
   common: {
     save: "Sábháil",
     saving: "Á shábháil...",
@@ -47,7 +47,6 @@ export const ga: Translations = {
       "Níorbh fhéidir script an plugin seo a luchtú. Seiceáil an cluaisín Network (dashboard-plugins/…) agus conair plugin an fhreastalaí.",
     pluginNotRegistered:
       "Níor ghlaoigh script an plugin ar register(), nó tharla earráid sa script. Oscail consól an bhrabhsálaí le haghaidh sonraí.",
-    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -70,31 +69,19 @@ export const ga: Translations = {
     nav: {
       analytics: "Anailís",
       chat: "Comhrá",
-      channels: "Cainéil",
       config: "Cumraíocht",
       cron: "Cron",
       documentation: "Doiciméadú",
-      achievements: "Achievements",
-      example: "Example",
-      kanban: "Kanban",
       keys: "Eochracha",
       logs: "Logaí",
-      mcp: "MCP",
       models: "Samhlacha",
-      pairing: "Péireáil",
       profiles: "próifílí : il-agents",
       plugins: "Plugins",
       sessions: "Seisiúin",
       skills: "Scileanna",
-      system: "Córas",
-      webhooks: "Webhooks",
     },
     modelToolsSheetSubtitle: "agus uirlisí",
     modelToolsSheetTitle: "Samhail",
-    copyLastResponse: "Copy last response",
-    copyLastResponseTitle: "Copy last assistant response as raw markdown",
-    copyLastResponseAria: "Copy last assistant response",
-    copied: "Copied",
     navigation: "Nascleanúint",
     openDocumentation: "Oscail an doiciméadú i gcluaisín nua",
     openNavigation: "Oscail an nascleanúint",
@@ -103,41 +90,6 @@ export const ga: Translations = {
     statusOverview: "Forbhreathnú stádais",
     system: "Córas",
     webUi: "Web UI",
-    loadingChat: "Loading chat…",
-  },
-
-  chatSidebar: {
-    model: "model",
-    switchModel: "switch model",
-    reconnect: "reconnect",
-    tools: "tools",
-    noToolCalls: "no tool calls yet",
-    eventsDisconnected:
-      "events feed disconnected — tool calls may not appear",
-    eventsRejected: "events feed rejected ({code}) — reload the page",
-    reasoning: "reasoning",
-    reasoningEffortSet:
-      "Reasoning effort set to {effort}. Run /new or refresh the page to apply it to this chat.",
-  },
-
-  modelPicker: {
-    title: "Switch Model",
-    close: "Close",
-    filterPlaceholder: "Filter providers and models…",
-    currentTag: "current",
-    cancel: "Cancel",
-    switch_: "Switch",
-    noMatches: "no matches",
-    noAuthProviders: "no authenticated providers",
-    loading: "loading…",
-    pickProvider: "pick a provider →",
-    noModelsMatch: "no models match your filter",
-    noModelsListed: "no models listed for this provider",
-    persistGlobal: "Persist globally (otherwise this session only)",
-    savesToConfig: "Saves to config.yaml — applies to new sessions.",
-    modelsCount: "{count} models",
-    unknownModel: "(unknown)",
-    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -253,14 +205,6 @@ export const ga: Translations = {
     toolCalls: "glaonna uirlise",
     noModelsData: "Gan sonraí úsáide samhla don tréimhse seo",
     startSession: "Tosaigh seisiún chun sonraí samhla a fheiceáil anseo",
-    overrideAuto: "(override — auto: {value})",
-    autoDetected: "auto-detected",
-    loading: "Loading model info…",
-    contextWindow: "Context Window",
-    maxOutput: "Max Output",
-    capabilityTools: "Tools",
-    capabilityVision: "Vision",
-    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -271,40 +215,6 @@ export const ga: Translations = {
     component: "Comhpháirt",
     lines: "Línte",
     noLogLines: "Níor aimsíodh línte loga",
-  },
-
-  channels: {
-    changesSaved: "Changes are saved. Restart the gateway for them to take effect.",
-    configure: "Configure",
-    configureTitle: "Configure {name}",
-    configuredSummary: "{configured} of {total} channels configured. Credentials are written to {path}; the gateway connects each enabled channel on its next restart.",
-    enablePlatform: "Enable {name}",
-    errorToast: "Error: {error}",
-    failedToRestart: "Failed to restart: {error}",
-    failedToSave: "Failed to save: {error}",
-    gatewayNotRunning: "The gateway is not running. Configure channels here, then start the gateway with {command} (or the Restart button above).",
-    gatewayRestarting: "Gateway restarting...",
-    keepExistingPlaceholder: "****** (set - leave blank to keep)",
-    nothingToSave: "Nothing to save - fill in at least one field.",
-    platformMessage: "{name}: {message}",
-    requiredField: "{field} is required",
-    restartGateway: "Restart gateway",
-    restartingGateway: "Restarting...",
-    restartNow: "Restart now",
-    saveAndEnable: "Save & enable",
-    saved: "{name} saved",
-    setupGuide: "Setup guide",
-    test: "Test",
-    state: {
-      connected: "Connected",
-      pendingRestart: "Restart to apply",
-      gatewayStopped: "Gateway stopped",
-      startupFailed: "Start failed",
-      disconnected: "Disconnected",
-      notConfigured: "Not configured",
-      disabled: "Disabled",
-      fatal: "Error",
-    },
   },
 
   cron: {
@@ -492,7 +402,6 @@ export const ga: Translations = {
     failedToLoadRaw: "Theip ar luchtú na cumraíochta amh",
     configImported: "Cumraíocht iompórtáilte — athbhreithnigh agus sábháil",
     invalidJson: "Comhad JSON neamhbhailí",
-    yaml: "YAML",
     categories: {
       general: "Ginearálta",
       agent: "Agent",
@@ -542,16 +451,6 @@ export const ga: Translations = {
     invalidKeyName: "Úsáid litreacha, uimhreacha agus fostríoca amháin (caithfidh sé tosú le litir nó fostríoc).",
   },
 
-  toolCall: {
-    running: "running",
-    error: "error",
-    done: "done",
-    context: "Context",
-    streaming: "Streaming",
-    diff: "Diff",
-    result: "Result",
-  },
-
   oauth: {
     title: "Logálacha isteach soláthraí (OAuth)",
     providerLogins: "Logálacha isteach soláthraí (OAuth)",
@@ -592,9 +491,6 @@ export const ga: Translations = {
       external: "CLI seachtrach",
     },
     expiresIn: "as feidhm i {time}",
-    tokenExchangeFailed: "Token exchange failed",
-    openDocs: "Open {provider} docs",
-    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -604,10 +500,6 @@ export const ga: Translations = {
   theme: {
     title: "Téama",
     switchTheme: "Athraigh téama",
-    presets: {
-      dock: { label: "Dock" },
-      minimal: { label: "Minimal" },
-    },
   },
 
   achievements: {

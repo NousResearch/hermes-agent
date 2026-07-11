@@ -1,6 +1,7 @@
 import { attachedImageNotice } from '../domain/messages.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { InputDetectDropResponse, PromptSubmitResponse } from '../gatewayTypes.js'
+import { translate } from '../i18n/index.js'
 import type { Msg } from '../types.js'
 
 import { turnController } from './turnController.js'
@@ -45,8 +46,11 @@ export function markSubmitting(): void {
 export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessage = true): void {
   const sid = getUiState().sid
 
+  const tr = (key: Parameters<typeof translate>[1], vars?: Record<string, string | number>) =>
+    translate(getUiState().locale, key, vars)
+
   if (!sid) {
-    return deps.sys('session not ready yet')
+    return deps.sys(tr('submission.sessionNotReady'))
   }
 
   // Close the async-busy gap up front, before the detect_drop round-trip.
@@ -56,7 +60,7 @@ export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessa
     const liveSid = getUiState().sid
 
     if (!liveSid) {
-      return deps.sys('session not ready yet')
+      return deps.sys(tr('submission.sessionNotReady'))
     }
 
     turnController.clearStatusTimer()
@@ -70,21 +74,27 @@ export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessa
     turnController.bufRef = ''
     turnController.interrupted = false
 
-    deps.gw.request<PromptSubmitResponse>('prompt.submit', { session_id: liveSid, text: submitText }).catch((e: Error) => {
-      // Defensive: prompt.submit no longer rejects a mid-turn send with
-      // "session busy" (the gateway queues it and returns success), but keep
-      // the re-queue path as a safety net for any future/legacy gateway that
-      // still errors, so a message is never silently dropped.
-      if (isSessionBusyError(e)) {
-        deps.enqueue(submitText)
-        patchUiState({ busy: true, status: 'queued for next turn' })
+    deps.gw
+      .request<PromptSubmitResponse>('prompt.submit', { session_id: liveSid, text: submitText })
+      .catch((e: Error) => {
+        // Defensive: prompt.submit no longer rejects a mid-turn send with
+        // "session busy" (the gateway queues it and returns success), but keep
+        // the re-queue path as a safety net for any future/legacy gateway that
+        // still errors, so a message is never silently dropped.
+        if (isSessionBusyError(e)) {
+          deps.enqueue(submitText)
+          patchUiState({ busy: true, status: 'queued for next turn' })
 
-        return deps.sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
-      }
+          return deps.sys(
+            tr('submission.queued', {
+              text: `${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}`
+            })
+          )
+        }
 
-      deps.sys(`error: ${e.message}`)
-      patchUiState({ busy: false, status: 'ready' })
-    })
+        deps.sys(tr('errors.rpc', { message: e.message }))
+        patchUiState({ busy: false, status: 'ready' })
+      })
   }
 
   // Always ask the backend whether this looks like a file drop. The backend's
@@ -100,7 +110,7 @@ export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessa
       if (r.is_image) {
         turnController.pushActivity(attachedImageNotice(r, getUiState().locale))
       } else {
-        turnController.pushActivity(`detected file: ${r.name}`)
+        turnController.pushActivity(tr('submission.detectedFile', { name: r.name ?? r.text ?? text }))
       }
 
       startSubmit(r.text || text, deps.expand(r.text || text), showUserMessage)

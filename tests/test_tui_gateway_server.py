@@ -3387,6 +3387,26 @@ def test_complete_slash_tui_extra_meta_respects_language(monkeypatch):
     assert compact_zh["meta"] == "切换紧凑显示模式"
 
 
+def test_resolve_language_reads_live_config_and_honors_env(monkeypatch):
+    configs = iter([
+        {"display": {"language": "en"}},
+        {"display": {"language": "zh"}},
+    ])
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: next(configs))
+
+    assert server.resolve_language() == "en"
+    assert server.resolve_language() == "zh"
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "pt_BR")
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: pytest.fail("environment override must not read config"),
+    )
+    assert server.resolve_language() == "pt"
+
+
 def test_commands_catalog_tui_extra_meta_respects_language(monkeypatch):
     monkeypatch.setattr(server, "resolve_language", lambda: "en")
     resp_en = server.handle_request(

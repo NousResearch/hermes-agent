@@ -4,6 +4,7 @@ import { TYPING_IDLE_MS } from '../config/timing.js'
 import { completionToApplyOnSubmit, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
+import { translate } from '../i18n/index.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
@@ -31,17 +32,14 @@ const spliceMatches = (text: string, matches: RegExpMatchArray[], results: strin
   matches.reduceRight((acc, m, i) => acc.slice(0, m.index!) + results[i] + acc.slice(m.index! + m[0].length), text)
 
 export function useSubmission(opts: UseSubmissionOptions) {
-  const {
-    appendMessage,
-    composerActions,
-    composerRefs,
-    composerState,
-    gw,
-    setLastUserMsg,
-    slashRef,
-    submitRef,
-    sys
-  } = opts
+  const { appendMessage, composerActions, composerRefs, composerState, gw, setLastUserMsg, slashRef, submitRef, sys } =
+    opts
+
+  const tr = useCallback(
+    (key: Parameters<typeof translate>[1], vars?: Record<string, string | number>) =>
+      translate(getUiState().locale, key, vars),
+    []
+  )
 
   const lastEmptyAt = useRef(0)
   const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -105,7 +103,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
           const r = asRpcResult<ShellExecResponse>(raw)
 
           if (!r) {
-            return sys('error: invalid response: shell.exec')
+            return sys(tr('errors.invalidResponse', { method: 'shell.exec' }))
           }
 
           const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
@@ -115,13 +113,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
           }
 
           if (r.code !== 0 || !out) {
-            sys(`exit ${r.code}`)
+            sys(tr('submission.shellExit', { code: r.code }))
           }
         })
-        .catch((e: Error) => sys(`error: ${e.message}`))
+        .catch((e: Error) => sys(tr('errors.rpc', { message: e.message })))
         .finally(() => patchUiState({ busy: false, status: 'ready' }))
     },
-    [appendMessage, gw, sys]
+    [appendMessage, gw, sys, tr]
   )
 
   const interpolate = useCallback(
@@ -202,10 +200,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
             const r = asRpcResult<SessionSteerResponse>(raw)
 
             if (r?.status !== 'queued') {
-              fallback('steer rejected — message queued for next turn')
+              fallback(tr('submission.steerRejectedQueued'))
             }
           })
-          .catch(() => fallback('steer failed — message queued for next turn'))
+          .catch(() => fallback(tr('submission.steerFailedQueued')))
 
         return
       }
@@ -217,7 +215,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys }, { keepBusy: true })
       }
     },
-    [appendMessage, composerActions, composerRefs, gw, sys]
+    [appendMessage, composerActions, composerRefs, gw, sys, tr]
   )
 
   const dispatchSubmission = useCallback(

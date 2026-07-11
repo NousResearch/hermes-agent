@@ -6,6 +6,7 @@ import {
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
 import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
+import { translate } from '../i18n/index.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
@@ -322,11 +323,13 @@ class TurnController {
     if (partial || tools.length) {
       appendMessage({
         role: 'assistant',
-        text: partial ? `${partial}\n\n*[interrupted]*` : '*[interrupted]*',
+        text: partial
+          ? `${partial}\n\n*[${translate(getUiState().locale, 'common.interrupted')}]*`
+          : `*[${translate(getUiState().locale, 'common.interrupted')}]*`,
         ...(tools.length && { tools })
       })
     } else {
-      sys('interrupted')
+      sys(translate(getUiState().locale, 'common.interrupted'))
     }
 
     this.clearStatusTimer()
@@ -707,8 +710,10 @@ class TurnController {
     // committed entry rather than merging into streaming reasoning.
     this.closeReasoningSegment()
 
-    const header =
-      index && count ? `◇ Reference ${index}/${count} — ${label}` : `◇ Reference — ${label}`
+    const header = translate(getUiState().locale, 'transcript.moaReference', {
+      label,
+      position: index && count ? ` ${index}/${count}` : ''
+    })
 
     const body = text.trim()
     const thinking = body ? `${header}\n${body}` : header

@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   AlertTriangle,
   Check,
@@ -62,7 +68,9 @@ function formatTemplate(
   values: Record<string, string | number>,
 ): string {
   return template.replace(/\{(\w+)\}/g, (match, key: string) =>
-    Object.prototype.hasOwnProperty.call(values, key) ? String(values[key]) : match,
+    Object.prototype.hasOwnProperty.call(values, key)
+      ? String(values[key])
+      : match,
   );
 }
 
@@ -80,7 +88,10 @@ const SLACK_TOKEN_PREFIXES: Record<string, string> = {
   SLACK_APP_TOKEN: "xapp-",
 };
 
-function validateMessagingEnvField(field: MessagingPlatformEnvVar, value: string): string | null {
+function validateMessagingEnvField(
+  field: MessagingPlatformEnvVar,
+  value: string,
+): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
 
@@ -97,7 +108,9 @@ function validateMessagingEnvField(field: MessagingPlatformEnvVar, value: string
       .split(",")
       .map((part) => part.trim())
       .filter(Boolean);
-    const invalid = parts.find((part) => part !== "*" && !SLACK_MEMBER_ID_RE.test(part));
+    const invalid = parts.find(
+      (part) => part !== "*" && !SLACK_MEMBER_ID_RE.test(part),
+    );
     if (invalid) {
       return `${invalid} does not look like a Slack member ID. Use IDs like U01ABC2DEF3.`;
     }
@@ -106,9 +119,9 @@ function validateMessagingEnvField(field: MessagingPlatformEnvVar, value: string
   return null;
 }
 
-function formatExpiry(expiresAt: string): string {
+function formatExpiry(expiresAt: string, expiredLabel: string): string {
   const ms = Date.parse(expiresAt) - Date.now();
-  if (!Number.isFinite(ms) || ms <= 0) return "expired";
+  if (!Number.isFinite(ms) || ms <= 0) return expiredLabel;
   const seconds = Math.ceil(ms / 1000);
   const minutes = Math.floor(seconds / 60);
   const rest = seconds % 60;
@@ -149,7 +162,10 @@ export default function ChannelsPage() {
     setEditing(null);
     setFieldErrors({});
   }, []);
-  const editModalRef = useModalBehavior({ open: editing !== null, onClose: closeEdit });
+  const editModalRef = useModalBehavior({
+    open: editing !== null,
+    onClose: closeEdit,
+  });
 
   // Per-card busy + restart-needed tracking
   const [togglingId, setTogglingId] = useState<string | null>(null);
@@ -165,7 +181,9 @@ export default function ChannelsPage() {
       .then((res) => {
         setPlatforms(res.platforms);
         setEnvPath(res.env_path || "~/.hermes/.env");
-        setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
+        setGatewayStartCommand(
+          res.gateway_start_command || "hermes gateway start",
+        );
       })
       .catch((e) =>
         showToast(
@@ -215,19 +233,25 @@ export default function ChannelsPage() {
     }
     const nextFieldErrors: Record<string, string> = {};
     editing.env_vars.forEach((field) => {
-      const message = validateMessagingEnvField(field, draftEnv[field.key] || "");
+      const message = validateMessagingEnvField(
+        field,
+        draftEnv[field.key] || "",
+      );
       if (message) nextFieldErrors[field.key] = message;
     });
     if (Object.keys(nextFieldErrors).length > 0) {
       setFieldErrors(nextFieldErrors);
-      showToast("Fix the highlighted fields before saving.", "error");
+      showToast(t.channels.fixHighlightedFields, "error");
       return;
     }
     setSaving(true);
     try {
       const body: MessagingPlatformUpdate = { env, enabled: true };
       await api.updateMessagingPlatform(editing.id, body);
-      showToast(formatTemplate(t.channels.saved, { name: editing.name }), "success");
+      showToast(
+        formatTemplate(t.channels.saved, { name: editing.name }),
+        "success",
+      );
       setEditing(null);
       setRestartNeeded(true);
       await load();
@@ -249,7 +273,11 @@ export default function ChannelsPage() {
       setPlatforms((prev) =>
         prev.map((p) =>
           p.id === platform.id
-            ? { ...p, enabled: next, state: next ? "pending_restart" : "disabled" }
+            ? {
+                ...p,
+                enabled: next,
+                state: next ? "pending_restart" : "disabled",
+              }
             : p,
         ),
       );
@@ -348,9 +376,13 @@ export default function ChannelsPage() {
               className="uppercase shrink-0"
               onClick={handleRestart}
               disabled={restarting}
-              prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
+              prefix={
+                restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />
+              }
             >
-              {restarting ? t.channels.restartingGateway : t.channels.restartNow}
+              {restarting
+                ? t.channels.restartingGateway
+                : t.channels.restartNow}
             </Button>
           </CardContent>
         </Card>
@@ -408,7 +440,9 @@ export default function ChannelsPage() {
                 id="channel-config-title"
                 className="font-mondwest text-display text-base tracking-wider"
               >
-                {formatTemplate(t.channels.configureTitle, { name: editing.name })}
+                {formatTemplate(t.channels.configureTitle, {
+                  name: editing.name,
+                })}
               </h2>
               {editing.docs_url && (
                 <a
@@ -454,14 +488,18 @@ export default function ChannelsPage() {
                     type={field.is_password ? "password" : "text"}
                     placeholder={
                       field.is_set
-                        ? field.redacted_value || t.channels.keepExistingPlaceholder
+                        ? field.redacted_value ||
+                          t.channels.keepExistingPlaceholder
                         : field.key
                     }
                     value={draftEnv[field.key] ?? ""}
                     aria-invalid={Boolean(fieldErrors[field.key])}
                     onChange={(e) => {
                       const nextValue = e.target.value;
-                      setDraftEnv((prev) => ({ ...prev, [field.key]: nextValue }));
+                      setDraftEnv((prev) => ({
+                        ...prev,
+                        [field.key]: nextValue,
+                      }));
                       setFieldErrors((prev) => {
                         if (!prev[field.key]) return prev;
                         const next = { ...prev };
@@ -505,7 +543,8 @@ export default function ChannelsPage() {
           const StateIcon =
             platform.state === "connected"
               ? CheckCircle2
-              : platform.state === "fatal" || platform.state === "startup_failed"
+              : platform.state === "fatal" ||
+                  platform.state === "startup_failed"
                 ? AlertTriangle
                 : Radio;
           return (
@@ -550,9 +589,12 @@ export default function ChannelsPage() {
                         <Switch
                           checked={platform.enabled}
                           onCheckedChange={() => void handleToggle(platform)}
-                          aria-label={formatTemplate(t.channels.enablePlatform, {
-                            name: platform.name,
-                          })}
+                          aria-label={formatTemplate(
+                            t.channels.enablePlatform,
+                            {
+                              name: platform.name,
+                            },
+                          )}
                         />
                       )}
                     </div>
@@ -566,9 +608,9 @@ export default function ChannelsPage() {
                           <Spinner />
                         ) : (
                           <PlugZap className="h-4 w-4" />
-                      )
-                    }
-                  >
+                        )
+                      }
+                    >
                       {t.channels.test}
                     </Button>
                     <Button
@@ -592,6 +634,7 @@ export default function ChannelsPage() {
                 )}
                 {platform.id === "whatsapp" && (
                   <WhatsAppOnboardingPanel
+                    key={`whatsapp-${platform.whatsapp_setup?.mode ?? "unconfigured"}`}
                     onChanged={load}
                     onRestartNeeded={() => setRestartNeeded(true)}
                     platform={platform}
@@ -621,6 +664,8 @@ function WhatsAppOnboardingPanel({
   setRestartNeeded: (needed: boolean) => void;
   showToast: (message: string, type: "success" | "error") => void;
 }) {
+  const { t } = useI18n();
+  const copy = t.channels.onboarding;
   const configuredMode = useMemo(
     () => normalizeWhatsAppMode(platform.whatsapp_setup?.mode),
     [platform.whatsapp_setup?.mode],
@@ -638,12 +683,6 @@ function WhatsAppOnboardingPanel({
   const [allowedUsers, setAllowedUsers] = useState("");
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    if (!setup && phase === "idle" && configuredMode) {
-      setMode(configuredMode);
-    }
-  }, [configuredMode, phase, setup]);
 
   const updateQr = useCallback(async (payload?: string | null) => {
     if (!payload) return;
@@ -675,7 +714,7 @@ function WhatsAppOnboardingPanel({
           return;
         }
         if (status.status === "error") {
-          setError(status.error || "WhatsApp setup failed.");
+          setError(status.error || copy.whatsappSetupFailed);
           setSetup(null);
           setQrDataUrl("");
           setPhase("idle");
@@ -686,16 +725,17 @@ function WhatsAppOnboardingPanel({
       } catch (pollError) {
         if (cancelled) return;
         const expiresAt = Date.parse(setup.expires_at);
-        const expired =
-          Number.isFinite(expiresAt) && Date.now() >= expiresAt;
+        const expired = Number.isFinite(expiresAt) && Date.now() >= expiresAt;
         if (isTerminalWhatsAppOnboardingError(pollError) || expired) {
           setSetup(null);
           setQrDataUrl("");
           setPhase("idle");
-          setError("WhatsApp QR setup expired. Start a new QR setup to try again.");
+          setError(copy.whatsappQrExpired);
           return;
         }
-        setError(`Still waiting for WhatsApp. Retrying after: ${pollError}`);
+        setError(
+          formatTemplate(copy.retryingWhatsApp, { error: String(pollError) }),
+        );
         timeout = setTimeout(poll, 2000);
       }
     };
@@ -705,7 +745,7 @@ function WhatsAppOnboardingPanel({
       cancelled = true;
       if (timeout) clearTimeout(timeout);
     };
-  }, [phase, setup, updateQr]);
+  }, [copy, phase, setup, updateQr]);
 
   useEffect(() => {
     if (!setup) return;
@@ -734,7 +774,7 @@ function WhatsAppOnboardingPanel({
         await updateQr(res.qr_payload);
       }
       if (res.status === "error") {
-        setError(res.error || "WhatsApp setup failed.");
+        setError(res.error || copy.whatsappSetupFailed);
         setSetup(null);
         setPhase("idle");
       } else {
@@ -766,7 +806,9 @@ function WhatsAppOnboardingPanel({
         if (st.exit_code !== 0 && st.exit_code !== null) {
           onRestartNeeded();
           showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
+            formatTemplate(copy.gatewayRestartFailedExit, {
+              code: st.exit_code,
+            }),
             "error",
           );
         }
@@ -788,14 +830,23 @@ function WhatsAppOnboardingPanel({
       });
       resetSetup();
       if (result.restart_started) {
-        showToast("WhatsApp saved; gateway restarting…", "success");
+        showToast(
+          formatTemplate(copy.savedRestarting, { channel: "WhatsApp" }),
+          "success",
+        );
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
         void watchRestartOutcome();
       } else {
         onRestartNeeded();
         const detail = result.restart_error ? `: ${result.restart_error}` : "";
-        showToast(`WhatsApp saved; gateway restart failed${detail}`, "error");
+        showToast(
+          formatTemplate(copy.savedRestartFailed, {
+            channel: "WhatsApp",
+            detail,
+          }),
+          "error",
+        );
       }
       await onChanged();
     } catch (applyError) {
@@ -805,48 +856,50 @@ function WhatsAppOnboardingPanel({
   };
 
   const expiresIn = useMemo(
-    () => (setup ? formatExpiry(setup.expires_at) : ""),
+    () => (setup ? formatExpiry(setup.expires_at, copy.expired) : ""),
     // tick keeps the memo fresh without recalculating on every render branch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [setup, tick],
+    [copy.expired, setup, tick],
   );
   const setupStatusLabel =
     setup?.status === "installing"
-      ? "preparing"
+      ? copy.preparing
       : setup?.status === "starting"
-        ? "starting"
-        : "waiting";
+        ? copy.starting
+        : copy.waiting;
   const setupHelp =
     phase === "connected" || phase === "applying"
-      ? "WhatsApp is linked but Hermes is not listening yet. Save and restart the gateway to finish setup."
+      ? copy.whatsappLinkedNeedsRestart
       : setup?.status === "installing"
-        ? "Preparing the WhatsApp bridge. The QR code will appear here when it is ready."
+        ? copy.whatsappBridgePreparing
         : setup?.status === "starting"
-          ? "Starting the WhatsApp pairing bridge. The QR code will appear here when it is ready."
-          : "Open WhatsApp on your phone, then go to Linked Devices and scan from there. This QR is not a browser URL.";
+          ? copy.whatsappBridgeStarting
+          : copy.whatsappQrInstructions;
   const linkedAccountLabel = setup?.account_phone
     ? `+${setup.account_phone}`
     : setup?.account_name || setup?.account_id || "";
   const linkedAccountDetail =
     setup?.account_phone || setup?.account_id
-      ? "This is the WhatsApp account Hermes is now logged into."
-      : "Hermes is logged into the WhatsApp account that scanned the QR code.";
+      ? copy.whatsappAccountDetailKnown
+      : copy.whatsappAccountDetailScanned;
   const linkedAccountChatUrl = setup?.account_phone
     ? `https://wa.me/${setup.account_phone}`
     : "";
   const messageInstruction =
     mode === "self-chat"
-      ? "After the restart, open Message Yourself on the linked account and send Hermes a message."
-      : "After the restart, start a chat from another WhatsApp account with the linked account and send Hermes a message.";
-  const hasSavedAllowedUsers = Boolean(platform.whatsapp_setup?.allowed_users_set);
+      ? copy.whatsappSelfChatMessage
+      : copy.whatsappStandardMessage;
+  const hasSavedAllowedUsers = Boolean(
+    platform.whatsapp_setup?.allowed_users_set,
+  );
   const pairingInstruction =
     mode === "self-chat" && !allowedUsers.trim()
       ? hasSavedAllowedUsers
-        ? "Hermes will keep the saved WhatsApp allowlist."
-        : "Self-chat mode will allow the linked account automatically when you save."
+        ? copy.whatsappKeepAllowlist
+        : copy.whatsappSelfChatAutoAllow
       : !allowedUsers.trim() && hasSavedAllowedUsers
-        ? "Hermes will keep the saved WhatsApp allowlist."
-        : "If no allowed numbers were entered, Hermes replies with a pairing code. Approve it from the dashboard Pairing page.";
+        ? copy.whatsappKeepAllowlist
+        : copy.whatsappPairingFallback;
 
   return (
     <div className="rounded-sm border border-border bg-background/35 p-4">
@@ -856,14 +909,24 @@ function WhatsAppOnboardingPanel({
             size="sm"
             className="uppercase"
             onClick={() => void start()}
-            disabled={phase === "starting" || phase === "waiting" || phase === "applying"}
-            prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
+            disabled={
+              phase === "starting" ||
+              phase === "waiting" ||
+              phase === "applying"
+            }
+            prefix={
+              phase === "starting" ? (
+                <Spinner />
+              ) : (
+                <QrCode className="h-4 w-4" />
+              )
+            }
           >
-            {phase === "starting" ? "Starting…" : "Pair with QR"}
+            {phase === "starting" ? copy.starting : copy.pairWithQr}
           </Button>
           {platform.configured && (
             <span className="text-xs text-muted-foreground">
-              Existing WhatsApp settings are configured.
+              {copy.existingWhatsAppConfigured}
             </span>
           )}
         </div>
@@ -871,7 +934,7 @@ function WhatsAppOnboardingPanel({
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
           <div className="grid gap-1.5">
             <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
-              Mode
+              {copy.mode}
             </span>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -880,7 +943,7 @@ function WhatsAppOnboardingPanel({
                 onClick={() => setMode("bot")}
                 disabled={phase === "waiting" || phase === "applying"}
               >
-                Bot
+                {copy.botMode}
               </Button>
               <Button
                 size="sm"
@@ -888,12 +951,14 @@ function WhatsAppOnboardingPanel({
                 onClick={() => setMode("self-chat")}
                 disabled={phase === "waiting" || phase === "applying"}
               >
-                Self-chat
+                {copy.selfChatMode}
               </Button>
             </div>
           </div>
           <div className="grid min-w-0 flex-1 gap-1.5">
-            <Label htmlFor="whatsapp-allowed-users">Allowed WhatsApp numbers</Label>
+            <Label htmlFor="whatsapp-allowed-users">
+              {copy.allowedWhatsAppNumbers}
+            </Label>
             <Input
               id="whatsapp-allowed-users"
               value={allowedUsers}
@@ -915,11 +980,13 @@ function WhatsAppOnboardingPanel({
             <div className="grid gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 {phase === "connected" || phase === "applying" ? (
-                  <Badge tone="success">Connected</Badge>
+                  <Badge tone="success">{copy.connected}</Badge>
                 ) : (
                   <Badge tone="warning">{setupStatusLabel}</Badge>
                 )}
-                <Badge tone={expiresIn === "expired" ? "destructive" : "outline"}>
+                <Badge
+                  tone={expiresIn === copy.expired ? "destructive" : "outline"}
+                >
                   {expiresIn}
                 </Badge>
               </div>
@@ -928,8 +995,7 @@ function WhatsAppOnboardingPanel({
 
               {phase === "waiting" && (
                 <div className="text-xs text-muted-foreground">
-                  After saving, unknown DMs use Hermes pairing codes unless their
-                  number is already allowed.
+                  {copy.whatsappUnknownDmHint}
                 </div>
               )}
 
@@ -938,12 +1004,16 @@ function WhatsAppOnboardingPanel({
                   <div className="border border-border bg-background/45 p-3 text-sm">
                     <div className="font-medium">
                       {linkedAccountLabel
-                        ? `Linked as ${linkedAccountLabel}`
-                        : "WhatsApp device linked"}
+                        ? formatTemplate(copy.linkedAs, {
+                            account: linkedAccountLabel,
+                          })
+                        : copy.whatsappLinkedDevice}
                     </div>
-                    <div className="mt-1 text-muted-foreground">{linkedAccountDetail}</div>
+                    <div className="mt-1 text-muted-foreground">
+                      {linkedAccountDetail}
+                    </div>
                     <ol className="mt-3 list-decimal space-y-1 pl-5 text-muted-foreground">
-                      <li>Save and restart the gateway.</li>
+                      <li>{copy.whatsappSaveFirst}</li>
                       <li>{messageInstruction}</li>
                       <li>{pairingInstruction}</li>
                     </ol>
@@ -954,7 +1024,7 @@ function WhatsAppOnboardingPanel({
                         target="_blank"
                         rel="noreferrer"
                       >
-                        Open chat link
+                        {copy.openChatLink}
                         <ExternalLink className="h-3.5 w-3.5" />
                       </a>
                     )}
@@ -965,12 +1035,18 @@ function WhatsAppOnboardingPanel({
                       className="uppercase"
                       onClick={() => void apply()}
                       disabled={phase === "applying"}
-                      prefix={phase === "applying" ? <Spinner /> : <Save className="h-4 w-4" />}
+                      prefix={
+                        phase === "applying" ? (
+                          <Spinner />
+                        ) : (
+                          <Save className="h-4 w-4" />
+                        )
+                      }
                     >
-                      {phase === "applying" ? "Saving…" : "Save and restart"}
+                      {phase === "applying" ? copy.saving : copy.saveAndRestart}
                     </Button>
                     <Button size="sm" ghost onClick={() => void cancel()}>
-                      Cancel
+                      {copy.cancel}
                     </Button>
                   </div>
                 </div>
@@ -981,31 +1057,31 @@ function WhatsAppOnboardingPanel({
               {qrDataUrl ? (
                 <img
                   src={qrDataUrl}
-                  alt="WhatsApp setup QR code"
+                  alt={copy.qrAltWhatsApp}
                   className="h-60 w-60 bg-white p-2"
                 />
               ) : phase === "connected" || phase === "applying" ? (
                 <div className="flex h-60 w-60 flex-col items-center justify-center gap-2 border border-border bg-background/50 p-4 text-center">
-                  <Badge tone="success">Linked</Badge>
+                  <Badge tone="success">{copy.linked}</Badge>
                   <div className="text-sm text-muted-foreground">
-                    {linkedAccountLabel || "Existing WhatsApp session found"}
+                    {linkedAccountLabel || copy.whatsappExistingSession}
                   </div>
                 </div>
               ) : (
                 <div className="flex h-60 w-60 flex-col items-center justify-center gap-3 border border-border bg-background/50 p-4 text-center">
                   <Spinner className="text-2xl" />
                   <div className="text-xs text-muted-foreground">
-                    Waiting for WhatsApp to provide a QR code…
+                    {copy.whatsappQrPending}
                   </div>
                 </div>
               )}
               {phase === "waiting" && (
                 <span className="text-center text-xs text-muted-foreground">
-                  Scan with WhatsApp Linked Devices, not the camera app.
+                  {copy.whatsappQrScanHint}
                 </span>
               )}
               <Button size="sm" ghost onClick={() => void cancel()}>
-                Cancel
+                {copy.cancel}
               </Button>
             </div>
           </div>
@@ -1028,6 +1104,8 @@ function TelegramOnboardingPanel({
   setRestartNeeded: (needed: boolean) => void;
   showToast: (message: string, type: "success" | "error") => void;
 }) {
+  const { t } = useI18n();
+  const copy = t.channels.onboarding;
   const [setup, setSetup] = useState<TelegramOnboardingStartResponse | null>(
     null,
   );
@@ -1070,17 +1148,18 @@ function TelegramOnboardingPanel({
         if (cancelled) return;
 
         const expiresAt = Date.parse(setup.expires_at);
-        const expired =
-          Number.isFinite(expiresAt) && Date.now() >= expiresAt;
+        const expired = Number.isFinite(expiresAt) && Date.now() >= expiresAt;
         if (isTerminalTelegramOnboardingError(pollError) || expired) {
           setSetup(null);
           setQrDataUrl("");
           setPhase("idle");
-          setError("Telegram pairing expired. Start a new QR setup to try again.");
+          setError(copy.telegramPairingExpired);
           return;
         }
 
-        setError(`Still waiting for Telegram. Retrying after: ${pollError}`);
+        setError(
+          formatTemplate(copy.retryingTelegram, { error: String(pollError) }),
+        );
         timeout = setTimeout(poll, 2000);
       }
     };
@@ -1090,7 +1169,7 @@ function TelegramOnboardingPanel({
       cancelled = true;
       if (timeout) clearTimeout(timeout);
     };
-  }, [phase, setup]);
+  }, [copy, phase, setup]);
 
   useEffect(() => {
     if (!setup) return;
@@ -1117,7 +1196,9 @@ function TelegramOnboardingPanel({
     setDetectedOwnerId(null);
     setNewAllowedId("");
     try {
-      const res = await api.startTelegramOnboarding({ bot_name: "Hermes Agent" });
+      const res = await api.startTelegramOnboarding({
+        bot_name: "Hermes Agent",
+      });
       const dataUrl = await QRCode.toDataURL(res.qr_payload, {
         errorCorrectionLevel: "M",
         margin: 1,
@@ -1146,7 +1227,7 @@ function TelegramOnboardingPanel({
   const addAllowedId = () => {
     const trimmed = newAllowedId.trim();
     if (!TELEGRAM_USER_ID_RE.test(trimmed)) {
-      setError("Allowed Telegram user IDs must be numeric.");
+      setError(copy.allowedTelegramIdsNumeric);
       return;
     }
     setError("");
@@ -1169,7 +1250,9 @@ function TelegramOnboardingPanel({
         if (st.exit_code !== 0 && st.exit_code !== null) {
           onRestartNeeded();
           showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
+            formatTemplate(copy.gatewayRestartFailedExit, {
+              code: st.exit_code,
+            }),
             "error",
           );
         }
@@ -1183,7 +1266,7 @@ function TelegramOnboardingPanel({
   const apply = async () => {
     if (!setup) return;
     if (allowedIds.length === 0) {
-      setError("Add at least one allowed Telegram user ID.");
+      setError(copy.telegramAddAtLeastOne);
       return;
     }
     setPhase("applying");
@@ -1194,24 +1277,41 @@ function TelegramOnboardingPanel({
       });
       resetSetup();
       if (result.restart_started) {
-        showToast("Telegram saved; gateway restarting…", "success");
+        showToast(
+          formatTemplate(copy.savedRestarting, { channel: "Telegram" }),
+          "success",
+        );
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
         void watchRestartOutcome();
       } else if (result.restart_started === undefined && result.needs_restart) {
         try {
           await api.restartGateway();
-          showToast("Telegram saved; gateway restarting…", "success");
+          showToast(
+            formatTemplate(copy.savedRestarting, { channel: "Telegram" }),
+            "success",
+          );
           setRestartNeeded(false);
           setTimeout(() => void onChanged(), 4000);
         } catch (restartError) {
           onRestartNeeded();
-          showToast(`Telegram saved; gateway restart failed: ${restartError}`, "error");
+          showToast(
+            formatTemplate(copy.gatewayRestartFailed, {
+              error: String(restartError),
+            }),
+            "error",
+          );
         }
       } else {
         onRestartNeeded();
         const detail = result.restart_error ? `: ${result.restart_error}` : "";
-        showToast(`Telegram saved; gateway restart failed${detail}`, "error");
+        showToast(
+          formatTemplate(copy.savedRestartFailed, {
+            channel: "Telegram",
+            detail,
+          }),
+          "error",
+        );
       }
       await onChanged();
     } catch (applyError) {
@@ -1221,10 +1321,10 @@ function TelegramOnboardingPanel({
   };
 
   const expiresIn = useMemo(
-    () => (setup ? formatExpiry(setup.expires_at) : ""),
+    () => (setup ? formatExpiry(setup.expires_at, copy.expired) : ""),
     // tick keeps the memo fresh without recalculating on every render branch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [setup, tick],
+    [copy.expired, setup, tick],
   );
 
   return (
@@ -1234,14 +1334,18 @@ function TelegramOnboardingPanel({
           size="sm"
           className="uppercase"
           onClick={() => void start()}
-          disabled={phase === "starting" || phase === "waiting" || phase === "applying"}
-          prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
+          disabled={
+            phase === "starting" || phase === "waiting" || phase === "applying"
+          }
+          prefix={
+            phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />
+          }
         >
-          {phase === "starting" ? "Starting…" : "Set up with QR"}
+          {phase === "starting" ? copy.starting : copy.setUpWithQr}
         </Button>
         {platform.configured && (
           <span className="text-xs text-muted-foreground">
-            Existing Telegram credentials are configured.
+            {copy.existingTelegramConfigured}
           </span>
         )}
       </div>
@@ -1258,7 +1362,7 @@ function TelegramOnboardingPanel({
             {(phase === "ready" || phase === "applying") && (
               <div className="grid gap-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone="success">Ready</Badge>
+                  <Badge tone="success">{copy.ready}</Badge>
                   {botUsername && (
                     <span className="font-courier text-sm text-muted-foreground">
                       @{botUsername}
@@ -1269,11 +1373,12 @@ function TelegramOnboardingPanel({
                 <div className="grid gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
-                      Allowed users
+                      {copy.allowedUsers}
                     </span>
-                    {detectedOwnerId && allowedIds.includes(detectedOwnerId) && (
-                      <Badge tone="success">owner detected</Badge>
-                    )}
+                    {detectedOwnerId &&
+                      allowedIds.includes(detectedOwnerId) && (
+                        <Badge tone="success">{copy.ownerDetected}</Badge>
+                      )}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {allowedIds.map((id) => (
@@ -1293,7 +1398,7 @@ function TelegramOnboardingPanel({
                     ))}
                     {allowedIds.length === 0 && (
                       <span className="text-sm text-muted-foreground">
-                        Add at least one Telegram user ID.
+                        {copy.telegramAddAtLeastOne}
                       </span>
                     )}
                   </div>
@@ -1303,11 +1408,16 @@ function TelegramOnboardingPanel({
                   <Input
                     value={newAllowedId}
                     onChange={(event) => setNewAllowedId(event.target.value)}
-                    placeholder="Telegram user ID"
+                    placeholder={copy.telegramUserIdPlaceholder}
                     className="font-courier"
                   />
-                  <Button size="sm" outlined onClick={addAllowedId} prefix={<Check />}>
-                    Add
+                  <Button
+                    size="sm"
+                    outlined
+                    onClick={addAllowedId}
+                    prefix={<Check />}
+                  >
+                    {copy.add}
                   </Button>
                 </div>
 
@@ -1317,12 +1427,18 @@ function TelegramOnboardingPanel({
                     className="uppercase"
                     onClick={() => void apply()}
                     disabled={phase === "applying"}
-                    prefix={phase === "applying" ? <Spinner /> : <Save className="h-4 w-4" />}
+                    prefix={
+                      phase === "applying" ? (
+                        <Spinner />
+                      ) : (
+                        <Save className="h-4 w-4" />
+                      )
+                    }
                   >
-                    {phase === "applying" ? "Saving…" : "Save and restart"}
+                    {phase === "applying" ? copy.saving : copy.saveAndRestart}
                   </Button>
                   <Button size="sm" ghost onClick={() => void cancel()}>
-                    Cancel
+                    {copy.cancel}
                   </Button>
                 </div>
               </div>
@@ -1332,14 +1448,18 @@ function TelegramOnboardingPanel({
           <div className="flex flex-col items-center justify-center gap-3">
             <img
               src={qrDataUrl}
-              alt="Telegram setup QR code"
+              alt={copy.qrAltTelegram}
               className="h-56 w-56 bg-white p-2"
             />
             <div className="flex flex-wrap items-center justify-center gap-2 text-sm">
-              <Badge tone={expiresIn === "expired" ? "destructive" : "outline"}>
+              <Badge
+                tone={expiresIn === copy.expired ? "destructive" : "outline"}
+              >
                 {expiresIn}
               </Badge>
-              {phase === "waiting" && <Badge tone="warning">waiting</Badge>}
+              {phase === "waiting" && (
+                <Badge tone="warning">{copy.waiting}</Badge>
+              )}
             </div>
             <div className="flex flex-wrap justify-center gap-2">
               <a
@@ -1349,10 +1469,10 @@ function TelegramOnboardingPanel({
                 className="inline-flex h-8 items-center gap-1 border border-border px-3 text-xs uppercase text-foreground hover:border-foreground/40"
               >
                 <ExternalLink className="h-4 w-4" />
-                Open Telegram
+                {copy.openTelegram}
               </a>
               <Button size="sm" ghost onClick={() => void cancel()}>
-                Cancel
+                {copy.cancel}
               </Button>
             </div>
           </div>

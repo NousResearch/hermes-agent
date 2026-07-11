@@ -24,19 +24,18 @@ import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
-const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
-
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
 export function handleIdleHotkeyExit(
   actions: Pick<InputHandlerActions, 'die' | 'sys'>,
   dashboardTuiMode = DASHBOARD_TUI_MODE,
-  requestDashboardNewSession?: () => void
+  requestDashboardNewSession?: () => void,
+  dashboardNewSessionMessage = 'starting a fresh dashboard chat…'
 ) {
   if (!shouldAllowIdleHotkeyExit(dashboardTuiMode)) {
     requestDashboardNewSession?.()
 
-    return actions.sys(DASHBOARD_NEW_SESSION_MESSAGE)
+    return actions.sys(dashboardNewSessionMessage)
   }
 
   return actions.die()
@@ -534,23 +533,33 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return cActions.clearIn()
       }
 
-      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
-        gateway.gw.publishLocalEvent({
-          payload: { reason: 'idle_exit_hotkey' },
-          session_id: live.sid ?? undefined,
-          type: 'dashboard.new_session_requested'
-        })
-      })
+      return handleIdleHotkeyExit(
+        actions,
+        DASHBOARD_TUI_MODE,
+        () => {
+          gateway.gw.publishLocalEvent({
+            payload: { reason: 'idle_exit_hotkey' },
+            session_id: live.sid ?? undefined,
+            type: 'dashboard.new_session_requested'
+          })
+        },
+        ti('sys.dashboardFreshChat')
+      )
     }
 
     if (isAction(key, ch, 'd')) {
-      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
-        gateway.gw.publishLocalEvent({
-          payload: { reason: 'idle_exit_hotkey' },
-          session_id: live.sid ?? undefined,
-          type: 'dashboard.new_session_requested'
-        })
-      })
+      return handleIdleHotkeyExit(
+        actions,
+        DASHBOARD_TUI_MODE,
+        () => {
+          gateway.gw.publishLocalEvent({
+            payload: { reason: 'idle_exit_hotkey' },
+            session_id: live.sid ?? undefined,
+            type: 'dashboard.new_session_requested'
+          })
+        },
+        ti('sys.dashboardFreshChat')
+      )
     }
 
     if (isAction(key, ch, 'l')) {
@@ -569,7 +578,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // arrives as meta+g across platforms).
     if (ch.toLowerCase() === 'g' && (isAction(key, ch, 'g') || key.meta)) {
       return void cActions.openEditor().catch((err: unknown) => {
-        actions.sys(err instanceof Error ? ti('sys.editorOpenFailed', { message: err.message }) : ti('sys.editorOpenFailedSimple'))
+        actions.sys(
+          err instanceof Error ? ti('sys.editorOpenFailed', { message: err.message }) : ti('sys.editorOpenFailedSimple')
+        )
       })
     }
 

@@ -79,6 +79,7 @@ export const en: Translations = {
       documentation: "Documentation",
       achievements: "Achievements",
       example: "Example",
+      files: "Files",
       kanban: "Kanban",
       keys: "Keys",
       logs: "Logs",
@@ -117,14 +118,18 @@ export const en: Translations = {
     model: "model",
     switchModel: "switch model",
     reconnect: "reconnect",
-    tools: "tools",
-    noToolCalls: "no tool calls yet",
-    eventsDisconnected:
-      "events feed disconnected — tool calls may not appear",
+    eventsDisconnected: "events feed disconnected — tool calls may not appear",
     eventsRejected: "events feed rejected ({code}) — reload the page",
     reasoning: "reasoning",
     reasoningEffortSet:
       "Reasoning effort set to {effort}. Run /new or refresh the page to apply it to this chat.",
+    modelSetRequiresReload:
+      "Model set to {model}. Run /new or refresh the page to apply it to this chat.",
+    reconnecting: "Chat is reconnecting.",
+    disconnected: "Chat disconnected.",
+    reconnectNow: "Reconnect now",
+    sessionEnded: "Session ended.",
+    startNewSession: "Start new session",
   },
 
   modelPicker: {
@@ -145,6 +150,13 @@ export const en: Translations = {
     modelsCount: "{count} models",
     unknownModel: "(unknown)",
     currentModelLabel: "current: {model}",
+    expensiveWarningFallback: "This model has unusually high known pricing.",
+    expensiveWarningTitle: "Expensive Model Warning",
+    switchAnyway: "Switch anyway",
+    reloadConfirmTitle: "Switch model?",
+    reloadConfirmDescription:
+      "Switching to {model} starts a fresh chat. Your current chat stays in the Sessions list and the Agent's memory is kept. Reload now to apply it?",
+    reload: "Reload",
   },
 
   status: {
@@ -182,6 +194,10 @@ export const en: Translations = {
     updateHermes: "Update Hermes",
     updateHermesConfirmMessage:
       "This runs hermes update and restarts the gateway when it finishes. Active sessions keep their prompt cache until then.",
+    updateHermesBehindConfirmMessage:
+      "This runs hermes update ({command}) and pulls {count} new commits. The gateway restarts when the update finishes; active sessions keep their prompt cache until then.",
+    updateHermesBehindOneConfirmMessage:
+      "This runs hermes update ({command}) and pulls 1 new commit. The gateway restarts when the update finishes; active sessions keep their prompt cache until then.",
     updateHermesConfirmNow: "Update now",
     updateHermesConfirmTitle: "Update Hermes?",
     updatingHermes: "Updating Hermes…",
@@ -268,14 +284,6 @@ export const en: Translations = {
     toolCalls: "tool calls",
     noModelsData: "No model usage data for this period",
     startSession: "Start a session to see model data here",
-    overrideAuto: "(override — auto: {value})",
-    autoDetected: "auto-detected",
-    loading: "Loading model info…",
-    contextWindow: "Context Window",
-    maxOutput: "Max Output",
-    capabilityTools: "Tools",
-    capabilityVision: "Vision",
-    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -289,15 +297,19 @@ export const en: Translations = {
   },
 
   channels: {
-    changesSaved: "Changes are saved. Restart the gateway for them to take effect.",
+    changesSaved:
+      "Changes are saved. Restart the gateway for them to take effect.",
     configure: "Configure",
     configureTitle: "Configure {name}",
-    configuredSummary: "{configured} of {total} channels configured. Credentials are written to {path}; the gateway connects each enabled channel on its next restart.",
+    configuredSummary:
+      "{configured} of {total} channels configured. Credentials are written to {path}; the gateway connects each enabled channel on its next restart.",
     enablePlatform: "Enable {name}",
     errorToast: "Error: {error}",
     failedToRestart: "Failed to restart: {error}",
     failedToSave: "Failed to save: {error}",
-    gatewayNotRunning: "The gateway is not running. Configure channels here, then start the gateway with {command} (or the Restart button above).",
+    fixHighlightedFields: "Fix the highlighted fields before saving.",
+    gatewayNotRunning:
+      "The gateway is not running. Configure channels here, then start the gateway with {command} (or the Restart button above).",
     gatewayRestarting: "Gateway restarting...",
     keepExistingPlaceholder: "****** (set - leave blank to keep)",
     nothingToSave: "Nothing to save - fill in at least one field.",
@@ -310,6 +322,79 @@ export const en: Translations = {
     saved: "{name} saved",
     setupGuide: "Setup guide",
     test: "Test",
+    onboarding: {
+      add: "Add",
+      allowedTelegramIdsNumeric: "Allowed Telegram user IDs must be numeric.",
+      allowedUsers: "Allowed users",
+      allowedWhatsAppNumbers: "Allowed WhatsApp numbers",
+      botMode: "Bot",
+      cancel: "Cancel",
+      connected: "Connected",
+      existingTelegramConfigured:
+        "Existing Telegram credentials are configured.",
+      existingWhatsAppConfigured: "Existing WhatsApp settings are configured.",
+      expired: "expired",
+      gatewayRestartFailed: "Gateway restart failed: {error}",
+      gatewayRestartFailedExit:
+        "Gateway restart failed (exit {code}) — restart manually",
+      linked: "Linked",
+      linkedAs: "Linked as {account}",
+      mode: "Mode",
+      openChatLink: "Open chat link",
+      openTelegram: "Open Telegram",
+      ownerDetected: "owner detected",
+      pairWithQr: "Pair with QR",
+      preparing: "preparing",
+      qrAltTelegram: "Telegram setup QR code",
+      qrAltWhatsApp: "WhatsApp setup QR code",
+      ready: "Ready",
+      retryingTelegram: "Still waiting for Telegram. Retrying after: {error}",
+      retryingWhatsApp: "Still waiting for WhatsApp. Retrying after: {error}",
+      saveAndRestart: "Save and restart",
+      savedRestartFailed: "{channel} saved; gateway restart failed{detail}",
+      savedRestarting: "{channel} saved; gateway restarting…",
+      saving: "Saving…",
+      selfChatMode: "Self-chat",
+      setUpWithQr: "Set up with QR",
+      starting: "Starting…",
+      telegramAddAtLeastOne: "Add at least one Telegram user ID.",
+      telegramPairingExpired:
+        "Telegram pairing expired. Start a new QR setup to try again.",
+      telegramUserIdPlaceholder: "Telegram user ID",
+      waiting: "waiting",
+      whatsappAccountDetailKnown:
+        "This is the WhatsApp account Hermes is now logged into.",
+      whatsappAccountDetailScanned:
+        "Hermes is logged into the WhatsApp account that scanned the QR code.",
+      whatsappBridgePreparing:
+        "Preparing the WhatsApp bridge. The QR code will appear here when it is ready.",
+      whatsappBridgeStarting:
+        "Starting the WhatsApp pairing bridge. The QR code will appear here when it is ready.",
+      whatsappExistingSession: "Existing WhatsApp session found",
+      whatsappKeepAllowlist: "Hermes will keep the saved WhatsApp allowlist.",
+      whatsappLinkedDevice: "WhatsApp device linked",
+      whatsappPairingFallback:
+        "If no allowed numbers were entered, Hermes replies with a pairing code. Approve it from the dashboard Pairing page.",
+      whatsappQrExpired:
+        "WhatsApp QR setup expired. Start a new QR setup to try again.",
+      whatsappQrInstructions:
+        "Open WhatsApp on your phone, then go to Linked Devices and scan from there. This QR is not a browser URL.",
+      whatsappQrPending: "Waiting for WhatsApp to provide a QR code…",
+      whatsappQrScanHint:
+        "Scan with WhatsApp Linked Devices, not the camera app.",
+      whatsappSaveFirst: "Save and restart the gateway.",
+      whatsappSelfChatAutoAllow:
+        "Self-chat mode will allow the linked account automatically when you save.",
+      whatsappSelfChatMessage:
+        "After the restart, open Message Yourself on the linked account and send Hermes a message.",
+      whatsappSetupFailed: "WhatsApp setup failed.",
+      whatsappStandardMessage:
+        "After the restart, start a chat from another WhatsApp account with the linked account and send Hermes a message.",
+      whatsappUnknownDmHint:
+        "After saving, unknown DMs use Hermes pairing codes unless their number is already allowed.",
+      whatsappLinkedNeedsRestart:
+        "WhatsApp is linked but Hermes is not listening yet. Save and restart the gateway to finish setup.",
+    },
     state: {
       connected: "Connected",
       pendingRestart: "Restart to apply",
@@ -466,7 +551,8 @@ export const en: Translations = {
     inactive: "inactive",
     installBtn: "Install",
     installHeading: "Install from GitHub / Git URL",
-    installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL. For a plugin in a subdirectory, append the path: owner/repo/path/to/plugin (or <url>#path/to/plugin).",
+    installHint:
+      "Use owner/repo shorthand or a full https:// or git@ clone URL. For a plugin in a subdirectory, append the path: owner/repo/path/to/plugin (or <url>#path/to/plugin).",
     memoryProviderLabel: "Memory provider",
     missingEnvWarn: "Set these in Keys before the plugin can run:",
     noDashboardTab: "No dashboard tab",
@@ -479,9 +565,11 @@ export const en: Translations = {
       "Writes memory.provider (empty = built-in) and context.engine to config.yaml. Takes effect next session.",
     refreshDashboard: "Rescan dashboard extensions",
     removeConfirm: "Remove this plugin from ~/.hermes/plugins/?",
-    removeHint: "Only user-installed plugins under ~/.hermes/plugins can be removed.",
+    removeHint:
+      "Only user-installed plugins under ~/.hermes/plugins can be removed.",
     rescanHeading: "SPA plugin registry",
-    rescanHint: "Rescan after adding files on disk so the dashboard sidebar picks up new manifests.",
+    rescanHint:
+      "Rescan after adding files on disk so the dashboard sidebar picks up new manifests.",
     runtimeHeading: "Gateway runtime (YAML plugins)",
     saveProviders: "Save provider settings",
     savedProviders: "Provider settings saved.",
@@ -526,7 +614,8 @@ export const en: Translations = {
     importConfig: "Import config from JSON",
     resetDefaults: "Reset to defaults",
     resetScopeTooltip: "Reset {scope} to defaults",
-    confirmResetScope: "Reset all {scope} settings to their defaults? This only updates the form — changes aren't written to config.yaml until you press Save.",
+    confirmResetScope:
+      "Reset all {scope} settings to their defaults? This only updates the form — changes aren't written to config.yaml until you press Save.",
     resetScopeToast: "{scope} reset to defaults — review and Save to persist",
     rawYaml: "Raw YAML Configuration",
     searchResults: "Search Results",
@@ -560,7 +649,8 @@ export const en: Translations = {
   },
 
   env: {
-    changesNote: "Changes are saved to disk immediately. Active sessions pick up new keys automatically.",
+    changesNote:
+      "Changes are saved to disk immediately. Active sessions pick up new keys automatically.",
     confirmClearMessage:
       "The stored value for this variable will be removed from your .env file. This cannot be undone from the UI.",
     confirmClearTitle: "Clear this key?",
@@ -580,23 +670,15 @@ export const en: Translations = {
     showValue: "Show real value",
     hideValue: "Hide value",
     customTitle: "Custom Keys",
-    customHint: "Arbitrary environment variables stored in your .env that Hermes doesn't recognise. Use these to inject env vars for skills, MCP servers, or your own tooling.",
+    customHint:
+      "Arbitrary environment variables stored in your .env that Hermes doesn't recognise. Use these to inject env vars for skills, MCP servers, or your own tooling.",
     customConfigured: "{count} custom key{s} set",
     addCustomKey: "Add a custom key",
     customKeyName: "Variable name",
     customKeyNamePlaceholder: "e.g. MY_SERVICE_API_KEY",
     add: "Add",
-    invalidKeyName: "Use letters, numbers and underscores only (must start with a letter or underscore).",
-  },
-
-  toolCall: {
-    running: "running",
-    error: "error",
-    done: "done",
-    context: "Context",
-    streaming: "Streaming",
-    diff: "Diff",
-    result: "Result",
+    invalidKeyName:
+      "Use letters, numbers and underscores only (must start with a letter or underscore).",
   },
 
   oauth: {
@@ -606,7 +688,10 @@ export const en: Translations = {
       "{connected} of {total} OAuth providers connected. Use Login for dashboard-supported flows; CLI commands remain available for external or fallback setup.",
     connected: "Connected",
     expired: "Expired",
-    notConnected: "Not connected. Use Login when available, or run {command} in a terminal.",
+    notConnected:
+      "Not connected. Use Login when available, or run {command} in a terminal.",
+    notConnectedHint:
+      "Not connected. Use Login when available, or run the command below in a terminal.",
     runInTerminal: "in a terminal.",
     noProviders: "No OAuth-capable providers detected.",
     login: "Login",
@@ -614,11 +699,15 @@ export const en: Translations = {
     managedExternally: "Managed externally",
     copied: "Copied ✓",
     copyCode: "Copy code",
-    copyFailed: "Could not copy automatically. Select the code and copy it manually.",
+    copyFailed:
+      "Could not copy automatically. Select the code and copy it manually.",
     cli: "Copy",
     copyCliCommand: "Copy CLI command (for external / fallback)",
     connect: "Connect",
     sessionExpires: "Session expires in {time}",
+    expiresMinutes: "expires in {count} min",
+    expiresHours: "expires in {count} h",
+    expiresDays: "expires in {count} d",
     initiatingLogin: "Initiating login flow…",
     exchangingCode: "Exchanging code for tokens…",
     connectedClosing: "Connected! Closing…",
@@ -640,12 +729,23 @@ export const en: Translations = {
     },
     expiresIn: "expires in {time}",
     tokenExchangeFailed: "Token exchange failed",
+    startFailed: "Failed to start login: {error}",
+    loginStatusFailed: "Login {status}",
+    pollingFailed: "Polling failed: {error}",
+    submitFailed: "Submit failed: {error}",
+    connectedProvider: "{provider} connected",
+    disconnectedProvider: "{provider} disconnected",
+    disconnectFailed: "Failed to disconnect {provider}: {error}",
+    loadProvidersFailed: "Failed to load providers: {error}",
+    tokenPreview: "access token",
     openDocs: "Open {provider} docs",
-    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
+    disconnectDescription:
+      "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
     switchTo: "Switch language",
+    saveFailed: "Could not save the language setting. Please try again.",
   },
 
   theme: {
@@ -762,11 +862,10 @@ export const en: Translations = {
       copy_button: "Copy image",
       copied: "Copied ✓",
       download_button: "Download PNG",
-      hint:
-        "Share on X opens a pre-filled post in a new tab. Click Copy image first if you want the 1200×630 badge attached — X lets you paste it right into the tweet composer. Download PNG saves the file for use anywhere.",
+      hint: "Share on X opens a pre-filled post in a new tab. Click Copy image first if you want the 1200×630 badge attached — X lets you paste it right into the tweet composer. Download PNG saves the file for use anywhere.",
       clipboard_unsupported:
         "Clipboard image copy not supported in this browser — use Download instead.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
 

@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const uk: Translations = {
+export const uk: TranslationOverlay = {
   common: {
     save: "Зберегти",
     saving: "Збереження...",
@@ -47,7 +47,6 @@ export const uk: Translations = {
       "Не вдалося завантажити скрипт цього плагіна. Перевірте вкладку Network (dashboard-plugins/…) та шлях до плагінів на сервері.",
     pluginNotRegistered:
       "Скрипт плагіна не викликав register(), або у скрипті сталася помилка. Відкрийте консоль браузера, щоб побачити деталі.",
-    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -70,31 +69,19 @@ export const uk: Translations = {
     nav: {
       analytics: "Аналітика",
       chat: "Чат",
-      channels: "Канали",
       config: "Конфігурація",
       cron: "Cron",
       documentation: "Документація",
-      achievements: "Achievements",
-      example: "Example",
-      kanban: "Kanban",
       keys: "Ключі",
       logs: "Журнали",
-      mcp: "MCP",
       models: "Моделі",
-      pairing: "Сполучення",
       profiles: "профілі: мульти-агенти",
       plugins: "Плагіни",
       sessions: "Сесії",
       skills: "Навички",
-      system: "Система",
-      webhooks: "Webhooks",
     },
     modelToolsSheetSubtitle: "та інструменти",
     modelToolsSheetTitle: "Модель",
-    copyLastResponse: "Copy last response",
-    copyLastResponseTitle: "Copy last assistant response as raw markdown",
-    copyLastResponseAria: "Copy last assistant response",
-    copied: "Copied",
     navigation: "Навігація",
     openDocumentation: "Відкрити документацію в новій вкладці",
     openNavigation: "Відкрити навігацію",
@@ -103,41 +90,6 @@ export const uk: Translations = {
     statusOverview: "Огляд стану",
     system: "Система",
     webUi: "Web UI",
-    loadingChat: "Loading chat…",
-  },
-
-  chatSidebar: {
-    model: "model",
-    switchModel: "switch model",
-    reconnect: "reconnect",
-    tools: "tools",
-    noToolCalls: "no tool calls yet",
-    eventsDisconnected:
-      "events feed disconnected — tool calls may not appear",
-    eventsRejected: "events feed rejected ({code}) — reload the page",
-    reasoning: "reasoning",
-    reasoningEffortSet:
-      "Reasoning effort set to {effort}. Run /new or refresh the page to apply it to this chat.",
-  },
-
-  modelPicker: {
-    title: "Switch Model",
-    close: "Close",
-    filterPlaceholder: "Filter providers and models…",
-    currentTag: "current",
-    cancel: "Cancel",
-    switch_: "Switch",
-    noMatches: "no matches",
-    noAuthProviders: "no authenticated providers",
-    loading: "loading…",
-    pickProvider: "pick a provider →",
-    noModelsMatch: "no models match your filter",
-    noModelsListed: "no models listed for this provider",
-    persistGlobal: "Persist globally (otherwise this session only)",
-    savesToConfig: "Saves to config.yaml — applies to new sessions.",
-    modelsCount: "{count} models",
-    unknownModel: "(unknown)",
-    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -253,14 +205,6 @@ export const uk: Translations = {
     toolCalls: "виклики інструментів",
     noModelsData: "Немає даних про використання моделей за цей період",
     startSession: "Почніть сесію, щоб побачити дані моделей тут",
-    overrideAuto: "(override — auto: {value})",
-    autoDetected: "auto-detected",
-    loading: "Loading model info…",
-    contextWindow: "Context Window",
-    maxOutput: "Max Output",
-    capabilityTools: "Tools",
-    capabilityVision: "Vision",
-    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -271,40 +215,6 @@ export const uk: Translations = {
     component: "Компонент",
     lines: "Рядки",
     noLogLines: "Записів журналу не знайдено",
-  },
-
-  channels: {
-    changesSaved: "Changes are saved. Restart the gateway for them to take effect.",
-    configure: "Configure",
-    configureTitle: "Configure {name}",
-    configuredSummary: "{configured} of {total} channels configured. Credentials are written to {path}; the gateway connects each enabled channel on its next restart.",
-    enablePlatform: "Enable {name}",
-    errorToast: "Error: {error}",
-    failedToRestart: "Failed to restart: {error}",
-    failedToSave: "Failed to save: {error}",
-    gatewayNotRunning: "The gateway is not running. Configure channels here, then start the gateway with {command} (or the Restart button above).",
-    gatewayRestarting: "Gateway restarting...",
-    keepExistingPlaceholder: "****** (set - leave blank to keep)",
-    nothingToSave: "Nothing to save - fill in at least one field.",
-    platformMessage: "{name}: {message}",
-    requiredField: "{field} is required",
-    restartGateway: "Restart gateway",
-    restartingGateway: "Restarting...",
-    restartNow: "Restart now",
-    saveAndEnable: "Save & enable",
-    saved: "{name} saved",
-    setupGuide: "Setup guide",
-    test: "Test",
-    state: {
-      connected: "Connected",
-      pendingRestart: "Restart to apply",
-      gatewayStopped: "Gateway stopped",
-      startupFailed: "Start failed",
-      disconnected: "Disconnected",
-      notConfigured: "Not configured",
-      disabled: "Disabled",
-      fatal: "Error",
-    },
   },
 
   cron: {
@@ -477,7 +387,7 @@ export const uk: Translations = {
     rawYaml: "Сирий YAML-конфіг",
     searchResults: "Результати пошуку",
     fields: "поле(ів)",
-    noFieldsMatch: 'Немає полів, що відповідають "{query}"',
+    noFieldsMatch: 'Немає полів, що відповідають \"{query}\"',
     configSaved: "Конфігурацію збережено",
     yamlConfigSaved: "YAML-конфігурацію збережено",
     failedToSave: "Не вдалося зберегти",
@@ -485,7 +395,6 @@ export const uk: Translations = {
     failedToLoadRaw: "Не вдалося завантажити сирий конфіг",
     configImported: "Конфігурацію імпортовано — перегляньте та збережіть",
     invalidJson: "Недійсний файл JSON",
-    yaml: "YAML",
     categories: {
       general: "Загальне",
       agent: "Агент",
@@ -535,16 +444,6 @@ export const uk: Translations = {
     invalidKeyName: "Використовуйте лише літери, цифри та підкреслення (має починатися з літери або підкреслення).",
   },
 
-  toolCall: {
-    running: "running",
-    error: "error",
-    done: "done",
-    context: "Context",
-    streaming: "Streaming",
-    diff: "Diff",
-    result: "Result",
-  },
-
   oauth: {
     title: "Входи постачальників (OAuth)",
     providerLogins: "Входи постачальників (OAuth)",
@@ -585,9 +484,6 @@ export const uk: Translations = {
       external: "Зовнішній CLI",
     },
     expiresIn: "завершується через {time}",
-    tokenExchangeFailed: "Token exchange failed",
-    openDocs: "Open {provider} docs",
-    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -597,10 +493,6 @@ export const uk: Translations = {
   theme: {
     title: "Тема",
     switchTheme: "Змінити тему",
-    presets: {
-      dock: { label: "Dock" },
-      minimal: { label: "Minimal" },
-    },
   },
 
   achievements: {

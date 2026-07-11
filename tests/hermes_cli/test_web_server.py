@@ -3539,6 +3539,12 @@ class TestBuildSchemaFromConfig:
             assert "options" in entry
             assert "local" in entry["options"]
 
+    def test_boolean_override_uses_frontend_schema_type(self):
+        """Boolean overrides must render as switches rather than text inputs."""
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        assert CONFIG_SCHEMA["updates.refresh_cua_driver"]["type"] == "boolean"
+
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config
         test_config = {"model": "test", "nested": {"key": "val"}}

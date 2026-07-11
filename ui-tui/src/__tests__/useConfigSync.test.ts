@@ -152,6 +152,16 @@ describe('applyDisplay', () => {
     expect(s.streaming).toBe(true)
   })
 
+  it('preserves the last-good locale when the config RPC fails', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { language: 'zh' } } }, setBell)
+    expect($uiState.get().locale).toBe('zh')
+
+    applyDisplay(null, setBell)
+    expect($uiState.get().locale).toBe('zh')
+  })
+
   it('accepts the new string statusBar modes', () => {
     const setBell = vi.fn()
 

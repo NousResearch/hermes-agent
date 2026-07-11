@@ -96,6 +96,7 @@ export interface Translations {
       cron: string;
       documentation: string;
       example: string;
+      files: string;
       kanban: string;
       keys: string;
       logs: string;
@@ -135,12 +136,16 @@ export interface Translations {
     model: string;
     switchModel: string;
     reconnect: string;
-    tools: string;
-    noToolCalls: string;
     eventsDisconnected: string;
     eventsRejected: string;
     reasoning: string;
     reasoningEffortSet: string;
+    modelSetRequiresReload: string;
+    reconnecting: string;
+    disconnected: string;
+    reconnectNow: string;
+    sessionEnded: string;
+    startNewSession: string;
   };
 
   // ── Model picker dialog ──
@@ -162,6 +167,12 @@ export interface Translations {
     modelsCount: string;
     unknownModel: string;
     currentModelLabel: string;
+    expensiveWarningFallback: string;
+    expensiveWarningTitle: string;
+    switchAnyway: string;
+    reloadConfirmTitle: string;
+    reloadConfirmDescription: string;
+    reload: string;
   };
 
   // ── Status page ──
@@ -187,8 +198,8 @@ export interface Translations {
     activeSessions: string;
     recentSessions: string;
     restartGateway: string;
-    restartGatewayConfirmMessage?: string;
-    restartGatewayConfirmTitle?: string;
+    restartGatewayConfirmMessage: string;
+    restartGatewayConfirmTitle: string;
     restartingGateway: string;
     running: string;
     runningRemote: string;
@@ -197,9 +208,11 @@ export interface Translations {
     startedInBackground: string;
     stopped: string;
     updateHermes: string;
-    updateHermesConfirmMessage?: string;
-    updateHermesConfirmNow?: string;
-    updateHermesConfirmTitle?: string;
+    updateHermesConfirmMessage: string;
+    updateHermesBehindConfirmMessage: string;
+    updateHermesBehindOneConfirmMessage: string;
+    updateHermesConfirmNow: string;
+    updateHermesConfirmTitle: string;
     updatingHermes: string;
     waitingForOutput: string;
   };
@@ -284,14 +297,6 @@ export interface Translations {
     toolCalls: string;
     noModelsData: string;
     startSession: string;
-    overrideAuto: string;
-    autoDetected: string;
-    loading: string;
-    contextWindow: string;
-    maxOutput: string;
-    capabilityTools: string;
-    capabilityVision: string;
-    capabilityReasoning: string;
   };
 
   // ── Logs page ──
@@ -315,6 +320,7 @@ export interface Translations {
     errorToast: string;
     failedToRestart: string;
     failedToSave: string;
+    fixHighlightedFields: string;
     gatewayNotRunning: string;
     gatewayRestarting: string;
     keepExistingPlaceholder: string;
@@ -328,6 +334,63 @@ export interface Translations {
     saved: string;
     setupGuide: string;
     test: string;
+    onboarding: {
+      add: string;
+      allowedTelegramIdsNumeric: string;
+      allowedUsers: string;
+      allowedWhatsAppNumbers: string;
+      botMode: string;
+      cancel: string;
+      connected: string;
+      existingTelegramConfigured: string;
+      existingWhatsAppConfigured: string;
+      expired: string;
+      gatewayRestartFailed: string;
+      gatewayRestartFailedExit: string;
+      linked: string;
+      linkedAs: string;
+      mode: string;
+      openChatLink: string;
+      openTelegram: string;
+      ownerDetected: string;
+      pairWithQr: string;
+      preparing: string;
+      qrAltTelegram: string;
+      qrAltWhatsApp: string;
+      ready: string;
+      retryingTelegram: string;
+      retryingWhatsApp: string;
+      saveAndRestart: string;
+      savedRestartFailed: string;
+      savedRestarting: string;
+      saving: string;
+      selfChatMode: string;
+      setUpWithQr: string;
+      starting: string;
+      telegramAddAtLeastOne: string;
+      telegramPairingExpired: string;
+      telegramUserIdPlaceholder: string;
+      waiting: string;
+      whatsappAccountDetailKnown: string;
+      whatsappAccountDetailScanned: string;
+      whatsappBridgePreparing: string;
+      whatsappBridgeStarting: string;
+      whatsappExistingSession: string;
+      whatsappKeepAllowlist: string;
+      whatsappLinkedDevice: string;
+      whatsappPairingFallback: string;
+      whatsappQrExpired: string;
+      whatsappQrInstructions: string;
+      whatsappQrPending: string;
+      whatsappQrScanHint: string;
+      whatsappSaveFirst: string;
+      whatsappSelfChatAutoAllow: string;
+      whatsappSelfChatMessage: string;
+      whatsappSetupFailed: string;
+      whatsappStandardMessage: string;
+      whatsappUnknownDmHint: string;
+      whatsappLinkedNeedsRestart: string;
+    };
     state: {
       connected: string;
       pendingRestart: string;
@@ -608,17 +671,6 @@ export interface Translations {
     invalidKeyName: string;
   };
 
-  // ── Tool call display ──
-  toolCall: {
-    running: string;
-    error: string;
-    done: string;
-    context: string;
-    streaming: string;
-    diff: string;
-    result: string;
-  };
-
   // ── OAuth ──
   oauth: {
     title: string;
@@ -627,6 +679,7 @@ export interface Translations {
     connected: string;
     expired: string;
     notConnected: string;
+    notConnectedHint: string;
     runInTerminal: string;
     noProviders: string;
     login: string;
@@ -639,6 +692,9 @@ export interface Translations {
     copyCliCommand: string;
     connect: string;
     sessionExpires: string;
+    expiresMinutes: string;
+    expiresHours: string;
+    expiresDays: string;
     initiatingLogin: string;
     exchangingCode: string;
     connectedClosing: string;
@@ -660,6 +716,15 @@ export interface Translations {
     };
     expiresIn: string;
     tokenExchangeFailed: string;
+    startFailed: string;
+    loginStatusFailed: string;
+    pollingFailed: string;
+    submitFailed: string;
+    connectedProvider: string;
+    disconnectedProvider: string;
+    disconnectFailed: string;
+    loadProvidersFailed: string;
+    tokenPreview: string;
     openDocs: string;
     disconnectDescription: string;
   };
@@ -667,6 +732,7 @@ export interface Translations {
   // ── Language switcher ──
   language: {
     switchTo: string;
+    saveFailed: string;
   };
 
   // ── Theme switcher ──
@@ -935,3 +1001,12 @@ export interface Translations {
     logAt: string;
   };
 }
+
+/** Locale files are overlays; the runtime deep-merges them onto English. */
+export type TranslationOverlay = DeepPartial<Translations>;
+
+type DeepPartial<T> = T extends readonly unknown[]
+  ? T
+  : T extends object
+    ? { [K in keyof T]?: DeepPartial<T[K]> }
+    : T;

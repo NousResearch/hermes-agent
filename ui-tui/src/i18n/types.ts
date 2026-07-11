@@ -23,14 +23,12 @@ export const LOCALES = [
 
 export type Locale = (typeof LOCALES)[number]
 
-export type TranslationValue = string | string[] | Record<string, string>
-
 export interface LangPack {
   toolVerbs: Record<string, string>
   verbs: string[]
   status: Record<string, string>
   /** UI string catalog — key set is authoritative from the EN pack. */
-  catalog: Record<string, TranslationValue>
+  catalog: Record<string, string>
   trail: { draftPrefix: string; analyzeLabel: string }
   /** How the status bar renders thinking verbs.
    *  'pad' — pad to a fixed width (Latin languages)

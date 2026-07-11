@@ -29,21 +29,39 @@ interface Props {
 
 function formatExpiresAt(
   expiresAt: string | null | undefined,
-  expiresInTemplate: string,
-): string | null {
+  templates: {
+    expired: string;
+    minutes: string;
+    hours: string;
+    days: string;
+  },
+): { expired: boolean; label: string } | null {
   if (!expiresAt) return null;
   try {
     const dt = new Date(expiresAt);
     if (Number.isNaN(dt.getTime())) return null;
     const now = Date.now();
     const diff = dt.getTime() - now;
-    if (diff < 0) return "expired";
+    if (diff < 0) return { expired: true, label: templates.expired };
     const mins = Math.floor(diff / 60_000);
-    if (mins < 60) return expiresInTemplate.replace("{time}", `${mins}m`);
+    if (mins < 60) {
+      return {
+        expired: false,
+        label: templates.minutes.replace("{count}", String(mins)),
+      };
+    }
     const hours = Math.floor(mins / 60);
-    if (hours < 24) return expiresInTemplate.replace("{time}", `${hours}h`);
+    if (hours < 24) {
+      return {
+        expired: false,
+        label: templates.hours.replace("{count}", String(hours)),
+      };
+    }
     const days = Math.floor(hours / 24);
-    return expiresInTemplate.replace("{time}", `${days}d`);
+    return {
+      expired: false,
+      label: templates.days.replace("{count}", String(days)),
+    };
   } catch {
     return null;
   }
@@ -59,30 +77,59 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const { t } = useI18n();
 
   const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
+  const loadErrorTemplateRef = useRef(t.oauth.loadProvidersFailed);
+
+  useEffect(() => {
+    onErrorRef.current = onError;
+    loadErrorTemplateRef.current = t.oauth.loadProvidersFailed;
+  }, [onError, t.oauth.loadProvidersFailed]);
+
+  const reportLoadError = useCallback((error: unknown) => {
+    onErrorRef.current?.(
+      loadErrorTemplateRef.current.replace("{error}", String(error)),
+    );
+  }, []);
 
   const refresh = useCallback(() => {
     setLoading(true);
     api
       .getOAuthProviders()
       .then((resp) => setProviders(resp.providers))
-      .catch((e) => onErrorRef.current?.(`Failed to load providers: ${e}`))
+      .catch(reportLoadError)
       .finally(() => setLoading(false));
-  }, []);
+  }, [reportLoadError]);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    let cancelled = false;
+    api
+      .getOAuthProviders()
+      .then((resp) => {
+        if (!cancelled) setProviders(resp.providers);
+      })
+      .catch(reportLoadError)
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reportLoadError]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {
     setBusyId(provider.id);
     setDisconnectTarget(null);
     try {
       await api.disconnectOAuthProvider(provider.id);
-      onSuccess?.(`${provider.name} ${t.oauth.disconnect.toLowerCase()}ed`);
+      onSuccess?.(
+        t.oauth.disconnectedProvider.replace("{provider}", provider.name),
+      );
       refresh();
-    } catch (e) {
-      onError?.(`${t.oauth.disconnect} failed: ${e}`);
+    } catch (error) {
+      onError?.(
+        t.oauth.disconnectFailed
+          .replace("{provider}", provider.name)
+          .replace("{error}", String(error)),
+      );
     } finally {
       setBusyId(null);
     }
@@ -132,10 +179,12 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
         )}
         <div className="flex flex-col divide-y divide-border">
           {providers?.map((p) => {
-            const expiresLabel = formatExpiresAt(
-              p.status.expires_at,
-              t.oauth.expiresIn,
-            );
+            const expiresLabel = formatExpiresAt(p.status.expires_at, {
+              expired: t.oauth.expired,
+              minutes: t.oauth.expiresMinutes,
+              hours: t.oauth.expiresHours,
+              days: t.oauth.expiresDays,
+            });
             const isBusy = busyId === p.id;
             return (
               <div
@@ -151,10 +200,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                   <div className="flex flex-col min-w-0 gap-0.5">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-sm">{p.name}</span>
-                      <Badge
-                        tone="outline"
-                        className="text-xs tracking-wide"
-                      >
+                      <Badge tone="outline" className="text-xs tracking-wide">
                         {t.oauth.flowLabels[p.flow]}
                       </Badge>
                       {p.status.logged_in && (
@@ -162,20 +208,22 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                           {t.oauth.connected}
                         </Badge>
                       )}
-                      {expiresLabel === "expired" && (
+                      {expiresLabel?.expired && (
                         <Badge tone="destructive" className="text-xs">
-                          {t.oauth.expired}
+                          {expiresLabel.label}
                         </Badge>
                       )}
-                      {expiresLabel && expiresLabel !== "expired" && (
+                      {expiresLabel && !expiresLabel.expired && (
                         <Badge tone="outline" className="text-xs">
-                          {expiresLabel}
+                          {expiresLabel.label}
                         </Badge>
                       )}
                     </div>
                     {p.status.logged_in && p.status.token_preview && (
                       <span className="truncate text-xs font-mono-ui text-text-secondary">
-                        <span className="text-text-tertiary">token </span>
+                        <span className="text-text-tertiary">
+                          {t.oauth.tokenPreview}{" "}
+                        </span>
                         {p.status.token_preview}
                         {p.status.source_label && (
                           <span className="text-text-tertiary">
@@ -188,8 +236,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                     {!p.status.logged_in && (
                       <>
                         <span className="text-xs text-text-secondary">
-                          {t.oauth.notConnected.split("{command}")[0].trimEnd()}
-                          {t.oauth.notConnected.split("{command}")[1] ?? ""}
+                          {t.oauth.notConnectedHint}
                         </span>
 
                         <div className="flex min-w-0 flex-wrap items-center gap-2">

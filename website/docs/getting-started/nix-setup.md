@@ -59,7 +59,7 @@ hermes --tui
 After `nix profile install`, `hermes`, `hermes-agent`, and `hermes-acp` are on your PATH. From here, the workflow is identical to the [standard installation](./installation.md) — `hermes setup` walks you through provider selection, `hermes gateway install` sets up a launchd (macOS) or systemd user service, and config lives in `~/.hermes/`.
 
 :::warning Messaging platforms (Discord, Telegram, Slack)
-The default package includes ALL libraries hermes-agent might need. if you want a smaller variant, check the other flake outputs.
+The default package includes ALL libraries hermes-agent might need. if you want a smaller variant, check the other flake outputs. 
 
 The `default` package adds ~700 MB to the closure. If you only need messaging platforms, `#messaging` adds just ~33 MB.
 

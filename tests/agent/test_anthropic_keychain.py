@@ -334,3 +334,4 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
         assert result == "newly-minted"
         # Prefers the live source's refresh token over the caller's stale copy.
         assert captured["refresh_token"] == "live-refresh"
+

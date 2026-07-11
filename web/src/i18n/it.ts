@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const it: Translations = {
+export const it: TranslationOverlay = {
   common: {
     save: "Salva",
     saving: "Salvataggio...",
@@ -47,7 +47,6 @@ export const it: Translations = {
       "Impossibile caricare lo script di questo plugin. Controlla la scheda Network (dashboard-plugins/…) e il percorso dei plugin del server.",
     pluginNotRegistered:
       "Lo script del plugin non ha chiamato register(), oppure ha generato un errore. Apri la console del browser per i dettagli.",
-    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -70,31 +69,19 @@ export const it: Translations = {
     nav: {
       analytics: "Analisi",
       chat: "Chat",
-      channels: "Canali",
       config: "Configurazione",
       cron: "Cron",
       documentation: "Documentazione",
-      achievements: "Achievements",
-      example: "Example",
-      kanban: "Kanban",
       keys: "Chiavi",
       logs: "Log",
-      mcp: "MCP",
       models: "Modelli",
-      pairing: "Associazione",
       profiles: "profili : multi agent",
       plugins: "Plugin",
       sessions: "Sessioni",
       skills: "Competenze",
-      system: "Sistema",
-      webhooks: "Webhooks",
     },
     modelToolsSheetSubtitle: "e strumenti",
     modelToolsSheetTitle: "Modello",
-    copyLastResponse: "Copy last response",
-    copyLastResponseTitle: "Copy last assistant response as raw markdown",
-    copyLastResponseAria: "Copy last assistant response",
-    copied: "Copied",
     navigation: "Navigazione",
     openDocumentation: "Apri la documentazione in una nuova scheda",
     openNavigation: "Apri navigazione",
@@ -103,41 +90,6 @@ export const it: Translations = {
     statusOverview: "Panoramica dello stato",
     system: "Sistema",
     webUi: "Web UI",
-    loadingChat: "Loading chat…",
-  },
-
-  chatSidebar: {
-    model: "model",
-    switchModel: "switch model",
-    reconnect: "reconnect",
-    tools: "tools",
-    noToolCalls: "no tool calls yet",
-    eventsDisconnected:
-      "events feed disconnected — tool calls may not appear",
-    eventsRejected: "events feed rejected ({code}) — reload the page",
-    reasoning: "reasoning",
-    reasoningEffortSet:
-      "Reasoning effort set to {effort}. Run /new or refresh the page to apply it to this chat.",
-  },
-
-  modelPicker: {
-    title: "Switch Model",
-    close: "Close",
-    filterPlaceholder: "Filter providers and models…",
-    currentTag: "current",
-    cancel: "Cancel",
-    switch_: "Switch",
-    noMatches: "no matches",
-    noAuthProviders: "no authenticated providers",
-    loading: "loading…",
-    pickProvider: "pick a provider →",
-    noModelsMatch: "no models match your filter",
-    noModelsListed: "no models listed for this provider",
-    persistGlobal: "Persist globally (otherwise this session only)",
-    savesToConfig: "Saves to config.yaml — applies to new sessions.",
-    modelsCount: "{count} models",
-    unknownModel: "(unknown)",
-    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -253,14 +205,6 @@ export const it: Translations = {
     toolCalls: "chiamate strumenti",
     noModelsData: "Nessun dato sull'uso dei modelli per questo periodo",
     startSession: "Avvia una sessione per vedere i dati dei modelli qui",
-    overrideAuto: "(override — auto: {value})",
-    autoDetected: "auto-detected",
-    loading: "Loading model info…",
-    contextWindow: "Context Window",
-    maxOutput: "Max Output",
-    capabilityTools: "Tools",
-    capabilityVision: "Vision",
-    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -271,40 +215,6 @@ export const it: Translations = {
     component: "Componente",
     lines: "Righe",
     noLogLines: "Nessuna riga di log trovata",
-  },
-
-  channels: {
-    changesSaved: "Changes are saved. Restart the gateway for them to take effect.",
-    configure: "Configure",
-    configureTitle: "Configure {name}",
-    configuredSummary: "{configured} of {total} channels configured. Credentials are written to {path}; the gateway connects each enabled channel on its next restart.",
-    enablePlatform: "Enable {name}",
-    errorToast: "Error: {error}",
-    failedToRestart: "Failed to restart: {error}",
-    failedToSave: "Failed to save: {error}",
-    gatewayNotRunning: "The gateway is not running. Configure channels here, then start the gateway with {command} (or the Restart button above).",
-    gatewayRestarting: "Gateway restarting...",
-    keepExistingPlaceholder: "****** (set - leave blank to keep)",
-    nothingToSave: "Nothing to save - fill in at least one field.",
-    platformMessage: "{name}: {message}",
-    requiredField: "{field} is required",
-    restartGateway: "Restart gateway",
-    restartingGateway: "Restarting...",
-    restartNow: "Restart now",
-    saveAndEnable: "Save & enable",
-    saved: "{name} saved",
-    setupGuide: "Setup guide",
-    test: "Test",
-    state: {
-      connected: "Connected",
-      pendingRestart: "Restart to apply",
-      gatewayStopped: "Gateway stopped",
-      startupFailed: "Start failed",
-      disconnected: "Disconnected",
-      notConfigured: "Not configured",
-      disabled: "Disabled",
-      fatal: "Error",
-    },
   },
 
   cron: {
@@ -484,7 +394,6 @@ export const it: Translations = {
     failedToLoadRaw: "Caricamento configurazione grezza non riuscito",
     configImported: "Configurazione importata — controlla e salva",
     invalidJson: "File JSON non valido",
-    yaml: "YAML",
     categories: {
       general: "Generale",
       agent: "Agente",
@@ -534,16 +443,6 @@ export const it: Translations = {
     invalidKeyName: "Usa solo lettere, numeri e trattini bassi (deve iniziare con una lettera o un trattino basso).",
   },
 
-  toolCall: {
-    running: "running",
-    error: "error",
-    done: "done",
-    context: "Context",
-    streaming: "Streaming",
-    diff: "Diff",
-    result: "Result",
-  },
-
   oauth: {
     title: "Accessi provider (OAuth)",
     providerLogins: "Accessi provider (OAuth)",
@@ -584,9 +483,6 @@ export const it: Translations = {
       external: "CLI esterna",
     },
     expiresIn: "scade tra {time}",
-    tokenExchangeFailed: "Token exchange failed",
-    openDocs: "Open {provider} docs",
-    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -596,10 +492,6 @@ export const it: Translations = {
   theme: {
     title: "Tema",
     switchTheme: "Cambia tema",
-    presets: {
-      dock: { label: "Dock" },
-      minimal: { label: "Minimal" },
-    },
   },
   achievements: {
     hero: {

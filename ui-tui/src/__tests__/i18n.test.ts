@@ -16,7 +16,7 @@ import {
   shouldEllipsisVerb,
   toolsetLabel,
   translate,
-  translateStatus,
+  translateStatus
 } from '../i18n/index.js'
 import { en as itLang } from '../i18n/it.js'
 import { en as ja } from '../i18n/ja.js'
@@ -43,7 +43,7 @@ const SHELL_PACKS: [string, typeof en][] = [
   ['ru', ru],
   ['tr', tr],
   ['uk', uk],
-  ['zh-hant', zhHant],
+  ['zh-hant', zhHant]
 ]
 
 const FULL_PACKS = ['en', 'zh'] as const
@@ -83,6 +83,19 @@ describe('TranslationKey coverage', () => {
   it('zh has no extra keys beyond EN', () => {
     const zhOnly = Object.keys(zh.catalog).filter(k => !(k in en.catalog))
     expect(zhOnly).toEqual([])
+  })
+
+  it('zh preserves every interpolation placeholder from EN', () => {
+    const placeholders = (value: string) => [...value.matchAll(/\{(\w+)\}/g)].map(match => match[1]).sort()
+
+    const mismatches = enKeys.flatMap(key => {
+      const english = placeholders(en.catalog[key])
+      const chinese = placeholders(zh.catalog[key]!)
+
+      return JSON.stringify(english) === JSON.stringify(chinese) ? [] : [{ key, english, chinese }]
+    })
+
+    expect(mismatches).toEqual([])
   })
 
   it('every shell pack has exactly the same catalog keys as EN', () => {
@@ -125,9 +138,7 @@ describe('fallback chain', () => {
 
   it('translate: unknown key returns the key itself', () => {
     for (const locale of [...FULL_PACKS, 'ja'] as const) {
-      expect(translate(locale, 'this.key.does.not.exist' as TranslationKey)).toBe(
-        'this.key.does.not.exist'
-      )
+      expect(translate(locale, 'this.key.does.not.exist' as TranslationKey)).toBe('this.key.does.not.exist')
     }
   })
 
@@ -178,6 +189,8 @@ describe('normalizeLocale', () => {
     expect(normalizeLocale('simplified chinese')).toBe('zh')
     expect(normalizeLocale('chinese')).toBe('zh')
     expect(normalizeLocale('mandarin')).toBe('zh')
+    expect(normalizeLocale('zh-CN')).toBe('zh')
+    expect(normalizeLocale('zh_Hans')).toBe('zh')
   })
 
   it('aliases: zh-hant / traditional-chinese → zh-hant', () => {

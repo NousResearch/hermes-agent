@@ -1,5 +1,5 @@
 # Hermes 静态消息目录 -- 中文（简体）
-# See locales/en.yaml for the source of truth; keep keys in sync.
+# locales/en.yaml 是键名的权威来源；此文件须与其保持同步。
 
 approval:
   dangerous_header: "⚠️  危险命令： {description}"
@@ -16,8 +16,8 @@ approval:
   blocklist_message: "此命令位于无条件拦截列表中，无法被批准。"
 
 gateway:
-  approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
-  draining:         "⏳ 正在等待 {count} 个活跃代理结束后重启..."
+  approval_expired: "⚠️ 审批已过期（Agent 已不再等待）。请让 Agent 重试。"
+  draining:         "⏳ 正在等待 {count} 个活跃 Agent 结束后重启…"
   goal_cleared:     "✓ 目标已清除。"
   no_active_goal:   "当前没有活跃的目标。"
   config_read_failed: "⚠️ 无法读取 config.yaml：{error}"
@@ -26,9 +26,9 @@ gateway:
   model:
     error_prefix:           "错误：{error}"
     switched:               "已切换模型为 `{model}`"
-    provider_label:         "提供方：{provider}"
-    context_label:          "上下文：{tokens} tokens"
-    max_output_label:       "最大输出：{tokens} tokens"
+    provider_label:         "服务商：{provider}"
+    context_label:          "上下文：{tokens} Token"
+    max_output_label:       "最大输出：{tokens} Token"
     cost_label:             "费用：{cost}"
     capabilities_label:     "能力：{capabilities}"
     prompt_caching_enabled: "提示词缓存：已启用"
@@ -39,40 +39,40 @@ gateway:
     current_tag:            "（当前）"
     more_models_suffix:     "（还有 {count} 个）"
     usage_switch_model:     "`/model <name>` — 切换模型"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — 切换提供方"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — 切换服务商"
     usage_persist:          "`/model <name> --global` — 永久保存"
 
   agents:
-    header:                "🤖 **活跃代理与任务**"
-    active_agents:         "**活跃代理：** {count}"
+    header:                "🤖 **活跃 Agent 与任务**"
+    active_agents:         "**活跃 Agent：** {count}"
     this_chat:             " · 当前聊天"
     more:                  "... 还有 {count} 个"
     running_processes:     "**运行中的后台进程：** {count}"
     async_jobs:            "**网关异步任务：** {count}"
-    none:                  "没有活跃的代理或运行中的任务。"
+    none:                  "没有活跃 Agent 或正在运行的任务。"
     state_starting:        "启动中"
     state_running:         "运行中"
 
   approve:
     no_pending:            "没有待批准的命令。"
-    once_singular:         "✅ 命令已批准。代理正在恢复…"
-    once_plural:           "✅ 命令已批准（{count} 条命令）。代理正在恢复…"
-    session_singular:      "✅ 命令已批准（本次会话内允许该模式）。代理正在恢复…"
-    session_plural:        "✅ 命令已批准（本次会话内允许该模式）（{count} 条命令）。代理正在恢复…"
-    always_singular:       "✅ 命令已批准（永久允许该模式）。代理正在恢复…"
-    always_plural:         "✅ 命令已批准（永久允许该模式）（{count} 条命令）。代理正在恢复…"
+    once_singular:         "✅ 命令已批准。Agent 正在恢复…"
+    once_plural:           "✅ 已批准 {count} 条命令。Agent 正在恢复…"
+    session_singular:      "✅ 命令已批准（本次会话内允许该模式）。Agent 正在恢复…"
+    session_plural:        "✅ 已批准 {count} 条命令（本次会话内允许该模式）。Agent 正在恢复…"
+    always_singular:       "✅ 命令已批准（永久允许该模式）。Agent 正在恢复…"
+    always_plural:         "✅ 已批准 {count} 条命令（永久允许该模式）。Agent 正在恢复…"
 
   background:
-    usage:                 "用法：/background <提示>\n示例：/background 总结今天 HN 上热门的故事\n\n在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。"
-    started:               "🔄 后台任务已启动：「{preview}」\n任务 ID：{task_id}\n你可以继续聊天 — 完成后结果将在此显示。"
+    usage:                 "用法：/background <提示词>\n示例：/background 总结今天 HN 上的热门内容\n\n该任务将在独立会话中执行。你可以继续聊天，任务完成后结果会显示在这里。"
+    started:               "🔄 后台任务已启动：「{preview}」\n任务 ID：{task_id}\n你可以继续聊天，任务完成后结果会显示在这里。"
 
   branch:
     db_unavailable:        "会话数据库不可用。"
-    no_conversation:       "没有可分支的对话 — 请先发送一条消息。"
+    no_conversation:       "没有可供创建分支的对话，请先发送一条消息。"
     create_failed:         "创建分支失败：{error}"
     switch_failed:         "分支已创建，但无法切换到它。"
-    branched_one:          "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
-    branched_many:         "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
+    branched_one:          "⑂ 已创建分支会话 **{title}**（已复制 {count} 条消息）\n原会话：`{parent}`\n分支会话：`{new}`\n使用 `/resume` 可切换回原会话。"
+    branched_many:         "⑂ 已创建分支会话 **{title}**（已复制 {count} 条消息）\n原会话：`{parent}`\n分支会话：`{new}`\n使用 `/resume` 可切换回原会话。"
 
   commands:
     usage:                 "用法：`/commands [page]`"
@@ -86,13 +86,13 @@ gateway:
 
   compress:
     not_enough:            "对话内容不足，无法压缩（至少需要 4 条消息）。"
-    no_provider:           "未配置提供方 — 无法压缩。"
+    no_provider:           "未配置服务商 — 无法压缩。"
     nothing_to_do:         "暂无可压缩内容（对话记录仍全部为受保护上下文）。"
-    aggressive_unsupported: "不支持 --aggressive；请使用 '/compress here [N]' 只保留最近的对话，或使用 /undo 删除回合。"
+    aggressive_unsupported: "不支持 `--aggressive`；请使用 `/compress here [N]` 仅保留最近的对话，或使用 `/undo` 删除回合。"
     focus_line:            "聚焦：\"{topic}\""
     summary_failed:        "⚠️ 摘要生成失败（{error}）。{count} 条历史消息已被移除并替换为占位符；之前的上下文已无法恢复。建议检查 auxiliary.compression 模型配置。"
-    aborted:               "⚠️ 压缩已中止 ({error})。未删除任何消息 — 对话保持不变。运行 /compress 重试，运行 /reset 开始新会话，或检查你的 auxiliary.compression 模型配置。"
-    aux_failed:            "ℹ️ 配置的压缩模型 `{model}` 失败（{error}）。已使用主模型恢复 — 上下文完好 — 但您可能想检查 config.yaml 中的 `auxiliary.compression.model`。"
+    aborted:               "⚠️ 压缩已中止（{error}）。未删除任何消息，对话保持不变。请运行 `/compress` 重试、运行 `/reset` 开始新会话，或检查 `auxiliary.compression` 模型配置。"
+    aux_failed:            "ℹ️ 配置的压缩模型 `{model}` 调用失败（{error}）。已改用主模型完成压缩，上下文保持完整；建议检查 config.yaml 中的 `auxiliary.compression.model`。"
     failed:                "压缩失败：{error}"
 
   debug:
@@ -107,8 +107,8 @@ gateway:
     no_pending:            "没有待拒绝的命令。"
     denied_singular:       "❌ 命令已拒绝。"
     denied_plural:         "❌ 命令已拒绝（{count} 条命令）。"
-    denied_reason_singular: "❌ 命令已拒绝。 已将原因转达给代理: \"{reason}\""
-    denied_reason_plural:  "❌ 命令已拒绝（{count} 条命令）。 已将原因转达给代理: \"{reason}\""
+    denied_reason_singular: "❌ 命令已拒绝。已将原因转达给 Agent：“{reason}”"
+    denied_reason_plural:  "❌ 已拒绝 {count} 条命令。已将原因转达给 Agent：“{reason}”"
 
   fast:
     not_supported:         "⚡ /fast 仅适用于支持优先处理（Priority Processing）的 OpenAI 模型。"
@@ -149,14 +149,14 @@ gateway:
 
   kanban:
     error_prefix:          "⚠ kanban 错误：{error}"
-    subscribed_suffix:     "（已订阅 — 当 {task_id} 完成或被阻塞时将通知您）"
+    subscribed_suffix:     "（已订阅；{task_id} 完成或被阻塞时会通知你）"
     truncated_suffix:      "…（已截断；如需完整输出请在终端运行 `hermes kanban …`）"
     no_output:             "（无输出）"
     wake:
       completed:           "已完成"
       gave_up:             "已放弃（重试次数耗尽）"
-      crashed:             "崩溃（worker 异常退出），dispatcher 将重试"
-      timed_out:           "超时，dispatcher 将重试"
+      crashed:             "崩溃（工作进程异常退出），调度器将重试"
+      timed_out:           "超时，调度器将重试"
       blocked:             "被阻塞，需要处理"
       status_default:      "状态变化"
       status_joiner:       "，"
@@ -169,7 +169,7 @@ gateway:
     item:                  "• `{name}` — {preview}"
     usage:                 "\n用法：`/personality <name>`"
     save_failed:           "⚠️ 保存人格变更失败：{error}"
-    cleared:               "🎭 已清除人格 — 使用基础代理行为。\n_（在下一条消息时生效）_"
+    cleared:               "🎭 已清除人格 — 恢复基础 Agent 行为。\n_（从下一条消息开始生效）_"
     set_to:                "🎭 人格已设置为 **{name}**\n_（在下一条消息时生效）_"
     unknown:               "未知人格：`{name}`\n\n可用：{available}"
 
@@ -197,7 +197,7 @@ gateway:
   reload_mcp:
     cancelled:             "🟡 已取消 /reload-mcp。MCP 工具未更改。"
     always_followup:       "ℹ️ 后续 `/reload-mcp` 调用将不再确认。可在 `config.yaml` 中将 `approvals.mcp_reload_confirm: true` 重新启用。"
-    confirm_prompt:        "⚠️ **确认 /reload-mcp**\n\n重新加载 MCP 服务器会为本会话重建工具集，并**使提供方提示词缓存失效** — 下一条消息将重新发送完整输入令牌。在长上下文或高推理模型上，这可能开销较大。\n\n请选择：\n• **批准一次** — 立即重新加载\n• **始终批准** — 立即重新加载并永久静默此提示\n• **取消** — 保持 MCP 工具不变\n\n_文本备用：回复 `/approve`、`/always` 或 `/cancel`。_"
+    confirm_prompt:        "⚠️ **确认 /reload-mcp**\n\n重新加载 MCP 服务器会为本会话重建工具集，并**使服务商的提示词缓存失效** — 下一条消息将重新发送完整输入 Token。在长上下文或高推理强度模型上，这可能产生较高费用。\n\n请选择：\n• **仅批准本次** — 立即重新加载\n• **始终批准** — 立即重新加载，且以后不再显示此提示\n• **取消** — 保持 MCP 工具不变\n\n_文本备用方式：回复 `/approve`、`/always` 或 `/cancel`。_"
     header:                "🔄 **MCP 服务器已重新加载**\n"
     reconnected:           "♻️ 已重新连接：{names}"
     added:                 "➕ 已添加：{names}"
@@ -231,15 +231,15 @@ gateway:
 
   resume:
     db_unavailable:        "会话数据库不可用。"
-    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
-Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room.
-Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
-    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
-Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
-    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
+    parse_error:           "⚠️ 无法解析 `/resume` 参数：{error}。
+标题中包含空格时请使用引号，例如：`/resume \"项目 A 计划\"`。"
+    matrix_no_named_sessions: "当前 Matrix 房间中没有已命名会话。
+使用 `/title 我的会话` 命名当前房间会话；使用 `/resume --all` 列出所有 Matrix 会话；如确实需要跨房间恢复，请使用 `/resume --cross-room <会话名称>`。"
+    matrix_blocked_no_origin: "⚠️ Matrix 已阻止 /resume：该已命名会话没有记录来源房间，因此 Hermes 默认不会在当前房间恢复它。如确实要跨越房间边界，请使用 `/resume --cross-room {name}`。"
+    matrix_blocked_other_room: "⚠️ Matrix 已阻止 /resume：该会话属于另一个 Matrix 房间（{room}）。如确实要在此处恢复，请使用 `/resume --cross-room {name}`。"
+    matrix_cross_room_success: "⚠️ 跨房间恢复：已在 Matrix 房间 **{room}** 中恢复 **{title}**。
+在执行 `/reset` 或再次执行 `/resume` 前，此房间中的后续消息都会使用该会话记录。{msg_part}"
+    blocked_not_owner:     "⚠️ `/resume` 已阻止：会话 **{name}** 属于其他用户或聊天。你只能恢复当前聊天中的会话。"
     no_named_sessions:     "未找到已命名的会话。\n使用 `/title 我的会话` 为当前会话命名，然后用 `/resume 我的会话` 返回。"
     list_header:           "📋 **已命名会话**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -249,7 +249,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     list_footer_numbered:  "\n用法：`/resume <会话名称>` 或 `/resume <编号>`（例如，`/resume 1` 表示最近的会话）"
     list_failed:           "无法列出会话：{error}"
     out_of_range:          "恢复索引 {index} 超出范围。\n请使用不带参数的 `/resume` 查看可用会话。"
-    not_found:             "未找到匹配 '**{name}**' 的会话。\n使用不带参数的 `/resume` 查看可用会话。"
+    not_found:             "未找到与 **{name}** 匹配的会话。\n使用不带参数的 `/resume` 查看可用会话。"
     already_on:            "📌 已在会话 **{name}** 上。"
     switch_failed:         "切换会话失败。"
     resumed_one:           "↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。"
@@ -272,29 +272,29 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   status:
     header:                "📊 **Hermes 网关状态**"
-    matrix_scope_header:   "**Matrix scope:**"
-    matrix_scope_room:     "  room: {room}"
-    matrix_scope_room_id:  "  room_id: {room_id}"
-    matrix_scope_thread:   "  thread_id: {thread_id}"
-    matrix_scope_mode:     "  session_scope: {scope}"
-    matrix_scope_key:      "  session_key: {session_key}"
+    matrix_scope_header:   "**Matrix 会话范围：**"
+    matrix_scope_room:     "  房间：{room}"
+    matrix_scope_room_id:  "  房间 ID：{room_id}"
+    matrix_scope_thread:   "  讨论串 ID：{thread_id}"
+    matrix_scope_mode:     "  会话范围：{scope}"
+    matrix_scope_key:      "  会话键：{session_key}"
     session_id:            "**会话 ID：** `{session_id}`"
     title:                 "**标题：** {title}"
     created:               "**创建时间：** {timestamp}"
     last_activity:         "**最近活动：** {timestamp}"
-    model:                 "**Model:** `{model}`"
-    model_provider:        "**Model:** `{model}` ({provider})"
-    context:               "**Context:** {used} / {total} ({pct}%)"
-    context_used:          "**Context:** ~{used} tokens"
+    model:                 "**模型：** `{model}`"
+    model_provider:        "**模型：** `{model}`（{provider}）"
+    context:               "**上下文：** {used} / {total}（{pct}%）"
+    context_used:          "**上下文：** 约 {used} Token"
     tokens:                "**Token 数：** {tokens}"
-    agent_running:         "**代理运行中：** {state}"
+    agent_running:         "**Agent 运行中：** {state}"
     state_yes:             "是 ⚡"
     state_no:              "否"
     queued:                "**排队的后续：** {count}"
     platforms:             "**已连接平台：** {platforms}"
 
   stop:
-    stopped_pending:       "⚡ 已停止。代理尚未启动 — 你可以继续此会话。"
+    stopped_pending:       "⚡ 已停止。Agent 尚未启动 — 你可以继续此会话。"
     stopped:               "⚡ 已停止。你可以继续此会话。"
     no_active:             "没有可停止的活跃任务。"
 
@@ -310,19 +310,19 @@ Future messages in this room will use that transcript until `/reset` or another 
   topic:
     not_telegram_dm:         "/topic 命令仅在 Telegram 私聊中可用。"
     no_session_db:           "会话数据库不可用。"
-    unauthorized:            "您无权在此 bot 上使用 /topic。"
-    restore_needs_topic:     "若要恢复会话，请先创建或打开一个 Telegram topic，然后在该 topic 中发送 /topic <session-id>。要创建新 topic，请打开 All Messages 并在其中发送任意消息。"
-    topics_disabled:         "此 bot 尚未启用 Telegram topics。\n\n启用方法：\n1. 打开 @BotFather。\n2. 选择您的 bot。\n3. 打开 Bot Settings → Threads Settings。\n4. 开启 Threaded Mode，并确保允许用户创建新线程。\n\n然后再次发送 /topic。"
-    topics_user_disallowed:  "Telegram topics 已启用，但不允许用户创建 topics。\n\n打开 @BotFather → 选择您的 bot → Bot Settings → Threads Settings，然后关闭 'Disallow users to create new threads'。\n\n然后再次发送 /topic。"
-    enable_failed:           "启用 Telegram topic 模式失败：{error}"
-    bound_status:            "此 topic 已关联到：\n会话：{label}\nID：{session_id}\n\n使用 /new 将此 topic 替换为新会话。\n如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
-    thread_ready:            "Telegram 多会话 topics 已启用。\n\n此 topic 将作为独立的 Hermes 会话使用。使用 /new 替换此 topic 的当前会话。如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
+    unauthorized:            "你无权在此机器人中使用 /topic。"
+    restore_needs_topic:     "若要恢复会话，请先创建或打开一个 Telegram 话题，然后在该话题中发送 /topic <会话 ID>。若要创建新话题，请打开「All Messages」并发送任意消息。"
+    topics_disabled:         "此机器人尚未启用 Telegram 话题。\n\n启用方法：\n1. 打开 @BotFather。\n2. 选择你的机器人。\n3. 打开 Bot Settings → Threads Settings。\n4. 开启 Threaded Mode，并确保允许用户创建新讨论串。\n\n然后再次发送 /topic。"
+    topics_user_disallowed:  "Telegram 话题已启用，但当前不允许用户创建新话题。\n\n打开 @BotFather → 选择你的机器人 → Bot Settings → Threads Settings，然后关闭「Disallow users to create new threads」。\n\n然后再次发送 /topic。"
+    enable_failed:           "启用 Telegram 话题模式失败：{error}"
+    bound_status:            "此话题已关联到：\n会话：{label}\nID：{session_id}\n\n使用 /new 将此话题替换为新会话。\n如需并行工作，请打开「All Messages」并发送消息，以创建另一个话题。"
+    thread_ready:            "Telegram 多会话话题已启用。\n\n此话题将作为独立的 Hermes 会话。使用 /new 替换此话题的当前会话。如需并行工作，请打开「All Messages」并发送消息，以创建另一个话题。"
     untitled_session:        "未命名会话"
 
   undo:
     nothing:               "没有可撤销的内容。"
     removed:               "↩️ 已撤销 {turns} 个回合（{count} 条消息）。\n已备份到：「{preview}」\n复制/编辑上面的文本并发送，即可从此处重新提问。"
-    invalid_count:         "无效的数量「{arg}」—— 请使用 /undo 或 /undo N。"
+    invalid_count:         "数量「{arg}」无效。请使用 `/undo` 或 `/undo N`。"
 
   update:
     platform_not_messaging:  "✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。"
@@ -333,12 +333,12 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   usage:
     rate_limits:              "⏱️ **速率限制：** {state}"
-    header_session:           "📊 **会话令牌使用情况**"
+    header_session:           "📊 **会话 Token 使用情况**"
     label_model:              "模型：`{model}`"
-    label_input_tokens:       "输入令牌：{count}"
-    label_cache_read:         "缓存读取令牌：{count}"
-    label_cache_write:        "缓存写入令牌：{count}"
-    label_output_tokens:      "输出令牌：{count}"
+    label_input_tokens:       "输入 Token：{count}"
+    label_cache_read:         "缓存读取 Token：{count}"
+    label_cache_write:        "缓存写入 Token：{count}"
+    label_output_tokens:      "输出 Token：{count}"
     label_total:              "总计：{count}"
     label_api_calls:          "API 调用次数：{count}"
     label_cost:               "费用：{prefix}${amount}"
@@ -346,19 +346,19 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_context:            "上下文：{used} / {total}（{pct}%）"
     label_compressions:       "压缩次数：{count}"
     breakdown_header: "🧩 **上下文明细** _(估算)_"
-    breakdown_line: "• {label}：约 {count} ({pct}%)"
+    breakdown_line: "• {label}：约 {count} Token（{pct}%）"
     breakdown_cat_system_prompt: "系统提示词"
     breakdown_cat_tool_definitions: "工具定义"
     breakdown_cat_rules: "规则"
     breakdown_cat_skills: "技能"
     breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "子代理定义"
+    breakdown_cat_subagent_definitions: "子 Agent 定义"
     breakdown_cat_memory: "记忆"
     breakdown_cat_conversation: "对话"
     header_session_info:      "📊 **会话信息**"
     label_messages:           "消息数：{count}"
-    label_estimated_context:  "估计上下文：~{count} 个令牌"
-    detailed_after_first:     "_（首次代理响应后可查看详细使用情况）_"
+    label_estimated_context:  "估算上下文：约 {count} Token"
+    detailed_after_first:     "_（Agent 首次响应后可查看详细使用情况）_"
     no_data:                  "此会话暂无使用数据。"
 
   credits:
@@ -389,7 +389,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_voice_only:      "开启（仅对语音消息进行语音回复）"
     label_all:             "TTS（对所有消息进行语音回复）"
     help:                  "{toggle}\n\n**/voice 用法**\n• `/voice on` — 当你发送语音消息时用语音回复\n• `/voice tts` — 对*每条*消息都用语音回复\n• `/voice off` — 恢复为纯文本回复\n• `/voice status` — 显示当前模式\n• `/voice`（无参数）— 在开启和关闭之间快速切换{channels}"
-    help_channels:         "\n\n**实时语音频道 (Discord)**\n• 先加入一个语音频道，然后 `/voice channel` — 我会加入、聆听并用语音回复\n• `/voice leave` — 断开语音频道"
+    help_channels:         "\n\n**实时语音频道（Discord）**\n• 先加入一个语音频道，然后运行 `/voice channel`——我会加入频道、聆听并用语音回复\n• `/voice leave`——断开语音频道"
 
   yolo:
     disabled:                   "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"

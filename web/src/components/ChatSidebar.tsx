@@ -250,7 +250,9 @@ export function ChatSidebar({
 
       ws.addEventListener("close", (ev) => {
         if (ev.code === 4401 || ev.code === 4403) {
-          surface(t.chatSidebar.eventsRejected.replace("{code}", String(ev.code)));
+          surface(
+            t.chatSidebar.eventsRejected.replace("{code}", String(ev.code)),
+          );
         } else if (ev.code !== 1000) {
           surface(DISCONNECTED);
         }
@@ -358,7 +360,9 @@ export function ChatSidebar({
             profile={profile}
             refreshKey={modelRefreshKey}
             onChanged={(effort) =>
-              setModelNotice(t.chatSidebar.reasoningEffortSet.replace("{effort}", effort))
+              setModelNotice(
+                t.chatSidebar.reasoningEffortSet.replace("{effort}", effort),
+              )
             }
           />
         </Card>
@@ -437,7 +441,7 @@ export function ChatSidebar({
           const m = pendingReloadModel;
           setPendingReloadModel(null);
           setModelNotice(
-            `Model set to ${m}. Run /new or refresh the page to apply it to this chat.`,
+            t.chatSidebar.modelSetRequiresReload.replace("{model}", m ?? ""),
           );
         }}
       />

@@ -5345,7 +5345,7 @@ class BasePlatformAdapter(ABC):
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     self._cleanup_finished_session_task(session_key, interrupt_event)
-
+    
     def _cleanup_finished_session_task(
         self, session_key: str, interrupt_event: Optional[asyncio.Event]
     ) -> None:

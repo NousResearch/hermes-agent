@@ -75,7 +75,7 @@ describe('handleIdleHotkeyExit', () => {
 
     expect(actions.die).not.toHaveBeenCalled()
     expect(requestDashboardNewSession).toHaveBeenCalledTimes(1)
-    expect(actions.sys).toHaveBeenCalledWith('starting a fresh dashboard chat...')
+    expect(actions.sys).toHaveBeenCalledWith('starting a fresh dashboard chat…')
   })
 })
 

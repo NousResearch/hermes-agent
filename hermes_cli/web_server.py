@@ -709,7 +709,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "options": ["stash", "discard"],
     },
     "updates.refresh_cua_driver": {
-        "type": "bool",
+        "type": "boolean",
         "description": (
             "Refresh an already-installed cua-driver during hermes update. "
             "Disable this on non-admin macOS accounts where /Applications is "

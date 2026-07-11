@@ -109,10 +109,11 @@ export async function startPromptLiveSession({
   // the initial title. Auto-title generation can rename it after the first
   // response; pre-queuing prompt text here causes duplicate-title errors when
   // users dispatch common prompts like "Hello, what model are you?".
-  const sid = (await newLiveSession('new live session started')) ?? null
+  const locale = getUiState().locale
+  const sid = (await newLiveSession(translate(locale, 'sys.newLiveSessionStarted'))) ?? null
 
   if (!sid) {
-    sys('error: failed to start new live session')
+    sys(translate(locale, 'errors.failedStartLiveSession'))
 
     return null
   }
@@ -123,12 +124,12 @@ export async function startPromptLiveSession({
     const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })
 
     if (!result?.value) {
-      sys('error: invalid response: model switch')
+      sys(translate(locale, 'errors.invalidResponse', { method: 'model switch' }))
 
       return sid
     }
 
-    sys(`model → ${result.value}`)
+    sys(translate(locale, 'sys.modelSet', { model: result.value }))
     maybeWarn(result)
     onModelSwitched?.(result.value, result)
   }
@@ -191,7 +192,12 @@ export function useMainApp(gw: GatewayClient) {
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
   const ui = useStore($uiState)
-  const ti = useCallback((key: TranslationKey, vars?: Record<string, string | number>) => translate(ui.locale, key, vars), [ui.locale])
+
+  const ti = useCallback(
+    (key: TranslationKey, vars?: Record<string, string | number>) => translate(ui.locale, key, vars),
+    [ui.locale]
+  )
+
   const overlay = useStore($overlayState)
 
   const turnLiveTailActive = useTurnSelector(state =>
@@ -462,7 +468,7 @@ export function useMainApp(gw: GatewayClient) {
 
         sys(ti('errors.invalidResponse', { method }))
       } catch (e) {
-        sys(`error: ${rpcErrorMessage(e)}`)
+        sys(ti('errors.rpc', { message: rpcErrorMessage(e) }))
       }
 
       return null
@@ -811,7 +817,7 @@ export function useMainApp(gw: GatewayClient) {
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid
         turnController.pushActivity('gateway exited · recovering session…', 'warn')
-        sys('gateway exited — recovering your session (any in-flight reply was lost)')
+        sys(ti('sys.gatewayRecovering'))
         gw.start()
 
         return
@@ -950,13 +956,13 @@ export function useMainApp(gw: GatewayClient) {
         return result
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e)
-        sys(`error: ${message}`)
+        sys(ti('errors.rpc', { message }))
         patchUiState({ status: 'ready' })
 
         throw e
       }
     },
-    [session, sys]
+    [session, sys, ti]
   )
 
   const newPromptSession = useCallback(
@@ -1110,13 +1116,13 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      // Raw voice state passed through so StatusRule (inside I18nProvider)
-      // can compute the translated label — useMainApp runs outside I18nProvider
-      // so its useI18n() always returns the default 'en' context.
+      // Raw voice state is passed through so StatusRule owns presentation and
+      // computes the translated label from the same active provider as the
+      // rest of the application tree.
       voiceRecording,
       voiceProcessing,
       voiceEnabled,
-      voiceTts,
+      voiceTts
     }),
     [
       cwd,

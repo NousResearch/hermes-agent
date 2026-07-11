@@ -224,7 +224,10 @@ export const applyDisplay = (
     detailsModeCommandOverride: false,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
-    locale: normalizeLocale(d.language),
+    // A failed config RPC is represented as null. Preserve the last-good
+    // language in that case; otherwise one transient read failure would
+    // overwrite the locale delivered by gateway.ready with English.
+    locale: cfg ? normalizeLocale(d.language) : getUiState().locale,
     mouseTracking: normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),

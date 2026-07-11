@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const tr: Translations = {
+export const tr: TranslationOverlay = {
   common: {
     save: "Kaydet",
     saving: "Kaydediliyor...",
@@ -47,7 +47,6 @@ export const tr: Translations = {
       "Bu eklentinin betiği yüklenemedi. Ağ sekmesini (dashboard-plugins/…) ve sunucunun eklenti yolunu kontrol edin.",
     pluginNotRegistered:
       "Eklenti betiği register() çağırmadı veya betik hata verdi. Ayrıntılar için tarayıcı konsolunu açın.",
-    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -70,31 +69,19 @@ export const tr: Translations = {
     nav: {
       analytics: "Analiz",
       chat: "Sohbet",
-      channels: "Kanallar",
       config: "Yapılandırma",
       cron: "Cron",
       documentation: "Dokümantasyon",
-      achievements: "Achievements",
-      example: "Example",
-      kanban: "Kanban",
       keys: "Anahtarlar",
       logs: "Günlükler",
-      mcp: "MCP",
       models: "Modeller",
-      pairing: "Eşleştirme",
       profiles: "profiller : çoklu agent",
       plugins: "Eklentiler",
       sessions: "Oturumlar",
       skills: "Yetenekler",
-      system: "Sistem",
-      webhooks: "Webhooks",
     },
     modelToolsSheetSubtitle: "& araçlar",
     modelToolsSheetTitle: "Model",
-    copyLastResponse: "Copy last response",
-    copyLastResponseTitle: "Copy last assistant response as raw markdown",
-    copyLastResponseAria: "Copy last assistant response",
-    copied: "Copied",
     navigation: "Gezinti",
     openDocumentation: "Dokümantasyonu yeni sekmede aç",
     openNavigation: "Gezintiyi aç",
@@ -103,41 +90,6 @@ export const tr: Translations = {
     statusOverview: "Durum özeti",
     system: "Sistem",
     webUi: "Web UI",
-    loadingChat: "Loading chat…",
-  },
-
-  chatSidebar: {
-    model: "model",
-    switchModel: "switch model",
-    reconnect: "reconnect",
-    tools: "tools",
-    noToolCalls: "no tool calls yet",
-    eventsDisconnected:
-      "events feed disconnected — tool calls may not appear",
-    eventsRejected: "events feed rejected ({code}) — reload the page",
-    reasoning: "reasoning",
-    reasoningEffortSet:
-      "Reasoning effort set to {effort}. Run /new or refresh the page to apply it to this chat.",
-  },
-
-  modelPicker: {
-    title: "Switch Model",
-    close: "Close",
-    filterPlaceholder: "Filter providers and models…",
-    currentTag: "current",
-    cancel: "Cancel",
-    switch_: "Switch",
-    noMatches: "no matches",
-    noAuthProviders: "no authenticated providers",
-    loading: "loading…",
-    pickProvider: "pick a provider →",
-    noModelsMatch: "no models match your filter",
-    noModelsListed: "no models listed for this provider",
-    persistGlobal: "Persist globally (otherwise this session only)",
-    savesToConfig: "Saves to config.yaml — applies to new sessions.",
-    modelsCount: "{count} models",
-    unknownModel: "(unknown)",
-    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -253,14 +205,6 @@ export const tr: Translations = {
     toolCalls: "araç çağrıları",
     noModelsData: "Bu dönem için model kullanım verisi yok",
     startSession: "Burada model verilerini görmek için bir oturum başlatın",
-    overrideAuto: "(override — auto: {value})",
-    autoDetected: "auto-detected",
-    loading: "Loading model info…",
-    contextWindow: "Context Window",
-    maxOutput: "Max Output",
-    capabilityTools: "Tools",
-    capabilityVision: "Vision",
-    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -271,40 +215,6 @@ export const tr: Translations = {
     component: "Bileşen",
     lines: "Satırlar",
     noLogLines: "Günlük satırı bulunamadı",
-  },
-
-  channels: {
-    changesSaved: "Changes are saved. Restart the gateway for them to take effect.",
-    configure: "Configure",
-    configureTitle: "Configure {name}",
-    configuredSummary: "{configured} of {total} channels configured. Credentials are written to {path}; the gateway connects each enabled channel on its next restart.",
-    enablePlatform: "Enable {name}",
-    errorToast: "Error: {error}",
-    failedToRestart: "Failed to restart: {error}",
-    failedToSave: "Failed to save: {error}",
-    gatewayNotRunning: "The gateway is not running. Configure channels here, then start the gateway with {command} (or the Restart button above).",
-    gatewayRestarting: "Gateway restarting...",
-    keepExistingPlaceholder: "****** (set - leave blank to keep)",
-    nothingToSave: "Nothing to save - fill in at least one field.",
-    platformMessage: "{name}: {message}",
-    requiredField: "{field} is required",
-    restartGateway: "Restart gateway",
-    restartingGateway: "Restarting...",
-    restartNow: "Restart now",
-    saveAndEnable: "Save & enable",
-    saved: "{name} saved",
-    setupGuide: "Setup guide",
-    test: "Test",
-    state: {
-      connected: "Connected",
-      pendingRestart: "Restart to apply",
-      gatewayStopped: "Gateway stopped",
-      startupFailed: "Start failed",
-      disconnected: "Disconnected",
-      notConfigured: "Not configured",
-      disabled: "Disabled",
-      fatal: "Error",
-    },
   },
 
   cron: {
@@ -484,7 +394,6 @@ export const tr: Translations = {
     failedToLoadRaw: "Ham yapılandırma yüklenemedi",
     configImported: "Yapılandırma içe aktarıldı — gözden geçirip kaydedin",
     invalidJson: "Geçersiz JSON dosyası",
-    yaml: "YAML",
     categories: {
       general: "Genel",
       agent: "Agent",
@@ -534,16 +443,6 @@ export const tr: Translations = {
     invalidKeyName: "Yalnızca harf, rakam ve alt çizgi kullanın (bir harf veya alt çizgi ile başlamalıdır).",
   },
 
-  toolCall: {
-    running: "running",
-    error: "error",
-    done: "done",
-    context: "Context",
-    streaming: "Streaming",
-    diff: "Diff",
-    result: "Result",
-  },
-
   oauth: {
     title: "Sağlayıcı Girişleri (OAuth)",
     providerLogins: "Sağlayıcı Girişleri (OAuth)",
@@ -584,9 +483,6 @@ export const tr: Translations = {
       external: "Harici CLI",
     },
     expiresIn: "{time} sonra sona erer",
-    tokenExchangeFailed: "Token exchange failed",
-    openDocs: "Open {provider} docs",
-    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -596,10 +492,6 @@ export const tr: Translations = {
   theme: {
     title: "Tema",
     switchTheme: "Temayı değiştir",
-    presets: {
-      dock: { label: "Dock" },
-      minimal: { label: "Minimal" },
-    },
   },
 
   achievements: {

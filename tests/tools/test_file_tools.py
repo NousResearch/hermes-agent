@@ -719,7 +719,7 @@ class TestLastKnownCwd:
         # Verify the env was created with the saved CWD, not the default
         create_call = mock_create_env.call_args
         assert create_call is not None, "_create_environment was not called"
-
+        
         # Find cwd in the kwargs
         kwargs = create_call.kwargs if create_call.kwargs else {}
         # cwd is passed as positional or keyword
@@ -730,13 +730,13 @@ class TestLastKnownCwd:
             # Position: (env_type, image, cwd, timeout, ...)
             if len(args) >= 3:
                 cwd_passed = args[2]
-
+        
         assert cwd_passed == "/Users/user/project", \
             f"Expected cwd='/Users/user/project', got {cwd_passed!r}"
-
+        
         # Cleanup
         _last_known_cwd.pop(task_id, None)
-
+        
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     @patch("tools.file_tools._file_ops_cache", new_callable=dict)
     @patch("tools.terminal_tool._get_env_config")
@@ -757,22 +757,22 @@ class TestLastKnownCwd:
 
         # _get_file_ops resolves to "default"
         task_id = "default"
-
+        
         # Ensure _last_known_cwd is empty for this task
         _last_known_cwd.pop(task_id, None)
 
         result = _get_file_ops(task_id)
-
+        
         create_call = mock_create_env.call_args
         assert create_call is not None, "_create_environment was not called"
-
+        
         kwargs = create_call.kwargs if create_call.kwargs else {}
         cwd_passed = kwargs.get("cwd", None)
         if cwd_passed is None:
             args = create_call.args if create_call.args else []
             if len(args) >= 3:
                 cwd_passed = args[2]
-
+        
         # Should fall back to config default
         assert cwd_passed == "/config/default/path", \
             f"Expected cwd='/config/default/path', got {cwd_passed!r}"

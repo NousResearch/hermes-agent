@@ -4,16 +4,18 @@ import { Check } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
-import { useI18n } from "@/i18n/context";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { useI18n } from "@/i18n";
 import { LOCALE_META } from "@/i18n";
 import type { Locale } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 /**
  * Language picker — shows the current language's endonym, opens a dropdown
- * of all supported locales when clicked.  Persists choice to localStorage via
- * the I18n context.
+ * of all supported locales when clicked. Persists the local preference and
+ * the shared display.language config through the I18n context.
  *
  * Replaces the older two-state EN↔ZH toggle now that we ship 16 locales
  * (en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu).
@@ -27,9 +29,17 @@ import { cn } from "@/lib/utils";
  * viewport / overflow ancestors. Below the `sm` breakpoint, `dropUp` uses a
  * bottom sheet portaled to `document.body` instead of an anchored dropdown.
  */
-export function LanguageSwitcher({ collapsed = false, dropUp = false, onLocaleChange }: LanguageSwitcherProps) {
+export function LanguageSwitcher({
+  collapsed = false,
+  dropUp = false,
+}: LanguageSwitcherProps) {
   const { locale, setLocale, t } = useI18n();
+  const { toast, showToast } = useToast();
   const [open, setOpen] = useState(false);
+  const [savingLocale, setSavingLocale] = useState<Locale | null>(null);
+  const [dropUpStyle, setDropUpStyle] = useState<
+    { bottom: number; left: number } | undefined
+  >();
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const narrowViewport = useBelowBreakpoint(640);
@@ -59,14 +69,39 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false, onLocaleCh
   }, [open, useMobileSheet]);
 
   const current = LOCALE_META[locale];
-  const allLocales = Object.entries(LOCALE_META) as Array<[Locale, typeof current]>;
+  const allLocales = Object.entries(LOCALE_META) as Array<
+    [Locale, typeof current]
+  >;
   const sheetTitle = t.language.switchTo;
+  const toggleOpen = () => {
+    if (!open && dropUp && !useMobileSheet) {
+      const rect = containerRef.current?.getBoundingClientRect();
+      setDropUpStyle(
+        rect
+          ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
+          : undefined,
+      );
+    }
+    setOpen((value) => !value);
+  };
+  const selectLocale = async (code: Locale) => {
+    if (savingLocale) return;
+    setSavingLocale(code);
+    try {
+      await setLocale(code);
+      setOpen(false);
+    } catch {
+      showToast(t.language.saveFailed, "error");
+    } finally {
+      setSavingLocale(null);
+    }
+  };
 
   return (
     <div ref={containerRef} className="relative inline-flex">
       <Button
         ghost
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggleOpen}
         title={t.language.switchTo}
         aria-label={t.language.switchTo}
         aria-haspopup="listbox"
@@ -77,9 +112,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false, onLocaleCh
         )}
       >
         <span className="inline-flex items-center gap-1.5">
-          <Typography
-            className="hidden sm:inline text-display tracking-wide text-xs"
-          >
+          <Typography className="hidden sm:inline text-display tracking-wide text-xs">
             {locale === "en" ? "EN" : current.name}
           </Typography>
         </span>
@@ -96,42 +129,40 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false, onLocaleCh
             <LanguageSwitcherOptions
               allLocales={allLocales}
               locale={locale}
-              setLocale={setLocale}
-              setOpen={setOpen}
-              onLocaleChange={onLocaleChange}
+              onSelectLocale={selectLocale}
+              savingLocale={savingLocale}
             />
           </div>
         </BottomSheet>
       )}
 
-      {open && !useMobileSheet && (() => {
-        const rect = containerRef.current?.getBoundingClientRect();
-        const dropdown = (
-          <div
-            ref={dropdownRef}
-            aria-label={sheetTitle}
-            className={cn(
-              "min-w-[10rem] border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto",
-              dropUp ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
-            )}
-            role="listbox"
-            style={
-              dropUp && rect
-                ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
-                : undefined
-            }
-          >
-            <LanguageSwitcherOptions
-              allLocales={allLocales}
-              locale={locale}
-              setLocale={setLocale}
-              setOpen={setOpen}
-              onLocaleChange={onLocaleChange}
-            />
-          </div>
-        );
-        return dropUp ? createPortal(dropdown, document.body) : dropdown;
-      })()}
+      {open &&
+        !useMobileSheet &&
+        (() => {
+          const dropdown = (
+            <div
+              ref={dropdownRef}
+              aria-label={sheetTitle}
+              className={cn(
+                "min-w-[10rem] border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto",
+                dropUp
+                  ? "fixed z-[100]"
+                  : "absolute z-50 right-0 top-full mt-1",
+              )}
+              role="listbox"
+              style={dropUp ? dropUpStyle : undefined}
+            >
+              <LanguageSwitcherOptions
+                allLocales={allLocales}
+                locale={locale}
+                onSelectLocale={selectLocale}
+                savingLocale={savingLocale}
+              />
+            </div>
+          );
+          return dropUp ? createPortal(dropdown, document.body) : dropdown;
+        })()}
+      <Toast toast={toast} />
     </div>
   );
 }
@@ -139,9 +170,8 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false, onLocaleCh
 function LanguageSwitcherOptions({
   allLocales,
   locale,
-  setLocale,
-  setOpen,
-  onLocaleChange,
+  onSelectLocale,
+  savingLocale,
 }: LanguageSwitcherOptionsProps) {
   return (
     <>
@@ -151,24 +181,26 @@ function LanguageSwitcherOptions({
         return (
           <button
             aria-selected={selected}
+            disabled={savingLocale !== null}
             className={cn(
               "w-full text-left px-3 py-1.5 flex items-center gap-2 cursor-pointer",
               "font-sans text-display text-xs tracking-[0.08em]",
               "hover:bg-accent hover:text-accent-foreground transition-colors",
-              selected ? "font-semibold text-foreground" : "text-muted-foreground",
+              savingLocale && "cursor-wait opacity-60",
+              selected
+                ? "font-semibold text-foreground"
+                : "text-muted-foreground",
             )}
             key={code}
-            onClick={() => {
-              setLocale(code);
-              onLocaleChange?.(code);
-              setOpen(false);
-            }}
+            onClick={() => void onSelectLocale(code)}
             role="option"
             type="button"
           >
             <span className="truncate">{meta.name}</span>
 
-            {selected && <Check className="ml-auto h-3 w-3 shrink-0 text-midground" />}
+            {selected && (
+              <Check className="ml-auto h-3 w-3 shrink-0 text-midground" />
+            )}
           </button>
         );
       })}
@@ -179,14 +211,11 @@ function LanguageSwitcherOptions({
 interface LanguageSwitcherOptionsProps {
   allLocales: Array<[Locale, (typeof LOCALE_META)[Locale]]>;
   locale: Locale;
-  setLocale: (code: Locale) => void;
-  setOpen: (open: boolean) => void;
-  onLocaleChange?: (locale: Locale) => void;
+  onSelectLocale: (code: Locale) => Promise<void>;
+  savingLocale: Locale | null;
 }
 
 interface LanguageSwitcherProps {
   collapsed?: boolean;
   dropUp?: boolean;
-  /** Fire-and-forget hook for syncing a dashboard locale choice to config.yaml. */
-  onLocaleChange?: (locale: Locale) => void;
 }

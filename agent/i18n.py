@@ -2,9 +2,9 @@
 
 Scope (thin slice, by design): only the highest-impact static strings shown
 to the user by Hermes itself -- approval prompts, a handful of gateway slash
-command replies, restart-drain notices.  Agent-generated output, log lines,
-error tracebacks, tool outputs, and slash-command descriptions all stay in
-English.
+command replies, and restart-drain notices. Agent-generated output, log lines,
+error tracebacks, and tool outputs stay outside this catalog; each UI owns its
+additional presentation catalog and uses the same locale normalization contract.
 
 Catalog files live under ``locales/<lang>.yaml`` at the repo root.  Each
 catalog is a flat dict keyed by dotted paths (e.g. ``approval.choose`` or
@@ -55,8 +55,10 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     # Bare "chinese" / "mandarin"
     # also default to Simplified since that's the larger user base.
     "chinese": "zh", "mandarin": "zh", "simplified-chinese": "zh",
-    "simplified_chinese": "zh",
-    "traditional-chinese": "zh-hant", "traditional_chinese": "zh-hant",
+    # BCP-47 compatibility stays internal; user-facing choices remain
+    # "Simplified Chinese" and "Traditional Chinese".
+    "zh-cn": "zh", "zh-hans": "zh",
+    "traditional-chinese": "zh-hant",
     "japanese": "ja", "jp": "ja", "ja-jp": "ja",
     "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
     "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",
@@ -138,7 +140,7 @@ def _locales_dir() -> Path:
     return source_dir
 
 
-def _normalize_lang(value: Any) -> str:
+def normalize_language(value: Any) -> str:
     """Normalize a user-supplied language value to a supported code.
 
     Accepts supported codes directly, common aliases (``chinese`` -> ``zh``),
@@ -148,7 +150,7 @@ def _normalize_lang(value: Any) -> str:
     """
     if not isinstance(value, str):
         return DEFAULT_LANGUAGE
-    key = value.strip().lower()
+    key = "-".join(value.strip().lower().replace("_", "-").split())
     if not key:
         return DEFAULT_LANGUAGE
     if key in SUPPORTED_LANGUAGES:
@@ -165,6 +167,11 @@ def _normalize_lang(value: Any) -> str:
     if base in SUPPORTED_LANGUAGES:
         return base
     return DEFAULT_LANGUAGE
+
+
+# Backward-compatible private name retained for existing internal tests and
+# callers while cross-module consumers use the public boundary above.
+_normalize_lang = normalize_language
 
 
 def _load_catalog(lang: str) -> dict[str, str]:
@@ -301,6 +308,7 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
 __all__ = [
     "SUPPORTED_LANGUAGES",
     "DEFAULT_LANGUAGE",
+    "normalize_language",
     "t",
     "get_language",
     "reset_language_cache",

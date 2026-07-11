@@ -10,7 +10,9 @@ export const debugCommands: SlashCommand[] = [
       const { heapUsed, rss } = process.memoryUsage()
       const locale = ctx.ui.locale
 
-      ctx.transcript.sys(translate(locale, 'debug.writingHeapDump', { heap: formatBytes(heapUsed), rss: formatBytes(rss) }))
+      ctx.transcript.sys(
+        translate(locale, 'debug.writingHeapDump', { heap: formatBytes(heapUsed), rss: formatBytes(rss) })
+      )
 
       void performHeapDump('manual').then(r => {
         if (ctx.stale()) {
@@ -18,7 +20,11 @@ export const debugCommands: SlashCommand[] = [
         }
 
         if (!r.success) {
-          return ctx.transcript.sys(translate(locale, 'debug.heapdumpFailed', { error: r.error ?? 'unknown error' }))
+          return ctx.transcript.sys(
+            translate(locale, 'debug.heapdumpFailed', {
+              error: r.error ?? translate(locale, 'common.unknownError')
+            })
+          )
         }
 
         ctx.transcript.sys(translate(locale, 'debug.heapdumpPath', { path: r.heapPath ?? '' }))

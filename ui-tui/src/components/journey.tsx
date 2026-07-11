@@ -183,6 +183,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 
   const doDelete = () => {
     const node = activeNode
+
     if (!node) {
       return
     }
@@ -206,18 +207,22 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 
   const doEdit = async () => {
     const node = activeNode
+
     if (!node) {
       return
     }
 
     setBusy(true)
+
     try {
       const detail = await gw.request<NodeDetail>('learning.detail', { id: node.id })
+
       if (!detail.ok || detail.content == null) {
         return setNotice(detail.message || ti('journey.cannotEdit'))
       }
 
       const edited = await openInEditor(detail.content, detail.kind === 'skill' ? '.md' : '.txt')
+
       if (edited == null || edited.trim() === detail.content.trim()) {
         return setNotice(ti('journey.noChanges'))
       }

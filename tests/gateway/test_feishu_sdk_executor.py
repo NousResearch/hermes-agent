@@ -120,3 +120,4 @@ async def test_reconnect_rearms_executor():
     # And now the executor is usable again.
     assert await adapter._run_blocking(lambda: "rearmed") == "rearmed"
     adapter._shutdown_sdk_executor()
+

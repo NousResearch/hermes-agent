@@ -61,7 +61,10 @@ import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
-import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
+import {
+  SidebarStatusStrip,
+  gatewayLine,
+} from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
@@ -93,7 +96,7 @@ import SystemPage from "@/pages/SystemPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
-import { useI18n } from "@/i18n";
+import { resolveNavLabel, useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
@@ -167,7 +170,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
-  { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/files", labelKey: "files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -187,7 +190,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/mcp", labelKey: "mcp", label: "MCP", icon: Plug },
   { path: "/channels", labelKey: "channels", label: "Channels", icon: Radio },
   { path: "/webhooks", labelKey: "webhooks", label: "Webhooks", icon: Webhook },
-  { path: "/pairing", labelKey: "pairing", label: "Pairing", icon: ShieldCheck },
+  {
+    path: "/pairing",
+    labelKey: "pairing",
+    label: "Pairing",
+    icon: ShieldCheck,
+  },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
@@ -367,7 +375,9 @@ export default function App() {
       const next = !prev;
       try {
         localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
-      } catch { /* localStorage may be unavailable in private browsing */ }
+      } catch {
+        /* localStorage may be unavailable in private browsing */
+      }
       return next;
     });
   }, []);
@@ -395,24 +405,6 @@ export default function App() {
         setShowTokenAnalytics(dash.show_token_analytics === true);
       })
       .catch(() => setShowTokenAnalytics(false));
-  }, []);
-
-  // Sync the Dashboard locale choice to `display.language` in config.yaml
-  // so the embedded TUI picks it up via `useConfigSync` mtime polling.
-  const handleLocaleChange = useCallback((code: string) => {
-    api
-      .getConfig()
-      .then((cfg) => {
-        const next = { ...cfg };
-        const display = { ...((next.display as Record<string, unknown>) ?? {}) };
-        display.language = code;
-        next.display = display;
-        return api.saveConfig(next);
-      })
-      .catch(() => {
-        // Fire-and-forget: Dashboard UI already reflects the choice.
-        // If the config write fails, TUI locale won't sync this time.
-      });
   }, []);
 
   // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
@@ -468,9 +460,9 @@ export default function App() {
         .filter((m) => !m.tab.hidden)
         .map((m) => ({
           path: m.tab.override ?? m.tab.path,
-          label: m.label,
+          label: resolveNavLabel(t, m.label, m.labelKey),
         })),
-    [manifests],
+    [manifests, t],
   );
 
   const layoutVariant = theme.layoutVariant ?? "standard";
@@ -500,310 +492,309 @@ export default function App() {
 
   return (
     <ProfileProvider>
-    <div
-      data-layout-variant={layoutVariant}
-      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
-    >
-      <SelectionSwitcher />
-
       <div
-        aria-hidden
-        className="pointer-events-none fixed inset-0 z-0"
+        data-layout-variant={layoutVariant}
+        className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
       >
-        <PluginSlot name="backdrop" />
-      </div>
+        <SelectionSwitcher />
 
-      <header
-        className={cn(
-          "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
-          "flex items-center gap-2 px-4 py-2",
-          "border-b border-current/20",
-          "bg-background-base",
-        )}
-        style={{
-          background: "var(--component-header-background)",
-          borderImage: "var(--component-header-border-image)",
-          clipPath: "var(--component-header-clip-path)",
-        }}
-      >
-        <Button
-          ghost
-          size="icon"
-          onClick={() => setMobileOpen(true)}
-          aria-label={t.app.openNavigation}
-          aria-expanded={mobileOpen}
-          aria-controls="app-sidebar"
-          className="text-text-secondary hover:text-midground"
-        >
-          <Menu />
-        </Button>
-
-        <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
-          {t.app.brand}
-        </Typography>
-      </header>
-
-      {mobileOpen && (
-        <Button
-          ghost
-          aria-label={t.app.closeNavigation}
-          onClick={closeMobile}
-          className={cn(
-            "lg:hidden fixed inset-0 z-40 p-0 block",
-            "bg-black/70",
-          )}
-        />
-      )}
-
-      <PluginSlot name="header-banner" />
-      <ProfileScopeBanner />
-
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
-        <div className="flex min-h-0 min-w-0 flex-1">
-          <aside
-            id="app-sidebar"
-            aria-label={t.app.navigation}
-            className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
-              "border-r border-current/20",
-              "bg-background-base",
-              "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
-              mobileOpen ? "translate-x-0" : "-translate-x-full",
-              "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
-              "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
-              collapsed && "lg:w-14",
-            )}
-            style={{
-              background: "var(--component-sidebar-background)",
-              clipPath: "var(--component-sidebar-clip-path)",
-              borderImage: "var(--component-sidebar-border-image)",
-            }}
-          >
-            <div
-              className={cn(
-                "flex h-14 shrink-0 items-center gap-2",
-                "border-b border-current/20",
-                collapsed ? "lg:justify-center lg:px-0" : "px-4 justify-between",
-              )}
-            >
-              <div
-                className={cn(
-                  "flex items-center gap-2",
-                  collapsed && "lg:hidden",
-                )}
-              >
-                <PluginSlot name="header-left" />
-
-                <Typography className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase">
-                  Hermes
-                  <br />
-                  Agent
-                </Typography>
-              </div>
-
-              <Button
-                ghost
-                size="icon"
-                onClick={closeMobile}
-                aria-label={t.app.closeNavigation}
-                className="lg:hidden text-text-secondary hover:text-midground"
-              >
-                <X />
-              </Button>
-
-              <Button
-                ghost
-                size="icon"
-                onClick={toggleCollapsed}
-                aria-label={
-                  collapsed ? t.common.expand : t.common.collapse
-                }
-                className="hidden lg:flex text-text-secondary hover:text-midground"
-              >
-                {collapsed ? (
-                  <PanelLeftOpen className="h-4 w-4" />
-                ) : (
-                  <PanelLeftClose className="h-4 w-4" />
-                )}
-              </Button>
-            </div>
-
-            <ProfileSwitcher collapsed={isDesktopCollapsed} />
-
-            <nav
-              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
-              aria-label={t.app.navigation}
-            >
-              <ul className="flex flex-col">
-                {sidebarNav.coreItems.map((item) => (
-                  <SidebarNavLink
-                    closeMobile={closeMobile}
-                    collapsed={isDesktopCollapsed}
-                    item={item}
-                    key={item.path}
-                    t={t}
-                    tooltipWarmRef={tooltipWarmRef}
-                  />
-                ))}
-              </ul>
-
-              {sidebarNav.pluginItems.length > 0 && (
-                <div
-                  aria-labelledby="hermes-sidebar-plugin-nav-heading"
-                  className="flex flex-col border-t border-current/10 pb-2"
-                  role="group"
-                >
-                  <span
-                    className={cn(
-                      "px-5 pt-2.5 pb-1",
-                      "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
-                      isDesktopCollapsed && "lg:hidden",
-                    )}
-                    id="hermes-sidebar-plugin-nav-heading"
-                  >
-                    {t.app.pluginNavSection}
-                  </span>
-
-                  <ul className="flex flex-col">
-                    {sidebarNav.pluginItems.map((item) => (
-                      <SidebarNavLink
-                        closeMobile={closeMobile}
-                        collapsed={isDesktopCollapsed}
-                        item={item}
-                        key={item.path}
-                        t={t}
-                        tooltipWarmRef={tooltipWarmRef}
-                      />
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </nav>
-
-            <SidebarSystemActions
-              collapsed={isDesktopCollapsed}
-              onNavigate={closeMobile}
-              status={sidebarStatus}
-              tooltipWarmRef={tooltipWarmRef}
-            />
-
-            <div
-              className={cn(
-                "flex shrink-0 items-center gap-2",
-                "px-3 py-2",
-                "border-t border-current/20",
-                isDesktopCollapsed
-                  ? "lg:flex-col lg:items-start lg:gap-3 lg:py-3"
-                  : "justify-between",
-              )}
-            >
-              <div
-                className={cn(
-                  "flex min-w-0 items-center gap-2",
-                  isDesktopCollapsed && "lg:flex-col lg:items-start",
-                )}
-              >
-                <PluginSlot name="header-right" />
-                <SidebarIconWithTooltip
-                  collapsed={isDesktopCollapsed}
-                  label={t.theme?.switchTheme ?? "Switch theme"}
-                  tooltipWarmRef={tooltipWarmRef}
-                >
-                  <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
-                </SidebarIconWithTooltip>
-
-                <SidebarIconWithTooltip
-                  collapsed={isDesktopCollapsed}
-                  label={t.language.switchTo}
-                  tooltipWarmRef={tooltipWarmRef}
-                >
-                  <LanguageSwitcher collapsed={isDesktopCollapsed} dropUp onLocaleChange={handleLocaleChange} />
-                </SidebarIconWithTooltip>
-              </div>
-            </div>
-
-            <div
-              className={cn(
-                "flex shrink-0 flex-col",
-                isDesktopCollapsed && "lg:hidden",
-              )}
-            >
-              <AuthWidget />
-              <SidebarFooter status={sidebarStatus} />
-            </div>
-          </aside>
-
-          <PageHeaderProvider pluginTabs={pluginTabMeta}>
-            <div
-              className={cn(
-                "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "px-3 sm:px-6",
-                isChatRoute
-                  ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
-                  : "pt-2 sm:pt-4 lg:pt-6",
-                isDocsRoute && "min-h-0 flex-1",
-              )}
-            >
-              <PluginSlot name="pre-main" />
-              <div
-                className={cn(
-                  "w-full min-w-0",
-                  !isChatRoute &&
-                    "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                  (isDocsRoute || isChatRoute) &&
-                    "min-h-0 flex flex-1 flex-col",
-                )}
-              >
-                <ProfileKeyedRoutes>
-                  <Routes>
-                    {routes.map(({ key, path, element }) => (
-                      <Route key={key} path={path} element={element} />
-                    ))}
-                    <Route
-                      path="*"
-                      element={
-                        <UnknownRouteFallback pluginsLoading={pluginsLoading} />
-                      }
-                    />
-                  </Routes>
-                </ProfileKeyedRoutes>
-
-                {embeddedChat &&
-                  !chatOverriddenByPlugin &&
-                  (pluginsLoading ? (
-                    isChatRoute ? (
-                      <div
-                        className="flex min-h-0 min-w-0 flex-1 items-center justify-center"
-                        aria-busy="true"
-                        aria-live="polite"
-                      >
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Spinner />
-                          <span>{t.app.loadingChat}</span>
-                        </div>
-                      </div>
-                    ) : null
-                  ) : (
-                    <div
-                      data-chat-active={isChatRoute ? "true" : "false"}
-                      className={cn(
-                        "min-h-0 min-w-0",
-                        isChatRoute ? "flex flex-1 flex-col" : "hidden",
-                      )}
-                      aria-hidden={!isChatRoute}
-                    >
-                      <ChatPage isActive={isChatRoute} />
-                    </div>
-                  ))}
-              </div>
-              <PluginSlot name="post-main" />
-            </div>
-          </PageHeaderProvider>
+        <div aria-hidden className="pointer-events-none fixed inset-0 z-0">
+          <PluginSlot name="backdrop" />
         </div>
-      </div>
 
-      <PluginSlot name="overlay" />
-    </div>
+        <header
+          className={cn(
+            "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
+            "flex items-center gap-2 px-4 py-2",
+            "border-b border-current/20",
+            "bg-background-base",
+          )}
+          style={{
+            background: "var(--component-header-background)",
+            borderImage: "var(--component-header-border-image)",
+            clipPath: "var(--component-header-clip-path)",
+          }}
+        >
+          <Button
+            ghost
+            size="icon"
+            onClick={() => setMobileOpen(true)}
+            aria-label={t.app.openNavigation}
+            aria-expanded={mobileOpen}
+            aria-controls="app-sidebar"
+            className="text-text-secondary hover:text-midground"
+          >
+            <Menu />
+          </Button>
+
+          <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
+            {t.app.brand}
+          </Typography>
+        </header>
+
+        {mobileOpen && (
+          <Button
+            ghost
+            aria-label={t.app.closeNavigation}
+            onClick={closeMobile}
+            className={cn(
+              "lg:hidden fixed inset-0 z-40 p-0 block",
+              "bg-black/70",
+            )}
+          />
+        )}
+
+        <PluginSlot name="header-banner" />
+        <ProfileScopeBanner />
+
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
+          <div className="flex min-h-0 min-w-0 flex-1">
+            <aside
+              id="app-sidebar"
+              aria-label={t.app.navigation}
+              className={cn(
+                "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
+                "border-r border-current/20",
+                "bg-background-base",
+                "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
+                mobileOpen ? "translate-x-0" : "-translate-x-full",
+                "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
+                "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
+                collapsed && "lg:w-14",
+              )}
+              style={{
+                background: "var(--component-sidebar-background)",
+                clipPath: "var(--component-sidebar-clip-path)",
+                borderImage: "var(--component-sidebar-border-image)",
+              }}
+            >
+              <div
+                className={cn(
+                  "flex h-14 shrink-0 items-center gap-2",
+                  "border-b border-current/20",
+                  collapsed
+                    ? "lg:justify-center lg:px-0"
+                    : "px-4 justify-between",
+                )}
+              >
+                <div
+                  className={cn(
+                    "flex items-center gap-2",
+                    collapsed && "lg:hidden",
+                  )}
+                >
+                  <PluginSlot name="header-left" />
+
+                  <Typography className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase">
+                    Hermes
+                    <br />
+                    Agent
+                  </Typography>
+                </div>
+
+                <Button
+                  ghost
+                  size="icon"
+                  onClick={closeMobile}
+                  aria-label={t.app.closeNavigation}
+                  className="lg:hidden text-text-secondary hover:text-midground"
+                >
+                  <X />
+                </Button>
+
+                <Button
+                  ghost
+                  size="icon"
+                  onClick={toggleCollapsed}
+                  aria-label={collapsed ? t.common.expand : t.common.collapse}
+                  className="hidden lg:flex text-text-secondary hover:text-midground"
+                >
+                  {collapsed ? (
+                    <PanelLeftOpen className="h-4 w-4" />
+                  ) : (
+                    <PanelLeftClose className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+
+              <ProfileSwitcher collapsed={isDesktopCollapsed} />
+
+              <nav
+                className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
+                aria-label={t.app.navigation}
+              >
+                <ul className="flex flex-col">
+                  {sidebarNav.coreItems.map((item) => (
+                    <SidebarNavLink
+                      closeMobile={closeMobile}
+                      collapsed={isDesktopCollapsed}
+                      item={item}
+                      key={item.path}
+                      t={t}
+                      tooltipWarmRef={tooltipWarmRef}
+                    />
+                  ))}
+                </ul>
+
+                {sidebarNav.pluginItems.length > 0 && (
+                  <div
+                    aria-labelledby="hermes-sidebar-plugin-nav-heading"
+                    className="flex flex-col border-t border-current/10 pb-2"
+                    role="group"
+                  >
+                    <span
+                      className={cn(
+                        "px-5 pt-2.5 pb-1",
+                        "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
+                        isDesktopCollapsed && "lg:hidden",
+                      )}
+                      id="hermes-sidebar-plugin-nav-heading"
+                    >
+                      {t.app.pluginNavSection}
+                    </span>
+
+                    <ul className="flex flex-col">
+                      {sidebarNav.pluginItems.map((item) => (
+                        <SidebarNavLink
+                          closeMobile={closeMobile}
+                          collapsed={isDesktopCollapsed}
+                          item={item}
+                          key={item.path}
+                          t={t}
+                          tooltipWarmRef={tooltipWarmRef}
+                        />
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </nav>
+
+              <SidebarSystemActions
+                collapsed={isDesktopCollapsed}
+                onNavigate={closeMobile}
+                status={sidebarStatus}
+                tooltipWarmRef={tooltipWarmRef}
+              />
+
+              <div
+                className={cn(
+                  "flex shrink-0 items-center gap-2",
+                  "px-3 py-2",
+                  "border-t border-current/20",
+                  isDesktopCollapsed
+                    ? "lg:flex-col lg:items-start lg:gap-3 lg:py-3"
+                    : "justify-between",
+                )}
+              >
+                <div
+                  className={cn(
+                    "flex min-w-0 items-center gap-2",
+                    isDesktopCollapsed && "lg:flex-col lg:items-start",
+                  )}
+                >
+                  <PluginSlot name="header-right" />
+                  <SidebarIconWithTooltip
+                    collapsed={isDesktopCollapsed}
+                    label={t.theme?.switchTheme ?? "Switch theme"}
+                    tooltipWarmRef={tooltipWarmRef}
+                  >
+                    <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
+                  </SidebarIconWithTooltip>
+
+                  <SidebarIconWithTooltip
+                    collapsed={isDesktopCollapsed}
+                    label={t.language.switchTo}
+                    tooltipWarmRef={tooltipWarmRef}
+                  >
+                    <LanguageSwitcher collapsed={isDesktopCollapsed} dropUp />
+                  </SidebarIconWithTooltip>
+                </div>
+              </div>
+
+              <div
+                className={cn(
+                  "flex shrink-0 flex-col",
+                  isDesktopCollapsed && "lg:hidden",
+                )}
+              >
+                <AuthWidget />
+                <SidebarFooter status={sidebarStatus} />
+              </div>
+            </aside>
+
+            <PageHeaderProvider pluginTabs={pluginTabMeta}>
+              <div
+                className={cn(
+                  "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
+                  "px-3 sm:px-6",
+                  isChatRoute
+                    ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
+                    : "pt-2 sm:pt-4 lg:pt-6",
+                  isDocsRoute && "min-h-0 flex-1",
+                )}
+              >
+                <PluginSlot name="pre-main" />
+                <div
+                  className={cn(
+                    "w-full min-w-0",
+                    !isChatRoute &&
+                      "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
+                    (isDocsRoute || isChatRoute) &&
+                      "min-h-0 flex flex-1 flex-col",
+                  )}
+                >
+                  <ProfileKeyedRoutes>
+                    <Routes>
+                      {routes.map(({ key, path, element }) => (
+                        <Route key={key} path={path} element={element} />
+                      ))}
+                      <Route
+                        path="*"
+                        element={
+                          <UnknownRouteFallback
+                            pluginsLoading={pluginsLoading}
+                          />
+                        }
+                      />
+                    </Routes>
+                  </ProfileKeyedRoutes>
+
+                  {embeddedChat &&
+                    !chatOverriddenByPlugin &&
+                    (pluginsLoading ? (
+                      isChatRoute ? (
+                        <div
+                          className="flex min-h-0 min-w-0 flex-1 items-center justify-center"
+                          aria-busy="true"
+                          aria-live="polite"
+                        >
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Spinner />
+                            <span>{t.app.loadingChat}</span>
+                          </div>
+                        </div>
+                      ) : null
+                    ) : (
+                      <div
+                        data-chat-active={isChatRoute ? "true" : "false"}
+                        className={cn(
+                          "min-h-0 min-w-0",
+                          isChatRoute ? "flex flex-1 flex-col" : "hidden",
+                        )}
+                        aria-hidden={!isChatRoute}
+                      >
+                        <ChatPage isActive={isChatRoute} />
+                      </div>
+                    ))}
+                </div>
+                <PluginSlot name="post-main" />
+              </div>
+            </PageHeaderProvider>
+          </div>
+        </div>
+
+        <PluginSlot name="overlay" />
+      </div>
     </ProfileProvider>
   );
 }
@@ -820,7 +811,11 @@ export default function App() {
  */
 function ProfileKeyedRoutes({ children }: { children: ReactNode }) {
   const { profile } = useProfileScope();
-  return <div key={profile || "__own__"} className="contents">{children}</div>;
+  return (
+    <div key={profile || "__own__"} className="contents">
+      {children}
+    </div>
+  );
 }
 
 function SidebarNavLink({
@@ -834,10 +829,10 @@ function SidebarNavLink({
   const [hovered, setHovered] = useState(false);
   const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
-  const navLabel = labelKey
-    ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
-    : label;
-  const showTooltip = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
+  const navLabel = resolveNavLabel(t, label, labelKey);
+  const showTooltip = (
+    event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>,
+  ) => {
     setHovered(true);
     setTooltipAnchor(event.currentTarget);
   };
@@ -903,7 +898,11 @@ function SidebarNavLink({
       </NavLink>
 
       {collapsed && hovered && tooltipAnchor && (
-        <SidebarTooltip anchor={tooltipAnchor} label={navLabel} warmRef={tooltipWarmRef} />
+        <SidebarTooltip
+          anchor={tooltipAnchor}
+          label={navLabel}
+          warmRef={tooltipWarmRef}
+        />
       )}
     </li>
   );
@@ -927,12 +926,8 @@ function SidebarSystemActions({
   const [updateConfirmChecking, setUpdateConfirmChecking] = useState(false);
 
   useEffect(() => {
-    if (!updateConfirmOpen) {
-      setUpdateConfirmInfo(null);
-      return;
-    }
+    if (!updateConfirmOpen) return;
     let cancelled = false;
-    setUpdateConfirmChecking(true);
     api
       .checkHermesUpdate(false)
       .then((info) => {
@@ -953,14 +948,26 @@ function SidebarSystemActions({
     if (updateConfirmInfo?.behind && updateConfirmInfo.behind > 0) {
       const cmd = updateConfirmInfo.update_command;
       const n = updateConfirmInfo.behind;
-      return `This will run 'hermes update' (${cmd}) and pull ${n} new commit${n === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`;
+      const template =
+        n === 1
+          ? t.status.updateHermesBehindOneConfirmMessage
+          : t.status.updateHermesBehindConfirmMessage;
+      return template.replace("{command}", cmd).replace("{count}", String(n));
     }
-    const cmd = updateConfirmInfo?.update_command ?? "hermes update";
-    return (
-      t.status.updateHermesConfirmMessage ??
-      `This will run 'hermes update' (${cmd}) and restart the gateway when it finishes.`
-    );
-  }, [t.status.updateHermesConfirmMessage, updateConfirmInfo]);
+    return t.status.updateHermesConfirmMessage;
+  }, [t.status, updateConfirmInfo]);
+
+  const openUpdateConfirm = () => {
+    setUpdateConfirmInfo(null);
+    setUpdateConfirmChecking(true);
+    setUpdateConfirmOpen(true);
+  };
+
+  const closeUpdateConfirm = () => {
+    setUpdateConfirmOpen(false);
+    setUpdateConfirmChecking(false);
+    setUpdateConfirmInfo(null);
+  };
 
   const items: SystemActionItem[] = [
     {
@@ -988,7 +995,7 @@ function SidebarSystemActions({
       return;
     }
     if (action === "update") {
-      setUpdateConfirmOpen(true);
+      openUpdateConfirm();
       return;
     }
     void runAction(action);
@@ -1004,7 +1011,7 @@ function SidebarSystemActions({
   };
 
   const confirmUpdate = () => {
-    setUpdateConfirmOpen(false);
+    closeUpdateConfirm();
     void runAction("update");
     navigate("/sessions");
     onNavigate();
@@ -1012,73 +1019,87 @@ function SidebarSystemActions({
 
   return (
     <>
-    <div
-      className={cn(
-        "shrink-0 flex flex-col",
-        "border-t border-current/10",
-        "py-1",
-      )}
-    >
-      <span
+      <div
         className={cn(
-          "px-5 pt-0.5 pb-0.5",
-          "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
-          collapsed && "lg:hidden",
+          "shrink-0 flex flex-col",
+          "border-t border-current/10",
+          "py-1",
         )}
       >
-        {t.app.system}
-      </span>
+        <span
+          className={cn(
+            "px-5 pt-0.5 pb-0.5",
+            "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
+            collapsed && "lg:hidden",
+          )}
+        >
+          {t.app.system}
+        </span>
 
-      <div className={cn(collapsed && "lg:hidden")}>
-        <SidebarStatusStrip status={status} />
+        <div className={cn(collapsed && "lg:hidden")}>
+          <SidebarStatusStrip status={status} />
+        </div>
+
+        <GatewayDot
+          collapsed={collapsed}
+          status={status}
+          tooltipWarmRef={tooltipWarmRef}
+        />
+
+        <ul className="flex flex-col">
+          {items.map((item) => (
+            <SystemActionButton
+              key={item.action}
+              collapsed={collapsed}
+              disabled={
+                isBusy &&
+                !(
+                  pendingAction === item.action ||
+                  (activeAction === item.action && isRunning)
+                )
+              }
+              tooltipWarmRef={tooltipWarmRef}
+              isPending={pendingAction === item.action}
+              isRunning={
+                activeAction === item.action &&
+                isRunning &&
+                pendingAction !== item.action
+              }
+              item={item}
+              onClick={() => handleClick(item.action)}
+            />
+          ))}
+        </ul>
       </div>
 
-      <GatewayDot collapsed={collapsed} status={status} tooltipWarmRef={tooltipWarmRef} />
+      <ConfirmDialog
+        cancelLabel={t.common.cancel}
+        confirmLabel={t.status.restartGateway}
+        description={
+          t.status.restartGatewayConfirmMessage ??
+          "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward."
+        }
+        loading={pendingAction === "restart"}
+        onCancel={() => setRestartConfirmOpen(false)}
+        onConfirm={confirmRestart}
+        open={restartConfirmOpen}
+        title={
+          t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`
+        }
+      />
 
-      <ul className="flex flex-col">
-        {items.map((item) => (
-          <SystemActionButton
-            key={item.action}
-            collapsed={collapsed}
-            disabled={isBusy && !(pendingAction === item.action || (activeAction === item.action && isRunning))}
-            tooltipWarmRef={tooltipWarmRef}
-            isPending={pendingAction === item.action}
-            isRunning={activeAction === item.action && isRunning && pendingAction !== item.action}
-            item={item}
-            onClick={() => handleClick(item.action)}
-          />
-        ))}
-      </ul>
-    </div>
-
-    <ConfirmDialog
-      cancelLabel={t.common.cancel}
-      confirmLabel={t.status.restartGateway}
-      description={
-        t.status.restartGatewayConfirmMessage ??
-        "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward."
-      }
-      loading={pendingAction === "restart"}
-      onCancel={() => setRestartConfirmOpen(false)}
-      onConfirm={confirmRestart}
-      open={restartConfirmOpen}
-      title={
-        t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`
-      }
-    />
-
-    <ConfirmDialog
-      cancelLabel={t.common.cancel}
-      confirmLabel={t.status.updateHermesConfirmNow ?? "Update now"}
-      description={
-        updateConfirmChecking ? t.common.loading : updateConfirmDescription
-      }
-      loading={pendingAction === "update" || updateConfirmChecking}
-      onCancel={() => setUpdateConfirmOpen(false)}
-      onConfirm={confirmUpdate}
-      open={updateConfirmOpen}
-      title={t.status.updateHermesConfirmTitle ?? `${t.status.updateHermes}?`}
-    />
+      <ConfirmDialog
+        cancelLabel={t.common.cancel}
+        confirmLabel={t.status.updateHermesConfirmNow}
+        description={
+          updateConfirmChecking ? t.common.loading : updateConfirmDescription
+        }
+        loading={pendingAction === "update" || updateConfirmChecking}
+        onCancel={closeUpdateConfirm}
+        onConfirm={confirmUpdate}
+        open={updateConfirmOpen}
+        title={t.status.updateHermesConfirmTitle}
+      />
     </>
   );
 }
@@ -1097,7 +1118,9 @@ function SystemActionButton({
   const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
   const busy = isPending || isActionRunning;
   const displayLabel = isActionRunning ? runningLabel : label;
-  const showTooltip = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
+  const showTooltip = (
+    event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>,
+  ) => {
     setHovered(true);
     setTooltipAnchor(event.currentTarget);
   };
@@ -1125,9 +1148,7 @@ function SystemActionButton({
           "font-sans text-display text-xs tracking-[0.1em]",
           "whitespace-nowrap transition-colors cursor-pointer",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-          busy
-            ? "text-midground"
-            : "text-text-secondary hover:text-midground",
+          busy ? "text-midground" : "text-text-secondary hover:text-midground",
           "disabled:text-text-disabled disabled:cursor-not-allowed",
         )}
       >
@@ -1144,10 +1165,12 @@ function SystemActionButton({
           />
         )}
 
-        <span className={cn(
-          "truncate transition-opacity duration-300",
-          collapsed ? "lg:opacity-0" : "lg:opacity-100",
-        )}>
+        <span
+          className={cn(
+            "truncate transition-opacity duration-300",
+            collapsed ? "lg:opacity-0" : "lg:opacity-100",
+          )}
+        >
           {displayLabel}
         </span>
 
@@ -1165,7 +1188,11 @@ function SystemActionButton({
       </button>
 
       {collapsed && hovered && tooltipAnchor && (
-        <SidebarTooltip anchor={tooltipAnchor} label={displayLabel} warmRef={tooltipWarmRef} />
+        <SidebarTooltip
+          anchor={tooltipAnchor}
+          label={displayLabel}
+          warmRef={tooltipWarmRef}
+        />
       )}
     </li>
   );
@@ -1190,10 +1217,7 @@ function SidebarIconWithTooltip({
 
   return (
     <div
-      className={cn(
-        "relative w-fit",
-        collapsed && "group/icon",
-      )}
+      className={cn("relative w-fit", collapsed && "group/icon")}
       onMouseEnter={collapsed ? showTooltip : undefined}
       onMouseLeave={collapsed ? hideTooltip : undefined}
     >
@@ -1207,7 +1231,11 @@ function SidebarIconWithTooltip({
       )}
 
       {collapsed && hovered && tooltipAnchor && (
-        <SidebarTooltip anchor={tooltipAnchor} label={label} warmRef={tooltipWarmRef} />
+        <SidebarTooltip
+          anchor={tooltipAnchor}
+          label={label}
+          warmRef={tooltipWarmRef}
+        />
       )}
     </div>
   );
@@ -1236,7 +1264,9 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
     color = toneToColor[gw.tone] ?? "bg-muted-foreground";
     label = `${t.status.gateway} ${gw.label}`;
   }
-  const showTooltip = (event: MouseEvent<HTMLDivElement> | FocusEvent<HTMLDivElement>) => {
+  const showTooltip = (
+    event: MouseEvent<HTMLDivElement> | FocusEvent<HTMLDivElement>,
+  ) => {
     setHovered(true);
     setTooltipAnchor(event.currentTarget);
   };
@@ -1249,7 +1279,9 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
     <div
       className={cn(
         "hidden lg:flex py-3 pl-[1.625rem] transition-opacity duration-300",
-        collapsed ? "lg:opacity-100" : "lg:opacity-0 lg:h-0 lg:py-0 lg:overflow-hidden",
+        collapsed
+          ? "lg:opacity-100"
+          : "lg:opacity-0 lg:h-0 lg:py-0 lg:overflow-hidden",
       )}
       role="status"
       aria-label={label}
@@ -1259,13 +1291,14 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
       onFocus={collapsed ? showTooltip : undefined}
       onBlur={collapsed ? hideTooltip : undefined}
     >
-      <span
-        aria-hidden
-        className={cn("h-1.5 w-1.5 rounded-full", color)}
-      />
+      <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", color)} />
 
       {hovered && tooltipAnchor && (
-        <SidebarTooltip anchor={tooltipAnchor} label={label} warmRef={tooltipWarmRef} />
+        <SidebarTooltip
+          anchor={tooltipAnchor}
+          label={label}
+          warmRef={tooltipWarmRef}
+        />
       )}
     </div>
   );

@@ -267,3 +267,4 @@ def test_all_three_background_indicators_independent(monkeypatch):
     assert "▶ 1" in rendered
     assert "⚙ 2" in rendered
     assert "⛓ 5" in rendered
+

@@ -106,6 +106,8 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   ukrainisch: 'uk',
   'uk-ua': 'uk',
   українська: 'uk',
+  'zh-cn': 'zh',
+  'zh-hans': 'zh',
   'zh-hant': 'zh-hant'
 }
 
@@ -166,9 +168,9 @@ export const normalizeLocale = (value: unknown): Locale => {
 
 export const translate = (locale: Locale, key: TranslationKey, vars?: Record<string, string | number>) => {
   const pack = getPack(locale)
-  const value = (pack.catalog as Record<string, string>)[key] ?? (en.catalog as Record<string, string>)[key] ?? key
+  const value = pack.catalog[key] ?? en.catalog[key] ?? key
 
-  return typeof value === 'string' ? interpolate(value, vars) : key
+  return interpolate(value, vars)
 }
 
 export const translateStatus = (locale: Locale, status: string) =>
@@ -212,9 +214,9 @@ export const useI18n = () => useContext(I18nContext)
 export const toolsetLabel = (raw: string, locale: Locale): string => {
   const key = raw.endsWith('_tools') ? raw.slice(0, -6) : raw
   const pack = getPack(locale)
-  const label = (pack.catalog as Record<string, string>)[`toolset.${key}`]
+  const label = pack.catalog[`toolset.${key}`]
 
-  return label ?? (en.catalog as Record<string, string>)[`toolset.${key}`] ?? key
+  return label ?? en.catalog[`toolset.${key}`] ?? key
 }
 
 /** Whether the language pack prefers ellipsis over padding for status-bar verbs.

@@ -143,6 +143,7 @@ AUTHOR_MAP = {
     "igor.izotov@gmail.com": "iizotov",  # PR #54912 salvage (add bedrock to MoA _slot_runtime name-preserve set; SigV4-signed client, placeholder aws-sdk api_key)
     "justin@newartifice.com": "JustinOhms",  # PR #24469 salvage (route native-SDK delegation providers through runtime resolver; fail on '(empty)' sentinel instead of accepting it as success)
     "186512915+lEWFkRAD@users.noreply.github.com": "lEWFkRAD",  # PR #53848 salvage (stream the MoA aggregator response to the user)
+    "jeff@beardencpa.com": "lEWFkRAD",  # PR #61687 (Kindle Scribe gateway platform)
     "193368749+jimmyjohansson84@users.noreply.github.com": "jimmyjohansson84",  # PR #27123 salvage (Kanban unknown-skill warn-instead-of-crash; #27136)
     "gxalong@gmail.com": "Jeffgithub0029",  # PR #28558 salvage (chunk Telegram text *after* MarkdownV2/HTML formatting so escaping inflation can't push a send over the 4096 UTF-16 limit; #28557)
     "273238055+fayenix@users.noreply.github.com": "fayenix",  # PR #28846 salvage (normalize _cfg_model in gateway fallback-eviction so vendor-prefixed config matches stripped agent.model on native providers)

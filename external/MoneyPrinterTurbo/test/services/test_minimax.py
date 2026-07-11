@@ -79,6 +79,32 @@ def test_t2a_sync_decodes_hex_audio(monkeypatch, tmp_path):
     assert calls[0]["headers"]["Authorization"] == "Bearer test-minimax-key"
 
 
+def test_t2a_sync_accepts_official_system_voice_id(monkeypatch, tmp_path):
+    _configure_minimax(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        calls.append({"url": url, "json": json})
+        return FakeResponse(
+            {
+                "data": {"audio": b"official-voice".hex()},
+                "base_resp": {"status_code": 0},
+            }
+        )
+
+    monkeypatch.setattr(minimax.requests, "post", fake_post)
+    official_voice_id = "Chinese (Mandarin)_HK_Flight_Attendant"
+
+    result = minimax.t2a_sync(
+        "欢迎光临",
+        official_voice_id,
+        str(tmp_path / "official.mp3"),
+    )
+
+    assert result["voice_id"] == official_voice_id
+    assert calls[0]["json"]["voice_setting"]["voice_id"] == official_voice_id
+
+
 def test_list_voices_returns_categorized_provider_records(monkeypatch, tmp_path):
     _configure_minimax(monkeypatch, tmp_path)
     monkeypatch.setattr(

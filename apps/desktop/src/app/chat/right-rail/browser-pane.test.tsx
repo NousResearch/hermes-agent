@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $browserCurrentState, driveBrowser, resetBrowserRegistryForTests, setBrowserSessionState } from '@/store/browser'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
-import { browserActionScript, BrowserPane } from './browser-pane'
+import { BROWSER_SNAPSHOT_SCRIPT, browserActionScript, BrowserPane } from './browser-pane'
 
 describe('BrowserPane', () => {
   beforeEach(() => {
@@ -227,5 +227,21 @@ describe('BrowserPane', () => {
     expect(result.ok).toBe(true)
     expect(firstClick).toHaveBeenCalledOnce()
     expect(secondClick).not.toHaveBeenCalled()
+  })
+
+  it('snapshots pointer-driven cards that lack native interactive semantics', () => {
+    document.body.innerHTML = '<div style="cursor:pointer">印度第一大城市孟买</div>'
+
+    const snapshot = window.eval(BROWSER_SNAPSHOT_SCRIPT) as {
+      elements: Array<{ hermesRef?: string; tag: string; text?: string }>
+    }
+
+    expect(snapshot.elements).toContainEqual(
+      expect.objectContaining({
+        hermesRef: expect.any(String),
+        tag: 'div',
+        text: '印度第一大城市孟买'
+      })
+    )
   })
 })

@@ -63,7 +63,7 @@ _RISKY_ACTION_WORDS = (
     "confirm",
     "pay",
 )
-_DOUYIN_HOST_SUFFIXES = ("douyin.com", "jinritemai.com", "iesdouyin.com")
+
 
 
 class DesktopBrowserProtocolError(ValueError):
@@ -255,14 +255,6 @@ def desktop_browser_approval_reason(action: dict[str, Any]) -> str | None:
     if matched_word:
         return f"点击“{target.get('text') or target.get('ariaLabel') or matched_word}”可能触发外部写操作"
 
-    try:
-        host = (urllib.parse.urlsplit(str(action.get("expectedUrl") or "")).hostname or "").lower()
-    except ValueError:
-        host = ""
-    tag = str(target.get("tag") or "").lower()
-    if host and any(host == suffix or host.endswith(f".{suffix}") for suffix in _DOUYIN_HOST_SUFFIXES) and tag != "a":
-        label = target.get("text") or target.get("ariaLabel") or target.get("role") or tag or "控件"
-        return f"点击抖音页面控件“{label}”可能改变账号或商家数据"
     return None
 
 

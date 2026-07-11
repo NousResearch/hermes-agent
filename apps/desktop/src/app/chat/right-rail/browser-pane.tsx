@@ -124,7 +124,7 @@ function browserPartition(): string {
   return BROWSER_PARTITION
 }
 
-const BROWSER_SNAPSHOT_SCRIPT = String.raw`(() => {
+export const BROWSER_SNAPSHOT_SCRIPT = String.raw`(() => {
   const MAX_TEXT = 200000
   const MAX_ELEMENTS = 500
   const MAX_TABLES = 30
@@ -157,9 +157,12 @@ const BROWSER_SNAPSHOT_SCRIPT = String.raw`(() => {
     }))
     .filter(item => item.text)
 
-  const elements = Array.from(
-    document.querySelectorAll('a,button,input,textarea,select,[role],[contenteditable="true"],summary,label')
+  const semanticElements = Array.from(
+    document.querySelectorAll('a,button,input,textarea,select,[role],[contenteditable="true"],summary,label,[tabindex],[data-e2e],[data-testid]')
   )
+  const pointerElements = Array.from(document.querySelectorAll('div,span'))
+    .filter(element => window.getComputedStyle(element).cursor === 'pointer' && Boolean(clean(elementText(element))))
+  const elements = Array.from(new Set([...semanticElements, ...pointerElements]))
     .slice(0, MAX_ELEMENTS)
     .map((element, index) => {
       const hermesRef = snapshotId + ':' + index
@@ -220,7 +223,7 @@ const BROWSER_SNAPSHOT_SCRIPT = String.raw`(() => {
 export function browserActionScript(action: BrowserDomActionPayload): string {
   return `(async () => {
   const action = ${JSON.stringify(action)}
-  const TARGET_SELECTOR = 'a,button,input,textarea,select,[role],[contenteditable="true"],summary,label'
+  const TARGET_SELECTOR = '[data-hermes-browser-ref],a,button,input,textarea,select,[role],[contenteditable="true"],summary,label,[tabindex],[data-e2e],[data-testid]'
   const clean = value => String(value || '').replace(/\\s+/g, ' ').trim()
   const clip = (value, max = 2000) => clean(value).slice(0, max)
   const elementText = element => {
@@ -587,6 +590,7 @@ export function BrowserPane({ setTitlebarToolGroup }: BrowserPaneProps) {
           let executableAction = action
           const uploadLabel = String(action.target?.text || action.target?.ariaLabel || '').toLowerCase()
           const localPath = String(action.text || '')
+
           if (
             action.kind === 'type' &&
             action.target?.tag === 'button' &&
@@ -594,9 +598,14 @@ export function BrowserPane({ setTitlebarToolGroup }: BrowserPaneProps) {
             localPath.startsWith('/')
           ) {
             const dataUrl = await window.hermesDesktop?.readFileDataUrl?.(localPath)
-            if (!dataUrl) throw new Error('Unable to read local upload file')
+
+            if (!dataUrl) {
+              throw new Error('Unable to read local upload file')
+            }
+
             executableAction = { ...action, text: dataUrl, value: localPath }
           }
+
           result = normalizeBrowserActionResult(
             await webview.executeJavaScript(browserActionScript(executableAction), true),
             action,

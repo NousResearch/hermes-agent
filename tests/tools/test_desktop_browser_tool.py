@@ -112,6 +112,16 @@ def test_douyin_mutations_and_enter_require_approval_but_navigation_links_do_not
         )
         is None
     )
+    assert (
+        desktop_browser_approval_reason(
+            {
+                "expectedUrl": "https://www.douyin.com/jingxuan",
+                "kind": "click",
+                "target": {"tag": "div", "text": "印度第一大城市孟买"},
+            }
+        )
+        is None
+    )
 
 
 def test_navigation_preflight_normalizes_public_urls_and_blocks_secret_or_metadata_urls():

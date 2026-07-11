@@ -87,6 +87,18 @@ afterEach(() => {
 })
 
 describe('AiEmployeesView', () => {
+  it('constrains the employee list so overflowing employees remain scrollable', async () => {
+    const { container } = await renderPage()
+
+    await screen.findByText('2 个员工')
+
+    const sidebar = container.querySelector('aside')
+    const employeeList = sidebar?.querySelector('.overflow-y-auto')
+
+    expect([...sidebar!.classList]).toEqual(expect.arrayContaining(['flex', 'min-h-0', 'flex-col']))
+    expect([...employeeList!.classList]).toEqual(expect.arrayContaining(['min-h-0', 'flex-1', 'overflow-y-auto']))
+  })
+
   it('renders Chinese employee names while keeping the stable profile id visible', async () => {
     await renderPage()
 

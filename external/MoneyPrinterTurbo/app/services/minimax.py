@@ -75,6 +75,23 @@ def validate_voice_id(voice_id: str) -> str:
     return value
 
 
+def normalize_tts_voice_id(voice_id: str) -> str:
+    """Validate a TTS voice reference without applying clone-ID rules.
+
+    MiniMax system voice IDs are provider-defined and may contain spaces or
+    parentheses. The stricter ``validate_voice_id`` contract applies only to
+    user-created clone/generated IDs.
+    """
+    value = str(voice_id or "").strip()
+    if not value:
+        raise ValueError("MiniMax TTS voice_id is required")
+    if len(value) > 256:
+        raise ValueError("MiniMax TTS voice_id exceeds 256 characters")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("MiniMax TTS voice_id cannot contain control characters")
+    return value
+
+
 def list_voices(voice_type: str = "all") -> dict[str, Any]:
     response = requests.post(
         _endpoint("/v1/get_voice"),
@@ -171,7 +188,7 @@ def t2a_sync(
     speed: float = 1.0,
     vol: float = 1.0,
 ) -> dict[str, Any]:
-    voice_id = validate_voice_id(voice_id)
+    voice_id = normalize_tts_voice_id(voice_id)
     text = str(text or "").strip()
     if not text:
         raise ValueError("MiniMax TTS text is required")

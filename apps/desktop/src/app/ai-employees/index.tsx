@@ -185,11 +185,11 @@ export function AiEmployeesView({ className, setStatusbarItemGroup: _setStatusba
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(220px,320px)_1fr] overflow-hidden">
-        <aside className="min-h-0 border-r border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) p-3">
+        <aside className="flex min-h-0 flex-col border-r border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) p-3">
           <div className="mb-3 px-2 text-xs text-(--ui-text-tertiary)">
             {loading ? '正在加载员工…' : `${employees.length} 个员工`}
           </div>
-          <div className="flex min-h-0 flex-col gap-1 overflow-y-auto pr-1">
+          <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-1">
             {employees.map(employee => {
               const active = employee.profile_id === selected?.profile_id
 

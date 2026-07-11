@@ -20,7 +20,7 @@ Operational lessons learned from running Genie in production. Read this after yo
 
 ## Filesystem Gotchas
 
-- **Off-hermes .cache consumers**: When `/root/.cache` is large, the usual culprits are: `ms-playwright/` (browser binaries, 1G+ rebuildable), `puccinialin/` (cargo/rustup cache, rebuildable), `chroma/` (embedding DB — check before deleting). These are all Tier 1 safe rebuildable caches.
+- **Off-hermes .cache consumers**: When `/root/.cache` is large, the usual culprits are: `ms-playwright/` (browser binaries, 1G+ rebuildable), `puccinialin/` (cargo/rustup cache, rebuildable), `chroma/` (embedding DB — check before deleting), `camoufox/` (stealth browser profile cache, 1-2GB, rebuildable). These are all Tier 1 safe rebuildable caches.
 - **`/tmp` not in assess output**: The `genie.py --assess` command does NOT report `/tmp/` contents, even when they contain gigabytes of reclaimable stale data. When assess shows zero or minimal Tier 1 targets but disk is still high, always manually check `/tmp/` with `du -sh /tmp/` and `find /tmp -type f -size +50M -mtime +1`. All `/tmp/` files older than 24h are Tier 1 zero-risk deletions.
 - **`backups/` is outside genie's scope**: The genie script only scans `state-snapshots/`, `logs/`, `cron/output/`, and `sessions/`. It does NOT scan `backups/` — which is often the largest space consumer after snapshots. When genie's `--assess` shows minimal targets but disk is still high, always run `du -sh /root/backups/*/` and `ls -la /root/backups/` to inspect.
 - **Nested directory traversal**: Ensure `os.walk()` is used for recursive directory traversal. Always use `dirpath` from `os.walk()` — never rejoin filenames against the root path. See `references/os-walk-pitfall.md`.
@@ -32,6 +32,9 @@ Operational lessons learned from running Genie in production. Read this after yo
 - **FTS footprint is significant**: FTS trigram indexes add substantial overhead proportional to message count. For large DBs (100K+ messages), expect FTS overhead in the multi-GB range. FTS can be dropped and rebuilt on demand — it contains no unique data, only search indexes.
 - **VACUUM INTO rebuilds FTS indexes**: `VACUUM INTO` on a DB with FTS tables rebuilds all FTS indexes during the copy. The result is as large as the input — it does NOT compact FTS overhead. To truly compact: copy the DB, drop FTS tables on the copy, then `.backup` to a new file. See `references/state-db-compaction.md`.
 - **SQLite timeouts on large state.db**: Large state.db files cause Python sqlite3 queries (especially `dbstat` and `COUNT(*)`) to timeout at 30-60s. Use the `sqlite3` CLI binary for lightweight queries. Avoid `dbstat` aggregation on large DBs.
+- **state.db is often a symlink**: `/root/.hermes/state.db` may be a symlink to a profile-scoped DB (e.g., `→ /root/.hermes/profiles/indigo/state.db`). Always resolve with `readlink -f` before operating on it. Multiple "instances" found by `find` may actually be the same file reached via symlinks + hardlinks. Check inode: `ls -li` to deduplicate.
+- **Genie has no --vacuum flag**: If the user asks to vacuum state.db, genie does not handle it. Run `sqlite3 <db> "VACUUM;"` manually (with timeout). For large DBs that time out, use `PRAGMA incremental_vacuum(1000)` as a non-blocking alternative. See `references/state-db-compaction.md`.
+- **Assess shows -1 rows**: The `--assess` output may report `-1 rows` for all tables. This is a sqlite3 timeout artifact, not real data. Do not treat it as a corruption signal.
 
 ## Operational Gotchas
 

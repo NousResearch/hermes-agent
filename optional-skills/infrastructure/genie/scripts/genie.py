@@ -77,7 +77,11 @@ DEFAULTS = {
     "snapshots_path": os.environ.get("GENIE_SNAPSHOTS_PATH", os.path.join(PROFILE_HOME, "state-snapshots")),
     "commons_path": os.environ.get("GENIE_COMMONS_PATH", os.path.join(PROFILE_HOME, "commons")),
     "backups_path": os.environ.get("GENIE_BACKUPS_PATH", "/root/backups"),
+    "backup_paths": os.environ.get("GENIE_BACKUP_PATHS", "/root/backup:/root/backups").split(":"),
+    "historical_backup_keep_count": int(os.environ.get("GENIE_HISTORICAL_BACKUP_KEEP_COUNT", 1)),
     "tmp_stale_hours": int(os.environ.get("GENIE_TMP_STALE_HOURS", 24)),
+    "git_clone_max_age_days": int(os.environ.get("GENIE_GIT_CLONE_MAX_AGE_DAYS", 5)),
+    "git_clones_path": os.environ.get("GENIE_GIT_CLONES_PATH", "/root/projects"),
 }
 
 # Built-in cleanup targets: path → {tier, action, max_age_days, ...}
@@ -119,6 +123,13 @@ BUILTIN_TARGETS = {
         "max_age_hours": 24, "path": "/tmp",
         "pattern": "/tmp/*",
         "description": "Stale temp files",
+    },
+    "git-clones": {
+        "tier": 1, "action": "delete_git_clones",
+        "max_age_days": 5, "path": "/root/projects",
+        "pattern": "/root/projects/*/",
+        "description": "Inactive git clones (untouched >5d, confirmed remote)",
+        "source": "builtin",
     },
     "cache-pip": {
         "tier": 1, "action": "delete_dir_contents",
@@ -182,6 +193,118 @@ def age_days(path):
 
 def age_hours(path):
     return (datetime.datetime.now().timestamp() - os.path.getmtime(path)) / 3600
+
+
+def historical_backup_candidates(cfg):
+    """Return historical backup candidates governed by the one-backup VPS policy.
+
+    Live databases are intentionally excluded. Candidates are backup copies,
+    snapshots, and migration/pre-migration backups that can accumulate alongside
+    live data.
+    """
+    candidates = []
+    seen = set()
+
+    def backup_score(path):
+        """Higher means a more complete backup candidate.
+
+        Prevents a tiny partial retry directory from superseding the previous
+        complete backup merely because it has a newer mtime.
+        """
+        if not os.path.isdir(path):
+            return 1
+        key_files = {
+            "state.db", "chroma.sqlite3", "chronicle.lbug", "weave.lbug",
+            "styx.db", "transactions.db", "mempalace.tar.gz",
+        }
+        try:
+            names = set(os.listdir(path))
+        except OSError:
+            return 0
+        hits = len(key_files & names)
+        return hits if hits else 1
+
+    def add(path, kind):
+        if not path or path in seen or not os.path.exists(path):
+            return
+        seen.add(path)
+        try:
+            size = du(path)
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return
+        candidates.append({
+            "path": path,
+            "kind": kind,
+            "size": size,
+            "mtime": mtime,
+            "score": backup_score(path),
+            "timestamp": datetime.datetime.fromtimestamp(mtime).isoformat(timespec="seconds"),
+        })
+
+    for base in cfg.get("backup_paths", []):
+        if os.path.isdir(base):
+            for entry in os.listdir(base):
+                add(os.path.join(base, entry), f"backup:{base}")
+
+    snapshots = cfg.get("snapshots_path")
+    if snapshots and os.path.isdir(snapshots):
+        for entry in os.listdir(snapshots):
+            path = os.path.join(snapshots, entry)
+            if os.path.isdir(path):
+                add(path, "state-snapshot")
+
+    migrations = os.path.join(HERMES_HOME, "migrations")
+    if os.path.isdir(migrations):
+        for dp, dirs, files in os.walk(migrations):
+            if os.path.basename(dp) == "backups":
+                for entry in dirs + files:
+                    add(os.path.join(dp, entry), "migration-backup")
+                dirs[:] = []
+                continue
+            if dp.count(os.sep) - migrations.count(os.sep) > 4:
+                dirs[:] = []
+
+    profiles = os.path.join(HERMES_HOME, "profiles")
+    if os.path.isdir(profiles):
+        for dp, dirs, files in os.walk(profiles):
+            for f in files:
+                if ".bak-" in f:
+                    add(os.path.join(dp, f), "db-bak")
+            if dp.count(os.sep) - profiles.count(os.sep) > 7:
+                dirs[:] = []
+
+    candidates.sort(key=lambda item: (item["score"], item["mtime"]), reverse=True)
+    return candidates
+
+
+def backup_retention_plan(cfg):
+    candidates = historical_backup_candidates(cfg)
+    # Local full state.db copies are not valid retained backups by default: they
+    # duplicate live data and are the primary disk-balloon failure mode. They are
+    # removed unless explicitly allowed with GENIE_ALLOW_LOCAL_STATE_DB_BACKUP=1.
+    allow_state_db = os.environ.get("GENIE_ALLOW_LOCAL_STATE_DB_BACKUP", "false").lower() in {"1", "true", "yes"}
+    invalid = []
+    valid = []
+    for item in candidates:
+        if not allow_state_db and os.path.isdir(item["path"]) and os.path.exists(os.path.join(item["path"], "state.db")):
+            item["invalid_reason"] = "local full state.db backup"
+            invalid.append(item)
+        else:
+            valid.append(item)
+
+    keep_count = max(1, int(cfg.get("historical_backup_keep_count", 1)))
+    keep = valid[:keep_count]
+    reclaim = invalid + valid[keep_count:]
+    return {
+        "action": "backup_retention",
+        "tier": 1,
+        "keep_count": keep_count,
+        "total": len(candidates),
+        "keep": keep,
+        "reclaim": reclaim,
+        "bytes_reclaimable": sum(item["size"] for item in reclaim),
+    }
 
 
 def gzip_file(src, dry_run):
@@ -841,37 +964,112 @@ def clean_cron_output(cron_output_path, compress_age_days, dry_run):
     return result
 
 
-def clean_backups(backups_path, max_age_days, dry_run):
-    result = {"action": "backups", "tier": 1, "dirs": 0, "bytes_freed": 0, "errors": []}
-    if not os.path.isdir(backups_path):
+def clean_backup_retention(cfg, dry_run):
+    """Enforce one historical backup on the VPS.
+
+    Keeps the newest candidate and removes older backup/snapshot copies. This
+    replaces age-only backup cleanup: retention is count-based because a single
+    accidental 12GB state.db copy can fill the disk even when it is minutes old.
+    """
+    plan = backup_retention_plan(cfg)
+    result = {
+        "action": "backup_retention",
+        "tier": 1,
+        "kept": [item["path"] for item in plan["keep"]],
+        "removed": 0,
+        "bytes_freed": 0,
+        "errors": [],
+    }
+
+    for item in plan["reclaim"]:
+        path = item["path"]
+        size = item["size"]
+        result["removed"] += 1
+        result["bytes_freed"] += size
+        if dry_run:
+            continue
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+        except Exception as e:
+            result["errors"].append(f"remove {path}: {e}")
+            result["bytes_freed"] -= size
+            result["removed"] -= 1
+    return result
+
+
+def clean_git_clones(clones_path, max_age_days, dry_run):
+    """Delete git clones that haven't been touched in N days and have a valid remote.
+
+    Safety: only deletes directories that:
+      1. Are git repos (have a .git dir)
+      2. Have at least one remote configured (url = ... in .git/config)
+      3. Haven't been modified (oldest file mtime) in >max_age_days
+    """
+    result = {"action": "git_clones", "tier": 1, "dirs": 0, "skipped_no_remote": 0,
+              "skipped_recent": 0, "bytes_freed": 0, "errors": []}
+    if not os.path.isdir(clones_path):
         return result
 
-    for entry in os.listdir(backups_path):
-        path = os.path.join(backups_path, entry)
+    for entry in os.listdir(clones_path):
+        path = os.path.join(clones_path, entry)
         if not os.path.isdir(path):
-            # Also clean old individual files in backups/
-            if os.path.isfile(path) and age_days(path) > max_age_days:
-                size = os.path.getsize(path)
-                result["dirs"] += 1
-                result["bytes_freed"] += size
-                if not dry_run:
-                    try:
-                        os.remove(path)
-                    except Exception as e:
-                        result["errors"].append(f"remove {path}: {e}")
-                        result["bytes_freed"] -= size
             continue
 
-        if age_days(path) > max_age_days:
-            size = du(path)
-            result["dirs"] += 1
-            result["bytes_freed"] += size
-            if not dry_run:
+        # Must be a git repo
+        git_dir = os.path.join(path, ".git")
+        if not os.path.isdir(git_dir):
+            result["skipped_no_remote"] += 1
+            continue
+
+        # Check age — use oldest file mtime inside the working tree
+        oldest_mtime = os.path.getmtime(path)
+        for dp, _, fns in os.walk(path):
+            # Skip .git internals to avoid packfile noise
+            if ".git" in dp.split(os.sep):
+                continue
+            for fn in fns:
+                fp = os.path.join(dp, fn)
                 try:
-                    shutil.rmtree(path)
-                except Exception as e:
-                    result["errors"].append(f"rmtree {path}: {e}")
-                    result["bytes_freed"] -= size
+                    m = os.path.getmtime(fp)
+                    if m < oldest_mtime:
+                        oldest_mtime = m
+                except OSError:
+                    continue
+
+        age_days = (datetime.datetime.now().timestamp() - oldest_mtime) / 86400
+        if age_days <= max_age_days:
+            result["skipped_recent"] += 1
+            continue
+
+        # Check that a remote exists (confirming it's a clone, not local-only)
+        remote_check = os.path.join(git_dir, "config")
+        has_remote = False
+        try:
+            with open(remote_check, "r") as f:
+                for line in f:
+                    if line.strip().startswith("url = "):
+                        has_remote = True
+                        break
+        except Exception:
+            pass
+
+        if not has_remote:
+            result["skipped_no_remote"] += 1
+            continue
+
+        # Safe to delete
+        size = du(path)
+        result["dirs"] += 1
+        result["bytes_freed"] += size
+        if not dry_run:
+            try:
+                shutil.rmtree(path)
+            except Exception as e:
+                result["errors"].append(f"rmtree {path}: {e}")
+                result["bytes_freed"] -= size
     return result
 
 
@@ -1102,14 +1300,13 @@ def assess(cfg, targets=None):
             f"{fmt(json_size)} total, {old_json} older than "
             f"{cfg['session_compress_age_days']}d compressible")
 
-    # Backups
-    bp = cfg["backups_path"]
-    if os.path.isdir(bp):
-        backup_size = du(bp)
-        old_backup_dirs = sum(1 for d in os.listdir(bp)
-                              if os.path.isdir(os.path.join(bp, d))
-                              and age_days(os.path.join(bp, d)) > 30)
-        lines.append(f"Backups: {fmt(backup_size)} total, {old_backup_dirs} dirs older than 30d")
+    # Historical backup retention
+    retention = backup_retention_plan(cfg)
+    if retention["total"]:
+        kept = retention["keep"][0]["path"] if retention["keep"] else "none"
+        lines.append(
+            f"Historical backups: {retention['total']} found, keep 1 ({kept}), "
+            f"{len(retention['reclaim'])} reclaimable ({fmt(retention['bytes_reclaimable'])})")
 
     # /tmp
     if os.path.isdir("/tmp"):
@@ -1117,6 +1314,54 @@ def assess(cfg, targets=None):
         old_tmp = sum(1 for f in os.listdir("/tmp")
                       if age_hours(os.path.join("/tmp", f)) > cfg.get("tmp_stale_hours", 24))
         lines.append(f"/tmp: {fmt(tmp_size)} total, {old_tmp} files/dirs older than {cfg.get('tmp_stale_hours', 24)}h")
+
+    # Git clones
+    gcp = cfg.get("git_clones_path", "/root/projects")
+    if os.path.isdir(gcp):
+        old_clones = 0
+        recent_clones = 0
+        no_remote = 0
+        clones_size = 0
+        for entry in os.listdir(gcp):
+            path = os.path.join(gcp, entry)
+            if not os.path.isdir(path):
+                continue
+            if not os.path.isdir(os.path.join(path, ".git")):
+                no_remote += 1
+                continue
+            oldest_mtime = os.path.getmtime(path)
+            for dp, _, fns in os.walk(path):
+                if ".git" in dp.split(os.sep):
+                    continue
+                for fn in fns:
+                    fp = os.path.join(dp, fn)
+                    try:
+                        m = os.path.getmtime(fp)
+                        if m < oldest_mtime:
+                            oldest_mtime = m
+                    except OSError:
+                        continue
+            clone_age_days = (datetime.datetime.now().timestamp() - oldest_mtime) / 86400
+            if clone_age_days > cfg.get("git_clone_max_age_days", 5):
+                # Check remote exists
+                has_remote = False
+                rc = os.path.join(path, ".git", "config")
+                try:
+                    with open(rc, "r") as f:
+                        for line in f:
+                            if line.strip().startswith("url = "):
+                                has_remote = True
+                                break
+                except Exception:
+                    pass
+                if has_remote:
+                    old_clones += 1
+                    clones_size += du(path)
+                else:
+                    no_remote += 1
+            else:
+                recent_clones += 1
+        lines.append(f"Git clones: {fmt(clones_size)} eligible ({old_clones} inactive >{cfg.get('git_clone_max_age_days', 5)}d, {recent_clones} recent, {no_remote} no-remote)")
 
     # State DB
     dbp = cfg["state_db_path"]
@@ -1157,13 +1402,17 @@ def clean(cfg):
     results.append(clean_cron_output(cfg["cron_output_path"],
                                      cfg["cron_output_compress_age_days"], cfg["dry_run"]))
 
-    # Backups
-    if cfg.get("backups_path") and os.path.isdir(cfg["backups_path"]):
-        results.append(clean_backups(cfg["backups_path"], 30, cfg["dry_run"]))
+    # Historical backups — count-based retention, keep newest valid candidate.
+    results.append(clean_backup_retention(cfg, cfg["dry_run"]))
 
     # /tmp
     if cfg.get("tmp_stale_hours", 0) > 0:
         results.append(clean_tmp("/tmp", cfg["tmp_stale_hours"], cfg["dry_run"]))
+
+    # Git clones (inactive, confirmed remote)
+    git_clones_path = cfg.get("git_clones_path", "/root/projects")
+    if os.path.isdir(git_clones_path):
+        results.append(clean_git_clones(git_clones_path, cfg["git_clone_max_age_days"], cfg["dry_run"]))
 
     # Package caches
     for cache_key, cache_path in [

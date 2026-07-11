@@ -57,6 +57,30 @@ FTS5 tables can be dropped and rebuilt at any time. The process:
 
 This is safe — FTS tables contain no unique data, only derived search indexes.
 
+## When Full VACUUM Times Out (Large DBs)
+
+On very large state.db files (5+ GB), even `VACUUM` via `sqlite3` CLI can time out because it requires an exclusive lock and rewrites the entire file. If the user asks for VACUUM:
+
+1. **Check DB is live and real** — confirm not a symlink first:
+   ```bash
+   file /root/.hermes/state.db  # if symlink, resolve: readlink -f /root/.hermes/state.db
+   ```
+
+2. **Attempt full VACUUM with generous timeout**, but warn user it may take 10+ minutes for 11 GB:
+   ```bash
+   timeout 1200 sqlite3 <live_db> "VACUUM;"
+   ```
+
+3. **If it times out**, fall back to incremental vacuum:
+   ```bash
+   sqlite3 <live_db> "PRAGMA incremental_vacuum(1000);"
+   ```
+   This is non-blocking and reclaims 1000 pages per transaction. Run repeatedly until `freelist_count` stabilizes.
+
+4. **Check results** — `PRAGMA freelist_count` shows remaining free pages. For an 11 GB DB with tight packing, reclaimable space is often < 1% of total size. Report honestly — if VACUUM saves only KB, tell the user the DB is not bloated.
+
+**Why this matters**: The DB takes ~11 GB regardless of vacuum. Don't promise compaction will free gigabytes — it rarely does because the DB is tightly packed legitimate data, not fragmentation waste.
+
 ## Recommended Approach (NOT to be run autonomously)
 
 1. Always work on a copy, never the live DB

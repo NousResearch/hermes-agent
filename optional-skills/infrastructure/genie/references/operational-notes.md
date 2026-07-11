@@ -89,7 +89,36 @@ Omit `repeat` entirely — it defaults to forever. Do NOT create one-shot timest
 5. **VACUUM is NOT the lever for state.db**: Only saves 0.5 GB. For actual space savings, prune old messages instead.
 6. **User gets frustrated when Inception is bypassed**: When user asks for Inception, run Inception. Do not substitute alternatives.
 
-## 2026-06-21: 14G Reclaim — Backups, Duplicate DBs, and Package Caches
+## 2026-06-27: Cache Junk + Gateway Health During Cleanup
+
+### Environment
+- Disk: 96 GB total, 85% used (81 GB) before cleanup
+- state.db: 10.0 GB (+ 4.1 MB WAL)
+- Snapshots: 1 directory (from pre-update at 2026-06-27 08:56:43 — most recent, preserved)
+- camoufox cache: 1.4 GB (stealth browser profiles)
+
+### Actions Taken
+1. Genie `--clean`: freed 739 MB (uv cache 291MB + npm cache 448MB + tmp 135KB)
+2. Manual: removed `/root/.cache/camoufox/` (1.4 GB — not covered by genie)
+3. Disk after: 83% (80 GB used, 17 GB free)
+
+### Gateway Health Check (parallel task)
+- `systemctl --user is-active hermes-gateway` returned "inactive/dead"
+- BUT process was actually running (PID 1069920, up 3h51m, RSS ~480MB)
+- Telegram was connected (polling mode, 60 commands, 158 channel targets)
+- Root cause: systemd lost tracking of the process (started with `--profile indigo` but systemd service name mismatch)
+- **Correct health check**: verify process via `pgrep -f "hermes.*gateway"` AND check profile-specific log at `/root/.hermes/profiles/indigo/logs/gateway.log` for "✓ telegram connected"
+- Do NOT trust `systemctl --user is-active` alone for gateway health
+
+### Key Learnings
+1. **camoufox cache is a new large consumer**: stealth browser profile cache at `/root/.cache/camoufox/` was 1.4 GB. Not covered by genie's built-in cache rules. Safe to `rm -rf` (rebuildable on next browser use).
+2. **Gateway health requires multi-signal check**: systemd state can be stale. Always cross-check process existence + profile-specific gateway log for Telegram connection status.
+3. **Script path gotcha confirmed**: The skill's documented path (`/root/.hermes/profiles/indigo/skills/genie/scripts/genie.py`) does NOT match reality (`ocas-genie/` prefix). Patched in this session.
+
+### Remaining Concerns
+- `/root/backup/`: 9.4 GB single directory from June 2026-06-24 (chroma.sqlite3 + chronicle.lbug) — manual review needed
+- `/tmp/`: 150 MB stale files (cleanup blocked by user consent gate)
+- hermes images/cache: small, blocked by user consent gate
 
 ### Environment
 - Disk: 96 GB total, 81% used (78 GB) before cleanup
@@ -138,3 +167,45 @@ Omit `repeat` entirely — it defaults to forever. Do NOT create one-shot timest
 - chronicle.db WAL: 250 MB (could be checkpointed)
 - node/ dir: 224 MB (rebuildable if needed)
 - checkpoints/: 187 MB (git checkpoint data)
+
+## 2026-06-28: Finch-Triggered Manual Cleanup (24 GB reclaimed)
+
+### Environment
+- Disk: 96 GB total, 87% used (83 GB) before cleanup — trending up 4%/day per finch task_017
+- state.db: 11 GB (live, in profiles/indigo/)
+- /tmp: 900 MB (camoufox extract 680M + other stale files)
+- /var/log: 868 MB (syslog.1 at 269M)
+
+### Actions Taken (manual — genie was not run)
+
+| Target | Space | Reason |
+|--------|-------|--------|
+| `state-snapshots/20260627-155543-pre-update/` | 11G | Pre-update snapshot, update completed ≥24h prior |
+| `migrations/peopledb/backups/chronicle.2026-06-28.db` | 6.1G | Takeout migration completed (CHECKPOINT.md confirmed) |
+| `commons/db/chronicle/chronicle.db.bak-pretakeout-2026-06-28` | 6.1G | Pre-takeout backup, live chronicle.db has newer mtime |
+| `/tmp/camoufox-HlfwFR/` + stale debug files | 687M | Camoufox not running, body_* debug files stale |
+| `/var/log/syslog.1` | 269M | Rotated log, truncated to zero |
+| pip + npm caches | 39M | `pip cache purge` + `npm cache clean --force` |
+| **Total freed** | **~24 GB** | |
+
+### Result
+- Disk after: 63% (61 GB used, 36 GB free)
+- /tmp after: 213 MB
+- /var/log after: 600 MB
+
+### Key Learnings
+
+1. **Migration backups are a major undocumented space consumer**: `migrations/peopledb/backups/` had a 6.1 GB chronicle.db copy. The takeout migration was confirmed complete via CHECKPOINT.md. These should be checked on every disk cleanup pass.
+
+2. **Pre-migration `.bak-*` files alongside live DBs**: `chronicle.db.bak-pretakeout-*` (6.1 GB) was a full copy sitting next to the live chronicle.db. Verify the live DB has a newer mtime than the backup before deleting. Added to disk-growth-patterns.md.
+
+3. **`/tmp/camoufox-*/` is distinct from `~/.cache/camoufox/`**: The cache directory is browser profile data (already documented). The /tmp directory is the browser engine extraction itself (680 MB). Both are safe to delete when camoufox isn't running.
+
+4. **Finch task list drives proactive cleanup**: Instead of waiting for disk to hit 90%+ and cause emergencies, the finch task (task_017) identified the trend early (87% with 4%/day trajectory). Acting at 87% prevented a 100% crisis.
+
+5. **chronicle.db is 6.1G + 930M WAL**: The WAL (write-ahead log) at 930M is significant. Future compaction should consider `PRAGMA wal_checkpoint(TRUNCATE)` to reclaim WAL space without a full VACUUM.
+
+### Remaining Concerns
+- chronicle.db: 6.1G + 930M WAL (wal_checkpoint could reclaim WAL space)
+- state.db: 11G (VACUUM only saves ~0.5G per Inception testing)
+- Indigo profile total: 27G (chronicle + state.db = 17G, remaining 10G across commons/data, node, skills, logs)

@@ -10,6 +10,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
+    _reply_anchor_for_event,
     cache_audio_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
@@ -19,6 +20,8 @@ from gateway.platforms.base import (
     _log_safe_path,
     _prefix_within_utf16_limit,
 )
+from gateway.config import Platform
+from gateway.session import SessionSource
 
 
 class TestInboundMediaSizeCap:
@@ -125,6 +128,52 @@ class TestMessageEventIsCommand:
     def test_slash_only(self):
         event = MessageEvent(text="/")
         assert event.is_command() is True
+
+
+class TestReplyAnchorForEvent:
+    def test_feishu_topic_reply_anchors_to_triggering_user_message(self):
+        event = MessageEvent(
+            text="follow up",
+            message_id="om_user_current",
+            reply_to_message_id="om_bot_parent",
+            source=SessionSource(
+                platform=Platform.FEISHU,
+                chat_id="oc_chat",
+                chat_type="dm",
+                thread_id="om_topic_root",
+            ),
+        )
+
+        assert _reply_anchor_for_event(event) == "om_user_current"
+
+    def test_feishu_topic_reply_falls_back_to_parent_without_current_message_id(self):
+        event = MessageEvent(
+            text="follow up",
+            reply_to_message_id="om_bot_parent",
+            source=SessionSource(
+                platform=Platform.FEISHU,
+                chat_id="oc_chat",
+                chat_type="dm",
+                thread_id="om_topic_root",
+            ),
+        )
+
+        assert _reply_anchor_for_event(event) == "om_bot_parent"
+
+    def test_telegram_private_topic_still_anchors_to_triggering_user_message(self):
+        event = MessageEvent(
+            text="follow up",
+            message_id="tg_user_current",
+            reply_to_message_id="tg_bot_parent",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="123",
+                chat_type="dm",
+                thread_id="42",
+            ),
+        )
+
+        assert _reply_anchor_for_event(event) == "tg_user_current"
 
 
 class TestMessageEventGetCommand:

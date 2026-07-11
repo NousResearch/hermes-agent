@@ -12180,6 +12180,22 @@ def cmd_dashboard(args):
     # fail-closed SystemExit unchanged.
     _maybe_setup_dashboard_auth_interactively(args)
 
+    # The Desktop app starts one backend per profile. Register that profile's
+    # hooks only there — the browser dashboard is a multi-profile process and
+    # must not install one profile's hooks process-wide. Auth setup comes first
+    # because it may force plugin rediscovery, which clears registered hooks.
+    if os.environ.get("HERMES_DESKTOP") == "1":
+        try:
+            from hermes_cli.config import load_config
+            from agent.shell_hooks import register_from_config
+
+            register_from_config(load_config(), accept_hooks=False)
+        except Exception:
+            logger.debug(
+                "shell-hook registration failed at Desktop backend startup",
+                exc_info=True,
+            )
+
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
     # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.

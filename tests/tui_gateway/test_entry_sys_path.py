@@ -12,9 +12,12 @@ failure.
 """
 
 import ast
+import io
 import pathlib
 
 import hermes_bootstrap
+import pytest
+import tui_gateway.entry as entry
 
 
 def _entry_source() -> str:
@@ -51,6 +54,89 @@ def test_entry_calls_shared_harden_guard_before_heavy_imports():
     assert harden_call_line < server_import_line, (
         "harden_import_path() must run before tui_gateway.server is imported"
     )
+
+
+def test_main_registers_configured_shell_hooks_before_gateway_ready(monkeypatch):
+    config = {"hooks": {"pre_tool_call": [{"command": "check-tool"}]}}
+    events = []
+
+    from agent import shell_hooks
+    from hermes_cli import config as config_module
+
+    monkeypatch.setattr(entry, "_install_sidecar_publisher", lambda: None)
+    monkeypatch.setattr(entry, "_log_exit", lambda _reason: None)
+    monkeypatch.setattr(entry, "resolve_skin", lambda: {})
+    monkeypatch.setattr(entry.sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(config_module, "read_raw_config", lambda: {})
+    monkeypatch.setattr(
+        config_module,
+        "load_config",
+        lambda: events.append("load_config") or config,
+    )
+    monkeypatch.setattr(
+        shell_hooks,
+        "register_from_config",
+        lambda cfg, *, accept_hooks: events.append(
+            ("register_from_config", cfg, accept_hooks)
+        ),
+    )
+    monkeypatch.setattr(
+        entry,
+        "write_json",
+        lambda message: events.append(message["params"]["type"]) or True,
+    )
+
+    entry.main()
+
+    assert events == [
+        "load_config",
+        ("register_from_config", config, False),
+        "gateway.ready",
+    ]
+
+
+@pytest.mark.parametrize("failure_stage", ["load", "register"])
+def test_main_shell_hook_failure_still_emits_gateway_ready(
+    monkeypatch, failure_stage
+):
+    config = {"hooks": {"pre_tool_call": [{"command": "check-tool"}]}}
+    events = []
+
+    from agent import shell_hooks
+    from hermes_cli import config as config_module
+
+    monkeypatch.setattr(entry, "_install_sidecar_publisher", lambda: None)
+    monkeypatch.setattr(entry, "_log_exit", lambda _reason: None)
+    monkeypatch.setattr(entry, "resolve_skin", lambda: {})
+    monkeypatch.setattr(entry.sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(config_module, "read_raw_config", lambda: {})
+
+    def load_config():
+        events.append("load_config")
+        if failure_stage == "load":
+            raise RuntimeError("config load failed")
+        return config
+
+    def register_from_config(cfg, *, accept_hooks):
+        events.append(("register_from_config", cfg, accept_hooks))
+        if failure_stage == "register":
+            raise RuntimeError("shell-hook registration failed")
+
+    monkeypatch.setattr(config_module, "load_config", load_config)
+    monkeypatch.setattr(shell_hooks, "register_from_config", register_from_config)
+    monkeypatch.setattr(
+        entry,
+        "write_json",
+        lambda message: events.append(message["params"]["type"]) or True,
+    )
+
+    entry.main()
+
+    expected = ["load_config"]
+    if failure_stage == "register":
+        expected.append(("register_from_config", config, False))
+    expected.append("gateway.ready")
+    assert events == expected
 
 
 def test_entry_does_not_reimplement_guard_inline():

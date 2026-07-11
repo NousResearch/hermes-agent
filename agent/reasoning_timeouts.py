@@ -112,6 +112,12 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     ("grok-4-fast-reasoning", 300),
     ("grok-4.20-reasoning", 300),
     ("grok-4-fast-non-reasoning", 180),
+    # MiniMax M2.x reasoning models (#62353). emit reasoning_content
+    # before first content token (#17924). Live-observed stall: 240s
+    # mid tool-call arguments (test_streaming.py:1270-1278). The
+    # default 180s chat-model stale detector kills the connection
+    # mid-think.
+    ("minimax-m2", 300),
 )
 
 

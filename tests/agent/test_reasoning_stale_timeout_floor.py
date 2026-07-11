@@ -78,6 +78,11 @@ import pytest
     ("x-ai/grok-4-fast-reasoning", 300.0),
     ("x-ai/grok-4.20-reasoning", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
+    # MiniMax M2.x reasoning models (#62353).
+    ("minimax/minimax-m2.7", 300.0),
+    ("minimax/minimax-m2.5", 300.0),
+    ("minimax-m2.7", 300.0),
+    ("minimax-m2.5", 300.0),
 ])
 def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor

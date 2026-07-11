@@ -7,6 +7,7 @@ Provides options for:
 """
 
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -285,6 +286,130 @@ def uninstall_gateway_service():
             log_warn(f"Could not check Windows gateway service: {e}")
 
     return stopped_something
+
+
+def _remove_path(target: Path) -> bool:
+    """Remove a file, symlink, or directory if it exists."""
+    if not target.exists() and not target.is_symlink():
+        return False
+
+    if target.is_dir() and not target.is_symlink():
+        shutil.rmtree(target)
+    else:
+        target.unlink(missing_ok=True)
+
+    return True
+
+
+def full_uninstall_extra_paths(
+    hermes_home: Path,
+    *,
+    home: Path | None = None,
+    system_name: str | None = None,
+    system_applications: Path | None = None,
+) -> list[Path]:
+    """Return desktop/cache paths that full uninstall should also sweep."""
+    home = home or Path.home()
+    system_name = system_name or platform.system()
+    system_applications = system_applications or Path("/Applications")
+
+    candidates = [
+        home / ".cache" / "hermes",
+        home / ".config" / "hermes",
+        home / ".local" / "share" / "hermes",
+    ]
+
+    if system_name == "Darwin":
+        library = home / "Library"
+        candidates.extend(
+            [
+                home / "Applications" / "Hermes.app",
+                system_applications / "Hermes.app",
+                library / "Application Support" / "Hermes",
+                library / "Caches" / "Hermes",
+                library / "Caches" / "com.nousresearch.hermes",
+                library / "Caches" / "hermes-setup",
+                library / "Caches" / "com.nousresearch.hermes.setup",
+                library / "Logs" / "Hermes",
+                library / "Preferences" / "com.nousresearch.hermes.plist",
+                library / "WebKit" / "com.nousresearch.hermes",
+                library / "WebKit" / "hermes-setup",
+                library / "WebKit" / "com.nousresearch.hermes.setup",
+                library / "HTTPStorages" / "com.nousresearch.hermes",
+                library / "Saved Application State" / "com.nousresearch.hermes.savedState",
+            ]
+        )
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate == hermes_home or candidate in seen:
+            continue
+        seen.add(candidate)
+        unique.append(candidate)
+
+    return unique
+
+
+def remove_full_uninstall_leftovers(
+    hermes_home: Path,
+    *,
+    home: Path | None = None,
+    system_name: str | None = None,
+    system_applications: Path | None = None,
+) -> list[Path]:
+    """Remove desktop/cache state that lives outside ``hermes_home``."""
+    removed: list[Path] = []
+    for target in full_uninstall_extra_paths(
+        hermes_home,
+        home=home,
+        system_name=system_name,
+        system_applications=system_applications,
+    ):
+        try:
+            if _remove_path(target):
+                removed.append(target)
+        except Exception as e:
+            log_warn(f"Could not remove {target}: {e}")
+    return removed
+
+
+def remove_legacy_macos_launchd_plists(*, home: Path | None = None) -> list[Path]:
+    """Unload and remove legacy launchd plists outside the active profile."""
+    launch_agents_dir = (home or Path.home()) / "Library" / "LaunchAgents"
+    if not launch_agents_dir.exists():
+        return []
+
+    removed: list[Path] = []
+    uid = str(os.getuid()) if hasattr(os, "getuid") else None
+
+    for pattern in ("ai.hermes.gateway*.plist", "io.nousresearch.hermes-agent.gateway*.plist"):
+        for plist_path in sorted(launch_agents_dir.glob(pattern)):
+            label = plist_path.stem
+            if uid:
+                try:
+                    subprocess.run(
+                        ["launchctl", "bootout", f"gui/{uid}/{label}"],
+                        capture_output=True,
+                        check=False,
+                    )
+                except Exception:
+                    pass
+            try:
+                subprocess.run(
+                    ["launchctl", "unload", str(plist_path)],
+                    capture_output=True,
+                    check=False,
+                )
+            except Exception:
+                pass
+            try:
+                plist_path.unlink(missing_ok=True)
+                removed.append(plist_path)
+            except Exception as e:
+                log_warn(f"Could not remove {plist_path}: {e}")
+
+    return removed
 
 
 # ============================================================================
@@ -725,6 +850,15 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
     print(f"  • Code checkout: {project_root}")
     if full_uninstall:
         print(f"  • Hermes config/data: {hermes_home}")
+        extra_paths = full_uninstall_extra_paths(hermes_home)
+        if extra_paths:
+            print("  • Extra cache / desktop state:")
+            for path in extra_paths:
+                print(f"    - {path}")
+        if platform.system() == "Darwin":
+            print("  • Legacy macOS launchd plists matching:")
+            print("    - ~/Library/LaunchAgents/ai.hermes.gateway*.plist")
+            print("    - ~/Library/LaunchAgents/io.nousresearch.hermes-agent.gateway*.plist")
         if _is_default_hermes_home(hermes_home):
             profiles = _discover_named_profiles()
             if profiles:
@@ -750,7 +884,8 @@ def _perform_uninstall(
     Steps: stop gateway → strip PATH (rc files + Windows registry) → remove the
     ``hermes`` wrapper + node symlinks → remove the desktop Chat GUI artifacts →
     delete the code checkout → (Windows) remove PortableGit/Node → optionally
-    wipe ``$HERMES_HOME`` data and named profiles on full uninstall.
+    wipe ``$HERMES_HOME`` data, extra desktop/cache state, and named profiles
+    on full uninstall.
     """
     print()
     print(color("Uninstalling...", Colors.CYAN, Colors.BOLD))
@@ -874,6 +1009,23 @@ def _perform_uninstall(
         if remove_profiles and named_profiles:
             for prof in named_profiles:
                 _uninstall_profile(prof)
+
+        if platform.system() == "Darwin":
+            log_info("Removing legacy macOS launch agents...")
+            removed_plists = remove_legacy_macos_launchd_plists()
+            if removed_plists:
+                for plist_path in removed_plists:
+                    log_success(f"Removed {plist_path}")
+            else:
+                log_info("No legacy macOS launch agents found")
+
+        log_info("Removing extra cache and desktop state...")
+        removed_leftovers = remove_full_uninstall_leftovers(hermes_home)
+        if removed_leftovers:
+            for path in removed_leftovers:
+                log_success(f"Removed {path}")
+        else:
+            log_info("No extra cache or desktop state found")
 
         log_info("Removing configuration and data...")
         try:

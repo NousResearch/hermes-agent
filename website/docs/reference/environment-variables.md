@@ -453,7 +453,6 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATRIX_IGNORE_USER_PATTERNS` | Comma-separated regular expressions for Matrix bridge/appservice ghost user IDs to ignore |
 | `MATRIX_PROCESS_NOTICES` | Process inbound Matrix `m.notice` events (default: `false`) |
 | `MATRIX_SESSION_SCOPE` | Matrix session scope for project rooms: `auto`, `room`, or `thread` (default: `auto`) |
-| `MATRIX_THREAD_BACKFILL_LIMIT` | Max prior thread messages fetched as context when a threaded message starts a fresh session; `0` disables (default: `20`) |
 | `MATRIX_TOOLS_ALLOW_CROSS_ROOM` | Allow Matrix tools to target explicit rooms other than the current room (default: `false`) |
 | `MATRIX_TOOLS_ALLOW_CROSS_ROOM_DESTRUCTIVE` | Allow cross-room Matrix redaction/invite-like tools; requires `MATRIX_TOOLS_ALLOW_CROSS_ROOM=true` (default: `false`) |
 | `MATRIX_TOOLS_ALLOW_REDACTION` | Allow Matrix message redaction tool execution (default: `false`) |

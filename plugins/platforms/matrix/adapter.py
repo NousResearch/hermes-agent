@@ -46,10 +46,9 @@ Environment variables:
                               when requester metadata is available (default: true)
     MATRIX_APPROVAL_TIMEOUT_SECONDS
                               Reaction approval/model-picker timeout (default: 300)
-    MATRIX_THREAD_BACKFILL_LIMIT
-                              Max prior thread messages fetched as context when a
-                              threaded message starts a fresh session; 0 disables
-                              (default: 20)
+
+Thread backfill depth is configured via ``matrix.thread_backfill_limit``
+in config.yaml (default: 20; 0 disables).
 """
 
 from __future__ import annotations
@@ -1052,10 +1051,10 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         )
         raw_backfill = config.extra.get("thread_backfill_limit")
-        if raw_backfill is None:
-            raw_backfill = os.getenv("MATRIX_THREAD_BACKFILL_LIMIT", "20")
         try:
-            self._thread_backfill_limit: int = max(0, int(raw_backfill))
+            self._thread_backfill_limit: int = (
+                max(0, int(raw_backfill)) if raw_backfill is not None else 20
+            )
         except (TypeError, ValueError):
             self._thread_backfill_limit = 20
         self._process_notices: bool = os.getenv(
@@ -2737,7 +2736,11 @@ class MatrixAdapter(BasePlatformAdapter):
         else:
             source_content = {}
 
+        # Normalise at the boundary: a malformed (non-dict) m.relates_to
+        # must not fault the pipeline before the relation parser runs.
         relates_to = source_content.get("m.relates_to", {})
+        if not isinstance(relates_to, dict):
+            relates_to = {}
 
         # Edits (m.replace) don't dispatch a new turn, but the replacement
         # text must refresh the seen-event cache so later replies to the

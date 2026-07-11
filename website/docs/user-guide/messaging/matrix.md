@@ -97,6 +97,8 @@ matrix:
   session_scope: room             # auto|room|thread; room is recommended for project rooms
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
+  thread_backfill_limit: 20       # Max prior thread messages fetched as context when a
+                                  # threaded message starts a fresh session (0 disables)
 ```
 
 Or via environment variables:

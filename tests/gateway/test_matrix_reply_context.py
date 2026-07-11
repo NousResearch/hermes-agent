@@ -575,6 +575,50 @@ class TestMediaMessageReplySemantics:
 
 
 # ---------------------------------------------------------------------------
+# Inbound relation normalisation
+# ---------------------------------------------------------------------------
+
+class TestInboundRelationNormalisation:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._user_id = "@bot:example.org"
+        self.adapter._startup_ts = 0.0
+        self.adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+        self.adapter._handle_text_message = AsyncMock()
+
+    def _event(self, relates_to):
+        event = MagicMock()
+        event.room_id = "!room:ex.org"
+        event.sender = "@alice:ex.org"
+        event.event_id = "$malformed"
+        event.timestamp = 1_800_000_000_000
+        event.content = {
+            "msgtype": "m.text",
+            "body": "hello",
+            "m.relates_to": relates_to,
+        }
+        return event
+
+    @pytest.mark.asyncio
+    async def test_non_dict_relates_to_still_dispatches(self):
+        """A malformed (non-dict) m.relates_to must not crash the event
+        pipeline; the message dispatches with an empty relation."""
+        await self.adapter._on_room_message(self._event("bogus"))
+
+        self.adapter._handle_text_message.assert_awaited_once()
+        kwargs = self.adapter._handle_text_message.await_args.kwargs
+        args = self.adapter._handle_text_message.await_args.args
+        relates_to = kwargs.get("relates_to", args[-1] if args else None)
+        assert relates_to == {}
+
+    @pytest.mark.asyncio
+    async def test_list_relates_to_still_dispatches(self):
+        await self.adapter._on_room_message(self._event(["not", "a", "dict"]))
+
+        self.adapter._handle_text_message.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # Cache maintenance: edits and redactions
 # ---------------------------------------------------------------------------
 

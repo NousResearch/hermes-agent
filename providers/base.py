@@ -60,10 +60,17 @@ class ProviderProfile:
     # True when the provider's API accepts image content inside
     # tool-result messages natively.  Set on providers that expose
     # multimodal models via tool results (Anthropic Messages API,
-    # OpenAI Chat Completions, Gemini, Xiaomi, MiniMax, etc.).
+    # OpenAI Chat Completions, Gemini, MiniMax, etc.).
     # Falls back to model-catalog lookup when False and the provider
     # has no registered profile.
     supports_vision: bool = False
+
+    # True when the provider's API accepts list-type tool message
+    # content (multipart with image_url parts).  Defaults to True for
+    # backward compatibility.  Set to False for providers that accept
+    # multimodal user messages but reject list-type tool content
+    # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
+    supports_vision_tool_messages: bool = True
 
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
@@ -156,6 +163,7 @@ class ProviderProfile:
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Fetch the live model list from the provider's models endpoint.
@@ -168,7 +176,8 @@ class ProviderProfile:
              endpoint differs from the inference base URL, e.g. OpenRouter
              exposes a public catalog at /api/v1/models while inference is
              at /api/v1)
-          2. self.base_url + "/models"  (standard OpenAI-compat fallback)
+          2. base_url (caller override — user-configured model.base_url)
+          3. self.base_url + "/models"  (standard OpenAI-compat fallback)
 
         The default implementation sends Bearer auth when api_key is given
         and forwards self.default_headers. Override to customise auth, path,
@@ -177,14 +186,17 @@ class ProviderProfile:
         Callers must always fall back to the static _PROVIDER_MODELS list
         when this returns None.
         """
+        effective_base = base_url or self.base_url
         url = (self.models_url or "").strip()
         if not url:
-            if not self.base_url:
+            if not effective_base:
                 return None
-            url = self.base_url.rstrip("/") + "/models"
+            url = effective_base.rstrip("/") + "/models"
 
         import json
         import urllib.request
+
+        from hermes_cli.urllib_security import open_credentialed_url
 
         req = urllib.request.Request(url)
         if api_key:
@@ -198,7 +210,7 @@ class ProviderProfile:
             req.add_header(k, v)
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
             return [m["id"] for m in items if isinstance(m, dict) and "id" in m]

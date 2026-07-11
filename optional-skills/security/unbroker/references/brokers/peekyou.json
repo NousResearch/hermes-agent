@@ -1,0 +1,53 @@
+{
+  "id": "peekyou",
+  "name": "PeekYou",
+  "category": "people_search",
+  "priority": "high",
+  "jurisdictions": [
+    "US"
+  ],
+  "parent": "peekyou",
+  "owns": [],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.peekyou.com/",
+    "fetch": "browser",
+    "match_signal": "result",
+    "antibot": "cloudflare",
+    "by": [
+      "name",
+      "phone",
+      "address"
+    ]
+  },
+  "optout": {
+    "tier": "T2",
+    "method": "web_form",
+    "url": "https://www.peekyou.com/about/contact/optout",
+    "requires": {
+      "profile_url": true,
+      "email_verification": true,
+      "captcha": false,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": [
+      "full_name",
+      "contact_email",
+      "profile_url"
+    ],
+    "notes": "Aggregates social/web profiles. Opt-out: paste your PeekYou profile URL(s), pick a reason, provide email, confirm the link.",
+    "quirks": [
+      "Opt-out URL is the documented public endpoint; datacenter IPs get 403 (anti-bot), so confirm the live flow via the operator's residential browser before the first submission, then set last_verified.",
+      "Needs the confirmed PeekYou profile_url.",
+      "Email verification required."
+    ],
+    "est_processing_days": 7,
+    "reappearance_risk": "medium"
+  },
+  "last_verified": null,
+  "source": "curated",
+  "confidence": "documented"
+}

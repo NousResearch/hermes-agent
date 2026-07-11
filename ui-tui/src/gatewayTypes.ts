@@ -43,6 +43,105 @@ export interface SlashExecResponse {
   warning?: string
 }
 
+// ── Credits / top-up ─────────────────────────────────────────────────
+
+export interface CreditsViewResponse {
+  balance_lines: string[]
+  depleted: boolean
+  identity_line: string | null
+  logged_in: boolean
+  topup_url: string | null
+}
+
+// ── Terminal billing (Phase 2b) ──────────────────────────────────────
+
+export interface BillingCardInfo {
+  brand: string
+  last4: string
+  masked: string
+}
+
+export interface BillingMonthlyCap {
+  is_default_ceiling: boolean
+  limit_display: string
+  limit_usd: string | null
+  spent_display: string
+  spent_this_month_usd: string | null
+}
+
+export interface BillingAutoReload {
+  enabled: boolean
+  reload_to_display: string
+  reload_to_usd: string | null
+  threshold_display: string
+  threshold_usd: string | null
+}
+
+export interface BillingStateResponse {
+  auto_reload: BillingAutoReload | null
+  balance_display: string
+  balance_usd: string | null
+  can_charge: boolean
+  card: BillingCardInfo | null
+  charge_presets: string[]
+  charge_presets_display: string[]
+  cli_billing_enabled: boolean
+  error?: string | null
+  is_admin: boolean
+  logged_in: boolean
+  max_usd: string | null
+  min_usd: string | null
+  monthly_cap: BillingMonthlyCap | null
+  ok: boolean
+  org_name: string | null
+  portal_url: string | null
+  role: string | null
+}
+
+/**
+ * Raw error payload echoed from the server (`_serialize_billing_error`). Carries
+ * the extra fields a few error codes attach — notably `remainingUsd` on
+ * `monthly_cap_exceeded` — so the client can render the same detail the CLI does.
+ */
+export interface BillingErrorPayload {
+  isDefaultCeiling?: boolean
+  remainingUsd?: string
+}
+
+export interface BillingChargeResponse {
+  charge_id?: string
+  error?: string
+  idempotency_key?: string
+  message?: string
+  ok: boolean
+  payload?: BillingErrorPayload
+  portal_url?: string | null
+  retry_after?: number | null
+}
+
+export interface BillingChargeStatusResponse {
+  amount_usd?: string | null
+  error?: string
+  message?: string
+  ok: boolean
+  payload?: BillingErrorPayload
+  portal_url?: string | null
+  reason?: string | null
+  retry_after?: number | null
+  settled_at?: string | null
+  status?: string
+}
+
+export interface BillingMutationResponse {
+  error?: string
+  granted?: boolean
+  message?: string
+  ok: boolean
+  payload?: BillingErrorPayload
+  portal_url?: string | null
+  retry_after?: number | null
+}
+
 export type CommandDispatchResponse =
   | { output?: string; type: 'exec' | 'plugin' }
   | { target: string; type: 'alias' }
@@ -89,7 +188,12 @@ export interface ConfigVoiceConfig {
 }
 
 export interface ConfigFullResponse {
-  config?: { display?: ConfigDisplayConfig; voice?: ConfigVoiceConfig; paste_collapse_threshold?: number; paste_collapse_char_threshold?: number }
+  config?: {
+    display?: ConfigDisplayConfig
+    voice?: ConfigVoiceConfig
+    paste_collapse_threshold?: number
+    paste_collapse_char_threshold?: number
+  }
 }
 
 export interface ConfigMtimeResponse {
@@ -103,6 +207,8 @@ export interface ConfigGetValueResponse {
 }
 
 export interface ConfigSetResponse {
+  confirm_message?: string
+  confirm_required?: boolean
   credential_warning?: string
   history_reset?: boolean
   info?: SessionInfo
@@ -209,6 +315,7 @@ export interface SessionUndoResponse {
 }
 
 export interface SessionUsageResponse {
+  active_subagents?: number
   cache_read?: number
   cache_write?: number
   calls?: number
@@ -511,6 +618,7 @@ export type GatewayEvent =
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
   | { payload: SessionInfo; session_id?: string; type: 'session.info' }
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
+  | { payload?: { kind?: string }; session_id?: string; type: 'reaction' }
   | { payload?: undefined; session_id?: string; type: 'message.start' }
   | { payload?: { kind?: string; text?: string }; session_id?: string; type: 'status.update' }
   | {
@@ -526,8 +634,14 @@ export type GatewayEvent =
       type: 'notification.show'
     }
   | { payload?: { key?: string }; session_id?: string; type: 'notification.clear' }
+  | {
+      payload: { user_code?: string; verification_url: string }
+      session_id?: string
+      type: 'billing.step_up.verification'
+    }
   | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
   | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
+  | { payload?: { reason?: string }; session_id?: string; type: 'dashboard.new_session_requested' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
   | {
       payload?: { level?: 'info' | 'warn' | 'error'; message?: string }
@@ -540,7 +654,17 @@ export type GatewayEvent =
       type: 'gateway.start_timeout'
     }
   | { payload?: { preview?: string }; session_id?: string; type: 'gateway.protocol_error' }
-  | { payload?: { text?: string; verbose?: boolean }; session_id?: string; type: 'reasoning.delta' | 'reasoning.available' }
+  | {
+      payload?: { text?: string; verbose?: boolean }
+      session_id?: string
+      type: 'reasoning.delta' | 'reasoning.available'
+    }
+  | {
+      payload: { count?: number; index?: number; label?: string; text?: string }
+      session_id?: string
+      type: 'moa.reference'
+    }
+  | { payload?: { aggregator?: string }; session_id?: string; type: 'moa.aggregating' }
   | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
   | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
   | {
@@ -567,7 +691,11 @@ export type GatewayEvent =
       session_id?: string
       type: 'clarify.request'
     }
-  | { payload: { command: string; description: string }; session_id?: string; type: 'approval.request' }
+  | {
+      payload: { allow_permanent?: boolean; command: string; description: string }
+      session_id?: string
+      type: 'approval.request'
+    }
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }

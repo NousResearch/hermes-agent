@@ -293,22 +293,18 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
 
 
 def should_use_direct_api_call(agent) -> bool:
-    """True when the LLM call must run inline instead of on the interrupt worker.
+    """Whether a cron OpenAI-wire request should skip the interrupt worker.
 
-    ``interruptible_api_call`` / ``interruptible_streaming_api_call`` run every
-    request on a spawned daemon worker so the conversation loop can poll for an
-    interactive interrupt during the blocking HTTP round-trip. Cron jobs execute
-    their turn inside the gateway's *nested* thread pools (cron-scheduler →
-    parallel/sequential pool → per-job pool → ``run_conversation``); stacking the
-    interrupt worker on top of that wedges before the socket even opens on the
-    2nd+ call of a tool-using turn (#62151), while the identical job runs fine
-    via ``hermes cron tick`` (foreground, no nested gateway pools). Cron has no
-    interactive interrupt surface — its only stop signal is the scheduler's
-    inactivity watchdog, which fires from the outer thread — so running inline
-    removes the deadlock class without giving anything up. This predicate is the
-    single extension point for any future non-interactive, nested-pool context.
+    Issue #62151 is specific to OpenRouter's chat-completions path inside the
+    gateway cron thread stack. Keep native/Codex/Bedrock/MoA transports on their
+    established workers: their cancellation and client ownership differ, and
+    the report provides no evidence that those paths share the pre-HTTP wedge.
     """
-    return getattr(agent, "platform", None) == "cron"
+    return (
+        getattr(agent, "platform", None) == "cron"
+        and getattr(agent, "api_mode", None) == "chat_completions"
+        and getattr(agent, "provider", None) != "moa"
+    )
 
 
 def direct_api_call(agent, api_kwargs: dict):

@@ -584,6 +584,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_unblock.add_argument("task_ids", nargs="+")
 
+    p_approve_deploy = sub.add_parser(
+        "approve-deploy",
+        help="Record attended approval for a deploy card (REQ-048) so its worker may apply",
+    )
+    p_approve_deploy.add_argument("task_ids", nargs="+")
+    p_approve_deploy.add_argument(
+        "--approver", default=None, help="Approver name (default: your profile)"
+    )
+
     p_promote = sub.add_parser(
         "promote",
         help="Manually move one or more todo/blocked tasks to ready (recovery path)",
@@ -956,6 +965,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
+            "approve-deploy": _cmd_approve_deploy,
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
@@ -2014,6 +2024,23 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
                 print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
+    return 0 if not failed else 1
+
+
+def _cmd_approve_deploy(args: argparse.Namespace) -> int:
+    ids = list(args.task_ids or [])
+    if not ids:
+        print("at least one task_id is required", file=sys.stderr)
+        return 1
+    approver = getattr(args, "approver", None) or _profile_author()
+    failed: list[str] = []
+    with kb.connect_closing() as conn:
+        for tid in ids:
+            if kb.approve_deploy(conn, tid, approver=approver):
+                print(f"Approved deploy {tid} (approver: {approver})")
+            else:
+                failed.append(tid)
+                print(f"cannot approve {tid} (unknown task?)", file=sys.stderr)
     return 0 if not failed else 1
 
 

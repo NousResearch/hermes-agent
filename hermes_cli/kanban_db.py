@@ -166,6 +166,66 @@ _CEILING_RANK = {"plan-only": 0, "repo-only": 1, "deploy-A": 2, "deploy-B": 3}
 DEFAULT_AUTONOMY_CEILING = "repo-only"
 
 
+# REQ-048: a deploy-tier card's deploy_spec is a JSON object of shell commands.
+# verify + rollback are REQUIRED for the card to execute autonomously — a deploy
+# without a validated verify step and a rollback command is not reversible, so
+# the dispatch gate routes it to plan-only instead.
+DEPLOY_SPEC_KEYS = ("dry_run", "apply", "verify", "rollback")
+DEPLOY_SPEC_REQUIRED_KEYS = ("verify", "rollback")
+_DEPLOY_TIERS = ("deploy-A", "deploy-B", "deploy-C")
+
+
+def normalize_deploy_spec(spec) -> Optional[dict]:
+    """Coerce a deploy_spec (dict or JSON string) to a validated dict, or None.
+
+    Accepts only the known DEPLOY_SPEC_KEYS with non-empty string values. Raises
+    ValueError on a malformed spec (bad JSON, non-dict, unknown/blank keys) so a
+    typo fails loudly at create time rather than silently disarming the gate.
+    """
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        spec = spec.strip()
+        if not spec:
+            return None
+        try:
+            spec = json.loads(spec)
+        except Exception as exc:
+            raise ValueError(f"deploy_spec is not valid JSON: {exc}")
+    if not isinstance(spec, dict):
+        raise ValueError("deploy_spec must be a JSON object of command strings")
+    out: dict = {}
+    for key, val in spec.items():
+        if key not in DEPLOY_SPEC_KEYS:
+            raise ValueError(
+                f"deploy_spec key {key!r} is not one of {DEPLOY_SPEC_KEYS}"
+            )
+        if val is None:
+            continue
+        val = str(val).strip()
+        if val:
+            out[key] = val
+    return out or None
+
+
+def deploy_spec_is_executable(spec: Optional[dict]) -> bool:
+    """True if a normalized deploy_spec carries every REQUIRED key (verify +
+    rollback) — the minimum for an autonomous, reversible deploy."""
+    if not spec:
+        return False
+    return all(spec.get(k) for k in DEPLOY_SPEC_REQUIRED_KEYS)
+
+
+def _safe_json_dict(raw) -> Optional[dict]:
+    """Parse a JSON-object column into a dict, fail-open to None (never crash a
+    row read on a malformed blob)."""
+    try:
+        val = json.loads(raw)
+        return val if isinstance(val, dict) else None
+    except Exception:
+        return None
+
+
 def tier_permitted_by_ceiling(risk_tier: Optional[str], ceiling: Optional[str]) -> bool:
     """True if a card of ``risk_tier`` may spawn-to-execute under ``ceiling``.
 
@@ -969,6 +1029,9 @@ class Task:
     # None = repo-only default. Snapshot at create; the gate compares it to
     # risk_tier without a projects.db lookup.
     autonomy_ceiling: Optional[str] = None
+    # REQ-048: deploy-gate contract dict {dry_run,apply,verify,rollback} or None.
+    # A deploy-tier card needs verify+rollback to be gate-executable.
+    deploy_spec: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1059,6 +1122,11 @@ class Task:
             autonomy_ceiling=(
                 row["autonomy_ceiling"]
                 if "autonomy_ceiling" in keys and row["autonomy_ceiling"]
+                else None
+            ),
+            deploy_spec=(
+                _safe_json_dict(row["deploy_spec"])
+                if "deploy_spec" in keys and row["deploy_spec"]
                 else None
             ),
         )
@@ -1250,7 +1318,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- create time (VALID_AUTONOMY_CEILINGS, or NULL = repo-only default). Read
     -- together with risk_tier at the dispatch gate so the cross-profile
     -- dispatcher never needs projects.db access.
-    autonomy_ceiling     TEXT
+    autonomy_ceiling     TEXT,
+    -- REQ-048 (decision 0007): deploy-gate contract for a deploy-tier card, as a
+    -- JSON object {dry_run, apply, verify, rollback} of shell commands (all
+    -- optional strings). A deploy-tier card MUST carry verify + rollback to be
+    -- allowed to execute — absent, the dispatch gate routes it to plan-only
+    -- (no autonomous deploy without a validated reversibility plan). NULL for
+    -- non-deploy cards.
+    deploy_spec          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2097,6 +2172,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "autonomy_ceiling", "autonomy_ceiling TEXT"
         )
 
+    if "deploy_spec" not in cols:
+        # REQ-048: deploy-gate contract JSON {dry_run,apply,verify,rollback}.
+        # NULL on legacy/non-deploy rows; a deploy-tier card needs verify+rollback
+        # to execute (else the gate routes it to plan-only).
+        _add_column_if_missing(conn, "tasks", "deploy_spec", "deploy_spec TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2520,6 +2601,7 @@ def create_task(
     project_id: Optional[str] = None,
     risk_tier: Optional[str] = None,
     autonomy_ceiling: Optional[str] = None,
+    deploy_spec=None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2569,6 +2651,9 @@ def create_task(
             "autonomy_ceiling must be one of "
             f"{sorted(VALID_AUTONOMY_CEILINGS)}, got {autonomy_ceiling!r}"
         )
+    # REQ-048: normalize + validate the deploy_spec (raises on malformed input).
+    deploy_spec = normalize_deploy_spec(deploy_spec)
+    deploy_spec_json = json.dumps(deploy_spec) if deploy_spec else None
     if branch_name is not None:
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
@@ -2783,8 +2868,8 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, goal_mode, goal_max_turns, session_id,
-                        risk_tier, autonomy_ceiling
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        risk_tier, autonomy_ceiling, deploy_spec
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2809,6 +2894,7 @@ def create_task(
                         session_id,
                         risk_tier,
                         autonomy_ceiling,
+                        deploy_spec_json,
                     ),
                 )
                 for pid in parents:
@@ -6189,6 +6275,11 @@ class DispatchResult:
     autonomy_paused: bool = False
     """REQ-046: True when the global kill-switch halted spawning this tick.
     Reclaim/promote housekeeping still ran; no new workers were launched."""
+    skipped_deploy_unsafe: list[str] = field(default_factory=list)
+    """REQ-048: deploy-tier cards permitted by their ceiling but NOT spawned
+    because they lack a reversible deploy_spec (verify + rollback). Routed to
+    plan-only (draft the runbook) — no autonomous deploy without a validated
+    rollback."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7523,6 +7614,61 @@ def _block_over_ceiling(
         )
 
 
+def _block_deploy_unsafe(
+    conn: sqlite3.Connection, task_id: str, risk_tier: Optional[str]
+) -> None:
+    """REQ-048: route a deploy-tier card that lacks a reversible deploy_spec
+    (verify + rollback) to ``blocked`` for a human — draft the runbook, do not
+    execute. Never runs the card."""
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status='blocked', block_kind='needs_input', "
+            "claim_lock=NULL, claim_expires=NULL "
+            "WHERE id=? AND status='ready'",
+            (task_id,),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "skipped_deploy_unsafe",
+            {
+                "risk_tier": risk_tier,
+                "reason": (
+                    "deploy-tier card has no reversible deploy_spec "
+                    "(verify + rollback required); routed to plan-only"
+                ),
+            },
+        )
+
+
+def approve_deploy(
+    conn: sqlite3.Connection, task_id: str, *, approver: Optional[str] = None
+) -> bool:
+    """REQ-048: record attended approval for a deploy card.
+
+    Emits a ``deploy_approved`` event (which the completion gate REQ-047 checks
+    before letting the card close to ``done``) and releases a card that parked
+    itself ``blocked`` awaiting approval back to ``ready`` so the worker can
+    proceed to the apply step. Returns False for an unknown task.
+    """
+    if not get_task(conn, task_id):
+        return False
+    with write_txn(conn):
+        _append_event(
+            conn,
+            task_id,
+            "deploy_approved",
+            {"approver": (approver or "operator")},
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', block_kind=NULL, "
+            "claim_lock=NULL, claim_expires=NULL "
+            "WHERE id=? AND status='blocked'",
+            (task_id,),
+        )
+    return True
+
+
 def _dispatch_once_locked(
     conn: sqlite3.Connection,
     *,
@@ -7617,7 +7763,7 @@ def _dispatch_once_locked(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee, risk_tier, autonomy_ceiling FROM tasks "
+        "SELECT id, assignee, risk_tier, autonomy_ceiling, deploy_spec FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -7689,6 +7835,19 @@ def _dispatch_once_locked(
                 _block_over_ceiling(conn, row["id"], _risk, _ceil)
             result.skipped_ceiling.append(row["id"])
             continue
+        # REQ-048: deploy-readiness gate. A deploy-tier card that passed the
+        # ceiling still must carry a reversible deploy_spec (verify + rollback)
+        # before it can execute — otherwise route it to plan-only (draft the
+        # runbook, never run an irreversible deploy).
+        if _risk in _DEPLOY_TIERS:
+            _spec = (
+                _safe_json_dict(row["deploy_spec"]) if "deploy_spec" in _rk else None
+            )
+            if not deploy_spec_is_executable(_spec):
+                if not dry_run:
+                    _block_deploy_unsafe(conn, row["id"], _risk)
+                result.skipped_deploy_unsafe.append(row["id"])
+                continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
@@ -8515,16 +8674,44 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(f"Branch:   {task.branch_name}")
     if task.risk_tier:
         lines.append(f"Risk tier: {task.risk_tier}")
-        if task.risk_tier in ("deploy-A", "deploy-B", "deploy-C"):
-            # REQ-044/048: a live-mutation card is told the deploy-gate protocol.
-            # Enforcement is mechanical (dispatch gate REQ-046, completion gate
-            # REQ-047); this brief is the worker-facing contract.
+        if task.risk_tier in _DEPLOY_TIERS:
+            # REQ-044/048: a live-mutation card is told the deploy-gate protocol
+            # AND its concrete deploy_spec commands. Enforcement is mechanical
+            # (dispatch gate REQ-046/048, completion gate REQ-047); this brief is
+            # the worker-facing contract for how to run the deploy safely.
+            spec = task.deploy_spec or {}
+            approved = (
+                conn.execute(
+                    "SELECT 1 FROM task_events "
+                    "WHERE task_id = ? AND kind = 'deploy_approved' LIMIT 1",
+                    (task.id,),
+                ).fetchone()
+                is not None
+            )
             lines.append(
-                "  ⚠ Live-mutation/deploy card. Follow the deploy-gate protocol: "
-                "dry-run first, capture a validated rollback, apply only after a "
-                "clean dry-run, then health-verify and auto-rollback on failure. "
-                "Never execute beyond your project's autonomy ceiling — if unsure, "
-                "draft the plan and block for a human."
+                "  ⚠ Live-mutation/deploy card. Run the deploy-gate protocol IN "
+                "ORDER, do not skip steps:"
+            )
+            if spec.get("dry_run"):
+                lines.append(f"    1. dry-run:  {spec['dry_run']}")
+            lines.append(
+                "    2. APPROVAL GATE: after a clean dry-run, if no "
+                "`deploy_approved` event is recorded on this card, STOP and block "
+                "needs_input ('awaiting deploy approval') — do NOT apply. The "
+                "operator runs `hermes kanban approve-deploy <id>`, which releases "
+                "you to continue."
+            )
+            if spec.get("apply"):
+                lines.append(f"    3. apply:    {spec['apply']}")
+            if spec.get("verify"):
+                lines.append(f"    4. verify:   {spec['verify']}")
+            if spec.get("rollback"):
+                lines.append(
+                    f"    5. ON VERIFY FAILURE, roll back: {spec['rollback']} "
+                    "— then block for a human. Never leave a failed deploy applied."
+                )
+            lines.append(
+                f"    approval recorded: {'YES — you may apply' if approved else 'NO — stop at the gate'}"
             )
     lines.append("")
 

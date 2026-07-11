@@ -100,17 +100,25 @@ def test_deploy_card_over_ceiling_is_blocked(isolated_kanban_home):
 
 def test_deploy_card_within_ceiling_passes_gate(isolated_kanban_home):
     kb, _ = isolated_kanban_home
+    # A reversible deploy_spec so it clears the REQ-048 readiness gate too — this
+    # test isolates the ceiling gate (deploy-A tier under a deploy-B ceiling).
+    spec = {"apply": "./go", "verify": "./v", "rollback": "./rb"}
     with kb.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
         tid = _mk_ready(
-            kb, conn, title="deploy bot",
-            risk_tier="deploy-A", autonomy_ceiling="deploy-B",
+            kb,
+            conn,
+            title="deploy bot",
+            risk_tier="deploy-A",
+            autonomy_ceiling="deploy-B",
+            deploy_spec=spec,
         )
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(conn, spawn_fn=_fake_spawn, dry_run=False)
-    # The gate let it through — it is NOT ceiling-blocked (whether it then
-    # spawned depends on profile resolution, which is not what we assert here).
+    # The gate let it through — NOT ceiling-blocked and NOT deploy-unsafe (whether
+    # it then spawned depends on profile resolution, not asserted here).
     assert tid not in res.skipped_ceiling
+    assert tid not in res.skipped_deploy_unsafe
     with kb.connect_closing() as conn:
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (tid,)
@@ -296,3 +304,127 @@ def test_repo_card_auto_completes(isolated_kanban_home):
     with kb.connect_closing() as conn:
         row = conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()
     assert row["status"] == "done"
+
+
+# --------------------------------------------------------------------------
+# Deploy-gate contract (REQ-048)
+# --------------------------------------------------------------------------
+
+_SPEC = {
+    "dry_run": "./deploy.sh --check",
+    "apply": "./deploy.sh",
+    "verify": "curl -f localhost/ready",
+    "rollback": "./deploy.sh --rollback",
+}
+
+
+def test_deploy_spec_normalization_and_validation(isolated_kanban_home):
+    kb, _ = isolated_kanban_home
+    assert kb.deploy_spec_is_executable(kb.normalize_deploy_spec(_SPEC)) is True
+    assert kb.deploy_spec_is_executable({"verify": "v"}) is False  # no rollback
+    with pytest.raises(ValueError):
+        kb.normalize_deploy_spec({"bogus": "x"})
+    with pytest.raises(ValueError):
+        kb.normalize_deploy_spec("{not json")
+
+
+def test_deploy_card_without_spec_is_plan_only(isolated_kanban_home):
+    """A deploy card that passes the ceiling but has no reversible spec is routed
+    to plan-only — no autonomous deploy without a validated rollback."""
+    kb, _ = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = _mk_ready(
+            kb, conn, title="deploy", risk_tier="deploy-A", autonomy_ceiling="deploy-A"
+        )  # ceiling OK, no spec
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(conn, spawn_fn=_fake_spawn, dry_run=False)
+    assert tid in res.skipped_deploy_unsafe
+    assert tid not in res.skipped_ceiling
+    with kb.connect_closing() as conn:
+        row = conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
+    assert row["status"] == "blocked"
+
+
+def test_deploy_card_missing_rollback_is_plan_only(isolated_kanban_home):
+    kb, _ = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = _mk_ready(
+            kb,
+            conn,
+            title="deploy",
+            risk_tier="deploy-A",
+            autonomy_ceiling="deploy-A",
+            deploy_spec={"apply": "./go", "verify": "./v"},
+        )
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(conn, spawn_fn=_fake_spawn, dry_run=False)
+    assert tid in res.skipped_deploy_unsafe
+
+
+def test_deploy_card_with_reversible_spec_passes_gates(isolated_kanban_home):
+    kb, _ = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = _mk_ready(
+            kb,
+            conn,
+            title="deploy bot",
+            risk_tier="deploy-A",
+            autonomy_ceiling="deploy-A",
+            deploy_spec=_SPEC,
+        )
+        assert kb.get_task(conn, tid).deploy_spec["rollback"] == _SPEC["rollback"]
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(conn, spawn_fn=_fake_spawn, dry_run=False)
+    assert tid not in res.skipped_deploy_unsafe
+    assert tid not in res.skipped_ceiling
+
+
+def test_approve_deploy_emits_event_and_unblocks(isolated_kanban_home):
+    """approve_deploy records the token AND releases a card parked blocked at the
+    approval gate → the completion gate then lets it close to done."""
+    kb, _ = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(
+            conn,
+            title="deploy",
+            assignee="default",
+            risk_tier="deploy-A",
+            deploy_spec=_SPEC,
+        )
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='blocked', "
+                "block_kind='needs_input' WHERE id=?",
+                (tid,),
+            )
+        assert kb.approve_deploy(conn, tid, approver="kevin") is True
+        row = conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
+        assert row["status"] == "ready"  # released from the approval gate
+        assert kb.complete_task(conn, tid, result="deployed") is True
+        row = conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
+    assert row["status"] == "done"
+
+
+def test_deploy_worker_context_surfaces_protocol(isolated_kanban_home):
+    kb, _ = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(
+            conn,
+            title="deploy",
+            assignee="default",
+            risk_tier="deploy-A",
+            deploy_spec=_SPEC,
+        )
+        ctx = kb.build_worker_context(conn, tid)
+    assert "deploy-gate protocol" in ctx
+    assert _SPEC["rollback"] in ctx and _SPEC["verify"] in ctx
+    assert "approval recorded: NO" in ctx  # not yet approved
+    with kb.connect_closing() as conn:
+        kb.approve_deploy(conn, tid, approver="kevin")
+        ctx2 = kb.build_worker_context(conn, tid)
+    assert "approval recorded: YES" in ctx2

@@ -2246,6 +2246,54 @@ def _resolve_use_tui(args) -> bool:
         return False
 
 
+def _warn_probable_tui_misparsing(args: argparse.Namespace) -> bool:
+    """Detect ``hermes -tui`` (single dash) and offer to relaunch as ``--tui``.
+
+    ``-t`` is the short flag for ``--toolsets``, so ``-tui`` silently sets
+    ``toolsets="ui"`` instead of enabling the TUI.  When interactive, prompt
+    the user to correct it.
+
+    Returns ``True`` if the user chose to relaunch with ``--tui`` (caller
+    should inject the flag and re-parse or set ``args.tui = True``), or
+    ``False`` to continue normally.  Calls ``sys.exit(0)`` if the user
+    declines and wants to abort.
+    """
+    toolsets = getattr(args, "toolsets", None)
+    if toolsets != "ui":
+        return False
+    if getattr(args, "tui", False):
+        return False  # explicit --tui was also passed, nothing to warn about
+    # Non-interactive: just warn and continue (no TTY to prompt)
+    try:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print(
+                "Warning: '-tui' sets --toolsets=ui (not the TUI). "
+                "Did you mean 'hermes --tui'?",
+                file=sys.stderr,
+            )
+            return False
+    except Exception:
+        return False
+
+    print(
+        "\n  It looks like you typed 'hermes -tui' (single dash)."
+        "\n  That sets --toolsets=ui instead of launching the TUI."
+        "\n"
+        "\n  (Y)es — continue with --toolsets=ui (tools restricted to 'ui')"
+        "\n  (N)o  — relaunch the TUI (--tui)"
+    )
+    try:
+        answer = input("\n  Continue with -tui? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Cancelled.\n")
+        sys.exit(0)
+    if answer in ("y", "yes"):
+        return False  # user knowingly wants --toolsets=ui
+    # User wants --tui — inject it
+    print("  Launching --tui …\n")
+    return True
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
@@ -12551,6 +12599,12 @@ def _try_termux_fast_cli_launch() -> bool:
         _print_version_info(check_updates=False)
         return True
 
+    # Detect ``hermes -tui`` (single dash) which argparse silently parses as
+    # ``--toolsets=ui`` instead of ``--tui``.
+    if _warn_probable_tui_misparsing(args):
+        args.tui = True
+        args.toolsets = None
+
     if getattr(args, "oneshot", None):
         _prepare_agent_startup(args)
         from hermes_cli.oneshot import run_oneshot
@@ -14639,6 +14693,12 @@ def main():
     if args.version:
         cmd_version(args)
         return
+
+    # Detect ``hermes -tui`` (single dash) which argparse silently parses as
+    # ``--toolsets=ui`` instead of ``--tui``.  Prompt the user to correct it.
+    if _warn_probable_tui_misparsing(args):
+        args.tui = True
+        args.toolsets = None
 
     # --yolo: set HERMES_YOLO_MODE *before* plugin discovery.  The call to
     # _prepare_agent_startup() below triggers discover_plugins() → tool

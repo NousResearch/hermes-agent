@@ -358,6 +358,11 @@ export function useMessageStream({
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
+
+          if (!visibleFinalText) {
+            return dedupeGeneratedImageEchoesInParts(parts)
+          }
+
           const dedupeReference = normalize(visibleFinalText)
 
           const kept = parts.filter(part => {
@@ -374,7 +379,7 @@ export function useMessageStream({
             return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
           })
 
-          return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
+          return [...kept, assistantTextPart(visibleFinalText)]
         }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>
@@ -429,8 +434,13 @@ export function useMessageStream({
         const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
+        const lastAssistant = [...nextMessages].reverse().find(m => m.role === 'assistant' && !m.hidden)
+        const hasVisibleAssistantText = Boolean(lastAssistant && chatMessageText(lastAssistant).trim())
         shouldHydrate =
-          !completionError && !hasInlineError && !unresolvedUserTail && (!state.sawAssistantPayload || !finalText)
+          !completionError &&
+          !hasInlineError &&
+          !unresolvedUserTail &&
+          (!state.sawAssistantPayload || (!finalText && !hasVisibleAssistantText))
 
         return {
           ...state,

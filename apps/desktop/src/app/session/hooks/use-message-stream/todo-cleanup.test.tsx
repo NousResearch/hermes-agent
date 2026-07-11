@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
+import { chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { TodoItem } from '@/lib/todos'
 import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
@@ -15,6 +16,7 @@ const SID = 'session-1'
 const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
 
 let handleEvent: ((event: RpcEvent) => void) | null = null
+let latestState: ClientSessionState | null = null
 
 function Harness() {
   const activeSessionIdRef = useRef<string | null>(SID)
@@ -32,6 +34,7 @@ function Harness() {
       const current = sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState()
       const next = updater(current)
       sessionStateByRuntimeIdRef.current.set(sessionId, next)
+      latestState = next
 
       return next
     }
@@ -54,6 +57,7 @@ const complete = () => act(() => handleEvent!({ payload: { text: 'done' }, sessi
 describe('useMessageStream turn-end todo cleanup', () => {
   beforeEach(() => {
     handleEvent = null
+    latestState = null
     clearSessionTodos(SID)
   })
 
@@ -89,5 +93,22 @@ describe('useMessageStream turn-end todo cleanup', () => {
     act(() => handleEvent!({ payload: { message: 'boom' }, session_id: SID, type: 'error' }))
 
     expect($todosBySession.get()[SID]).toBeUndefined()
+  })
+
+  it('keeps streamed assistant text when completion text is empty', async () => {
+    await mountStream()
+
+    act(() => {
+      handleEvent!({ payload: {}, session_id: SID, type: 'message.start' })
+      handleEvent!({ payload: { text: 'streamed answer' }, session_id: SID, type: 'message.delta' })
+      handleEvent!({ payload: { text: '' }, session_id: SID, type: 'message.complete' })
+    })
+
+    const assistant = latestState?.messages.find(message => message.role === 'assistant')
+
+    expect(assistant).toBeDefined()
+    expect(chatMessageText(assistant!)).toBe('streamed answer')
+    expect(assistant!.pending).toBe(false)
+    expect(latestState?.busy).toBe(false)
   })
 })

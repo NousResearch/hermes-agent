@@ -99,30 +99,39 @@ class TestOllamaCloudNotLocal:
 class TestTruncatedJoinKeepsMediaDelimiter:
     """Bug 2 (#60928): a part-boundary MEDIA: tag must stay delimiter-separated.
 
-    The continuation join now uses ``"\\n".join`` instead of ``"".join`` so the
-    tag is followed by a delimiter and MEDIA_TAG_CLEANUP_RE still strips it.
+    ``_join_continuation_parts`` concatenates prose/code with ``""`` (so
+    "Part 1" + "Part 2" stays "Part 1 Part 2") but inserts a delimiter only
+    at a MEDIA: tag boundary, where MEDIA_TAG_CLEANUP_RE needs a trailing
+    delimiter to strip the directive.
     """
 
-    def test_joined_media_tag_is_stripped(self):
+    def test_prose_stays_glued(self):
+        from agent.conversation_loop import _join_continuation_parts
+
+        assert _join_continuation_parts(["Part 1 ", "Part 2"]) == "Part 1 Part 2"
+
+    def test_media_boundary_gets_delimiter(self):
+        from agent.conversation_loop import _join_continuation_parts
         from gateway.platforms.base import _strip_media_tag_directives
 
         part1 = "Here is your file: MEDIA:/tmp/audio/tts_20260708_052306.ogg"
         part2 = "It's a warm and humid day."
-        # ponytail: mirrors the fixed join in conversation_loop.py.
-        assembled = "\n".join([part1, part2])
+        assembled = _join_continuation_parts([part1, part2])
 
         cleaned = _strip_media_tag_directives(assembled)
         assert "MEDIA:/tmp/audio/tts_20260708_052306.ogg" not in cleaned
         assert cleaned.strip().startswith("Here is your file:")
 
-    def test_old_glued_join_leaves_raw_tag(self):
-        # Documents the bug class: the pre-fix "".join glues the tag to the
-        # next word so the cleanup regex's lookahead can't match.
+    def test_media_tag_at_start_of_next_part(self):
+        # Previous part ends with prose; next part is a bare MEDIA: tag. The
+        # helper must not glue them into one un-delimited token.
+        from agent.conversation_loop import _join_continuation_parts
         from gateway.platforms.base import _strip_media_tag_directives
 
-        part1 = "MEDIA:/tmp/audio/tts_20260708_052306.ogg"
-        part2 = "It's a warm day."
-        glued = "".join([part1, part2])  # pre-fix behavior
+        part1 = "see this:"
+        part2 = "MEDIA:/tmp/img/plot.png some caption"
+        assembled = _join_continuation_parts([part1, part2])
 
-        cleaned = _strip_media_tag_directives(glued)
-        assert "MEDIA:/tmp/audio/tts_20260708_052306.ogg" in cleaned
+        cleaned = _strip_media_tag_directives(assembled)
+        assert "MEDIA:/tmp/img/plot.png" not in cleaned
+        assert cleaned.strip().startswith("see this:")

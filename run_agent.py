@@ -1490,8 +1490,10 @@ class AIAgent:
         if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
             # ponytail: ollama.com is Ollama *Cloud* (hosted, reports
             # finish_reason correctly) — must not trigger the local-Ollama
-            # stop-misreport workaround. #60928.
-            if "ollama.com" in self._base_url_lower:
+            # stop-misreport workaround. #60928. Use the host-matches helper
+            # (not a raw substring) so lookalike hosts like
+            # ollama.com.attacker.test don't match. See teknium1 review #60988.
+            if base_url_host_matches(self._base_url_lower, "ollama.com"):
                 return False
             return True
         return provider_lower == "ollama"

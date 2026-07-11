@@ -520,6 +520,32 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     return sp
 
 
+def _join_continuation_parts(parts: list) -> str:
+    """Join truncated-continuation parts, preserving MEDIA: tags.
+
+    Prose/code is concatenated with ``""`` so "Part 1" + "Part 2" stays
+    "Part 1 Part 2" (see run_agent/test_run_agent.py). The only place a
+    delimiter is required is a MEDIA: tag boundary: ``MEDIA_TAG_CLEANUP_RE``
+    needs a trailing delimiter, so when a part ends with a complete MEDIA
+    tag and the next part does not begin with whitespace, a newline is
+    inserted between them. This keeps the cleanup regex's lookahead firing
+    without corrupting ordinary continuation text (#60928, teknium1 review).
+    """
+    if not parts:
+        return ""
+    from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+
+    out: list = [parts[0]]
+    for p in parts[1:]:
+        prev = out[-1]
+        _prev_ends_media = bool(MEDIA_TAG_CLEANUP_RE.search(prev + "\n")) and not prev.endswith(("\n", " ", "\t"))
+        if _prev_ends_media and not (p[:1].isspace() if p else False):
+            out.append("\n" + p)
+        else:
+            out.append(p)
+    return "".join(out)
+
+
 def run_conversation(
     agent,
     user_message: str,
@@ -1933,9 +1959,7 @@ def run_conversation(
                                 _retry.restart_with_length_continuation = True
                                 break
 
-                            # ponytail: join with newline so a part-boundary
-                            # MEDIA: tag stays delimiter-separated (#60928).
-                            partial_response = agent._strip_think_blocks("\n".join(truncated_response_parts)).strip()
+                            partial_response = agent._strip_think_blocks(_join_continuation_parts(truncated_response_parts)).strip()
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
@@ -5103,10 +5127,10 @@ def run_conversation(
                 codex_ack_continuations = 0
 
                 if truncated_response_parts:
-                    # ponytail: join with newline, not "". A MEDIA: tag at a
-                    # part boundary must be followed by a delimiter so
-                    # MEDIA_TAG_CLEANUP_RE's lookahead fires (#60928).
-                    final_response = "\n".join([*truncated_response_parts, final_response])
+                    # Join truncated parts: prose/code stays ""-concatenated;
+                    # a MEDIA: tag at a boundary gets a delimiter so the
+                    # cleanup regex's lookahead fires (#60928).
+                    final_response = _join_continuation_parts([*truncated_response_parts, final_response])
                     truncated_response_parts = []
                     length_continue_retries = 0
                 

@@ -4435,7 +4435,7 @@ class AIAgent:
                 if "gemini" in _model_lower or "gemma" in _model_lower:
                     prompt_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
                     _tool_guidance_chars += len(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
-                if "gpt" in _model_lower or "codex" in _model_lower:
+                if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
                     prompt_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
                     _tool_guidance_chars += len(OPENAI_MODEL_EXECUTION_GUIDANCE)
 

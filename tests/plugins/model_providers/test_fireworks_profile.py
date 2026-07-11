@@ -1,8 +1,7 @@
 """Unit tests for the Fireworks AI provider profile.
 
-Pins the profile's contract without going live: identity, attribution headers
-(so Fireworks can attribute Hermes traffic for the partnership), alias
-registration, and the pay-as-you-go model defaults (direct catalog ``/models/``
+Pins the profile's contract without going live: identity, alias registration,
+and the pay-as-you-go model defaults (direct catalog ``/models/``
 IDs, not the router-only tier).
 """
 
@@ -30,7 +29,7 @@ class TestFireworksIdentity:
         assert p.auth_type == "api_key"
         assert p.base_url == "https://api.fireworks.ai/inference/v1"
         assert "FIREWORKS_API_KEY" in p.env_vars
-        assert "FIREWORKS_BASE_URL" in p.env_vars
+        assert "FIREWORKS_BASE_URL" not in p.env_vars
 
     def test_display_metadata_present(self, fireworks_profile):
         # Prominence copy is surfaced in the picker; keep it non-empty rather
@@ -40,13 +39,10 @@ class TestFireworksIdentity:
         assert fireworks_profile.signup_url.startswith("https://")
 
 
-class TestFireworksAttributionHeaders:
-    """The profile carries the partner-attribution headers Fireworks captures."""
-
-    def test_referer_and_title_headers(self, fireworks_profile):
-        headers = fireworks_profile.default_headers
-        assert headers.get("HTTP-Referer") == "https://hermes-agent.nousresearch.com"
-        assert headers.get("X-Title") == "Hermes Agent"
+class TestFireworksHeaders:
+    def test_no_partner_attribution_headers(self, fireworks_profile):
+        assert "HTTP-Referer" not in fireworks_profile.default_headers
+        assert "X-Title" not in fireworks_profile.default_headers
 
 
 class TestFireworksAliases:

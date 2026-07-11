@@ -28,10 +28,9 @@ import {
 import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
-import { FeaturedFireworksRow, FeaturedProviderRow, KeyProviderRow, ProviderRow, sortProviders } from './providers'
+import { FeaturedProviderRow, KeyProviderRow, ProviderRow, sortProviders } from './providers'
 
 export {
-  FeaturedFireworksRow,
   FeaturedProviderRow,
   KeyProviderRow,
   ProviderRow,
@@ -57,16 +56,16 @@ export interface ApiKeyOption {
 
 const API_KEY_OPTIONS: ApiKeyOption[] = [
   {
-    id: 'fireworks',
-    name: 'Fireworks AI',
-    envKey: 'FIREWORKS_API_KEY',
-    docsUrl: 'https://app.fireworks.ai/settings/users/api-keys'
-  },
-  {
     id: 'openrouter',
     name: 'OpenRouter',
     envKey: 'OPENROUTER_API_KEY',
     docsUrl: 'https://openrouter.ai/keys'
+  },
+  {
+    id: 'fireworks',
+    name: 'Fireworks AI',
+    envKey: 'FIREWORKS_API_KEY',
+    docsUrl: 'https://app.fireworks.ai/settings/users/api-keys'
   },
   {
     id: 'openai',
@@ -408,9 +407,8 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const { t } = useI18n()
   const { localEndpoint, manual, mode, providers } = useStore($desktopOnboarding)
   const [showAll, setShowAll] = useState(readShowAll)
-  // Which key-form option to preselect when we flip to 'apikey' mode. Set by the
-  // Fireworks hero card (its BYOK key) and the OpenRouter row; the generic
-  // "I have an API key" link leaves it undefined and lands on the first option.
+  // Which key-form option to preselect when we flip to 'apikey' mode. The
+  // OpenRouter row selects its key; the generic link lands on the first option.
   const [apiKeyInitialEnv, setApiKeyInitialEnv] = useState<string | undefined>(undefined)
   const openKeyForm = (envKey?: string) => {
     setApiKeyInitialEnv(envKey)
@@ -459,9 +457,6 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
     <div className="grid gap-2">
       <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1">
         {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
-        {/* Fireworks — preferred BYOK provider, second hero card after Nous.
-            Routes into the API-key form preselecting the Fireworks key. */}
-        <FeaturedFireworksRow onSelect={() => openKeyForm('FIREWORKS_API_KEY')} />
         {showRest ? (
           <>
             {rest.map(p => (

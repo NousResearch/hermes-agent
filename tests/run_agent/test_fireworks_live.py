@@ -6,7 +6,7 @@ Opt-in only:
 
 Unlike a bare OpenAI() client pointed at the endpoint, this drives Hermes'
 own provider resolution — ``resolve_provider_client('fireworks')`` — so it
-verifies the auth/config/base-URL/attribution-header/aux-model wiring that the
+verifies the auth/config/base-URL/aux-model wiring that the
 bundled provider actually ships, then makes a real call through that client.
 """
 
@@ -51,8 +51,6 @@ def test_fireworks_basic_chat_through_runtime():
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": "Say exactly the word 'pong' and nothing else."}],
-        max_tokens=32,
-        temperature=0.0,
         timeout=60,
     )
 

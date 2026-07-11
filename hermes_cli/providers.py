@@ -200,7 +200,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         extra_env_vars=("FIREWORKS_API_KEY",),
         base_url_override="https://api.fireworks.ai/inference/v1",
-        base_url_env_var="FIREWORKS_BASE_URL",
     ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",

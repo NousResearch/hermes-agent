@@ -646,11 +646,13 @@ async def api_auth_ws_ticket(request: Request):
             raise HTTPException(status_code=400, detail="Expected a JSON object")
 
     audience = str(requested.get("audience") or "").strip()
-    if "scopes" in requested and not audience:
-        raise HTTPException(
-            status_code=400,
-            detail="audience is required when scopes are requested",
+    if body and not audience:
+        detail = (
+            "audience is required when scopes are requested"
+            if "scopes" in requested
+            else "audience is required for a non-empty ticket request"
         )
+        raise HTTPException(status_code=400, detail=detail)
     if audience:
         from tui_gateway.mobile_contract import (
             MOBILE_AUDIENCE,

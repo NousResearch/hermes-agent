@@ -64,6 +64,27 @@ class TestMintAndConsume:
         assert info["audience"] == "hermes.mobile"
         assert info["scopes"] == ("conversation.read", "conversation.write")
 
+    def test_ticket_store_rejects_unknown_audiences(self):
+        with pytest.raises(ValueError, match="unsupported WebSocket audience"):
+            mint_ticket(
+                user_id="u1",
+                provider="nous",
+                audience="hermes.future",
+                scopes=("*",),
+            )
+
+    def test_ticket_store_rejects_mobile_grants_without_read_scope(self):
+        with pytest.raises(
+            ValueError,
+            match="conversation.read is required for every mobile WebSocket grant",
+        ):
+            mint_ticket(
+                user_id="u1",
+                provider="nous",
+                audience="hermes.mobile",
+                scopes=("conversation.write",),
+            )
+
 
 # ---------------------------------------------------------------------------
 # Single-use

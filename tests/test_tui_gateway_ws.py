@@ -121,8 +121,11 @@ def test_mobile_authorization_is_enforced_on_requests_from_the_live_socket(
         "data": {
             "reason": "method_not_available_to_mobile",
             "method": "not.a.mobile.method",
-            "required_scope": None,
+            "required_scope": "mobile.unavailable",
+            "required_scopes": ["mobile.unavailable"],
+            "missing_scopes": ["mobile.unavailable"],
             "granted_scopes": ["conversation.read"],
+            "grantable": False,
         },
     }
 

@@ -77,12 +77,20 @@ def mint_ticket(
     seed). Stash returns the ``info`` dict to the caller on consume so the
     WS handler can carry the identity forward into its session log.
     """
+    scope_tuple = tuple(scopes)
+    if audience == "hermes.mobile":
+        from tui_gateway.mobile_contract import normalize_mobile_scopes
+
+        scope_tuple = normalize_mobile_scopes(scope_tuple)
+    elif audience != LEGACY_AUDIENCE or scope_tuple != LEGACY_SCOPES:
+        raise ValueError(f"unsupported WebSocket audience or grant: {audience}")
+
     ticket = secrets.token_urlsafe(32)
     info = {
         "user_id": user_id,
         "provider": provider,
         "audience": audience,
-        "scopes": tuple(scopes),
+        "scopes": scope_tuple,
         "minted_at": int(time.time()),
     }
     with _lock:

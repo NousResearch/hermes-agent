@@ -5,16 +5,14 @@ The dashboard's WS endpoints (``/api/pty``, ``/api/console``, ``/api/ws``,
 loopback mode it accepts ``?token=<_SESSION_TOKEN>``; in gated mode it accepts
 a single-use ``?ticket=`` minted by ``POST /api/auth/ws-ticket``.
 
-These tests exercise the helper at the unit level (no actual WS upgrade)
-plus the ticket-mint endpoint under realistic gated-mode setup. We don't
-test the full WS upgrade because the starlette TestClient WS path has a
-pre-existing regression unrelated to dashboard-auth.
+These tests exercise the helper at the unit level, the ticket-mint endpoint
+under realistic gated-mode setup, and one public mint-to-upgrade-to-dispatch
+round trip. The full upgrade supplies explicit Host/Origin headers because
+Starlette's WebSocket TestClient does not inherit the HTTP ``base_url`` host.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -33,7 +31,6 @@ from hermes_cli.dashboard_auth.ws_tickets import (
 )
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 from tui_gateway import server as tui_server
-from tui_gateway import ws as tui_ws
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +191,35 @@ class TestWsTicketEndpoint:
         assert response.status_code == 400
         assert response.json()["detail"] == "audience is required when scopes are requested"
 
+    def test_nonempty_request_without_an_audience_does_not_mint_legacy_authority(
+        self,
+        gated_app,
+    ):
+        _logged_in(gated_app)
+
+        response = gated_app.post("/api/auth/ws-ticket", json={})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "audience is required for a non-empty ticket request"
+        )
+
+    def test_mobile_write_grant_requires_read_scope(self, gated_app):
+        _logged_in(gated_app)
+
+        response = gated_app.post(
+            "/api/auth/ws-ticket",
+            json={
+                "audience": "hermes.mobile",
+                "scopes": ["conversation.write"],
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "conversation.read is required for every mobile WebSocket grant"
+        )
+
     def test_get_method_is_not_allowed(self, gated_app):
         _logged_in(gated_app)
         r = gated_app.get("/api/auth/ws-ticket", follow_redirects=False)
@@ -213,52 +239,47 @@ class TestWsTicketEndpoint:
         )
 
 
-def test_scoped_ticket_grant_reaches_gateway_ready(gated_app, monkeypatch):
-    sent = []
+def test_scoped_ticket_grant_reaches_gateway_ready_and_dispatch(gated_app, monkeypatch):
     monkeypatch.setattr(web_server, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
     monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **_kw: None)
     monkeypatch.setattr(tui_server, "resolve_skin", lambda: "test-skin")
-    ticket = mint_ticket(
-        user_id="mobile-user",
-        provider="stub",
-        audience="hermes.mobile",
-        scopes=("conversation.read",),
+
+    _logged_in(gated_app)
+    minted = gated_app.post(
+        "/api/auth/ws-ticket",
+        json={
+            "audience": "hermes.mobile",
+            "scopes": ["conversation.read"],
+        },
     )
+    assert minted.status_code == 200
 
-    class QueryParams:
-        def get(self, key, default=""):
-            return {"ticket": ticket}.get(key, default)
-
-    class FakeWS:
-        query_params = QueryParams()
-        client = SimpleNamespace(host="203.0.113.10")
-        url = SimpleNamespace(path="/api/ws")
-        headers = {
-            "host": "fly-app.fly.dev",
-            "origin": "https://fly-app.fly.dev",
+    with gated_app.websocket_connect(
+        f"/api/ws?ticket={minted.json()['ticket']}",
+        headers={
+            "Host": "fly-app.fly.dev",
+            "Origin": "https://fly-app.fly.dev",
+        },
+    ) as socket:
+        ready = socket.receive_json()
+        authorization = ready["params"]["payload"]["authorization"]
+        assert authorization == {
+            "subject": "stub-user-1",
+            "provider": "stub",
+            "audience": "hermes.mobile",
+            "scopes": ["conversation.read"],
         }
 
-        async def accept(self):
-            pass
-
-        async def send_text(self, line):
-            sent.append(json.loads(line))
-
-        async def receive_text(self):
-            raise tui_ws._WebSocketDisconnect()
-
-        async def close(self, code=None):
-            pass
-
-    asyncio.run(web_server.gateway_ws(FakeWS()))
-
-    authorization = sent[0]["params"]["payload"]["authorization"]
-    assert authorization == {
-        "subject": "mobile-user",
-        "provider": "stub",
-        "audience": "hermes.mobile",
-        "scopes": ["conversation.read"],
-    }
+        socket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "denied-write",
+                "method": "prompt.submit",
+                "params": {},
+            }
+        )
+        denied = socket.receive_json()
+        assert denied["error"]["data"]["required_scope"] == "conversation.write"
 
 
 # ---------------------------------------------------------------------------

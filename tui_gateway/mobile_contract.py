@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from hermes_cli import __release_date__, __version__
 
@@ -41,6 +42,11 @@ CONVERSATION_WRITE_SCOPE = "conversation.write"
 # mutation idempotency; clients must wait for that separately advertised
 # capability before treating retries as safe.
 CONVERSATION_CONTROL_SCOPE = "conversation.control"
+CONVERSATION_DELETE_SCOPE = "conversation.delete"
+# Error-only marker for a method or parameter that has no grantable mobile
+# scope in this contract version.  It is deliberately absent from
+# SUPPORTED_MOBILE_SCOPES; clients must also inspect ``grantable``.
+MOBILE_UNAVAILABLE_SCOPE = "mobile.unavailable"
 
 SUPPORTED_MOBILE_SCOPES = frozenset(
     {
@@ -50,18 +56,52 @@ SUPPORTED_MOBILE_SCOPES = frozenset(
     }
 )
 
-MOBILE_METHOD_SCOPES = {
-    "session.list": CONVERSATION_READ_SCOPE,
-    "prompt.submit": CONVERSATION_WRITE_SCOPE,
-    "session.active_list": CONVERSATION_READ_SCOPE,
-    "session.activate": CONVERSATION_READ_SCOPE,
-    "session.history": CONVERSATION_READ_SCOPE,
-    "session.status": CONVERSATION_READ_SCOPE,
-    "session.usage": CONVERSATION_READ_SCOPE,
-    "session.create": CONVERSATION_WRITE_SCOPE,
-    "session.resume": CONVERSATION_WRITE_SCOPE,
-    "session.interrupt": CONVERSATION_CONTROL_SCOPE,
-    "session.steer": CONVERSATION_CONTROL_SCOPE,
+@dataclass(frozen=True)
+class MobileMethodPolicy:
+    """Scopes and parameters that make one existing gateway method mobile-safe."""
+
+    required_scopes: tuple[str, ...]
+    allowed_parameters: frozenset[str]
+
+
+MOBILE_METHOD_POLICIES = {
+    "session.list": MobileMethodPolicy(
+        (CONVERSATION_READ_SCOPE,),
+        frozenset(),
+    ),
+    "session.active_list": MobileMethodPolicy(
+        (CONVERSATION_READ_SCOPE,),
+        frozenset({"current_session_id"}),
+    ),
+    # Activating or resuming rebinds the live transport, so read access alone
+    # is intentionally insufficient even though both responses contain history.
+    "session.activate": MobileMethodPolicy(
+        (CONVERSATION_CONTROL_SCOPE,),
+        frozenset({"session_id"}),
+    ),
+    "session.history": MobileMethodPolicy(
+        (CONVERSATION_READ_SCOPE,),
+        frozenset({"session_id"}),
+    ),
+    # Creating a live session starts Hermes-owned workers and hooks.  It is both
+    # a conversation write and a runtime-control action, with server-derived
+    # profile/source/model/cwd rather than client-selected privileged knobs.
+    "session.create": MobileMethodPolicy(
+        (CONVERSATION_WRITE_SCOPE, CONVERSATION_CONTROL_SCOPE),
+        frozenset({"cols", "title"}),
+    ),
+    "session.resume": MobileMethodPolicy(
+        (CONVERSATION_CONTROL_SCOPE,),
+        frozenset({"cols", "session_id"}),
+    ),
+    "prompt.submit": MobileMethodPolicy(
+        (CONVERSATION_WRITE_SCOPE,),
+        frozenset({"session_id", "text"}),
+    ),
+    "session.interrupt": MobileMethodPolicy(
+        (CONVERSATION_CONTROL_SCOPE,),
+        frozenset({"session_id"}),
+    ),
 }
 
 
@@ -76,6 +116,10 @@ def normalize_mobile_scopes(scopes: Iterable[object]) -> tuple[str, ...]:
             granted.append(scope)
     if not granted:
         raise ValueError("at least one mobile scope is required")
+    if CONVERSATION_READ_SCOPE not in granted:
+        raise ValueError(
+            "conversation.read is required for every mobile WebSocket grant"
+        )
     return tuple(granted)
 
 
@@ -113,25 +157,85 @@ def gateway_ready_payload(*, skin: str, authorization: dict | None = None) -> di
     }
 
 
-def mobile_method_denial(method: str, authorization: dict | None) -> dict | None:
+def authorization_allows_scope(authorization: dict | None, scope: str) -> bool:
+    """Return whether a connection may perform a scope-gated side effect."""
+    grant = effective_authorization(authorization)
+    return grant["audience"] != MOBILE_AUDIENCE or scope in grant["scopes"]
+
+
+def _denial(
+    *,
+    reason: str,
+    method: str,
+    grant: dict,
+    required_scopes: tuple[str, ...],
+    grantable: bool,
+    parameter: str | None = None,
+) -> dict:
+    missing = (
+        list(required_scopes)
+        if not grantable
+        else [scope for scope in required_scopes if scope not in grant["scopes"]]
+    )
+    data = {
+        "reason": reason,
+        "method": method,
+        "required_scope": missing[0] if missing else required_scopes[0],
+        "required_scopes": list(required_scopes),
+        "missing_scopes": missing,
+        "granted_scopes": grant["scopes"],
+        "grantable": grantable,
+    }
+    if parameter is not None:
+        data["parameter"] = parameter
+    return data
+
+
+def mobile_method_denial(
+    method: str,
+    authorization: dict | None,
+    params: dict | None = None,
+) -> dict | None:
     """Describe why a mobile grant cannot call *method*, or return ``None``."""
     grant = effective_authorization(authorization)
     if grant["audience"] != MOBILE_AUDIENCE:
         return None
 
-    required_scope = MOBILE_METHOD_SCOPES.get(method)
-    if required_scope is None:
-        return {
-            "reason": "method_not_available_to_mobile",
-            "method": method,
-            "required_scope": None,
-            "granted_scopes": grant["scopes"],
-        }
-    if required_scope not in grant["scopes"]:
-        return {
-            "reason": "missing_scope",
-            "method": method,
-            "required_scope": required_scope,
-            "granted_scopes": grant["scopes"],
-        }
+    policy = MOBILE_METHOD_POLICIES.get(method)
+    if policy is None:
+        return _denial(
+            reason="method_not_available_to_mobile",
+            method=method,
+            grant=grant,
+            required_scopes=(MOBILE_UNAVAILABLE_SCOPE,),
+            grantable=False,
+        )
+
+    params = params or {}
+    unsupported_parameters = sorted(set(params) - policy.allowed_parameters)
+    if unsupported_parameters:
+        parameter = unsupported_parameters[0]
+        required_scope = (
+            CONVERSATION_DELETE_SCOPE
+            if method == "prompt.submit"
+            and parameter == "truncate_before_user_ordinal"
+            else MOBILE_UNAVAILABLE_SCOPE
+        )
+        return _denial(
+            reason="parameter_not_available_to_mobile",
+            method=method,
+            parameter=parameter,
+            grant=grant,
+            required_scopes=(required_scope,),
+            grantable=False,
+        )
+
+    if any(scope not in grant["scopes"] for scope in policy.required_scopes):
+        return _denial(
+            reason="missing_scope",
+            method=method,
+            grant=grant,
+            required_scopes=policy.required_scopes,
+            grantable=True,
+        )
     return None

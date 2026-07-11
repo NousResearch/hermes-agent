@@ -1,7 +1,10 @@
 """Public JSON-RPC conformance tests for the mobile authorization contract."""
 
+import threading
+
 import pytest
 
+from tui_gateway import mobile_contract
 from tui_gateway import server
 
 
@@ -18,15 +21,17 @@ class RecordingTransport:
         pass
 
 
+def _mobile_authorization(*scopes):
+    return {
+        "subject": "mobile-user",
+        "provider": "stub",
+        "audience": "hermes.mobile",
+        "scopes": scopes,
+    }
+
+
 def test_mobile_dispatch_rejects_a_mapped_method_without_its_required_scope():
-    transport = RecordingTransport(
-        {
-            "subject": "mobile-user",
-            "provider": "stub",
-            "audience": "hermes.mobile",
-            "scopes": ("conversation.read",),
-        }
-    )
+    transport = RecordingTransport(_mobile_authorization("conversation.read"))
 
     response = server.dispatch(
         {
@@ -48,7 +53,10 @@ def test_mobile_dispatch_rejects_a_mapped_method_without_its_required_scope():
                 "reason": "missing_scope",
                 "method": "prompt.submit",
                 "required_scope": "conversation.write",
+                "required_scopes": ["conversation.write"],
+                "missing_scopes": ["conversation.write"],
                 "granted_scopes": ["conversation.read"],
+                "grantable": True,
             },
         },
     }
@@ -56,12 +64,7 @@ def test_mobile_dispatch_rejects_a_mapped_method_without_its_required_scope():
 
 def test_mobile_dispatch_rejects_an_unmapped_method_fail_closed():
     transport = RecordingTransport(
-        {
-            "subject": "mobile-user",
-            "provider": "stub",
-            "audience": "hermes.mobile",
-            "scopes": ("conversation.read", "conversation.write"),
-        }
+        _mobile_authorization("conversation.read", "conversation.write")
     )
 
     response = server.dispatch(
@@ -80,20 +83,18 @@ def test_mobile_dispatch_rejects_an_unmapped_method_fail_closed():
         "data": {
             "reason": "method_not_available_to_mobile",
             "method": "shell.exec",
-            "required_scope": None,
+            "required_scope": "mobile.unavailable",
+            "required_scopes": ["mobile.unavailable"],
+            "missing_scopes": ["mobile.unavailable"],
             "granted_scopes": ["conversation.read", "conversation.write"],
+            "grantable": False,
         },
     }
 
 
 def test_mobile_dispatch_does_not_expose_legacy_fifo_approval_resolution():
     transport = RecordingTransport(
-        {
-            "subject": "mobile-user",
-            "provider": "stub",
-            "audience": "hermes.mobile",
-            "scopes": ("conversation.read", "conversation.write"),
-        }
+        _mobile_authorization("conversation.read", "conversation.write")
     )
 
     response = server.dispatch(
@@ -109,20 +110,16 @@ def test_mobile_dispatch_does_not_expose_legacy_fifo_approval_resolution():
     assert response["error"]["data"] == {
         "reason": "method_not_available_to_mobile",
         "method": "approval.respond",
-        "required_scope": None,
+        "required_scope": "mobile.unavailable",
+        "required_scopes": ["mobile.unavailable"],
+        "missing_scopes": ["mobile.unavailable"],
         "granted_scopes": ["conversation.read", "conversation.write"],
+        "grantable": False,
     }
 
 
 def test_mobile_dispatch_allows_a_mapped_method_with_its_scope():
-    transport = RecordingTransport(
-        {
-            "subject": "mobile-user",
-            "provider": "stub",
-            "audience": "hermes.mobile",
-            "scopes": ("conversation.read",),
-        }
-    )
+    transport = RecordingTransport(_mobile_authorization("conversation.read"))
     server._sessions.clear()
 
     response = server.dispatch(
@@ -147,29 +144,19 @@ def test_mobile_dispatch_allows_a_mapped_method_with_its_scope():
     [
         ("session.list", "conversation.read"),
         ("session.active_list", "conversation.read"),
-        ("session.activate", "conversation.read"),
+        ("session.activate", "conversation.control"),
         ("session.history", "conversation.read"),
-        ("session.status", "conversation.read"),
-        ("session.usage", "conversation.read"),
         ("session.create", "conversation.write"),
-        ("session.resume", "conversation.write"),
+        ("session.resume", "conversation.control"),
         ("prompt.submit", "conversation.write"),
         ("session.interrupt", "conversation.control"),
-        ("session.steer", "conversation.control"),
     ],
 )
 def test_mobile_dispatch_declares_the_minimum_conversation_scope_map(
     method,
     required_scope,
 ):
-    transport = RecordingTransport(
-        {
-            "subject": "mobile-user",
-            "provider": "stub",
-            "audience": "hermes.mobile",
-            "scopes": (),
-        }
-    )
+    transport = RecordingTransport(_mobile_authorization())
 
     response = server.dispatch(
         {"jsonrpc": "2.0", "id": "scope-check", "method": method, "params": {}},
@@ -180,8 +167,142 @@ def test_mobile_dispatch_declares_the_minimum_conversation_scope_map(
         "reason": "missing_scope",
         "method": method,
         "required_scope": required_scope,
+        "required_scopes": (
+            ["conversation.write", "conversation.control"]
+            if method == "session.create"
+            else [required_scope]
+        ),
+        "missing_scopes": (
+            ["conversation.write", "conversation.control"]
+            if method == "session.create"
+            else [required_scope]
+        ),
         "granted_scopes": [],
+        "grantable": True,
     }
+
+
+def test_mobile_create_requires_write_and_control():
+    transport = RecordingTransport(
+        _mobile_authorization("conversation.read", "conversation.write")
+    )
+
+    response = server.dispatch(
+        {"jsonrpc": "2.0", "id": "create", "method": "session.create", "params": {}},
+        transport,
+    )
+
+    assert response["error"]["data"] == {
+        "reason": "missing_scope",
+        "method": "session.create",
+        "required_scope": "conversation.control",
+        "required_scopes": ["conversation.write", "conversation.control"],
+        "missing_scopes": ["conversation.control"],
+        "granted_scopes": ["conversation.read", "conversation.write"],
+        "grantable": True,
+    }
+
+
+@pytest.mark.parametrize("method", ["session.status", "session.usage", "session.steer"])
+def test_mobile_contract_keeps_nonessential_or_account_methods_unavailable(method):
+    response = server.dispatch(
+        {"jsonrpc": "2.0", "id": "unavailable", "method": method, "params": {}},
+        RecordingTransport(
+            _mobile_authorization(
+                "conversation.read",
+                "conversation.write",
+                "conversation.control",
+            )
+        ),
+    )
+
+    assert response["error"]["data"]["required_scope"] == "mobile.unavailable"
+    assert response["error"]["data"]["grantable"] is False
+
+
+def test_mobile_contract_rejects_hidden_delete_and_privileged_create_parameters():
+    authorization = _mobile_authorization(
+        "conversation.read",
+        "conversation.write",
+        "conversation.control",
+    )
+
+    delete_denial = mobile_contract.mobile_method_denial(
+        "prompt.submit",
+        authorization,
+        {"session_id": "known", "text": "replace", "truncate_before_user_ordinal": 1},
+    )
+    profile_denial = mobile_contract.mobile_method_denial(
+        "session.create",
+        authorization,
+        {"profile": "../../outside", "messages": [{"role": "system", "content": "x"}]},
+    )
+
+    assert delete_denial == {
+        "reason": "parameter_not_available_to_mobile",
+        "method": "prompt.submit",
+        "parameter": "truncate_before_user_ordinal",
+        "required_scope": "conversation.delete",
+        "required_scopes": ["conversation.delete"],
+        "missing_scopes": ["conversation.delete"],
+        "granted_scopes": [
+            "conversation.read",
+            "conversation.write",
+            "conversation.control",
+        ],
+        "grantable": False,
+    }
+    assert profile_denial["reason"] == "parameter_not_available_to_mobile"
+    assert profile_denial["parameter"] == "messages"
+    assert profile_denial["required_scope"] == "mobile.unavailable"
+    assert profile_denial["grantable"] is False
+
+
+def test_mobile_write_without_control_queues_a_busy_prompt_without_interrupting(
+    monkeypatch,
+):
+    class Agent:
+        interrupted = False
+
+        def interrupt(self):
+            self.interrupted = True
+
+    agent = Agent()
+    session = {
+        "agent": agent,
+        "history_lock": threading.Lock(),
+        "queued_prompt": None,
+        "running": True,
+        "transport": None,
+    }
+    server._sessions.clear()
+    server._sessions["busy"] = session
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    transport = RecordingTransport(
+        _mobile_authorization("conversation.read", "conversation.write")
+    )
+
+    response = server.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": "busy-write",
+            "method": "prompt.submit",
+            "params": {"session_id": "busy", "text": "next"},
+        },
+        transport,
+    )
+
+    assert response["result"] == {"status": "queued"}
+    assert agent.interrupted is False
+    assert session["queued_prompt"]["text"] == "next"
+
+
+def test_mobile_scope_grants_require_read_access():
+    with pytest.raises(
+        ValueError,
+        match="conversation.read is required for every mobile WebSocket grant",
+    ):
+        mobile_contract.normalize_mobile_scopes(["conversation.write"])
 
 
 @pytest.mark.parametrize(

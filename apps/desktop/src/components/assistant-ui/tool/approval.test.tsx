@@ -71,6 +71,18 @@ describe('PendingToolApproval', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
+  it('shows multi-line approval descriptions on the inline tool card', () => {
+    const description = 'Runs:\npwd'
+    setRequest('<terminal> (plugin approval rule)', undefined, description)
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    const descriptionElement = screen.getByText((_, element) => element?.textContent === description)
+    const classes = [...descriptionElement.classList]
+
+    expect(classes).toEqual(expect.arrayContaining(['whitespace-pre-wrap', 'break-words', 'overflow-auto']))
+    expect(classes.some(className => className.startsWith('max-h-'))).toBe(true)
+  })
+
   it('sends approval.respond {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
     setRequest()

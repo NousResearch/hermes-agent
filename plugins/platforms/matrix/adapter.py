@@ -46,12 +46,22 @@ Environment variables:
                               when requester metadata is available (default: true)
     MATRIX_APPROVAL_TIMEOUT_SECONDS
                               Reaction approval/model-picker timeout (default: 300)
+    MATRIX_SENDER_PROFILE_MAP  JSON object mapping sender MXIDs to Hermes profile names
+                              (e.g. '{"@alice:server":"lexi","@bob:server":"lana"}').
+                              When a sender matches, their messages are routed to the
+                              specified profile. Can also be set via config.extra
+                              ``sender_profile_map`` (merged with env var).
+    config.extra.room_profile_map
+                              JSON object mapping room IDs to Hermes profile names.
+                              Room-level mapping takes priority over sender-level.
+                              Example: {"!abc:server":"lexi","!def:server":"family"}
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import mimetypes
 import os
@@ -970,6 +980,40 @@ class MatrixAdapter(BasePlatformAdapter):
                     pattern,
                     exc,
                 )
+
+        # Per-sender / per-room profile routing
+        self._sender_profile_map: Dict[str, str] = {}
+        self._room_profile_map: Dict[str, str] = {}
+        profile_map_json = os.getenv("MATRIX_SENDER_PROFILE_MAP", "")
+        if profile_map_json:
+            try:
+                self._sender_profile_map = json.loads(profile_map_json)
+            except json.JSONDecodeError as exc:
+                logger.warning("Matrix: invalid MATRIX_SENDER_PROFILE_MAP JSON: %s", exc)
+        # Also check config.extra
+        sender_map_extra = config.extra.get("sender_profile_map")
+        if isinstance(sender_map_extra, dict):
+            self._sender_profile_map.update(sender_map_extra)
+        room_map_extra = config.extra.get("room_profile_map")
+        if isinstance(room_map_extra, dict):
+            self._room_profile_map = room_map_extra
+        if self._sender_profile_map or self._room_profile_map:
+            logger.info(
+                "Matrix: profile routing enabled — senders=%d rooms=%d",
+                len(self._sender_profile_map),
+                len(self._room_profile_map),
+            )
+
+    def _resolve_profile_for_sender(self, room_id: str, sender: str) -> Optional[str]:
+        """Resolve Hermes profile name for a given sender MXID and room.
+
+        Priority: room_profile_map > sender_profile_map > None (use default).
+        """
+        if room_id in self._room_profile_map:
+            return self._room_profile_map[room_id]
+        if sender in self._sender_profile_map:
+            return self._sender_profile_map[sender]
+        return None
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -2698,6 +2742,15 @@ class MatrixAdapter(BasePlatformAdapter):
             parent_chat_id=room_id if thread_id else None,
             message_id=event_id,
         )
+
+        # Per-sender / per-room profile routing
+        resolved_profile = self._resolve_profile_for_sender(room_id, sender)
+        if resolved_profile:
+            source.profile = resolved_profile
+            logger.debug(
+                "Matrix: routing %s in %s → profile '%s'",
+                sender, room_id, resolved_profile,
+            )
 
         if thread_id:
             self._threads.mark(thread_id)

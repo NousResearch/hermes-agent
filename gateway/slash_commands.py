@@ -272,7 +272,7 @@ class GatewaySlashCommandsMixin:
         # Set session title if provided with /new <title>
         _title_arg = event.get_command_args().strip()
         _title_note = ""
-        if _title_arg and self._session_db and new_entry:
+        if _title_arg and new_entry:
             from hermes_state import SessionDB
             try:
                 sanitized = SessionDB.sanitize_title(_title_arg)
@@ -281,7 +281,9 @@ class GatewaySlashCommandsMixin:
                 _title_note = t("gateway.reset.title_rejected", error=str(e))
             if sanitized:
                 try:
-                    await self._session_db.set_session_title(new_entry.session_id, sanitized)
+                    _sess_db = self._session_db_for(source)
+                    if _sess_db is not None:
+                        await _sess_db.set_session_title(new_entry.session_id, sanitized)
                     header = t("gateway.reset.header_titled", title=sanitized)
                 except ValueError as e:
                     _title_note = t("gateway.reset.title_error_untitled", error=str(e))
@@ -531,13 +533,14 @@ class GatewaySlashCommandsMixin:
         # single source of truth; reading it here keeps /status accurate
         # without duplicating token writes into two stores.
         db_total_tokens = 0
-        if self._session_db:
+        _sess_db = self._session_db_for(source)
+        if _sess_db:
             try:
-                title = await self._session_db.get_session_title(session_entry.session_id)
+                title = await _sess_db.get_session_title(session_entry.session_id)
             except Exception:
                 title = None
             try:
-                row = await self._session_db.get_session(session_entry.session_id)
+                row = await _sess_db.get_session(session_entry.session_id)
                 if isinstance(row, dict):
                     session_row = row
                     db_total_tokens = (
@@ -808,6 +811,8 @@ class GatewaySlashCommandsMixin:
         """
         if allow_override and self._resume_caller_is_admin(source):
             return True
+        # Use the per-profile session DB
+        _sess_db = self._session_db_for(source)
         # Use the live origin only when it resolves to a real SessionSource; a
         # store that can't resolve it (or an unexpected lookup error) must not
         # silently allow/deny — fall through to the deterministic DB scoping.
@@ -819,7 +824,7 @@ class GatewaySlashCommandsMixin:
             return self._same_origin_chat(source, origin)
         # Inactive/persisted-only: best-effort scope by DB row source + user.
         try:
-            row = await self._session_db.get_session(target_id) or {}
+            row = await _sess_db.get_session(target_id) or {}
         except Exception:
             return False
         caller_src = source.platform.value if source.platform else None
@@ -2431,7 +2436,12 @@ class GatewaySlashCommandsMixin:
         thread_env_key = _home_thread_env_var(platform_name)
         thread_id = source.thread_id
 
-        # Save to .env so it persists across restarts
+        # Save to .env so it persists across restarts. ``get_home_channel``
+        # now reads live from the active profile's secret scope, so the
+        # subsequent in-process resolution (cron deliveries, restart
+        # notifications) sees the new value without needing an in-memory
+        # cache update. This is critical in multiplex mode where multiple
+        # profiles share one config instance.
         try:
             from hermes_cli.config import save_env_value
             save_env_value(env_key, str(chat_id))
@@ -2440,20 +2450,6 @@ class GatewaySlashCommandsMixin:
             save_env_value(thread_env_key, str(thread_id or ""))
         except Exception as e:
             return t("gateway.set_home.save_failed", error=e)
-
-        # Keep the running gateway config in sync too. The pre-restart
-        # notification path reads self.config before the process reloads env.
-        if source.platform:
-            platform_config = self.config.platforms.setdefault(
-                source.platform,
-                PlatformConfig(enabled=True),
-            )
-            platform_config.home_channel = HomeChannel(
-                platform=source.platform,
-                chat_id=str(chat_id),
-                name=chat_name,
-                thread_id=str(thread_id) if thread_id else None,
-            )
 
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
@@ -3211,7 +3207,7 @@ class GatewaySlashCommandsMixin:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
-                session_db=getattr(self._session_db, "_db", self._session_db),
+                session_db=getattr(self._session_db_for(source) or self._session_db, "_db", self._session_db_for(source) or self._session_db),
             )
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
@@ -3370,7 +3366,8 @@ class GatewaySlashCommandsMixin:
         source = event.source
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
             return t("gateway.topic.not_telegram_dm")
-        if not self._session_db:
+        _sess_db = self._session_db_for(source)
+        if not _sess_db:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
@@ -3414,8 +3411,9 @@ class GatewaySlashCommandsMixin:
                     await self._send_telegram_topic_setup_image(source)
                 return t("gateway.topic.topics_user_disallowed")
 
+        _sess_db = self._session_db_for(source)
         try:
-            await self._session_db.enable_telegram_topic_mode(
+            await _sess_db.enable_telegram_topic_mode(
                 chat_id=str(source.chat_id),
                 user_id=str(source.user_id),
                 has_topics_enabled=capabilities.get("has_topics_enabled"),
@@ -3430,7 +3428,7 @@ class GatewaySlashCommandsMixin:
 
         if source.thread_id:
             try:
-                binding = await self._session_db.get_telegram_topic_binding(
+                binding = await _sess_db.get_telegram_topic_binding(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
                 )
@@ -3441,7 +3439,7 @@ class GatewaySlashCommandsMixin:
                 session_id = str(binding.get("session_id") or "")
                 title = None
                 try:
-                    title = await self._session_db.get_session_title(session_id)
+                    title = await _sess_db.get_session_title(session_id)
                 except Exception:
                     title = None
                 session_label = title or t("gateway.topic.untitled_session")
@@ -3460,29 +3458,30 @@ class GatewaySlashCommandsMixin:
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_id = session_entry.session_id
 
-        if not self._session_db:
-            from hermes_state import format_session_db_unavailable
-            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
-
         # Ensure session exists in SQLite DB (it may only exist in session_store
         # if this is the first command in a new session)
-        existing_title = await self._session_db.get_session_title(session_id)
+        _sess_db = self._session_db_for(source)
+        if _sess_db is None:
+            from hermes_state import format_session_db_unavailable
+            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
+        existing_title = await _sess_db.get_session_title(session_id)
         if existing_title is None:
             # Session doesn't exist in DB yet — create it
-            try:
-                await self._session_db.create_session(
-                    session_id=session_id,
-                    source=source.platform.value if source.platform else "unknown",
-                    user_id=source.user_id,
-                    # Persist the messaging origin so a later /resume of this
-                    # titled-but-now-inactive session can prove it belongs to the
-                    # caller's chat/thread (IDOR scoping).
-                    chat_id=source.chat_id,
-                    chat_type=source.chat_type,
-                    thread_id=source.thread_id,
-                )
-            except Exception:
-                pass  # Session might already exist, ignore errors
+            if _sess_db is not None:
+                try:
+                    await _sess_db.create_session(
+                        session_id=session_id,
+                        source=source.platform.value if source.platform else "unknown",
+                        user_id=source.user_id,
+                        # Persist the messaging origin so a later /resume of this
+                        # titled-but-now-inactive session can prove it belongs to the
+                        # caller's chat/thread (IDOR scoping).
+                        chat_id=source.chat_id,
+                        chat_type=source.chat_type,
+                        thread_id=source.thread_id,
+                    )
+                except Exception:
+                    pass  # Session might already exist, ignore errors
 
         title_arg = event.get_command_args().strip()
         if title_arg:
@@ -3496,7 +3495,7 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.title.empty_after_clean")
             # Set the title
             try:
-                if await self._session_db.set_session_title(session_id, sanitized):
+                if await _sess_db.set_session_title(session_id, sanitized):
                     # Propagate the user-chosen title to the visible Telegram
                     # forum topic name too. Auto-generated titles already rename
                     # the topic; without this, /title only updated the DB title
@@ -3520,7 +3519,7 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.shared.warn_passthrough", error=e)
         else:
             # Show the current title and session ID
-            title = await self._session_db.get_session_title(session_id)
+            title = await _sess_db.get_session_title(session_id)
             if title:
                 return t("gateway.title.current_with_title", session_id=session_id, title=title)
             else:
@@ -3528,11 +3527,12 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — list or switch to a previous session."""
-        if not self._session_db:
+        source = event.source
+        _sess_db = self._session_db_for(source)
+        if not _sess_db:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
-        source = event.source
         session_key = self._session_key_for_source(source)
         raw_args = event.get_command_args().strip()
         try:
@@ -3555,7 +3555,7 @@ class GatewaySlashCommandsMixin:
 
         async def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = await self._session_db.list_sessions_rich(source=user_source, limit=10)
+            sessions = await _sess_db.list_sessions_rich(source=user_source, limit=10)
             return [s for s in sessions if s.get("title")][:10]
 
         if not name:
@@ -3606,17 +3606,17 @@ class GatewaySlashCommandsMixin:
         else:
             # Try direct session ID lookup first (so `/resume <session_id>`
             # works in the gateway, not just `/resume <title>`).
-            session = await self._session_db.get_session(name)
+            session = await _sess_db.get_session(name)
             if session:
                 target_id = session["id"]
             else:
-                target_id = await self._session_db.resolve_session_by_title(name)
+                target_id = await _sess_db.resolve_session_by_title(name)
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.
         # Follow that chain so gateway /resume matches CLI behavior (#15000).
         try:
-            target_id = await self._session_db.resolve_resume_session_id(target_id)
+            target_id = await _sess_db.resolve_resume_session_id(target_id)
         except Exception as e:
             logger.debug("Failed to resolve resume continuation for %s: %s", target_id, e)
 
@@ -3682,7 +3682,7 @@ class GatewaySlashCommandsMixin:
         self._evict_cached_agent(session_key)
 
         # Get the title for confirmation
-        title = await self._session_db.get_session_title(target_id) or name
+        title = await _sess_db.get_session_title(target_id) or name
 
         # Count messages for context
         history = await self.async_session_store.load_transcript(target_id)
@@ -3704,7 +3704,9 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_sessions_command(self, event: MessageEvent) -> str:
         """Handle /sessions — list previous sessions for gateway chats."""
-        if not self._session_db:
+        source = event.source
+        _sess_db = self._session_db_for(source)
+        if not _sess_db:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
@@ -3714,7 +3716,6 @@ class GatewaySlashCommandsMixin:
             query_session_listing,
         )
 
-        source = event.source
         raw_args = event.get_command_args().strip()
         try:
             include_all, include_unnamed, target, search_query = (
@@ -3739,7 +3740,7 @@ class GatewaySlashCommandsMixin:
         current_entry = await self.async_session_store.get_or_create_session(source)
         rows = await asyncio.to_thread(
             query_session_listing,
-            getattr(self._session_db, "_db", self._session_db),
+            getattr(_sess_db, "_db", _sess_db),
             source=source.platform.value if source.platform else None,
             current_session_id=current_entry.session_id,
             include_all_sources=cross_origin,
@@ -3777,11 +3778,12 @@ class GatewaySlashCommandsMixin:
         """
         import uuid as _uuid
 
-        if not self._session_db:
+        source = event.source
+        _sess_db = self._session_db_for(source)
+        if not _sess_db:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
-        source = event.source
         session_key = self._session_key_for_source(source)
 
         # Load the current session and its transcript
@@ -3803,9 +3805,9 @@ class GatewaySlashCommandsMixin:
         if branch_name:
             branch_title = branch_name
         else:
-            current_title = await self._session_db.get_session_title(current_entry.session_id)
+            current_title = await _sess_db.get_session_title(current_entry.session_id)
             base = current_title or "branch"
-            branch_title = await self._session_db.get_next_title_in_lineage(base)
+            branch_title = await _sess_db.get_next_title_in_lineage(base)
 
         parent_session_id = current_entry.session_id
 
@@ -3815,7 +3817,7 @@ class GatewaySlashCommandsMixin:
         # /sessions even after the parent is reopened and re-ended with a
         # different end_reason (e.g. tui_shutdown overwriting 'branched').
         try:
-            await self._session_db.create_session(
+            await _sess_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
@@ -3829,7 +3831,7 @@ class GatewaySlashCommandsMixin:
         # Copy conversation history to the new session
         for msg in history:
             try:
-                await self._session_db.append_message(
+                await _sess_db.append_message(
                     session_id=new_session_id,
                     role=msg.get("role", "user"),
                     content=msg.get("content"),
@@ -3848,7 +3850,7 @@ class GatewaySlashCommandsMixin:
 
         # Set title
         try:
-            await self._session_db.set_session_title(new_session_id, branch_title)
+            await _sess_db.set_session_title(new_session_id, branch_title)
         except Exception:
             pass
 
@@ -3972,7 +3974,8 @@ class GatewaySlashCommandsMixin:
         if not provider and getattr(self, "_session_db", None) is not None:
             try:
                 _entry_for_billing = await self.async_session_store.get_or_create_session(source)
-                persisted = await self._session_db.get_session(_entry_for_billing.session_id) or {}
+                _billing_db = self._session_db_for(source) or self._session_db
+                persisted = await _billing_db.get_session(_entry_for_billing.session_id) or {}
             except Exception:
                 persisted = {}
             provider = provider or persisted.get("billing_provider")

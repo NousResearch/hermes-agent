@@ -992,7 +992,7 @@ class SessionStore:
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
-                 has_active_processes_fn=None):
+                 has_active_processes_fn=None, get_profile_db=None):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
@@ -1015,12 +1015,17 @@ class SessionStore:
         )
         
         # Initialize SQLite session database
+        # In multiplex mode, we don't use the global state.db — sessions
+        # go to per-profile state.db files via the callback. So we set
+        # self._db = None to avoid writing to the global DB.
         self._db = None
-        try:
-            from hermes_state import SessionDB
-            self._db = SessionDB()
-        except Exception as e:
-            print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+        self._get_profile_db = get_profile_db
+        if not getattr(config, "multiplex_profiles", False):
+            try:
+                from hermes_state import SessionDB
+                self._db = SessionDB()
+            except Exception as e:
+                print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
     
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
@@ -1234,7 +1239,16 @@ class SessionStore:
             if generation <= getattr(self, "_persisted_routing_generation", 0):
                 return
             db_saved = False
-            _db = getattr(self, "_db", None)
+            _db = None
+            if self._get_profile_db is not None:
+                try:
+                    _profile_db = self._get_profile_db(None)
+                    if _profile_db is not None:
+                        _db = getattr(_profile_db, "_db", _profile_db)
+                except Exception:
+                    pass
+            if _db is None:
+                _db = getattr(self, "_db", None)
             if _db:
                 replacer = getattr(_db, "replace_gateway_routing_entries", None)
                 if callable(replacer):
@@ -1491,9 +1505,16 @@ class SessionStore:
         display_name: Optional[str] = None,
     ) -> None:
         """Persist the routing peer for an existing gateway session row."""
-        if not self._db or not source:
+        if not self._get_profile_db or not source:
             return
-        recorder = getattr(self._db, "record_gateway_session_peer", None)
+        try:
+            _profile_db = self._get_profile_db(source)
+            if _profile_db is None:
+                return
+            _db = getattr(_profile_db, "_db", _profile_db)
+        except Exception:
+            return
+        recorder = getattr(_db, "record_gateway_session_peer", None)
         if not callable(recorder):
             return
         try:
@@ -1997,16 +2018,26 @@ class SessionStore:
         if _needs_save:
             self._save_entries()
 
-        # SQLite operations outside the lock (unchanged).
-        if self._db and db_end_session_id:
+        # SQLite operations outside the lock.
+        # Resolve the per-profile DB if a source is available.
+        _db = self._db
+        if self._get_profile_db is not None:
             try:
-                self._db.end_session(db_end_session_id, "session_reset")
+                _profile_db = self._get_profile_db(source)
+                if _profile_db is not None:
+                    _db = getattr(_profile_db, "_db", _profile_db)
+            except Exception:
+                pass  # fall back to self._db
+
+        if _db and db_end_session_id:
+            try:
+                _db.end_session(db_end_session_id, "session_reset")
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
-        if self._db and db_create_kwargs:
+        if _db and db_create_kwargs:
             try:
-                self._db.create_session(**db_create_kwargs)
+                _db.create_session(**db_create_kwargs)
                 self._record_gateway_session_peer(
                     session_id,
                     session_key,

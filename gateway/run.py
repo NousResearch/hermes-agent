@@ -2853,6 +2853,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(
                 key, max_active_age=_bg_max_age_seconds,
             ),
+            get_profile_db=getattr(self, "_session_db_for", None),
         )
         # One enforced loop-side boundary for the synchronous SessionStore.
         # Sync helpers keep using ``session_store`` directly; async gateway
@@ -3038,9 +3039,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Initialize session database for session_search tool support
         self._session_db = None
+        self._profile_session_dbs: dict = {}
         try:
             from hermes_state import AsyncSessionDB, SessionDB
             self._session_db = AsyncSessionDB(SessionDB())
+            # In multiplex mode, build per-profile DBs so the agent can
+            # write to the correct profile's state.db instead of the global one.
+            if getattr(self.config, "multiplex_profiles", False):
+                self._build_profile_session_dbs()
         except Exception as e:
             # WARNING (not DEBUG) so the failure appears in errors.log — matches
             # cli.py's handling of the same init path.  Users hitting NFS-mounted
@@ -3122,6 +3128,65 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Set after a wake (re-arm cooldown, 0.F) so we don't immediately re-go
         # dormant before the drained backlog has a chance to update the clock.
         self._scale_to_zero_cooldown_until: float = 0.0
+
+    def _build_profile_session_dbs(self) -> None:
+        """Build per-profile AsyncSessionDBs for multiplex mode.
+
+        Populates ``self._profile_session_dbs`` with one DB per served
+        profile. The active profile's DB is also stored as
+        ``self._session_db`` so legacy code that reads it still works.
+        Idempotent — safe to call once at startup.
+        """
+        try:
+            from hermes_state import AsyncSessionDB, SessionDB
+            from hermes_cli.profiles import (
+                get_active_profile_name,
+                profiles_to_serve,
+                get_profile_dir,
+            )
+            active = get_active_profile_name() or "default"
+            for profile_name, _ in profiles_to_serve(multiplex=True):
+                if profile_name in self._profile_session_dbs:
+                    continue
+                profile_dir = get_profile_dir(profile_name)
+                if profile_dir is None:
+                    continue
+                db_path = profile_dir / "state.db"
+                try:
+                    self._profile_session_dbs[profile_name] = AsyncSessionDB(
+                        SessionDB(db_path=db_path)
+                    )
+                    logger.info(
+                        "Per-profile session DB ready for '%s' at %s",
+                        profile_name, db_path,
+                    )
+                except Exception as _e:
+                    logger.warning(
+                        "Failed to open session DB for profile '%s' at %s: %s",
+                        profile_name, db_path, _e,
+                    )
+            # Replace self._session_db with the active profile's DB so the
+            # default code path writes to the right place.
+            active_db = self._profile_session_dbs.get(active)
+            if active_db is not None:
+                self._session_db = active_db
+        except Exception as e:
+            logger.warning("Failed to build per-profile session DBs: %s", e)
+
+    def _session_db_for(self, source: Any = None) -> Optional[Any]:
+        """Return the per-profile AsyncSessionDB for the given source.
+
+        Used by SessionStore, slash commands, and the agent creation path
+        to route session writes to the correct profile's state.db. Falls
+        back to ``self._session_db`` (the active profile's DB) when
+        multiplex is off, no profile is set on the source, or the
+        profile has no dedicated DB.
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return self._session_db
+        if source is None or getattr(source, "profile", None) is None:
+            return self._session_db
+        return self._profile_session_dbs.get(source.profile) or self._session_db
 
 
     def _wire_teams_pipeline_runtime(self) -> None:
@@ -11448,7 +11513,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
-            if not os.getenv(env_key):
+            # In multiplex mode the per-profile home channel lives in the
+            # active profile's secret scope, not os.environ — read through
+            # get_secret so the notice honors the same per-profile resolution
+            # path as the rest of the gateway.
+            try:
+                from agent.secret_scope import get_secret as _get_secret
+                home_channel_set = bool(_get_secret(env_key))
+            except Exception:
+                home_channel_set = bool(os.getenv(env_key))
+            if not home_channel_set:
                 # Slack dispatches all Hermes commands through a single
                 # parent slash command `/hermes`; bare `/sethome` is not
                 # registered and would fail with "app did not respond".
@@ -13360,7 +13434,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_name=source.chat_name,
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
-                    session_db=getattr(self._session_db, "_db", self._session_db),
+                    session_db=getattr(self._session_db_for(source) or self._session_db, "_db", self._session_db_for(source) or self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
@@ -18218,6 +18292,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                # Use per-profile session DB in multiplex mode so the agent's
+                # create_session() writes to the correct profile's state.db
+                # instead of leaking to the global default state.db.
+                _agent_session_db = self._session_db_for(source)
+                if _agent_session_db is None:
+                    _agent_session_db = self._session_db
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -18247,7 +18327,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
-                    session_db=getattr(self._session_db, "_db", self._session_db),
+                    session_db=getattr(_agent_session_db, "_db", _agent_session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )

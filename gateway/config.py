@@ -773,8 +773,100 @@ class GatewayConfig:
 
         return False
     
+    # Env-var names for per-platform home channel lookups. Kept in sync
+    # with the keys written by /sethome (see ``hermes_cli.config.save_env_value``)
+    # and consumed by the adapter's home_target_env_var helper.
+    _HOME_CHANNEL_ENV_KEYS = {
+        Platform.TELEGRAM: "TELEGRAM_HOME_CHANNEL",
+        Platform.DISCORD: "DISCORD_HOME_CHANNEL",
+        Platform.WHATSAPP: "WHATSAPP_HOME_CHANNEL",
+        Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_HOME_CHANNEL",
+        Platform.SLACK: "SLACK_HOME_CHANNEL",
+        Platform.SIGNAL: "SIGNAL_HOME_CHANNEL",
+        Platform.MATTERMOST: "MATTERMOST_HOME_CHANNEL",
+        Platform.MATRIX: "MATRIX_HOME_CHANNEL",
+        Platform.EMAIL: "EMAIL_HOME_CHANNEL",
+        Platform.SMS: "SMS_HOME_CHANNEL",
+        Platform.DINGTALK: "DINGTALK_HOME_CHANNEL",
+        Platform.FEISHU: "FEISHU_HOME_CHANNEL",
+        Platform.WECOM: "WECOM_HOME_CHANNEL",
+        Platform.WEIXIN: "WEIXIN_HOME_CHANNEL",
+        Platform.BLUEBUBBLES: "BLUEBUBBLES_HOME_CHANNEL",
+        Platform.QQBOT: "QQBOT_HOME_CHANNEL",
+        Platform.YUANBAO: "YUANBAO_HOME_CHANNEL",
+    }
+    _HOME_CHANNEL_NAME_ENV_KEYS = {
+        Platform.TELEGRAM: "TELEGRAM_HOME_CHANNEL_NAME",
+        Platform.DISCORD: "DISCORD_HOME_CHANNEL_NAME",
+    }
+    _HOME_CHANNEL_THREAD_ENV_KEYS = {
+        Platform.TELEGRAM: "TELEGRAM_HOME_CHANNEL_THREAD_ID",
+        Platform.DISCORD: "DISCORD_HOME_CHANNEL_THREAD_ID",
+    }
+
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
-        """Get the home channel for a platform."""
+        """Get the home channel for a platform.
+
+        Resolves live from the active profile's secret scope when one is
+        installed (multiplexed gateway), so each profile can have its own
+        home channel even within a single process. Falls back to the value
+        cached at config-load time when no scope is active (single-profile
+        gateway or pre-startup callers).
+        """
+        # Try a live read first — this is what makes per-profile home
+        # channels work in multiplex mode. ``get_secret`` honors the active
+        # profile's secret scope, falls back to os.environ in single-profile
+        # mode, and fails closed in multiplex without a scope.
+        env_key = self._HOME_CHANNEL_ENV_KEYS.get(platform)
+        if env_key:
+            live_chat_id = None
+            try:
+                from agent.secret_scope import get_secret as _get_secret
+                live_chat_id = _get_secret(env_key) or None
+            except Exception:
+                # secret_scope unavailable (early import, no agent context).
+                # Fall through to the cached value below.
+                pass
+            if not live_chat_id:
+                # Fallback: in single-profile mode, get_secret's os.environ
+                # path should have returned a value. If it didn't, try
+                # os.getenv directly so startup-time callers without a
+                # scope still work. Skip this in multiplex mode to avoid
+                # leaking a cross-profile value.
+                try:
+                    from agent.secret_scope import is_multiplex_active as _is_mp
+                    in_multiplex = _is_mp()
+                except Exception:
+                    in_multiplex = False
+                if not in_multiplex:
+                    import os as _os
+                    live_chat_id = _os.getenv(env_key) or None
+
+            if live_chat_id:
+                name_key = self._HOME_CHANNEL_NAME_ENV_KEYS.get(platform)
+                thread_key = self._HOME_CHANNEL_THREAD_ENV_KEYS.get(platform)
+                name, thread_id = None, None
+                try:
+                    from agent.secret_scope import get_secret as _get_secret
+                    name = _get_secret(name_key) if name_key else None
+                    thread_id = _get_secret(thread_key) if thread_key else None
+                except Exception:
+                    pass
+                if name is None and name_key:
+                    import os as _os
+                    name = _os.getenv(name_key)
+                if thread_id is None and thread_key:
+                    import os as _os
+                    thread_id = _os.getenv(thread_key)
+                return HomeChannel(
+                    platform=platform,
+                    chat_id=str(live_chat_id),
+                    name=name or "Home",
+                    thread_id=str(thread_id) if thread_id else None,
+                )
+
+        # Fall back to the cached value (set at config load or by /sethome's
+        # in-memory sync). Preserves behavior for callers without a scope.
         config = self.platforms.get(platform)
         if config:
             return config.home_channel

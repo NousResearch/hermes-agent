@@ -337,25 +337,36 @@ class GatewaySlashCommandsMixin:
         answer "default" in every chat regardless of which profile actually
         serves the room/channel (``source.profile`` — stamped by the
         ``/p/<profile>/`` URL prefix, a per-credential adapter, or a room→
-        profile map). Report the stamped profile and, like the scoped /reset
-        banner (#59003), resolve the displayed home under that profile's
-        runtime scope. Single-profile gateways are unchanged: an unstamped
-        source falls back to the active profile and the default home.
+        profile map). When ``multiplex_profiles`` is on, report the stamped
+        profile and, like the scoped /reset banner (#59003), resolve the
+        displayed home under that profile's runtime scope. When multiplexing
+        is off (the default) the stamp is ignored — mirroring the gating in
+        ``_run_agent`` and ``_reset_notice_session_info`` — and the command
+        reports the active profile and default home, byte-identical to before.
         """
         from hermes_constants import display_hermes_home
         from hermes_cli.profiles import get_active_profile_name
 
+        multiplexed = getattr(
+            getattr(self, "config", None), "multiplex_profiles", False
+        )
         source = getattr(event, "source", None)
-        profile_name = (
-            getattr(source, "profile", "") or ""
-        ).strip() or get_active_profile_name()
-        try:
-            from gateway.run import _profile_runtime_scope
 
-            profile_home = self._resolve_profile_home_for_source(source)
-            with _profile_runtime_scope(profile_home):
+        profile_name = ""
+        if multiplexed:
+            profile_name = (getattr(source, "profile", "") or "").strip()
+        profile_name = profile_name or get_active_profile_name()
+
+        if multiplexed:
+            try:
+                from gateway.run import _profile_runtime_scope
+
+                profile_home = self._resolve_profile_home_for_source(source)
+                with _profile_runtime_scope(profile_home):
+                    display = display_hermes_home()
+            except Exception:
                 display = display_hermes_home()
-        except Exception:
+        else:
             display = display_hermes_home()
 
         lines = [

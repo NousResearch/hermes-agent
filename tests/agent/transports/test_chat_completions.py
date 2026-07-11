@@ -30,6 +30,19 @@ class TestChatCompletionsBasic:
         result = transport.convert_messages(msgs)
         assert result is msgs  # no copy needed
 
+    def test_convert_messages_strips_internal_effect_disposition(self, transport):
+        msgs = [{
+            "role": "tool",
+            "content": "uncertain",
+            "tool_call_id": "c1",
+            "effect_disposition": "unknown",
+        }]
+
+        result = transport.convert_messages(msgs)
+
+        assert "effect_disposition" not in result[0]
+        assert msgs[0]["effect_disposition"] == "unknown"
+
     def test_convert_messages_strips_codex_fields(self, transport):
         msgs = [
             {"role": "assistant", "content": "ok", "codex_reasoning_items": [{"id": "rs_1"}],
@@ -103,6 +116,24 @@ class TestChatCompletionsBasic:
         assert result[2]["tool_call_id"] == "call_1"
         # Original list untouched (deepcopy-on-demand)
         assert msgs[2]["tool_name"] == "execute_code"
+
+    def test_convert_messages_strips_tool_output_risk_metadata(self, transport):
+        msgs = [{
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "result",
+            "_tool_output_risk": {
+                "risk": "high",
+                "findings": ["prompt_injection"],
+                "redacted": False,
+            },
+        }]
+
+        result = transport.convert_messages(msgs)
+
+        assert "_tool_output_risk" not in result[0]
+        assert result[0]["content"] == "result"
+        assert "_tool_output_risk" in msgs[0]
 
     def test_convert_messages_strips_timestamp(self, transport):
         """Internal per-message ``timestamp`` metadata (stamped by

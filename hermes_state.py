@@ -753,6 +753,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_call_id TEXT,
     tool_calls TEXT,
     tool_name TEXT,
+    effect_disposition TEXT,
     timestamp REAL NOT NULL,
     token_count INTEGER,
     finish_reason TEXT,
@@ -3455,6 +3456,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        effect_disposition: Optional[str] = None,
         timestamp: Any = None,
     ) -> int:
         """
@@ -3505,10 +3507,10 @@ class SessionDB:
         def _do(conn):
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3516,6 +3518,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
+                    effect_disposition,
                     message_timestamp,
                     token_count,
                     finish_reason,
@@ -3597,10 +3600,10 @@ class SessionDB:
 
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3608,6 +3611,7 @@ class SessionDB:
                     msg.get("tool_call_id"),
                     tool_calls_json,
                     msg.get("tool_name"),
+                    msg.get("effect_disposition"),
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
@@ -4103,7 +4107,7 @@ class SessionDB:
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
-                "SELECT role, content, tool_call_id, tool_calls, tool_name, "
+                "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
@@ -4131,6 +4135,8 @@ class SessionDB:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:
                 msg["tool_name"] = row["tool_name"]
+            if row["effect_disposition"]:
+                msg["effect_disposition"] = row["effect_disposition"]
             if row["tool_calls"]:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])

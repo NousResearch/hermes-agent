@@ -7,6 +7,7 @@ knowledge of gateway lifecycle or repair policy.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -14,13 +15,29 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
 DEFAULT_LOCK_TIMEOUT_SECONDS = 1.0
 _LOCK_POLL_SECONDS = 0.01
+
+
+@dataclass
+class _MaintenanceLease:
+    lock_key: str
+    exclusive: bool
+    owner_thread: int
+    owner_task: int | None
+    active: bool = True
+
+
+_HELD_MAINTENANCE_LOCKS: ContextVar[tuple[_MaintenanceLease, ...]] = ContextVar(
+    "kanban_held_maintenance_locks", default=()
+)
 
 
 class KanbanSafetyError(RuntimeError):
@@ -235,6 +252,14 @@ def _unlock(handle) -> None:
     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def _current_task_identity() -> int | None:
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        return None
+    return None if task is None else id(task)
+
+
 @contextlib.contextmanager
 def maintenance_lock(
     db_path: Path,
@@ -242,8 +267,32 @@ def maintenance_lock(
     exclusive: bool,
     timeout_seconds: float | None = None,
 ) -> Iterator[None]:
-    """Acquire a board's shared normal-operation or exclusive maintenance fence."""
+    """Acquire a board's shared normal-operation or exclusive maintenance fence.
+
+    Re-entry for the same board is allowed within one context when it does not
+    upgrade a shared lock to exclusive. OS locks still arbitrate across threads
+    and processes because ContextVar state is not inherited by new threads.
+    """
     lock_path = maintenance_lock_path(db_path)
+    lock_key = str(lock_path.expanduser().resolve())
+    held_locks = _HELD_MAINTENANCE_LOCKS.get()
+    owner_thread = threading.get_ident()
+    owner_task = _current_task_identity()
+    for held_lease in reversed(held_locks):
+        if held_lease.lock_key != lock_key or not held_lease.active:
+            continue
+        if (
+            held_lease.owner_thread != owner_thread
+            or held_lease.owner_task != owner_task
+        ):
+            continue
+        if exclusive and not held_lease.exclusive:
+            raise MaintenanceLockError(
+                f"cannot upgrade shared maintenance lock to exclusive: {lock_path}"
+            )
+        yield
+        return
+
     try:
         handle = _open_lock_file(lock_path)
     except OSError as exc:
@@ -251,6 +300,8 @@ def maintenance_lock(
             f"failed to open maintenance lock {lock_path}: {exc}"
         ) from exc
     acquired = False
+    context_token = None
+    lease: _MaintenanceLease | None = None
     body_error: BaseException | None = None
     timeout = (
         DEFAULT_LOCK_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
@@ -273,11 +324,22 @@ def maintenance_lock(
                 raise MaintenanceLockError(
                     f"failed to acquire maintenance lock {lock_path}: {exc}"
                 ) from exc
+        lease = _MaintenanceLease(
+            lock_key=lock_key,
+            exclusive=exclusive,
+            owner_thread=owner_thread,
+            owner_task=owner_task,
+        )
+        context_token = _HELD_MAINTENANCE_LOCKS.set(held_locks + (lease,))
         yield
     except BaseException as exc:
         body_error = exc
         raise
     finally:
+        if lease is not None:
+            lease.active = False
+        if context_token is not None:
+            _HELD_MAINTENANCE_LOCKS.reset(context_token)
         release_failures: list[OSError] = []
         if acquired:
             try:
@@ -309,20 +371,30 @@ def _write_generations(db_path: Path, value: Generations) -> None:
     )
 
 
+def _bump_service_generation_locked(db_path: Path) -> int:
+    """Bump service generation while caller holds exclusive maintenance."""
+    current = read_generations(db_path)
+    updated = Generations(current.service_generation + 1, current.board_generation)
+    _write_generations(db_path, updated)
+    return updated.service_generation
+
+
+def _bump_board_generation_locked(db_path: Path) -> int:
+    """Bump board generation while caller holds exclusive maintenance."""
+    current = read_generations(db_path)
+    updated = Generations(current.service_generation, current.board_generation + 1)
+    _write_generations(db_path, updated)
+    return updated.board_generation
+
+
 def bump_service_generation(db_path: Path) -> int:
     with maintenance_lock(db_path, exclusive=True):
-        current = read_generations(db_path)
-        updated = Generations(current.service_generation + 1, current.board_generation)
-        _write_generations(db_path, updated)
-        return updated.service_generation
+        return _bump_service_generation_locked(db_path)
 
 
 def bump_board_generation(db_path: Path) -> int:
     with maintenance_lock(db_path, exclusive=True):
-        current = read_generations(db_path)
-        updated = Generations(current.service_generation, current.board_generation + 1)
-        _write_generations(db_path, updated)
-        return updated.board_generation
+        return _bump_board_generation_locked(db_path)
 
 
 def quarantine_board(db_path: Path, *, reason: str, source: str) -> Path:
@@ -461,6 +533,17 @@ _REQUIRED_TABLE_SHAPES: dict[str, dict[str, tuple[str, int, int]]] = {
         "notifier_profile": ("TEXT", 0, 0),
         "created_at": ("INTEGER", 1, 0),
         "last_event_id": ("INTEGER", 1, 0),
+    },
+    "kanban_writer_requests": {
+        "request_id": ("TEXT", 0, 1),
+        "board": ("TEXT", 1, 0),
+        "actor_profile": ("TEXT", 1, 0),
+        "source": ("TEXT", 1, 0),
+        "writer_pid": ("INTEGER", 1, 0),
+        "operation": ("TEXT", 1, 0),
+        "payload_digest": ("TEXT", 1, 0),
+        "response": ("TEXT", 1, 0),
+        "created_at": ("INTEGER", 1, 0),
     },
 }
 

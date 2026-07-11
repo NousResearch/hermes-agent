@@ -1141,18 +1141,25 @@ def test_heartbeat_uses_env_default_ttl(kanban_home, monkeypatch):
 
 
 def test_concurrent_claims_only_one_wins(kanban_home):
-    """Fire N threads claiming the same task; exactly one must win."""
+    """Fire N real IPC clients claiming the same task; exactly one wins."""
+    from hermes_cli import kanban_writer
+
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="race", assignee="a")
+        task_id = kb.create_task(conn, title="race", assignee="a")
 
-    def attempt(i):
-        with kb.connect() as c:
-            return kb.claim_task(c, t, claimer=f"host:{i}")
+    service = kanban_writer.KanbanWriterService(kb.kanban_db_path())
+    service.start()
+    try:
+        def attempt(i):
+            with kb.connect() as connection:
+                return kb.claim_task(connection, task_id, claimer=f"host:{i}")
 
-    n_workers = 8
-    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as ex:
-        results = list(ex.map(attempt, range(n_workers)))
-    winners = [r for r in results if r is not None]
+        n_workers = 8
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as executor:
+            results = list(executor.map(attempt, range(n_workers)))
+    finally:
+        service.stop()
+    winners = [result for result in results if result is not None]
     assert len(winners) == 1
     assert winners[0].status == "running"
 
@@ -3090,16 +3097,15 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
 
     real_connect = _sqlite3.connect
 
-    class _WalBlockingConnection(_sqlite3.Connection):
+    class _WalBlockingConnection(kb.KanbanConnection):
         def execute(self, sql, *args, **kwargs):  # type: ignore[override]
             if "journal_mode=wal" in sql.lower().replace(" ", ""):
                 raise _sqlite3.OperationalError("locking protocol")
             return super().execute(sql, *args, **kwargs)
 
     def wal_blocking_connect(*args, **kwargs):
-        return real_connect(
-            *args, factory=_WalBlockingConnection, **kwargs
-        )
+        kwargs["factory"] = _WalBlockingConnection
+        return real_connect(*args, **kwargs)
 
     with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
         with caplog.at_level("WARNING", logger="hermes_state"):

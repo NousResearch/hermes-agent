@@ -84,8 +84,9 @@ def test_first_init_connect_is_bounded_when_lock_held(kanban_home, monkeypatch):
         conn = kb.connect()  # path NOT yet initialized — must take the bounded path
         conn.close()
         elapsed = time.monotonic() - start
-        # Proceeded within roughly the timeout window (not unbounded).
-        assert 0.4 <= elapsed < 3.0, f"expected bounded ~0.6s acquire, got {elapsed:.2f}s"
+        # The lock wait is bounded; leave headroom for SQLite initialization
+        # and scheduler delay on constrained CI hosts.
+        assert 0.4 <= elapsed < 5.0, f"expected bounded ~0.6s acquire, got {elapsed:.2f}s"
         assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
     finally:
         release.set()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import json
 import multiprocessing
 import sqlite3
@@ -150,20 +152,91 @@ def test_quarantine_marker_write_failure_is_explicit_and_fail_closed(
         )
 
 
-def test_exclusive_maintenance_lock_blocks_writer(tmp_path, monkeypatch):
+def test_exclusive_maintenance_lock_blocks_other_thread(tmp_path, monkeypatch):
     db_path = _fresh_db(tmp_path)
     monkeypatch.setattr(safety, "DEFAULT_LOCK_TIMEOUT_SECONDS", 0.05)
-    conn = sqlite3.connect(db_path, isolation_level=None)
-    try:
+    failures: list[BaseException] = []
+
+    def contend() -> None:
+        try:
+            with safety.maintenance_lock(db_path, exclusive=False):
+                pass
+        except BaseException as exc:
+            failures.append(exc)
+
+    with safety.maintenance_lock(db_path, exclusive=True):
+        thread = threading.Thread(target=contend)
+        thread.start()
+        thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], safety.MaintenanceLockError)
+    assert "timed out" in str(failures[0])
+
+
+def test_exclusive_maintenance_lock_is_reentrant_for_shared_work(tmp_path):
+    db_path = _fresh_db(tmp_path)
+    with safety.maintenance_lock(db_path, exclusive=True):
+        with safety.maintenance_lock(db_path, exclusive=False):
+            pass
+
+
+def test_copied_context_cannot_reuse_released_maintenance_lease(
+    tmp_path, monkeypatch
+):
+    db_path = _fresh_db(tmp_path)
+    monkeypatch.setattr(safety, "DEFAULT_LOCK_TIMEOUT_SECONDS", 0.05)
+    with safety.maintenance_lock(db_path, exclusive=False):
+        stale_context = contextvars.copy_context()
+
+    ready = threading.Event()
+    release = threading.Event()
+
+    def hold_exclusive() -> None:
         with safety.maintenance_lock(db_path, exclusive=True):
-            with pytest.raises(safety.MaintenanceLockError, match="timed out"):
-                with kb.write_txn(conn):
-                    conn.execute(
-                        "INSERT INTO tasks (id, title, status, created_at) "
-                        "VALUES ('x', 'x', 'todo', 1)"
-                    )
+            ready.set()
+            release.wait(2)
+
+    holder = threading.Thread(target=hold_exclusive)
+    holder.start()
+    assert ready.wait(1)
+
+    def acquire_shared() -> None:
+        with safety.maintenance_lock(db_path, exclusive=False):
+            pass
+
+    try:
+        with pytest.raises(safety.MaintenanceLockError, match="timed out"):
+            stale_context.run(acquire_shared)
     finally:
-        conn.close()
+        release.set()
+        holder.join(timeout=2)
+    assert not holder.is_alive()
+
+
+def test_async_child_cannot_inherit_parent_maintenance_lease(tmp_path):
+    db_path = _fresh_db(tmp_path)
+
+    async def scenario() -> None:
+        with safety.maintenance_lock(db_path, exclusive=True):
+            async def child() -> None:
+                with pytest.raises(safety.MaintenanceLockError):
+                    with safety.maintenance_lock(
+                        db_path, exclusive=False, timeout_seconds=0.05
+                    ):
+                        pass
+
+            await asyncio.create_task(child())
+
+    asyncio.run(scenario())
+
+
+def test_maintenance_lock_rejects_shared_to_exclusive_upgrade(tmp_path):
+    db_path = _fresh_db(tmp_path)
+    with safety.maintenance_lock(db_path, exclusive=False):
+        with pytest.raises(safety.MaintenanceLockError, match="cannot upgrade"):
+            with safety.maintenance_lock(db_path, exclusive=True):
+                pass
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
@@ -388,6 +461,18 @@ def test_clear_rejects_missing_additive_index(tmp_path):
     fingerprint = safety.db_fingerprint(db_path)
 
     with pytest.raises(safety.KanbanSafetyError, match="idx_events_run"):
+        safety.clear_quarantine(db_path, expected_fingerprint=fingerprint)
+    assert marker.exists()
+
+
+def test_clear_rejects_incomplete_writer_replay_ledger(tmp_path):
+    db_path = _fresh_db(tmp_path)
+    marker = safety.quarantine_board(db_path, reason="maintenance", source="test")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE kanban_writer_requests DROP COLUMN source")
+    fingerprint = safety.db_fingerprint(db_path)
+
+    with pytest.raises(safety.KanbanSafetyError, match="kanban_writer_requests.source"):
         safety.clear_quarantine(db_path, expected_fingerprint=fingerprint)
     assert marker.exists()
 

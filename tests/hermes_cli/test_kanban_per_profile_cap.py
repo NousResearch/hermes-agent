@@ -7,24 +7,18 @@ model / API quota / browser pool from being overwhelmed by a fan-out.
 """
 from __future__ import annotations
 
-import os
-import sys
-import tempfile
-
 import pytest
+
+from hermes_cli import kanban_db
 
 
 @pytest.fixture()
-def isolated_kanban_home_with_profiles(monkeypatch):
-    """Spin up a fresh HERMES_HOME with kanban DB + alpha/beta profiles."""
-    test_home = tempfile.mkdtemp(prefix="kanban_per_profile_cap_test_")
+def isolated_kanban_home_with_profiles(monkeypatch, tmp_path):
+    """Use a fresh HERMES_HOME without replacing canonical modules."""
+    test_home = tmp_path / ".hermes"
     for prof in ("alpha", "beta", "default"):
-        os.makedirs(os.path.join(test_home, "profiles", prof), exist_ok=True)
-    monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    from hermes_cli import kanban_db
+        (test_home / "profiles" / prof).mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(test_home))
     yield kanban_db
 
 

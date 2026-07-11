@@ -3763,10 +3763,10 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     assert calls["connect"] == 5
 
 
-def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
+def test_gateway_dispatcher_logs_unchanged_corrupt_board_once(
     monkeypatch, tmp_path, caplog
 ):
-    """A corrupt-looking board is retried after the quarantine TTL expires."""
+    """An unchanged corrupt board is not re-logged after the old TTL expires."""
     import asyncio
     import inspect
     import logging
@@ -3849,8 +3849,7 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
         )
 
     messages = [record.getMessage() for record in caplog.records]
-    assert sum("not a valid SQLite database" in msg for msg in messages) == 2
-    assert any("database fingerprint unchanged" in msg for msg in messages)
+    assert sum("not a valid SQLite database" in msg for msg in messages) == 1
     assert calls["tick"] == 3
 
 

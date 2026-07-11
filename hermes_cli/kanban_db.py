@@ -1264,6 +1264,21 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Durable replay ledger for the authenticated per-board writer. The writer
+-- records the mutation result in the same transaction as the board change, so
+-- reconnecting after a lost response cannot apply the mutation twice.
+CREATE TABLE IF NOT EXISTS kanban_writer_requests (
+    request_id TEXT PRIMARY KEY,
+    board      TEXT NOT NULL,
+    actor_profile TEXT NOT NULL,
+    source     TEXT NOT NULL,
+    writer_pid INTEGER NOT NULL,
+    operation  TEXT NOT NULL,
+    payload_digest TEXT NOT NULL,
+    response   TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1313,18 +1328,50 @@ def _resolve_busy_timeout_ms() -> int:
     return DEFAULT_BUSY_TIMEOUT_MS
 
 
-def _sqlite_connect(path: Path) -> sqlite3.Connection:
+class KanbanConnection(sqlite3.Connection):
+    """SQLite connection carrying immutable mutation attribution metadata."""
+
+    _kanban_actor_profile: str
+    _kanban_board: str
+    _kanban_source: str
+
+
+def _sqlite_connect(path: Path) -> KanbanConnection:
     """Open a Kanban SQLite connection with consistent lock waiting."""
     busy_timeout_ms = _resolve_busy_timeout_ms()
     conn = sqlite3.connect(
         str(path),
         isolation_level=None,
         timeout=busy_timeout_ms / 1000.0,
+        factory=KanbanConnection,
     )
     # ``sqlite3.connect(timeout=...)`` normally maps to busy_timeout, but set
     # the PRAGMA explicitly so it is observable and survives future wrapper
     # changes. Parameter binding is not supported for PRAGMA assignments.
     conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+    return conn
+
+
+def _sqlite_connect_read_only(path: Path) -> KanbanConnection:
+    """Open a physical board without creating files or persistent pragmas."""
+    busy_timeout_ms = _resolve_busy_timeout_ms()
+    resolved = Path(path).expanduser().resolve()
+    conn = sqlite3.connect(
+        resolved.as_uri() + "?mode=ro",
+        uri=True,
+        isolation_level=None,
+        timeout=busy_timeout_ms / 1000.0,
+        factory=KanbanConnection,
+    )
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA cell_size_check=ON")
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
@@ -1683,7 +1730,7 @@ def _connect_under_maintenance_lock(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
-) -> sqlite3.Connection:
+) -> KanbanConnection:
     """Open (and initialize if needed) the kanban DB.
 
     WAL mode is enabled on every connection; it's a no-op after the first
@@ -1776,8 +1823,15 @@ def _connect_under_maintenance_lock(
                     # process are cheap. The lock prevents same-process dispatcher
                     # threads from racing through the additive ALTER TABLE pass with
                     # stale PRAGMA snapshots during gateway startup.
-                    conn.executescript(SCHEMA_SQL)
-                    _migrate_add_optional_columns(conn)
+                    from hermes_cli import kanban_writer
+
+                    # Schema bootstrap and additive migration are the only
+                    # writes permitted outside the runtime writer service.
+                    # Keep this bypass scoped so a missing writer never becomes
+                    # an implicit runtime fallback.
+                    with kanban_writer.privileged_maintenance(Path(resolved)):
+                        conn.executescript(SCHEMA_SQL)
+                        _migrate_add_optional_columns(conn)
                     _INITIALIZED_PATHS.add(resolved)
         except Exception:
             conn.close()
@@ -1827,16 +1881,39 @@ def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    actor_profile: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> sqlite3.Connection:
     """Open a board under persistent quarantine and maintenance fencing."""
     path = Path(db_path) if db_path is not None else kanban_db_path(board=board)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_cli import kanban_writer
+
+    attributed_actor = actor_profile or os.environ.get("HERMES_PROFILE") or "default"
+    attributed_board = board or kanban_writer._infer_board(path)
+    attributed_source = kanban_writer.mutation_source_label(
+        source or kanban_writer.current_mutation_source()
+    )
+
+    def attributed(conn: KanbanConnection) -> KanbanConnection:
+        conn._kanban_actor_profile = attributed_actor
+        conn._kanban_board = attributed_board
+        conn._kanban_source = attributed_source
+        return conn
+
+    owner = kanban_writer.is_writer_owner(path)
+    writer_required = kanban_writer.is_writer_required(path)
+    if owner or not writer_required:
+        path.parent.mkdir(parents=True, exist_ok=True)
     kanban_safety.assert_board_not_quarantined(path)
     try:
         with kanban_safety.maintenance_lock(path, exclusive=False):
-            # A maintainer may have created a marker while this caller waited.
+            # Quarantine or writer activation may have changed while waiting.
             kanban_safety.assert_board_not_quarantined(path)
-            return _connect_under_maintenance_lock(path)
+            writer_required = kanban_writer.is_writer_required(path)
+            if owner or not writer_required:
+                return attributed(_connect_under_maintenance_lock(path))
+            _validate_sqlite_header(path)
+            return attributed(_sqlite_connect_read_only(path))
     except kanban_safety.BoardQuarantinedError:
         raise
     except Exception as exc:
@@ -1852,6 +1929,8 @@ def connect_closing(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    actor_profile: Optional[str] = None,
+    source: Optional[str] = None,
 ):
     """Open a kanban DB connection and guarantee it is closed on exit.
 
@@ -1872,7 +1951,12 @@ def connect_closing(
     intentionally manage the connection lifetime (tests, long-lived
     callers) continue to work.
     """
-    conn = connect(db_path=db_path, board=board)
+    conn = connect(
+        db_path=db_path,
+        board=board,
+        actor_profile=actor_profile,
+        source=source,
+    )
     try:
         yield conn
     finally:
@@ -2090,6 +2174,41 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
 
+    writer_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='kanban_writer_requests'"
+    ).fetchone() is not None
+    if writer_table_exists:
+        writer_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(kanban_writer_requests)")
+        }
+        if "payload_digest" not in writer_cols:
+            _add_column_if_missing(
+                conn,
+                "kanban_writer_requests",
+                "payload_digest",
+                "payload_digest TEXT NOT NULL DEFAULT ''",
+            )
+        for column, definition in (
+            ("board", "board TEXT NOT NULL DEFAULT ''"),
+            ("actor_profile", "actor_profile TEXT NOT NULL DEFAULT ''"),
+            ("source", "source TEXT NOT NULL DEFAULT ''"),
+            ("writer_pid", "writer_pid INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if column not in writer_cols:
+                _add_column_if_missing(
+                    conn,
+                    "kanban_writer_requests",
+                    column,
+                    definition,
+                )
+
+    # Canonicalize drifted legacy table shapes before any migration writes use
+    # modern columns or INTEGER run ids. In particular, running-task backfill
+    # below inserts claim metadata that pre-v2 task_runs tables do not have.
+    _rebuild_drifted_tables(conn)
+
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
     # Synthesize a matching task_runs row so subsequent end-run / heartbeat
@@ -2159,8 +2278,6 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "UPDATE task_events SET kind = ? WHERE kind = ?",
             (new, old),
         )
-
-    _rebuild_drifted_tables(conn)
 
 
 # Legacy DBs defined these tables with a ``TEXT PRIMARY KEY`` id (or, for
@@ -2253,7 +2370,13 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
     it. Idempotent: a correctly-typed DB skips every table and returns without
     opening a transaction.
     """
-    drifted = [t for t in _REBUILD_SPECS if _table_has_drifted(conn, t)]
+    rebuild_order = (
+        "task_runs",
+        "task_events",
+        "task_comments",
+        "kanban_notify_subs",
+    )
+    drifted = [t for t in rebuild_order if _table_has_drifted(conn, t)]
     if not drifted:
         return
 
@@ -2267,14 +2390,47 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
             conn.execute(create_sql)
             new_cols = {c["name"] for c in conn.execute(f"PRAGMA table_info({table})")}
             if table == "kanban_notify_subs":
-                # Cast the legacy TEXT cursor to INTEGER; NULL / non-numeric → 0.
+                # Event-ID reassignment invalidates every cursor. If only the
+                # subscription schema drifted, preserve numeric cursor meaning.
                 shared = [c for c in old_cols if c in new_cols and c != "last_event_id"]
                 cols_csv = ", ".join(shared)
+                cursor_sql = (
+                    "0"
+                    if "task_events" in drifted
+                    else "COALESCE(CAST(last_event_id AS INTEGER), 0)"
+                )
                 conn.execute(
                     f"INSERT INTO {table} ({cols_csv}, last_event_id) "
-                    f"SELECT {cols_csv}, COALESCE(CAST(last_event_id AS INTEGER), 0) "
-                    f"FROM {table}_legacy"
+                    f"SELECT {cols_csv}, {cursor_sql} FROM {table}_legacy"
                 )
+            elif table == "task_runs":
+                # Reassign canonical INTEGER ids row by row and remap every
+                # cross-table pointer while the old ids are still available.
+                shared = [c for c in old_cols if c in new_cols and c != "id"]
+                cols_csv = ", ".join(shared)
+                placeholders = ", ".join("?" for _ in shared)
+                legacy_rows = conn.execute(
+                    f"SELECT * FROM {table}_legacy ORDER BY rowid"
+                ).fetchall()
+                for legacy_row in legacy_rows:
+                    cur = conn.execute(
+                        f"INSERT INTO {table} ({cols_csv}) VALUES ({placeholders})",
+                        tuple(legacy_row[column] for column in shared),
+                    )
+                    old_id = legacy_row["id"]
+                    if old_id is None:
+                        continue
+                    old_id_text = str(old_id)
+                    conn.execute(
+                        "UPDATE tasks SET current_run_id = ? "
+                        "WHERE CAST(current_run_id AS TEXT) = ?",
+                        (cur.lastrowid, old_id_text),
+                    )
+                    conn.execute(
+                        "UPDATE task_events SET run_id = ? "
+                        "WHERE CAST(run_id AS TEXT) = ?",
+                        (cur.lastrowid, old_id_text),
+                    )
             else:
                 # Drop the legacy TEXT id; AUTOINCREMENT reassigns it.
                 shared = [c for c in old_cols if c in new_cols and c != "id"]
@@ -2286,6 +2442,12 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
             conn.execute(f"DROP TABLE {table}_legacy")
             for index_sql in index_sqls:
                 conn.execute(index_sql)
+        if "task_events" in drifted and conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
+        ).fetchone():
+            # Reassigned event IDs invalidate every existing cursor, including
+            # subscriptions whose own table already had the current schema.
+            conn.execute("UPDATE kanban_notify_subs SET last_event_id = 0")
         conn.execute("COMMIT")
     except Exception:
         try:
@@ -2393,8 +2555,25 @@ def _physical_main_db_path(conn: sqlite3.Connection) -> Path | None:
 
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
-    """Run an IMMEDIATE transaction inside the board's shared maintenance fence."""
+    """Run an IMMEDIATE transaction owned by the board's writer service."""
     db_path = _physical_main_db_path(conn)
+    if db_path is not None:
+        from hermes_cli import kanban_writer
+
+        if (
+            kanban_writer.is_writer_required(db_path)
+            and not kanban_writer.is_writer_owner(db_path)
+        ):
+            raise kanban_writer.WriterOwnershipError(
+                f"direct write rejected for {db_path}; use the per-board "
+                "single-writer service"
+            )
+        # Public mutation functions compose. The writer opens one outer
+        # transaction so the durable replay row and nested mutations commit
+        # atomically. Legacy pre-activation callers retain the same composition.
+        if conn.in_transaction:
+            yield conn
+            return
     fence = (
         kanban_safety.maintenance_lock(db_path, exclusive=False)
         if db_path is not None
@@ -2895,6 +3074,33 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
         _append_event(conn, task_id, "assigned", {"assignee": profile})
+        return True
+
+
+def assign_default_assignee(
+    conn: sqlite3.Connection,
+    task_id: str,
+    profile: str,
+) -> bool:
+    """CAS-assign an unassigned task from dispatcher configuration."""
+    canonical_profile = _canonical_assignee(profile)
+    if not canonical_profile:
+        raise ValueError("default assignee must be non-empty")
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
+            "last_failure_error = NULL WHERE id = ? "
+            "AND (assignee IS NULL OR assignee = '')",
+            (canonical_profile, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "assigned",
+            {"assignee": canonical_profile, "source": "kanban.default_assignee"},
+        )
         return True
 
 
@@ -3689,6 +3895,152 @@ def heartbeat_claim(
         return False
 
 
+def _extend_stale_claim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    expected_lock: Optional[str],
+    stale_before: int,
+    new_expires: int,
+) -> bool:
+    """CAS-extend one expired claim after caller-side liveness checks."""
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT worker_pid, claim_expires, last_heartbeat_at "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        cur = conn.execute(
+            "UPDATE tasks SET claim_expires = ? "
+            "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+            "AND claim_expires IS NOT NULL AND claim_expires < ?",
+            (new_expires, task_id, expected_lock, stale_before),
+        )
+        if cur.rowcount != 1:
+            return False
+        run_id = _current_run_id(conn, task_id)
+        if run_id is not None:
+            conn.execute(
+                "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                (new_expires, run_id),
+            )
+        _append_event(
+            conn,
+            task_id,
+            "claim_extended",
+            {
+                "reason": "pid_alive",
+                "worker_pid": int(row["worker_pid"]) if row and row["worker_pid"] else None,
+                "claim_lock": expected_lock,
+                "claim_expires_was": (
+                    int(row["claim_expires"])
+                    if row and row["claim_expires"] is not None
+                    else None
+                ),
+                "claim_expires_now": new_expires,
+                "last_heartbeat_at": (
+                    int(row["last_heartbeat_at"])
+                    if row and row["last_heartbeat_at"] is not None
+                    else None
+                ),
+            },
+            run_id=run_id,
+        )
+        return True
+
+
+def _finalize_stale_reclaim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    expected_lock: Optional[str],
+    stale_before: int,
+    now: int,
+    termination: dict,
+    host_local: bool,
+    heartbeat_stale: bool,
+) -> bool:
+    """CAS-finalize one TTL reclaim after caller-side termination."""
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT worker_pid, claim_expires, last_heartbeat_at "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+            "AND claim_expires IS NOT NULL AND claim_expires < ?",
+            (task_id, expected_lock, stale_before),
+        )
+        if cur.rowcount != 1:
+            return False
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="reclaimed",
+            status="reclaimed",
+            error=f"stale_lock={expected_lock}",
+            metadata=termination,
+        )
+        payload = {
+            "stale_lock": expected_lock,
+            "worker_pid": int(row["worker_pid"]) if row and row["worker_pid"] else None,
+            "claim_expires": (
+                int(row["claim_expires"])
+                if row and row["claim_expires"] is not None
+                else None
+            ),
+            "last_heartbeat_at": (
+                int(row["last_heartbeat_at"])
+                if row and row["last_heartbeat_at"] is not None
+                else None
+            ),
+            "now": now,
+            "host_local": host_local,
+            "heartbeat_stale": heartbeat_stale,
+        }
+        payload.update(termination)
+        _append_event(conn, task_id, "reclaimed", payload, run_id=run_id)
+        return True
+
+
+def _finalize_manual_reclaim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    expected_lock: Optional[str],
+    reason: Optional[str],
+    termination: dict,
+) -> bool:
+    """CAS-finalize an operator reclaim after caller-side termination."""
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, "
+            "consecutive_failures = 0, last_failure_error = NULL "
+            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
+            "AND claim_lock IS ?",
+            (task_id, expected_lock),
+        )
+        if cur.rowcount != 1:
+            return False
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="reclaimed",
+            status="reclaimed",
+            error=(
+                f"manual_reclaim: {reason}"
+                if reason
+                else f"manual_reclaim lock={expected_lock}"
+            ),
+            metadata=termination,
+        )
+        payload = {"manual": True, "reason": reason, "prev_lock": expected_lock}
+        payload.update(termination)
+        _append_event(conn, task_id, "reclaimed", payload, run_id=run_id)
+        return True
+
+
 def release_stale_claims(
     conn: sqlite3.Connection,
     *,
@@ -3748,39 +4100,13 @@ def release_stale_claims(
             and not heartbeat_stale
         ):
             new_expires = now + _resolve_claim_ttl_seconds()
-            with write_txn(conn):
-                cur = conn.execute(
-                    "UPDATE tasks SET claim_expires = ? "
-                    "WHERE id = ? AND status = 'running' "
-                    "  AND claim_lock IS ? "
-                    "  AND claim_expires IS NOT NULL "
-                    "  AND claim_expires < ?",
-                    (new_expires, row["id"], row["claim_lock"], now),
-                )
-                if cur.rowcount != 1:
-                    continue
-                run_id = _current_run_id(conn, row["id"])
-                if run_id is not None:
-                    conn.execute(
-                        "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
-                        (new_expires, run_id),
-                    )
-                _append_event(
-                    conn, row["id"], "claim_extended",
-                    {
-                        "reason": "pid_alive",
-                        "worker_pid": int(row["worker_pid"]),
-                        "claim_lock": row["claim_lock"],
-                        "claim_expires_was": int(row["claim_expires"]),
-                        "claim_expires_now": new_expires,
-                        "last_heartbeat_at": (
-                            int(row["last_heartbeat_at"])
-                            if row["last_heartbeat_at"] is not None
-                            else None
-                        ),
-                    },
-                    run_id=run_id,
-                )
+            _extend_stale_claim(
+                conn,
+                row["id"],
+                row["claim_lock"],
+                now,
+                new_expires,
+            )
             continue
 
         termination = _terminate_reclaimed_worker(
@@ -3794,43 +4120,16 @@ def release_stale_claims(
                 reason="ttl_expired_worker_alive",
             )
             continue
-        with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
-            )
-            if cur.rowcount != 1:
-                continue
-            run_id = _end_run(
-                conn, row["id"],
-                outcome="reclaimed", status="reclaimed",
-                error=f"stale_lock={row['claim_lock']}",
-                metadata=termination,
-            )
-            payload = {
-                "stale_lock": row["claim_lock"],
-                "worker_pid": (
-                    int(row["worker_pid"])
-                    if row["worker_pid"] is not None else None
-                ),
-                "claim_expires": int(row["claim_expires"]),
-                "last_heartbeat_at": (
-                    int(row["last_heartbeat_at"])
-                    if row["last_heartbeat_at"] is not None else None
-                ),
-                "now": now,
-                "host_local": host_local,
-                "heartbeat_stale": bool(heartbeat_stale),
-            }
-            payload.update(termination)
-            _append_event(
-                conn, row["id"], "reclaimed",
-                payload,
-                run_id=run_id,
-            )
+        if _finalize_stale_reclaim(
+            conn,
+            row["id"],
+            row["claim_lock"],
+            now,
+            now,
+            termination,
+            host_local,
+            bool(heartbeat_stale),
+        ):
             reclaimed += 1
     return reclaimed
 
@@ -3866,42 +4165,13 @@ def reclaim_task(
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
-    with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?",
-            (task_id, prev_lock),
-        )
-        if cur.rowcount != 1:
-            return False
-        run_id = _end_run(
-            conn, task_id,
-            outcome="reclaimed", status="reclaimed",
-            error=(
-                f"manual_reclaim: {reason}" if reason
-                else f"manual_reclaim lock={prev_lock}"
-            ),
-            metadata=termination,
-        )
-        payload = {
-            "manual": True,
-            "reason": reason,
-            "prev_lock": prev_lock,
-        }
-        payload.update(termination)
-        _append_event(
-            conn, task_id, "reclaimed",
-            payload,
-            run_id=run_id,
-        )
-    # Operator intervention — they've looked at the task, so the
-    # consecutive-failures counter is now stale. Give the next retry
-    # a fresh budget. (_clear_failure_counter opens its own write_txn,
-    # so it runs after the enclosing one commits.)
-    _clear_failure_counter(conn, task_id)
-    return True
+    return _finalize_manual_reclaim(
+        conn,
+        task_id,
+        prev_lock,
+        reason,
+        termination,
+    )
 
 
 def reassign_task(
@@ -4534,6 +4804,30 @@ def _mark_scratch_tip_shown() -> None:
         pass
 
 
+def emit_scratch_tip_event(conn: sqlite3.Connection, task_id: str) -> None:
+    """Persist the scratch-workspace first-use event via the board writer."""
+    with write_txn(conn):
+        _append_event(
+            conn,
+            task_id,
+            "tip_scratch_workspace",
+            {"message": _SCRATCH_TIP_MESSAGE},
+        )
+
+
+def record_respawn_guarded(
+    conn: sqlite3.Connection,
+    task_id: str,
+    reason: str,
+) -> None:
+    """Persist a dispatcher respawn-guard decision via the board writer."""
+    allowed = {"rate_limit_cooldown", "blocker_auth", "recent_success", "active_pr"}
+    if reason not in allowed:
+        raise ValueError(f"unsupported respawn guard reason: {reason}")
+    with write_txn(conn):
+        _append_event(conn, task_id, "respawn_guarded", {"reason": reason})
+
+
 def _maybe_emit_scratch_tip(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4551,11 +4845,7 @@ def _maybe_emit_scratch_tip(
         return
     try:
         _log.warning("kanban: %s (task %s)", _SCRATCH_TIP_MESSAGE, task_id)
-        with write_txn(conn):
-            _append_event(
-                conn, task_id, "tip_scratch_workspace",
-                {"message": _SCRATCH_TIP_MESSAGE},
-            )
+        emit_scratch_tip_event(conn, task_id)
     except Exception:
         # Best-effort — never block the spawn loop over a help message.
         pass
@@ -5656,6 +5946,135 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     raise ValueError(f"unknown workspace_kind: {kind}")
 
 
+def edit_task_fields(
+    conn: sqlite3.Connection, task_id: str, *, changes: dict[str, Any]
+) -> bool:
+    """Edit dashboard-owned task fields and emit their canonical events."""
+    unknown = set(changes) - {"title", "body", "priority"}
+    if unknown:
+        raise ValueError(f"unsupported task fields: {sorted(unknown)}")
+    if not changes:
+        return get_task(conn, task_id) is not None
+    normalized = dict(changes)
+    if "title" in normalized:
+        title = str(normalized["title"]).strip()
+        if not title:
+            raise ValueError("title cannot be empty")
+        normalized["title"] = title
+    if "body" in normalized and normalized["body"] is not None:
+        normalized["body"] = str(normalized["body"])
+    if "priority" in normalized:
+        normalized["priority"] = int(normalized["priority"])
+
+    with write_txn(conn):
+        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is None:
+            return False
+        columns = [name for name in ("title", "body", "priority") if name in normalized]
+        assignments = ", ".join(f"{name} = ?" for name in columns)
+        conn.execute(
+            f"UPDATE tasks SET {assignments} WHERE id = ?",
+            [*(normalized[name] for name in columns), task_id],
+        )
+        now = int(time.time())
+        if "priority" in normalized:
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'reprioritized', ?, ?)",
+                (task_id, json.dumps({"priority": normalized["priority"]}), now),
+            )
+        if "title" in normalized or "body" in normalized:
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'edited', NULL, ?)",
+                (task_id, now),
+            )
+    return True
+
+
+def set_task_status_direct(
+    conn: sqlite3.Connection, task_id: str, new_status: str
+) -> bool:
+    """Apply dashboard drag/drop transitions through the canonical writer."""
+    if new_status not in {"todo", "triage", "scheduled", "ready"}:
+        raise ValueError(f"unsupported direct status: {new_status}")
+    with write_txn(conn):
+        previous = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if previous is None:
+            return False
+        if new_status == "ready":
+            parents = conn.execute(
+                "SELECT t.status FROM tasks t "
+                "JOIN task_links l ON l.parent_id = t.id "
+                "WHERE l.child_id = ?",
+                (task_id,),
+            ).fetchall()
+            if parents and not all(parent["status"] == "done" for parent in parents):
+                return False
+
+        was_running = previous["status"] == "running"
+        reopening_parent = (
+            previous["status"] in {"done", "archived"}
+            and new_status not in {"done", "archived"}
+        )
+        updated = conn.execute(
+            "UPDATE tasks SET status = ?, "
+            "claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
+            "claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
+            "worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
+            "WHERE id = ?",
+            (new_status, new_status, new_status, new_status, task_id),
+        )
+        if updated.rowcount != 1:
+            return False
+        run_id = None
+        if was_running and new_status != "running" and previous["current_run_id"]:
+            run_id = _end_run(
+                conn,
+                task_id,
+                outcome="reclaimed",
+                status="reclaimed",
+                summary=f"status changed to {new_status} (dashboard/direct)",
+            )
+        conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+            "VALUES (?, ?, 'status', ?, ?)",
+            (task_id, run_id, json.dumps({"status": new_status}), int(time.time())),
+        )
+        if reopening_parent:
+            children = conn.execute(
+                "SELECT child_id FROM task_links WHERE parent_id = ? ORDER BY child_id",
+                (task_id,),
+            ).fetchall()
+            for row in children:
+                child_id = row["child_id"]
+                demoted = conn.execute(
+                    "UPDATE tasks SET status = 'todo' "
+                    "WHERE id = ? AND status = 'ready'",
+                    (child_id,),
+                )
+                if demoted.rowcount == 1:
+                    conn.execute(
+                        "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                        "VALUES (?, 'status', ?, ?)",
+                        (
+                            child_id,
+                            json.dumps(
+                                {
+                                    "status": "todo",
+                                    "reason": "parent_reopened",
+                                    "parent": task_id,
+                                }
+                            ),
+                            int(time.time()),
+                        ),
+                    )
+    if new_status in {"done", "ready"}:
+        recompute_ready(conn)
+    return True
+
+
 def set_workspace_path(
     conn: sqlite3.Connection, task_id: str, path: Path | str
 ) -> None:
@@ -6174,6 +6593,53 @@ def heartbeat_worker(
     return True
 
 
+def _finalize_max_runtime(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int,
+    expected_lock: Optional[str],
+    elapsed: int,
+    limit: int,
+    killed: bool,
+) -> bool:
+    """CAS-finalize a max-runtime timeout after caller-side signalling."""
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, last_heartbeat_at = NULL "
+            "WHERE id = ? AND status = 'running' "
+            "AND worker_pid = ? AND claim_lock IS ?",
+            (task_id, pid, expected_lock),
+        )
+        if cur.rowcount != 1:
+            return False
+        payload = {
+            "pid": pid,
+            "elapsed_seconds": elapsed,
+            "limit_seconds": limit,
+            "sigkill": killed,
+        }
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="timed_out",
+            status="timed_out",
+            error=f"elapsed {elapsed}s > limit {limit}s",
+            metadata=payload,
+        )
+        _append_event(conn, task_id, "timed_out", payload, run_id=run_id)
+        _record_task_failure(
+            conn,
+            task_id,
+            error=f"elapsed {elapsed}s > limit {limit}s",
+            outcome="timed_out",
+            release_claim=False,
+            end_run=False,
+            event_payload_extra={"pid": pid, "sigkill": killed},
+        )
+        return True
+
+
 def enforce_max_runtime(
     conn: sqlite3.Connection,
     *,
@@ -6245,46 +6711,16 @@ def enforce_max_runtime(
                 except (ProcessLookupError, OSError):
                     pass
 
-        with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (tid, pid, row["claim_lock"]),
-            )
-            if cur.rowcount == 1:
-                payload = {
-                    "pid": pid,
-                    "elapsed_seconds": int(elapsed),
-                    "limit_seconds": int(row["max_runtime_seconds"]),
-                    "sigkill": killed,
-                }
-                run_id = _end_run(
-                    conn, tid,
-                    outcome="timed_out", status="timed_out",
-                    error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
-                    metadata=payload,
-                )
-                _append_event(
-                    conn, tid, "timed_out", payload, run_id=run_id,
-                )
-                timed_out.append(tid)
-        # Increment the unified failure counter. Outside the write_txn
-        # above because ``_record_task_failure`` opens its own. If the
-        # breaker trips, this flips the task ``ready → blocked`` and
-        # emits a ``gave_up`` event on top of the ``timed_out`` we
-        # already emitted.
-        if cur.rowcount == 1:
-            _record_task_failure(
-                conn, tid,
-                error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
-                outcome="timed_out",
-                release_claim=False,
-                end_run=False,
-                event_payload_extra={"pid": pid, "sigkill": killed},
-            )
+        if _finalize_max_runtime(
+            conn,
+            tid,
+            pid,
+            row["claim_lock"],
+            int(elapsed),
+            int(row["max_runtime_seconds"]),
+            killed,
+        ):
+            timed_out.append(tid)
     return timed_out
 
 
@@ -6293,6 +6729,51 @@ def enforce_max_runtime(
 # the ``dispatch_stale_timeout_seconds`` threshold.  Hardcoded at 1 hour
 # to match the original spec (">4h started + no commits in 1h").
 _STALE_HEARTBEAT_GAP_SECONDS = 3600
+
+
+def _finalize_stale_running(
+    conn: sqlite3.Connection,
+    task_id: str,
+    expected_lock: Optional[str],
+    elapsed: int,
+    last_heartbeat_at: Optional[int],
+    heartbeat_age: Optional[int],
+    timeout: int,
+    pid: Optional[int],
+    termination: dict,
+) -> bool:
+    """CAS-finalize heartbeat-stale reclaim after caller-side termination."""
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, last_heartbeat_at = NULL "
+            "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
+            (task_id, expected_lock),
+        )
+        if cur.rowcount != 1:
+            return False
+        payload = {
+            "elapsed_seconds": elapsed,
+            "last_heartbeat_at": last_heartbeat_at,
+            "heartbeat_age_seconds": heartbeat_age,
+            "timeout_seconds": timeout,
+            "pid": pid,
+        }
+        payload.update(termination)
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="stale",
+            status="stale",
+            error=(
+                f"no heartbeat for {heartbeat_age}s "
+                if heartbeat_age is not None
+                else "no heartbeat ever"
+            ) + f" after {elapsed}s running",
+            metadata=payload,
+        )
+        _append_event(conn, task_id, "stale", payload, run_id=run_id)
+        return True
 
 
 def detect_stale_running(
@@ -6371,44 +6852,17 @@ def detect_stale_running(
             )
             continue
 
-        with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND claim_lock IS ?",
-                (tid, row["claim_lock"]),
-            )
-            if cur.rowcount != 1:
-                continue
-
-            payload = {
-                "elapsed_seconds": int(elapsed),
-                "last_heartbeat_at": (
-                    int(last_hb) if last_hb is not None else None
-                ),
-                "heartbeat_age_seconds": (
-                    int(hb_age) if hb_age is not None else None
-                ),
-                "timeout_seconds": stale_timeout_seconds,
-                "pid": int(pid) if pid else None,
-            }
-            payload.update(termination)
-
-            run_id = _end_run(
-                conn, tid,
-                outcome="stale", status="stale",
-                error=(
-                    f"no heartbeat for {int(hb_age)}s "
-                    if hb_age is not None
-                    else "no heartbeat ever"
-                ) + f" after {int(elapsed)}s running",
-                metadata=payload,
-            )
-            _append_event(
-                conn, tid, "stale", payload, run_id=run_id,
-            )
+        if _finalize_stale_running(
+            conn,
+            tid,
+            row["claim_lock"],
+            int(elapsed),
+            int(last_hb) if last_hb is not None else None,
+            int(hb_age) if hb_age is not None else None,
+            stale_timeout_seconds,
+            int(pid) if pid else None,
+            termination,
+        ):
             reclaimed.append(tid)
 
         # Intentionally NOT calling _record_task_failure here. Stale reclaim
@@ -7268,19 +7722,11 @@ def _dispatch_once_locked(
                 # 'assigned' event so the board state matches what just happened.
                 if not dry_run:
                     try:
-                        with write_txn(conn):
-                            conn.execute(
-                                "UPDATE tasks SET assignee = ? WHERE id = ? "
-                                "AND (assignee IS NULL OR assignee = '')",
-                                (_default_assignee, row["id"]),
-                            )
-                            _append_event(
-                                conn, row["id"], "assigned",
-                                {
-                                    "assignee": _default_assignee,
-                                    "source": "kanban.default_assignee",
-                                },
-                            )
+                        if not assign_default_assignee(
+                            conn, row["id"], _default_assignee
+                        ):
+                            result.skipped_unassigned.append(row["id"])
+                            continue
                     except Exception:
                         _log.debug(
                             "kanban dispatch: failed to apply default_assignee=%r "
@@ -7345,11 +7791,7 @@ def _dispatch_once_locked(
             # skipped when reading `hermes kanban tail` — without
             # this the task appears stuck in ready with no diagnosis.
             if not dry_run:
-                with write_txn(conn):
-                    _append_event(
-                        conn, row["id"], "respawn_guarded",
-                        {"reason": guard_reason},
-                    )
+                record_respawn_guarded(conn, row["id"], guard_reason)
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
@@ -8840,3 +9282,22 @@ def latest_summaries(
         ids,
     ).fetchall()
     return {r["task_id"]: r["summary"] for r in rows}
+
+
+# Install routing only after every mutation function exists. functools.wraps
+# preserves the public signatures/docstrings used by CLI, tests and plugins.
+def _install_writer_mutation_routes() -> None:
+    from hermes_cli import kanban_writer
+
+    for mutation_name in kanban_writer.RUNTIME_MUTATIONS:
+        mutation = globals().get(mutation_name)
+        if mutation is None:
+            raise RuntimeError(
+                f"writer mutation registry references missing function: {mutation_name}"
+            )
+        globals()[mutation_name] = kanban_writer.route_runtime_mutation(
+            mutation_name, mutation
+        )
+
+
+_install_writer_mutation_routes()

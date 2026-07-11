@@ -46,6 +46,9 @@ const fmtElapsed = (ms: number) => {
   return sec < 10 ? `${sec.toFixed(1)}s` : `${Math.round(sec)}s`
 }
 
+const isDelegateToolLabel = (label: string) =>
+  label.startsWith('Delegate Task') || label === 'Delegating' || label.startsWith('Delegating ')
+
 type TreeBranch = 'mid' | 'last'
 type TreeRails = readonly boolean[]
 
@@ -886,7 +889,7 @@ export const ToolTrail = memo(function ToolTrail({
   const toolTokensLabel = toolTokens !== undefined && toolTokens > 0 ? `~${fmtK(toolTokens)} tokens` : undefined
 
   const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
-  const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
+  const delegateGroups = groups.filter(g => isDelegateToolLabel(g.label))
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 
   const toolLabel = (group: Group) => {
@@ -1063,7 +1066,7 @@ export const ToolTrail = memo(function ToolTrail({
             // Surface the /agents hint the moment a delegate group appears —
             // while it's still in-flight and before any subagent has
             // registered — so users can open the live monitor immediately.
-            const isDelegateGroup = group.label.startsWith('Delegate Task')
+            const isDelegateGroup = isDelegateToolLabel(group.label)
 
             return (
               <Box flexDirection="column" key={group.key}>

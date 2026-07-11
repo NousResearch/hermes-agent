@@ -5,10 +5,38 @@ import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { MessageLine } from '../components/messageLine.js'
+import { ToolTrail } from '../components/thinking.js'
 import { toTranscriptMessages } from '../domain/messages.js'
 import { upsert } from '../lib/messages.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
+import type { SubagentProgress } from '../types.js'
+
+const renderText = (element: React.ReactElement, columns = 80) => {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+  let output = ''
+
+  Object.assign(stdout, { columns, isTTY: false, rows: 24 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+
+  const instance = renderSync(element, {
+    patchConsole: false,
+    stderr: stderr as NodeJS.WriteStream,
+    stdin: stdin as NodeJS.ReadStream,
+    stdout: stdout as NodeJS.WriteStream
+  })
+
+  instance.unmount()
+  instance.cleanup()
+
+  return stripAnsi(output)
+}
 
 describe('toTranscriptMessages', () => {
   it('preserves assistant tool-call rows so resume does not drop prior turns', () => {
@@ -36,45 +64,56 @@ describe('toTranscriptMessages', () => {
 
 describe('MessageLine', () => {
   it('preserves a separator after compound user prompt glyphs in transcript rows', () => {
-    const stdout = new PassThrough()
-    const stdin = new PassThrough()
-    const stderr = new PassThrough()
-    let output = ''
-
-    Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
-    Object.assign(stdin, { isTTY: false })
-    Object.assign(stderr, { isTTY: false })
-    stdout.on('data', chunk => {
-      output += chunk.toString()
-    })
-
     const t = {
       ...DEFAULT_THEME,
       brand: { ...DEFAULT_THEME.brand, prompt: 'Ψ >' }
     }
 
-    const instance = renderSync(
+    const output = renderText(
       React.createElement(MessageLine, {
         cols: 80,
         msg: { role: 'user', text: 'Okay' },
         t
-      }),
-      {
-        patchConsole: false,
-        stderr: stderr as NodeJS.WriteStream,
-        stdin: stdin as NodeJS.ReadStream,
-        stdout: stdout as NodeJS.WriteStream
-      }
+      })
     )
-
-    instance.unmount()
-    instance.cleanup()
 
     const renderedLine = stripAnsi(output)
       .split('\n')
       .find(line => line.includes('Okay'))
 
     expect(renderedLine).toContain('Ψ > Okay')
+  })
+})
+
+describe('ToolTrail', () => {
+  it('keeps friendly delegate labels attached to their inline subagents', () => {
+    const subagent: SubagentProgress = {
+      depth: 0,
+      goal: 'Inspect regression',
+      id: 'agent-1',
+      index: 0,
+      notes: [],
+      parentId: null,
+      status: 'running',
+      taskCount: 1,
+      thinking: [],
+      toolCount: 0,
+      tools: []
+    }
+
+    const output = renderText(
+      React.createElement(ToolTrail, {
+        detailsMode: 'expanded',
+        subagents: [subagent],
+        t: DEFAULT_THEME,
+        tools: [{ id: 'delegate-1', label: 'Delegating inspect regression', name: 'delegate_task' }]
+      })
+    )
+
+    expect(output).toContain('Delegating inspect regression')
+    expect(output).toContain('/agents to monitor')
+    expect(output).toContain('Inspect regression')
+    expect(output).not.toContain('Spawn tree')
   })
 })
 

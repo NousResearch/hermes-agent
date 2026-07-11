@@ -329,11 +329,27 @@ class _Client:
 # ---------------------------------------------------------------------------
 
 class _WriteQueue:
-    """SQLite-backed async write queue. Survives crashes — pending rows replay on startup."""
+    """SQLite-backed async write queue. Survives crashes — pending rows replay on startup.
+
+    Process-wide shared instance registry: the main agent and every
+    delegate_task subagent construct their own RetainDBMemoryProvider (see
+    plugins/memory/__init__.py::load_memory_provider — it calls the plugin's
+    register(ctx) fresh on every call, never reusing a cached instance), each
+    of which used to open its own _WriteQueue — its own background writer
+    thread plus its own thread-local SQLite connections — against the same
+    HERMES_HOME-scoped retaindb_queue.db. Concurrent subagents raced as
+    independent writers against one file. get_or_create()/release() share
+    ONE _WriteQueue (one writer thread) per resolved db path, refcounted so
+    closing one provider instance never tears down a live sibling's queue.
+    """
+
+    _shared: Dict[str, "_WriteQueue"] = {}
+    _shared_guard = threading.Lock()
 
     def __init__(self, client: _Client, db_path: Path):
         self._client = client
         self._db_path = db_path
+        self._refs = 0
         self._q: queue.Queue = queue.Queue()
         self._thread = threading.Thread(target=self._loop, name="retaindb-writer", daemon=True)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -344,6 +360,35 @@ class _WriteQueue:
         # Replay any rows left from a previous crash
         for row_id, user_id, session_id, msgs_json in self._pending_rows():
             self._q.put((row_id, user_id, session_id, json.loads(msgs_json)))
+
+    @classmethod
+    def get_or_create(cls, client: _Client, db_path: Path) -> "_WriteQueue":
+        """Return the process-wide shared queue for *db_path*, creating it on first use."""
+        key = str(db_path.resolve())
+        with cls._shared_guard:
+            entry = cls._shared.get(key)
+            if entry is None:
+                entry = cls(client, db_path)
+                cls._shared[key] = entry
+            entry._refs += 1
+            return entry
+
+    def release(self) -> None:
+        """Release this reference to the shared queue.
+
+        The background writer thread is stopped only when the last provider
+        instance referencing the same database releases it, so releasing one
+        instance can never break a live sibling still using it. Idempotent.
+        """
+        key = str(self._db_path.resolve())
+        with _WriteQueue._shared_guard:
+            if _WriteQueue._shared.get(key) is not self:
+                return
+            self._refs -= 1
+            if self._refs > 0:
+                return
+            _WriteQueue._shared.pop(key, None)
+        self.shutdown()
 
     def _get_conn(self) -> sqlite3.Connection:
         """Return a cached connection for the current thread."""
@@ -509,7 +554,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         from hermes_constants import get_hermes_home
         hermes_home_path = get_hermes_home()
         db_path = hermes_home_path / "retaindb_queue.db"
-        self._queue = _WriteQueue(self._client, db_path)
+        self._queue = _WriteQueue.get_or_create(self._client, db_path)
 
         # Seed agent identity from SOUL.md in background
         soul_path = hermes_home_path / "SOUL.md"
@@ -763,7 +808,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         for t in self._prefetch_threads:
             t.join(timeout=3.0)
         if self._queue:
-            self._queue.shutdown()
+            self._queue.release()
 
 
 def register(ctx) -> None:

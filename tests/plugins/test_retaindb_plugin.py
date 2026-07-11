@@ -249,6 +249,101 @@ class TestWriteQueue:
         assert call_args[0][0] == "user1"  # user_id
 
 
+class TestWriteQueueSharedRegistry:
+    """get_or_create()/release() share one queue (one writer thread, one set
+    of connections) per resolved db path across multiple provider instances.
+
+    The main agent and every delegate_task subagent construct their own
+    RetainDBMemoryProvider (plugins/memory/__init__.py's load_memory_provider
+    re-runs the plugin's register(ctx) on every call, never reusing a cached
+    instance). Before this fix, each provider's initialize() opened its own
+    independent _WriteQueue — its own background writer thread and its own
+    thread-local SQLite connections — against the same HERMES_HOME-scoped
+    retaindb_queue.db, so concurrent subagents raced as independent writers
+    against one file.
+    """
+
+    def teardown_method(self):
+        # Tests construct queues directly (bypassing get_or_create) and via
+        # get_or_create; make sure no shared entry leaks between tests.
+        from plugins.memory.retaindb import _WriteQueue
+        _WriteQueue._shared.clear()
+
+    def test_get_or_create_shares_one_queue_for_same_path(self, tmp_path):
+        from plugins.memory.retaindb import _WriteQueue
+
+        client1 = MagicMock()
+        client2 = MagicMock()
+        db_path = tmp_path / "shared.db"
+
+        q1 = _WriteQueue.get_or_create(client1, db_path)
+        q2 = _WriteQueue.get_or_create(client2, db_path)
+
+        assert q1 is q2
+        assert q1._thread is q2._thread
+
+        q1.release()
+        q2.release()
+
+    def test_get_or_create_resolves_symlinked_and_relative_paths(self, tmp_path):
+        """A symlinked or relative path to the same DB file must not get its
+        own queue — mirrors the holographic store's resolve() fix for the
+        exact same class of bug."""
+        from plugins.memory.retaindb import _WriteQueue
+
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        db_path = real_dir / "shared.db"
+        link_dir = tmp_path / "link"
+        link_dir.symlink_to(real_dir)
+        linked_db_path = link_dir / "shared.db"
+
+        client = MagicMock()
+        q1 = _WriteQueue.get_or_create(client, db_path)
+        q2 = _WriteQueue.get_or_create(client, linked_db_path)
+
+        assert q1 is q2
+
+        q1.release()
+        q2.release()
+
+    def test_release_keeps_queue_alive_for_live_sibling(self, tmp_path):
+        client = MagicMock()
+        client.ingest_session = MagicMock(return_value={"status": "ok"})
+        db_path = tmp_path / "shared.db"
+
+        from plugins.memory.retaindb import _WriteQueue
+        q1 = _WriteQueue.get_or_create(client, db_path)
+        q2 = _WriteQueue.get_or_create(client, db_path)
+
+        q1.release()
+        assert q2._thread.is_alive()
+
+        # The still-live sibling must still be able to enqueue/flush.
+        q2.enqueue("user1", "sess1", [{"role": "user", "content": "hi"}])
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not client.ingest_session.called:
+            time.sleep(0.05)
+        assert client.ingest_session.called
+
+        q2.release()
+
+    def test_release_shuts_down_queue_when_last_reference_released(self, tmp_path):
+        client = MagicMock()
+        db_path = tmp_path / "shared.db"
+
+        from plugins.memory.retaindb import _WriteQueue
+        q1 = _WriteQueue.get_or_create(client, db_path)
+        q2 = _WriteQueue.get_or_create(client, db_path)
+
+        q1.release()
+        q2.release()
+
+        q1._thread.join(timeout=2.0)
+        assert not q1._thread.is_alive()
+        assert str(db_path.resolve()) not in _WriteQueue._shared
+
+
 # ===========================================================================
 # _build_overlay tests
 # ===========================================================================

@@ -16,6 +16,9 @@ import yaml
 
 pytest.importorskip("mcp.server.fastmcp")
 
+_SLASH_WORKER_RESPONSE_TIMEOUT_S = 30
+_FAILURE_STDERR_TAIL_CHARS = 4000
+
 
 def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
     profile_home = tmp_path / "profile-home"
@@ -90,16 +93,36 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
         proc.stdin.write(json.dumps({"id": 1, "command": "/tools"}) + "\n")
         proc.stdin.flush()
         try:
-            line = output.get(timeout=10)
+            line = output.get(timeout=_SLASH_WORKER_RESPONSE_TIMEOUT_S)
         except queue.Empty:
-            pytest.fail("slash worker produced no /tools response within 10 seconds")
+            # The worker imports the full Hermes tool registry and starts a
+            # local FastMCP subprocess before answering.  A 10-second deadline
+            # flakes on shared CI runners when the per-file suite is under
+            # load, even though the worker is still alive.  Preserve a bounded
+            # deadline, but leave enough startup headroom and retain stderr so
+            # a real hang is diagnosable rather than reported as an opaque
+            # timeout.
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+            stderr = proc.stderr.read() if proc.stderr is not None else ""
+            pytest.fail(
+                "slash worker produced no /tools response within "
+                f"{_SLASH_WORKER_RESPONSE_TIMEOUT_S} seconds "
+                f"(returncode={proc.returncode}, "
+                f"stderr_tail={stderr[-_FAILURE_STDERR_TAIL_CHARS:]!r})"
+            )
         response = json.loads(line)
         assert response["ok"] is True
         assert "mcp__profileprobe__hermes_61922_profile_probe" in response["output"]
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)

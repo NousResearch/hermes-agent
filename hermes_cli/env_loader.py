@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from utils import atomic_replace, fast_safe_load
+from utils import atomic_replace, env_var_enabled, fast_safe_load
 
 
 # Env var name suffixes that indicate credential values.  These are the
@@ -350,10 +350,14 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # came from BSM rather than .env.
         for name in result.applied:
             _SECRET_SOURCES[name] = "bitwarden"
+        applied_names = (
+            f" ({', '.join(sorted(result.applied))})"
+            if env_var_enabled("HERMES_SECRETS_DEBUG")
+            else ""
+        )
         _stderr_note(
             f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
-            f"secret{'s' if len(result.applied) != 1 else ''} "
-            f"({', '.join(sorted(result.applied))})"
+            f"secret{'s' if len(result.applied) != 1 else ''}{applied_names}"
         )
     if result.error:
         _stderr_note(f"  Bitwarden Secrets Manager: {result.error}")

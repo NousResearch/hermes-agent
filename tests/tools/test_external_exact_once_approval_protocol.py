@@ -280,6 +280,10 @@ def test_named_profile_binding_is_stable_and_not_machine_specific(monkeypatch):
     )
     assert approval_module._external_approval_profile_binding() == "linear-agent-dev"
 
+    monkeypatch.setenv("HERMES_PROFILE", "stale-default")
+    assert approval_module._external_approval_profile_binding() == "linear-agent-dev"
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: Path("/srv/hermes"))
     monkeypatch.setenv("HERMES_PROFILE", "linear-agent-explicit")
     assert approval_module._external_approval_profile_binding() == "linear-agent-explicit"
 

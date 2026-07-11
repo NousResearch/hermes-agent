@@ -644,11 +644,6 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 # Attachments — upload / list / download / delete (#35338)
 # ---------------------------------------------------------------------------
 
-# Cap a single upload so a runaway request can't fill the disk. 25 MB
-# comfortably covers PDFs, images, and source docs — the kanban use case.
-_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
-
-
 def _safe_attachment_name(raw: str) -> str:
     """Reduce a client-supplied filename to a safe basename.
 
@@ -727,13 +722,14 @@ async def upload_task_attachment(
                     if not chunk:
                         break
                     total += len(chunk)
-                    if total > _MAX_ATTACHMENT_BYTES:
+                    if total > kanban_db.KANBAN_ATTACHMENT_MAX_BYTES:
                         out.close()
                         dest_path.unlink(missing_ok=True)
                         raise HTTPException(
                             status_code=413,
                             detail=(
-                                f"attachment exceeds {_MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB limit"
+                                "attachment exceeds "
+                                f"{kanban_db.KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit"
                             ),
                         )
                     out.write(chunk)

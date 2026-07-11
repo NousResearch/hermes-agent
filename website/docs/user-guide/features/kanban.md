@@ -167,10 +167,13 @@ body and hoping it finds them.
 - **Storage** — files land under
   `<hermes-home>/kanban/attachments/<task_id>/` for the default board, or
   `<hermes-home>/kanban/boards/<slug>/attachments/<task_id>/` for a named
-  board. Set `HERMES_KANBAN_ATTACHMENTS_ROOT` to pin a custom location.
+  board. Scratch deliverables preserved through a direct `HERMES_KANBAN_DB`
+  connection use `<db-parent>/attachments/<task_id>/`. Set
+  `HERMES_KANBAN_ATTACHMENTS_ROOT` to pin a custom location.
 - **Worker deliverables** — files inside a managed scratch workspace that the
   worker lists in `kanban_complete(artifacts=[...])` are copied here before
-  scratch cleanup. Completion metadata and notifications use the durable paths.
+  scratch cleanup, with the same 25 MiB per-file cap as dashboard uploads.
+  Completion metadata and notifications use the durable paths.
 - **What the worker sees** — when the dispatcher hands a task to a worker,
   the worker's context includes an **Attachments** section listing each
   file's name and its **absolute path**. The worker has full file/terminal

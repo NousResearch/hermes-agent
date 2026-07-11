@@ -11,7 +11,7 @@ claimed the task. The same applies to ``<root>/kanban/workspaces/`` and
 **Multiple boards (projects):** users can create additional boards to
 separate unrelated streams of work (e.g. one per project / repo / domain).
 Each board is a directory under ``<root>/kanban/boards/<slug>/`` with
-its own ``kanban.db``, ``workspaces/``, and ``logs/``. All boards share
+its own ``kanban.db``, ``workspaces/``, ``logs/``, and ``attachments/``. All boards share
 the profile's Hermes home but are otherwise isolated: a worker spawned
 for a task on board ``atm10-server`` sees only that board's tasks,
 cannot enumerate other boards, and its dispatcher ticks don't touch
@@ -43,6 +43,7 @@ overrides still work:
 
 * ``HERMES_KANBAN_DB`` — pin the database file path directly.
 * ``HERMES_KANBAN_WORKSPACES_ROOT`` — pin the workspaces root directly.
+* ``HERMES_KANBAN_ATTACHMENTS_ROOT`` — pin the attachments root directly.
 * ``HERMES_KANBAN_HOME`` — pin the umbrella root that anchors kanban
   paths. Useful for tests and unusual deployments.
 
@@ -135,6 +136,8 @@ BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+# Shared by dashboard uploads and worker-produced durable artifacts.
+KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -2976,7 +2979,7 @@ def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
 # ---------------------------------------------------------------------------
 
 def _attachments_root_for_connection(conn: sqlite3.Connection) -> Path:
-    """Resolve attachment storage from the connection's board, not global state."""
+    """Resolve attachment storage from the connection's DB, not global state."""
     override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
     if override:
         return Path(override).expanduser()
@@ -2992,19 +2995,13 @@ def _attachments_root_for_connection(conn: sqlite3.Connection) -> Path:
     except OSError:
         root = None
 
-    if db_path is not None and root is not None:
-        if db_path == root / "kanban.db":
+    if db_path is not None:
+        if root is not None and db_path == root / "kanban.db":
             return root / "kanban" / "attachments"
-        try:
-            relative = db_path.relative_to(boards_root().resolve())
-        except (OSError, ValueError):
-            relative = None
-        if (
-            relative is not None
-            and len(relative.parts) == 2
-            and relative.parts[1] == "kanban.db"
-        ):
-            return db_path.parent / "attachments"
+        # Named boards and direct HERMES_KANBAN_DB/connect(db_path=...) pins
+        # keep artifacts beside their DB. This avoids falling back to the
+        # ambient board selected by HERMES_KANBAN_BOARD/current.
+        return db_path.parent / "attachments"
 
     return attachments_root()
 
@@ -3019,6 +3016,18 @@ def _remove_staged_artifact(path: Path) -> None:
 
 def _copy_artifact_exclusive(source: Path, destination_dir: Path, filename: str) -> Path:
     """Copy one artifact without overwriting an existing attachment."""
+    try:
+        source_size = source.stat().st_size
+    except OSError as exc:
+        raise ArtifactPreservationError(
+            f"could not inspect declared artifact {source}: {exc}"
+        ) from exc
+    if source_size > KANBAN_ATTACHMENT_MAX_BYTES:
+        raise ArtifactPreservationError(
+            f"declared artifact exceeds the {KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: "
+            f"{source} ({source_size} bytes)"
+        )
+
     try:
         destination_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -3035,11 +3044,24 @@ def _copy_artifact_exclusive(source: Path, destination_dir: Path, filename: str)
         try:
             with source.open("rb") as source_file, destination.open("xb") as destination_file:
                 destination_created = True
-                shutil.copyfileobj(source_file, destination_file, length=1024 * 1024)
+                copied_size = 0
+                while chunk := source_file.read(1024 * 1024):
+                    copied_size += len(chunk)
+                    if copied_size > KANBAN_ATTACHMENT_MAX_BYTES:
+                        raise ArtifactPreservationError(
+                            "declared artifact grew beyond the "
+                            f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit while copying: "
+                            f"{source}"
+                        )
+                    destination_file.write(chunk)
             return destination.resolve()
         except FileExistsError:
             candidate = f"{stem} ({suffix}){dot}{extension}"
             suffix += 1
+        except ArtifactPreservationError:
+            if destination_created:
+                _remove_staged_artifact(destination)
+            raise
         except OSError as exc:
             if destination_created:
                 _remove_staged_artifact(destination)

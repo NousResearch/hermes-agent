@@ -2561,6 +2561,67 @@ def test_complete_rejects_unusable_declared_scratch_artifact(
     assert not kb.task_attachments_dir(task_id).exists()
 
 
+def test_complete_rejects_oversized_scratch_artifact(
+    kanban_home,
+    monkeypatch,
+):
+    """Oversized deliverables must not fill durable attachment storage."""
+    monkeypatch.setattr(kb, "KANBAN_ATTACHMENT_MAX_BYTES", 8)
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn)
+        artifact = workspace / "report.bin"
+        artifact.write_bytes(b"123456789")
+
+        with pytest.raises(kb.ArtifactPreservationError, match="exceeds the 8-byte limit"):
+            kb.complete_task(
+                conn,
+                task_id,
+                summary="oversized report",
+                metadata={"artifacts": [str(artifact)]},
+            )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None and task.status == "ready"
+    assert artifact.read_bytes() == b"123456789"
+    assert not kb.task_attachments_dir(task_id).exists()
+
+
+def test_complete_stops_copy_when_artifact_grows_past_limit(
+    kanban_home,
+    monkeypatch,
+):
+    """The streaming guard must catch growth after the preflight stat."""
+    monkeypatch.setattr(kb, "KANBAN_ATTACHMENT_MAX_BYTES", 8)
+    real_stat = Path.stat
+
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn)
+        artifact = workspace / "growing.bin"
+        artifact.write_bytes(b"123456789")
+
+        def underreport_source_size(path, *args, **kwargs):
+            result = real_stat(path, *args, **kwargs)
+            if path == artifact:
+                values = list(result)
+                values[6] = 8
+                return os.stat_result(values)
+            return result
+
+        monkeypatch.setattr(Path, "stat", underreport_source_size)
+        with pytest.raises(kb.ArtifactPreservationError, match="grew beyond"):
+            kb.complete_task(
+                conn,
+                task_id,
+                summary="growing report",
+                metadata={"artifacts": [str(artifact)]},
+            )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None and task.status == "ready"
+    assert artifact.read_bytes() == b"123456789"
+    assert not kb.task_attachments_dir(task_id).exists()
+
+
 def test_complete_post_commit_failure_keeps_recorded_artifact(
     kanban_home,
     monkeypatch,
@@ -2678,6 +2739,39 @@ def test_complete_uses_connection_board_for_preserved_artifact(kanban_home):
     )
     assert not durable_path.is_relative_to(kb.task_attachments_dir(task_id))
     assert durable_path.read_text(encoding="utf-8") == "named board"
+
+
+def test_complete_uses_custom_db_location_instead_of_ambient_board(
+    kanban_home,
+    monkeypatch,
+    tmp_path,
+):
+    """A direct DB pin must keep artifacts isolated from the active board."""
+    kb.create_board("ambient-board")
+    kb.set_current_board("ambient-board")
+    custom_db = tmp_path / "custom-board" / "isolated.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(custom_db))
+
+    with kb.connect() as conn:
+        task_id, workspace = _materialize_scratch_task(conn)
+        artifact = workspace / "report.md"
+        artifact.write_text("custom board", encoding="utf-8")
+        assert kb.complete_task(
+            conn,
+            task_id,
+            summary="custom-board report",
+            metadata={"artifacts": [str(artifact)]},
+        )
+        run = kb.latest_run(conn, task_id)
+        assert run is not None
+        assert run.metadata is not None
+        durable_path = Path(run.metadata["artifacts"][0])
+
+    expected_root = custom_db.parent / "attachments" / task_id
+    ambient_root = kb.task_attachments_dir(task_id, board="ambient-board")
+    assert durable_path.is_relative_to(expected_root)
+    assert not durable_path.is_relative_to(ambient_root)
+    assert durable_path.read_text(encoding="utf-8") == "custom board"
 
 
 def test_complete_rejects_attachment_root_inside_scratch(

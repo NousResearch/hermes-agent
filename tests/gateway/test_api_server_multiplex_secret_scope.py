@@ -11,6 +11,9 @@ These tests code-simulate the bug class — no live gateway or network.
 
 from __future__ import annotations
 
+import asyncio
+import json
+
 import pytest
 
 from agent import secret_scope as ss
@@ -120,4 +123,61 @@ async def test_run_agent_scopes_secret_reads_under_multiplex(
     assert observed["during_create"] == "https://openrouter.ai/api/v1"
     assert observed["during_run"] == "https://openrouter.ai/api/v1"
     # Scope must not leak after the turn.
+    assert ss.current_secret_scope() is None
+
+
+@pytest.mark.asyncio
+async def test_v1_runs_scopes_agent_creation_and_executor_run(
+    adapter, tmp_path, monkeypatch,
+):
+    """The independent /v1/runs path scopes both of its execution regions."""
+    (tmp_path / ".env").write_text(
+        "OPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    observed: dict = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            observed["during_run"] = ss.get_secret("OPENROUTER_BASE_URL")
+            observed["scope_during_run"] = ss.current_secret_scope() is not None
+            return {"final_response": "ok"}
+
+    def fake_create_agent(**kwargs):
+        observed["during_create"] = ss.get_secret("OPENROUTER_BASE_URL")
+        observed["scope_during_create"] = ss.current_secret_scope() is not None
+        return FakeAgent()
+
+    monkeypatch.setattr(adapter, "_create_agent", fake_create_agent)
+    ss.set_multiplex_active(True)
+
+    class FakeRequest:
+        headers = {}
+
+        async def json(self):
+            return {"input": "hi"}
+
+    response = await adapter._handle_runs(FakeRequest())
+    assert response.status == 202
+    run_id = json.loads(response.text)["run_id"]
+
+    for _ in range(20):
+        status = adapter._run_statuses[run_id]
+        if status["status"] in {"completed", "failed"}:
+            break
+        await asyncio.sleep(0.05)
+
+    assert status["status"] == "completed"
+    assert observed == {
+        "during_create": "https://openrouter.ai/api/v1",
+        "scope_during_create": True,
+        "during_run": "https://openrouter.ai/api/v1",
+        "scope_during_run": True,
+    }
     assert ss.current_secret_scope() is None

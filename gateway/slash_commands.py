@@ -4359,14 +4359,15 @@ class GatewaySlashCommandsMixin:
         """
         source = event.source
         session_key = self._session_key_for_source(source)
+        user_id = str(source.user_id) if source.user_id else ""
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
         )
 
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
+        if not has_blocking_approval(session_key, user_id):
+            if self._pending_approvals_key(session_key, user_id) in self._pending_approvals:
+                self._pending_approvals.pop(self._pending_approvals_key(session_key, user_id))
                 return t("gateway.approval_expired")
             return t("gateway.approve.no_pending")
 
@@ -4382,7 +4383,7 @@ class GatewaySlashCommandsMixin:
         else:
             choice = "once"
 
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all, user_id=user_id)
         if not count:
             return t("gateway.approve.no_pending")
 
@@ -4408,14 +4409,16 @@ class GatewaySlashCommandsMixin:
         """
         source = event.source
         session_key = self._session_key_for_source(source)
+        user_id = str(source.user_id) if source.user_id else ""
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
         )
 
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
+        if not has_blocking_approval(session_key, user_id):
+            _deny_key = self._pending_approvals_key(session_key, user_id)
+            if _deny_key in self._pending_approvals:
+                self._pending_approvals.pop(_deny_key)
                 return t("gateway.deny.stale")
             return t("gateway.deny.no_pending")
 
@@ -4435,7 +4438,7 @@ class GatewaySlashCommandsMixin:
 
         count = resolve_gateway_approval(
             session_key, "deny", resolve_all=resolve_all,
-            reason=reason or None,
+            reason=reason or None, user_id=user_id,
         )
         if not count:
             return t("gateway.deny.no_pending")

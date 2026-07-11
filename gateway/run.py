@@ -2976,9 +2976,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None
-        # Track pending exec approvals per session
-        # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
-        self._pending_approvals: Dict[str, Dict[str, Any]] = {}
+        # Track pending exec approvals per (session_key, user_id)
+        # Key: (session_key, user_id), Value: {"command": str, "pattern_key": str, ...}
+        self._pending_approvals: Dict[tuple, Dict[str, Any]] = {}
 
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
@@ -3122,6 +3122,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Set after a wake (re-arm cooldown, 0.F) so we don't immediately re-go
         # dormant before the drained backlog has a chance to update the clock.
         self._scale_to_zero_cooldown_until: float = 0.0
+
+
+    def _pending_approvals_key(self, session_key: str, user_id: str = "") -> tuple:
+        """Composite key for the per-session pending-approvals map.
+
+        Mirrors tools.approval._approval_queue_key so that in a shared
+        gateway thread each participant's pending approval is tracked (and
+        expired) independently — closing the cross-user approval hijack.
+        """
+        return (session_key, user_id or "")
 
 
     def _wire_teams_pipeline_runtime(self) -> None:
@@ -5338,8 +5348,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # string.  The busy-handler path does not auto-send that return, so
         # we deliver it ourselves (mirroring the draining-case send above).
         try:
-            from tools.approval import has_blocking_approval
-            if has_blocking_approval(session_key):
+            from tools.approval import has_blocking_approval, get_current_user_id
+            _user_id = str(event.source.user_id) if event.source.user_id else ""
+            if has_blocking_approval(session_key, _user_id):
                 _raw_text = (event.text or "").strip().lower()
                 _approve_words = {"approve", "yes", "ok", "okay", "confirm", "y", "👍"}
                 _deny_words = {"deny", "no", "reject", "cancel", "n", "👎"}
@@ -7731,7 +7742,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _lrm.pop(key, None)
                         _pending_approvals = getattr(self, "_pending_approvals", None)
                         if isinstance(_pending_approvals, dict):
-                            _pending_approvals.pop(key, None)
+                            for _pk in [k for k in _pending_approvals if isinstance(k, tuple) and k[0] == key]:
+                                _pending_approvals.pop(_pk, None)
                         _update_prompt_pending = getattr(self, "_update_prompt_pending", None)
                         if isinstance(_update_prompt_pending, dict):
                             _update_prompt_pending.pop(key, None)
@@ -15989,7 +16001,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         pending_approvals = getattr(self, "_pending_approvals", None)
         if isinstance(pending_approvals, dict):
-            pending_approvals.pop(session_key, None)
+            for _pk in [k for k in pending_approvals if isinstance(k, tuple) and k[0] == session_key]:
+                pending_approvals.pop(_pk, None)
 
         update_prompt_pending = getattr(self, "_update_prompt_pending", None)
         if isinstance(update_prompt_pending, dict):

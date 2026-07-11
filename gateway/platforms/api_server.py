@@ -4594,6 +4594,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 approval_session_key,
                 choice,
                 resolve_all=resolve_all,
+                user_id="",
             )
         except Exception as exc:
             logger.exception("[api_server] approval resolution failed for run %s", run_id)

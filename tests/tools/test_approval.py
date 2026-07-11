@@ -2157,7 +2157,7 @@ class TestApprovalTimeoutIsNotConsent:
 
         # Wait for the queue entry to appear, then resolve.
         for _ in range(50):
-            if mod._gateway_queues.get(self.SESSION_KEY):
+            if mod._gateway_queues.get((self.SESSION_KEY, "")):
                 break
             time.sleep(0.02)
         mod.resolve_gateway_approval(self.SESSION_KEY, "deny")

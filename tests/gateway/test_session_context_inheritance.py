@@ -46,6 +46,7 @@ from gateway.session_context import (
     set_session_vars,
 )
 from tools.environments.local import _make_run_env
+from tools.thread_context import propagate_context_to_thread
 
 SESSION_VARS = list(_VAR_MAP.keys())
 
@@ -144,6 +145,12 @@ def _shutdown_test_executor(runner) -> None:
         executor.shutdown(wait=True)
 
 
+def _poison_worker_thread(executor: ThreadPoolExecutor) -> None:
+    """Bind FOREIGN directly on the reusable worker thread."""
+    future = executor.submit(lambda: set_session_vars(**FOREIGN, session_id="FOREIGN_SID"))
+    future.result(timeout=5)
+
+
 @pytest.mark.asyncio
 async def test_run_agent_rebinds_full_turn_context_before_inner_dispatch():
     """The _run_agent choke point must not trust its caller's current context."""
@@ -178,6 +185,101 @@ async def test_run_agent_rebinds_full_turn_context_before_inner_dispatch():
         "HERMES_SESSION_ID": "MINE_SID",
         "HERMES_SESSION_MESSAGE_ID": "MINE_MSG",
     }
+
+
+@pytest.mark.asyncio
+async def test_gateway_executor_context_run_overrides_reused_thread_residue_bidirectionally():
+    """A recycled gateway worker thread must not leak its previous ContextVars."""
+    runner = _runner_with_inner(None)
+    try:
+        _poison_worker_thread(runner._executor)
+
+        source_a = _discord_thread_source("THREAD_A", message_id="SOURCE_A_MSG")
+        source_b = _discord_thread_source("THREAD_B", message_id="SOURCE_B_MSG")
+        key_a = "agent:main:discord:thread:THREAD_A:THREAD_A"
+        key_b = "agent:main:discord:thread:THREAD_B:THREAD_B"
+
+        async def run_bound(source, key, sid, mid):
+            tokens = GatewayRunner._set_session_vars_for_source(
+                runner,
+                source=source,
+                session_key=key,
+                session_id=sid,
+                message_id=mid,
+            )
+            try:
+                return await _worker_spawn_view(runner)
+            finally:
+                from gateway.session_context import restore_session_vars
+                restore_session_vars(tokens)
+
+        observed_a = await run_bound(source_a, key_a, "SID_A", "MSG_A")
+        observed_b = await run_bound(source_b, key_b, "SID_B", "MSG_B")
+    finally:
+        _shutdown_test_executor(runner)
+
+    assert observed_a == {
+        "HERMES_SESSION_CHAT_ID": "THREAD_A",
+        "HERMES_SESSION_THREAD_ID": "THREAD_A",
+        "HERMES_SESSION_KEY": key_a,
+        "HERMES_SESSION_ID": "SID_A",
+        "HERMES_SESSION_MESSAGE_ID": "MSG_A",
+    }
+    assert observed_b == {
+        "HERMES_SESSION_CHAT_ID": "THREAD_B",
+        "HERMES_SESSION_THREAD_ID": "THREAD_B",
+        "HERMES_SESSION_KEY": key_b,
+        "HERMES_SESSION_ID": "SID_B",
+        "HERMES_SESSION_MESSAGE_ID": "MSG_B",
+    }
+    assert observed_a["HERMES_SESSION_KEY"] != key_b
+    assert observed_b["HERMES_SESSION_KEY"] != key_a
+
+
+def test_tool_thread_context_wrapper_overrides_reused_thread_residue_bidirectionally():
+    """The tool worker wrapper must snapshot the agent-thread context, not residue."""
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-tool-context")
+    try:
+        _poison_worker_thread(executor)
+
+        def submit_bound(binding: Dict[str, Any], sid: str):
+            tokens = set_session_vars(**binding, session_id=sid)
+            try:
+                return executor.submit(
+                    propagate_context_to_thread(_spawn_view)
+                ).result(timeout=5)
+            finally:
+                from gateway.session_context import restore_session_vars
+                restore_session_vars(tokens)
+
+        mine = submit_bound(MINE, "MINE_SID")
+        foreign = submit_bound(FOREIGN, "FOREIGN_SID")
+    finally:
+        executor.shutdown(wait=True)
+
+    assert mine["HERMES_SESSION_KEY"] == MINE["session_key"]
+    assert mine["HERMES_SESSION_CHAT_ID"] == MINE["chat_id"]
+    assert mine["HERMES_SESSION_ID"] == "MINE_SID"
+    assert foreign["HERMES_SESSION_KEY"] == FOREIGN["session_key"]
+    assert foreign["HERMES_SESSION_CHAT_ID"] == FOREIGN["chat_id"]
+    assert foreign["HERMES_SESSION_ID"] == "FOREIGN_SID"
+    assert mine["HERMES_SESSION_KEY"] != FOREIGN["session_key"]
+    assert foreign["HERMES_SESSION_KEY"] != MINE["session_key"]
+
+
+def test_tool_submit_warns_on_agent_context_mismatch(caplog):
+    """The tool-submit net reports a stale bound session before snapshotting it."""
+    from agent.tool_executor import _warn_on_tool_submit_session_mismatch
+
+    set_session_vars(**FOREIGN, session_id="FOREIGN_SID")
+    agent = SimpleNamespace(_gateway_session_key=MINE["session_key"])
+
+    with caplog.at_level("WARNING", logger="agent.tool_executor"):
+        _warn_on_tool_submit_session_mismatch(agent)
+
+    assert "Tool executor context mismatch" in caplog.text
+    assert FOREIGN["session_key"] in caplog.text
+    assert MINE["session_key"] in caplog.text
 
 
 @pytest.mark.asyncio

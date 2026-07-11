@@ -1,0 +1,54 @@
+name: whatsapp-cloud-platform
+label: WhatsApp Cloud
+kind: platform
+version: 1.0.0
+description: >
+  WhatsApp Business Cloud API adapter for Hermes Agent.
+  Connects to WhatsApp via the official Meta Cloud API (Business account
+  required, public webhook URL required, token-based auth).
+  Supports text, media (image/video/audio/document), voice notes,
+  24-hour conversation window with template fallback, and HMAC webhook
+  verification.
+author: NousResearch
+requires_env:
+  - name: WHATSAPP_CLOUD_PHONE_NUMBER_ID
+    description: "WhatsApp phone number ID from Meta Developer Console"
+    prompt: "WhatsApp Cloud phone number ID"
+    password: false
+  - name: WHATSAPP_CLOUD_ACCESS_TOKEN
+    description: "System User permanent access token"
+    prompt: "WhatsApp Cloud access token"
+    password: true
+optional_env:
+  - name: WHATSAPP_CLOUD_APP_SECRET
+    description: "App secret for X-Hub-Signature-256 HMAC verification"
+    prompt: "WhatsApp Cloud app secret (or empty)"
+    password: true
+  - name: WHATSAPP_CLOUD_VERIFY_TOKEN
+    description: "Shared secret for webhook verification handshake"
+    prompt: "WhatsApp Cloud verify token (or empty)"
+    password: true
+  - name: WHATSAPP_CLOUD_WEBHOOK_HOST
+    description: "Webhook server host (default: 0.0.0.0)"
+    prompt: "Webhook host"
+    password: false
+  - name: WHATSAPP_CLOUD_WEBHOOK_PORT
+    description: "Webhook server port (default: 8090)"
+    prompt: "Webhook port"
+    password: false
+  - name: WHATSAPP_CLOUD_ALLOWED_USERS
+    description: "Comma-separated WhatsApp phone numbers allowed to talk to the bot"
+    prompt: "Allowed phone numbers (comma-separated)"
+    password: false
+  - name: WHATSAPP_CLOUD_ALLOW_ALL_USERS
+    description: "Allow any WhatsApp user to trigger the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: WHATSAPP_CLOUD_HOME_CHANNEL
+    description: "Default phone number for cron / notification delivery"
+    prompt: "Home channel phone number (or empty)"
+    password: false
+  - name: WHATSAPP_CLOUD_HOME_CHANNEL_NAME
+    description: "Display name for the WhatsApp Cloud home channel"
+    prompt: "Home channel display name (or empty)"
+    password: false

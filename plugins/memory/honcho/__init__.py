@@ -1413,18 +1413,23 @@ class HonchoMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         # CPython aborts (SIGABRT, exit 134) when daemon threads are still
-        # blocked in C-level I/O (httpx socket recv) at Py_FinalizeEx — the
-        # finalizer forcibly kills them via PyThread_exit_thread →
-        # __pthread_unwind → abort(). The Honcho SDK's HTTP calls run on
-        # daemon worker threads, so we must join EVERY outstanding one here
-        # before the interpreter begins teardown. See CPython gh-97940 /
-        # bpo-20526.
+        # blocked in C-level I/O (httpx socket recv) at Py_FinalizeEx.
+        # The precise internal path is not fully characterized — likely
+        # Py_FatalError("Invalid thread state") or a glibc assert in
+        # pthread_mutex_destroy when a daemon thread still holds a lock
+        # during module/state teardown. CPython does not forcibly kill
+        # daemon threads; it abandons them and tears down the interpreter
+        # out from under them. See CPython gh-97940 / bpo-20526.
         #
         # Closing the Honcho SDK's underlying httpx.Client is the key step:
         # it interrupts any worker thread blocked in sock_recv (httpx raises
         # a connection-closed error that the worker's try/except absorbs),
         # so the subsequent joins actually complete instead of timing out
         # against a 30s read poll.
+        #
+        # Worst-case shutdown latency: ~2s (init join) + 2×2s (prefetch/sync)
+        # + manager shutdown (10s async join + 5s/prefetch) + 3×5s re-join
+        # ≈ 30s+ if anything is wedged. Acceptable vs. a crash.
         if self._init_thread and self._init_thread.is_alive():
             self._init_thread.join(timeout=2.0)
 

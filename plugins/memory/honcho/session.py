@@ -555,8 +555,9 @@ class HonchoSessionManager:
         """Gracefully shut down background worker threads.
 
         Joins the async writer and any in-flight context-prefetch threads so
-        none is left blocked in HTTP recv at interpreter teardown (which would
-        abort CPython via PyThread_exit_thread → __pthread_unwind → abort()).
+        none is left blocked in HTTP recv at interpreter teardown (which
+        aborts CPython during Py_FinalizeEx — daemon threads are abandoned,
+        not killed, and the interpreter tears down around them; gh-97940).
         """
         if self._closed:
             return

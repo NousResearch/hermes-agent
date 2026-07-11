@@ -75,7 +75,11 @@ def test_verify_on_stop_preserves_composed_report_at_budget_limit(agent, monkeyp
         result = agent.run_conversation("edit changed.py")
 
     _assert_pending_response_survives(agent, result)
-    assert result["messages"][1]["_verification_stop_synthetic"] is True
+    # The agent's attempted response must NOT be flagged synthetic — it
+    # should persist so the user can see it while verification runs.
+    # Only the nudge message stays synthetic. (verification-stop response
+    # suppression fix)
+    assert "_verification_stop_synthetic" not in result["messages"][1]
     assert result["messages"][2]["_verification_stop_synthetic"] is True
 
 
@@ -144,3 +148,33 @@ def test_later_verified_response_supersedes_pending_report(agent, monkeypatch):
     assert result["turn_exit_reason"] == "text_response(finish_reason=stop)"
     assert result["completed"] is True
     agent._handle_max_iterations.assert_not_called()
+
+
+def test_verify_on_stop_response_is_not_ephemeral(agent, monkeypatch):
+    """The agent's attempted response must survive persistence (not be
+    flagged _verification_stop_synthetic) so the user sees the full answer
+    while the verification loop runs. Only the nudge stays ephemeral."""
+    from run_agent import _is_ephemeral_scaffolding
+
+    def model_call(_api_kwargs):
+        agent._turn_file_mutation_paths = {"changed.py"}
+        return _response()
+
+    agent._interruptible_api_call = model_call
+    agent._handle_max_iterations = MagicMock(return_value="replacement summary")
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
+
+    with (
+        patch("agent.verification_stop.build_verify_on_stop_nudge", return_value="verify it"),
+        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+    ):
+        result = agent.run_conversation("edit changed.py")
+
+    # messages[1] is the agent's response — must NOT be ephemeral
+    assert result["messages"][1]["role"] == "assistant"
+    assert result["messages"][1]["content"] == "composed report"
+    assert not _is_ephemeral_scaffolding(result["messages"][1])
+
+    # messages[2] is the nudge — MUST be ephemeral
+    assert result["messages"][2]["role"] == "user"
+    assert _is_ephemeral_scaffolding(result["messages"][2])

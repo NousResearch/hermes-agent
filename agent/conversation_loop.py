@@ -5170,17 +5170,18 @@ def run_conversation(
                         getattr(agent, "_verification_stop_nudges", 0) + 1
                     )
                     final_msg["finish_reason"] = "verification_required"
-                    final_msg["_verification_stop_synthetic"] = True
+                    # Persist the attempted answer so the user can see it
+                    # while the verification loop runs. Previously both the
+                    # answer and the nudge were flagged
+                    # ``_verification_stop_synthetic`` and suppressed from
+                    # the durable transcript — the user only saw the brief
+                    # post-verification response, never the full answer.
+                    # The nudge stays synthetic (internal instruction, not
+                    # for display). The resulting assistant→assistant gap
+                    # in the persisted transcript (nudge is stripped) is
+                    # repaired at API-call time by ``repair_message_sequence``
+                    # (Pass 0: consecutive-assistant merge). (#55733)
                     messages.append(final_msg)
-                    # Keep the attempted final answer in model history so the
-                    # synthetic user nudge preserves role alternation, but do
-                    # not surface it to the user as an interim answer. The
-                    # whole point of this guard is to prevent premature
-                    # "done" claims before checks run. Both the attempted
-                    # answer and the nudge are flagged synthetic so neither
-                    # persists — otherwise the resumed transcript keeps a
-                    # premature "done" with the nudge stripped, producing an
-                    # assistant→assistant adjacency. (#55733)
                     messages.append({
                         "role": "user",
                         "content": _verify_nudge,

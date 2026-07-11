@@ -1074,7 +1074,7 @@ def _compress_context_via_codex_app_server(
             pass
         agent._codex_session = None
 
-    if getattr(result, "error", None):
+    if getattr(result, "interrupted", False) or getattr(result, "error", None):
         try:
             agent._emit_warning(
                 f"⚠ Codex app-server compaction failed: {result.error}"

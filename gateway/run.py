@@ -12319,10 +12319,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
+                return self._format_session_info(source)
+        return self._format_session_info(source)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, source: Optional["SessionSource"] = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
@@ -12332,6 +12332,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
         model = _resolve_gateway_model()
+        # Channel overrides win over the global default — otherwise the /new
+        # banner advertises config.model while the session runs the override.
+        override_provider = None
+        cfg = getattr(self, "config", None)
+        if source is not None and cfg is not None:
+            try:
+                ch = _get_channel_override(
+                    cfg,
+                    source.platform,
+                    str(source.chat_id) if source.chat_id else "",
+                    thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                    parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+                )
+                if ch:
+                    if ch.model:
+                        model = ch.model
+                    if ch.provider:
+                        override_provider = ch.provider
+            except Exception:
+                pass
         config_context_length = None
         provider = None
         base_url = None
@@ -12398,11 +12418,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Resolve runtime credentials for probing
         try:
             runtime = _resolve_runtime_agent_kwargs()
-            provider = provider or runtime.get("provider")
+            provider = override_provider or provider or runtime.get("provider")
             base_url = base_url or runtime.get("base_url")
             api_key = runtime.get("api_key")
         except Exception:
-            pass
+            provider = override_provider or provider
 
         context_length = get_model_context_length(
             model,

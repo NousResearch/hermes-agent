@@ -1969,6 +1969,97 @@ def _model_flow_devin_acp(config, current_model=""):
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
+def _model_flow_grok_acp(config, current_model=""):
+    """Grok CLI ACP flow using the local Grok CLI (`grok agent stdio`)."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+        get_external_process_provider_status,
+        resolve_external_process_provider_credentials,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.config import load_config, save_config
+
+    del config
+
+    provider_id = "grok-acp"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    status = get_external_process_provider_status(provider_id)
+    resolved_command = (
+        status.get("resolved_command") or status.get("command") or "grok"
+    )
+    effective_base = status.get("base_url") or pconfig.inference_base_url
+
+    print("  Grok CLI ACP delegates Hermes turns to `grok agent stdio`.")
+    print("  Hermes keeps the ACP process warm and continues sessions when history grows.")
+    print("  Authenticate with: grok login   (or set XAI_API_KEY)")
+    print(f"  Command: {resolved_command}")
+    print(f"  Backend marker: {effective_base}")
+    if status.get("auth_present") is True:
+        print("  Local credentials: detected")
+    elif status.get("auth_present") is False:
+        print("  Local credentials: missing")
+    if status.get("hint"):
+        print(f"  ⚠ {status['hint']}")
+    print()
+
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        print(
+            "  Install Grok CLI (https://docs.x.ai/build/cli) or set "
+            "HERMES_GROK_ACP_COMMAND / GROK_CLI_PATH."
+        )
+        return
+
+    effective_base = creds.get("base_url") or effective_base
+    # Prefer live Grok CLI discovery (`grok models`), then curated snapshot.
+    try:
+        from hermes_cli.models import cached_provider_model_ids
+
+        model_list = cached_provider_model_ids(provider_id) or _PROVIDER_MODELS.get(
+            "grok-acp", ["grok-acp"]
+        )
+    except Exception:
+        model_list = _PROVIDER_MODELS.get("grok-acp", ["grok-acp"])
+    default_pick = current_model or (model_list[0] if model_list else "grok-acp")
+    selected = _prompt_model_selection(
+        model_list,
+        current_model=default_pick,
+        confirm_provider=provider_id,
+        confirm_base_url=effective_base,
+        confirm_api_key="",
+    )
+    if not selected:
+        try:
+            selected = input("Model name [grok-acp]: ").strip() or "grok-acp"
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = effective_base
+    model["api_mode"] = "chat_completions"
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection with automatic endpoint routing.
 

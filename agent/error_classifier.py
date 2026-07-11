@@ -644,6 +644,7 @@ def classify_api_error(
         )
     if (
         "devin auth login" in error_msg
+        or "grok login" in error_msg
         or ("acp" in error_msg and "not logged in" in error_msg)
     ):
         return _result(

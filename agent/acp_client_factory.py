@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-ACP_PROVIDERS = frozenset({"copilot-acp", "devin-acp"})
+ACP_PROVIDERS = frozenset({"copilot-acp", "devin-acp", "grok-acp"})
 
 
 def is_acp_provider(provider: str | None = None, base_url: str | None = None) -> bool:
@@ -70,6 +70,11 @@ def create_acp_client(
         from agent.devin_acp_client import DevinACPClient
 
         return DevinACPClient(base_url=base_url, **client_kwargs)
+
+    if p == "grok-acp" or url.startswith("acp://grok"):
+        from agent.grok_acp_client import GrokACPClient
+
+        return GrokACPClient(base_url=base_url, **client_kwargs)
 
     from agent.copilot_acp_client import CopilotACPClient
 

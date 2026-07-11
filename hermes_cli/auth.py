@@ -97,6 +97,7 @@ DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
 DEFAULT_DEVIN_ACP_BASE_URL = "acp://devin"
+DEFAULT_GROK_ACP_BASE_URL = "acp://grok"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
@@ -239,6 +240,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_DEVIN_ACP_BASE_URL,
         base_url_env_var="DEVIN_ACP_BASE_URL",
+    ),
+    "grok-acp": ProviderConfig(
+        id="grok-acp",
+        name="Grok CLI ACP",
+        auth_type="external_process",
+        inference_base_url=DEFAULT_GROK_ACP_BASE_URL,
+        base_url_env_var="GROK_ACP_BASE_URL",
     ),
     "gemini": ProviderConfig(
         id="gemini",
@@ -1659,6 +1667,7 @@ def resolve_provider(
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
         "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
+        "grok-cli": "grok-acp", "grok-build": "grok-acp", "xai-grok-cli": "grok-acp",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
@@ -6303,6 +6312,19 @@ def _external_process_spec(provider_id: str) -> Dict[str, Any]:
                 "or set HERMES_DEVIN_ACP_COMMAND/DEVIN_CLI_PATH."
             ),
         },
+        "grok-acp": {
+            "command_env": ("HERMES_GROK_ACP_COMMAND", "GROK_CLI_PATH"),
+            "default_command": "grok",
+            "args_env": "HERMES_GROK_ACP_ARGS",
+            "default_args": ["--no-auto-update", "agent", "stdio"],
+            "api_key": "grok-acp",
+            "missing_code": "missing_grok_cli",
+            "missing_msg": (
+                "Could not find the Grok CLI command '{command}'. "
+                "Install Grok CLI (https://docs.x.ai/build/cli), run `grok login`, "
+                "or set HERMES_GROK_ACP_COMMAND/GROK_CLI_PATH."
+            ),
+        },
     }
     return dict(specs.get(provider_id) or specs["copilot-acp"])
 
@@ -6377,10 +6399,27 @@ def _devin_local_credentials_present() -> bool:
     return False
 
 
+def _grok_local_credentials_present() -> Optional[bool]:
+    """Best-effort check that Grok CLI has a local auth file or an API key.
+
+    ``grok login`` writes ``~/.grok/auth.json``.  The CLI also accepts an
+    ambient ``XAI_API_KEY``.  Either is enough for ``grok agent stdio``.
+    """
+    if os.environ.get("XAI_API_KEY", "").strip():
+        return True
+    auth_json = os.path.expanduser("~/.grok/auth.json")
+    try:
+        return os.path.getsize(auth_json) > 0
+    except OSError:
+        return False
+
+
 def _external_process_auth_present(provider_id: str) -> Optional[bool]:
     """Return True/False when local auth can be probed; None if unknown."""
     if provider_id == "devin-acp":
         return _devin_local_credentials_present()
+    if provider_id == "grok-acp":
+        return _grok_local_credentials_present()
     # Copilot ACP auth is CLI/session specific; PATH presence is the only
     # cheap signal we have without spawning the binary.
     return None
@@ -6410,6 +6449,8 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
         hint = str(spec.get("missing_msg") or "CLI not found.").format(command=command)
     elif auth_present is False and provider_id == "devin-acp":
         hint = "Devin CLI found but no local credentials — run: devin auth login"
+    elif auth_present is False and provider_id == "grok-acp":
+        hint = "Grok CLI found but no local credentials — run: grok login or set XAI_API_KEY"
 
     return {
         "configured": cli_installed,

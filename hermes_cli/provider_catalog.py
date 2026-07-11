@@ -47,7 +47,7 @@ _ACCOUNTS_AUTH_TYPES: frozenset[str] = frozenset(
         "oauth_device_code",
         "oauth_external",
         "oauth_minimax",
-        "external_process",  # copilot-acp / devin-acp: spawn local ACP CLIs
+        "external_process",  # copilot-acp / devin-acp / grok-acp: spawn local ACP CLIs
         "copilot",           # GitHub Copilot token / gh auth
     }
 )

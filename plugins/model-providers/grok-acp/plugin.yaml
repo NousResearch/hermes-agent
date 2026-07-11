@@ -1,0 +1,5 @@
+name: grok-acp-provider
+kind: model-provider
+version: 1.0.0
+description: Grok CLI via ACP subprocess (grok agent stdio)
+author: Community

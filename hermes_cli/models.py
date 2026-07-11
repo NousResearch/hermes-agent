@@ -319,6 +319,22 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # Hermes placeholder when no specific model is chosen
         "devin-acp",
     ],
+    # Snapshot of `grok models` "Available models:" list (offline fallback).
+    # Live discovery via fetch_grok_cli_models() preferred when the Grok CLI is
+    # installed and authenticated.
+    "grok-acp": [
+        "grok-4.5",
+        "grok-composer-2.5-fast",
+        "grok-build-0.1",
+        "grok-4.3",
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-0309-non-reasoning",
+        "grok-4.20-multi-agent-0309",
+        "grok-3-mini",
+        "grok-3-mini-fast",
+        # Hermes placeholder when no specific model is chosen
+        "grok-acp",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -1113,6 +1129,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
     ProviderEntry("devin-acp",      "Devin CLI ACP",            "Devin CLI ACP (Spawns devin acp)"),
+    ProviderEntry("grok-acp",       "Grok CLI ACP",             "Grok CLI ACP (Spawns grok --no-auto-update agent stdio)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
     ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
@@ -1185,7 +1202,7 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
-    "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
+    "xai":      ("xAI Grok",        "Direct API, SuperGrok / Premium+ OAuth, or Grok CLI ACP", ["xai", "xai-oauth", "grok-acp"]),
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
@@ -1331,6 +1348,9 @@ _PROVIDER_ALIASES = {
     "amazon": "bedrock",
     "grok": "xai",
     "grok-oauth": "xai-oauth",
+    "grok-cli": "grok-acp",
+    "grok-build": "grok-acp",
+    "xai-grok-cli": "grok-acp",
     "xai-oauth": "xai-oauth",
     "x-ai-oauth": "xai-oauth",
     "xai-grok-oauth": "xai-oauth",
@@ -1884,7 +1904,7 @@ _AGGREGATOR_PROVIDERS = frozenset(
 # would be listed here (tried only as a last resort for bare short-alias
 # resolution, after every native-vendor catalog, so they never hijack an alias
 # away from the model's native vendor). None are currently defined.
-_BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
+_BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()  # reset
 
 # Providers whose live /v1/models endpoint is the authoritative catalog, so the
 # curated list is a discovery-only fallback. For these, the picker merges
@@ -2425,6 +2445,90 @@ def fetch_devin_cli_models(
     return models
 
 
+def parse_grok_cli_available_models(text: str) -> list[str]:
+    """Parse the ``Available models:`` list emitted by ``grok models``.
+
+    Handles lines like::
+
+          * grok-4.5 (default)
+          - grok-composer-2.5-fast
+
+    Returns the model ids in the order they appear (default first).
+    """
+    if not text:
+        return []
+    marker = "Available models:"
+    idx = text.find(marker)
+    if idx == -1:
+        return []
+    block = text[idx + len(marker) :].split("\n\n", 1)[0]
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in block.splitlines():
+        m = re.match(r"^\s*[-*]\s+([^\s(]+)", line)
+        if not m:
+            continue
+        model_id = m.group(1).strip()
+        if not model_id:
+            continue
+        key = model_id.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(model_id)
+    return out
+
+
+def fetch_grok_cli_models(
+    *,
+    command: Optional[str] = None,
+    timeout: float = 12.0,
+) -> list[str]:
+    """Discover Grok CLI models by running ``grok models``.
+
+    Returns [] when the CLI is missing, times out, or does not emit an
+    Available line. Never raises for expected probe failures.
+    """
+    import shutil
+    import subprocess
+
+    cmd = (command or "").strip()
+    if not cmd:
+        try:
+            from hermes_cli.auth import _resolve_external_process_command_args
+
+            cmd, _args = _resolve_external_process_command_args("grok-acp")
+        except Exception:
+            cmd = (
+                os.getenv("HERMES_GROK_ACP_COMMAND", "").strip()
+                or os.getenv("GROK_CLI_PATH", "").strip()
+                or "grok"
+            )
+    resolved = shutil.which(cmd) if cmd and os.sep not in cmd and "/" not in cmd else cmd
+    if not resolved:
+        resolved = cmd
+    if not resolved:
+        return []
+
+    try:
+        proc = subprocess.run(
+            [resolved, "models"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+    except Exception:
+        return []
+
+    blob = "\n".join(
+        part for part in (proc.stderr or "", proc.stdout or "") if part
+    )
+    return parse_grok_cli_available_models(blob)
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -2472,6 +2576,14 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
         return list(_PROVIDER_MODELS.get("devin-acp", ["devin-acp"]))
+    if normalized == "grok-acp":
+        try:
+            live = fetch_grok_cli_models()
+            if live:
+                return live
+        except Exception:
+            pass
+        return list(_PROVIDER_MODELS.get("grok-acp", ["grok-acp"]))
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:
@@ -2775,6 +2887,22 @@ def _credential_fingerprint(provider: str) -> str:
         for path in devin_paths:
             if not path:
                 continue
+            try:
+                mt = _os.stat(path).st_mtime_ns
+                parts.append(f"{path}@{mt}")
+            except FileNotFoundError:
+                parts.append(f"{path}@missing")
+            except Exception:
+                pass
+
+    # Grok CLI: cached auth or config changes should refresh the model list.
+    if provider in {"grok-acp", "grok-cli", "grok-build"}:
+        home = _os.path.expanduser("~")
+        grok_paths = [
+            _os.path.join(home, ".grok", "auth.json"),
+            _os.path.join(home, ".grok", "config.toml"),
+        ]
+        for path in grok_paths:
             try:
                 mt = _os.stat(path).st_mtime_ns
                 parts.append(f"{path}@{mt}")
@@ -4115,7 +4243,7 @@ def validate_requested_model(
         }
 
     # Providers with non-standard catalog validation — /v1/models probing is not the right path.
-    if normalized in {"openai-codex", "xai-oauth"}:
+    if normalized in {"openai-codex", "xai-oauth", "grok-acp"}:
         try:
             catalog_models = provider_model_ids(normalized)
         except Exception:
@@ -4142,11 +4270,16 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
-            provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
+            if normalized == "openai-codex":
+                provider_label = "OpenAI Codex"
+            elif normalized == "xai-oauth":
+                provider_label = "xAI Grok OAuth (SuperGrok / Premium+)"
+            else:
+                provider_label = "Grok CLI ACP"
             # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists
             # for entitlement-gated *hidden* slugs the curated listing hasn't
             # caught up with — but those are always the provider's own family
-            # (openai-codex -> gpt-*; xai-oauth -> grok-*). Accepting an
+            # (openai-codex -> gpt-*; xai-oauth/xai -> grok-*). Accepting an
             # unrelated typed name (e.g. `qwen3.5-4b`, `llama-3.1-8b`) here turns
             # what should be an actionable "did you mean --provider <x>?" error
             # into a confusing success that 400s on the next turn. Only soft-
@@ -4155,6 +4288,7 @@ def validate_requested_model(
             _family_prefixes = {
                 "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
                 "xai-oauth": ("grok-",),
+                "grok-acp": ("grok-",),
             }.get(normalized, ())
             _lower = requested_for_lookup.strip().lower()
             _plausible = (not _family_prefixes) or any(

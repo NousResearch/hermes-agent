@@ -889,6 +889,61 @@ class TestSecondaryProfileConfigHandling:
         assert secondary.disconnected is False
         assert runner._profile_adapters["reviewer"][photon] is secondary
 
+    @pytest.mark.asyncio
+    async def test_failed_photon_connect_releases_listener_for_later_profile(
+        self, monkeypatch
+    ):
+        """A failed sidecar must not reserve an endpoint it never owned."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        class _PhotonAdapter:
+            def __init__(self, secret, should_connect):
+                self._project_secret = secret
+                self._sidecar_bind = "127.0.0.1"
+                self._sidecar_port = 8789
+                self.platform = Platform("photon")
+                self.should_connect = should_connect
+                self.disconnected = False
+                self.config = PlatformConfig(enabled=True)
+
+            def __getattr__(self, name):
+                if name.startswith("set_"):
+                    return lambda *args, **kwargs: None
+                raise AttributeError(name)
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner.session_store = None
+        runner._busy_text_mode = "queue"
+
+        photon = Platform("photon")
+        profile_cfg = GatewayConfig(multiplex_profiles=True)
+        profile_cfg.platforms = {photon: PlatformConfig(enabled=True)}
+        failed = _PhotonAdapter("failed-secret", False)
+        later = _PhotonAdapter("later-secret", True)
+        adapters = iter((failed, later))
+        claimed = {}
+
+        async def _connect(adapter, platform):
+            return adapter.should_connect
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: next(adapters))
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
+        monkeypatch.setattr(runner, "_make_adapter_auth_check", lambda p: None)
+
+        first = await runner._start_one_profile_adapters("broken", "/tmp/x", claimed)
+        second = await runner._start_one_profile_adapters("later", "/tmp/y", claimed)
+
+        assert first == 0
+        assert failed.disconnected is True
+        assert second == 1
+        assert runner._profile_adapters["later"][photon] is later
+
     def test_port_binding_set_covers_known_listeners(self):
         from gateway.run import _PORT_BINDING_PLATFORM_VALUES
         # Every adapter that binds a TCP port must be in the guard set.

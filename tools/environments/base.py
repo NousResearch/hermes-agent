@@ -498,7 +498,7 @@ class BaseEnvironment(ABC):
         # ``$HOME`` so suffixes with spaces remain a single shell word.
         quoted_cwd = self._quote_cwd_for_cd(cwd)
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
-        parts.append(f"builtin cd -- {quoted_cwd} || exit 126")
+        parts.append(f"builtin cd -- {quoted_cwd} 2>/dev/null || {{ cd \"$HOME\" 2>/dev/null || cd /; }}")
 
         # Run the actual command
         parts.append(f"eval '{escaped}'")

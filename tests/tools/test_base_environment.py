@@ -80,14 +80,35 @@ class TestWrapCommand:
         env._snapshot_ready = True
         wrapped = env._wrap_command("pwd", "-demo")
 
-        assert "builtin cd -- -demo || exit 126" in wrapped
+        assert "builtin cd -- -demo 2>/dev/null || { cd \"$HOME\" 2>/dev/null || cd /; }" in wrapped
 
-    def test_cd_failure_exit_126(self):
+    def test_cd_failure_graceful_fallback(self):
         env = _TestableEnv()
         env._snapshot_ready = True
         wrapped = env._wrap_command("ls", "/nonexistent")
 
-        assert "exit 126" in wrapped
+        assert "exit 126" not in wrapped
+        assert "cd \"$HOME\" 2>/dev/null || cd /" in wrapped
+
+    def test_cd_success_no_fallback_damages_flow(self):
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("echo ok", "/tmp")
+
+        cd_line = next(l for l in wrapped.split("\n") if "builtin cd" in l)
+        eval_line = next(l for l in wrapped.split("\n") if "eval" in l)
+        assert wrapped.index(cd_line) < wrapped.index(eval_line)
+        assert "cd -- /tmp" in cd_line or "cd -- '/tmp'" in cd_line
+        assert "cd \"$HOME\" 2>/dev/null || cd /" in cd_line
+
+    def test_exit_code_propagated_after_cd_fallback(self):
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("false", "/nonexistent")
+
+        assert "__hermes_ec=$?" in wrapped
+        assert "exit $__hermes_ec" in wrapped
+        assert "exit 126" not in wrapped
 
 
 class TestAtomicSnapshotWrite:

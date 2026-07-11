@@ -501,6 +501,63 @@ class TestToolNamePreservation(unittest.TestCase):
 
         self.assertEqual(model_tools._last_resolved_tool_names, original_tools)
 
+    def test_runtime_main_restored_after_child_failure(self):
+        """A failed delegated child must not leave aux routing on its model."""
+        import agent.auxiliary_client as aux
+
+        self.addCleanup(aux.clear_runtime_main)
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "deepseek"
+        parent.model = "deepseek-v4-pro"
+        parent.base_url = "https://api.deepseek.com/v1"
+        parent.api_key = "parent-key"
+        parent.api_mode = "chat_completions"
+        aux.clear_runtime_main()
+        aux.set_runtime_main(
+            parent.provider,
+            parent.model,
+            base_url=parent.base_url,
+            api_key=parent.api_key,
+            api_mode=parent.api_mode,
+        )
+
+        creds = {
+            "model": "doubao-seed-2-0-lite-260428",
+            "provider": "ark-coding",
+            "base_url": "https://ark.example/v1",
+            "api_key": "child-key",
+            "api_mode": "chat_completions",
+            "request_overrides": None,
+            "max_output_tokens": None,
+        }
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("tools.delegate_tool._resolve_delegation_credentials", return_value=creds):
+            mock_child = MagicMock()
+            mock_child.get_activity_summary.return_value = {"api_call_count": 0}
+
+            def _fail_after_child_turn_start(*args, **kwargs):
+                aux.set_runtime_main(
+                    creds["provider"],
+                    creds["model"],
+                    base_url=creds["base_url"],
+                    api_key=creds["api_key"],
+                    api_mode=creds["api_mode"],
+                )
+                raise RuntimeError("API call failed after 3 retries: Request timed out")
+
+            mock_child.run_conversation.side_effect = _fail_after_child_turn_start
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="trigger timeout", parent_agent=parent))
+
+        self.assertEqual(result["results"][0]["status"], "error")
+        self.assertEqual(aux._RUNTIME_MAIN_PROVIDER, parent.provider)
+        self.assertEqual(aux._RUNTIME_MAIN_MODEL, parent.model)
+        self.assertEqual(aux._RUNTIME_MAIN_BASE_URL, parent.base_url)
+        self.assertEqual(aux._RUNTIME_MAIN_API_KEY, parent.api_key)
+        self.assertEqual(aux._RUNTIME_MAIN_API_MODE, parent.api_mode)
+
     def test_build_child_agent_does_not_raise_name_error(self):
         """Regression: _build_child_agent must not reference _saved_tool_names.
 

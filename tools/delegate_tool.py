@@ -801,6 +801,24 @@ def _emit_parent_console(parent_agent, line: str) -> None:
     print(line)
 
 
+def _restore_parent_aux_runtime(parent_agent) -> None:
+    """Restore auxiliary-client routing to the parent after a child turn."""
+    if parent_agent is None:
+        return
+    try:
+        from agent.auxiliary_client import set_runtime_main
+
+        set_runtime_main(
+            getattr(parent_agent, "provider", "") or "",
+            getattr(parent_agent, "model", "") or "",
+            base_url=getattr(parent_agent, "base_url", "") or "",
+            api_key=getattr(parent_agent, "api_key", "") or "",
+            api_mode=getattr(parent_agent, "api_mode", "") or "",
+        )
+    except Exception as exc:
+        logger.debug("Failed to restore parent auxiliary runtime: %s", exc)
+
+
 def _build_child_progress_callback(
     task_index: int,
     goal: str,
@@ -2318,6 +2336,11 @@ def _run_single_child(
         saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
         if isinstance(saved_tool_names, list):
             model_tools._last_resolved_tool_names = list(saved_tool_names)
+
+        # Child run_conversation() updates auxiliary_client's process-local
+        # "main runtime" for its own turn. Put it back before the parent
+        # continues, especially on timeout/error exits.
+        _restore_parent_aux_runtime(parent_agent)
 
         # Remove child from active tracking
 

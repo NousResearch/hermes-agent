@@ -392,6 +392,13 @@ class CLIAgentSetupMixin:
                 notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction,
             )
+            # Bind CLI terminal approvals to the real persisted Hermes session.
+            # Without this, exact external requests use the contextvar fallback
+            # "default", which cannot resume the NLS-180 session safely.
+            from tools.approval import set_current_session_key
+            _approval_session_id = getattr(self.agent, "session_id", None) or self.session_id
+            if _approval_session_id:
+                set_current_session_key(_approval_session_id)
             # Store reference for atexit memory provider shutdown.
             # NOTE: this MUST write to the ``cli`` module's global, not a
             # local module global. ``_run_cleanup`` (in cli.py) reads

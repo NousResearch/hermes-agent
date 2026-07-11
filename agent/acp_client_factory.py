@@ -16,6 +16,45 @@ def is_acp_provider(provider: str | None = None, base_url: str | None = None) ->
     return url.startswith("acp://") or url.startswith("acp+tcp://")
 
 
+def _fill_missing_acp_invocation(provider: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Fill empty command/args from the external-process credential resolver.
+
+    Call sites sometimes construct an ACP client with only provider/base_url.
+    When that happens, prefer the shared auth resolver (env + PATH) over each
+    client's private defaults — keeps command/args consistent with
+    ``resolve_runtime_provider`` / ``hermes status``.
+    """
+    command = kwargs.get("command") or kwargs.get("acp_command")
+    raw_args = kwargs.get("args")
+    if raw_args is None:
+        raw_args = kwargs.get("acp_args")
+    has_args = isinstance(raw_args, (list, tuple)) and len(raw_args) > 0
+    if command and has_args:
+        return kwargs
+
+    p = (provider or "").strip().lower()
+    if p not in ACP_PROVIDERS:
+        return kwargs
+
+    try:
+        from hermes_cli.auth import resolve_external_process_provider_credentials
+
+        creds = resolve_external_process_provider_credentials(p)
+    except Exception:
+        return kwargs
+
+    filled = dict(kwargs)
+    if not command:
+        resolved = str(creds.get("command") or "").strip()
+        if resolved:
+            filled["command"] = resolved
+    if not has_args:
+        cred_args = list(creds.get("args") or [])
+        if cred_args:
+            filled["args"] = cred_args
+    return filled
+
+
 def create_acp_client(
     *,
     provider: str | None = None,
@@ -25,11 +64,13 @@ def create_acp_client(
     """Instantiate the correct ACP client for *provider* / *base_url*."""
     p = (provider or "").strip().lower()
     url = (base_url or kwargs.get("base_url") or "").strip().lower()
+    client_kwargs = _fill_missing_acp_invocation(p, kwargs)
+
     if p == "devin-acp" or url.startswith("acp://devin"):
         from agent.devin_acp_client import DevinACPClient
 
-        return DevinACPClient(base_url=base_url, **kwargs)
+        return DevinACPClient(base_url=base_url, **client_kwargs)
 
     from agent.copilot_acp_client import CopilotACPClient
 
-    return CopilotACPClient(base_url=base_url, **kwargs)
+    return CopilotACPClient(base_url=base_url, **client_kwargs)

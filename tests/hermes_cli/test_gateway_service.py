@@ -2598,6 +2598,67 @@ class TestProfileArg:
         assert "<string>Aqua</string>" in plist
         assert "<string>Background</string>" in plist
 
+    def test_launchd_plist_uses_named_launcher_for_login_items(self, tmp_path, monkeypatch):
+        # Login Items shows ProgramArguments[0]'s executable name, so the
+        # plist must launch through a "Hermes Gateway" symlink instead of a
+        # bare venv python (which displays as an anonymous "python" entry).
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        venv_python = tmp_path / "venv" / "bin" / "python"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(venv_python))
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        launcher = hermes_home / "bin" / "Hermes Gateway"
+        assert f"<string>{launcher}</string>" in plist
+        assert launcher.is_symlink()
+        assert os.readlink(launcher) == str(venv_python)
+        # Interpreter identity is preserved through the symlink.
+        assert Path(os.readlink(launcher)) == venv_python
+
+    def test_launchd_launcher_refreshes_stale_symlink(self, tmp_path, monkeypatch):
+        # After a venv rebuild the symlink must be repointed, not reused.
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "bin").mkdir(parents=True)
+        old_python = tmp_path / "old-venv" / "bin" / "python"
+        new_python = tmp_path / "new-venv" / "bin" / "python"
+        for p in (old_python, new_python):
+            p.parent.mkdir(parents=True)
+            p.write_text("#!/bin/sh\n")
+        launcher = hermes_home / "bin" / "Hermes Gateway"
+        launcher.symlink_to(old_python)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+
+        result = gateway_cli._ensure_launchd_launcher(str(new_python))
+
+        assert result == str(launcher)
+        assert os.readlink(launcher) == str(new_python)
+
+    def test_launchd_launcher_falls_back_to_python_on_oserror(self, tmp_path, monkeypatch):
+        # Cosmetic feature must never break gateway install: if the symlink
+        # can't be created, the raw interpreter path is used.
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(
+            gateway_cli.Path, "symlink_to",
+            lambda self, target: (_ for _ in ()).throw(OSError("read-only")),
+        )
+
+        result = gateway_cli._ensure_launchd_launcher("/some/venv/bin/python")
+
+        assert result == "/some/venv/bin/python"
+
+    def test_launchd_launcher_name_is_profile_scoped(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        assert gateway_cli.get_launchd_launcher_name() == "Hermes Gateway"
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "mybot")
+        assert gateway_cli.get_launchd_launcher_name() == "Hermes Gateway (mybot)"
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)

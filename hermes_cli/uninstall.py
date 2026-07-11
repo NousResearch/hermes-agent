@@ -258,6 +258,15 @@ def uninstall_gateway_service():
                 plist_path.unlink()
                 log_success(f"Removed macOS gateway service ({plist_path})")
                 stopped_something = True
+            # Remove the named launcher symlink used for Login Items display.
+            try:
+                from hermes_cli.gateway import get_launchd_launcher_name
+                from hermes_constants import get_hermes_home
+                launcher = get_hermes_home() / "bin" / get_launchd_launcher_name()
+                if launcher.is_symlink():
+                    launcher.unlink()
+            except Exception:
+                pass
         except Exception as e:
             log_warn(f"Could not remove launchd gateway service: {e}")
 

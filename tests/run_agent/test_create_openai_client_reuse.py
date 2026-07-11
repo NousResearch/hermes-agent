@@ -237,14 +237,11 @@ def test_opencode_go_disables_keepalive_pooling(provider: str):
     those dead connections and the next request hangs until the proxy's
     timeout fires (~30s). Disabling pooling forces the cold (~3s) path.
     Other providers keep the 20s idle reaper (CLOSE-WAIT prevention).
+
+    Asserts the real ``httpx.Limits.keepalive_expiry`` on the constructed
+    client, not a mocked argument — so the assertion breaks when the
+    production wiring drifts rather than when the mock signature changes.
     """
-    calls: list = []
-
-    def _fake_build_keepalive(base_url="", *, verify=True, keepalive_expiry=20.0):
-        calls.append({"base_url": base_url, "keepalive_expiry": keepalive_expiry})
-        # Return a throwaway stand-in so create_openai_client can attach it.
-        return SimpleNamespace(close=lambda: None)
-
     agent = AIAgent(
         api_key="test-key",
         base_url="https://opencode.ai/zen/go/v1",
@@ -262,29 +259,44 @@ def test_opencode_go_disables_keepalive_pooling(provider: str):
     constructed: list = []
     fake_openai = _make_fake_openai_factory(constructed)
 
-    with patch.object(
-        agent, "_build_keepalive_http_client", side_effect=_fake_build_keepalive
-    ):
-        with patch("run_agent.OpenAI", fake_openai):
-            agent._create_openai_client(
-                agent._client_kwargs, reason="test", shared=True
-            )
+    # Let _build_keepalive_http_client run for real (no mock) so the
+    # returned httpx.Client carries the actual Limits object.  Only
+    # OpenAI is faked — we read the http_client it received.
+    with patch("run_agent.OpenAI", fake_openai):
+        agent._create_openai_client(
+            agent._client_kwargs, reason="test", shared=True
+        )
 
-    assert len(calls) == 1, f"expected 1 keepalive build, got {len(calls)}"
-    assert calls[0]["keepalive_expiry"] == 0.0, (
-        f"{provider} must disable keepalive pooling (keepalive_expiry=0.0), "
-        f"got {calls[0]['keepalive_expiry']}"
+    assert len(constructed) == 1, (
+        f"expected 1 OpenAI construction, got {len(constructed)}"
+    )
+    hc = constructed[0]._http_client
+    assert hc is not None, (
+        "create_openai_client must inject an http_client for {provider}"
+    )
+    # httpx.Client stores Limits on the transport pool, not on the client
+    # itself.  Read the private _keepalive_expiry — it's the authoritative
+    # value the pool uses to reap idle connections.
+    _keepalive = getattr(
+        getattr(getattr(hc, "_transport", None), "_pool", None),
+        "_keepalive_expiry", None,
+    )
+    assert _keepalive is not None, (
+        f"httpx.Client._transport._pool._keepalive_expiry should be readable "
+        f"on the injected http_client"
+    )
+    assert _keepalive == 0.0, (
+        f"{provider} must disable keepalive pooling "
+        f"(pool._keepalive_expiry=0.0), got {_keepalive}"
     )
 
 
 def test_other_providers_keep_keepalive_reaper():
-    """Non-opencode providers keep the 20s idle reaper (default)."""
-    calls: list = []
+    """Non-opencode providers keep the 20s idle reaper (default).
 
-    def _fake_build_keepalive(base_url="", *, verify=True, keepalive_expiry=20.0):
-        calls.append({"base_url": base_url, "keepalive_expiry": keepalive_expiry})
-        return SimpleNamespace(close=lambda: None)
-
+    Asserts the real ``httpx.Limits.keepalive_expiry`` on the constructed
+    client, not a mocked argument.
+    """
     agent = AIAgent(
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
@@ -302,16 +314,25 @@ def test_other_providers_keep_keepalive_reaper():
     constructed: list = []
     fake_openai = _make_fake_openai_factory(constructed)
 
-    with patch.object(
-        agent, "_build_keepalive_http_client", side_effect=_fake_build_keepalive
-    ):
-        with patch("run_agent.OpenAI", fake_openai):
-            agent._create_openai_client(
-                agent._client_kwargs, reason="test", shared=True
-            )
+    with patch("run_agent.OpenAI", fake_openai):
+        agent._create_openai_client(
+            agent._client_kwargs, reason="test", shared=True
+        )
 
-    assert len(calls) == 1
-    assert calls[0]["keepalive_expiry"] == 20.0, (
+    assert len(constructed) == 1
+    hc = constructed[0]._http_client
+    assert hc is not None, (
+        "create_openai_client must inject an http_client"
+    )
+    _keepalive = getattr(
+        getattr(getattr(hc, "_transport", None), "_pool", None),
+        "_keepalive_expiry", None,
+    )
+    assert _keepalive is not None, (
+        "httpx.Client._transport._pool._keepalive_expiry should be readable "
+        "on the injected http_client"
+    )
+    assert _keepalive == 20.0, (
         f"non-opencode provider should keep keepalive_expiry=20.0, "
-        f"got {calls[0]['keepalive_expiry']}"
+        f"got {_keepalive}"
     )

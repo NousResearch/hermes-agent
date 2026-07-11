@@ -138,11 +138,11 @@ _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
-# Task admission contract (HERMES-ORCH-001A — storage only)
+# Task admission contract (HERMES-ORCH-001A storage + ORCH-001B gates)
 # ---------------------------------------------------------------------------
-# Versioned JSON blob stored on ``tasks.contract``. ORCH-001A adds schema,
-# migration, ser/de, and structural validation only. Dispatch/admission
-# enforcement is intentionally deferred to a later ORCH-001 slice.
+# Versioned JSON blob stored on ``tasks.contract``. ORCH-001A added schema,
+# migration, ser/de, and structural validation. ORCH-001B adds deterministic
+# admission validation and opt-in ready/claim gates.
 TASK_CONTRACT_VERSION = 1
 TASK_CONTRACT_V1_KEYS = (
     "version",
@@ -158,9 +158,68 @@ TASK_CONTRACT_V1_KEYS = (
 )
 TASK_CONTRACT_V1_KEY_SET = frozenset(TASK_CONTRACT_V1_KEYS)
 
+# Full 40-char Git object name (hex). Structural storage still allows any
+# non-empty base_commit string; admission requires a full SHA.
+FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+# Admission enforce modes (opt-in, backward-compatible default).
+# - off: never enforce (always admit)
+# - contracts: enforce only when the task has a non-NULL contract (default)
+# - all: enforce for every task; missing contract is itself a rejection
+ADMISSION_ENFORCE_OFF = "off"
+ADMISSION_ENFORCE_CONTRACTS = "contracts"
+ADMISSION_ENFORCE_ALL = "all"
+ADMISSION_ENFORCE_MODES = frozenset(
+    {
+        ADMISSION_ENFORCE_OFF,
+        ADMISSION_ENFORCE_CONTRACTS,
+        ADMISSION_ENFORCE_ALL,
+    }
+)
+
+# Stable machine-readable rejection codes (auditable event payload).
+ADMISSION_REASON_MISSING_CONTRACT = "missing_contract"
+ADMISSION_REASON_INVALID_CONTRACT = "invalid_contract"
+ADMISSION_REASON_INVALID_BASE_COMMIT = "invalid_base_commit"
+ADMISSION_REASON_MISSING_REQUIRED_EVIDENCE = "missing_required_evidence"
+ADMISSION_REASON_MISSING_WORKSPACE_DATA = "missing_workspace_data"
+ADMISSION_REASON_MISSING_NOTIFICATION_SUBSCRIPTION = (
+    "missing_notification_subscription"
+)
+
 
 class TaskContractError(ValueError):
     """Raised when a task-contract payload fails structural validation."""
+
+
+@dataclass(frozen=True)
+class AdmissionRejection:
+    """One deterministic admission rejection reason."""
+
+    code: str
+    message: str
+
+
+@dataclass(frozen=True)
+class AdmissionDecision:
+    """Result of :func:`evaluate_task_admission` / :func:`evaluate_admission`."""
+
+    admitted: bool
+    enforced: bool
+    rejections: tuple[AdmissionRejection, ...] = ()
+
+    @property
+    def codes(self) -> list[str]:
+        return [r.code for r in self.rejections]
+
+    @property
+    def messages(self) -> list[str]:
+        return [r.message for r in self.rejections]
+
+    def summary(self) -> str:
+        if self.admitted:
+            return "admitted"
+        return "; ".join(self.messages) if self.messages else "admission rejected"
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -941,8 +1000,8 @@ class Task:
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
     # Versioned task-admission contract (JSON object) or None for legacy
-    # tasks that predate HERMES-ORCH-001. Storage/ser-de only in ORCH-001A —
-    # dispatcher admission gates land in a later slice.
+    # tasks that predate HERMES-ORCH-001. Storage/ser-de in ORCH-001A;
+    # ready/claim admission gates in ORCH-001B (opt-in when present).
     contract: Optional[dict] = None
 
     @classmethod
@@ -1293,6 +1352,254 @@ def get_task_contract(
     if "contract" not in keys:
         return None
     return deserialize_task_contract(row["contract"])
+
+
+# ---------------------------------------------------------------------------
+# Task admission (HERMES-ORCH-001B)
+# ---------------------------------------------------------------------------
+
+
+def resolve_admission_enforce_mode(mode: Optional[str] = None) -> str:
+    """Resolve admission enforce mode (default: contracts / opt-in).
+
+    Explicit ``mode`` wins. Otherwise ``HERMES_KANBAN_ADMISSION_ENFORCE`` is
+    consulted:
+
+    * ``off`` / ``0`` / ``false`` / ``no`` → never enforce
+    * ``all`` / ``1`` / ``true`` / ``required`` → enforce every task
+    * ``contracts`` / ``contract`` / ``opt-in`` / unset → enforce only when
+      a non-NULL contract is present (backward-compatible default)
+    """
+    if mode is not None:
+        normalized = str(mode).strip().lower()
+        if normalized not in ADMISSION_ENFORCE_MODES:
+            raise ValueError(
+                f"unknown admission enforce mode {mode!r}; "
+                f"expected one of {sorted(ADMISSION_ENFORCE_MODES)}"
+            )
+        return normalized
+
+    raw = os.environ.get("HERMES_KANBAN_ADMISSION_ENFORCE", "").strip().lower()
+    if not raw:
+        return ADMISSION_ENFORCE_CONTRACTS
+    if raw in ("0", "false", "off", "no"):
+        return ADMISSION_ENFORCE_OFF
+    if raw in ("1", "true", "all", "yes", "required"):
+        return ADMISSION_ENFORCE_ALL
+    if raw in ("contracts", "contract", "opt-in", "optin", "opt_in"):
+        return ADMISSION_ENFORCE_CONTRACTS
+    # Unknown env values fall back to the safe default so a typo cannot
+    # silently hard-block every legacy board.
+    return ADMISSION_ENFORCE_CONTRACTS
+
+
+def evaluate_admission(
+    *,
+    contract: Optional[dict[str, Any]],
+    workspace_kind: Optional[str],
+    workspace_path: Optional[str],
+    has_notification_subscription: bool,
+    enforce_mode: Optional[str] = None,
+    contract_present: Optional[bool] = None,
+    contract_error: Optional[str] = None,
+) -> AdmissionDecision:
+    """Deterministic pure admission check (no DB I/O).
+
+    ``contract`` is a normalized version-1 dict, or ``None`` when absent.
+    ``contract_present`` overrides presence detection when the blob exists
+    but failed to parse (``contract_error`` carries the parse message).
+    """
+    mode = resolve_admission_enforce_mode(enforce_mode)
+    if mode == ADMISSION_ENFORCE_OFF:
+        return AdmissionDecision(admitted=True, enforced=False, rejections=())
+
+    present = (
+        bool(contract_present)
+        if contract_present is not None
+        else contract is not None
+    )
+
+    if mode == ADMISSION_ENFORCE_CONTRACTS and not present and not contract_error:
+        return AdmissionDecision(admitted=True, enforced=False, rejections=())
+
+    # Enforced path (mode=all, or mode=contracts with a contract present /
+    # corrupt blob that must not silently pass).
+    rejections: list[AdmissionRejection] = []
+
+    if contract_error:
+        rejections.append(
+            AdmissionRejection(
+                ADMISSION_REASON_INVALID_CONTRACT,
+                f"task contract is invalid: {contract_error}",
+            )
+        )
+        return AdmissionDecision(
+            admitted=False, enforced=True, rejections=tuple(rejections)
+        )
+
+    if contract is None:
+        rejections.append(
+            AdmissionRejection(
+                ADMISSION_REASON_MISSING_CONTRACT,
+                "task contract is required for admission",
+            )
+        )
+        return AdmissionDecision(
+            admitted=False, enforced=True, rejections=tuple(rejections)
+        )
+
+    base_commit = contract.get("base_commit", "")
+    if not isinstance(base_commit, str) or not FULL_GIT_SHA_RE.fullmatch(base_commit):
+        rejections.append(
+            AdmissionRejection(
+                ADMISSION_REASON_INVALID_BASE_COMMIT,
+                "task contract base_commit must be a full 40-character Git SHA",
+            )
+        )
+
+    evidence = contract.get("required_evidence")
+    if not isinstance(evidence, list) or not evidence:
+        rejections.append(
+            AdmissionRejection(
+                ADMISSION_REASON_MISSING_REQUIRED_EVIDENCE,
+                "task contract required_evidence must be a non-empty list",
+            )
+        )
+
+    kind = (workspace_kind or "scratch").strip() or "scratch"
+    if kind in ("dir", "worktree"):
+        path = (workspace_path or "").strip() if workspace_path else ""
+        if not path:
+            rejections.append(
+                AdmissionRejection(
+                    ADMISSION_REASON_MISSING_WORKSPACE_DATA,
+                    f"workspace_kind={kind!r} requires workspace_path for admission",
+                )
+            )
+
+    if not has_notification_subscription:
+        rejections.append(
+            AdmissionRejection(
+                ADMISSION_REASON_MISSING_NOTIFICATION_SUBSCRIPTION,
+                "task requires at least one notification subscription for admission",
+            )
+        )
+
+    return AdmissionDecision(
+        admitted=not rejections,
+        enforced=True,
+        rejections=tuple(rejections),
+    )
+
+
+def evaluate_task_admission(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    enforce_mode: Optional[str] = None,
+) -> AdmissionDecision:
+    """Load task state and return a deterministic admission decision.
+
+    Opt-in by default: legacy tasks without a contract are admitted under
+    the ``contracts`` enforce mode. Raises :class:`ValueError` if the task
+    row does not exist.
+    """
+    row = conn.execute(
+        "SELECT workspace_kind, workspace_path, contract FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"unknown task: {task_id}")
+
+    keys = set(row.keys())
+    raw_blob = row["contract"] if "contract" in keys else None
+    has_blob = bool(isinstance(raw_blob, str) and raw_blob.strip()) or (
+        raw_blob is not None and not isinstance(raw_blob, str)
+    )
+
+    contract: Optional[dict[str, Any]] = None
+    contract_error: Optional[str] = None
+    if has_blob:
+        try:
+            contract = deserialize_task_contract(
+                raw_blob if isinstance(raw_blob, str) else str(raw_blob)
+            )
+            if contract is None:
+                # Empty-after-strip treated as absent.
+                has_blob = False
+        except TaskContractError as exc:
+            contract_error = str(exc)
+
+    sub = conn.execute(
+        "SELECT 1 FROM kanban_notify_subs WHERE task_id = ? LIMIT 1",
+        (task_id,),
+    ).fetchone()
+
+    return evaluate_admission(
+        contract=contract,
+        workspace_kind=row["workspace_kind"] if "workspace_kind" in keys else "scratch",
+        workspace_path=row["workspace_path"] if "workspace_path" in keys else None,
+        has_notification_subscription=sub is not None,
+        enforce_mode=enforce_mode,
+        contract_present=has_blob or contract is not None,
+        contract_error=contract_error,
+    )
+
+
+def _admission_event_payload(
+    decision: AdmissionDecision,
+    *,
+    phase: str,
+) -> dict[str, Any]:
+    return {
+        "phase": phase,
+        "reason": "admission",
+        "reasons": list(decision.codes),
+        "messages": list(decision.messages),
+    }
+
+
+def _append_admission_rejection_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    decision: AdmissionDecision,
+    *,
+    phase: str,
+    event_kind: str,
+) -> None:
+    """Append an auditable rejection event, deduping consecutive identical ones.
+
+    Must be called inside an open write transaction.
+    """
+    payload = _admission_event_payload(decision, phase=phase)
+    last = conn.execute(
+        "SELECT kind, payload FROM task_events WHERE task_id = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if last is not None and last["kind"] == event_kind and last["payload"]:
+        try:
+            prev = json.loads(last["payload"])
+        except (TypeError, json.JSONDecodeError):
+            prev = None
+        if (
+            isinstance(prev, dict)
+            and prev.get("phase") == phase
+            and prev.get("reasons") == payload["reasons"]
+        ):
+            return
+    _append_event(conn, task_id, event_kind, payload)
+
+
+def _task_has_notification_subscription(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM kanban_notify_subs WHERE task_id = ? LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return row is not None
 
 
 # ---------------------------------------------------------------------------
@@ -2742,9 +3049,10 @@ def create_task(
     translation skill regardless of the profile's default config).
 
     ``contract`` is an optional version-1 task-admission contract
-    (HERMES-ORCH-001A). When provided it is structurally validated and
+    (HERMES-ORCH-001). When provided it is structurally validated and
     stored as JSON; when omitted the task remains a legacy un-contracted
-    card. This path does not enforce admission/dispatch gates.
+    card. Presence of a contract opts the task into ready/claim admission
+    enforcement (ORCH-001B).
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -2899,6 +3207,7 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                admission_rejection = None
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -2948,6 +3257,31 @@ def create_task(
                             )
                         except Exception:
                             branch_name = None
+
+                # ORCH-001B: gate create-time ready on admission. New tasks
+                # never have notification subscriptions yet, so a contract-
+                # bearing task lands in todo until subscribed + promoted.
+                if task_status == "ready":
+                    normalized_for_admission = None
+                    admission_contract_error = None
+                    if contract_blob is not None:
+                        try:
+                            normalized_for_admission = deserialize_task_contract(
+                                contract_blob
+                            )
+                        except TaskContractError as exc:
+                            admission_contract_error = str(exc)
+                    decision = evaluate_admission(
+                        contract=normalized_for_admission,
+                        workspace_kind=workspace_kind,
+                        workspace_path=workspace_path,
+                        has_notification_subscription=False,
+                        contract_present=contract_blob is not None,
+                        contract_error=admission_contract_error,
+                    )
+                    if not decision.admitted:
+                        task_status = "todo"
+                        admission_rejection = decision
 
                 conn.execute(
                     """
@@ -3003,6 +3337,14 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if admission_rejection is not None:
+                    _append_admission_rejection_event(
+                        conn,
+                        task_id,
+                        admission_rejection,
+                        phase="ready",
+                        event_kind="admission_rejected",
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -3713,7 +4055,10 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 
 
 def recompute_ready(
-    conn: sqlite3.Connection, failure_limit: int = None,
+    conn: sqlite3.Connection,
+    failure_limit: int = None,
+    *,
+    enforce_mode: Optional[str] = None,
 ) -> int:
     """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
 
@@ -3742,6 +4087,11 @@ def recompute_ready(
       2. caller-supplied ``failure_limit`` (the dispatcher passes the
          ``kanban.failure_limit`` config value through ``dispatch_once``)
       3. ``DEFAULT_FAILURE_LIMIT``
+
+    HERMES-ORCH-001B: when admission enforcement applies and the task
+    fails the admission validator, it is left in its current status and
+    an ``admission_rejected`` event records the exact reason codes. No
+    ready transition occurs.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -3784,6 +4134,22 @@ def recompute_ready(
                     )
                     if failures >= effective_limit:
                         continue
+
+                # Ready-transition admission gate (ORCH-001B).
+                decision = evaluate_task_admission(
+                    conn, task_id, enforce_mode=enforce_mode
+                )
+                if not decision.admitted:
+                    _append_admission_rejection_event(
+                        conn,
+                        task_id,
+                        decision,
+                        phase="ready",
+                        event_kind="admission_rejected",
+                    )
+                    continue
+
+                if cur_status == "blocked":
                     conn.execute(
                         "UPDATE tasks SET status = 'ready' "
                         "WHERE id = ? AND status = 'blocked'",
@@ -3809,11 +4175,18 @@ def claim_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    enforce_mode: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
+
+    HERMES-ORCH-001B: revalidates admission inside the same write
+    transaction *before* the CAS update and *before* inserting a
+    ``task_runs`` row. Admission failures demote the task to ``todo``,
+    emit ``claim_rejected`` with exact reason codes, and leave no run
+    row / PID.
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -3844,6 +4217,27 @@ def claim_task(
                 {"reason": "parents_not_done"},
             )
             return None
+
+        # ORCH-001B: revalidate admission inside the protected claim txn
+        # before any status change or task_runs insert.
+        decision = evaluate_task_admission(
+            conn, task_id, enforce_mode=enforce_mode
+        )
+        if not decision.admitted:
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' "
+                "WHERE id = ? AND status = 'ready'",
+                (task_id,),
+            )
+            _append_admission_rejection_event(
+                conn,
+                task_id,
+                decision,
+                phase="claim",
+                event_kind="claim_rejected",
+            )
+            return None
+
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant
@@ -5419,6 +5813,7 @@ def promote_task(
     reason: Optional[str] = None,
     force: bool = False,
     dry_run: bool = False,
+    enforce_mode: Optional[str] = None,
 ) -> tuple[bool, Optional[str]]:
     """Manually promote a `todo` or `blocked` task to `ready`.
 
@@ -5429,6 +5824,9 @@ def promote_task(
     assignee or claim state. Returns ``(True, None)`` on success and
     ``(False, reason)`` if refused. ``dry_run=True`` validates the
     promotion would succeed without mutating state.
+
+    HERMES-ORCH-001B: also refuses when admission enforcement applies
+    and the task fails the admission validator (unless ``force=True``).
     """
     row = conn.execute(
         "SELECT status FROM tasks WHERE id = ?", (task_id,)
@@ -5460,10 +5858,39 @@ def promote_task(
                 f"{', '.join(unsatisfied)} (use --force to override)"
             )
 
+        decision = evaluate_task_admission(
+            conn, task_id, enforce_mode=enforce_mode
+        )
+        if not decision.admitted:
+            if not dry_run:
+                with write_txn(conn):
+                    _append_admission_rejection_event(
+                        conn,
+                        task_id,
+                        decision,
+                        phase="ready",
+                        event_kind="admission_rejected",
+                    )
+            return False, f"admission rejected: {decision.summary()}"
+
     if dry_run:
         return True, None
 
     with write_txn(conn):
+        # Re-check admission inside the write txn (unless force).
+        if not force:
+            decision = evaluate_task_admission(
+                conn, task_id, enforce_mode=enforce_mode
+            )
+            if not decision.admitted:
+                _append_admission_rejection_event(
+                    conn,
+                    task_id,
+                    decision,
+                    phase="ready",
+                    event_kind="admission_rejected",
+                )
+                return False, f"admission rejected: {decision.summary()}"
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
             "WHERE id = ? AND status IN ('todo', 'blocked')",
@@ -5522,6 +5949,18 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             (task_id,),
         ).fetchone()
         new_status = "todo" if undone_parents else "ready"
+        # ORCH-001B: admission gate on ready transition from unblock.
+        if new_status == "ready":
+            decision = evaluate_task_admission(conn, task_id)
+            if not decision.admitted:
+                new_status = "todo"
+                _append_admission_rejection_event(
+                    conn,
+                    task_id,
+                    decision,
+                    phase="ready",
+                    event_kind="admission_rejected",
+                )
         # NOTE: deliberately does NOT touch ``block_recurrences`` or
         # ``block_kind``. Resetting the recurrence counter on unblock is exactly
         # the amnesia that let a cron unblock → worker re-block loop run

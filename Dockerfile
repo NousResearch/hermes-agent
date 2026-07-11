@@ -193,13 +193,14 @@ RUN cd web && npm run build && \
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
-# --link decouples this layer from parents for cache purposes; --chmod bakes
-# the final read-only permissions at copy time so we skip the separate
-# `chmod -R` pass that previously walked ~30k files across the venv +
-# node_modules + source (21s amd64 / 222s arm64 — #49113).  `a+rX,go-w`
-# gives the non-root hermes user read + traverse but no write; root retains
-# write so the build steps below don't need chmod u+w dances.
-COPY --link --chmod=a+rX,go-w . .
+# COPY without --link/--chmod for compatibility with all build engines
+# (Docker BuildKit, Podman/Buildah). The --link and --chmod=a+rX,go-w flags
+# are BuildKit-only and break Podman/Buildah builds (#62849). The subsequent
+# `chmod -R` pass restores the same read-only permissions for the non-root
+# hermes user: a+rX gives read + traverse, go-w removes group/other write
+# while root retains write so build steps below don't need chmod u+w dances.
+COPY . .
+RUN chmod -R a+rX,go-w .
 
 # ---------- Permissions ----------
 # Link hermes-agent itself (editable). Deps are already installed in the

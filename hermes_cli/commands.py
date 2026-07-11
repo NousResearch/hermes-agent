@@ -549,6 +549,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
 # Users can tune this via platforms.telegram.extra.command_menu.max_commands.
 _DEFAULT_TELEGRAM_MENU_MAX_COMMANDS = 60
 _TELEGRAM_BOT_API_MAX_COMMANDS = 100
+_TELEGRAM_COMMAND_MENU_MODES = {"all", "quick_commands_only"}
 _TELEGRAM_PRIORITY_MODES = {"prepend", "append", "replace"}
 
 _TELEGRAM_MENU_PRIORITY = (
@@ -624,6 +625,10 @@ def _telegram_command_menu_config() -> dict[str, Any]:
     if priority_mode not in _TELEGRAM_PRIORITY_MODES:
         priority_mode = "prepend"
 
+    mode = str(menu_cfg.get("mode") or "all").strip().lower()
+    if mode not in _TELEGRAM_COMMAND_MENU_MODES:
+        mode = "all"
+
     raw_priority = menu_cfg.get("priority")
     if isinstance(raw_priority, list):
         priority = [str(item) for item in raw_priority if str(item).strip()]
@@ -632,8 +637,14 @@ def _telegram_command_menu_config() -> dict[str, Any]:
 
     return {
         "max_commands": max_commands,
+        "mode": mode,
         "priority_mode": priority_mode,
         "priority": priority,
+        "quick_commands": (
+            raw_cfg.get("quick_commands")
+            if isinstance(raw_cfg.get("quick_commands"), Mapping)
+            else {}
+        ),
     }
 
 
@@ -691,6 +702,34 @@ def _prioritize_telegram_menu_commands(
             ),
         )
     ]
+
+
+def _telegram_quick_menu_commands(
+    quick_commands: Mapping[str, Any],
+    max_commands: int,
+) -> tuple[list[tuple[str, str]], int]:
+    """Build a focused Telegram menu from configured quick commands only."""
+    commands: list[tuple[str, str]] = []
+    reserved: set[str] = set()
+
+    for raw_name, raw_config in quick_commands.items():
+        if not isinstance(raw_name, str) or not isinstance(raw_config, Mapping):
+            continue
+        if raw_config.get("show_in_telegram_menu") is False:
+            continue
+
+        name = _sanitize_telegram_name(raw_name)
+        if not name or name in reserved:
+            continue
+
+        description = str(raw_config.get("description") or f"Run /{raw_name}")
+        if len(description) > 40:
+            description = description[:37] + "..."
+        commands.append((name, description))
+        reserved.add(name)
+
+    hidden_count = max(0, len(commands) - max_commands)
+    return commands[:max_commands], hidden_count
 
 
 _CMD_NAME_LIMIT = 32
@@ -908,6 +947,13 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         (menu_commands, hidden_count) where hidden_count is the number of
         commands omitted due to the cap.
     """
+    menu_config = _telegram_command_menu_config()
+    if menu_config["mode"] == "quick_commands_only":
+        return _telegram_quick_menu_commands(
+            menu_config["quick_commands"],
+            max_commands=max_commands,
+        )
+
     core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
     reserved_names = {n for n, _ in core_commands}
     all_commands = list(core_commands)

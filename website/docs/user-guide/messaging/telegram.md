@@ -90,6 +90,7 @@ platforms:
   telegram:
     extra:
       command_menu:
+        mode: all  # all | quick_commands_only
         max_commands: 60
         priority_mode: prepend  # prepend | append | replace
         priority:
@@ -103,6 +104,29 @@ platforms:
 - `replace`: use only your list for priority ordering
 
 Telegram allows up to 100 BotCommands, but large command payloads can fail. Hermes defaults to 60 for reliability and clamps configured values to `1..100`; use `/commands` for the full command list.
+
+For a specialist bot, set `mode: quick_commands_only` to show only the
+top-level `quick_commands` entries in Telegram's `/` picker. Individual quick
+commands can set `show_in_telegram_menu: false` to remain callable without
+appearing in the picker:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      command_menu:
+        mode: quick_commands_only
+
+quick_commands:
+  health:
+    type: exec
+    command: scripts/health.sh
+    description: Show service health
+  internal_debug:
+    type: exec
+    command: scripts/debug.sh
+    show_in_telegram_menu: false
+```
 
 ## Step 3: Privacy Mode (Critical for Groups)
 

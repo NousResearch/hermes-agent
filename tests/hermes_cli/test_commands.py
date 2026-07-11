@@ -1373,6 +1373,58 @@ class TestTelegramMenuCommands:
         )
         assert telegram_menu_max_commands() == 60
 
+    def test_quick_commands_only_menu_reads_top_level_quick_commands(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        mode: quick_commands_only\n"
+            "quick_commands:\n"
+            "  agent-health:\n"
+            "    type: exec\n"
+            "    command: scripts/health.sh\n"
+            "    description: Show agent health\n"
+            "  hidden:\n"
+            "    type: exec\n"
+            "    command: scripts/internal.sh\n"
+            "    show_in_telegram_menu: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        menu, hidden = telegram_menu_commands(max_commands=30)
+
+        assert menu == [("agent_health", "Show agent health")]
+        assert hidden == 0
+
+    def test_quick_commands_only_menu_sanitizes_deduplicates_and_caps(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        mode: quick_commands_only\n"
+            "quick_commands:\n"
+            "  agent-health:\n"
+            f"    description: {'A' * 80}\n"
+            "  agent_health:\n"
+            "    description: Duplicate after sanitizing\n"
+            "  second:\n"
+            "    description: Second command\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        menu, hidden = telegram_menu_commands(max_commands=1)
+
+        assert menu == [("agent_health", ("A" * 37) + "...")]
+        assert hidden == 1
+
     def test_telegram_menu_ignores_undocumented_command_menu_paths(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(

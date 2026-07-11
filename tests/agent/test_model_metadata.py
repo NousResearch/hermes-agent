@@ -30,6 +30,7 @@ from agent.model_metadata import (
     save_context_length,
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
+    _query_anthropic_context_length,
     estimate_request_tokens_rough,
 )
 
@@ -348,6 +349,35 @@ class TestDefaultContextLengths:
                 "moonshotai/kimi-k2.6", base_url=or_url, provider="openrouter"
             )
             assert ctx != 32768, "Kimi 32k OR underreport must not be accepted"
+
+
+class TestAnthropicContextLengthProbe:
+    def test_anthropic_models_probe_disables_x_api_key_redirects(self, monkeypatch):
+        leaked_headers = []
+
+        class FakeResponse:
+            status_code = 302
+
+            def json(self):
+                return {"data": [{"id": "claude-test", "max_input_tokens": 12345}]}
+
+        def fake_get(url, **kwargs):
+            if kwargs.get("allow_redirects", True):
+                leaked_headers.append(dict(kwargs.get("headers") or {}))
+                response = FakeResponse()
+                response.status_code = 200
+                return response
+            return FakeResponse()
+
+        monkeypatch.setattr("agent.model_metadata.requests.get", fake_get)
+        result = _query_anthropic_context_length(
+            "claude-test",
+            "https://api.anthropic.com",
+            "sk-ant-api03-secret-test",
+        )
+
+        assert result is None
+        assert leaked_headers == []
 
 
 # =========================================================================

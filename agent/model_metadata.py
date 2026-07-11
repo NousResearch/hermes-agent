@@ -1809,7 +1809,13 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
         }
-        resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+        resp = requests.get(
+            url,
+            headers=headers,
+            timeout=(5, 10),
+            verify=_resolve_requests_verify(),
+            allow_redirects=False,
+        )
         if resp.status_code != 200:
             return None
         data = resp.json()

@@ -198,6 +198,123 @@ _SUMMARY_RATIO = 0.20
 # itself a context-pressure source and slows every compaction.
 _SUMMARY_TOKENS_CEILING = 10_000
 
+
+# Regex for the "User asked: '<verbatim quote>'" phrasing the compaction
+# template pushes the LLM into. Compaction models occasionally fabricate a
+# quote to fit the template even when no such user message exists in the
+# compacted turns (issue #62365). The post-validation helper below strips
+# any such line that cannot be located in the source turns — the safe
+# fallback is "None — no verifiable outstanding user request".
+_USER_ASKED_QUOTE_RE = re.compile(
+    r"""User\s+asked:\s*['"\u2018\u2019\u201c\u201d]([^'"\u2018\u2019\u201c\u201d]{1,500}?)['"\u2018\u2019\u201c\u201d]""",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _normalize_for_quote_match(text: str) -> str:
+    """Normalize text for the fabricated-quote check.
+
+    Substring matches are intentionally loose — the LLM may quote with
+    light whitespace/quote-mark drift, and a 5-token user message is
+    short enough that exact match is brittle. We:
+      - lowercase
+      - collapse internal whitespace
+      - strip surrounding whitespace
+    """
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _serialize_turn_text(turns: List[Dict[str, Any]]) -> str:
+    """Concatenate every user/assistant/tool-content string from ``turns``.
+
+    Used as the source-side corpus for fabricated-quote verification
+    (#62365). Trims the same way the summarizer prompt does so a quote
+    the LLM emitted can be located in the same form it was provided.
+    """
+    from agent.agent_runtime_helpers import strip_think_blocks
+
+    out: List[str] = []
+    for msg in turns or []:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content") or ""
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    txt = part.get("text")
+                    if isinstance(txt, str):
+                        out.append(txt)
+        elif isinstance(content, str):
+            out.append(content)
+        if msg.get("role") == "assistant":
+            content = strip_think_blocks(None, content) if isinstance(content, str) else ""
+            tool_calls = msg.get("tool_calls") or []
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                name = fn.get("name") or ""
+                args = fn.get("arguments") or ""
+                if isinstance(args, str):
+                    out.append(args)
+                if name:
+                    out.append(name)
+    return "\n".join(out)
+
+
+def _strip_fabricated_user_asks(
+    summary: str,
+    source_turns: List[Dict[str, Any]],
+) -> str:
+    """Strip ``User asked: '<quote>'`` lines whose quote is unverifiable.
+
+    Issue #62365: the compaction template pushes the LLM to write
+    ``User asked: '<verbatim exact words>'``. When the actual conversation
+    has no such outstanding user request (or the LLM can't locate one),
+    it fabricates a quote to fit the template — the agent then acts on
+    a request that was never made.
+
+    Fix: after the LLM produces a summary, scan every ``User asked:``
+    line and check whether the quoted substring appears anywhere in the
+    source turns (case-insensitive, whitespace-normalized). If not, the
+    line is replaced with the safe fallback ``None — no verifiable
+    outstanding user request`` and the rewrite is logged.
+
+    The fallback is the existing convention from the template's "if no
+    outstanding task exists, write 'None.'" guidance, so the shape of
+    downstream behavior does not change for legitimate ``None`` cases.
+    """
+    if not summary or not source_turns:
+        return summary
+    source_norm = _normalize_for_quote_match(_serialize_turn_text(source_turns))
+    if not source_norm:
+        return summary
+
+    def _replace(match: "re.Match[str]") -> str:
+        quote = _normalize_for_quote_match(match.group(1))
+        if not quote or len(quote) < 4:
+            # Too short to verify reliably; keep as-is to avoid mangling
+            # legitimate trivial asks ("ok", "go", "yes"). The template
+            # phrasing already constrains real user asks to be substantive.
+            return match.group(0)
+        if quote in source_norm:
+            return match.group(0)
+        # Unverifiable — fabricate guard trips. Replace with the safe
+        # fallback so the agent sees "no outstanding ask" instead of
+        # acting on a made-up user request.
+        logger.warning(
+            "Compaction summary contained a fabricated 'User asked: \"…\"' "
+            "line that cannot be located in the source turns "
+            "(quote_len=%d, preview=%r). Replacing with safe fallback to "
+            "prevent the agent from acting on a request that was never made "
+            "(#62365).",
+            len(quote),
+            quote[:60],
+        )
+        return "User asked: (none — no verifiable outstanding user request in compacted turns)"
+
+    return _USER_ASKED_QUOTE_RE.sub(_replace, summary)
+
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
@@ -2009,6 +2126,16 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
+            # Issue #62365: the compaction template pushes the LLM to write
+            # ``User asked: '<verbatim quote>'``. When the model can't locate
+            # a real outstanding ask it fabricates one to fit the template,
+            # and the agent then acts on a request that was never made.
+            # Post-validate every quoted line against the source turns —
+            # unverifiable quotes get rewritten to the safe fallback so the
+            # next-turn prompt carries "no outstanding ask" instead of a
+            # fabricated user request. Cheap (one regex pass + one source
+            # normalization) and gated on the turns the LLM actually saw.
+            summary = _strip_fabricated_user_asks(summary, turns_to_summarize)
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()

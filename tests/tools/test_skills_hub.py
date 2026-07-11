@@ -2571,3 +2571,107 @@ class TestLoadHermesIndex:
 
         data = hub._load_hermes_index()
         assert data == {"skills": [{"name": "stale"}]}
+
+    def test_bundle_disk_symmetry_with_backslash_paths(self, tmp_path):
+        """Bundle with backslash-separated keys matches on-disk forward-slash hash.
+        
+        This catches the Windows path separator divergence fixed by PR #62310.
+        On Windows, SkillBundle keys may arrive as ``"refs\\notes.md"``, while
+        on-disk content_hash always normalizes to ``"refs/notes.md"``. Both
+        functions now normalize to forward slashes before hashing.
+        """
+        from tools.skills_guard import content_hash
+        
+        # Simulate Windows-style bundle keys (as they might arrive from a
+        # Windows client or from a bundle serialized on Windows).
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": "same content",
+                "refs\\notes.md": "- [ ] security\n",
+                "docs\\guide.md": "# Guide\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        
+        # Create matching on-disk tree with forward-slash paths (POSIX/normalized).
+        skill_dir = tmp_path / "demo-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("same content")
+        (skill_dir / "refs").mkdir()
+        (skill_dir / "refs" / "notes.md").write_text("- [ ] security\n")
+        (skill_dir / "docs").mkdir()
+        (skill_dir / "docs" / "guide.md").write_text("# Guide\n")
+        
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
+    def test_path_sorting_is_deterministic_across_platforms(self, tmp_path):
+        """Path ordering is stable regardless of platform separators.
+        
+        Before PR #62310, ``sorted()`` on Windows paths like ``["A\\Z.md", "B\\Y.md"]``
+        could order differently from POSIX ``["A/Z.md", "B/Y.md"]`` because
+        backslash (ASCII 92) sorts after forward slash (ASCII 47). Both functions
+        now normalize to forward slashes before sorting.
+        """
+        from tools.skills_guard import content_hash
+        
+        # Bundle with mixed backslash and forward-slash keys (as might happen
+        # when bundles cross platform boundaries).
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "B\\Y.md": "content y",
+                "A\\Z.md": "content z",
+                "C/X.md": "content x",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        
+        # Create matching on-disk tree.
+        skill_dir = tmp_path / "demo-skill"
+        skill_dir.mkdir()
+        (skill_dir / "B").mkdir()
+        (skill_dir / "B" / "Y.md").write_text("content y")
+        (skill_dir / "A").mkdir()
+        (skill_dir / "A" / "Z.md").write_text("content z")
+        (skill_dir / "C").mkdir()
+        (skill_dir / "C" / "X.md").write_text("content x")
+        
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
+    def test_windows_mixed_case_path_ordering(self, tmp_path):
+        """Windows is case-insensitive; ensure hash handles mixed-case paths.
+        
+        On Windows, ``"Docs/Readme.md"`` and ``"docs/readme.md"`` refer to the same
+        file. The hash function normalizes paths to forward slashes but preserves
+        the original casing as provided by the bundle. This test ensures the
+        normalization contract is upheld even when bundle keys use non-canonical
+        casing (e.g., ``"Docs\\README.md"`` on a case-insensitive filesystem).
+        """
+        from tools.skills_guard import content_hash
+        
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": "same content",
+                "Docs\\README.md": "# Readme\n",
+                "docs\\guide.md": "# Guide\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        
+        skill_dir = tmp_path / "demo-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("same content")
+        (skill_dir / "Docs").mkdir()
+        (skill_dir / "Docs" / "README.md").write_text("# Readme\n")
+        (skill_dir / "docs").mkdir()
+        (skill_dir / "docs" / "guide.md").write_text("# Guide\n")
+        
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)

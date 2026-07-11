@@ -151,6 +151,27 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
         pricing_version="openai-gpt-5.6-2026-07",
     ),
+    # ── Anthropic Claude Sonnet 5 ────────────────────────────────────────
+    # Introductory pricing $2/$10 in/out is in effect through 2026-08-31;
+    # standard $3/$15 (matching Sonnet 4.6/4.5) takes over 2026-09-01. This
+    # table has no time-boundary mechanism, so it's pinned to the CURRENT
+    # (introductory) rate — must be bumped to $3/$15 (cache $0.30/$3.75) on
+    # or after 2026-09-01. Cache write shown is the 5m tier; Anthropic also
+    # offers a 1h tier at $4/MTok, not representable here (single write rate
+    # per model — see #43353).
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing
+    (
+        "anthropic",
+        "claude-sonnet-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        cache_write_cost_per_million=Decimal("2.50"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-07-intro",
+    ),
     # ── Anthropic Claude 4.8 ─────────────────────────────────────────────
     # Same $5/$25 base pricing as 4.6/4.7.  Fast-mode variant is a separate
     # model ID with 2x premium (vs the 6x premium on older Opus generations).

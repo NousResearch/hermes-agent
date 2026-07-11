@@ -507,7 +507,7 @@ class TestCLIStatusBar:
 
 
 class TestCLIUsageReport:
-    def test_show_usage_omits_cost_reporting(self, capsys):
+    def test_show_usage_includes_cache_and_cost_reporting(self, capsys):
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=10_230,
@@ -517,6 +517,8 @@ class TestCLIUsageReport:
             context_tokens=12_450,
             context_length=200_000,
             compressions=1,
+            cache_read_tokens=5_000,
+            cache_write_tokens=2_000,
         )
         cli_obj.verbose = False
 
@@ -530,12 +532,53 @@ class TestCLIUsageReport:
         assert "Total tokens:" in output
         assert "Session duration:" in output
         assert "Compressions:" in output
-        # Cost and cache-hit reporting is removed everywhere.
-        assert "Total cost:" not in output
-        assert "Cost status:" not in output
-        assert "Cost source:" not in output
+        # Cache read/write and cost are restored (#52717 regression fix).
+        assert "Cache read tokens:" in output
+        assert "Cache write tokens:" in output
+        assert "5,000" in output
+        assert "2,000" in output
+
+    def test_show_usage_hides_cache_lines_when_zero(self, capsys):
+        """Providers that don't report cache data must not show a fabricated 0."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=1,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+        )
+        cli_obj.verbose = False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
         assert "Cache read tokens:" not in output
         assert "Cache write tokens:" not in output
+
+    def test_show_usage_hides_cost_when_pricing_unknown(self, capsys):
+        """A model with no pricing entry must not render a fabricated $0.00."""
+        cli_obj = _attach_agent(
+            _make_cli(model="custom/unknown-model-xyz"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=1,
+        )
+        cli_obj.agent.provider = "custom"
+        cli_obj.verbose = False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Total cost:" not in output
 
 
 class TestStatusBarWidthSource:

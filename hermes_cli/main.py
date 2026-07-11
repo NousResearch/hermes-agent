@@ -14701,15 +14701,15 @@ def main():
         ]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
-        cmd_chat(args)
-        return
+        return cmd_chat(args)
 
     # Execute the command
     if hasattr(args, "func"):
-        args.func(args)
+        return args.func(args)
     else:
         parser.print_help()
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

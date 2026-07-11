@@ -1494,12 +1494,14 @@ def test_review_fork_restricts_toolsets_to_skills_and_terminal(curator_env, monk
 
 
 def test_review_fork_toolset_surface_is_skills_plus_terminal():
-    """Documentary pin on the static surface the fork's kwarg resolves to.
+    """Documentary check on the static surface the fork's kwarg resolves to.
 
     Registry-independent (include_registry=False) so a plugin-registered tool
-    tagged into these toolsets cannot flake the exact-set pin. This documents
-    the intended surface (the four prompt-named tools present, dead default
-    and lcm_* schema absent) but does not itself guard the call-site kwarg.
+    tagged into these toolsets cannot flake the membership checks. This
+    documents the intended surface (the four prompt-named tools present, dead
+    default and lcm_* schema absent) but does not itself guard the call-site
+    kwarg. No exact-set pin: intentional additions to either toolset must not
+    fail this test.
     """
     from toolsets import resolve_toolset
 
@@ -1517,8 +1519,3 @@ def test_review_fork_toolset_surface_is_skills_plus_terminal():
     assert "read_file" not in surface
     assert "web_search" not in surface
     assert "lcm_grep" not in surface
-
-    # Exact source-of-truth pin: terminal pulls in "process" (5 tools, not 4).
-    assert sorted(surface) == sorted(
-        {"skills_list", "skill_view", "skill_manage", "terminal", "process"}
-    )

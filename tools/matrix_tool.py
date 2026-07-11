@@ -155,6 +155,53 @@ def _authorize_room_id(
 
 
 def _run(coro):
+    """Run Matrix adapter coroutines on the gateway loop that owns the client.
+
+    Gateway agent turns execute tool handlers in an executor thread. Using
+    ``model_tools._run_async`` there would schedule work on a disposable
+    worker loop, not ``GatewayRunner._gateway_loop`` where the live Matrix
+    adapter/mautrix client lives. Prefer ``run_coroutine_threadsafe`` onto
+    the gateway loop; fall back to ``_run_async`` only when no live gateway
+    loop exists (unit tests / non-gateway callers).
+    """
+    import asyncio
+
+    try:
+        from gateway.run import _gateway_runner_ref
+
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+
+    loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
+    if loop is not None:
+        try:
+            running = not loop.is_closed() and loop.is_running()
+        except Exception:
+            running = False
+        if running:
+            try:
+                from agent.async_utils import safe_schedule_threadsafe
+
+                fut = safe_schedule_threadsafe(
+                    coro,
+                    loop,
+                    log_message="Matrix tool schedule onto gateway loop failed",
+                )
+            except Exception:
+                fut = None
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(coro, loop)
+                except Exception:
+                    if asyncio.iscoroutine(coro):
+                        coro.close()
+                    raise
+            if fut is None:
+                # Schedule failed; do not also run on a foreign loop for live
+                # gateway turns — surface the failure.
+                raise RuntimeError("Matrix gateway loop unavailable for tool dispatch")
+            return fut.result(timeout=120)
+
     from model_tools import _run_async
 
     return _run_async(coro)

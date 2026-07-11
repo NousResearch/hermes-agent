@@ -174,6 +174,27 @@ describe('renderMediaTags', () => {
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
   })
+
+  it('strips trailing markdown emphasis/brackets wrapped around the path', () => {
+    // Models regularly append trailing `**` / `)` / backtick to a bare
+    // `MEDIA:/path` tag (MEDIA:/x.png**). The scraper must not capture that
+    // punctuation into the href, or the desktop FS read silently 404s and the
+    // image never thumbnails.
+    expect(renderMediaTags('MEDIA:/tmp/shot.png**')).toBe('[Image: shot.png](#media:%2Ftmp%2Fshot.png)')
+    expect(renderMediaTags('MEDIA:/tmp/shot.png)')).toBe('[Image: shot.png](#media:%2Ftmp%2Fshot.png)')
+    expect(renderMediaTags('MEDIA:/tmp/shot.png`')).toBe('[Image: shot.png](#media:%2Ftmp%2Fshot.png)')
+  })
+
+  it('strips leading markdown emphasis wrapped around the path', () => {
+    // The dominant real-world shape: `MEDIA:** `/path``. Leading emphasis must
+    // be skipped (and the surrounding backticks unquoted) so the href carries
+    // the bare path. The home-dir prefix (~/) is preserved, not stripped.
+    expect(renderMediaTags('MEDIA:** `/tmp/shot.png`')).toBe('[Image: shot.png](#media:%2Ftmp%2Fshot.png)')
+    expect(renderMediaTags('MEDIA:`/tmp/shot.png`')).toBe('[Image: shot.png](#media:%2Ftmp%2Fshot.png)')
+    // Home-relative paths (~/) are preserved verbatim in the href and expanded
+    // later by the desktop FS bridge — they must NOT be stripped as emphasis.
+    expect(renderMediaTags('MEDIA:~/shots/x.png')).toBe('[Image: x.png](#media:~%2Fshots%2Fx.png)')
+  })
 })
 
 describe('interleaved reasoning/text coalescing', () => {

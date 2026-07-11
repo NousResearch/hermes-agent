@@ -37,11 +37,37 @@ function mediaInfo(path: string): MediaInfo | undefined {
 }
 
 export function mediaKind(path: string): MediaKind {
-  return mediaInfo(path)?.kind ?? 'file'
+  const info = mediaInfo(path)
+
+  if (info) {
+    return info.kind
+  }
+
+  // No recognizable extension. Remote (http/https) URLs are almost always
+  // images even without a file extension (e.g. Unsplash
+  // `images.unsplash.com/photo-…`, `picsum.photos/200`), and the extension
+  // strip above drops any query string. Treat them as images so they render
+  // inline instead of being misclassified as a generic `file` and blocked.
+  if (/^https?:/i.test(path)) {
+    return 'image'
+  }
+
+  return 'file'
 }
 
 export function mediaMime(path: string): string {
-  return mediaInfo(path)?.mime ?? 'application/octet-stream'
+  const info = mediaInfo(path)
+
+  if (info) {
+    return info.mime
+  }
+
+  // Mirror mediaKind: extensionless remote URLs are treated as images.
+  if (/^https?:/i.test(path)) {
+    return 'image/'
+  }
+
+  return 'application/octet-stream'
 }
 
 export function mediaName(path: string): string {
@@ -127,6 +153,31 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
 // Remote-mode replacement for opening gateway-local file paths with file://.
 // The file lives on the gateway, so fetch it over the authenticated fs bridge
 // and hand the bytes to the local browser shell as a download.
+// Resolve a media path to a URL the renderer can display. Local files are read
+// through the desktop FS bridge (window.hermesDesktop.readFileDataUrl); remote
+// gateway files are fetched over the authenticated API; http(s)/data URLs pass
+// through; audio/video may stream via the custom protocol to bypass the data
+// URL size cap.
+export async function mediaSrc(path: string): Promise<string> {
+  if (/^(?:https?|data):/i.test(path)) {
+    return path
+  }
+
+  if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
+    return mediaStreamUrl(path)
+  }
+
+  if (window.hermesDesktop && isRemoteGateway()) {
+    return gatewayMediaDataUrl(path)
+  }
+
+  if (!window.hermesDesktop?.readFileDataUrl) {
+    return mediaExternalUrl(path)
+  }
+
+  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+}
+
 export async function downloadGatewayMediaFile(path: string): Promise<void> {
   const dataUrl = await readDesktopFileDataUrl(filePathFromMediaPath(path))
 
@@ -147,8 +198,70 @@ export async function downloadGatewayMediaFile(path: string): Promise<void> {
 }
 
 export function mediaDisplayLabel(path: string): string {
-  const escaped = mediaName(path).replace(/[[\]\\]/g, '\\$&')
+  const escaped = mediaName(path).replace(/[[\\]\\\\]/g, '\\\\$&')
   const kind = mediaKind(path)
 
   return `${capitalize(kind)}: ${escaped}`
+}
+
+// ─── Image gallery (MEDIA-GALLERY) ────────────────────────────────────────
+// A gallery lets the agent emit a sequence of screenshots as a single
+// auto-playing carousel in the chat (Replit-agent style progress reel). It is
+// encoded as a `#gallery:` markdown link (parallel to the `#media:` links used
+// for single-file attachments) so it rides the existing Streamdown → React
+// link pipeline and needs no new assistant-ui message-part type.
+
+export interface MediaGalleryImage {
+  src: string
+  title?: string
+}
+
+export interface MediaGalleryPayload {
+  title?: string
+  intervalMs?: number
+  images: MediaGalleryImage[]
+}
+
+const GALLERY_HREF_PREFIX = '#gallery:'
+
+export function galleryMarkdownHref(payload: MediaGalleryPayload): string {
+  return `${GALLERY_HREF_PREFIX}${encodeURIComponent(JSON.stringify(payload))}`
+}
+
+// Decode a `#gallery:` href back into a payload. Returns null for anything
+// that isn't a valid gallery link, or that has fewer than two images (a
+// single/zero image "gallery" is meaningless and should fall back to plain
+// MEDIA rendering).
+export function galleryPayloadFromHref(href?: string): MediaGalleryPayload | null {
+  if (!href?.startsWith(GALLERY_HREF_PREFIX)) {
+    return null
+  }
+
+  try {
+    const raw = decodeURIComponent(href.slice(GALLERY_HREF_PREFIX.length))
+    const parsed = JSON.parse(raw) as Partial<MediaGalleryPayload>
+
+    if (!Array.isArray(parsed.images)) {
+      return null
+    }
+
+    const images = parsed.images
+      .filter((img): img is MediaGalleryImage => !!img && typeof img.src === 'string' && img.src.length > 0)
+      .map(img => ({
+        src: img.src,
+        title: typeof img.title === 'string' && img.title ? img.title : undefined
+      }))
+
+    if (images.length < 2) {
+      return null
+    }
+
+    const intervalMs =
+      typeof parsed.intervalMs === 'number' && Number.isFinite(parsed.intervalMs) ? parsed.intervalMs : undefined
+    const title = typeof parsed.title === 'string' && parsed.title ? parsed.title : undefined
+
+    return { images, intervalMs, title }
+  } catch {
+    return null
+  }
 }

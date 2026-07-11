@@ -1,7 +1,7 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
-import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import { mediaDisplayLabel, mediaKind, mediaMarkdownHref } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
@@ -91,15 +91,36 @@ export function reasoningPart(text: string): ChatMessagePart {
   return { type: 'reasoning', text }
 }
 
-const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
+const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?:[*`_]+[\t ]*)?(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
 
-const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
+const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?:[*`_]+[\t ]*)?(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)["']?/g
+
+// The path-scraping regex below captures any markdown emphasis the model
+// wraps around a bare `MEDIA:/path` tag into the path itself, producing an
+// invalid `#media:/x.png**` (or `**/x.png`) href that the desktop FS read
+// silently rejects — so the image never thumbnails (live or after refresh).
+// Real Hermes output shows both shapes (trailing `**`/`)`/backtick and the
+// leading form `MEDIA:** `/path``). Strip that wrapping on both ends before
+// building the link. Punctuation-only: a path never *ends* in )/]/`, and the
+// leading strip deliberately spares `~` so `MEDIA:~/x.png` (home-relative)
+// stays intact — only `*`/`_`/`~`/backtick emphasis is removed.
+const MEDIA_TRAILING_JUNK_RE = /[*`_~)\]`]+$/u
+const MEDIA_LEADING_JUNK_RE = /^[*`_~`]+/u
 
 function unquoteMediaPath(value: string): string {
   const trimmed = value.trim()
   const quote = trimmed[0]
 
-  return quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
+  const unquoted =
+    quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
+
+  // Drop a leading `~` only when it is emphasis, not the home-dir prefix: a
+  // real home-relative path is `~` followed by `/` or `\`.
+  const emphasisStripped = MEDIA_LEADING_JUNK_RE.test(unquoted) && !/^~[\\/]/.test(unquoted)
+    ? unquoted.replace(MEDIA_LEADING_JUNK_RE, '')
+    : unquoted
+
+  return emphasisStripped.replace(MEDIA_TRAILING_JUNK_RE, '')
 }
 
 function mediaLink(value: string): string {
@@ -108,8 +129,88 @@ function mediaLink(value: string): string {
   return `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})`
 }
 
+// ─── MEDIA-GALLERY: progress-reel directive ───────────────────────────────
+// Collapses a fenced run of image MEDIA lines into one `#gallery:` link so the
+// desktop renderer can show them as a single auto-playing carousel instead of a
+// vertical stack of thumbnails:
+//
+//   MEDIA-GALLERY: Login flow (1200ms)
+//   MEDIA:/shot/login-1.png
+//   MEDIA:/shot/login-2.png
+//   MEDIA:/shot/login-3.png
+//   <!-- /MEDIA-GALLERY -->
+//
+// The optional `(<ms>)` after the title sets the autoplay interval. A gallery
+// needs ≥2 image lines to be worth collapsing; otherwise the block is left
+// untouched and each MEDIA line renders as a normal thumbnail. Only image
+// MEDIA lines count — audio/video/files in the block are ignored for the
+// gallery but still render as their own links via renderMediaTags.
+const MEDIA_GALLERY_OPEN_RE = /^MEDIA-GALLERY:\s*(?<title>[^\n(]*?)\s*(?:\((?<ms>\d+)\s*ms\))?\s*$/im
+const MEDIA_GALLERY_CLOSE_RE = /<!--\s*\/\s*MEDIA-GALLERY\s*-->/i
+const MEDIA_GALLERY_IMAGE_RE = /(?:^|[\n])\s*[`"']?MEDIA:\s*(?:[*_`]+[ \t]*)?(?<img>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`'"]?[ \t]*(?=[\n]|$)/g
+
+function collectGalleryImageSources(body: string): string[] {
+  const sources: string[] = []
+  let match: RegExpExecArray | null
+
+  MEDIA_GALLERY_IMAGE_RE.lastIndex = 0
+
+  // Reset lastIndex between calls; the regex is global.
+  for (match = MEDIA_GALLERY_IMAGE_RE.exec(body); match; match = MEDIA_GALLERY_IMAGE_RE.exec(body)) {
+    const src = unquoteMediaPath(match.groups?.img ?? '')
+
+    if (src && mediaKind(src) === 'image') {
+      sources.push(src)
+    }
+  }
+
+  return sources
+}
+
+function renderMediaGalleryBlock(block: string): string | null {
+  const open = block.match(MEDIA_GALLERY_OPEN_RE)
+
+  if (!open || !MEDIA_GALLERY_CLOSE_RE.test(block)) {
+    return null
+  }
+
+  const rawTitle = (open.groups?.title ?? '').trim()
+  const intervalMs = open.groups?.ms ? Number.parseInt(open.groups.ms, 10) : undefined
+  const images = collectGalleryImageSources(block)
+
+  // Not enough images → don't collapse; let each MEDIA line render normally.
+  if (images.length < 2) {
+    return null
+  }
+
+  const payload = {
+    title: rawTitle ? rawTitle : undefined,
+    intervalMs: intervalMs && intervalMs > 0 ? intervalMs : undefined,
+    images: images.map(src => ({ src }))
+  }
+
+  return `[Gallery: ${images.length} images](#gallery:${encodeURIComponent(JSON.stringify(payload))})`
+}
+
+function renderMediaGalleries(text: string): string {
+  if (!/MEDIA-GALLERY:/i.test(text)) {
+    return text
+  }
+
+  return text.replace(
+    /(^|\n)(MEDIA-GALLERY:[\s\S]*?<!--\s*\/\s*MEDIA-GALLERY\s*-->)/g,
+    (_full, lead: string, block: string) => {
+      const rendered = renderMediaGalleryBlock(block)
+
+      return `${lead}${rendered ?? block}`
+    }
+  )
+}
+
 export function renderMediaTags(text: string): string {
-  return text
+  const withGalleries = renderMediaGalleries(text)
+
+  return withGalleries
     .replace(
       MEDIA_LINE_RE,
       (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`

@@ -2339,6 +2339,11 @@ export const zhHant = defineLocale({
     clipboard: '剪貼簿',
     noClipboardImage: '剪貼簿中沒有圖片',
     clipboardPasteFailed: '剪貼簿貼上失敗',
+    carouselPlay: '播放幻燈片',
+    carouselPause: '暫停幻燈片',
+    carouselPrevious: '上一張',
+    carouselNext: '下一張',
+    carouselOpen: '開啟',
     dropFiles: '拖曳檔案',
     handoff: {
       pickPlatform: '選擇目標平台',

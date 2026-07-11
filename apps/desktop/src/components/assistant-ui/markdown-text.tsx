@@ -23,12 +23,14 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
+import { MediaCarousel } from '@/components/chat/media-carousel'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
   filePathFromMediaPath,
+  galleryPayloadFromHref,
   gatewayMediaDataUrl,
   isRemoteGateway,
   mediaExternalUrl,
@@ -106,29 +108,11 @@ function parseMarkdownIntoBlocksCached(markdown: string): string[] {
   return blocks
 }
 
-async function mediaSrc(path: string): Promise<string> {
-  if (/^(?:https?|data):/i.test(path)) {
-    return path
-  }
-
-  // Stream audio/video through the custom protocol: data URLs are capped and
-  // load the whole file into memory, which broke playback for larger videos.
-  if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
-    return mediaStreamUrl(path)
-  }
-
-  // Remote gateway: the image lives on the gateway machine, so read it over the
-  // authenticated API rather than this machine's disk.
-  if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
-  }
-
-  if (!window.hermesDesktop?.readFileDataUrl) {
-    return mediaExternalUrl(path)
-  }
-
-  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
-}
+// mediaSrc now lives in @/lib/media to avoid a circular import between this
+// module and the carousel that consumes it. Imported here (not just
+// re-exported) so local callers like MediaAttachment keep working unchanged.
+import { mediaSrc } from '@/lib/media'
+export { mediaSrc }
 
 function useOpenMediaFile(path: string) {
   const [openFailed, setOpenFailed] = useState(false)
@@ -282,6 +266,18 @@ function childrenToText(children: unknown): string {
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+  const galleryPayload = galleryPayloadFromHref(href)
+
+  if (galleryPayload) {
+    return (
+      <MediaCarousel
+        images={galleryPayload.images}
+        intervalMs={galleryPayload.intervalMs}
+        title={galleryPayload.title}
+      />
+    )
+  }
+
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {

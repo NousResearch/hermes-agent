@@ -394,6 +394,32 @@ def _heal_managed_node_windows() -> bool:
             extract_dir = tmp_path / "extract"
             extract_dir.mkdir()
             with zipfile.ZipFile(zip_path) as archive:
+                # Validate member paths to prevent zip-slip (path traversal)
+                # AND reject symlink members before extracting.  The zip is
+                # fetched over the network from a nodejs.org mirror without a
+                # pinned checksum, so an attacker who can MITM the connection
+                # or compromise the mirror could otherwise plant files outside
+                # ``extract_dir`` (e.g. into %HERMES_HOME% or a startup dir) and
+                # gain code execution on the next launch.  This mirrors the
+                # guard already applied on the self-update path in
+                # ``hermes_cli/main.py``.
+                extract_dir_real = os.path.realpath(extract_dir)
+                for member in archive.infolist():
+                    member_path = os.path.realpath(os.path.join(extract_dir, member.filename))
+                    if (
+                        not member_path.startswith(extract_dir_real + os.sep)
+                        and member_path != extract_dir_real
+                    ):
+                        raise ValueError(
+                            f"Zip-slip detected: {member.filename} escapes extraction directory"
+                        )
+                    # Unix mode lives in the upper 16 bits of external_attr;
+                    # mask to the file-type bits.
+                    mode = (member.external_attr >> 16) & 0o170000
+                    if stat.S_ISLNK(mode):
+                        raise ValueError(
+                            f"ZIP contains unsupported symlink member: {member.filename}"
+                        )
                 archive.extractall(extract_dir)
             extracted = next(extract_dir.glob("node-v*"), None)
             if extracted is None or not extracted.is_dir():
@@ -402,6 +428,11 @@ def _heal_managed_node_windows() -> bool:
             if target.exists():
                 shutil.rmtree(target)
             shutil.move(str(extracted), str(target))
+    except ValueError as exc:
+        # A malicious archive (zip-slip / symlink member) — fail closed: abort
+        # the heal instead of extracting, and never crash Node resolution.
+        print(f"hermes: refusing unsafe Node archive: {exc}", file=sys.stderr)
+        return False
     except OSError:
         return False
 

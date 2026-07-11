@@ -209,6 +209,114 @@ class TestHermesManagedNode:
         assert parts[-1] == "system-node"
 
 
+class TestHealManagedNodeWindowsZipSlip:
+    """_heal_managed_node_windows must reject malicious Node archives.
+
+    The portable Node zip is fetched over the network from a nodejs.org
+    mirror with no pinned checksum, then extracted with ``extractall``.  An
+    attacker who can MITM or compromise the mirror could otherwise ship a
+    zip-slip member (``..`` traversal) or a symlink member that escapes the
+    extraction directory and plants files under %HERMES_HOME%.  These tests
+    lock in the pre-extraction validation and its fail-closed behavior.
+    """
+
+    @staticmethod
+    def _major():
+        return hermes_constants._HERMES_NODE_TARGET_MAJOR
+
+    def _dir_name(self):
+        return f"node-v{self._major()}.0.0-win-x64"
+
+    def _zip_name(self):
+        return f"{self._dir_name()}.zip"
+
+    def _fake_urlopen(self, zip_bytes):
+        """Return a urlopen stub: 1st call = index HTML, 2nd = zip bytes."""
+        import io
+
+        index_html = (
+            f'<a href="{self._zip_name()}">{self._zip_name()}</a>'
+        ).encode("utf-8")
+
+        class _FakeResp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        responses = iter([_FakeResp(index_html), _FakeResp(zip_bytes)])
+
+        def _urlopen(url, *args, **kwargs):
+            return next(responses)
+
+        return _urlopen
+
+    def _run_with_zip(self, monkeypatch, tmp_path, zip_bytes):
+        from unittest.mock import patch
+
+        monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+        home = tmp_path / "hermes_home"
+        home.mkdir()
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+
+        with patch("urllib.request.urlopen", side_effect=self._fake_urlopen(zip_bytes)):
+            result = hermes_constants._heal_managed_node_windows()
+        return result, home
+
+    def test_rejects_symlink_member(self, tmp_path, monkeypatch, capsys):
+        import io
+        import stat
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            info = zipfile.ZipInfo(f"{self._dir_name()}/evil-link")
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            zf.writestr(info, "/etc/passwd")
+
+        result, home = self._run_with_zip(monkeypatch, tmp_path, buf.getvalue())
+
+        assert result is False
+        assert "refusing unsafe Node archive" in capsys.readouterr().err
+        assert not (home / "node").exists(), "malicious archive must not be extracted"
+
+    def test_rejects_zip_slip_member(self, tmp_path, monkeypatch, capsys):
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(f"{self._dir_name()}/ok.txt", "ok")
+            zf.writestr("../escapes.txt", "pwned")
+
+        result, home = self._run_with_zip(monkeypatch, tmp_path, buf.getvalue())
+
+        assert result is False
+        assert "refusing unsafe Node archive" in capsys.readouterr().err
+        assert not (home / "node").exists()
+
+    def test_accepts_normal_archive(self, tmp_path, monkeypatch, capsys):
+        import io
+        import zipfile
+        from unittest.mock import patch
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(f"{self._dir_name()}/node.exe", "fake-binary")
+            zf.writestr(f"{self._dir_name()}/README.md", "ok")
+
+        # A clean archive must pass validation and extract; stub the final
+        # runnable probe so the happy path returns True without a real node.exe.
+        with patch.object(hermes_constants, "node_tool_runnable", return_value=True):
+            result, home = self._run_with_zip(monkeypatch, tmp_path, buf.getvalue())
+
+        assert result is True
+        assert (home / "node").is_dir(), "clean archive should extract into %HERMES_HOME%/node"
+        assert "refusing unsafe Node archive" not in capsys.readouterr().err
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
 class TestNodeToolRunnable:
     """node_tool_runnable() rejects broken Hermes-managed npm/node wrappers."""

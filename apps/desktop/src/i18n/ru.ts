@@ -1,3 +1,5 @@
+import { defineFieldCopy } from '@/app/settings/field-copy'
+
 import { defineLocale } from './define-locale'
 
 function pluralRu(count: number, one: string, few: string, many: string): string {
@@ -62,6 +64,18 @@ export const ru = defineLocale({
     update: 'Обновить',
     on: 'Вкл',
     off: 'Выкл'
+  },
+
+  fileMenu: {
+    revealFinder: 'Показать в Finder',
+    revealExplorer: 'Показать в Проводнике',
+    revealFileManager: 'Открыть содержащую папку',
+    revealInSidebar: 'Показать в дереве файлов',
+    copyPath: 'Копировать путь',
+    copyRelativePath: 'Копировать относительный путь',
+    rename: 'Переименовать…', delete: 'Удалить', renameTitle: 'Переименовать', renameLabel: 'Новое имя',
+    deleteTitle: name => `Удалить ${name}?`,
+    deleteBody: 'Файл будет перемещён в корзину, откуда его можно восстановить.', pathCopied: 'Путь скопирован'
   },
 
   boot: {
@@ -438,6 +452,13 @@ export const ru = defineLocale({
         turnOffFailed: 'Не удалось выключить питомца.'
       }
     },
+    fieldLabels: defineFieldCopy({ display: { personality: 'Стиль общения', showReasoning: 'Блоки рассуждений' } }),
+    fieldDescriptions: defineFieldCopy({
+      display: {
+        personality: 'Стиль ассистента по умолчанию для новых сессий.',
+        showReasoning: 'Показывать содержимое рассуждений, когда его предоставляет бэкенд.'
+      }
+    }),
     about: {
       heading: 'Hermes Desktop',
       version: value => `Версия ${value}`,
@@ -730,6 +751,15 @@ export const ru = defineLocale({
     failedToUpdate: name => `Не удалось обновить ${name}`
   },
 
+  starmap: {
+    title: 'Граф памяти', subtitle: (nodes, clusters) => `${nodes} навыков в ${clusters} категориях`, close: 'Закрыть граф памяти', refresh: 'Обновить', memory: 'Память',
+    filterAll: 'Все', filterUsed: 'Использованные', filterLearned: 'Освоенные', viewGraph: 'Граф', loadFailed: 'Не удалось загрузить граф памяти', loading: 'Загрузка…',
+    emptyTitle: 'Пока ничего не изучено', emptyDesc: 'Здесь появятся навыки и воспоминания, которые Hermes создаёт в процессе работы.', share: 'Поделиться картой',
+    shareHint: 'Скопируйте код, чтобы поделиться картой, или вставьте код для загрузки. Он содержит только макет, без памяти и текстов навыков.', shareTitle: 'Импорт / экспорт карты', sharePlaceholder: 'Вставьте код карты…',
+    copy: 'Копировать код карты', copied: 'Скопировано!', importMap: 'Импортировать карту', importBtn: 'Загрузить', importEmpty: 'Вставьте код карты для загрузки.',
+    importSuccess: nodes => `Загружена карта с ${countRu(nodes, 'узлом', 'узлами', 'узлами')}.`, importedBadge: 'импортированная карта', resetToMine: 'Вернуться к моей карте'
+  },
+
   agents: {
     close: 'Закрыть агентов',
     title: 'Дерево агентов',
@@ -743,7 +773,7 @@ export const ru = defineLocale({
     files: 'Файлы',
     moreFiles: count => `+${countRu(count, 'файл', 'файла', 'файлов')}`,
     delegation: index => `Делегирование ${index}`,
-    workers: count => `${count} воркеров`,
+    workers: count => countRu(count, 'воркер', 'воркера', 'воркеров'),
     workersActive: count => `${count} активных`,
     agentsCount: count => countRu(count, 'агент', 'агента', 'агентов'),
     activeCount: count => `${count} активных`,
@@ -757,7 +787,7 @@ export const ru = defineLocale({
     ageHours: hours => `${hours}ч назад`,
     durationSeconds: seconds => `${seconds}с`,
     durationMinutes: (minutes, seconds) => `${minutes}м ${seconds}с`,
-    tokens: value => `${value} токенов`
+    tokens: value => countRu(Number(value), 'токен', 'токена', 'токенов')
   },
 
   commandCenter: {
@@ -781,7 +811,7 @@ export const ru = defineLocale({
       install: 'Установить',
       installing: 'Установка...',
       installed: 'Установлена',
-      installs: count => `${count} установок`
+      installs: count => countRu(Number(count), 'установка', 'установки', 'установок')
     },
     settingsFields: 'Поля настроек',
     mcpServers: 'MCP-серверы',
@@ -842,7 +872,7 @@ export const ru = defineLocale({
     noModelUsage: 'Использования моделей пока нет.',
     topSkills: 'Топ навыков',
     noSkillActivity: 'Активности навыков пока нет.',
-    actions: count => `${count} действий`
+    actions: count => countRu(Number(count), 'действие', 'действия', 'действий')
   },
 
   messaging: {
@@ -1713,7 +1743,8 @@ export const ru = defineLocale({
         'Hermes ещё работает, но результат перезапуска не получен. Команда может выполняться в foreground.',
       workspaceReloading: 'Рабочее пространство изменилось, обновление предпросмотра',
       fileChanged: url => `Файл изменён, обновление: ${url}`,
-      filesChanged: (count, url) => `${count} файлов изменено, обновление: ${url}`,
+      filesChanged: (count, url) =>
+        count === 1 ? `Изменён 1 файл, обновление: ${url}` : `${countRu(count, 'файла', 'файлов', 'файлов')} изменено, обновление: ${url}`,
       watchFailed: message => `Не удалось отслеживать файл: ${message}`,
       moduleMimeDescription:
         'Модульные скрипты раздаются с неправильным MIME-типом. Обычно это значит, что статический файловый сервер раздаёт Vite/React-приложение вместо dev-сервера.',
@@ -1824,7 +1855,8 @@ export const ru = defineLocale({
     providerCredentialRequired: 'Добавьте учётные данные провайдера перед первым сообщением.',
     emptySlashCommand: 'пустая слэш-команда',
     desktopCommands: 'Команды Hermes Desktop',
-    skillCommandsAvailable: count => `Доступно ${count} команд навыков.`,
+    skillCommandsAvailable: count =>
+      count === 1 ? 'Доступна 1 команда навыка.' : `Доступны ${countRu(count, 'команды навыков', 'команды навыков', 'команд навыков')}.`,
     warningLine: message => `предупреждение: ${message}`,
     yoloArmed: 'YOLO активирован для этого чата',
     yoloOff: 'YOLO выключен',

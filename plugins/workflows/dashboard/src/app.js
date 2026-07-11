@@ -6,6 +6,15 @@ import {
   locationForMode,
   modeForLocation,
 } from "./workspace.js";
+import {
+  SCALAR_INPUT_KINDS,
+  workflowIdFromText,
+  inputRowsFromTrigger,
+  inputSchemaFromRows,
+  triggerIntakeFromForm,
+  readyPathFromTrigger,
+  changeNodeType,
+} from "./editor-model.js";
 
 (function () {
   "use strict";
@@ -62,7 +71,6 @@ import {
   };
 
   const PRIVACY_NOTE = "Workflow inputs and outputs are stored locally in Hermes workflow/Kanban history. Do not paste secrets; common secret-looking keys are redacted in dashboard views.";
-  const SCALAR_INPUT_KINDS = ["text", "long_text", "prompt", "criteria", "url", "repo_path", "boolean", "number", "integer"];
   const INTAKE_SCOPE_NOTE = "Phase 1 supports scalar manual and continuous input items. Batch splitting and document uploads are not supported in this release.";
 
   function asArray(value) {
@@ -304,59 +312,6 @@ import {
       return "";
     });
     return Object.keys(found).sort().map(function (name) { return { name: name, kind: found[name] }; });
-  }
-
-  function inputRowsFromTrigger(trigger) {
-    const schema = trigger && trigger.input_schema && typeof trigger.input_schema === "object" && !Array.isArray(trigger.input_schema) ? trigger.input_schema : {};
-    return Object.keys(schema).sort().map(function (name) {
-      const field = schema[name] && typeof schema[name] === "object" && !Array.isArray(schema[name]) ? schema[name] : {};
-      let kind = String(field.kind || "text");
-      if (kind === "object" || kind === "json" || kind === "document") kind = "text";
-      if (SCALAR_INPUT_KINDS.indexOf(kind) === -1) kind = "text";
-      return {
-        name: name,
-        kind: kind,
-        required: !!field.required,
-        defaultValue: field.default === undefined || field.default === null ? "" : String(field.default),
-        minLength: field.min_length === undefined || field.min_length === null ? "" : String(field.min_length),
-        maxLength: field.max_length === undefined || field.max_length === null ? "" : String(field.max_length),
-      };
-    });
-  }
-
-  function inputSchemaFromRows(rows) {
-    const schema = {};
-    asArray(rows).forEach(function (row) {
-      const name = workflowIdFromText(row && row.name ? row.name : "").replace(/-/g, "_");
-      if (!name) return;
-      const kind = SCALAR_INPUT_KINDS.indexOf(row.kind) !== -1 ? row.kind : "text";
-      const field = { kind: kind };
-      if (row.required) field.required = true;
-      if (row.defaultValue !== undefined && String(row.defaultValue).trim() !== "") field.default = String(row.defaultValue);
-      const minLength = String(row.minLength || "").trim();
-      const maxLength = String(row.maxLength || "").trim();
-      if (minLength) field.min_length = Math.max(0, parseInt(minLength, 10) || 0);
-      if (maxLength) field.max_length = Math.max(0, parseInt(maxLength, 10) || 0);
-      schema[name] = field;
-    });
-    return schema;
-  }
-
-  function readyPathFromTrigger(trigger) {
-    const cond = trigger && trigger.intake && trigger.intake.ready_when;
-    if (!cond || typeof cond !== "object" || Array.isArray(cond)) return "";
-    if (String(cond.op || "") === "exists" && typeof cond.path === "string") return cond.path;
-    return "";
-  }
-
-  function triggerIntakeFromForm(mode, dedupeKey, readyPath) {
-    const safeMode = mode === "continuous" ? "continuous" : "single";
-    const intake = { mode: safeMode };
-    const dedupe = String(dedupeKey || "").trim();
-    const ready = String(readyPath || "").trim();
-    if (dedupe) intake.dedupe_key = dedupe;
-    if (ready) intake.ready_when = { op: "exists", path: ready };
-    return intake;
   }
 
   function inputObjectForFields(fields, values) {
@@ -829,13 +784,6 @@ import {
     });
     if (!exists && source && target) next.edges.push({ from: source, to: target });
     return next;
-  }
-
-  function workflowIdFromText(value) {
-    const text = String(value || "workflow draft").trim().toLowerCase();
-    const slug = text.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64);
-    if (slug && /^[a-z]/.test(slug)) return slug;
-    return "workflow_draft";
   }
 
   function nodeIdsForSpec(spec) {
@@ -2359,6 +2307,7 @@ import {
         h("h2", null, "Advanced YAML"),
         h("textarea", {
           className: "hermes-workflows-editor",
+          "aria-label": "Workflow definition YAML",
           value: editorText,
           onChange: function (event) {
             setDraftResult(null);
@@ -2782,7 +2731,23 @@ import {
       );
       var typeField = selectedNode.specKind === "trigger" ? null : h("label", null,
         h("span", { className: "hermes-workflows-muted" }, "Cell type"),
-        h("select", { value: cellType, "aria-label": "Change selected cell type", onChange: function (event) { setCellType(event.target.value); } }, ["pass", "switch", "agent_task", "wait", "parallel", "join", "fail"].map(function (type) {
+        h("select", { value: cellType, "aria-label": "Change selected cell type", onChange: function (event) {
+          var nextType = event.target.value;
+          var spec = activeSpec();
+          if (!spec || !selectedNode) { setCellType(nextType); return; }
+          var preview = changeNodeType(spec, selectedNode.id, nextType);
+          if (preview.removedFields.length > 0) {
+            var msg = "Changing to " + nextType + " will remove: " + preview.removedFields.join(", ") + ". Continue?";
+            if (!window.confirm(msg)) return;
+          }
+          setCellType(nextType);
+          setDraftSpec(preview.spec);
+          updateEditorText(specToEditorText(preview.spec));
+          setSelectedDefinition(Object.assign({}, selectedDefinition || {}, { spec: preview.spec }));
+          var nextNode = findSpecNode(preview.spec, selectedNode.id);
+          if (nextNode) { setSelectedNode(Object.assign({}, nextNode, { id: selectedNode.id, specKind: selectedNode.specKind })); setNodeJson(jsonBlock(Object.assign({}, nextNode, { id: selectedNode.id }))); }
+          setNodeMessage(preview.removedFields.length ? "Changed type to " + nextType + "; removed " + preview.removedFields.join(", ") + "." : "Changed type to " + nextType + ".");
+        } }, ["pass", "switch", "agent_task", "wait", "parallel", "join", "fail"].map(function (type) {
           return h("option", { key: type, value: type }, type);
         }))
       );

@@ -2,6 +2,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUNDLE = ROOT / "plugins" / "workflows" / "dashboard" / "src" / "app.js"
+EDITOR_MODEL = ROOT / "plugins" / "workflows" / "dashboard" / "src" / "editor-model.js"
 
 
 def test_workflow_dashboard_renders_assistant_error_hints() -> None:
@@ -207,6 +208,7 @@ def test_workflow_dashboard_has_no_dead_builder_code() -> None:
 
 def test_workflow_dashboard_trigger_inspector_authors_input_and_intake_without_json() -> None:
     text = BUNDLE.read_text(encoding="utf-8")
+    editor = EDITOR_MODEL.read_text(encoding="utf-8")
     for marker in [
         "Input schema",
         "Intake mode",
@@ -217,13 +219,17 @@ def test_workflow_dashboard_trigger_inspector_authors_input_and_intake_without_j
         "Dedupe key",
         "Ready when field path",
         "$.input.repo_path",
-        "function inputRowsFromTrigger",
-        "function inputSchemaFromRows",
-        "function triggerIntakeFromForm",
         "setTriggerInputRows",
         "setTriggerIntakeMode",
     ]:
         assert marker in text
+    # Form conversion functions are now in editor-model.js (source-tested).
+    for marker in [
+        "function inputRowsFromTrigger",
+        "function inputSchemaFromRows",
+        "function triggerIntakeFromForm",
+    ]:
+        assert marker in editor
     assert "Advanced JSON remains available" in text
 
 
@@ -299,3 +305,20 @@ def test_workflow_dashboard_uses_three_zone_builder_layout() -> None:
         ".hermes-workflows .hermes-workflows-bottom-panel",
     ]:
         assert marker in css
+
+
+def test_editor_model_exports_structured_editing_coverage() -> None:
+    editor = EDITOR_MODEL.read_text(encoding="utf-8")
+    for marker in [
+        "supportedEditorCoverage",
+        "changeNodeType",
+        "conditionFromForm",
+        "resultContractFromRows",
+        "editorSections",
+        "workflowIdFromText",
+        "inputRowsFromTrigger",
+        "inputSchemaFromRows",
+        "triggerIntakeFromForm",
+        "readyPathFromTrigger",
+    ]:
+        assert marker in editor, f"editor-model.js missing export: {marker}"

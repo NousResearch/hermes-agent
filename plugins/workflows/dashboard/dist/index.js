@@ -282,6 +282,136 @@
 		return value ? base + "?" + MODE_TO_QUERY_KEY[safeMode] + "=" + encodeURIComponent(value) : base;
 	}
 	//#endregion
+	//#region ../plugins/workflows/dashboard/src/editor-model.js
+	var SCALAR_INPUT_KINDS = [
+		"text",
+		"long_text",
+		"prompt",
+		"criteria",
+		"url",
+		"repo_path",
+		"boolean",
+		"number",
+		"integer"
+	];
+	var NODE_TYPE_FIELDS = {
+		agent_task: [
+			"profile",
+			"prompt",
+			"result_contract",
+			"provider",
+			"model",
+			"skills",
+			"workspace_kind",
+			"workspace_path",
+			"goal_mode",
+			"goal_max_turns",
+			"max_retries"
+		],
+		switch: ["cases", "default"],
+		wait: ["seconds"],
+		pass: ["output"],
+		fail: ["output"],
+		parallel: [],
+		join: []
+	};
+	function changeNodeType(spec, nodeId, nextType) {
+		var next = JSON.parse(JSON.stringify(spec || {}));
+		var node = (next.nodes || {})[nodeId];
+		if (!node) return {
+			spec: next,
+			removedFields: []
+		};
+		var oldFields = NODE_TYPE_FIELDS[node.type || "pass"] || [];
+		var newFieldSet = {};
+		(NODE_TYPE_FIELDS[nextType] || []).forEach(function(f) {
+			newFieldSet[f] = true;
+		});
+		var removedFields = [];
+		oldFields.forEach(function(f) {
+			if (!newFieldSet[f] && node[f] !== void 0) {
+				removedFields.push(f);
+				delete node[f];
+			}
+		});
+		node.type = nextType;
+		if (nextType === "agent_task") {
+			if (!node.profile) node.profile = "default";
+			if (!node.prompt) node.prompt = "Return JSON only matching the result contract.";
+			if (!node.result_contract) node.result_contract = {
+				summary: "string",
+				status: "string"
+			};
+		} else if (nextType === "wait") {
+			if (node.seconds === void 0) node.seconds = 60;
+		} else if (nextType === "fail") {
+			if (!node.output) node.output = "Workflow failed.";
+		} else if (nextType === "switch") {
+			if (!node.cases) node.cases = [];
+		} else if (nextType === "pass") {
+			if (!node.output) node.output = {};
+		}
+		return {
+			spec: next,
+			removedFields: removedFields.sort()
+		};
+	}
+	function workflowIdFromText(value) {
+		var slug = String(value || "workflow draft").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64);
+		if (slug && /^[a-z]/.test(slug)) return slug;
+		return "workflow_draft";
+	}
+	function inputRowsFromTrigger(trigger) {
+		var schema = trigger && trigger.input_schema && typeof trigger.input_schema === "object" && !Array.isArray(trigger.input_schema) ? trigger.input_schema : {};
+		return Object.keys(schema).sort().map(function(name) {
+			var field = schema[name] && typeof schema[name] === "object" && !Array.isArray(schema[name]) ? schema[name] : {};
+			var kind = String(field.kind || "text");
+			if (kind === "object" || kind === "json" || kind === "document") kind = "text";
+			if (SCALAR_INPUT_KINDS.indexOf(kind) === -1) kind = "text";
+			return {
+				name,
+				kind,
+				required: !!field.required,
+				defaultValue: field.default === void 0 || field.default === null ? "" : String(field.default),
+				minLength: field.min_length === void 0 || field.min_length === null ? "" : String(field.min_length),
+				maxLength: field.max_length === void 0 || field.max_length === null ? "" : String(field.max_length)
+			};
+		});
+	}
+	function inputSchemaFromRows(rows) {
+		var schema = {};
+		(rows || []).forEach(function(row) {
+			var name = workflowIdFromText(row && row.name ? row.name : "").replace(/-/g, "_");
+			if (!name) return;
+			var field = { kind: SCALAR_INPUT_KINDS.indexOf(row.kind) !== -1 ? row.kind : "text" };
+			if (row.required) field.required = true;
+			if (row.defaultValue !== void 0 && String(row.defaultValue).trim() !== "") field.default = String(row.defaultValue);
+			var minLength = String(row.minLength || "").trim();
+			var maxLength = String(row.maxLength || "").trim();
+			if (minLength) field.min_length = Math.max(0, parseInt(minLength, 10) || 0);
+			if (maxLength) field.max_length = Math.max(0, parseInt(maxLength, 10) || 0);
+			schema[name] = field;
+		});
+		return schema;
+	}
+	function triggerIntakeFromForm(mode, dedupeKey, readyPath) {
+		var intake = { mode: mode === "continuous" ? "continuous" : "single" };
+		var dedupe = String(dedupeKey || "").trim();
+		var ready = String(readyPath || "").trim();
+		if (dedupe) intake.dedupe_key = dedupe;
+		if (ready) intake.ready_when = {
+			op: "exists",
+			path: ready
+		};
+		return intake;
+	}
+	function readyPathFromTrigger(trigger) {
+		var cond = trigger && trigger.intake && trigger.intake.ready_when;
+		if (!cond || typeof cond !== "object" || Array.isArray(cond)) return "";
+		if (String(cond.op || "") === "exists" && typeof cond.path === "string") return cond.path;
+		return "";
+	}
+	//#endregion
 	//#region ../plugins/workflows/dashboard/src/app.js
 	(function() {
 		"use strict";
@@ -348,17 +478,6 @@
 			return formatApiError(err);
 		}
 		const PRIVACY_NOTE = "Workflow inputs and outputs are stored locally in Hermes workflow/Kanban history. Do not paste secrets; common secret-looking keys are redacted in dashboard views.";
-		const SCALAR_INPUT_KINDS = [
-			"text",
-			"long_text",
-			"prompt",
-			"criteria",
-			"url",
-			"repo_path",
-			"boolean",
-			"number",
-			"integer"
-		];
 		const INTAKE_SCOPE_NOTE = "Phase 1 supports scalar manual and continuous input items. Batch splitting and document uploads are not supported in this release.";
 		function asArray(value) {
 			return Array.isArray(value) ? value : [];
@@ -593,56 +712,6 @@
 					kind: found[name]
 				};
 			});
-		}
-		function inputRowsFromTrigger(trigger) {
-			const schema = trigger && trigger.input_schema && typeof trigger.input_schema === "object" && !Array.isArray(trigger.input_schema) ? trigger.input_schema : {};
-			return Object.keys(schema).sort().map(function(name) {
-				const field = schema[name] && typeof schema[name] === "object" && !Array.isArray(schema[name]) ? schema[name] : {};
-				let kind = String(field.kind || "text");
-				if (kind === "object" || kind === "json" || kind === "document") kind = "text";
-				if (SCALAR_INPUT_KINDS.indexOf(kind) === -1) kind = "text";
-				return {
-					name,
-					kind,
-					required: !!field.required,
-					defaultValue: field.default === void 0 || field.default === null ? "" : String(field.default),
-					minLength: field.min_length === void 0 || field.min_length === null ? "" : String(field.min_length),
-					maxLength: field.max_length === void 0 || field.max_length === null ? "" : String(field.max_length)
-				};
-			});
-		}
-		function inputSchemaFromRows(rows) {
-			const schema = {};
-			asArray(rows).forEach(function(row) {
-				const name = workflowIdFromText(row && row.name ? row.name : "").replace(/-/g, "_");
-				if (!name) return;
-				const field = { kind: SCALAR_INPUT_KINDS.indexOf(row.kind) !== -1 ? row.kind : "text" };
-				if (row.required) field.required = true;
-				if (row.defaultValue !== void 0 && String(row.defaultValue).trim() !== "") field.default = String(row.defaultValue);
-				const minLength = String(row.minLength || "").trim();
-				const maxLength = String(row.maxLength || "").trim();
-				if (minLength) field.min_length = Math.max(0, parseInt(minLength, 10) || 0);
-				if (maxLength) field.max_length = Math.max(0, parseInt(maxLength, 10) || 0);
-				schema[name] = field;
-			});
-			return schema;
-		}
-		function readyPathFromTrigger(trigger) {
-			const cond = trigger && trigger.intake && trigger.intake.ready_when;
-			if (!cond || typeof cond !== "object" || Array.isArray(cond)) return "";
-			if (String(cond.op || "") === "exists" && typeof cond.path === "string") return cond.path;
-			return "";
-		}
-		function triggerIntakeFromForm(mode, dedupeKey, readyPath) {
-			const intake = { mode: mode === "continuous" ? "continuous" : "single" };
-			const dedupe = String(dedupeKey || "").trim();
-			const ready = String(readyPath || "").trim();
-			if (dedupe) intake.dedupe_key = dedupe;
-			if (ready) intake.ready_when = {
-				op: "exists",
-				path: ready
-			};
-			return intake;
 		}
 		function inputObjectForFields(fields, values) {
 			const input = {};
@@ -1127,11 +1196,6 @@
 				to: target
 			});
 			return next;
-		}
-		function workflowIdFromText(value) {
-			const slug = String(value || "workflow draft").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64);
-			if (slug && /^[a-z]/.test(slug)) return slug;
-			return "workflow_draft";
 		}
 		function nodeIdsForSpec(spec) {
 			return nodeList(spec).map(function(node) {
@@ -2625,6 +2689,7 @@
 				if (!showAdvancedYaml) return null;
 				return h(Card, { className: "hermes-workflows-panel" }, h("h2", null, "Advanced YAML"), h("textarea", {
 					className: "hermes-workflows-editor",
+					"aria-label": "Workflow definition YAML",
 					value: editorText,
 					onChange: function(event) {
 						setDraftResult(null);
@@ -3089,7 +3154,30 @@
 					value: cellType,
 					"aria-label": "Change selected cell type",
 					onChange: function(event) {
-						setCellType(event.target.value);
+						var nextType = event.target.value;
+						var spec = activeSpec();
+						if (!spec || !selectedNode) {
+							setCellType(nextType);
+							return;
+						}
+						var preview = changeNodeType(spec, selectedNode.id, nextType);
+						if (preview.removedFields.length > 0) {
+							var msg = "Changing to " + nextType + " will remove: " + preview.removedFields.join(", ") + ". Continue?";
+							if (!window.confirm(msg)) return;
+						}
+						setCellType(nextType);
+						setDraftSpec(preview.spec);
+						updateEditorText(specToEditorText(preview.spec));
+						setSelectedDefinition(Object.assign({}, selectedDefinition || {}, { spec: preview.spec }));
+						var nextNode = findSpecNode(preview.spec, selectedNode.id);
+						if (nextNode) {
+							setSelectedNode(Object.assign({}, nextNode, {
+								id: selectedNode.id,
+								specKind: selectedNode.specKind
+							}));
+							setNodeJson(jsonBlock(Object.assign({}, nextNode, { id: selectedNode.id })));
+						}
+						setNodeMessage(preview.removedFields.length ? "Changed type to " + nextType + "; removed " + preview.removedFields.join(", ") + "." : "Changed type to " + nextType + ".");
 					}
 				}, [
 					"pass",

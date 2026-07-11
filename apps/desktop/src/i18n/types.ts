@@ -1799,6 +1799,35 @@ export interface Translations {
     closeToRight: string
     closeAll: string
     closePane: string
+    surface: {
+      activate: (label: string) => string
+      dock: (label: string) => string
+      detach: (label: string) => string
+      minimize: (label: string) => string
+      maximize: (label: string) => string
+      restore: (label: string) => string
+      resize: (label: string) => string
+      snapLayouts: (label: string) => string
+      snapTo: (label: string, slot: string) => string
+      detachedTitle: (label: string) => string
+      detachedBody: string
+      floating: string
+      slots: {
+        bottomHalf: string
+        bottomLeftQuarter: string
+        bottomRightQuarter: string
+        centerThird: string
+        leftHalf: string
+        leftThird: string
+        leftTwoThirds: string
+        rightHalf: string
+        rightThird: string
+        rightTwoThirds: string
+        topHalf: string
+        topLeftQuarter: string
+        topRightQuarter: string
+      }
+    }
     loading: string
     unavailable: string
     opening: string

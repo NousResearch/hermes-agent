@@ -1201,8 +1201,20 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
-    """Read a file with pagination and line numbers."""
+def read_file_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = 500,
+    task_id: str = "default",
+    preview: bool = False,
+) -> str:
+    """Read a file with pagination and line numbers.
+
+    ``preview`` is an event-routing hint for Desktop/Webapp clients. It must not
+    change the file read itself; the gateway forwards the original arguments
+    after the tool completes.
+    """
+    _ = preview
     try:
         offset, limit = normalize_read_pagination(offset, limit)
 
@@ -2047,7 +2059,12 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000},
+            "preview": {
+                "type": "boolean",
+                "description": "Set true only when the user explicitly asks to open/show/display the text file in Desktop/Webapp Preview Workspace.",
+                "default": False,
+            },
         },
         "required": ["path"]
     }

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type MutableRefObject, useCallback, useEffect } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
 import {
@@ -10,7 +10,8 @@ import {
   getSessionPreviewRecord,
   progressPreviewServerRestart,
   requestPreviewReload,
-  setPreviewTarget
+  setPreviewTarget,
+  setSessionPreviewTarget
 } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
@@ -48,6 +49,7 @@ export function usePreviewRouting({
   routedSessionId,
   selectedStoredSessionId
 }: PreviewRoutingOptions) {
+  const routedPreviewToolIdsRef = useRef(new Set<string>())
   const previewRegistry = useStore($sessionPreviewRegistry)
   const previewSessionId = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
 
@@ -119,6 +121,44 @@ export function usePreviewRouting({
         return
       }
 
+      const payload = asRecord(event.payload)
+      const args = asRecord(payload.args)
+      const toolId = typeof payload.tool_id === 'string' ? payload.tool_id : ''
+      const path = typeof args.path === 'string' ? args.path.trim() : ''
+      const activeSessionId = activeSessionIdRef.current
+
+      if (
+        event.type === 'tool.complete' &&
+        event.session_id === activeSessionId &&
+        payload.name === 'read_file' &&
+        args.preview === true &&
+        path &&
+        toolId &&
+        !routedPreviewToolIdsRef.current.has(toolId)
+      ) {
+        routedPreviewToolIdsRef.current.add(toolId)
+        const cwd = $currentCwd.get() || currentCwd || undefined
+
+        void window.hermesDesktop
+          .normalizePreviewTarget(path, cwd)
+          .then(target => {
+            if (!target || target.kind !== 'file' || activeSessionIdRef.current !== activeSessionId) {
+              return
+            }
+
+            setSessionPreviewTarget(
+              activeSessionId,
+              { ...target, renderMode: 'source', source: path },
+              'agent-request',
+              path
+            )
+          })
+          .catch(() => {
+            // Preview requests are optional UI affordances; normalization can
+            // fail on a disconnected remote backend without affecting the read.
+          })
+      }
+
       // Only refresh an already-open live preview when a file changes; never
       // open one unprompted. (Preview links are surfaced from the tool row into
       // the status stack — see tool-fallback.tsx.)
@@ -126,7 +166,7 @@ export function usePreviewRouting({
         requestPreviewReload()
       }
     },
-    [activeSessionIdRef, baseHandleGatewayEvent]
+    [activeSessionIdRef, baseHandleGatewayEvent, currentCwd]
   )
 
   return { handleDesktopGatewayEvent, restartPreviewServer }

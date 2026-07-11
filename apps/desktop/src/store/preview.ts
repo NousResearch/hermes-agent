@@ -11,6 +11,12 @@ import {
   selectRightRailTab
 } from './layout'
 import { setPaneOpen } from './panes'
+import {
+  clampFloatingGeometry,
+  type FloatingGeometry,
+  type PreviewSnapSlot,
+  type PreviewViewport
+} from './preview-surface-layout'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
 
 export interface PreviewTarget {
@@ -40,7 +46,7 @@ export interface PreviewServerRestart {
   url: string
 }
 
-export type PreviewRecordSource = 'explicit-link' | 'file-browser' | 'manual' | 'tool-result'
+export type PreviewRecordSource = 'agent-request' | 'explicit-link' | 'file-browser' | 'manual' | 'tool-result'
 
 export interface SessionPreviewRecord {
   autoOpen?: boolean
@@ -60,12 +66,42 @@ export interface FilePreviewTab {
   target: PreviewTarget
 }
 
+export interface WebPreviewTab {
+  id: `preview:${string}`
+  target: PreviewTarget
+}
+
+export type PreviewSurfacePlacement = 'docked' | 'floating' | 'maximized' | 'minimized' | PreviewSnapSlot
+
+export interface PreviewSurfaceRestore {
+  geometry?: FloatingGeometry
+  placement: Exclude<PreviewSurfacePlacement, 'maximized' | 'minimized'>
+}
+
+export interface PreviewSurfaceLayout {
+  geometry?: FloatingGeometry
+  placement: PreviewSurfacePlacement
+  restore?: PreviewSurfaceRestore
+}
+
 const REGISTRY_STORAGE_KEY = 'hermes.desktop.sessionPreviews.v1'
 const TABS_STORAGE_KEY = 'hermes.desktop.filePreviewTabs.v1'
+const WEB_TABS_STORAGE_KEY = 'hermes.desktop.webPreviewTabs.v1'
+const SURFACE_LAYOUTS_STORAGE_KEY = 'hermes.desktop.previewSurfaceLayouts.v1'
 const MAX_RECORDS_PER_SESSION = 1
 const MAX_SESSIONS = 120
 
 export const $previewTarget = atom<PreviewTarget | null>(null)
+export const $webPreviewTabs = persistentAtom<WebPreviewTab[]>(WEB_TABS_STORAGE_KEY, [], {
+  decode: raw => {
+    const parsed = JSON.parse(raw) as unknown
+
+    return Array.isArray(parsed)
+      ? parsed.filter(isWebPreviewTab).filter(isPersistableWebPreviewTab).map(migrateWebPreviewTab)
+      : []
+  },
+  encode: tabs => JSON.stringify(tabs.filter(isPersistableWebPreviewTab))
+})
 // Persisted so open file-preview tabs survive a relaunch; content is re-read
 // from each target's path/url on demand. Invalid rows are dropped on load and
 // inline image bytes (megabytes) are stripped on save, mirroring the registry.
@@ -73,16 +109,45 @@ export const $filePreviewTabs = persistentAtom<FilePreviewTab[]>(TABS_STORAGE_KE
   decode: raw => {
     const parsed = JSON.parse(raw) as unknown
 
-    return Array.isArray(parsed) ? parsed.filter(isFilePreviewTab) : []
+    return Array.isArray(parsed) ? parsed.filter(isFilePreviewTab).map(migrateFilePreviewTab) : []
   },
   encode: tabs => JSON.stringify(tabs, (key, value) => (key === 'dataUrl' ? undefined : value))
 })
+export const $previewSurfaceLayouts = persistentAtom<Partial<Record<RightRailTabId, PreviewSurfaceLayout>>>(
+  SURFACE_LAYOUTS_STORAGE_KEY,
+  {},
+  {
+    decode: raw => {
+      const parsed = JSON.parse(raw) as unknown
 
-// Drop a restored active file-tab that didn't survive validation so the rail
-// never points at a tab that isn't there.
+      if (!parsed || typeof parsed !== 'object') {
+        return {}
+      }
+
+      return Object.fromEntries(
+        Object.entries(parsed as Record<string, unknown>).filter(
+          ([tabId, layout]) => isPersistableLayoutTabId(tabId) && isPreviewSurfaceLayout(layout)
+        )
+      ) as Partial<Record<RightRailTabId, PreviewSurfaceLayout>>
+    },
+    encode: layouts =>
+      JSON.stringify(Object.fromEntries(Object.entries(layouts).filter(([tabId]) => isPersistableLayoutTabId(tabId))))
+  }
+)
+
+// Rewrite migrated/sanitized persistence immediately so credentials from a
+// legacy URL-derived tab id cannot remain dormant in localStorage.
+$filePreviewTabs.set([...$filePreviewTabs.get()])
+$webPreviewTabs.set([...$webPreviewTabs.get()])
+$previewSurfaceLayouts.set({ ...$previewSurfaceLayouts.get() })
+
+// Drop a restored active tab that did not survive validation so the rail never
+// points at a tab that is not there.
+const restoredActiveTabId = $rightRailActiveTabId.get()
+
 if (
-  $rightRailActiveTabId.get().startsWith('file:') &&
-  !$filePreviewTabs.get().some(tab => tab.id === $rightRailActiveTabId.get())
+  (restoredActiveTabId.startsWith('file:') && !$filePreviewTabs.get().some(tab => tab.id === restoredActiveTabId)) ||
+  (restoredActiveTabId.startsWith('preview:') && !$webPreviewTabs.get().some(tab => tab.id === restoredActiveTabId))
 ) {
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
 }
@@ -140,14 +205,35 @@ export function setPreviewTarget(target: PreviewTarget | null) {
   }
 }
 
-export function filePreviewTabId(target: PreviewTarget): `file:${string}` {
-  return `file:${target.url}`
+function createOpaquePreviewTabId(prefix: 'file' | 'preview'): `file:${string}` | `preview:${string}` {
+  const uuid = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+
+  return `${prefix}:tab-${uuid}`
+}
+
+export function filePreviewTabId(_target: PreviewTarget): `file:${string}` {
+  return createOpaquePreviewTabId('file') as `file:${string}`
+}
+
+export function webPreviewTabId(_target: PreviewTarget): `preview:${string}` {
+  return createOpaquePreviewTabId('preview') as `preview:${string}`
+}
+
+function openWebPreviewTarget(target: PreviewTarget) {
+  const current = $webPreviewTabs.get()
+  const index = current.findIndex(tab => isSamePreviewTarget(tab.target, target))
+  const id = index === -1 ? webPreviewTabId(target) : current[index]!.id
+  const tab: WebPreviewTab = { id, target }
+
+  $webPreviewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
+  setPaneOpen(PREVIEW_PANE_ID, true)
+  selectRightRailTab(id)
 }
 
 function openFilePreviewTarget(target: PreviewTarget) {
-  const id = filePreviewTabId(target)
   const current = $filePreviewTabs.get()
-  const index = current.findIndex(tab => tab.id === id)
+  const index = current.findIndex(tab => isSamePreviewTarget(tab.target, target))
+  const id = index === -1 ? filePreviewTabId(target) : current[index]!.id
   const tab: FilePreviewTab = { id, target }
 
   $filePreviewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
@@ -158,7 +244,7 @@ function openFilePreviewTarget(target: PreviewTarget) {
 // Manual/file-browser opens are "peeking at a file" → source view in the file
 // pane. Tool/explicit-link opens are runnable artifacts → live preview pane.
 function isFilePreviewSource(source: PreviewRecordSource): boolean {
-  return source === 'file-browser' || source === 'manual'
+  return source === 'agent-request' || source === 'file-browser' || source === 'manual'
 }
 
 function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSource): PreviewTarget {
@@ -204,6 +290,89 @@ function isFilePreviewTab(value: unknown): value is FilePreviewTab {
   return typeof r.id === 'string' && r.id.startsWith('file:') && isPreviewTarget(r.target)
 }
 
+function isWebPreviewTab(value: unknown): value is WebPreviewTab {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const r = value as Record<string, unknown>
+
+  return typeof r.id === 'string' && r.id.startsWith('preview:') && isPreviewTarget(r.target)
+}
+
+function isOpaquePreviewTabId(id: string, prefix: 'file' | 'preview'): boolean {
+  return new RegExp(`^${prefix}:tab-[a-z0-9-]+$`, 'i').test(id)
+}
+
+function migrateFilePreviewTab(tab: FilePreviewTab): FilePreviewTab {
+  return isOpaquePreviewTabId(tab.id, 'file') ? tab : { ...tab, id: filePreviewTabId(tab.target) }
+}
+
+function migrateWebPreviewTab(tab: WebPreviewTab): WebPreviewTab {
+  return isOpaquePreviewTabId(tab.id, 'preview') ? tab : { ...tab, id: webPreviewTabId(tab.target) }
+}
+
+function isPersistableWebPreviewTab(tab: WebPreviewTab): boolean {
+  try {
+    const url = new URL(tab.target.url)
+
+    // Credential-bearing and stateful URLs remain usable for this process but
+    // are deliberately omitted from localStorage.
+    return !url.username && !url.password && !url.search && !url.hash
+  } catch {
+    return false
+  }
+}
+
+function isPersistableLayoutTabId(tabId: string): boolean {
+  return (
+    tabId === RIGHT_RAIL_PREVIEW_TAB_ID || isOpaquePreviewTabId(tabId, 'file') || isOpaquePreviewTabId(tabId, 'preview')
+  )
+}
+
+function isFloatingGeometry(value: unknown): value is FloatingGeometry {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const r = value as Record<string, unknown>
+
+  return ['height', 'width', 'x', 'y'].every(key => typeof r[key] === 'number' && Number.isFinite(r[key]))
+}
+
+const SURFACE_PLACEMENTS: readonly PreviewSurfacePlacement[] = [
+  'docked',
+  'floating',
+  'minimized',
+  'maximized',
+  'left-half',
+  'right-half',
+  'top-half',
+  'bottom-half',
+  'left-third',
+  'center-third',
+  'right-third',
+  'left-two-thirds',
+  'right-two-thirds',
+  'top-left-quarter',
+  'top-right-quarter',
+  'bottom-left-quarter',
+  'bottom-right-quarter'
+]
+
+function isPreviewSurfaceLayout(value: unknown): value is PreviewSurfaceLayout {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const r = value as Record<string, unknown>
+
+  return (
+    SURFACE_PLACEMENTS.includes(r.placement as PreviewSurfacePlacement) &&
+    (r.geometry === undefined || isFloatingGeometry(r.geometry))
+  )
+}
+
 function isPreviewRecord(value: unknown): value is SessionPreviewRecord {
   if (!value || typeof value !== 'object') {
     return false
@@ -216,7 +385,7 @@ function isPreviewRecord(value: unknown): value is SessionPreviewRecord {
     typeof r.id === 'string' &&
     isPreviewTarget(r.normalized) &&
     typeof r.sessionId === 'string' &&
-    ['explicit-link', 'file-browser', 'manual', 'tool-result'].includes(String(r.source)) &&
+    ['agent-request', 'explicit-link', 'file-browser', 'manual', 'tool-result'].includes(String(r.source)) &&
     typeof r.target === 'string' &&
     (r.dismissedAt === undefined || typeof r.dismissedAt === 'number')
   )
@@ -266,10 +435,18 @@ function persistSessionPreviewRegistry(registry: SessionPreviewRegistry) {
   }
 
   try {
+    const pruned = pruneRegistry(registry)
+
+    if (Object.keys(pruned).length === 0) {
+      window.localStorage.removeItem(REGISTRY_STORAGE_KEY)
+
+      return
+    }
+
     // Drop the inline image bytes before persisting — a screenshot data URL is
     // megabytes and would blow the localStorage quota. On reload the record
     // falls back to reading its `path`/`url`.
-    const lean = JSON.stringify(pruneRegistry(registry), (key, value) => (key === 'dataUrl' ? undefined : value))
+    const lean = JSON.stringify(pruned, (key, value) => (key === 'dataUrl' ? undefined : value))
     window.localStorage.setItem(REGISTRY_STORAGE_KEY, lean)
   } catch {
     // Session previews are a desktop convenience; storage failures are nonfatal.
@@ -346,8 +523,13 @@ export function setSessionPreviewTarget(
   }
 
   const record = registerSessionPreview(sessionId, target, source, rawTarget)
+  const normalized = record?.normalized ?? previewTargetForSource(target, source)
 
-  setPreviewTarget(record?.normalized ?? previewTargetForSource(target, source))
+  if (normalized.kind === 'url') {
+    openWebPreviewTarget(normalized)
+  } else {
+    setPreviewTarget(normalized)
+  }
 
   return record
 }
@@ -368,6 +550,148 @@ export function getSessionPreviewRecord(sessionId: string | null | undefined): S
   }
 
   return $sessionPreviewRegistry.get()[id]?.find(record => !record.dismissedAt && record.autoOpen !== false) ?? null
+}
+
+export function previewSurfacePlacementForTab(tabId: RightRailTabId): PreviewSurfacePlacement {
+  return $previewSurfaceLayouts.get()[tabId]?.placement ?? 'docked'
+}
+
+function removeRightRailTabLayout(tabId: RightRailTabId) {
+  const next = { ...$previewSurfaceLayouts.get() }
+  delete next[tabId]
+  $previewSurfaceLayouts.set(next)
+}
+
+function previewTabIds(): RightRailTabId[] {
+  const ids: RightRailTabId[] = []
+
+  if ($previewTarget.get()) {
+    ids.push(RIGHT_RAIL_PREVIEW_TAB_ID)
+  }
+
+  ids.push(...$webPreviewTabs.get().map(tab => tab.id))
+  ids.push(...$filePreviewTabs.get().map(tab => tab.id))
+
+  return ids
+}
+
+function activateAvailableTab(excluding?: RightRailTabId) {
+  const next = previewTabIds().find(id => id !== excluding && previewSurfacePlacementForTab(id) !== 'minimized')
+
+  if (next) {
+    selectRightRailTab(next)
+  }
+}
+
+export function setRightRailTabPlacement(tabId: RightRailTabId, placement: PreviewSurfacePlacement) {
+  const current = $previewSurfaceLayouts.get()[tabId]
+
+  if (placement === 'docked') {
+    removeRightRailTabLayout(tabId)
+  } else {
+    $previewSurfaceLayouts.set({
+      ...$previewSurfaceLayouts.get(),
+      [tabId]: { ...current, placement }
+    })
+  }
+
+  setPaneOpen(PREVIEW_PANE_ID, true)
+  selectRightRailTab(tabId)
+}
+
+export function setRightRailTabFloatingGeometry(
+  tabId: RightRailTabId,
+  geometry: FloatingGeometry,
+  viewport: PreviewViewport
+) {
+  const current = $previewSurfaceLayouts.get()[tabId]
+  const clamped = clampFloatingGeometry(geometry, viewport)
+
+  $previewSurfaceLayouts.set({
+    ...$previewSurfaceLayouts.get(),
+    [tabId]: { ...current, geometry: clamped, placement: current?.placement ?? 'floating' }
+  })
+}
+
+export function dockRightRailTab(tabId: RightRailTabId) {
+  setRightRailTabPlacement(tabId, 'docked')
+}
+
+export function detachRightRailTab(tabId: RightRailTabId) {
+  setRightRailTabPlacement(tabId, 'floating')
+}
+
+function restorableLayout(layout: PreviewSurfaceLayout | undefined): PreviewSurfaceRestore {
+  if (layout?.placement === 'minimized' || layout?.placement === 'maximized') {
+    return layout.restore ?? { geometry: layout.geometry, placement: 'floating' }
+  }
+
+  return {
+    geometry: layout?.geometry,
+    placement: layout?.placement ?? 'docked'
+  }
+}
+
+export function maximizeRightRailTab(tabId: RightRailTabId) {
+  const current = $previewSurfaceLayouts.get()[tabId]
+
+  $previewSurfaceLayouts.set({
+    ...$previewSurfaceLayouts.get(),
+    [tabId]: {
+      geometry: current?.geometry,
+      placement: 'maximized',
+      restore: restorableLayout(current)
+    }
+  })
+  selectRightRailTab(tabId)
+}
+
+export function minimizeRightRailTab(tabId: RightRailTabId) {
+  const current = $previewSurfaceLayouts.get()[tabId]
+
+  $previewSurfaceLayouts.set({
+    ...$previewSurfaceLayouts.get(),
+    [tabId]: {
+      geometry: current?.geometry,
+      placement: 'minimized',
+      restore: restorableLayout(current)
+    }
+  })
+
+  if ($rightRailActiveTabId.get() === tabId) {
+    activateAvailableTab(tabId)
+  }
+}
+
+export function restoreRightRailTab(tabId: RightRailTabId) {
+  const current = $previewSurfaceLayouts.get()[tabId]
+  const restore = current?.restore
+
+  if (!restore || restore.placement === 'docked') {
+    removeRightRailTabLayout(tabId)
+  } else {
+    $previewSurfaceLayouts.set({
+      ...$previewSurfaceLayouts.get(),
+      [tabId]: { geometry: restore.geometry ?? current?.geometry, placement: restore.placement }
+    })
+  }
+
+  setPaneOpen(PREVIEW_PANE_ID, true)
+  selectRightRailTab(tabId)
+}
+
+export function snapRightRailTab(tabId: RightRailTabId, placement: PreviewSnapSlot) {
+  const current = $previewSurfaceLayouts.get()[tabId]
+
+  $previewSurfaceLayouts.set({
+    ...$previewSurfaceLayouts.get(),
+    [tabId]: {
+      geometry: current?.geometry,
+      placement,
+      restore: restorableLayout(current)
+    }
+  })
+  selectRightRailTab(tabId)
 }
 
 export function dismissSessionPreview(sessionId: string | null | undefined, url?: string) {
@@ -415,12 +739,34 @@ export function dismissPreviewTarget() {
   }
 
   $previewTarget.set(null)
+  removeRightRailTabLayout(RIGHT_RAIL_PREVIEW_TAB_ID)
 
   if ($rightRailActiveTabId.get() === RIGHT_RAIL_PREVIEW_TAB_ID) {
-    selectRightRailTab($filePreviewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+    activateAvailableTab(RIGHT_RAIL_PREVIEW_TAB_ID)
   }
 
-  setPaneOpen(PREVIEW_PANE_ID, $filePreviewTabs.get().length > 0)
+  setPaneOpen(PREVIEW_PANE_ID, previewTabIds().length > 0)
+}
+
+function closeWebPreviewTab(tabId: RightRailTabId) {
+  if (!tabId.startsWith('preview:')) {
+    return
+  }
+
+  const current = $webPreviewTabs.get()
+
+  if (!current.some(tab => tab.id === tabId)) {
+    return
+  }
+
+  $webPreviewTabs.set(current.filter(tab => tab.id !== tabId))
+  removeRightRailTabLayout(tabId)
+
+  if ($rightRailActiveTabId.get() === tabId) {
+    activateAvailableTab(tabId)
+  }
+
+  setPaneOpen(PREVIEW_PANE_ID, previewTabIds().length > 0)
 }
 
 function closeFilePreviewTab(tabId: RightRailTabId) {
@@ -429,23 +775,19 @@ function closeFilePreviewTab(tabId: RightRailTabId) {
   }
 
   const current = $filePreviewTabs.get()
-  const index = current.findIndex(tab => tab.id === tabId)
 
-  if (index === -1) {
+  if (!current.some(tab => tab.id === tabId)) {
     return
   }
 
-  const next = current.filter(tab => tab.id !== tabId)
-
-  $filePreviewTabs.set(next)
+  $filePreviewTabs.set(current.filter(tab => tab.id !== tabId))
+  removeRightRailTabLayout(tabId)
 
   if ($rightRailActiveTabId.get() === tabId) {
-    selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+    activateAvailableTab(tabId)
   }
 
-  if (next.length === 0 && !$previewTarget.get()) {
-    setPaneOpen(PREVIEW_PANE_ID, false)
-  }
+  setPaneOpen(PREVIEW_PANE_ID, previewTabIds().length > 0)
 }
 
 export function closeRightRailTab(tabId: RightRailTabId) {
@@ -457,26 +799,17 @@ export function closeRightRailTab(tabId: RightRailTabId) {
     return
   }
 
-  closeFilePreviewTab(tabId)
+  if (tabId.startsWith('preview:')) {
+    closeWebPreviewTab(tabId)
+  } else {
+    closeFilePreviewTab(tabId)
+  }
 }
 
 export const closeActiveRightRailTab = () => closeRightRailTab($rightRailActiveTabId.get())
 
-// The rail's visible tab order: the live preview tab (when present) first, then
-// the file tabs in their stored order. Mirrors `ChatPreviewRail`'s `tabs` memo
-// so "close others / to the right" act on what the user actually sees.
 function rightRailTabOrder(): RightRailTabId[] {
-  const ids: RightRailTabId[] = []
-
-  if ($previewTarget.get()) {
-    ids.push(RIGHT_RAIL_PREVIEW_TAB_ID)
-  }
-
-  for (const tab of $filePreviewTabs.get()) {
-    ids.push(tab.id)
-  }
-
-  return ids
+  return previewTabIds()
 }
 
 /** Close every rail tab except `keepId`, then make `keepId` active. */
@@ -487,7 +820,7 @@ export function closeOtherRightRailTabs(keepId: RightRailTabId) {
     }
   }
 
-  selectRightRailTab(keepId)
+  restoreRightRailTab(keepId)
 }
 
 /** Close every rail tab positioned after `tabId` (VS Code's "Close to the Right"). */
@@ -504,20 +837,25 @@ export function closeRightRailTabsToRight(tabId: RightRailTabId) {
   }
 }
 
-/** Dismisses the active preview + every file tab so the rail pane unmounts. */
+/** Dismisses every preview surface so the rail pane unmounts. */
 export function closeRightRail() {
   if ($previewTarget.get()) {
     dismissPreviewTarget()
   }
 
+  $webPreviewTabs.set([])
   $filePreviewTabs.set([])
+  $previewSurfaceLayouts.set({})
   setPaneOpen(PREVIEW_PANE_ID, false)
+  selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
 }
 
 export function clearSessionPreviewRegistry() {
   $sessionPreviewRegistry.set({})
-  setPreviewTarget(null)
+  $previewTarget.set(null)
+  $webPreviewTabs.set([])
   $filePreviewTabs.set([])
+  $previewSurfaceLayouts.set({})
   setPaneOpen(PREVIEW_PANE_ID, false)
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
 }

@@ -45,7 +45,7 @@ import {
   setPetOverlayScaleHandler,
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
-import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
+import { $filePreviewTabs, $previewTarget, $webPreviewTabs, closeActiveRightRailTab } from '../store/preview'
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
@@ -192,8 +192,9 @@ export function DesktopController() {
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
-  const filePreviewTarget = useStore($filePreviewTarget)
+  const filePreviewTabs = useStore($filePreviewTabs)
   const previewTarget = useStore($previewTarget)
+  const webPreviewTabs = useStore($webPreviewTabs)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
   const terminalTakeover = useStore($terminalTakeover)
@@ -257,8 +258,10 @@ export function DesktopController() {
   const { connectionRef, gatewayRef, requestGateway } = useGatewayRequest()
 
   useEffect(() => {
-    window.hermesDesktop?.setPreviewShortcutActive?.(Boolean(chatOpen && (filePreviewTarget || previewTarget)))
-  }, [chatOpen, filePreviewTarget, previewTarget])
+    window.hermesDesktop?.setPreviewShortcutActive?.(
+      Boolean(chatOpen && (filePreviewTabs.length || webPreviewTabs.length || previewTarget))
+    )
+  }, [chatOpen, filePreviewTabs.length, previewTarget, webPreviewTabs.length])
 
   useEffect(() => {
     startUpdatePoller()
@@ -374,7 +377,7 @@ export function DesktopController() {
       }
 
       // Otherwise ⌘/Ctrl+W closes the active preview tab when one is open.
-      if ($filePreviewTarget.get() || $previewTarget.get()) {
+      if ($filePreviewTabs.get().length || $webPreviewTabs.get().length || $previewTarget.get()) {
         event.preventDefault()
         event.stopPropagation()
         closeActiveRightRailTab()
@@ -1174,8 +1177,10 @@ export function DesktopController() {
 
   // Other sidebars docked as real columns on the terminal's rail. Force-collapsed
   // hover-reveal overlays (narrow window) don't take a column, so they don't count.
+  const hasPreviewSurfaces = Boolean(previewTarget || filePreviewTabs.length || webPreviewTabs.length)
+
   const railColumnOpen =
-    (chatOpen && Boolean(previewTarget || filePreviewTarget) && previewPaneOpen) ||
+    (chatOpen && hasPreviewSurfaces && previewPaneOpen) ||
     (chatOpen && !narrowViewport && fileBrowserOpen) ||
     (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen)
 
@@ -1185,7 +1190,7 @@ export function DesktopController() {
 
   const previewPane = (
     <Pane
-      disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
+      disabled={!chatOpen || !hasPreviewSurfaces}
       id={PREVIEW_PANE_ID}
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}
@@ -1290,7 +1295,7 @@ export function DesktopController() {
       mainOverlays={mainOverlays}
       onOpenSettings={openSettings}
       overlays={overlays}
-      previewPaneOpen={chatOpen && Boolean(previewTarget || filePreviewTarget)}
+      previewPaneOpen={chatOpen && hasPreviewSurfaces}
       statusbarItems={statusbarItems}
       terminalPaneOpen={terminalSidebarOpen}
       titlebarTools={titlebarToolGroups.flat.right}

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
 import {
+  $filePreviewTabs,
   $previewTarget,
   clearSessionPreviewRegistry,
   type PreviewTarget,
@@ -140,5 +141,90 @@ describe('usePreviewRouting', () => {
 
     expect($previewTarget.get()).toBeNull()
     expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')).toBeNull()
+  })
+
+  it('opens an explicitly requested read_file path as an editor tab with cwd semantics', async () => {
+    render(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} />)
+
+    act(() =>
+      handleEvent({
+        payload: {
+          args: { path: './notes.txt', preview: true },
+          name: 'read_file',
+          tool_id: 'tool-preview-1'
+        },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+    )
+
+    await waitFor(() => expect($filePreviewTabs.get()).toHaveLength(1))
+    expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalledWith('./notes.txt', '/work')
+    expect($filePreviewTabs.get()[0]?.target).toMatchObject({ renderMode: 'source', source: './notes.txt' })
+  })
+
+  it('deduplicates explicit preview requests by tool id', async () => {
+    render(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} />)
+
+    const event: RpcEvent = {
+      payload: { args: { path: 'notes.txt', preview: true }, name: 'read_file', tool_id: 'same-tool' },
+      session_id: 'session-1',
+      type: 'tool.complete'
+    }
+
+    act(() => {
+      handleEvent(event)
+      handleEvent(event)
+    })
+
+    await waitFor(() => expect($filePreviewTabs.get()).toHaveLength(1))
+    expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores ordinary reads, other tools, other sessions, and empty paths', () => {
+    render(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} />)
+
+    act(() => {
+      handleEvent({
+        payload: { args: { path: 'ordinary.txt' }, name: 'read_file', tool_id: 'ordinary' },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+      handleEvent({
+        payload: { args: { path: 'other.txt', preview: true }, name: 'write_file', tool_id: 'other-tool' },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+      handleEvent({
+        payload: { args: { path: 'other-session.txt', preview: true }, name: 'read_file', tool_id: 'other-session' },
+        session_id: 'session-2',
+        type: 'tool.complete'
+      })
+      handleEvent({
+        payload: { args: { path: '  ', preview: true }, name: 'read_file', tool_id: 'empty' },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+    })
+
+    expect(window.hermesDesktop.normalizePreviewTarget).not.toHaveBeenCalled()
+    expect($filePreviewTabs.get()).toEqual([])
+  })
+
+  it('contains preview normalization failures without opening a surface', async () => {
+    vi.mocked(window.hermesDesktop.normalizePreviewTarget).mockRejectedValueOnce(new Error('unavailable'))
+    render(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} />)
+
+    act(() =>
+      handleEvent({
+        payload: { args: { path: 'notes.txt', preview: true }, name: 'read_file', tool_id: 'failed-normalize' },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+    )
+
+    await waitFor(() => expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalled())
+    expect($filePreviewTabs.get()).toEqual([])
+    expect($previewTarget.get()).toBeNull()
   })
 })

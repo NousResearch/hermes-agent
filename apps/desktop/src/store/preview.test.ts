@@ -7,27 +7,38 @@ import {
   $filePreviewTarget,
   $previewServerRestart,
   $previewServerRestartStatus,
+  $previewSurfaceLayouts,
   $previewTarget,
   $sessionPreviewRegistry,
+  $webPreviewTabs,
   beginPreviewServerRestart,
   clearSessionPreviewRegistry,
   closeActiveRightRailTab,
+  closeRightRail,
+  closeRightRailTab,
+  detachRightRailTab,
   dismissPreviewTarget,
   getSessionPreviewRecord,
+  maximizeRightRailTab,
+  minimizeRightRailTab,
   type PreviewTarget,
   progressPreviewServerRestart,
-  setCurrentSessionPreviewTarget
+  restoreRightRailTab,
+  setCurrentSessionPreviewTarget,
+  setRightRailTabFloatingGeometry
 } from './preview'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
 
 function previewTarget(source: string): PreviewTarget {
+  const isUrl = /^https?:\/\//i.test(source)
+
   return {
-    kind: 'file',
+    kind: isUrl ? 'url' : 'file',
     label: source,
-    path: source,
-    previewKind: 'html',
+    path: isUrl ? undefined : source,
+    previewKind: isUrl ? undefined : 'html',
     source,
-    url: `file://${source}`
+    url: isUrl ? source : `file://${source}`
   }
 }
 
@@ -134,5 +145,92 @@ describe('preview store', () => {
     expect($filePreviewTarget.get()).toBeNull()
     expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
     expect($previewTarget.get()).toEqual(withRenderMode(live, 'preview'))
+  })
+
+  it('keeps multiple browser preview tabs instead of overwriting the live target', () => {
+    const first = previewTarget('https://example.com/one')
+    const second = previewTarget('https://example.com/two')
+
+    setCurrentSessionPreviewTarget(first, 'manual')
+    setCurrentSessionPreviewTarget(second, 'manual')
+
+    expect($webPreviewTabs.get().map(tab => tab.target.url)).toEqual([
+      'https://example.com/one',
+      'https://example.com/two'
+    ])
+    const activeId = $rightRailActiveTabId.get()
+    expect(activeId).toMatch(/^preview:tab-/)
+    expect(activeId).not.toContain('https://example.com/two')
+  })
+
+  it('keeps credential-bearing URLs out of persisted tabs and layout keys', () => {
+    const sensitive = previewTarget('https://user:pass@example.com/app?token=secret-value#private')
+
+    setCurrentSessionPreviewTarget(sensitive, 'manual')
+    const tabId = $webPreviewTabs.get()[0]!.id
+    detachRightRailTab(tabId)
+
+    expect(tabId).toMatch(/^preview:tab-/)
+    expect(tabId).not.toContain(sensitive.url)
+    expect($webPreviewTabs.get()[0]!.target.url).toBe(sensitive.url)
+    expect(window.localStorage.getItem('hermes.desktop.webPreviewTabs.v1') ?? '').not.toContain('secret-value')
+    expect(window.localStorage.getItem('hermes.desktop.previewSurfaceLayouts.v1') ?? '').not.toContain('secret-value')
+    expect(window.localStorage.getItem('hermes.desktop.previewSurfaceLayouts.v1') ?? '').not.toContain(sensitive.url)
+  })
+
+  it('restores floating geometry after maximize and minimize', () => {
+    const target = previewTarget('/work/layout.html')
+
+    setCurrentSessionPreviewTarget(target, 'manual')
+    const tabId = $filePreviewTabs.get()[0]!.id
+    const geometry = { height: 480, width: 720, x: 96, y: 88 }
+
+    detachRightRailTab(tabId)
+    setRightRailTabFloatingGeometry(tabId, geometry, { height: 900, width: 1400 })
+    maximizeRightRailTab(tabId)
+
+    expect($previewSurfaceLayouts.get()[tabId]).toMatchObject({
+      placement: 'maximized',
+      restore: { geometry, placement: 'floating' }
+    })
+
+    restoreRightRailTab(tabId)
+    minimizeRightRailTab(tabId)
+    restoreRightRailTab(tabId)
+
+    expect($previewSurfaceLayouts.get()[tabId]).toMatchObject({ geometry, placement: 'floating' })
+    expect($rightRailActiveTabId.get()).toBe(tabId)
+  })
+
+  it('moves activation away from a minimized active tab when another surface is available', () => {
+    setCurrentSessionPreviewTarget(previewTarget('/work/first.txt'), 'manual')
+    const firstId = $filePreviewTabs.get()[0]!.id
+    setCurrentSessionPreviewTarget(previewTarget('/work/second.txt'), 'manual')
+    const secondId = $filePreviewTabs.get()[1]!.id
+
+    minimizeRightRailTab(secondId)
+
+    expect($previewSurfaceLayouts.get()[secondId]?.placement).toBe('minimized')
+    expect($rightRailActiveTabId.get()).toBe(firstId)
+  })
+
+  it('removes layouts on close and clears every layout on close-all', () => {
+    setCurrentSessionPreviewTarget(previewTarget('/work/first.txt'), 'manual')
+    const firstId = $filePreviewTabs.get()[0]!.id
+    setCurrentSessionPreviewTarget(previewTarget('/work/second.txt'), 'manual')
+    const secondId = $filePreviewTabs.get()[1]!.id
+
+    detachRightRailTab(firstId)
+    maximizeRightRailTab(secondId)
+    closeRightRailTab(secondId)
+
+    expect($previewSurfaceLayouts.get()[secondId]).toBeUndefined()
+    expect($rightRailActiveTabId.get()).toBe(firstId)
+
+    closeRightRail()
+
+    expect($previewSurfaceLayouts.get()).toEqual({})
+    expect($filePreviewTabs.get()).toEqual([])
+    expect($webPreviewTabs.get()).toEqual([])
   })
 })

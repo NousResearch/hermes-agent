@@ -5694,25 +5694,31 @@ class AIAgent:
             _strip_model_hidden_task_fields,
             delegate_task as _delegate_task,
         )
-        # Delegations from the top-level MODEL always run in the background —
-        # the model does not get to choose. delegate_task returns immediately
-        # with a handle (one per task) and each subagent's result re-enters the
-        # conversation as a new message when it finishes. This applies to BOTH
-        # a single task and a fan-out batch (each task becomes its own
-        # independent background subagent). The one exception:
-        #   - A delegation from an ORCHESTRATOR SUBAGENT (depth > 0) stays
-        #     synchronous: the orchestrator needs its workers' results within
-        #     its own turn to compose a summary, and a subagent doesn't own the
-        #     gateway session the async result would route back to.
-        # The schema-level `background` param is intentionally ignored here.
+        # Top-level MODEL delegation mode is configurable. Hermes' compatibility
+        # default remains asynchronous, but operators that need the parent to
+        # synthesize child findings before replying can set:
+        #
+        #   delegation.foreground_by_default: true
+        #
+        # Orchestrator subagents (depth > 0) always stay synchronous because
+        # they need their workers' results within their own turn and do not own
+        # a gateway session for detached completion routing. The model-facing
+        # `background` parameter remains ignored so this operator policy cannot
+        # be bypassed accidentally by model output.
+        from tools.delegate_tool import _load_config
+
         _is_subagent = getattr(self, "_delegate_depth", 0) > 0
+        _delegation_cfg = _load_config()
+        _foreground_by_default = is_truthy_value(
+            _delegation_cfg.get("foreground_by_default"), default=False
+        )
         return _delegate_task(
             goal=function_args.get("goal"),
             context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"),
             role=function_args.get("role"),
-            background=(not _is_subagent),
+            background=(False if _is_subagent else not _foreground_by_default),
             parent_agent=self,
         )
 

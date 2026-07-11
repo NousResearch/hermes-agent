@@ -2764,6 +2764,12 @@ def delegate_task(
         # on top.  Degrades silently if the parent lacks the counter (older test
         # fixtures, etc.).
         if _children_cost_total > 0.0:
+            # Tracks whether this rollup *changed* parent classification from
+            # unknown/none. Used for the DB write below so we don't clobber
+            # provider-derived cost_status/cost_source already persisted by
+            # conversation_loop (COALESCE closes unknown→non-null permanently).
+            _promoted_cost_source = False
+            _promoted_cost_status = False
             try:
                 current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
                 parent_agent.session_estimated_cost_usd = current + _children_cost_total
@@ -2773,8 +2779,10 @@ def delegate_task(
                 # was delegate_task).
                 if getattr(parent_agent, "session_cost_source", "none") in {None, "", "none"}:
                     parent_agent.session_cost_source = "subagent"
+                    _promoted_cost_source = True
                 if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:
                     parent_agent.session_cost_status = "estimated"
+                    _promoted_cost_status = True
             except Exception:
                 logger.debug("Subagent cost rollup failed", exc_info=True)
 
@@ -2785,16 +2793,24 @@ def delegate_task(
             # conversation_loop already wrote. Nested orchestrator→worker
             # trees remain correct because each layer only flushes its
             # direct children's deltas. Closes #32220 (salvage of #32225).
+            #
+            # cost_status/cost_source are only passed when this rollup
+            # genuinely promoted unknown/none parent classification. Supplying
+            # them unconditionally would relabel sessions that already have
+            # provider-derived metadata (SessionDB COALESCE prefers the first
+            # non-null=overwrite when the arg is non-null).
             try:
                 _session_db = getattr(parent_agent, "_session_db", None)
                 _session_id = getattr(parent_agent, "session_id", None)
                 if _session_db is not None and _session_id:
-                    _session_db.update_token_counts(
-                        _session_id,
-                        estimated_cost_usd=float(_children_cost_total),
-                        cost_status="estimated",
-                        cost_source="subagent",
-                    )
+                    _db_kwargs = {
+                        "estimated_cost_usd": float(_children_cost_total),
+                    }
+                    if _promoted_cost_status:
+                        _db_kwargs["cost_status"] = "estimated"
+                    if _promoted_cost_source:
+                        _db_kwargs["cost_source"] = "subagent"
+                    _session_db.update_token_counts(_session_id, **_db_kwargs)
             except Exception:
                 logger.debug(
                     "Subagent cost DB persistence failed", exc_info=True

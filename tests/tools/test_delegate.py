@@ -11,10 +11,12 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import tempfile
 import threading
 import time
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -1055,10 +1057,9 @@ class TestSubagentCostRollup(unittest.TestCase):
         self.assertEqual(parent.session_estimated_cost_usd, 0.10)
         self.assertEqual(len(result["results"]), 1)
 
-    def test_subagent_cost_persisted_to_session_db(self):
-        """After in-memory rollup, the cost delta must be flushed to the
-        state DB (#32220). Without this, hermes insights undercounts spend
-        for any session that used delegate_task."""
+    def test_subagent_cost_persisted_to_session_db_when_parent_unclassified(self):
+        """Unknown parent classification: DB write stumps estimated/subagent
+        (promotion case)."""
         parent = self._make_parent_with_cost_counters(starting_cost=0.10)
         parent.session_id = "parent-session-abc"
         mock_db = MagicMock()
@@ -1083,6 +1084,115 @@ class TestSubagentCostRollup(unittest.TestCase):
         self.assertAlmostEqual(kwargs["estimated_cost_usd"], 0.42, places=6)
         self.assertEqual(kwargs["cost_status"], "estimated")
         self.assertEqual(kwargs["cost_source"], "subagent")
+
+    def test_subagent_cost_db_omits_status_source_when_parent_already_classified(self):
+        """Provider-classified parent: only cost delta is written; status/source
+        must not be force-relabeled to estimated/subagent."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.20)
+        parent.session_cost_status = "exact"
+        parent.session_cost_source = "openrouter"
+        parent.session_id = "parent-session-billed"
+        mock_db = MagicMock()
+        parent._session_db = mock_db
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.30,
+            }
+            delegate_task(goal="billed parent", parent_agent=parent)
+
+        mock_db.update_token_counts.assert_called_once()
+        _args, kwargs = mock_db.update_token_counts.call_args
+        self.assertAlmostEqual(kwargs["estimated_cost_usd"], 0.30, places=6)
+        self.assertNotIn("cost_status", kwargs)
+        self.assertNotIn("cost_source", kwargs)
+
+    def test_subagent_cost_sessiondb_sums_and_preserves_provider_metadata(self):
+        """Real SessionDB regression: prior direct provider cost + child delta
+        → summed estimated_cost_usd AND retained provider cost_status/source."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "state.db")
+            sid = "parent-session-real-db"
+            db.create_session(sid, source="cli", model="anthropic/claude-sonnet-4")
+            # Simulate conversation_loop persisting a real provider-billed call.
+            db.update_token_counts(
+                sid,
+                input_tokens=1000,
+                output_tokens=200,
+                estimated_cost_usd=0.20,
+                cost_status="exact",
+                cost_source="openrouter",
+                api_call_count=1,
+            )
+
+            parent = self._make_parent_with_cost_counters(starting_cost=0.20)
+            parent.session_cost_status = "exact"
+            parent.session_cost_source = "openrouter"
+            parent.session_id = sid
+            parent._session_db = db
+
+            with patch("tools.delegate_tool._run_single_child") as mock_run:
+                mock_run.return_value = {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "done",
+                    "api_calls": 2,
+                    "duration_seconds": 1.0,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.42,
+                }
+                delegate_task(goal="mix direct + subagent", parent_agent=parent)
+
+            row = db.get_session(sid)
+            self.assertIsNotNone(row)
+            self.assertAlmostEqual(float(row["estimated_cost_usd"]), 0.62, places=6)
+            self.assertEqual(row["cost_status"], "exact")
+            self.assertEqual(row["cost_source"], "openrouter")
+            self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.62, places=6)
+            self.assertEqual(parent.session_cost_source, "openrouter")
+            self.assertEqual(parent.session_cost_status, "exact")
+
+            db.close()
+
+    def test_subagent_cost_sessiondb_promotes_when_parent_unclassified(self):
+        """Real SessionDB: no prior provider classification → promote to
+        estimated/subagent while persisting the child cost."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "state.db")
+            sid = "parent-session-promote"
+            db.create_session(sid, source="cli")
+
+            parent = self._make_parent_with_cost_counters(starting_cost=0.0)
+            parent.session_id = sid
+            parent._session_db = db
+
+            with patch("tools.delegate_tool._run_single_child") as mock_run:
+                mock_run.return_value = {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "done",
+                    "api_calls": 1,
+                    "duration_seconds": 0.5,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.15,
+                }
+                delegate_task(goal="subagent only", parent_agent=parent)
+
+            row = db.get_session(sid)
+            self.assertAlmostEqual(float(row["estimated_cost_usd"] or 0), 0.15, places=6)
+            self.assertEqual(row["cost_status"], "estimated")
+            self.assertEqual(row["cost_source"], "subagent")
+            db.close()
 
     def test_subagent_cost_db_skipped_when_no_session_db(self):
         """Fixtures / ACP paths with no _session_db must not crash."""

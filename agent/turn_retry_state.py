@@ -58,6 +58,10 @@ class TurnRetryState:
     # ── Transport / rate-limit recovery ──────────────────────────────────
     primary_recovery_attempted: bool = False
     has_retried_429: bool = False
+    # Set once we've reacted to a 404 for a routed LM Studio instance that
+    # vanished after ensure — cleared the stale claim and retried with the
+    # base model name — so we don't loop on it within one attempt.
+    lmstudio_stale_instance_recovered: bool = False
 
     # ── Auth-failure provider failover ───────────────────────────────────
     # Set once we've escalated a persistent 401/403 (after the per-provider

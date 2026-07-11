@@ -84,6 +84,25 @@ def lmstudio_request_model(model: str, base_url: Optional[str]) -> str:
     return routed or model
 
 
+def clear_lmstudio_routed_instance(model: str, base_url: Optional[str]) -> bool:
+    """Forget any routing claim for ``model`` on ``base_url``.
+
+    Returns ``True`` when a claim existed and was cleared, so a caller can
+    decide whether a fresh request with the bare model name is worth a retry.
+    After clearing, :func:`lmstudio_request_model` returns the bare name again.
+    Used when a request to a claimed instance fails because the instance is
+    gone (e.g. a 404 from a spec-compliant server or proxy).
+    """
+    server_root = _lmstudio_server_root(base_url)
+    if not server_root:
+        return False
+    routed = _lmstudio_routed_instances.get((server_root, str(model or "").strip()))
+    if routed is None:
+        return False
+    _drop_lmstudio_instance_claims(server_root, routed)
+    return True
+
+
 def normalize_lmstudio_unload_policy(value: Any) -> str:
     """Normalize the LM Studio model-switch unload policy.
 

@@ -1048,6 +1048,45 @@ class TestEnsureLmStudioModelLoaded:
             == "qwen/qwen3.6-35b-a3b"
         )
 
+    def test_clear_lmstudio_routed_instance_drops_claim_and_reverts(self):
+        from hermes_cli.models import (
+            clear_lmstudio_routed_instance,
+            lmstudio_request_model,
+        )
+
+        server_root = hermes_models._lmstudio_server_root(
+            "http://localhost:1234/v1"
+        )
+        hermes_models._lmstudio_routed_instances[
+            (server_root, "qwen/qwen3.6-35b-a3b")
+        ] = "qwen/qwen3.6-35b-a3b:2"
+
+        # Before clearing, requests address the stacked instance.
+        assert (
+            lmstudio_request_model(
+                "qwen/qwen3.6-35b-a3b", "http://localhost:1234/v1"
+            )
+            == "qwen/qwen3.6-35b-a3b:2"
+        )
+        assert clear_lmstudio_routed_instance(
+            "qwen/qwen3.6-35b-a3b", "http://localhost:1234/v1"
+        )
+        # After clearing, requests fall back to the bare model name.
+        assert (
+            lmstudio_request_model(
+                "qwen/qwen3.6-35b-a3b", "http://localhost:1234/v1"
+            )
+            == "qwen/qwen3.6-35b-a3b"
+        )
+
+    def test_clear_lmstudio_routed_instance_returns_false_without_claim(self):
+        from hermes_cli.models import clear_lmstudio_routed_instance
+
+        assert not clear_lmstudio_routed_instance(
+            "qwen/qwen3.6-35b-a3b", "http://localhost:1234/v1"
+        )
+        assert not clear_lmstudio_routed_instance("qwen/qwen3.6-35b-a3b", None)
+
     def test_unload_policy_never_still_resizes_own_fresh_instance(self):
         calls = []
         initial = [{"key": "qwen/qwen3.6-35b-a3b", "type": "llm"}]

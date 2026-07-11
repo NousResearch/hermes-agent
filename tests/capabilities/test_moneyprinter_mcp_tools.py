@@ -99,11 +99,72 @@ def test_mcp_generate_video_tool_uses_adapter(monkeypatch):
     assert "Poll moneyprinter_get_task" in payload["data"]["message"]
 
 
+def test_mcp_cache_local_material_uses_existing_adapter(monkeypatch):
+    seen = {}
+
+    def fake_upload(body):
+        seen.update(body)
+        return 200, {
+            "ok": True,
+            "data": {"material": {"file": body["filename"]}},
+            "error": None,
+        }
+
+    monkeypatch.setattr(adapter, "upload_local_material_data", fake_upload)
+
+    payload = json.loads(
+        mp_tools.moneyprinter_cache_local_material(
+            "/vault/02_精选镜头/clip.mp4",
+            "beef-noodle-asset-clip.mp4",
+        )
+    )
+
+    assert payload["data"]["material"]["file"] == "beef-noodle-asset-clip.mp4"
+    assert seen == {
+        "filename": "beef-noodle-asset-clip.mp4",
+        "sourcePath": "/vault/02_精选镜头/clip.mp4",
+    }
+
+
+def test_mcp_generate_video_accepts_cached_local_materials(monkeypatch):
+    seen = {}
+
+    async def fake_create(body):
+        seen.update(body)
+        return 200, {
+            "ok": True,
+            "data": {"task": {"id": "task-local", "state": "queued"}},
+            "error": None,
+        }
+
+    monkeypatch.setattr(adapter, "create_video_data", fake_create)
+
+    payload = json.loads(
+        mp_tools.moneyprinter_generate_video(
+            video_subject="牛肉面门店",
+            video_script="顾客吃面。员工端碗。成品面特写。",
+            video_source="local",
+            local_materials=["one.mp4", "two.mp4", "three.mp4"],
+            custom_audio_file="acceptance.mp3",
+            match_materials_to_script=True,
+            auto_start=False,
+            bgm_type="none",
+        )
+    )
+
+    assert payload["data"]["task_id"] == "task-local"
+    assert seen["video_source"] == "local"
+    assert [item["url"] for item in seen["video_materials"]] == ["one.mp4", "two.mp4", "three.mp4"]
+    assert seen["custom_audio_file"] == "acceptance.mp3"
+    assert seen["match_materials_to_script"] is True
+
+
 def test_mcp_tool_specs_cover_phase3_and_phase2_names():
     names = {spec["name"] for spec in mp_tools.TOOL_SPECS}
     required = {
         "moneyprinter_health_check",
         "moneyprinter_generate_video",
+        "moneyprinter_cache_local_material",
         "moneyprinter_get_task",
         "moneyprinter_list_tasks",
         "moneyprinter_list_outputs",

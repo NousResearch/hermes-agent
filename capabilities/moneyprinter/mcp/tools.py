@@ -74,6 +74,16 @@ def moneyprinter_start_service() -> str:
     return _json_result(_run(_go()))
 
 
+def moneyprinter_cache_local_material(source_path: str, filename: str) -> str:
+    """Copy one selected materialized shot into MoneyPrinter's local whitelist."""
+    from capabilities.moneyprinter import adapter
+
+    status, payload = adapter.upload_local_material_data(
+        {"filename": filename, "sourcePath": source_path}
+    )
+    return _json_result(payload, status=status)
+
+
 def moneyprinter_generate_video(
     video_subject: str,
     video_script: str = "",
@@ -86,6 +96,9 @@ def moneyprinter_generate_video(
     subtitle_enabled: bool = True,
     bgm_type: str = "random",
     auto_start: bool = True,
+    local_materials: Optional[list[str]] = None,
+    custom_audio_file: str = "",
+    match_materials_to_script: bool = False,
 ) -> str:
     """Create a full video generation task. Do not wait for completion.
 
@@ -103,6 +116,9 @@ def moneyprinter_generate_video(
         subtitle_enabled: Whether to burn subtitles.
         bgm_type: random | none | custom path semantics upstream.
         auto_start: Start sidecar automatically when needed.
+        local_materials: Cached MoneyPrinter local-material filenames, in render order.
+        custom_audio_file: Cached custom-audio filename, if TTS should be skipped.
+        match_materials_to_script: Preserve the supplied material order during rendering.
     """
 
     async def _go() -> tuple[int, dict[str, Any]]:
@@ -121,7 +137,14 @@ def moneyprinter_generate_video(
             "voice_name": voice_name,
             "subtitle_enabled": subtitle_enabled,
             "bgm_type": bgm_type,
+            "custom_audio_file": custom_audio_file,
+            "match_materials_to_script": match_materials_to_script,
         }
+        if video_source == "local":
+            body["video_materials"] = [
+                {"duration": 0, "provider": "local", "url": name}
+                for name in (local_materials or [])
+            ]
         status, payload = await adapter.create_video_data(body)
         if payload.get("ok") and isinstance(payload.get("data"), dict):
             task = payload["data"].get("task") or {}
@@ -464,6 +487,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "moneyprinter_start_service",
         "description": "Start the MoneyPrinterTurbo FastAPI sidecar process.",
         "fn": moneyprinter_start_service,
+    },
+    {
+        "name": "moneyprinter_cache_local_material",
+        "description": "Copy one Agent-selected materialized shot into MoneyPrinter's local whitelist.",
+        "fn": moneyprinter_cache_local_material,
     },
     {
         "name": "moneyprinter_generate_video",

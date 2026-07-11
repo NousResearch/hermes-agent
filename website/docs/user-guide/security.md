@@ -152,14 +152,14 @@ approvals:
     verification_key: "<base64 raw 32-byte Ed25519 public key>"
 ```
 
-When `mode` is `exact-once`, a valid `verification_key` is pinned in `config.yaml`, **and** Hermes was started with the hidden chat transport flags (`--external-approval-grant-fd`, `--external-approval-record-fd`), every dangerous command:
+When `mode` is `exact-once`, a valid `verification_key` is pinned in `config.yaml`, **and** Hermes was started with the hidden chat transport flag `--external-approval-record-fd` (optionally with `--external-approval-grant-fd` when consume is needed), every dangerous command:
 
 1. Emits a canonical JSON **request** on the record-output FD (never on stdout/stderr).
 2. Accepts at most one signed Ed25519 **grant** on the grant-input FD, bound to the exact command fingerprint, session, profile, expiry, and `approve_once` choice.
 3. Atomically consumes the grant (cross-process `O_CREAT|O_EXCL` marker under `~/.hermes/.external-approval/consumed/`) and writes a **receipt** before executing.
 4. Never mutates YOLO, session, or permanent allowlists.
 
-Hermes holds only the adapter's **public** verification key, which is configured before the child starts; private keys stay in the adapter. A child cannot select or replace this trust root through CLI arguments. Incomplete FD pairs fail startup closed. Protocol FDs are marked non-inheritable and terminal/tool subprocesses are spawned with `close_fds=True` so child shells cannot read them.
+Hermes holds only the adapter's **public** verification key, which is configured before the child starts; private keys stay in the adapter. A child cannot select or replace this trust root through CLI arguments. `--external-approval-record-fd` alone is accepted for first-turn request emit (grant FD optional); `--external-approval-grant-fd` without a record FD fails startup closed. Protocol FDs are marked non-inheritable and terminal/tool subprocesses are spawned with `close_fds=True` so child shells cannot read them.
 
 Leave `external.mode: off` (the default) for normal CLI and gateway sessions.
 

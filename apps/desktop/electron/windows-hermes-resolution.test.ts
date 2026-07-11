@@ -119,3 +119,28 @@ test('createActiveBackend calls resolveBasePythonFromVenvCfg on Windows', () => 
     'createActiveBackend must use basePython when available, falling back to venvPython then system Python'
   )
 })
+
+test('ensureRuntime prefers base Python from pyvenv.cfg on Windows, falls back to venv', () => {
+  const source = readMain()
+  const fnStart = source.indexOf('async function ensureRuntime(')
+  assert.notEqual(fnStart, -1, 'ensureRuntime must exist in main.ts')
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1)
+  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
+  assert.match(
+    body,
+    /const basePython = IS_WINDOWS \? resolveBasePythonFromVenvCfg\(VENV_ROOT\) : null/,
+    'ensureRuntime must call resolveBasePythonFromVenvCfg on Windows'
+  )
+  assert.match(
+    body,
+    /backend\.command = basePython \|\| venvPython/,
+    'ensureRuntime must prefer basePython, falling back to venvPython'
+  )
+  // The old unconditional override must not return.
+  assert.doesNotMatch(
+    body,
+    /backend\.command = getVenvPython\(VENV_ROOT\)/,
+    'ensureRuntime regressed to unconditionally wiring the venv interpreter, ' +
+      'overwriting the base Python resolved by createActiveBackend'
+  )
+})

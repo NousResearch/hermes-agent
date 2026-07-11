@@ -3579,11 +3579,13 @@ async function ensureRuntime(backend) {
   }
 
   // bootstrap=true with a real backend (createActiveBackend path) means we
-  // have a checkout and need to ensure the venv-derived Python command is
-  // wired into the backend before launch. Same code path the old factory
-  // sync flow exited through, minus all the factory/pip/marker machinery
-  // (install.ps1 owns those concerns now and the bootstrap-complete marker
-  // attests they ran successfully).
+  // have a checkout and need to ensure the Python command is wired into the
+  // backend before launch. On Windows, prefer the base Python from pyvenv.cfg
+  // to avoid venv .pyd file locks (blocking hermes update); fall back to the
+  // venv interpreter when base resolution fails. Same code path the old
+  // factory sync flow exited through, minus all the factory/pip/marker
+  // machinery (install.ps1 owns those concerns now and the bootstrap-complete
+  // marker attests they ran successfully).
   if (!isHermesSourceRoot(ACTIVE_HERMES_ROOT)) {
     throw new Error(
       `Hermes install at ${ACTIVE_HERMES_ROOT} is missing or incomplete. ` +
@@ -3621,8 +3623,11 @@ async function ensureRuntime(backend) {
     )
   }
 
-  backend.command = getVenvPython(VENV_ROOT)
-  backend.label = `Hermes at ${ACTIVE_HERMES_ROOT} (venv: ${VENV_ROOT})`
+  const basePython = IS_WINDOWS ? resolveBasePythonFromVenvCfg(VENV_ROOT) : null
+  backend.command = basePython || venvPython
+  backend.label = basePython
+    ? `Hermes at ${ACTIVE_HERMES_ROOT} (base Python: ${VENV_ROOT})`
+    : `Hermes at ${ACTIVE_HERMES_ROOT} (venv: ${VENV_ROOT})`
   updateBootProgress({
     phase: 'runtime.ready',
     message: 'Hermes runtime is ready',

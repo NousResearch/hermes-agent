@@ -16800,6 +16800,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
+        enabled_toolsets: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -16875,6 +16876,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "messages": api_messages,
             "stream": True,
         }
+        # The local gateway owns per-conversation ACL resolution. The remote
+        # server intersects this list with its own configured toolsets, so the
+        # request can only remove capabilities, never grant new ones.
+        if enabled_toolsets is not None:
+            body["hermes_enabled_toolsets"] = list(enabled_toolsets)
 
         # Set up platform streaming if available -------------------------
         _stream_consumer = None
@@ -17178,6 +17184,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        user_config = _load_gateway_config()
+        platform_key = _platform_config_key(source.platform)
+        enabled_toolsets = self._effective_enabled_toolsets(
+            user_config, platform_key, source
+        )
+
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
@@ -17189,6 +17201,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
+                enabled_toolsets=enabled_toolsets,
             )
 
         from run_agent import AIAgent
@@ -17199,12 +17212,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return True
             return self._is_session_run_current(session_key, run_generation)
         
-        user_config = _load_gateway_config()
-        platform_key = _platform_config_key(source.platform)
-
-        enabled_toolsets = self._effective_enabled_toolsets(
-            user_config, platform_key, source
-        )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

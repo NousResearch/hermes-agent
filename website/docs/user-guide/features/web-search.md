@@ -416,7 +416,7 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 | `PARALLEL_API_KEY` | parallel |
 | `TAVILY_API_KEY` | tavily |
 | `EXA_API_KEY` | exa |
-| `SEARXNG_URL` or `web.searxng.url` in config | searxng |
+| `SEARXNG_URL` | searxng |
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
 

@@ -94,7 +94,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, ConfigDict, Field
     from starlette.concurrency import run_in_threadpool
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
@@ -110,7 +110,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
+        from pydantic import BaseModel, ConfigDict, Field
         from starlette.concurrency import run_in_threadpool
     except Exception:
         raise SystemExit(
@@ -621,6 +621,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Context window override (0 = auto-detect from model metadata)",
         "category": "general",
     },
+    "voice.input_mode": {
+        "type": "select",
+        "options": ["legacy", "realtime"],
+        "description": "Desktop voice input transport (Realtime is experimental)",
+        "category": "voice",
+    },
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
@@ -894,6 +900,13 @@ class AudioTranscriptionRequest(BaseModel):
     mime_type: Optional[str] = None
 
 
+class RealtimeVoiceSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(min_length=1, max_length=160)
+    language: Optional[str] = Field(default=None, max_length=16)
+
+
 class ManagedFileUpload(BaseModel):
     path: str
     data_url: str
@@ -930,6 +943,97 @@ _AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
     "video/webm": ".webm",
 }
 _MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024
+_REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
+_REALTIME_SECRET_MAX_RESPONSE_BYTES = 64 * 1024
+_REALTIME_SECRET_RATE_MAX = 5
+_REALTIME_SECRET_RATE_WINDOW_SECONDS = 60.0
+_realtime_secret_timestamps: Dict[str, List[float]] = {}
+
+
+def _realtime_voice_config() -> Dict[str, Any]:
+    config = load_config()
+    voice = config.get("voice") if isinstance(config, dict) else None
+    realtime = voice.get("realtime") if isinstance(voice, dict) else None
+
+    if not isinstance(realtime, dict):
+        return {}
+    if voice.get("input_mode") != "realtime" or realtime.get("enabled") is not True:
+        return {}
+    return realtime
+
+
+def _clamp_number(value: Any, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(parsed, maximum))
+
+
+def _realtime_origin_allowed(request: Request) -> bool:
+    """Accept Electron IPC (no Origin) or an exact HTTP(S) dashboard origin."""
+    origin = request.headers.get("origin", "").strip()
+    if not origin:
+        return True
+
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+
+    request_host = request.url.hostname or ""
+    request_scheme = request.url.scheme
+    request_port = request.url.port or (443 if request_scheme == "https" else 80)
+    origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if parsed.scheme != request_scheme or origin_port != request_port:
+        return False
+
+    if request_host in _LOOPBACK_HOST_VALUES:
+        return parsed.hostname in _LOOPBACK_HOST_VALUES
+    return parsed.hostname.lower() == request_host.lower()
+
+
+def _consume_realtime_secret_rate(binding: str, now: Optional[float] = None) -> bool:
+    current = time.monotonic() if now is None else now
+    cutoff = current - _REALTIME_SECRET_RATE_WINDOW_SECONDS
+    recent = [stamp for stamp in _realtime_secret_timestamps.get(binding, []) if stamp > cutoff]
+    if len(recent) >= _REALTIME_SECRET_RATE_MAX:
+        _realtime_secret_timestamps[binding] = recent
+        return False
+    recent.append(current)
+    _realtime_secret_timestamps[binding] = recent
+    return True
+
+
+def _realtime_session_binding(request: Request, session_id: str) -> str:
+    client_host = request.client.host if request.client else "unknown"
+    origin = request.headers.get("origin", "desktop-ipc")
+    material = f"{session_id}|{client_host}|{origin}".encode("utf-8")
+    return hmac.new(_SESSION_TOKEN.encode("utf-8"), material, hashlib.sha256).hexdigest()
+
+
+def _read_realtime_client_secret(
+    api_key: str,
+    safety_identifier: str,
+    body: Dict[str, Any],
+) -> Dict[str, Any]:
+    upstream_request = urllib.request.Request(
+        _REALTIME_CLIENT_SECRETS_URL,
+        data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "OpenAI-Safety-Identifier": safety_identifier,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(upstream_request, timeout=10) as response:
+        raw = response.read(_REALTIME_SECRET_MAX_RESPONSE_BYTES + 1)
+    if len(raw) > _REALTIME_SECRET_MAX_RESPONSE_BYTES:
+        raise ValueError("Realtime client-secret response was too large")
+    parsed = json.loads(raw.decode("utf-8"))
+    if not isinstance(parsed, dict):
+        raise ValueError("Realtime client-secret response was invalid")
+    return parsed
 
 
 def _audio_extension_for_mime(mime_type: str) -> str:
@@ -3717,6 +3821,110 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
         "ok": True,
         "transcript": str(result.get("transcript") or "").strip(),
         "provider": result.get("provider"),
+    }
+
+
+@app.post("/api/audio/realtime/session")
+async def create_realtime_voice_session(
+    request: Request,
+    payload: RealtimeVoiceSessionRequest,
+):
+    """Mint a short-lived, transcription-only Realtime client secret.
+
+    The standard OpenAI key never leaves this process. The renderer receives
+    only an ephemeral secret and uses it for a WebRTC audio-input session;
+    Hermes remains the sole owner of response generation and tool execution.
+    """
+    realtime = _realtime_voice_config()
+    if not realtime:
+        raise HTTPException(status_code=409, detail="Realtime voice is disabled")
+
+    if not _realtime_origin_allowed(request):
+        raise HTTPException(status_code=403, detail="Realtime voice origin is not allowed")
+
+    session_id = (payload.session_id or "").strip()
+    if not session_id or len(session_id) > 160 or not re.fullmatch(r"[A-Za-z0-9._:-]+", session_id):
+        raise HTTPException(status_code=400, detail="Invalid voice session binding")
+
+    language = (payload.language or realtime.get("language") or "").strip()
+    if language and (len(language) > 16 or not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?", language)):
+        raise HTTPException(status_code=400, detail="Invalid transcription language")
+
+    # Deliberately use only the already-loaded process environment. This route
+    # never reads credential files and never returns or logs the standard key.
+    api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OpenAI Realtime is not configured")
+
+    binding = _realtime_session_binding(request, session_id)
+    client_rate_key = _realtime_session_binding(request, "client-secret-issuance")
+    if not _consume_realtime_secret_rate(client_rate_key):
+        raise HTTPException(status_code=429, detail="Too many Realtime voice session requests")
+
+    allowed_models = {
+        "gpt-4o-mini-transcribe",
+        "gpt-4o-transcribe",
+        "whisper-1",
+    }
+    transcription_model = str(realtime.get("transcription_model") or "gpt-4o-transcribe").strip()
+    if transcription_model not in allowed_models:
+        transcription_model = "gpt-4o-transcribe"
+
+    ttl_seconds = int(_clamp_number(realtime.get("client_secret_ttl_seconds"), 60, 10, 120))
+    threshold = _clamp_number(realtime.get("vad_threshold"), 0.5, 0.1, 0.9)
+    prefix_padding_ms = int(_clamp_number(realtime.get("prefix_padding_ms"), 300, 0, 1000))
+    silence_duration_ms = int(_clamp_number(realtime.get("silence_duration_ms"), 500, 200, 2000))
+    transcription: Dict[str, Any] = {"model": transcription_model}
+    if language:
+        transcription["language"] = language
+
+    upstream_body = {
+        "expires_after": {"anchor": "created_at", "seconds": ttl_seconds},
+        "session": {
+            "type": "transcription",
+            "audio": {
+                "input": {
+                    "format": {"type": "audio/pcm", "rate": 24000},
+                    "noise_reduction": {"type": "near_field"},
+                    "transcription": transcription,
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": threshold,
+                        "prefix_padding_ms": prefix_padding_ms,
+                        "silence_duration_ms": silence_duration_ms,
+                    },
+                },
+            },
+        },
+    }
+
+    try:
+        loop = asyncio.get_running_loop()
+        upstream = await loop.run_in_executor(
+            None,
+            _read_realtime_client_secret,
+            api_key,
+            binding,
+            upstream_body,
+        )
+    except urllib.error.HTTPError as exc:
+        _log.warning("OpenAI Realtime client-secret request failed (status=%s)", exc.code)
+        raise HTTPException(status_code=502, detail="Could not create Realtime voice session")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        _log.warning("OpenAI Realtime client-secret request failed (%s)", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Could not create Realtime voice session")
+
+    secret_payload = upstream.get("client_secret") if isinstance(upstream.get("client_secret"), dict) else upstream
+    secret = str(secret_payload.get("value") or "").strip()
+    expires_at = secret_payload.get("expires_at")
+    if not secret or not isinstance(expires_at, (int, float)) or expires_at <= time.time() + 5:
+        raise HTTPException(status_code=502, detail="OpenAI returned an invalid Realtime voice session")
+
+    return {
+        "ok": True,
+        "client_secret": secret,
+        "expires_at": int(expires_at),
+        "session_binding": binding,
     }
 
 

@@ -251,9 +251,11 @@ class TestWebServerEndpoints:
 
         import hermes_state
         from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as web_server
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+        web_server._realtime_secret_timestamps.clear()
 
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -1612,6 +1614,202 @@ class TestWebServerEndpoints:
         assert resp.status_code == 400
         assert "base64" in resp.json()["detail"]
 
+    def test_realtime_voice_session_is_transcription_only_and_redacts_standard_key(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps({"value": "ek_ephemeral_only", "expires_at": 2_000_000_000}).encode()
+
+        def fake_urlopen(request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {"voice": {"input_mode": "realtime", "realtime": {"enabled": True}}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-standard-backend-only")
+        monkeypatch.setattr(web_server.urllib.request, "urlopen", fake_urlopen)
+
+        resp = self.client.post(
+            "/api/audio/realtime/session",
+            json={"session_id": "desktop-session-1", "language": "ko"},
+        )
+
+        assert resp.status_code == 200
+        response_body = resp.json()
+        assert response_body["client_secret"] == "ek_ephemeral_only"
+        assert response_body["expires_at"] == 2_000_000_000
+        assert len(response_body["session_binding"]) == 64
+        assert "sk-standard-backend-only" not in json.dumps(response_body)
+
+        upstream_request = captured["request"]
+        assert upstream_request.full_url == "https://api.openai.com/v1/realtime/client_secrets"
+        assert upstream_request.get_header("Authorization") == "Bearer sk-standard-backend-only"
+        assert len(upstream_request.get_header("Openai-safety-identifier")) == 64
+        assert captured["timeout"] == 10
+
+        upstream_body = json.loads(upstream_request.data)
+        assert upstream_body["expires_after"] == {"anchor": "created_at", "seconds": 60}
+        session = upstream_body["session"]
+        assert session["type"] == "transcription"
+        assert session["audio"]["input"]["transcription"] == {
+            "language": "ko",
+            "model": "gpt-4o-transcribe",
+        }
+        assert session["audio"]["input"]["turn_detection"]["type"] == "server_vad"
+        serialized = json.dumps(upstream_body)
+        assert "response.create" not in serialized
+        assert "tools" not in session
+        assert "tool_choice" not in session
+        assert "output_modalities" not in session
+
+    def test_realtime_voice_session_is_off_by_default(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        called = False
+
+        def fail_urlopen(*_args, **_kwargs):
+            nonlocal called
+            called = True
+            raise AssertionError("feature-off route must not reach OpenAI")
+
+        monkeypatch.setattr(web_server, "load_config", lambda: DEFAULT_CONFIG)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-unused")
+        monkeypatch.setattr(web_server.urllib.request, "urlopen", fail_urlopen)
+
+        resp = self.client.post(
+            "/api/audio/realtime/session",
+            json={"session_id": "desktop-session-off"},
+        )
+
+        assert resp.status_code == 409
+        assert called is False
+        assert DEFAULT_CONFIG["voice"]["input_mode"] == "legacy"
+        assert DEFAULT_CONFIG["voice"]["realtime"]["enabled"] is False
+
+    def test_realtime_voice_session_requires_process_key_and_valid_origin(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {"voice": {"input_mode": "realtime", "realtime": {"enabled": True}}},
+        )
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        missing_key = self.client.post(
+            "/api/audio/realtime/session",
+            json={"session_id": "desktop-session-no-key"},
+        )
+        assert missing_key.status_code == 503
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-backend")
+        bad_origin = self.client.post(
+            "/api/audio/realtime/session",
+            headers={"Origin": "https://evil.example"},
+            json={"session_id": "desktop-session-origin"},
+        )
+        assert bad_origin.status_code == 403
+
+        wrong_port = self.client.post(
+            "/api/audio/realtime/session",
+            headers={"Origin": "http://testserver:9999"},
+            json={"session_id": "desktop-session-port"},
+        )
+        assert wrong_port.status_code == 403
+
+    def test_realtime_voice_session_timeout_is_generic_and_redacted(self, monkeypatch, caplog):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {"voice": {"input_mode": "realtime", "realtime": {"enabled": True}}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-timeout-must-stay-private")
+
+        def fail_urlopen(*_args, **_kwargs):
+            raise TimeoutError("sk-timeout-must-stay-private")
+
+        monkeypatch.setattr(web_server.urllib.request, "urlopen", fail_urlopen)
+
+        resp = self.client.post(
+            "/api/audio/realtime/session",
+            json={"session_id": "desktop-session-timeout"},
+        )
+
+        assert resp.status_code == 502
+        assert resp.json() == {"detail": "Could not create Realtime voice session"}
+        assert "sk-timeout-must-stay-private" not in resp.text
+        assert "sk-timeout-must-stay-private" not in caplog.text
+
+    def test_realtime_voice_session_rate_limits_client_and_rejects_extra_payload(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return b'{"value":"ek_test","expires_at":2000000000}'
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {"voice": {"input_mode": "realtime", "realtime": {"enabled": True}}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-backend")
+        monkeypatch.setattr(web_server.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+        monkeypatch.setattr(web_server, "_REALTIME_SECRET_RATE_MAX", 1)
+
+        first = self.client.post(
+            "/api/audio/realtime/session",
+            json={"session_id": "desktop-session-rate"},
+        )
+        second = self.client.post(
+            "/api/audio/realtime/session",
+            json={"session_id": "desktop-session-rate-2"},
+        )
+        extra = self.client.post(
+            "/api/audio/realtime/session",
+            json={"session_id": "desktop-session-other", "api_key": "must-not-be-accepted"},
+        )
+        oversized = self.client.post(
+            "/api/audio/realtime/session",
+            json={"session_id": "x" * 161},
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 429
+        assert extra.status_code == 422
+        assert oversized.status_code == 422
+
+    def test_realtime_voice_route_requires_dashboard_auth(self):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauthenticated = TestClient(app)
+        resp = unauthenticated.post(
+            "/api/audio/realtime/session",
+            json={"session_id": "desktop-session-unauthenticated"},
+        )
+        assert resp.status_code == 401
+
     def test_desktop_audio_routes_registered(self):
         """All three desktop voice endpoints must exist.
 
@@ -1625,6 +1823,7 @@ class TestWebServerEndpoints:
         paths = {getattr(r, "path", None) for r in app.routes}
         assert "/api/audio/transcribe" in paths
         assert "/api/audio/speak" in paths
+        assert "/api/audio/realtime/session" in paths
         assert "/api/audio/elevenlabs/voices" in paths
 
     def test_elevenlabs_voices_unavailable_without_key(self, monkeypatch):

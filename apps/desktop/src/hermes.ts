@@ -42,6 +42,7 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  RealtimeVoiceSessionResponse,
   SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
@@ -141,6 +142,7 @@ export type {
   ProjectFolder,
   ProjectInfo,
   ProjectsPayload,
+  RealtimeVoiceSessionResponse,
   RpcEvent,
   SessionCreateResponse,
   SessionInfo,
@@ -1009,6 +1011,20 @@ export function speakText(text: string): Promise<AudioSpeakResponse> {
     path: '/api/audio/speak',
     method: 'POST',
     body: { text }
+  })
+}
+
+export function createRealtimeVoiceSession(
+  sessionId: string,
+  language?: string
+): Promise<RealtimeVoiceSessionResponse> {
+  return window.hermesDesktop.api<RealtimeVoiceSessionResponse>({
+    path: '/api/audio/realtime/session',
+    method: 'POST',
+    body: {
+      session_id: sessionId,
+      ...(language ? { language } : {})
+    }
   })
 }
 

@@ -23,6 +23,13 @@ export interface AudioSpeakResponse {
   provider?: string
 }
 
+export interface RealtimeVoiceSessionResponse {
+  ok: boolean
+  client_secret: string
+  expires_at: number
+  session_binding: string
+}
+
 export interface ElevenLabsVoice {
   label: string
   name: string
@@ -219,6 +226,10 @@ export interface HermesConfig {
   voice?: {
     max_recording_seconds?: number
     auto_tts?: boolean
+    input_mode?: 'legacy' | 'realtime'
+    realtime?: {
+      enabled?: boolean
+    }
   }
 }
 

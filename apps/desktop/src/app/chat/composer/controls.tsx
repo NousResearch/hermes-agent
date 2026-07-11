@@ -1,3 +1,5 @@
+import { useStore } from '@nanostores/react'
+
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
@@ -7,6 +9,8 @@ import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, iconSize, Layers3, Loader2, Square, SteeringWheel, Volume2, VolumeX } from '@/lib/icons'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
+import { notifyError } from '@/store/notifications'
+import { $voiceInputMode, setVoiceInputMode } from '@/store/voice-prefs'
 
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
@@ -71,6 +75,7 @@ export function ComposerControls({
 }) {
   const { t } = useI18n()
   const c = t.composer
+  const voiceInputMode = useStore($voiceInputMode)
   const steerCombo = formatCombo('mod+enter')
   const steerLabel = `${c.steer} (${steerCombo})`
 
@@ -111,21 +116,38 @@ export function ComposerControls({
       )}
       <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
       {showVoicePrimary ? (
-        <Tip label={c.startVoice}>
-          <Button
-            aria-label={c.startVoice}
-            className={PRIMARY_ICON_BTN}
+        <>
+          <select
+            aria-label="Voice input mode"
+            className="h-(--composer-control-size) max-w-24 rounded-md border border-border/60 bg-transparent px-1.5 text-[0.6875rem] text-muted-foreground outline-none"
             disabled={disabled}
-            onClick={() => {
-              triggerHaptic('open')
-              conversation.onStart()
+            onChange={event => {
+              const mode = event.target.value === 'realtime' ? 'realtime' : 'legacy'
+
+              void setVoiceInputMode(mode).catch(error => notifyError(error, t.settings.config.autosaveFailed))
             }}
-            size="icon"
-            type="button"
+            title={voiceInputMode === 'realtime' ? 'Realtime transcription (experimental)' : 'Legacy voice input'}
+            value={voiceInputMode}
           >
-            <AudioLines className={iconSize.sm} />
-          </Button>
-        </Tip>
+            <option value="legacy">Legacy</option>
+            <option value="realtime">Realtime (experimental)</option>
+          </select>
+          <Tip label={c.startVoice}>
+            <Button
+              aria-label={c.startVoice}
+              className={PRIMARY_ICON_BTN}
+              disabled={disabled}
+              onClick={() => {
+                triggerHaptic('open')
+                conversation.onStart()
+              }}
+              size="icon"
+              type="button"
+            >
+              <AudioLines className={iconSize.sm} />
+            </Button>
+          </Tip>
+        </>
       ) : (
         <Tip label={busy ? (busyAction === 'queue' ? c.queueMessage : c.stop) : c.send}>
           <Button
@@ -155,28 +177,37 @@ function ConversationPill({
   level,
   muted,
   onEnd,
+  onStart,
   onStopTurn,
   onToggleMute,
   status
 }: ConversationProps & { disabled: boolean }) {
   const { t } = useI18n()
   const c = t.composer
+  const voiceInputMode = useStore($voiceInputMode)
   const speaking = status === 'speaking'
   const listening = status === 'listening' && !muted
 
   const label =
-    status === 'speaking'
-      ? c.speaking
-      : status === 'transcribing'
-        ? c.transcribing
-        : status === 'thinking'
-          ? c.thinking
-          : muted
-            ? c.muted
-            : c.listening
+    status === 'connecting'
+      ? 'Connecting Realtime voice'
+      : status === 'error'
+        ? 'Realtime voice error'
+        : status === 'speaking'
+          ? c.speaking
+          : status === 'transcribing'
+            ? c.transcribing
+            : status === 'thinking'
+              ? c.thinking
+              : muted
+                ? c.muted
+                : c.listening
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
+      <span className="rounded-full border border-border/60 px-2 py-1 text-[0.625rem] text-muted-foreground">
+        {voiceInputMode === 'realtime' ? 'Realtime' : 'Legacy'} · {status === 'idle' ? 'ready' : status}
+      </span>
       <Tip label={muted ? c.unmuteMic : c.muteMic}>
         <Button
           aria-label={muted ? c.unmuteMic : c.muteMic}
@@ -209,6 +240,16 @@ function ConversationPill({
         >
           <Square className={cn('fill-current', iconSize.xs)} />
           <span>{c.stopShort}</span>
+        </Button>
+      )}
+      {status === 'error' && (
+        <Button
+          className="h-(--composer-control-size) rounded-full px-2.5 text-xs"
+          onClick={onStart}
+          type="button"
+          variant="ghost"
+        >
+          Retry
         </Button>
       )}
       <Button

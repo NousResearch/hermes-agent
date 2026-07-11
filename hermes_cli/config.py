@@ -2151,6 +2151,20 @@ DEFAULT_CONFIG = {
         "record_key": "ctrl+b",
         "max_recording_seconds": 120,
         "auto_tts": False,
+        # Desktop voice input stays on the existing record/transcribe path
+        # unless the user explicitly selects the experimental Realtime mode.
+        # Realtime is transcription/VAD transport only; Hermes still owns the
+        # conversation, tools, policy, and TTS response.
+        "input_mode": "legacy",       # legacy | realtime
+        "realtime": {
+            "enabled": False,
+            "transcription_model": "gpt-4o-transcribe",
+            "language": "",
+            "client_secret_ttl_seconds": 60,
+            "vad_threshold": 0.5,
+            "prefix_padding_ms": 300,
+            "silence_duration_ms": 500,
+        },
         "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop

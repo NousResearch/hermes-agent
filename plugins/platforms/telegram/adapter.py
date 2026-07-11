@@ -457,6 +457,14 @@ class TelegramAdapter(BasePlatformAdapter):
     # edit and the final edit, skipping the plain-text → MarkdownV2 conversion.
     # Fixes #25710.
     REQUIRES_EDIT_FINALIZE: bool = True
+    # Retrying a turn-final edit consumes more of the same Telegram flood
+    # budget while the completed answer remains undelivered. Move directly to
+    # the final fallback path instead.
+    FALLBACK_ON_FINAL_EDIT_FLOOD: bool = True
+    # A failed final edit can leave Telegram clients with only a partial or
+    # non-durable preview. Commit empty-tail fallbacks as a fresh final message
+    # instead of trusting the preview as completed delivery.
+    RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = True
 
     # Adaptive text-batch ingress: short messages need a tighter delay so the
     # first token reaches the agent fast.  Numbers tuned for "feels instant":
@@ -4067,7 +4075,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, wait,
                 )
                 if wait > 5.0:
-                    return SendResult(success=False, error=f"flood_control:{wait}")
+                    return SendResult(
+                        success=False,
+                        error=f"flood_control:{wait}",
+                        retry_after=float(wait),
+                    )
                 await asyncio.sleep(wait)
                 try:
                     await self._bot.edit_message_text(

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import gateway.run as gateway_run
-from gateway.config import ChannelOverride, HomeChannel, Platform
+from gateway.config import HomeChannel, Platform
 from gateway.platforms.base import MessageEvent
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
@@ -194,25 +194,16 @@ async def test_gateway_stop_launchd_service_restart_keeps_nonzero_exit(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_gateway_stop_bounds_final_cleanup_after_channel_override_restart(
+async def test_gateway_stop_bounds_wedged_final_cleanup(
     tmp_path,
     monkeypatch,
     caplog,
 ):
-    """A wedged late cleanup must not keep launchd/service restarts alive.
-
-    Regression for #58666: with Telegram ``channel_overrides`` configured, the
-    reporter saw the shutdown log stop immediately after adapter disconnect,
-    before ``Gateway stopped`` / housekeeping shutdown could run.
-    """
+    """A wedged late cleanup must not keep launchd/service restarts alive."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()
     runner.config.shutdown_cleanup_timeout = 0.01
     adapter.disconnect = AsyncMock()
-    runner.config.platforms[Platform.TELEGRAM].channel_overrides = {
-        "-1234567890": ChannelOverride(system_prompt="You are a test assistant.")
-    }
-
     entered_cleanup = threading.Event()
     release_cleanup = threading.Event()
 

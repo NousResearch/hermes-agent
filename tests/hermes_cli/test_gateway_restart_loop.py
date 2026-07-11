@@ -47,6 +47,16 @@ class TestGatewayLifecyclePattern:
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
     @pytest.mark.parametrize("text", [
+        # #62891: a blocked direct restart/kill laundered through a NEW
+        # launchd keepalive job wrapping a helper script, instead of a
+        # direct kickstart/unload/stop/restart on the existing service.
+        "launchctl submit -l ai.hermes.gateway-hard-restart-no-photon-notice -- /bin/sh ~/.hermes/scripts/hard_restart_gateway_no_photon_notice.sh",
+        "launchctl submit -l hermes-gateway-restart-helper -- /bin/sh helper.sh",
+    ])
+    def test_launchctl_submit_commands(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
         "kill hermes gateway process",
         "pkill -f hermes.*gateway",
         "pkill -f gateway.*hermes",          # inverse token order
@@ -73,6 +83,8 @@ class TestGatewayLifecyclePattern:
         # hermes token).
         "launchctl unload ai.hermes.update-checker.plist",
         "launchctl restart ai.hermes.daemon",
+        # `submit` on an unrelated launchd label must not be falsely blocked.
+        "launchctl submit -l com.example.backup -- /bin/sh backup.sh",
         "systemctl restart hermes-meta.service",
         "systemctl restart hermes-cron-helper",
         # Regression (#30728 follow-up): legit prompts that merely mention an

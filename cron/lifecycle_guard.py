@@ -56,7 +56,12 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.
     # `launchctl unload ai.hermes.update-checker.plist`).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart)\b[^\n]*\bhermes[.\-]?gateway)"
+    # `submit` is included alongside the direct verbs (kickstart/etc.):
+    # `launchctl submit -l ai.hermes.gateway-<suffix> -- <helper-script>`
+    # creates a NEW keepalive job wrapping an arbitrary helper, which is how
+    # a blocked direct restart/kill gets laundered into a persistent restart
+    # loop instead (#62891) — same foot-gun, indirect shape.
+    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch C: systemctl ops on a hermes-gateway unit.
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both

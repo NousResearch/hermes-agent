@@ -12,7 +12,7 @@ import logging
 import threading
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -107,6 +107,8 @@ class ToolRepairStats:
     ) -> None:
         """Record a single repair event.  Thread-safe, bounded, cheap."""
         try:
+            # Normalize string patterns to their .value for consistent counting.
+            pat_value = pattern.value if hasattr(pattern, "value") else str(pattern)
             evt = RepairEvent(
                 pattern=pattern,
                 tool_name=tool_name,
@@ -119,7 +121,13 @@ class ToolRepairStats:
                 self._events.append(evt)
                 if len(self._events) > self._MAX_EVENTS:
                     self._events = self._events[-self._MAX_EVENTS:]
-                self._model_counts[model_name][pattern.value] += 1
+                    # Rebuild model counts from retained events so totals
+                    # stay consistent with total() after ring-buffer trim.
+                    self._model_counts = defaultdict(lambda: defaultdict(int))
+                    for e in self._events:
+                        v = e.pattern if isinstance(e.pattern, str) else getattr(e.pattern, "value", str(e.pattern))
+                        self._model_counts[e.model_name][v] += 1
+                self._model_counts[model_name][pat_value] += 1
         except Exception:
             # Observability must NEVER break the repair pipeline.
             pass

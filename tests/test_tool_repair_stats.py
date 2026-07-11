@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
-from unittest.mock import patch
-
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -14,7 +10,6 @@ import pytest
 # ---------------------------------------------------------------------------
 
 from agent.tool_repair_stats import (
-    RepairEvent,
     RepairPattern,
     ToolRepairStats,
     get_stats,
@@ -206,8 +201,6 @@ class TestModelContext:
         assert get_current_model() == "deepseek/deepseek-v4-pro"
 
     def test_default_is_unknown(self):
-        # Reset to default
-        from agent.tool_repair_stats import _current_model
         import agent.tool_repair_stats as mod
         mod._current_model = "unknown"
         assert get_current_model() == "unknown"

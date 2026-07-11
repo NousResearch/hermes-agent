@@ -543,6 +543,15 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
         else:
             tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
+    elif tts_provider == "piper":
+        try:
+            piper_ok = importlib.util.find_spec("piper") is not None
+        except Exception:
+            piper_ok = False
+        if piper_ok:
+            tool_status.append(("Text-to-Speech (Piper local)", True, None))
+        else:
+            tool_status.append(("Text-to-Speech (Piper - not installed)", False, "run 'hermes setup tts'"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 

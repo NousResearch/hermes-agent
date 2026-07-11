@@ -1,3 +1,7 @@
+from types import SimpleNamespace
+
+import pytest
+
 from hermes_cli import setup
 
 
@@ -33,3 +37,34 @@ def test_setup_tts_uses_existing_piper_post_setup(monkeypatch):
 
     assert post_setup_calls == ["piper"]
     assert config["tts"]["provider"] == "piper"
+
+
+@pytest.mark.parametrize(
+    ("installed", "expected"),
+    [
+        (True, "Text-to-Speech (Piper local)"),
+        (False, "Text-to-Speech (Piper - not installed)"),
+    ],
+)
+def test_setup_summary_reports_piper_availability(
+    installed, expected, tmp_path, monkeypatch, capsys
+):
+    unavailable = SimpleNamespace(managed_by_nous=False, available=False, current_provider=None)
+    features = SimpleNamespace(
+        web=unavailable,
+        browser=unavailable,
+        image_gen=unavailable,
+        video_gen=unavailable,
+        tts=unavailable,
+        modal=SimpleNamespace(managed_by_nous=False, direct_override=False),
+        nous_auth_present=False,
+    )
+    monkeypatch.setattr(setup, "get_nous_subscription_features", lambda config: features)
+    monkeypatch.setattr(setup, "managed_nous_tools_enabled", lambda: False)
+    monkeypatch.setattr(setup.importlib.util, "find_spec", lambda name: object() if name == "piper" and installed else None)
+
+    setup._print_setup_summary({"tts": {"provider": "piper"}}, tmp_path)
+
+    output = capsys.readouterr().out
+    assert expected in output
+    assert "Text-to-Speech (Edge TTS)" not in output

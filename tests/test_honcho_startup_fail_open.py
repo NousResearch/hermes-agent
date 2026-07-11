@@ -6,6 +6,7 @@ import json
 import threading
 import time
 from types import SimpleNamespace
+from typing import Any, cast
 
 from plugins.memory.honcho import HonchoMemoryProvider
 
@@ -28,6 +29,7 @@ def _configured_hybrid_config() -> _FakeHonchoConfig:
         reasoning_level_cap="high",
         context_tokens=None,
         message_max_chars=25000,
+        save_messages=True,
         session_strategy="per-directory",
     )
 
@@ -225,6 +227,77 @@ def test_honcho_sync_turn_waits_for_full_background_startup(monkeypatch):
             provider._prefetch_thread.join(timeout=1)
 
     assert provider._session_initialized is True
+
+
+def _ready_sync_provider(*, save_messages: bool = True):
+    added = []
+
+    class Session:
+        def add_message(self, role, content):
+            added.append((role, content))
+
+    class Manager:
+        def get_or_create(self, session_key):
+            return Session()
+
+        def _flush_session(self, session):
+            pass
+
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+    cfg.save_messages = save_messages
+    unsafe_provider = cast(Any, provider)
+    unsafe_provider._config = cfg
+    unsafe_provider._manager = Manager()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+    return provider, added
+
+
+def test_honcho_sync_turn_honors_save_messages_false():
+    provider, added = _ready_sync_provider(save_messages=False)
+
+    provider.sync_turn("remember me", "acknowledged")
+
+    assert provider._sync_thread is None
+    assert added == []
+
+
+def test_honcho_sync_turn_drops_internal_gateway_notifications():
+    provider, added = _ready_sync_provider()
+    internal_turns = [
+        "[ASYNC BATCH COMPLETE]\nreview output",
+        "[CONTEXT COMPACTION — REFERENCE ONLY]\nsummary",
+        "[Your active task list was preserved across context compression]\n- task",
+        (
+            "A background fan-out of 1 subagent(s) you dispatched earlier has "
+            "finished. All ran in parallel."
+        ),
+    ]
+
+    for user_content in internal_turns:
+        provider.sync_turn(user_content, "technical status report")
+
+    assert provider._sync_thread is None
+    assert added == []
+
+
+def test_honcho_sync_turn_strips_memory_context_but_keeps_user_text():
+    provider, added = _ready_sync_provider()
+    user_content = (
+        "What should I remember?\n\n"
+        "<memory-context>\n[System note: recalled context]\nold data\n"
+        "</memory-context>"
+    )
+
+    provider.sync_turn(user_content, "Remember the explicit preference only.")
+    assert provider._sync_thread is not None
+    provider._sync_thread.join(timeout=1)
+
+    assert added == [
+        ("user", "What should I remember?"),
+        ("assistant", "Remember the explicit preference only."),
+    ]
 
 
 def test_honcho_system_prompt_advertises_active_while_background_init_runs(monkeypatch):

@@ -29,6 +29,28 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 
+# Gateway-internal notifications can arrive through the same user-role channel
+# as genuine user messages. They are execution metadata, not conversation, and
+# must never become durable personal memory. Keep this deliberately anchored:
+# a human discussing one of these strings mid-message is still valid input.
+_INTERNAL_GATEWAY_TURN_RE = re.compile(
+    r"^\s*(?:"
+    r"\[ASYNC (?:BATCH|DELEGATION) COMPLETE\]|"
+    r"\[CONTEXT COMPACTION(?:\s*[—-]\s*REFERENCE ONLY)?\]|"
+    r"\[PRIOR CONTEXT(?:\s*[—-]\s*FOR REFERENCE ONLY)?\]|"
+    r"\[Your active task list was preserved across context compression\]|"
+    r"A background fan-out of \d+ subagent\(s\) you dispatched earlier has finished\.|"
+    r"A background (?:process|subagent|delegation) .* (?:has )?(?:finished|completed)\."
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_internal_gateway_turn(text: str) -> bool:
+    """Return True for machine-generated gateway/delegation notifications."""
+    return bool(_INTERNAL_GATEWAY_TURN_RE.match(text or ""))
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
 # ---------------------------------------------------------------------------
@@ -1219,6 +1241,14 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
+        # ``saveMessages`` is the operator's hard write gate. Previously it
+        # was parsed into HonchoClientConfig but never enforced here, so a
+        # cached hybrid provider kept writing even after containment was set.
+        if self._config and not getattr(self._config, "save_messages", True):
+            return
+        if _is_internal_gateway_turn(user_content):
+            logger.debug("Honcho sync skipped machine-generated gateway turn")
+            return
         if self._recall_mode == "tools" and not self._session_ready():
             return
         if not self._session_ready():
@@ -1228,6 +1258,8 @@ class HonchoMemoryProvider(MemoryProvider):
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        if not clean_user_content or not clean_assistant_content:
+            return
 
         def _sync():
             try:

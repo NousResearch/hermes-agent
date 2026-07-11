@@ -66,6 +66,9 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if thread_id is None:
         return None
     metadata = {"thread_id": thread_id}
+    if _platform_name(getattr(source, "platform", None)) == "telegram" and str(thread_id).startswith("guest:"):
+        metadata["telegram_guest_query_id"] = str(thread_id).split(":", 1)[1]
+        return metadata
     if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)

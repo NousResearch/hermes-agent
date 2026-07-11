@@ -155,6 +155,11 @@ async def _shutdown_abandoned_app(app) -> None:
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     try:
+        from telegram import InlineQueryResultArticle, InputTextMessageContent
+    except ImportError:
+        InlineQueryResultArticle = None
+        InputTextMessageContent = None
+    try:
         from telegram import LinkPreviewOptions
     except ImportError:
         LinkPreviewOptions = None
@@ -166,6 +171,10 @@ try:
         ContextTypes,
         filters,
     )
+    try:
+        from telegram.ext import TypeHandler
+    except ImportError:
+        TypeHandler = None
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -176,11 +185,14 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+    InlineQueryResultArticle = Any
+    InputTextMessageContent = Any
     LinkPreviewOptions = None
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    TypeHandler = Any
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -1012,11 +1024,21 @@ class TelegramAdapter(BasePlatformAdapter):
             }
         return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
 
+    @staticmethod
+    def _numeric_message_thread_id(thread_id: Optional[str]) -> Optional[int]:
+        """Return a Bot API topic id, omitting Hermes-only synthetic lanes."""
+        if not thread_id:
+            return None
+        try:
+            return int(thread_id)
+        except (TypeError, ValueError):
+            return None
+
     @classmethod
     def _message_thread_id_for_send(cls, thread_id: Optional[str]) -> Optional[int]:
         if not thread_id or str(thread_id) == cls._GENERAL_TOPIC_THREAD_ID:
             return None
-        return int(thread_id)
+        return cls._numeric_message_thread_id(thread_id)
 
     @classmethod
     def _message_thread_id_for_typing(cls, thread_id: Optional[str]) -> Optional[int]:
@@ -1029,7 +1051,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # sends still map "1" → None via _message_thread_id_for_send.
         if not thread_id:
             return None
-        return int(thread_id)
+        return cls._numeric_message_thread_id(thread_id)
 
     @staticmethod
     def _is_thread_not_found_error(error: Exception) -> bool:
@@ -3201,6 +3223,13 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            if (
+                TypeHandler is not None
+                and hasattr(Update, "GUEST_MESSAGE")
+                and InlineQueryResultArticle is not None
+                and InputTextMessageContent is not None
+            ):
+                self._app.add_handler(TypeHandler(Update, self._handle_guest_message), group=-1)
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -3574,6 +3603,27 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a message to a Telegram chat."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        guest_query_id = (metadata or {}).get("telegram_guest_query_id")
+        if guest_query_id:
+            # Guest Mode permits exactly one answer per query. Suppress status /
+            # streaming sends and reserve answerGuestQuery for the final reply.
+            if not (metadata or {}).get("notify"):
+                return SendResult(success=True, message_id=None)
+            try:
+                result = InlineQueryResultArticle(
+                    id=str(guest_query_id),
+                    title="Response",
+                    input_message_content=InputTextMessageContent(content.strip()),
+                )
+                sent = await self._bot.answer_guest_query(str(guest_query_id), result)
+                return SendResult(
+                    success=True,
+                    message_id=str(getattr(sent, "message_id", "")) or None,
+                )
+            except Exception as exc:
+                logger.exception("[%s] Failed to answer Telegram guest query", self.name)
+                return SendResult(success=False, error=str(exc), retryable=False)
 
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):
@@ -7507,6 +7557,12 @@ class TelegramAdapter(BasePlatformAdapter):
         rapid successive text messages from the same user/chat and aggregate
         them into a single MessageEvent before dispatching.
         """
+        # Bot API 10.0 guest messages have their own one-shot answer endpoint
+        # and are handled by _handle_guest_message. PTB also exposes them as
+        # effective_message, so exclude them here to prevent duplicate turns and
+        # an invalid fallback sendMessage into a chat where the bot is absent.
+        if getattr(update, "guest_message", None) is not None:
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -7533,8 +7589,30 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
 
+    async def _handle_guest_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Route a Bot API 10.0 Guest Mode summon through the normal agent loop."""
+        msg = getattr(update, "guest_message", None)
+        if not msg or not getattr(msg, "text", None):
+            return
+        guest_query_id = getattr(msg, "guest_query_id", None)
+        if not guest_query_id:
+            return
+        if not self._is_user_authorized_from_message(msg):
+            logger.warning(
+                "[Telegram] Blocked unauthorized guest query from user %s",
+                getattr(getattr(msg, "from_user", None), "id", None),
+            )
+            return
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        event.source.thread_id = f"guest:{guest_query_id}"
+        event.source.chat_topic = "Guest Bot Mention"
+        event.text = self._clean_bot_trigger_text(event.text)
+        self._enqueue_text_event(event)
+
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
+        if getattr(update, "guest_message", None) is not None:
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -8342,6 +8420,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
         # string-like, but mocks often provide plain strings).
         telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        telegram_chat_type = telegram_chat_type.strip("<>'\"").split(":", 1)[0]
         chat_type = "dm"
         if telegram_chat_type in {"group", "supergroup"}:
             chat_type = "group"

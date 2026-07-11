@@ -500,6 +500,20 @@ class WeComAdapter(BasePlatformAdapter):
         if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
             return
+        try:
+            await self._process_message(payload, body, msg_id)
+        except BaseException:
+            # Processing failed after the dedup mark.  Release the claim so
+            # WeCom's redelivery of this callback (sent when our ACK is lost,
+            # e.g. after the websocket reconnects) is retried instead of being
+            # dropped as a duplicate for the rest of the TTL window.
+            self._dedup.remove(msg_id)
+            raise
+
+    async def _process_message(
+        self, payload: Dict[str, Any], body: Dict[str, Any], msg_id: str
+    ) -> None:
+        """Parse a deduplicated callback and dispatch it to the gateway."""
         self._remember_reply_req_id(msg_id, self._payload_req_id(payload))
 
         sender = body.get("from") if isinstance(body.get("from"), dict) else {}
@@ -592,11 +606,17 @@ class WeComAdapter(BasePlatformAdapter):
         chunk_len = len(event.text or "")
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            event._dedup_msg_ids = [event.message_id]  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            # Track every merged msgid so a failed flush can release all of
+            # their dedup claims, not just the first chunk's.
+            merged_ids = getattr(existing, "_dedup_msg_ids", [existing.message_id])
+            merged_ids.append(event.message_id)
+            existing._dedup_msg_ids = merged_ids  # type: ignore[attr-defined]
             # Merge any media that might be attached
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
@@ -644,7 +664,18 @@ class WeComAdapter(BasePlatformAdapter):
                 "[WeCom] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
-            await self.handle_message(event)
+            try:
+                await self.handle_message(event)
+            except BaseException:
+                # Dispatch failed after the dedup mark(s).  Release the claims
+                # for every merged chunk so WeCom's redelivery is retried
+                # instead of dropped as a duplicate (same contract as
+                # _on_message for the non-batched path).
+                for stale_id in getattr(event, "_dedup_msg_ids", None) or (
+                    [event.message_id] if event.message_id else []
+                ):
+                    self._dedup.remove(stale_id)
+                raise
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)

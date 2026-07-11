@@ -99,3 +99,18 @@ class TestMessageDeduplicatorTTL:
         # the check is `now - ts < ttl` which is `0 < 0` = False
         # This means TTL=0 effectively disables dedup
         assert dedup.is_duplicate("msg-1") is False
+
+    def test_remove_releases_claim(self):
+        """remove() lets a redelivery of a failed message through."""
+        dedup = MessageDeduplicator(ttl_seconds=60)
+        assert dedup.is_duplicate("msg-1") is False
+        dedup.remove("msg-1")
+        assert dedup.is_duplicate("msg-1") is False, \
+            "Released claim should not suppress the redelivery"
+        assert dedup.is_duplicate("msg-1") is True
+
+    def test_remove_unknown_id_is_noop(self):
+        """remove() on an untracked ID must not raise."""
+        dedup = MessageDeduplicator(ttl_seconds=60)
+        dedup.remove("never-seen")
+        assert dedup.is_duplicate("never-seen") is False

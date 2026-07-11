@@ -38,6 +38,13 @@ class MessageDeduplicator:
         # In message handler:
         if self._dedup.is_duplicate(msg_id):
             return
+        try:
+            ...  # process the message
+        except BaseException:
+            # Release the claim so the platform's redelivery is retried
+            # instead of being dropped as a duplicate.
+            self._dedup.remove(msg_id)
+            raise
     """
 
     def __init__(self, max_size: int = 2000, ttl_seconds: float = 300):
@@ -69,6 +76,17 @@ class MessageDeduplicator:
                 )[-self._max_size:]
                 self._seen = dict(newest)
         return False
+
+    def remove(self, msg_id: str) -> None:
+        """Evict *msg_id* so a later delivery of it is treated as new.
+
+        ``is_duplicate()`` marks a message seen at check time, before the
+        adapter has finished processing it.  Adapters call this to release
+        that claim when processing fails, so the platform's redelivery of
+        the same message is retried instead of silently dropped for the
+        remainder of the TTL window.
+        """
+        self._seen.pop(msg_id, None)
 
     def clear(self):
         """Clear all tracked messages."""

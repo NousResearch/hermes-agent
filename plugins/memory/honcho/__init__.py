@@ -1467,6 +1467,11 @@ class HonchoMemoryProvider(MemoryProvider):
         client = getattr(self, "_manager", None)
         client = getattr(client, "_honcho", None) if client else None
         if client is None:
+            logger.warning(
+                "shutdown_memory_provider: could not locate Honcho SDK client "
+                "(_manager._honcho) — httpx client not closed, daemon threads "
+                "may linger. SDK attribute path may have drifted."
+            )
             return
         for attr in ("_http", "_async_http"):
             http_client = getattr(client, attr, None)

@@ -147,6 +147,7 @@ class HonchoSessionManager:
         # so none is left blocked in HTTP recv at interpreter teardown (which
         # aborts CPython — see HonchoMemoryProvider.shutdown).
         self._context_prefetch_threads: list[threading.Thread] = []
+        self._prefetch_threads_lock = threading.Lock()
         self._closed = False
         if write_frequency == "async":
             self._async_queue = queue.Queue()
@@ -566,13 +567,18 @@ class HonchoSessionManager:
             self._async_thread.join(timeout=10)
         # Join context-prefetch threads, but keep references to any that
         # don't join within the timeout so a later shutdown phase can retry.
+        # Snapshot under lock so a concurrent prefetch_context() can't
+        # add a thread after we've snapshotted (TOCTOU → lost thread → SIGABRT).
+        with self._prefetch_threads_lock:
+            prefetch_snapshot = list(self._context_prefetch_threads)
         alive = []
-        for t in self._context_prefetch_threads:
+        for t in prefetch_snapshot:
             if t.is_alive():
                 t.join(timeout=5.0)
                 if t.is_alive():
                     alive.append(t)
-        self._context_prefetch_threads = alive
+        with self._prefetch_threads_lock:
+            self._context_prefetch_threads = alive
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""
@@ -702,10 +708,12 @@ class HonchoSessionManager:
         # Track so shutdown() can join it before interpreter teardown.
         # Prune completed threads to avoid unbounded list growth in long-lived
         # sessions (e.g. gateway runs for days/weeks with many turns).
-        self._context_prefetch_threads = [
-            th for th in self._context_prefetch_threads if th.is_alive()
-        ]
-        self._context_prefetch_threads.append(t)
+        # Lock against concurrent shutdown() which snapshots the same list.
+        with self._prefetch_threads_lock:
+            self._context_prefetch_threads = [
+                th for th in self._context_prefetch_threads if th.is_alive()
+            ]
+            self._context_prefetch_threads.append(t)
         t.start()
 
     def set_context_result(self, session_key: str, result: dict[str, str]) -> None:

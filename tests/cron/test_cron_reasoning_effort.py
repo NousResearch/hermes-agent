@@ -234,6 +234,23 @@ def test_scheduler_invalid_hand_edited_value_falls_back_to_global(scheduler_harn
     assert captured["reasoning_config"] == {"enabled": True, "effort": "medium"}
 
 
+def test_scheduler_unhashable_hand_edited_value_falls_back_to_global(scheduler_harness):
+    home, captured = scheduler_harness
+    (home / "config.yaml").write_text(
+        "model:\n  default: gpt-5.5\n  provider: openai-codex\nagent:\n  reasoning_effort: medium\n",
+        encoding="utf-8",
+    )
+
+    from cron.scheduler import run_job
+
+    success, _doc, final_response, error = run_job(_minimal_job(["invalid"]))
+
+    assert success is True
+    assert final_response == "ok"
+    assert error is None
+    assert captured["reasoning_config"] == {"enabled": True, "effort": "medium"}
+
+
 def test_scheduler_no_agent_ignores_reasoning_and_never_constructs_agent(
     scheduler_harness
 ):

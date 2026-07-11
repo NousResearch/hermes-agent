@@ -2874,12 +2874,13 @@ def run_job(
             else ""
         )
         job_effort = job.get("reasoning_effort")
+        has_job_effort = job_effort is not None and job_effort != ""
         reasoning_config = (
             parse_reasoning_effort(job_effort)
-            if job_effort not in {None, ""}
+            if has_job_effort
             else parse_reasoning_effort(global_effort)
         )
-        if job_effort not in {None, ""} and reasoning_config is None:
+        if has_job_effort and reasoning_config is None:
             logger.warning(
                 "Job '%s': invalid reasoning_effort %r; falling back to global agent.reasoning_effort",
                 job_id,

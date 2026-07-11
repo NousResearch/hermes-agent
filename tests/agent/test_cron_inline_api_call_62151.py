@@ -40,11 +40,20 @@ def _make_agent(*, platform="cron"):
     return agent
 
 
-def test_should_use_direct_api_call_only_for_cron_platform():
+def test_should_use_direct_api_call_only_for_cron_openai_wire():
     assert should_use_direct_api_call(_make_agent(platform="cron")) is True
     assert should_use_direct_api_call(_make_agent(platform="cli")) is False
     assert should_use_direct_api_call(_make_agent(platform="telegram")) is False
     assert should_use_direct_api_call(_make_agent(platform=None)) is False
+
+    for api_mode in ("codex_responses", "anthropic_messages", "bedrock_converse"):
+        agent = _make_agent(platform="cron")
+        agent.api_mode = api_mode
+        assert should_use_direct_api_call(agent) is False
+
+    moa = _make_agent(platform="cron")
+    moa.provider = "moa"
+    assert should_use_direct_api_call(moa) is False
 
 
 def test_direct_api_call_runs_inline_and_closes_client():

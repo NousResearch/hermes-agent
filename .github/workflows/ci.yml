@@ -35,6 +35,7 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       python: ${{ steps.classify.outputs.python }}
       frontend: ${{ steps.classify.outputs.frontend }}
@@ -59,6 +60,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
+    timeout-minutes: 30
     with:
       slice_count: 8
 
@@ -67,6 +69,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/lint.yml
+    timeout-minutes: 10
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
 
@@ -75,41 +78,48 @@ jobs:
     needs: detect
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/typecheck.yml
+    timeout-minutes: 10
 
   docs-site:
     name: Docs Site
     needs: detect
     if: needs.detect.outputs.site == 'true'
     uses: ./.github/workflows/docs-site-checks.yml
+    timeout-minutes: 30
 
   history-check:
     name: Deny unrelated histories
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request'
     uses: ./.github/workflows/history-check.yml
+    timeout-minutes: 10
 
   contributor-check:
     name: Check contributors
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/contributor-check.yml
+    timeout-minutes: 10
 
   uv-lockfile:
     name: Check uv.lock
     needs: detect
     uses: ./.github/workflows/uv-lockfile-check.yml
+    timeout-minutes: 10
 
   docker-lint:
     name: Lint Docker scripts
     needs: detect
     if: needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker-lint.yml
+    timeout-minutes: 10
 
   docker:
     name: Build&Test Docker image
     needs: detect
     if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker.yml
+    timeout-minutes: 60
     secrets: inherit
 
   supply-chain:
@@ -117,6 +127,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.scan == 'true' || needs.detect.outputs.deps == 'true' || needs.detect.outputs.mcp_catalog == 'true')
     uses: ./.github/workflows/supply-chain-audit.yml
+    timeout-minutes: 30
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
       scan: ${{ needs.detect.outputs.scan == 'true' }}
@@ -126,6 +137,7 @@ jobs:
   osv-scanner:
     name: OSV scan
     uses: ./.github/workflows/osv-scanner.yml
+    timeout-minutes: 30
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
@@ -151,6 +163,7 @@ jobs:
       # - docker
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Evaluate job results
         env:
@@ -177,6 +190,7 @@ jobs:
     needs: [all-checks-pass, docker]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

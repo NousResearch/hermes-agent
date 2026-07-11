@@ -1629,6 +1629,9 @@ class ContextCompressor(ContextEngine):
         max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None,
         threshold_tokens_cap: Any = None,
+        proactive_prune_tokens: int = 0,
+        proactive_prune_min_result_chars: int = 8000,
+        proactive_prune_min_reclaim_tokens: int = 4096,
     ):
         self.model = model
         self.base_url = base_url
@@ -1658,6 +1661,31 @@ class ContextCompressor(ContextEngine):
         )
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
+        # Proactive tool-result pruning (cost-oriented; runs INDEPENDENTLY of the
+        # full-compression trigger, via prune_tool_results_only()). 0 = disabled.
+        self.proactive_prune_tokens = int(proactive_prune_tokens or 0)
+        # Floor the summarize threshold at 200 chars (matching
+        # _prune_old_tool_results' dedup floor). Below ~200 a generated summary
+        # can be longer than the floor it replaces, so Pass 2 would re-summarize
+        # its own output every turn (corrupting it and never converging); a
+        # negative value would strip every non-tail tool result outright. A
+        # configured 0 keeps the 8000 default via `or`. Keep the floor well above
+        # typical summary length (default 8000) to stay idempotent.
+        self.proactive_prune_min_result_chars = max(
+            200, int(proactive_prune_min_result_chars or 8000)
+        )
+        # Minimum estimated token reclaim before a proactive prune COMMITS.
+        # Every commit rewrites messages the provider has already seen, which
+        # invalidates the prompt-cache prefix from the earliest rewritten
+        # message forward. Without this gate a busy tool loop would re-fire
+        # the prune nearly every iteration (each new tool pair ages an old one
+        # out of the protected tail), breaking the cache per turn. Requiring a
+        # meaningful batch of reclaimable tokens makes fires episodic and
+        # amortized — the same way full compression is the one sanctioned
+        # cache break. 0 disables the gate (commit any non-zero prune).
+        self.proactive_prune_min_reclaim_tokens = max(
+            0, int(proactive_prune_min_reclaim_tokens or 0)
+        )
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
         # Output-token reservation: the provider carves max_tokens out of the
@@ -2049,6 +2077,7 @@ class ContextCompressor(ContextEngine):
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None,
+        min_prune_chars: int = 200,
     ) -> tuple[List[Dict[str, Any]], int]:
         """Replace old tool result contents with informative 1-line summaries.
 
@@ -2191,7 +2220,9 @@ class ContextCompressor(ContextEngine):
                 return False
             if content.startswith("[screenshot removed"):
                 return False
-            if len(content) <= 200:
+            # Only prune if the content is substantial (default >200 chars; the
+            # proactive path raises this floor via min_prune_chars).
+            if len(content) <= min_prune_chars:
                 return False
             call_id = msg.get("tool_call_id", "")
             tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
@@ -2306,6 +2337,75 @@ class ContextCompressor(ContextEngine):
                     )
 
         return result, pruned
+
+    def prune_tool_results_only(
+        self, messages: List[Dict[str, Any]], current_tokens: int | None = None,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Deterministic, no-LLM tool-result prune for the cost-oriented path.
+
+        Runs the Phase-1 prune (``_prune_old_tool_results``) WITHOUT the
+        compression summary phase, gated on ``proactive_prune_tokens`` rather
+        than the (much higher) full-compression threshold. On large-window
+        models ``should_compress()`` (≈50% of the window) rarely fires, so old
+        tool outputs otherwise ride in history and are re-sent verbatim on every
+        subsequent turn; this reclaims them early with no quality-risky LLM
+        summarization.
+
+        Protects the recent tail by message COUNT (``protect_last_n``), never by
+        ``tail_token_budget`` — the latter is derived from the 50% compression
+        threshold (≈100K tokens on a 1M window) and would protect the entire
+        session, pruning nothing.
+
+        ``_prune_old_tool_results`` runs all three deterministic passes:
+        (1) dedup byte-identical tool results — keeps the newest full copy and
+        back-references older exact duplicates ANYWHERE in the list (including
+        the protected tail), so no unique content is ever lost; (2) summarize
+        non-tail tool results larger than ``min_prune_chars``; (3) truncate
+        oversized tool_call arguments on non-tail assistant messages. Only
+        pass (2)'s floor is raised by ``proactive_prune_min_result_chars``;
+        passes (1) and (3) keep their own fixed floors. The recent-tail
+        protection applies to passes (2) and (3); pass (1) is tail-agnostic by
+        design because dedup is lossless.
+
+        PROMPT-CACHE CONTRACT: a committed prune rewrites message bodies the
+        provider has already seen, invalidating the cached prefix from the
+        earliest rewritten message forward — exactly like a compression
+        boundary. To keep that break episodic rather than per-turn, the prune
+        only COMMITS when the estimated reclaim meets
+        ``proactive_prune_min_reclaim_tokens`` (measured on the actual pruned
+        output, not guessed up front). Below the gate the INPUT list object is
+        returned unchanged — the standard no-op caller contract (callers gate
+        bookkeeping on ``result is not input``).
+
+        Returns ``(messages, 0)`` — the input object — when disabled, below
+        the trigger, or when the reclaim gate rejects the commit.
+        """
+        if self.proactive_prune_tokens <= 0:
+            return messages, 0
+        if current_tokens is not None and current_tokens < self.proactive_prune_tokens:
+            return messages, 0
+        # Nothing to reclaim until there are messages outside the protected tail.
+        if len(messages) <= self.protect_last_n + self._protect_head_size(messages) + 1:
+            return messages, 0
+        pruned_msgs, pruned_count = self._prune_old_tool_results(
+            messages,
+            protect_tail_count=self.protect_last_n,
+            protect_tail_tokens=None,
+            min_prune_chars=self.proactive_prune_min_result_chars,
+        )
+        if not pruned_count:
+            # Standard no-op contract: hand back the INPUT object so callers
+            # can gate bookkeeping on `result is not input`.
+            return messages, 0
+        # Measured-savings gate (prompt-cache hysteresis): only commit when
+        # the prune reclaims a meaningful batch of tokens. Estimated on the
+        # real before/after messages so dedup + arg truncation count too.
+        if self.proactive_prune_min_reclaim_tokens > 0:
+            before = sum(_estimate_msg_budget_tokens(m) for m in messages)
+            after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
+            if (before - after) < self.proactive_prune_min_reclaim_tokens:
+                return messages, 0
+        return pruned_msgs, pruned_count
 
     # ------------------------------------------------------------------
     # Summarization

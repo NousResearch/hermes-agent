@@ -1414,6 +1414,29 @@ DEFAULT_CONFIG = {
                                       # (e.g. 6) for tool-schema-heavy sessions where 3
                                       # rounds cannot clear the request estimate.
                                       # Validated >= 1, hard-capped at 10.
+        "proactive_prune_tokens": 0,  # opt-in trigger (tokens) for the deterministic,
+                                      # no-LLM tool-result prune, run independently of
+                                      # `threshold` above. On large-window models
+                                      # `threshold` (≈50% of the window) rarely fires,
+                                      # so old tool output otherwise rides in history
+                                      # and is re-sent every turn; a low value like
+                                      # 48000 reclaims it early. 0 = off. Recent tail
+                                      # protected by `protect_last_n`. Built-in
+                                      # compressor only (other engines inherit a no-op).
+                                      # NOTE: each committed prune rewrites already-sent
+                                      # history, breaking the provider prompt-cache
+                                      # prefix — the min_reclaim gate below keeps those
+                                      # breaks episodic rather than per-turn.
+        "proactive_prune_min_result_chars": 8000,  # the prune's summarize pass only
+                                      # touches tool results larger than this (chars);
+                                      # clamped to >= 200 so a generated summary can't
+                                      # itself be re-summarized.
+        "proactive_prune_min_reclaim_tokens": 4096,  # a proactive prune only commits
+                                      # when it reclaims at least this many tokens
+                                      # (measured on the pruned output). Keeps
+                                      # prompt-cache invalidation amortized: one big
+                                      # episodic break instead of a tiny break every
+                                      # tool iteration. 0 = commit any non-zero prune.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session

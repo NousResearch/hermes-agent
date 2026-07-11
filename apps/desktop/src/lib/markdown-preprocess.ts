@@ -128,29 +128,32 @@ function isUrlOnlyBlock(lines: string[]): boolean {
 // Strip only the *unbalanced* trailing `)` — the closing paren of a prose
 // wrapper like `(https://example.com/page)`, which the bare-URL matcher
 // greedily captures into the href. Parens that belong to the URL itself
-// (`…/wiki/Foo_(bar)`) stay intact: a trailing `)` is peeled only while the
-// URL holds more `)` than `(`. Count once, then trim from the end — the loop
-// only ever removes trailing closers, so `opens` never changes.
+// (`…/wiki/Foo_(bar)`) stay intact. Track normal left-to-right pairing and
+// peel only a suffix made entirely of unmatched closing parens; this avoids
+// sacrificing a valid trailing pair when an earlier stray `)` exists.
 function trimUnbalancedTrailingParens(url: string): string {
-  let opens = 0
-  let closes = 0
+  let depth = 0
+  let unmatchedSuffixStart: number | null = null
 
-  for (const char of url) {
+  for (let index = 0; index < url.length; index += 1) {
+    const char = url[index]
+
     if (char === '(') {
-      opens += 1
+      depth += 1
+      unmatchedSuffixStart = null
     } else if (char === ')') {
-      closes += 1
+      if (depth > 0) {
+        depth -= 1
+        unmatchedSuffixStart = null
+      } else if (unmatchedSuffixStart === null) {
+        unmatchedSuffixStart = index
+      }
+    } else {
+      unmatchedSuffixStart = null
     }
   }
 
-  let end = url.length
-
-  while (closes > opens && url[end - 1] === ')') {
-    closes -= 1
-    end -= 1
-  }
-
-  return url.slice(0, end)
+  return unmatchedSuffixStart === null ? url : url.slice(0, unmatchedSuffixStart)
 }
 
 function autoLinkRawUrls(text: string): string {

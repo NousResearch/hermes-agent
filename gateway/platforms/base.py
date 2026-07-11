@@ -1168,8 +1168,15 @@ def _media_delivery_denied_paths() -> List[Path]:
     # this pairs the media-delivery (exfil) side so a prompt-injection MEDIA
     # tag can't deliver a live bearer token as a native attachment.
     # (session/kanban SQLite stores are handled by #41071 — kept out here.)
+    #
+    # pairing/ covers both possible DM-pairing store layouts: gateway/pairing.py
+    # resolves the live directory via get_hermes_dir("platforms/pairing",
+    # "pairing"), so new installs (and any install whose legacy pairing/ is
+    # empty) use platforms/pairing/ instead of the legacy pairing/ — both are
+    # blocked here regardless of which one is currently active.
     _ROOT_CREDENTIAL_DIRS = (
         "pairing",
+        os.path.join("platforms", "pairing"),
         "mcp-tokens",
     )
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):

@@ -124,12 +124,18 @@ def is_write_denied(path: str) -> bool:
                 return True
         except Exception:
             pass
-        try:
-            pairing_real = os.path.realpath(os.path.join(base_real, "pairing"))
-            if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
-                return True
-        except Exception:
-            pass
+        # gateway/pairing.py resolves the live pairing store via
+        # get_hermes_dir("platforms/pairing", "pairing") — new installs (and
+        # any install whose legacy `pairing/` is empty) use the consolidated
+        # `platforms/pairing/` location, not the legacy one. Block both so a
+        # write is denied regardless of which layout is currently active.
+        for pairing_rel in ("pairing", os.path.join("platforms", "pairing")):
+            try:
+                pairing_real = os.path.realpath(os.path.join(base_real, pairing_rel))
+                if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
+                    return True
+            except Exception:
+                pass
 
     safe_roots = get_safe_write_roots()
     if safe_roots:

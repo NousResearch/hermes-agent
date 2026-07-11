@@ -1122,6 +1122,29 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
 
+    def test_denylist_blocks_consolidated_platforms_pairing_directory_contents(
+        self, tmp_path, monkeypatch
+    ):
+        """gateway/pairing.py resolves the live store via
+        get_hermes_dir("platforms/pairing", "pairing") — new installs (and
+        any install whose legacy pairing/ is empty) use platforms/pairing/,
+        not the legacy pairing/ this class's sibling test covers. Same
+        credential material, must be equally undeliverable.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        pairing = hermes_dir / "platforms" / "pairing"
+        pairing.mkdir(parents=True)
+        token = pairing / "telegram-approved.json"
+        token.write_text('{"approved": ["123"]}')
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
+
     def test_hermes_cache_still_delivers_under_denied_home(self, tmp_path, monkeypatch):
         """The targeted credential denylist must not break legitimate cache
         deliveries: a generated artifact under the allowlisted cache root is

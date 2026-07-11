@@ -6,6 +6,24 @@ from unittest.mock import patch
 from agent.system_prompt import build_system_prompt_parts
 
 
+def test_import_survives_stale_prompt_builder_without_parallel_guidance():
+    """A live CLI may retain prompt_builder while an update replaces system_prompt."""
+    import subprocess
+    import sys
+
+    script = """
+import sys
+import agent.prompt_builder as prompt_builder
+
+del prompt_builder.PARALLEL_TOOL_CALL_GUIDANCE
+sys.modules.pop('agent.system_prompt', None)
+import agent.system_prompt as system_prompt
+
+assert system_prompt.PARALLEL_TOOL_CALL_GUIDANCE == ''
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
+
+
 def _make_agent(**overrides):
     base = dict(
         load_soul_identity=False,

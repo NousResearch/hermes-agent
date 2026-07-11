@@ -34,7 +34,6 @@ from agent.prompt_builder import (
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
-    PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
@@ -44,6 +43,14 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
 )
+
+# A running CLI can update its checkout before this lazily imported module is
+# loaded.  Keep old in-memory prompt_builder modules compatible with new code.
+try:
+    from agent.prompt_builder import PARALLEL_TOOL_CALL_GUIDANCE
+except ImportError:
+    PARALLEL_TOOL_CALL_GUIDANCE = ""
+
 from agent.runtime_cwd import resolve_context_cwd
 from utils import is_truthy_value
 

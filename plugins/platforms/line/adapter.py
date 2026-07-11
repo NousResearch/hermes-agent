@@ -71,6 +71,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import tempfile
 import time
 import uuid
@@ -1234,20 +1235,26 @@ class LineAdapter(BasePlatformAdapter):
     # Outbound media (image / voice / video)
     # ------------------------------------------------------------------
 
+    def _revoke_media_token(self, token: str) -> None:
+        """Revoke a media token and remove its owned temp copy, if any."""
+        entry = self._media_tokens.pop(token, None)
+        if not entry:
+            return
+        path, _expires_at = entry
+        if path in self._media_temp_paths:
+            self._media_temp_paths.discard(path)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
     def _register_media(self, file_path: str, *, cleanup: bool = False) -> str:
         """Register a local file for HTTPS serving; return the URL token."""
         # Evict expired tokens first.
         now = time.time()
-        for token in list(self._media_tokens.keys()):
-            path, exp = self._media_tokens[token]
+        for token, (_path, exp) in list(self._media_tokens.items()):
             if now > exp:
-                self._media_tokens.pop(token, None)
-                if path in self._media_temp_paths:
-                    self._media_temp_paths.discard(path)
-                    try:
-                        os.unlink(path)
-                    except OSError:
-                        pass
+                self._revoke_media_token(token)
 
         resolved = str(Path(file_path).resolve())
         token = secrets.token_urlsafe(32)
@@ -1255,6 +1262,23 @@ class LineAdapter(BasePlatformAdapter):
         if cleanup:
             self._media_temp_paths.add(resolved)
         return token
+
+    def _copy_media_to_managed_temp(self, source: Path) -> str:
+        """Copy a user-owned file into adapter-managed temp storage."""
+        suffix = source.suffix
+        with tempfile.NamedTemporaryFile(
+            prefix="hermes-line-", suffix=suffix, delete=False
+        ) as tmp:
+            tmp_path = tmp.name
+        try:
+            shutil.copyfile(source, tmp_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        return tmp_path
 
     def _media_url(self, token: str, filename: str) -> str:
         """Build the public HTTPS URL for a media token. PR #8398 style."""
@@ -1288,7 +1312,7 @@ class LineAdapter(BasePlatformAdapter):
 
         file_path, expires_at = entry
         if time.time() > expires_at:
-            self._media_tokens.pop(token, None)
+            self._revoke_media_token(token)
             return web.Response(status=410, text="gone")
 
         path = Path(file_path)
@@ -1314,8 +1338,73 @@ class LineAdapter(BasePlatformAdapter):
         content_type, _ = mimetypes.guess_type(str(path))
         return web.FileResponse(
             path,
-            headers={"Content-Type": content_type or "application/octet-stream"},
+            headers={
+                "Content-Type": content_type or "application/octet-stream",
+                "Cache-Control": "no-store",
+            },
         )
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an HTTPS image URL as a native LINE image message."""
+        if not self._client:
+            return SendResult(success=False, error="LINE adapter not connected")
+        if not image_url.lower().startswith("https://"):
+            return SendResult(success=False, error=f"LINE image URL must be HTTPS: {image_url}")
+        msgs: List[Dict[str, Any]] = [_image_message(image_url)]
+        if caption:
+            msgs.append(_text_message(caption))
+        return await self._send_messages(chat_id, msgs)
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a regular file as a safe expiring HTTPS download link.
+
+        LINE has image/audio/video message objects but no general outbound file
+        object. For non-image files, deliver a text bubble containing an
+        unguessable, adapter-hosted HTTPS link with a short TTL.
+        """
+        path = Path(file_path)
+        if not path.exists() or not path.is_file():
+            return SendResult(success=False, error=f"file not found: {file_path}")
+        if not self._client:
+            return SendResult(success=False, error="LINE adapter not connected")
+        if not self.public_base_url and self.webhook_host == "0.0.0.0":
+            return SendResult(
+                success=False,
+                error="LINE_PUBLIC_URL must be set to send file links "
+                "(LINE only accepts publicly reachable HTTPS URLs)",
+            )
+
+        managed_path = self._copy_media_to_managed_temp(path)
+        token = self._register_media(managed_path, cleanup=True)
+        label = file_name or path.name
+        public_name = f"download{path.suffix}" if path.suffix else "download"
+        url = self._media_url(token, public_name)
+        if not url.lower().startswith("https://"):
+            self._revoke_media_token(token)
+            return SendResult(success=False, error=f"LINE file URL must be HTTPS: {url}")
+        text = f"Download file: {label}\n{url}"
+        if caption:
+            text = f"{caption}\n{text}"
+        result = await self._send_messages(chat_id, [_text_message(text)])
+        if not result.success:
+            self._revoke_media_token(token)
+        return result
 
     async def send_image_file(
         self,
@@ -1341,11 +1430,15 @@ class LineAdapter(BasePlatformAdapter):
         token = self._register_media(str(path.resolve()))
         url = self._media_url(token, path.name)
         if not url.lower().startswith("https://"):
+            self._revoke_media_token(token)
             return SendResult(success=False, error=f"LINE image URL must be HTTPS: {url}")
         msgs: List[Dict[str, Any]] = [_image_message(url)]
         if caption:
             msgs.append(_text_message(caption))
-        return await self._send_messages(chat_id, msgs)
+        result = await self._send_messages(chat_id, msgs)
+        if not result.success:
+            self._revoke_media_token(token)
+        return result
 
     async def send_voice(
         self,
@@ -1369,7 +1462,13 @@ class LineAdapter(BasePlatformAdapter):
 
         token = self._register_media(str(path.resolve()))
         url = self._media_url(token, path.name)
-        return await self._send_messages(chat_id, [_audio_message(url, duration_ms)])
+        if not url.lower().startswith("https://"):
+            self._revoke_media_token(token)
+            return SendResult(success=False, error=f"LINE audio URL must be HTTPS: {url}")
+        result = await self._send_messages(chat_id, [_audio_message(url, duration_ms)])
+        if not result.success:
+            self._revoke_media_token(token)
+        return result
 
     async def send_video(
         self,
@@ -1414,7 +1513,19 @@ class LineAdapter(BasePlatformAdapter):
         video_token = self._register_media(str(path.resolve()))
         video_url = self._media_url(video_token, path.name)
         preview_url = self._media_url(preview_token, preview_filename)
-        return await self._send_messages(chat_id, [_video_message(video_url, preview_url)])
+        if not video_url.lower().startswith("https://"):
+            self._revoke_media_token(video_token)
+            self._revoke_media_token(preview_token)
+            return SendResult(success=False, error=f"LINE video URL must be HTTPS: {video_url}")
+        if not preview_url.lower().startswith("https://"):
+            self._revoke_media_token(video_token)
+            self._revoke_media_token(preview_token)
+            return SendResult(success=False, error=f"LINE video preview URL must be HTTPS: {preview_url}")
+        result = await self._send_messages(chat_id, [_video_message(video_url, preview_url)])
+        if not result.success:
+            self._revoke_media_token(video_token)
+            self._revoke_media_token(preview_token)
+        return result
 
     async def _send_messages(
         self,

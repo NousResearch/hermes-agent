@@ -19,6 +19,8 @@ import hashlib
 import hmac
 import base64
 import json
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -555,6 +557,107 @@ class TestPostbackButtonShape:
         long = "x" * 500
         msg = build_postback_button_message(long, "Tap", "rid")
         assert len(msg["altText"]) <= 400
+
+
+class TestOutboundMediaLinks:
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+            "public_url": "https://line-public.example.test",
+        })
+        ad = LineAdapter(cfg)
+        ad._client = MagicMock()
+        ad._client.reply = AsyncMock()
+        ad._client.push = AsyncMock()
+        return ad
+
+    def test_https_image_url_sends_native_line_image(self, adapter):
+        result = asyncio.run(
+            adapter.send_image(
+                "Utarget",
+                "https://cdn.example.test/chart.png",
+                caption="Chart",
+            )
+        )
+
+        assert result.success
+        adapter._client.push.assert_awaited_once()
+        messages = adapter._client.push.await_args.args[1]
+        assert messages[0] == {
+            "type": "image",
+            "originalContentUrl": "https://cdn.example.test/chart.png",
+            "previewImageUrl": "https://cdn.example.test/chart.png",
+        }
+        assert messages[1] == {"type": "text", "text": "Chart"}
+
+    def test_document_sends_expiring_no_store_download_link_from_owned_copy(self, adapter, tmp_path):
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"hello")
+
+        result = asyncio.run(adapter.send_document("Utarget", str(doc), caption="Report"))
+
+        assert result.success
+        adapter._client.push.assert_awaited_once()
+        messages = adapter._client.push.await_args.args[1]
+        assert messages[0]["type"] == "text"
+        text = messages[0]["text"]
+        assert "Report" in text
+        assert "https://line-public.example.test/line/media/" in text
+        url = next(part for part in text.split() if part.startswith("https://"))
+        assert url.endswith("/download.pdf")
+        assert "report.pdf" not in url
+        assert "Utarget" not in text
+        assert "tok" not in text
+        assert len(adapter._media_tokens) == 1
+        token, (registered_path, expires_at) = next(iter(adapter._media_tokens.items()))
+        assert registered_path != str(doc.resolve())
+        assert registered_path in adapter._media_temp_paths
+        assert Path(registered_path).read_bytes() == b"hello"
+        assert len(token) >= 32
+        assert expires_at - _line.time.time() <= 24 * 60 * 60
+
+        request = SimpleNamespace(match_info={"token": token})
+        response = asyncio.run(adapter._handle_media(request))
+        assert response.headers["Cache-Control"] == "no-store"
+
+        adapter._media_tokens[token] = (registered_path, _line.time.time() - 1)
+        expired = asyncio.run(adapter._handle_media(request))
+        assert expired.status == 410
+        assert token not in adapter._media_tokens
+        assert registered_path not in adapter._media_temp_paths
+        assert not Path(registered_path).exists()
+        assert doc.exists()
+
+    def test_document_revokes_owned_copy_when_public_url_is_not_https(self, adapter, tmp_path):
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"hello")
+        adapter.public_base_url = "http://line-public.example.test"
+
+        result = asyncio.run(adapter.send_document("Utarget", str(doc)))
+
+        assert not result.success
+        assert "must be HTTPS" in result.error
+        assert adapter._media_tokens == {}
+        assert adapter._media_temp_paths == set()
+        assert doc.exists()
+
+    def test_expired_media_token_is_revoked_and_removed(self, adapter, tmp_path):
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"hello")
+        token = adapter._register_media(str(doc))
+        adapter._media_tokens[token] = (str(doc), _line.time.time() - 1)
+
+        request = SimpleNamespace(match_info={"token": token})
+        response = asyncio.run(adapter._handle_media(request))
+
+        assert response.status == 410
+        assert token not in adapter._media_tokens
 
 
 class TestCheckRequirements:

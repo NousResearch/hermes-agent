@@ -29,6 +29,9 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
 # Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
+# LINE send_message's normal surface is a single user; group/room targets must
+# continue through configured home channels / channel-directory allowlists.
+_LINE_USER_TARGET_RE = re.compile(r"^\s*(U[A-Za-z0-9_-]{8,})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
@@ -406,8 +409,8 @@ def _handle_send(args):
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
-        # Weixin can be configured purely via .env; synthesize a pconfig so
-        # send_message and cron delivery work without a gateway.yaml entry.
+        # Weixin and LINE can be configured purely via .env; synthesize a pconfig
+        # so send_message and cron delivery work without a gateway.yaml entry.
         if platform_name == "weixin":
             wx_token = os.getenv("WEIXIN_TOKEN", "").strip()
             wx_account = os.getenv("WEIXIN_ACCOUNT_ID", "").strip()
@@ -420,6 +423,21 @@ def _handle_send(args):
                         "account_id": wx_account,
                         "base_url": os.getenv("WEIXIN_BASE_URL", "").strip(),
                         "cdn_base_url": os.getenv("WEIXIN_CDN_BASE_URL", "").strip(),
+                    },
+                )
+            else:
+                return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+        elif platform_name == "line":
+            line_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+            line_secret = os.getenv("LINE_CHANNEL_SECRET", "").strip()
+            if line_token and line_secret:
+                from gateway.config import PlatformConfig
+                pconfig = PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "channel_access_token": line_token,
+                        "channel_secret": line_secret,
+                        "public_url": os.getenv("LINE_PUBLIC_URL", "").strip(),
                     },
                 )
             else:
@@ -447,6 +465,11 @@ def _handle_send(args):
             if wx_home:
                 from gateway.config import HomeChannel
                 home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
+        if not home and platform_name == "line":
+            line_home = os.getenv("LINE_HOME_CHANNEL", "").strip()
+            if line_home:
+                from gateway.config import HomeChannel
+                home = HomeChannel(platform=platform, chat_id=line_home, name="LINE Home")
         if home:
             chat_id = home.chat_id
             used_home_channel = True
@@ -563,6 +586,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # resolution path in send_message() can run.
             is_explicit = chat_id[0] not in {"U", "W"}
             return chat_id, None, is_explicit
+    if platform_name == "line":
+        match = _LINE_USER_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     if platform_name == "matrix":
         trimmed = target_ref.strip()
         split_idx = trimmed.rfind(":$")
@@ -1030,6 +1057,66 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 return result
             last_result = result
         return last_result
+
+    # --- LINE: images go as native image messages; other local files become
+    # expiring HTTPS download links served by the live LINE adapter. The LINE
+    # Messaging API has no generic outbound file object, so standalone sends
+    # cannot safely deliver arbitrary files without a running public webhook.
+    if platform == Platform("line") and media_files:
+        runner = None
+        try:
+            from gateway.run import _gateway_runner_ref
+            runner = _gateway_runner_ref()
+        except Exception:
+            runner = None
+        adapter = None
+        if runner is not None:
+            try:
+                adapter = runner.adapters.get(platform)
+            except Exception:
+                adapter = None
+        if adapter is None:
+            return {
+                "error": (
+                    "LINE MEDIA delivery requires a live LINE gateway adapter "
+                    "with LINE_PUBLIC_URL configured; no live adapter is available."
+                )
+            }
+
+        metadata = {"thread_id": thread_id} if thread_id else None
+        last_result = None
+        if message.strip():
+            text_result = await adapter.send(
+                chat_id=chat_id,
+                content=message,
+                metadata=metadata,
+            )
+            if not text_result.success:
+                return {"error": f"Adapter send failed: {text_result.error}"}
+            last_result = {"success": True, "message_id": text_result.message_id}
+
+        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg"}
+        for media_path, _is_voice in media_files:
+            ext = os.path.splitext(media_path)[1].lower()
+            if ext in image_exts and not force_document:
+                media_result = await adapter.send_image_file(
+                    chat_id=chat_id,
+                    image_path=media_path,
+                    caption=None,
+                    metadata=metadata,
+                )
+            else:
+                media_result = await adapter.send_document(
+                    chat_id=chat_id,
+                    file_path=media_path,
+                    caption=None,
+                    file_name=os.path.basename(media_path),
+                    metadata=metadata,
+                )
+            if not media_result.success:
+                return {"error": f"LINE media send failed: {media_result.error}"}
+            last_result = {"success": True, "message_id": media_result.message_id}
+        return last_result or {"success": True, "message_id": None}
 
     # --- Non-media platforms ---
     if media_files and not message.strip():

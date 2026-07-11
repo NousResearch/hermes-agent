@@ -232,6 +232,9 @@ class TestDelegateTask(unittest.TestCase):
         parent = _make_mock_parent()
         result = json.loads(delegate_task(tasks=[{"goal": None}], parent_agent=parent))
         self.assertIn("error", result)
+        # A present-but-null goal must return the same actionable message as
+        # the absent-key case, not crash with an opaque AttributeError.
+        self.assertIn("Task 0 is missing a 'goal'", result["error"])
 
     @patch("tools.delegate_tool._run_single_child")
     def test_single_task_mode(self, mock_run):

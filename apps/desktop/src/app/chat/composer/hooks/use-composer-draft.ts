@@ -1,5 +1,5 @@
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
-import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { $composerAttachments, type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -305,8 +305,10 @@ export function useComposerDraft({
 
   // Per-thread draft swap — the composer's only session coupling. Lifecycle
   // never clears composer state; this effect alone stashes on leave, restores
-  // on enter. Keyed writes are idempotent, so no skip-sentinel.
-  useEffect(() => {
+  // on enter. This must run before paint so a new session never renders the
+  // previous session's contentEditable draft for one frame. Keyed writes are
+  // idempotent, so no skip-sentinel.
+  useLayoutEffect(() => {
     // A pending debounce timer from the outgoing session is now stale — its
     // scope was correct when scheduled, but the authoritative stash below
     // (and the cleanup on the way out) already covers that text. Letting it

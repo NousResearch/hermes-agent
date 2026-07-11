@@ -5731,6 +5731,27 @@ class AIAgent:
                      skip_tool_request_middleware: bool = False,
                      tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None) -> str:
         """Forwarder — see ``agent.agent_runtime_helpers.invoke_tool``."""
+        if function_name == "browser_task":
+            _is_subagent = getattr(self, "_delegate_depth", 0) > 0
+            if not _is_subagent:
+                goal_text = function_args.get("task", "") or function_args.get("goal", "")
+                constraints = function_args.get("constraints", "")
+                timeout = function_args.get("timeout", "")
+                
+                child_goal = f"Use the browser_task tool to: {goal_text}"
+                if constraints:
+                    child_goal += f"\nConstraints: {constraints}"
+                if timeout:
+                    child_goal += f"\nTimeout: {timeout}s"
+                
+                from tools.delegate_tool import delegate_task as _delegate_task
+                return _delegate_task(
+                    goal=child_goal,
+                    background=True,
+                    toolsets=["browser_agent"],
+                    parent_agent=self,
+                )
+
         from agent.agent_runtime_helpers import invoke_tool
         return invoke_tool(
             self,

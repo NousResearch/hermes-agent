@@ -181,6 +181,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "browser_agent": {
+        "description": "AI-driven browser automation via CloakBrowser + browser-use for complex multi-step web tasks",
+        "tools": ["browser_task", "browser_respond"],
+        "includes": []
+    },
+    
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
         "tools": ["cronjob"],

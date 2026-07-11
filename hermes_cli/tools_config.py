@@ -60,6 +60,7 @@ from hermes_cli.cli_output import (  # noqa: E402 — late import block
 CONFIGURABLE_TOOLSETS = [
     ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
     ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
+    ("browser_agent",   "🤖 browser-use (Local, no API)", "browser_task — CloakBrowser + browser-use"),
     ("terminal",        "💻 Terminal & Processes",      "terminal, process"),
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
@@ -490,6 +491,30 @@ TOOL_CATEGORIES = {
                 ],
                 "browser_provider": "camofox",
                 "post_setup": "camofox",
+            },
+        ],
+    },
+    "browser_agent": {
+        "name": "browser-use (Local, no API)",
+        "icon": "🤖",
+        "providers": [
+            {
+                "name": "browser-use (Local, no API)",
+                "badge": "★ recommended · free",
+                "tag": "AI browser worker using local CloakBrowser + browser-use",
+                "env_vars": [
+                    {
+                        "key": "BROWSER_CDP_URL",
+                        "prompt": "Stealth Browser CDP URL",
+                        "default": "http://127.0.0.1:9377",
+                    },
+                    {
+                        "key": "BROWSER_LLM_BASE_URL",
+                        "prompt": "Browser-use LLM Base URL (optional - leave empty to inherit from Hermes model config)",
+                        "default": "",
+                    },
+                ],
+                "post_setup": "browser_use_local",
             },
         ],
     },
@@ -1279,6 +1304,44 @@ def _run_post_setup(post_setup_key: str):
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
+
+    elif post_setup_key == "browser_use_local":
+        _print_info("    Validating browser-use (Local, no API) environment...")
+        import subprocess
+        # Check systemd service status
+        res = subprocess.run(["systemctl", "--user", "is-active", "stealth-browser.service"], capture_output=True, text=True)
+        is_active = res.stdout.strip() == "active"
+        if not is_active:
+            _print_warning("    stealth-browser.service is not active.")
+            _print_info("      Run: systemctl --user start stealth-browser.service")
+        else:
+            _print_success("    stealth-browser.service is running")
+
+        # Check CDP reachability
+        import urllib.request
+        import json
+        cdp_url = os.environ.get("BROWSER_CDP_URL", "http://127.0.0.1:9377")
+        try:
+            req = urllib.request.Request(f"{cdp_url}/json/version", method="GET")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read())
+                if data.get("Browser"):
+                    _print_success(f"    CDP endpoint reachable at {cdp_url}")
+                else:
+                    _print_warning(f"    CDP endpoint did not return browser version at {cdp_url}")
+        except Exception as e:
+            _print_warning(f"    CDP endpoint not reachable at {cdp_url}: {e}")
+            _print_info("      Verify that stealth-browser.service is running and listening on port 9377")
+
+        # Check worker dir
+        worker_dir = os.path.expanduser("~/tool/browser-use-cloak-stealth")
+        if not os.path.isdir(worker_dir):
+            _print_warning(f"    Worker directory not found: {worker_dir}")
+            _print_info("      Please clone and install the stealth environment repository:")
+            _print_info("        git clone https://github.com/nnishad/browser-use-cloak-stealth ~/tool/browser-use-cloak-stealth")
+            _print_info("        cd ~/tool/browser-use-cloak-stealth && ./install.sh")
+        else:
+            _print_success(f"    Worker directory exists: {worker_dir}")
 
     elif post_setup_key == "cua_driver":
         install_cua_driver(upgrade=False)

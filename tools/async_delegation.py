@@ -533,6 +533,14 @@ def interrupt_all(reason: str = "shutdown") -> int:
                 )
     if count:
         logger.info("Interrupted %d async delegation(s) (%s)", count, reason)
+    
+    # Also kill any active browser workers
+    try:
+        from tools.browser_agent_tool import kill_all_workers
+        kill_all_workers()
+    except Exception:
+        pass
+    
     return count
 
 

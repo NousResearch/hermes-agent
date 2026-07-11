@@ -1124,11 +1124,31 @@ def _build_child_agent(
         # toolset names (e.g. web, terminal) are recognised during intersection.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
+        # Fallback: keep explicitly-requested toolsets that are statically
+        # defined in TOOLSETS even when they are absent from the parent's
+        # expanded toolsets.  This handles plugin-registered toolsets
+        # (e.g. browser_agent) whose tools are loaded dynamically and may
+        # not appear in composite parent toolsets like hermes-cli.  The
+        # caller explicitly asked for these toolsets via delegate_task(),
+        # so this is an intentional grant of capability.  Safety is still
+        # enforced by DELEGATE_BLOCKED_TOOLS and _strip_blocked_tools.
+        _child_set = set(child_toolsets)
+        for _ts in toolsets:
+            if _ts not in _child_set and _ts in TOOLSETS:
+                # Security boundary: only allow custom/plugin toolsets if the parent
+                # actually has this capability enabled, preventing privilege escalation.
+                if not parent_toolsets or _ts in parent_toolsets:
+                    child_toolsets.append(_ts)
+                    _child_set.add(_ts)
         if _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
             )
         child_toolsets = _strip_blocked_tools(child_toolsets)
+        logger.info(
+            "Child toolset intersection: requested=%s, parent=%s, expanded_parent=%s, result=%s",
+            toolsets, parent_toolsets, list(expanded_parent)[:10], child_toolsets,
+        )
     elif parent_agent and parent_enabled is not None:
         child_toolsets = _strip_blocked_tools(parent_enabled)
     elif parent_toolsets:
@@ -2373,6 +2393,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    toolsets: Optional[List[str]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2512,13 +2533,17 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task toolsets override the top-level toolsets when provided.
+            # This allows batch tasks where each subagent gets different capabilities
+            # (e.g. one with browser_agent, another with terminal).
+            _task_toolsets = t.get("toolsets") or toolsets
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
+                # Use per-task toolsets if provided, else top-level toolsets,
+                # else inherit parent's full toolset.
+                toolsets=_task_toolsets,
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
@@ -3506,6 +3531,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        toolsets=args.get("toolsets"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

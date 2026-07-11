@@ -1969,6 +1969,47 @@ def _format_async_delegation(evt: dict) -> str:
     dispatched_at = evt.get("dispatched_at")
     completed_at = evt.get("completed_at") or _time.time()
 
+    # ----- Browser-agent mid-flight: info_needed -----
+    if status == "info_needed":
+        request_id = evt.get("request_id", "unknown")
+        question = evt.get("question", "")
+        choices = evt.get("choices")
+        lines = [
+            f"[BROWSER TASK NEEDS INPUT — {request_id}]",
+            "A background browser task needs information to continue.",
+        ]
+        if goal:
+            lines.append(f"Task: {goal}")
+        lines.append(f"Question: {question}")
+        if choices:
+            lines.append(f"Choices: {', '.join(choices)}")
+        lines.append(
+            f"\nAsk the user this question using the clarify tool, "
+            f"then call browser_respond(request_id='{request_id}', "
+            f"answer=<user's response>)."
+        )
+        return "\n".join(lines)
+
+    # ----- Browser-agent mid-flight: escalation (CAPTCHA/MFA) -----
+    if status == "escalation":
+        request_id = evt.get("request_id", "unknown")
+        reason = evt.get("reason", "")
+        tunnel_url = evt.get("tunnel_url", "")
+        esc_timeout = evt.get("timeout", 120)
+        lines = [
+            f"[BROWSER TASK ESCALATION — {request_id}]",
+            "A background browser task hit a CAPTCHA/MFA challenge.",
+        ]
+        if goal:
+            lines.append(f"Task: {goal}")
+        if reason:
+            lines.append(f"Reason: {reason}")
+        if tunnel_url:
+            lines.append(f"Open this URL in your browser to solve it: {tunnel_url}")
+        lines.append("The task will resume automatically once you solve it.")
+        lines.append(f"Timeout: {esc_timeout} seconds.")
+        return "\n".join(lines)
+
     # ----- Batch (fan-out) completion: consolidated multi-task block -----
     # A whole delegate_task fan-out dispatched as one background unit finishes
     # together and carries a per-task `results` list. Render every subagent's

@@ -1457,6 +1457,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key or session_id,
             )
 
+        # Apply session /model override fields to this agent instance.
+        # Mirrors GatewayRunner._apply_session_model_override (run.py):
+        # override beats config defaults and model_routes.  Fields with
+        # None values are skipped so partial overrides don't clobber
+        # valid config defaults.
+        if session_override:
+            model = session_override.get("model", model)
+            for key in ("provider", "api_key", "base_url", "api_mode"):
+                val = session_override.get(key)
+                if val is not None:
+                    runtime_kwargs[key] = val
+
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
@@ -1939,7 +1951,16 @@ class APIServerAdapter(BasePlatformAdapter):
         if "yolo" in body:
             from tools.approval import enable_session_yolo, disable_session_yolo
 
-            if body["yolo"]:
+            yolo_val = body["yolo"]
+            if not isinstance(yolo_val, bool):
+                return web.json_response(
+                    _openai_error(
+                        "yolo must be a JSON boolean (true/false)",
+                        code="invalid_yolo",
+                    ),
+                    status=400,
+                )
+            if yolo_val:
                 enable_session_yolo(session_key)
             else:
                 disable_session_yolo(session_key)

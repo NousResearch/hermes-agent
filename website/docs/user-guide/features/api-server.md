@@ -321,7 +321,7 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `GET` | `/api/sessions` | List sessions (paginated — `limit`, `offset`, `source`, `include_children`) |
 | `POST` | `/api/sessions` | Create an empty session |
 | `GET` | `/api/sessions/{id}` | Read session metadata |
-| `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
+| `PATCH` | `/api/sessions/{id}` | Update `title`, `end_reason`, `model` (per-session override), or `yolo` (auto-approve toggle) |
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |

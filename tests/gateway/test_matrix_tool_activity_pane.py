@@ -7,44 +7,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from gateway.matrix_tool_activity import matrix_tool_activity_bodies
 from gateway.platforms.base import SendResult
 from plugins.platforms.matrix.adapter import MatrixAdapter, _sanitize_matrix_html
 
 
-def _render_like_production(lines: list[str]) -> tuple[str, str]:
-    """Mirror gateway/run.py _matrix_tool_activity_bodies contract for unit tests.
-
-    Production helper is nested inside send_progress_messages; keep this in sync
-    via the assertions below (no fences, counter body, single ol list).
-    """
-    import html as _html
-    import re
-
-    cleaned: list[str] = []
-    for line in lines:
-        s = str(line or "").strip()
-        if not s:
-            continue
-        if s in {"```", "~~~"} or set(s) <= {"`", "~", " "}:
-            continue
-        if s.startswith("```") or s.startswith("~~~"):
-            continue
-        s = s.splitlines()[0].strip()
-        s = re.sub(r"\s+", " ", s)
-        if len(s) > 160:
-            s = s[:157] + "..."
-        cleaned.append(s)
-    n = len(cleaned)
-    body = f"🛠 Tool activity ({n} update{'s' if n != 1 else ''})"
-    if not cleaned:
-        return body, f"<p><strong>{_html.escape(body)}</strong></p>"
-    items = "".join(f"<li>{_html.escape(item)}</li>" for item in cleaned)
-    html_body = f"<p><strong>{_html.escape(body)}</strong></p><ol>{items}</ol>"
-    return body, html_body
-
-
 def test_matrix_body_is_counter_only():
-    body, html = _render_like_production(
+    body, html = matrix_tool_activity_bodies(
         [
             "🔍 Searching past sessions",
             "💻 terminal: ls -la /tmp",
@@ -59,7 +28,7 @@ def test_matrix_body_is_counter_only():
 
 
 def test_matrix_html_is_single_ol_no_fences_or_details():
-    body, html = _render_like_production(
+    body, html = matrix_tool_activity_bodies(
         [
             "🔍 Searching past sessions",
             "```",
@@ -78,14 +47,17 @@ def test_matrix_html_is_single_ol_no_fences_or_details():
     assert html.count("Searching past sessions") == 1
 
 
-def test_sanitize_keeps_ol_li():
+def test_sanitize_keeps_ol_li_and_strips_details():
     html = (
         "<p><strong>🛠 Tool activity (1 update)</strong></p>"
         "<ol><li>💻 terminal: ls</li></ol>"
+        "<details><summary>x</summary>secret</details>"
     )
     out = _sanitize_matrix_html(html)
     assert "<ol>" in out and "<li>" in out
     assert "terminal: ls" in out
+    assert "<details>" not in out
+    assert "<summary>" not in out
 
 
 @pytest.mark.asyncio
@@ -105,7 +77,7 @@ async def test_matrix_send_and_edit_carry_html():
         return f"$e{len(sent['events'])}"
 
     adapter._client.send_message_event = _send_evt
-    body, html = _render_like_production(["💻 terminal: ls", "📖 read_file: x"])
+    body, html = matrix_tool_activity_bodies(["💻 terminal: ls", "📖 read_file: x"])
 
     res = await MatrixAdapter.send(
         adapter,
@@ -132,6 +104,7 @@ async def test_matrix_send_and_edit_carry_html():
     assert edit["m.new_content"]["formatted_body"].startswith("<p>")
     assert not edit["formatted_body"].startswith("*")
     assert "```" not in edit["m.new_content"]["formatted_body"]
+    assert "<details>" not in edit["m.new_content"]["formatted_body"]
 
 
 def test_edit_message_accepts_metadata():
@@ -146,3 +119,10 @@ def test_matrix_one_line_label_contract_for_terminal():
     assert "```" not in label
     assert "\n" not in label
     assert label.startswith("💻 terminal:")
+
+
+def test_production_helper_is_single_source_for_run_py():
+    """gateway/run.py must import the production helper, not a forked copy."""
+    import gateway.run as run_mod
+    src = inspect.getsource(run_mod)
+    assert "from gateway.matrix_tool_activity import matrix_tool_activity_bodies" in src

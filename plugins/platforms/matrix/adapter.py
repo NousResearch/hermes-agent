@@ -209,9 +209,9 @@ class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
     _ALLOWED_TAGS = {
-        "a", "b", "blockquote", "br", "code", "del", "details", "em", "h1", "h2", "h3",
-        "h4", "h5", "h6", "hr", "i", "li", "ol", "p", "pre", "s", "span", "strike",
-        "strong", "summary", "table", "tbody", "td", "th", "thead", "tr", "ul",
+        "a", "b", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3",
+        "h4", "h5", "h6", "hr", "i", "li", "ol", "p", "pre", "s", "strike",
+        "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
     }
     _VOID_TAGS = {"br", "hr"}
 
@@ -243,13 +243,6 @@ class _MatrixHtmlSanitizer(HTMLParser):
             elif tag == "code" and attr == "class":
                 if re.fullmatch(r"language-[A-Za-z0-9_+.-]{1,64}", raw_value):
                     safe.append(f' class="{_html_escape(raw_value, quote=True)}"')
-            elif tag == "span" and attr == "data-mx-spoiler":
-                # Empty value is valid (reason-less spoiler). Bound reason length.
-                reason = re.sub(r"[\x00-\x1f\x7f]+", "", raw_value)[:80]
-                safe.append(f' data-mx-spoiler="{_html_escape(reason, quote=True)}"')
-            elif tag == "details" and attr == "open":
-                # Boolean attribute; presence means open.
-                safe.append(" open")
         return "".join(safe)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -1827,8 +1820,7 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["m.mentions"] = new_content["m.mentions"]
         if "formatted_body" in new_content:
             msg_content["format"] = "org.matrix.custom.html"
-            # DO NOT prefix HTML with "* ". That breaks <details>/<summary> and
-            # spoiler markup. Plain-text body keeps the Matrix edit convention.
+            # DO NOT prefix HTML with "* ". Keep plain-text body as the Matrix edit convention; HTML stays unprefixed. Plain-text body keeps the Matrix edit convention.
             msg_content["formatted_body"] = new_content["formatted_body"]
         msg_content["m.relates_to"] = {
             "rel_type": "m.replace",

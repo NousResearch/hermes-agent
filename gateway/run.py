@@ -54,6 +54,7 @@ from typing import Awaitable, Callable, Dict, Optional, Any, List, Union
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
+from gateway.matrix_tool_activity import matrix_tool_activity_bodies
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
@@ -19644,36 +19645,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             def _matrix_tool_activity_bodies(lines: list) -> tuple[str, str]:
-                """Matrix tool-activity contract (single root, always-visible list).
-
-                body:            "🛠 Tool activity (N updates)"  # notifications
-                formatted_body:  <p><strong>…</strong></p><ol><li>…</li></ol>
-
-                Inputs must already be one-line labels (no fences). Matrix
-                progress_callback never enqueues code blocks.
-                """
-                import html as _html
-
-                cleaned: list[str] = []
-                for line in lines:
-                    s = str(line or "").strip()
-                    if not s:
-                        continue
-                    # Hard guard: drop pure fence artifacts if any leak in.
-                    if s in {"```", "~~~"} or set(s) <= {"`", "~", " "}:
-                        continue
-                    if s.startswith("```") or s.startswith("~~~"):
-                        continue
-                    s = s.splitlines()[0].strip()
-                    s = re.sub(r"\s+", " ", s)
-                    if len(s) > 160:
-                        s = s[:157] + "..."
-                    cleaned.append(s)
-                n = len(cleaned)
-                body = f"🛠 Tool activity ({n} update{'s' if n != 1 else ''})"
-                if not cleaned:
-                    html_body = f"<p><strong>{_html.escape(body)}</strong></p>"
-                    return body, html_body
+                """Delegate to importable production helper (single source of truth)."""
+                return matrix_tool_activity_bodies(lines)
                 items = "".join(f"<li>{_html.escape(item)}</li>" for item in cleaned)
                 html_body = (
                     f"<p><strong>{_html.escape(body)}</strong></p>"

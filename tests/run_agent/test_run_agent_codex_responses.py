@@ -2795,7 +2795,7 @@ def test_run_conversation_codex_continues_after_ack_stop_message(monkeypatch):
         for msg in result["messages"]
     )
     assert any(
-        msg.get("role") == "user"
+        msg.get("role") == "system"
         and "Continue now. Execute the required tool calls" in (msg.get("content") or "")
         for msg in result["messages"]
     )
@@ -2836,7 +2836,7 @@ def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt
         for msg in result["messages"]
     )
     assert any(
-        msg.get("role") == "user"
+        msg.get("role") == "system"
         and "Continue now. Execute the required tool calls" in (msg.get("content") or "")
         for msg in result["messages"]
     )

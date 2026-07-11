@@ -256,7 +256,7 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
     assert defaults["    Vercel team ID"] == "linked-team"
 
 
-@pytest.mark.parametrize("extra", ["neutts", "kittentts", "modal", "daytona", "vercel"])
+@pytest.mark.parametrize("extra", ["neutts", "kittentts", "piper", "modal", "daytona", "vercel"])
 @pytest.mark.parametrize("succeeds", [True, False])
 def test_python_setup_uses_declared_extras_and_reports_restart(extra, succeeds, monkeypatch, capsys):
     import pm
@@ -272,7 +272,7 @@ def test_python_setup_uses_declared_extras_and_reports_restart(extra, succeeds, 
     monkeypatch.setattr("pm.extras.extra_supported", lambda name: True)
     monkeypatch.setitem(sys.modules, extra, None)
     monkeypatch.setattr(setup_tts.shutil, "which", lambda name: "/usr/bin/espeak-ng")
-    if extra in {"neutts", "kittentts"}:
+    if extra in {"neutts", "kittentts", "piper"}:
         assert getattr(setup_tts, f"_install_{extra}_deps")() is succeeds
     else:
         setup_terminal._ensure_sdk(extra)
@@ -287,7 +287,7 @@ def test_python_setup_uses_declared_extras_and_reports_restart(extra, succeeds, 
         assert "installed." not in output
 
 
-@pytest.mark.parametrize("extra", ["neutts", "kittentts"])
+@pytest.mark.parametrize("extra", ["neutts", "kittentts", "piper"])
 def test_unsupported_tts_selection_is_retained_without_installing(extra, monkeypatch, capsys):
     from hermes_cli import setup_tts
 

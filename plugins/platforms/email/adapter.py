@@ -124,7 +124,7 @@ class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
-def _send_imap_id(imap: imaplib.IMAP4) -> None:
+def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     """Send RFC 2971 IMAP ID command identifying this client.
 
     Required by 163/NetEase mailbox after LOGIN: without it, every UID
@@ -586,6 +586,13 @@ class EmailAdapter(BasePlatformAdapter):
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
             _send_imap_id(imap)
+            if is_reconnect:
+                logger.warning(
+                    "[Email] Reconnect is establishing a fresh UID baseline; "
+                    "unread mail received while disconnected may be treated as "
+                    "existing backlog because UID state is not persisted across "
+                    "adapter instances."
+                )
             # Establish a startup UID boundary so we only process later messages.
             imap.select("INBOX")
             startup_count = self._establish_uid_baseline(imap)

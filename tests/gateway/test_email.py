@@ -1188,25 +1188,22 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(fetched_uids, [b"1002"])
         self.assertNotIn(b"999", adapter._seen_uids)
 
-    def test_fetch_skips_uid_equal_to_startup_cutoff(self):
-        """The startup cutoff is inclusive."""
+    def test_fetch_filters_range_boundary_uid_returned_by_server(self):
+        """The cutoff guard rejects a reordered IMAP UID range boundary."""
         adapter = self._make_adapter()
         adapter._startup_seen_uid_cutoff = 1000
         adapter._startup_seen_uidvalidity = b"123"
-
-        raw_email = MIMEText("Hello", "plain", "utf-8")
-        raw_email["From"] = "user@test.com"
-        raw_email["Subject"] = "Test"
-        raw_email["Message-ID"] = "<msg@test.com>"
 
         mock_imap = MagicMock()
         mock_imap.response.return_value = ("UIDVALIDITY", [b"123"])
 
         def uid_handler(command, *args):
             if command == "search":
-                return ("OK", [b"1000 1001"])
+                # Some servers may reorder ``1001:*`` when 1000 is the
+                # mailbox's highest UID and return the cutoff boundary.
+                return ("OK", [b"1000"])
             if command == "fetch":
-                return ("OK", [(args[0], raw_email.as_bytes())])
+                raise AssertionError("the startup cutoff UID must not be fetched")
             return ("NO", [])
 
         mock_imap.uid.side_effect = uid_handler
@@ -1214,7 +1211,7 @@ class TestFetchNewMessages(unittest.TestCase):
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
             results = adapter._fetch_new_messages()
 
-        self.assertEqual([msg["uid"] for msg in results], [b"1001"])
+        self.assertEqual(results, [])
 
     def test_fetch_searches_only_uids_above_startup_cutoff(self):
         """Poll search narrows to UIDs above the startup cutoff when possible."""
@@ -1352,13 +1349,20 @@ class TestFetchNewMessages(unittest.TestCase):
 
         poll_imap.uid.side_effect = uid_handler
 
-        with patch("imaplib.IMAP4_SSL", side_effect=[startup_imap, poll_imap]), \
-             patch("smtplib.SMTP") as mock_smtp:
-            mock_smtp.return_value = MagicMock()
-            self.assertTrue(asyncio.run(adapter.connect(is_reconnect=True)))
-            results = adapter._fetch_new_messages()
+        with self.assertLogs(
+            "plugins.platforms.email.adapter", level="WARNING"
+        ) as reconnect_logs:
+            with patch("imaplib.IMAP4_SSL", side_effect=[startup_imap, poll_imap]), \
+                 patch("smtplib.SMTP") as mock_smtp:
+                mock_smtp.return_value = MagicMock()
+                self.assertTrue(asyncio.run(adapter.connect(is_reconnect=True)))
+                results = adapter._fetch_new_messages()
 
         self.assertEqual([msg["uid"] for msg in results], [b"500"])
+        self.assertTrue(any(
+            "unread mail received while disconnected" in message
+            for message in reconnect_logs.output
+        ))
         adapter._running = False
         if adapter._poll_task:
             adapter._poll_task.cancel()

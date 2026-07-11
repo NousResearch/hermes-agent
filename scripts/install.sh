@@ -1274,7 +1274,22 @@ clone_repo() {
         log_info "Trying SSH clone..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
            git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
-            log_success "Cloned via SSH"
+            # Validate the clone actually produced files — in some environments
+            # (notably Lightning.ai studios) SSH can exit 0 without a valid
+            # clone, producing an empty directory.  Trusting only the exit code
+            # skips the HTTPS fallback and the install fails downstream.
+            if [ -d "$INSTALL_DIR/.git" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+                log_success "Cloned via SSH"
+            else
+                rm -rf "$INSTALL_DIR" 2>/dev/null
+                log_info "SSH clone incomplete (empty directory), trying HTTPS..."
+                if git clone --depth 1 --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+                    log_success "Cloned via HTTPS"
+                else
+                    log_error "Failed to clone repository"
+                    exit 1
+                fi
+            fi
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."

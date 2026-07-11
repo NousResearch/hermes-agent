@@ -648,6 +648,119 @@ class TestSessionLifecycle:
 
 
 # =========================================================================
+# Execution artifact visibility
+# =========================================================================
+
+class TestExecutionArtifacts:
+    def test_execution_artifact_created_for_successful_run(self, db):
+        artifact = db.record_execution_artifact(
+            run_id="run-1",
+            execution_id="exec-1",
+            user_id="user-a",
+            source="specialist",
+            artifact_type="stdout",
+            content="successful output",
+        )
+
+        artifacts = db.list_execution_artifacts(run_id="run-1", user_id="user-a")
+
+        assert len(artifacts) == 1
+        assert artifacts[0]["artifact_id"] == artifact["artifact_id"]
+        assert artifacts[0]["user_id"] == "user-a"
+        assert artifacts[0]["parser_status"] == "pending"
+        assert artifacts[0]["visibility_status"] == "pending"
+        assert artifacts[0]["content_preview"] == "successful output"
+
+    def test_replay_is_idempotent_within_user_scope(self, db):
+        first = db.record_execution_artifact(
+            run_id="run-replay",
+            execution_id="exec-replay",
+            user_id="user-a",
+            source="specialist",
+            artifact_type="stdout",
+            content="same output",
+        )
+        second = db.record_execution_artifact(
+            run_id="run-replay",
+            execution_id="exec-replay",
+            user_id="user-a",
+            source="specialist",
+            artifact_type="stdout",
+            content="same output",
+        )
+
+        assert second["artifact_id"] == first["artifact_id"]
+        assert len(db.list_execution_artifacts(run_id="run-replay", user_id="user-a")) == 1
+
+    def test_identical_artifacts_do_not_collide_across_users(self, db):
+        first = db.record_execution_artifact(
+            run_id="shared-run",
+            execution_id="shared-exec",
+            user_id="user-a",
+            source="specialist",
+            artifact_type="stdout",
+            content="same output",
+        )
+        second = db.record_execution_artifact(
+            run_id="shared-run",
+            execution_id="shared-exec",
+            user_id="user-b",
+            source="specialist",
+            artifact_type="stdout",
+            content="same output",
+        )
+
+        assert first["artifact_id"] != second["artifact_id"]
+        assert [
+            row["artifact_id"]
+            for row in db.list_execution_artifacts(run_id="shared-run", user_id="user-a")
+        ] == [first["artifact_id"]]
+        assert [
+            row["artifact_id"]
+            for row in db.list_execution_artifacts(run_id="shared-run", user_id="user-b")
+        ] == [second["artifact_id"]]
+
+    def test_parser_failure_preserves_raw_artifact(self, db):
+        raw = db.record_execution_artifact(
+            run_id="run-parse-fail",
+            execution_id="exec-parse-fail",
+            user_id="user-a",
+            source="specialist",
+            artifact_type="json",
+            content="{not valid json",
+        )
+
+        parser_result = db.record_parser_result_artifact(
+            raw_artifact_id=raw["artifact_id"],
+            parser_status="failed",
+            status_reason="invalid JSON at byte 1",
+        )
+
+        artifacts = db.list_execution_artifacts(run_id="run-parse-fail", user_id="user-a")
+
+        assert len(artifacts) == 2
+        raw_after = next(a for a in artifacts if a["artifact_id"] == raw["artifact_id"])
+        parser_after = next(a for a in artifacts if a["artifact_id"] == parser_result["artifact_id"])
+        assert raw_after["artifact_type"] == "json"
+        assert raw_after["parser_status"] == "pending"
+        assert raw_after["content_preview"] == "{not valid json"
+        assert parser_after["artifact_type"] == "parser_result"
+        assert parser_after["parser_status"] == "failed"
+        assert parser_after["status_reason"] == "invalid JSON at byte 1"
+        assert parser_after["metadata"]["raw_artifact_id"] == raw["artifact_id"]
+
+    def test_user_scope_is_required(self, db):
+        with pytest.raises(ValueError, match="user_id is required"):
+            db.record_execution_artifact(
+                run_id="run-1",
+                execution_id="exec-1",
+                user_id="",
+                source="specialist",
+                artifact_type="stdout",
+            )
+
+
+# =========================================================================
 # Message storage
 # =========================================================================
 
@@ -2778,6 +2891,7 @@ class TestSchemaInit:
         assert "sessions" in tables
         assert "messages" in tables
         assert "schema_version" in tables
+        assert "execution_artifacts" in tables
 
     def test_schema_version(self, db):
         from hermes_state import SCHEMA_VERSION

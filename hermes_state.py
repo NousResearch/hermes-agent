@@ -15,6 +15,7 @@ Key design decisions:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import random
@@ -23,6 +24,7 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -122,7 +124,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -787,12 +789,36 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS execution_artifacts (
+    artifact_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    execution_id TEXT NOT NULL,
+    parent_execution_id TEXT,
+    user_id TEXT NOT NULL,
+    task_id TEXT,
+    source TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    artifact_uri TEXT,
+    content_hash TEXT NOT NULL,
+    content_preview TEXT,
+    parser_status TEXT NOT NULL DEFAULT 'pending',
+    visibility_status TEXT NOT NULL DEFAULT 'pending',
+    status_reason TEXT,
+    metadata TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+CREATE INDEX IF NOT EXISTS idx_execution_artifacts_user_run
+    ON execution_artifacts(user_id, run_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_artifacts_idempotency
+    ON execution_artifacts(user_id, run_id, execution_id, artifact_type, content_hash);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -2373,6 +2399,177 @@ class SessionDB:
                 (model, session_id),
             )
         self._execute_write(_do)
+
+    @staticmethod
+    def _execution_artifact_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+        data = dict(row)
+        raw_metadata = data.get("metadata")
+        if raw_metadata:
+            try:
+                data["metadata"] = json.loads(raw_metadata)
+            except (TypeError, json.JSONDecodeError):
+                data["metadata"] = {}
+        else:
+            data["metadata"] = {}
+        return data
+
+    @staticmethod
+    def _execution_artifact_preview(content: Optional[str], limit: int = 500) -> str:
+        if not content:
+            return ""
+        preview = sanitize_context(str(content))
+        if len(preview) > limit:
+            return preview[: limit - 1] + "…"
+        return preview
+
+    def record_execution_artifact(
+        self,
+        *,
+        run_id: str,
+        execution_id: str,
+        user_id: str,
+        source: str,
+        artifact_type: str,
+        content: Optional[str] = None,
+        parent_execution_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        artifact_uri: Optional[str] = None,
+        parser_status: str = "pending",
+        visibility_status: str = "pending",
+        status_reason: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create a durable, user-scoped execution artifact envelope.
+
+        Replays for the same user, run, execution, artifact type, and content
+        return the existing row. The user scope is part of both the unique key
+        and lookup so identical executions from different users cannot collide.
+        """
+        required = {
+            "run_id": run_id,
+            "execution_id": execution_id,
+            "user_id": user_id,
+            "source": source,
+            "artifact_type": artifact_type,
+        }
+        for field, value in required.items():
+            if not value:
+                raise ValueError(f"{field} is required for execution artifacts")
+
+        now = time.time()
+        content_text = "" if content is None else str(content)
+        content_hash = hashlib.sha256(content_text.encode("utf-8")).hexdigest()
+        artifact_id = str(uuid.uuid4())
+        metadata_json = json.dumps(metadata or {}, sort_keys=True)
+        content_preview = self._execution_artifact_preview(content_text)
+
+        def _do(conn):
+            conn.execute(
+                """INSERT OR IGNORE INTO execution_artifacts (
+                   artifact_id, run_id, execution_id, parent_execution_id,
+                   user_id, task_id, source, artifact_type, artifact_uri,
+                   content_hash, content_preview, parser_status,
+                   visibility_status, status_reason, metadata, created_at,
+                   updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    artifact_id,
+                    run_id,
+                    execution_id,
+                    parent_execution_id,
+                    user_id,
+                    task_id,
+                    source,
+                    artifact_type,
+                    artifact_uri,
+                    content_hash,
+                    content_preview,
+                    parser_status,
+                    visibility_status,
+                    status_reason,
+                    metadata_json,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                """SELECT * FROM execution_artifacts
+                   WHERE user_id = ? AND run_id = ? AND execution_id = ?
+                     AND artifact_type = ? AND content_hash = ?""",
+                (user_id, run_id, execution_id, artifact_type, content_hash),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("execution artifact insert did not return a row")
+            return self._execution_artifact_row_to_dict(row)
+
+        return self._execute_write(_do)
+
+    def record_parser_result_artifact(
+        self,
+        *,
+        raw_artifact_id: str,
+        parser_status: str,
+        status_reason: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Persist a parser outcome without overwriting the raw artifact."""
+        raw = self._conn.execute(
+            "SELECT * FROM execution_artifacts WHERE artifact_id = ?",
+            (raw_artifact_id,),
+        ).fetchone()
+        if raw is None:
+            raise ValueError(f"raw artifact not found: {raw_artifact_id}")
+        raw_data = self._execution_artifact_row_to_dict(raw)
+        parser_metadata = {
+            "raw_artifact_id": raw_artifact_id,
+            **(metadata or {}),
+        }
+        content = json.dumps(
+            {
+                "raw_artifact_id": raw_artifact_id,
+                "parser_status": parser_status,
+                "status_reason": status_reason,
+            },
+            sort_keys=True,
+        )
+        return self.record_execution_artifact(
+            run_id=raw_data["run_id"],
+            execution_id=raw_data["execution_id"],
+            parent_execution_id=raw_data.get("parent_execution_id"),
+            user_id=raw_data["user_id"],
+            task_id=raw_data.get("task_id"),
+            source="parser",
+            artifact_type="parser_result",
+            content=content,
+            parser_status=parser_status,
+            visibility_status="pending",
+            status_reason=status_reason,
+            metadata=parser_metadata,
+        )
+
+    def list_execution_artifacts(
+        self,
+        *,
+        run_id: str,
+        user_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Return execution artifacts scoped to exactly one user and run."""
+        if not run_id:
+            raise ValueError("run_id is required for execution artifacts")
+        if not user_id:
+            raise ValueError("user_id is required for execution artifacts")
+        bounded_limit = min(max(int(limit), 1), 500)
+        bounded_offset = max(int(offset), 0)
+        rows = self._conn.execute(
+            """SELECT * FROM execution_artifacts
+               WHERE user_id = ? AND run_id = ?
+               ORDER BY created_at ASC, artifact_id ASC
+               LIMIT ? OFFSET ?""",
+            (user_id, run_id, bounded_limit, bounded_offset),
+        ).fetchall()
+        return [self._execution_artifact_row_to_dict(row) for row in rows]
 
     def update_session_billing_route(
         self,

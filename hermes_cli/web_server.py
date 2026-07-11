@@ -3941,6 +3941,46 @@ def _strip_session_list_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, A
     return sessions
 
 
+@app.get("/api/execution-artifacts")
+def get_execution_artifacts(
+    run_id: str,
+    user_id: str,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """Return dashboard artifacts scoped to one run and one user."""
+    from hermes_state import DEFAULT_DB_PATH, SessionDB
+
+    if not DEFAULT_DB_PATH.exists():
+        return {
+            "artifacts": [],
+            "total": 0,
+            "run_id": run_id,
+            "user_id": user_id,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    db = SessionDB(read_only=True)
+    try:
+        artifacts = db.list_execution_artifacts(
+            run_id=run_id,
+            user_id=user_id,
+            limit=limit,
+            offset=offset,
+        )
+        return {
+            "artifacts": artifacts,
+            "total": len(artifacts),
+            "run_id": run_id,
+            "user_id": user_id,
+            "limit": min(max(limit, 1), 500),
+            "offset": max(offset, 0),
+        }
+    finally:
+        db.close()
+
+
 @app.get("/api/sessions")
 def get_sessions(
     limit: int = 20,

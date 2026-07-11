@@ -93,6 +93,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     cache_audio_from_bytes,
+    cache_document_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
 )
@@ -1073,6 +1074,8 @@ class LineAdapter(BasePlatformAdapter):
                 return cache_audio_from_bytes(data, ext=ext)
             elif msg_type == "video":
                 return cache_video_from_bytes(data, ext=ext)
+            elif msg_type == "file":
+                return cache_document_from_bytes(data, filename="document.bin")
             else:
                 return cache_image_from_bytes(data, ext=ext)
         except Exception as exc:

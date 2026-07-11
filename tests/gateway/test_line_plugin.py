@@ -674,3 +674,50 @@ class TestMessageTypeMapping:
     def test_unknown_type_falls_back_to_text(self):
         MessageType = _line.MessageType
         assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT
+
+
+# ---------------------------------------------------------------------------
+# 10. Inbound media cache routing
+# ---------------------------------------------------------------------------
+
+class TestMediaCacheRouting:
+    """Each LINE media type must use its matching gateway cache helper."""
+
+    @pytest.fixture
+    def adapter(self):
+        from gateway.config import PlatformConfig
+
+        adapter = LineAdapter(PlatformConfig(enabled=True))
+        adapter._client = MagicMock()
+        adapter._client.fetch_content = AsyncMock(return_value=b"media bytes")
+        return adapter
+
+    @pytest.mark.parametrize(
+        ("msg_type", "cache_name"),
+        [
+            ("image", "cache_image_from_bytes"),
+            ("audio", "cache_audio_from_bytes"),
+            ("video", "cache_video_from_bytes"),
+            ("file", "cache_document_from_bytes"),
+        ],
+    )
+    def test_download_media_uses_matching_cache_helper(self, adapter, monkeypatch, msg_type, cache_name):
+        cache_helpers = {
+            name: MagicMock(return_value=f"/{name}")
+            for name in (
+                "cache_image_from_bytes",
+                "cache_audio_from_bytes",
+                "cache_video_from_bytes",
+                "cache_document_from_bytes",
+            )
+        }
+        for name, helper in cache_helpers.items():
+            monkeypatch.setattr(_line, name, helper, raising=False)
+
+        result = asyncio.run(adapter._download_media("message-id", msg_type))
+
+        assert result == f"/{cache_name}"
+        cache_helpers[cache_name].assert_called_once()
+        for name, helper in cache_helpers.items():
+            if name != cache_name:
+                helper.assert_not_called()

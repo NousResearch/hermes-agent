@@ -1235,20 +1235,32 @@ class GatewayKanbanWatchersMixin:
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):
-                    if res is not None and getattr(res, "spawned", None):
+                    if res is None:
+                        continue
+                    if getattr(res, "spawned", None):
                         any_spawned = True
-                        # Quiet by default — only log when something actually
-                        # happened, so an idle gateway stays silent.
+                    # Quiet by default — only log when something actually
+                    # happened, so an idle gateway stays silent. Audit
+                    # 2026-07-11 H5: "something" includes crash/timeout/
+                    # reclaim/auto-block ticks, not just spawns — a crash
+                    # wave without a simultaneous spawn was invisible (also
+                    # to the mission-control log-tail escalation).
+                    _spawned_n = len(getattr(res, "spawned", None) or [])
+                    _crashed = len(res.crashed) if hasattr(getattr(res, "crashed", None), "__len__") else 0
+                    _timed_out = len(res.timed_out) if hasattr(getattr(res, "timed_out", None), "__len__") else 0
+                    _auto_blocked = len(res.auto_blocked) if hasattr(getattr(res, "auto_blocked", None), "__len__") else 0
+                    _reclaimed = getattr(res, "reclaimed", 0) or 0
+                    if _spawned_n or _crashed or _timed_out or _auto_blocked or _reclaimed:
                         logger.info(
                             "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
                             "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
                             slug,
-                            len(res.spawned),
-                            res.reclaimed,
-                            len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
-                            len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
+                            _spawned_n,
+                            _reclaimed,
+                            _crashed,
+                            _timed_out,
                             res.promoted,
-                            len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            _auto_blocked,
                         )
                 # Health telemetry (aggregate across boards)
                 ready_pending = await asyncio.to_thread(_ready_nonempty)

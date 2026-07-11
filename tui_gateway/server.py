@@ -602,6 +602,10 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    history_ready = session.get("resume_history_ready")
+    if history_ready is not None and not history_ready.is_set():
+        session["resume_history_error"] = "session resume cancelled"
+        history_ready.set()
     _release_active_session_slot(session)
     stop_event = session.get("_notif_stop")
     if stop_event is not None:
@@ -1648,6 +1652,15 @@ def _start_agent_build(sid: str, session: dict) -> None:
         home_token = None
         profile_home = current.get("profile_home")
         try:
+            history_ready = current.get("resume_history_ready")
+            if history_ready is not None:
+                if not history_ready.wait(timeout=300.0):
+                    raise TimeoutError("session history hydration timed out")
+                if history_error := current.get("resume_history_error"):
+                    raise RuntimeError(str(history_error))
+                with _sessions_lock:
+                    if _sessions.get(sid) is not current:
+                        return
             tokens = _set_session_context(key)
             # Build against the session's profile (global-remote): bind its
             # HERMES_HOME so config/skills/model resolve to it, and hand the
@@ -6371,6 +6384,72 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
     timer.start()
 
 
+def _schedule_resume_hydration(sid: str, stored_id: str, db) -> None:
+    """Load a cold resume's transcript off the JSON-RPC response path."""
+
+    def _run() -> None:
+        session = _sessions.get(sid)
+        if session is None:
+            return
+        _emit(
+            "session.resume_progress",
+            sid,
+            {"phase": "history", "status": "loading"},
+        )
+        try:
+            db.reopen_session(stored_id)
+            raw_history, display_history = db.get_resume_conversations(stored_id)
+            prefix = db.get_ancestor_display_prefix(stored_id)
+            history = sanitize_replay_history(raw_history)
+
+            if _sessions.get(sid) is not session:
+                return
+            with session["history_lock"]:
+                session["history"] = history
+                session["display_history_prefix"] = prefix
+                session["resume_hydrating"] = False
+                session["resume_message_count"] = len(display_history)
+            session["resume_history_ready"].set()
+            _emit(
+                "session.resume_progress",
+                sid,
+                {
+                    "message_count": len(display_history),
+                    "phase": "history",
+                    "status": "complete",
+                },
+            )
+            _start_agent_build(sid, session)
+        except Exception as exc:
+            if _sessions.get(sid) is not session:
+                return
+            message = f"resume failed: {exc}"
+            session["resume_hydrating"] = False
+            session["resume_history_error"] = message
+            session["agent_error"] = message
+            session["resume_history_ready"].set()
+            session["agent_ready"].set()
+            _emit(
+                "session.resume_progress",
+                sid,
+                {"message": message, "phase": "history", "status": "failed"},
+            )
+            _emit("error", sid, {"message": message})
+            with _sessions_lock:
+                discarded = _sessions.pop(sid, None) if _sessions.get(sid) is session else None
+            lease = (discarded or {}).get("active_session_lease")
+            if lease is not None:
+                lease.release()
+        finally:
+            if session.get("profile_home") and hasattr(db, "close"):
+                try:
+                    db.close()
+                except Exception:
+                    logger.debug("failed to close resume db for %s", sid, exc_info=True)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 @method("session.resume")
 def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")
@@ -6384,6 +6463,7 @@ def _(rid, params: dict) -> dict:
     # local profile's state.db. None/own profile → the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    defer_history = is_truthy_value(params.get("defer_history", False))
 
     # In a profile scope, the agent OWNS a long-lived db handle bound to that
     # profile (do NOT auto-close it here). Otherwise reuse the shared launch db.
@@ -6450,6 +6530,12 @@ def _(rid, params: dict) -> dict:
             transport=current_transport() or _stdio_transport,
         )
         payload["resumed"] = target
+        if defer_history:
+            payload["messages"] = []
+            payload["message_count"] = int(
+                session.get("resume_message_count") or payload["message_count"]
+            )
+            payload["hydrating"] = bool(session.get("resume_hydrating"))
         # A lazy watch session never owns a run loop, so its payload's running
         # flag is always False — overlay the child-run registry so a reconnecting
         # watch window keeps its busy indicator while the child is still mid-run.
@@ -6536,6 +6622,63 @@ def _(rid, params: dict) -> dict:
                 "session_key": target,
                 "started_at": record["created_at"],
                 "status": "streaming" if child_running else "idle",
+            },
+        )
+
+    # Desktop can ask for a bounded acknowledgement and hydrate the display
+    # transcript through the paginated REST endpoint. Register the runtime now,
+    # then load model history and initialize optional providers in background.
+    # Repeated requests reuse the record through the live fast path above.
+    if defer_history and not is_truthy_value(params.get("eager_build", False)):
+        sid = uuid.uuid4().hex[:8]
+        source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+        lease, limit_message = _claim_active_session_slot(
+            target, live_session_id=sid, surface=source
+        )
+        if limit_message is not None:
+            return _err(rid, 4090, limit_message)
+        _enable_gateway_prompts()
+        overrides = _stored_session_runtime_overrides(found) or {}
+        model_override = overrides.get("model_override") or {}
+        cwd = profile_resume_cwd or _default_session_cwd()
+        record = _deferred_session_record(
+            target,
+            cols=cols,
+            cwd=cwd,
+            history=[],
+            lease=lease,
+            source=source,
+            close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+            profile_home=profile_home,
+            model_override=overrides.get("model_override"),
+            resume_runtime_overrides=overrides or None,
+        )
+        record["resume_history_ready"] = threading.Event()
+        record["resume_hydrating"] = True
+        record["resume_message_count"] = int(found.get("message_count") or 0)
+        if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
+            return _ok(rid, _reuse_live_payload(*live))
+
+        _schedule_resume_hydration(sid, target, db)
+        _schedule_session_cap_enforcement()
+        return _ok(
+            rid,
+            {
+                "session_id": sid,
+                "resumed": target,
+                "message_count": record["resume_message_count"],
+                "messages": [],
+                "hydrating": True,
+                "info": _lazy_resume_info(
+                    cwd,
+                    model=model_override.get("model") or "",
+                    provider=overrides.get("provider_override") or "",
+                ),
+                "inflight": None,
+                "running": False,
+                "session_key": target,
+                "started_at": record["created_at"],
+                "status": "resuming",
             },
         )
 

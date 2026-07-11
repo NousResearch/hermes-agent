@@ -1771,6 +1771,220 @@ def test_lazy_child_watch_resume_serves_candidate_inclusive_display(monkeypatch,
     assert texts == ["child prompt", "child substantive answer", "child terse reply"]
 
 
+def test_session_resume_deferred_history_acknowledges_and_reuses(monkeypatch):
+    history_started = threading.Event()
+    release_history = threading.Event()
+    build_started = threading.Event()
+    history_calls = []
+    ancestor = {"role": "assistant", "content": "ancestor"}
+    loaded = {"role": "user", "content": "loaded"}
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target, "message_count": 1200}
+
+        def resolve_resume_session_id(self, target):
+            return target
+
+        def reopen_session(self, target):
+            assert target == "large-session"
+
+        def get_resume_conversations(self, target):
+            history_calls.append(("resume", target))
+            history_started.set()
+            assert release_history.wait(timeout=2.0)
+            return [loaded], [ancestor, loaded]
+
+        def get_ancestor_display_prefix(self, target):
+            history_calls.append(("prefix", target))
+            return [ancestor]
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda _sid, _session: build_started.set(),
+    )
+
+    try:
+        first = server._methods["session.resume"](
+            "r1",
+            {
+                "session_id": "large-session",
+                "source": "desktop",
+                "defer_history": True,
+            },
+        )
+
+        assert first["result"]["hydrating"] is True
+        assert first["result"]["messages"] == []
+        assert first["result"]["message_count"] == 1200
+        assert history_started.wait(timeout=1.0)
+
+        second = server._methods["session.resume"](
+            "r2",
+            {"session_id": "large-session", "defer_history": True},
+        )
+        assert second["result"]["session_id"] == first["result"]["session_id"]
+        assert second["result"]["hydrating"] is True
+        assert second["result"]["messages"] == []
+
+        release_history.set()
+        sid = first["result"]["session_id"]
+        assert server._sessions[sid]["resume_history_ready"].wait(timeout=1.0)
+        assert build_started.wait(timeout=1.0)
+        assert history_calls == [
+            ("resume", "large-session"),
+            ("prefix", "large-session"),
+        ]
+        assert server._sessions[sid]["history"] == [loaded]
+        assert server._sessions[sid]["display_history_prefix"] == [ancestor]
+        assert server._sessions[sid]["resume_message_count"] == 2
+    finally:
+        release_history.set()
+        for sid, session in list(server._sessions.items()):
+            if session.get("session_key") == "large-session":
+                lease = session.get("active_session_lease")
+                if lease is not None:
+                    lease.release()
+                server._sessions.pop(sid, None)
+
+
+def test_session_resume_deferred_history_failure_can_retry(monkeypatch):
+    first_released = threading.Event()
+    build_started = threading.Event()
+    attempts = 0
+    leases = []
+
+    class Lease:
+        def __init__(self):
+            self.released = threading.Event()
+
+        def release(self):
+            self.released.set()
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target, "message_count": 1}
+
+        def resolve_resume_session_id(self, target):
+            return target
+
+        def reopen_session(self, _target):
+            pass
+
+        def get_resume_conversations(self, _target):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                first_released.set()
+                raise RuntimeError("sqlite read failed")
+            loaded = [{"role": "user", "content": "retry loaded"}]
+            return loaded, loaded
+
+        def get_ancestor_display_prefix(self, _target):
+            return []
+
+    def claim(*_args, **_kwargs):
+        lease = Lease()
+        leases.append(lease)
+        return lease, None
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_claim_active_session_slot", claim)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda _sid, _session: build_started.set(),
+    )
+
+    try:
+        first = server._methods["session.resume"](
+            "r1",
+            {"session_id": "retry-session", "defer_history": True},
+        )
+        first_sid = first["result"]["session_id"]
+        assert first_released.wait(timeout=1.0)
+        assert leases[0].released.wait(timeout=1.0)
+        assert first_sid not in server._sessions
+
+        second = server._methods["session.resume"](
+            "r2",
+            {"session_id": "retry-session", "defer_history": True},
+        )
+        second_sid = second["result"]["session_id"]
+        assert second_sid != first_sid
+        assert server._sessions[second_sid]["resume_history_ready"].wait(timeout=1.0)
+        assert build_started.wait(timeout=1.0)
+    finally:
+        for sid, session in list(server._sessions.items()):
+            if session.get("session_key") == "retry-session":
+                lease = session.get("active_session_lease")
+                if lease is not None:
+                    lease.release()
+                server._sessions.pop(sid, None)
+
+
+def test_session_resume_deferred_history_close_cancels_build(monkeypatch):
+    history_started = threading.Event()
+    release_history = threading.Event()
+    build_started = threading.Event()
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target, "message_count": 1}
+
+        def resolve_resume_session_id(self, target):
+            return target
+
+        def reopen_session(self, _target):
+            pass
+
+        def get_resume_conversations(self, _target):
+            history_started.set()
+            assert release_history.wait(timeout=2.0)
+            loaded = [{"role": "user", "content": "late"}]
+            return loaded, loaded
+
+        def get_ancestor_display_prefix(self, _target):
+            return []
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda _sid, _session: build_started.set(),
+    )
+
+    response = {}
+    try:
+        response = server._methods["session.resume"](
+            "r1",
+            {"session_id": "cancel-session", "defer_history": True},
+        )
+        sid = response["result"]["session_id"]
+        session = server._sessions[sid]
+        assert history_started.wait(timeout=1.0)
+
+        assert server._close_session_by_id(sid, end_reason="tui_close") is True
+        assert session["resume_history_ready"].is_set()
+        assert session["resume_history_error"] == "session resume cancelled"
+
+        release_history.set()
+        time.sleep(0.05)
+        assert not build_started.is_set()
+        assert sid not in server._sessions
+    finally:
+        release_history.set()
+        server._sessions.pop(response.get("result", {}).get("session_id", ""), None)
+
+
 def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     """Resuming a rotated-out parent id must load the continuation's messages.
 

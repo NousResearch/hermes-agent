@@ -1105,11 +1105,66 @@ describe('resumeSession warm-cache mapping integrity', () => {
     // resume RPC ran, for the session that was actually requested.
     const resumeCalls = requestGateway.mock.calls.filter(([method]) => method === 'session.resume')
     expect(resumeCalls.length).toBe(1)
-    expect(resumeCalls[0][1]).toMatchObject({ session_id: 'stored-A' })
+    expect(resumeCalls[0][1]).toMatchObject({
+      defer_history: true,
+      session_id: 'stored-A'
+    })
+    expect(getSessionMessages).toHaveBeenCalledWith('stored-A', undefined, {
+      limit: 500,
+      offset: 0
+    })
 
     // The corrupt mapping was purged so it can't mis-resolve again.
     expect(runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(false)
+  })
+
+  it('hydrates large transcripts in bounded pages', async () => {
+    const firstPage = Array.from({ length: 500 }, (_, index) => ({
+      content: `message-${index}`,
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      timestamp: index + 1
+    }))
+
+    const finalMessage = { content: 'message-500', role: 'user', timestamp: 501 }
+
+    setSessions([storedSession({ id: 'stored-A', message_count: 501 })])
+    vi.mocked(getSessionMessages).mockReset()
+
+    vi.mocked(getSessionMessages)
+      .mockResolvedValueOnce({
+        messages: firstPage,
+        pagination: { limit: 500, offset: 0, returned: 500 },
+        session_id: 'stored-A'
+      } as never)
+      .mockResolvedValueOnce({
+        messages: [finalMessage],
+        pagination: { limit: 500, offset: 500, returned: 1 },
+        session_id: 'stored-A'
+      } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return { session_id: 'rt-A', resumed: 'stored-A', messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={value => (resume = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    expect(getSessionMessages).toHaveBeenNthCalledWith(1, 'stored-A', undefined, {
+      limit: 500,
+      offset: 0
+    })
+    expect(getSessionMessages).toHaveBeenNthCalledWith(2, 'stored-A', undefined, {
+      limit: 500,
+      offset: 500
+    })
+    expect($messages.get()).toHaveLength(501)
   })
 
   it('honours a warm cache entry whose stored id matches and refreshes its persisted transcript', async () => {

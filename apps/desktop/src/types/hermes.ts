@@ -441,10 +441,16 @@ export interface SessionMessage {
 
 export interface SessionMessagesResponse {
   messages: SessionMessage[]
+  pagination?: {
+    limit: null | number
+    offset: number
+    returned: number
+  }
   session_id: string
 }
 
 export interface SessionResumeResponse {
+  hydrating?: boolean
   inflight?: null | {
     assistant?: string
     streaming?: boolean

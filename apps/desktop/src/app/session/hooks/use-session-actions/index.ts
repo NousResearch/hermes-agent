@@ -60,7 +60,7 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type { SessionCreateResponse, SessionMessagesResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -185,6 +185,40 @@ interface FreshSessionDraftOptions {
 
 function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewChatWorkspaceTarget {
   return typeof target === 'string' ? target.trim() || null : target
+}
+
+const SESSION_MESSAGES_PAGE_SIZE = 500
+
+async function getSessionMessagesIncrementally(
+  sessionId: string,
+  profile: null | string | undefined,
+  onPage: (response: SessionMessagesResponse) => void
+): Promise<SessionMessagesResponse> {
+  let offset = 0
+  let messages: SessionMessagesResponse['messages'] = []
+  let sessionKey = sessionId
+
+  for (;;) {
+    const page = await getSessionMessages(sessionId, profile, {
+      limit: SESSION_MESSAGES_PAGE_SIZE,
+      offset
+    })
+
+    sessionKey = page.session_id
+    messages = messages.concat(page.messages)
+    const accumulated = { ...page, messages }
+
+    onPage(accumulated)
+    const returned = page.pagination?.returned ?? page.messages.length
+
+    // Older backends ignore pagination and omit metadata; their first response
+    // is already the complete transcript.
+    if (!page.pagination || returned < SESSION_MESSAGES_PAGE_SIZE || returned === 0) {
+      return { ...accumulated, session_id: sessionKey }
+    }
+
+    offset += returned
+  }
 }
 
 export function useSessionActions({
@@ -813,12 +847,31 @@ export function useSessionActions({
         // max(prefetch, resume) instead of their sum. The prefetch paints the
         // transcript as soon as it lands; the RPC binds the runtime id.
         // Watch windows skip the prefetch — lazy resume attaches the live mirror.
-        const prefetchPromise = watchWindow ? null : getSessionMessages(storedSessionId, sessionProfile)
+        const prefetchPromise = watchWindow
+          ? null
+          : getSessionMessagesIncrementally(storedSessionId, sessionProfile, storedMessages => {
+              if (!isCurrentResume()) {
+                return
+              }
+
+              const previousMessages = resumedSameSelectedSession
+                ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
+                : $messages.get()
+
+              localSnapshot = reconcileAuthoritativeMessages(storedMessages.messages, previousMessages)
+              prefetchApplied = true
+              prefetchedStoredSessionId = storedMessages.session_id || storedSessionId
+
+              if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
+                setMessages(localSnapshot)
+              }
+            })
 
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
           source: 'desktop',
+          defer_history: !watchWindow,
           // Watch windows attach lazily (live mirror). Every other cold resume
           // gets the gateway's default deferred build: the RPC returns the
           // transcript immediately instead of blocking the switch on _make_agent
@@ -832,14 +885,9 @@ export function useSessionActions({
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)
 
-        // Keep both requests concurrent, but do not paint the REST result until
-        // the runtime resume has also settled. An eager prefetch paint followed
-        // by the runtime projection rebuilds large transcripts during resume.
-        let prefetchedResult: { messages: SessionMessage[]; session_id?: string } | null = null
-
         try {
           if (prefetchPromise) {
-            prefetchedResult = await prefetchPromise
+            await prefetchPromise
           }
         } catch {
           // Non-fatal: gateway resume below can still hydrate the session.
@@ -849,16 +897,6 @@ export function useSessionActions({
 
         if (!isCurrentResume()) {
           return
-        }
-
-        if (prefetchedResult) {
-          const previousMessages = resumedSameSelectedSession
-            ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-            : $messages.get()
-
-          localSnapshot = reconcileAuthoritativeMessages(prefetchedResult.messages, previousMessages)
-          prefetchApplied = true
-          prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
         }
 
         const currentMessages = $messages.get()

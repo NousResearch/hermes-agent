@@ -11867,6 +11867,31 @@ def _(rid, params: dict) -> dict:
         pass
 
     try:
+        from agent.skill_bundles import (
+            build_bundle_invocation_message,
+            get_skill_bundles,
+            resolve_bundle_command_key,
+        )
+
+        bundle_key = resolve_bundle_command_key(name)
+        if bundle_key is not None:
+            bundle_result = build_bundle_invocation_message(
+                bundle_key,
+                arg,
+                task_id=session.get("session_key", "") if session else "",
+            )
+            if bundle_result:
+                msg, loaded, missing = bundle_result
+                bundle = get_skill_bundles().get(bundle_key, {})
+                bundle_name = bundle.get("name") or bundle_key.lstrip("/")
+                notice = f"⚡ Loading bundle: {bundle_name} ({len(loaded)} skills)"
+                if missing:
+                    notice += f"\nSkipped missing skills: {', '.join(missing)}"
+                return _ok(rid, {"type": "send", "notice": notice, "message": msg})
+    except Exception:
+        pass
+
+    try:
         from agent.skill_commands import (
             scan_skill_commands,
             build_skill_invocation_message,
@@ -13099,6 +13124,21 @@ def _(rid, params: dict) -> dict:
                 4018,
                 "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore",
             )
+
+    try:
+        from agent.skill_bundles import resolve_bundle_command_key
+
+        if resolve_bundle_command_key(_cmd_base) is not None:
+            return _methods["command.dispatch"](
+                rid,
+                {
+                    "name": _cmd_base,
+                    "arg": _cmd_arg,
+                    "session_id": params.get("session_id", ""),
+                },
+            )
+    except Exception:
+        pass
 
     try:
         from agent.skill_commands import get_skill_commands

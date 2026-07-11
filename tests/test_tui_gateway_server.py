@@ -4551,6 +4551,57 @@ def test_skills_reload_runs_in_gateway_process(monkeypatch):
     assert "42 skill(s) available" in resp["result"]["output"]
 
 
+def test_slash_exec_routes_skill_bundle_payload_to_live_agent(monkeypatch):
+    import agent.skill_bundles as skill_bundles
+    import agent.skill_commands as skill_commands
+
+    monkeypatch.setattr(
+        skill_commands,
+        "get_skill_commands",
+        lambda: {"/taskfinish": {"name": "colliding-visible-skill"}},
+    )
+    monkeypatch.setattr(
+        skill_bundles,
+        "resolve_bundle_command_key",
+        lambda command: "/taskfinish" if command == "taskfinish" else None,
+    )
+    monkeypatch.setattr(
+        skill_bundles,
+        "build_bundle_invocation_message",
+        lambda *args, **kwargs: ("taskfinish bundle payload", ["taskfinish"], []),
+    )
+    monkeypatch.setattr(
+        skill_bundles,
+        "get_skill_bundles",
+        lambda: {"/taskfinish": {"name": "taskfinish"}},
+    )
+    monkeypatch.setattr(
+        server,
+        "_SlashWorker",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("bundle must not enter slash worker")
+        ),
+    )
+    server._sessions["sid"] = _session()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "/taskfinish", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp is not None
+    assert resp["result"] == {
+        "type": "send",
+        "notice": "⚡ Loading bundle: taskfinish (1 skills)",
+        "message": "taskfinish bundle payload",
+    }
+
+
 def test_snapshot_restore_is_blocked_from_tui_worker():
     server._sessions["sid"] = _session()
     try:

@@ -104,7 +104,10 @@ def test_restricted_standard_turn_suppresses_persistent_hooks(monkeypatch):
 
     agent._sync_external_memory_for_turn.assert_not_called()
     agent._spawn_background_review.assert_not_called()
-    assert all(call.args != ("on_session_end",) for call in invoke_hook.call_args_list)
+    hook_names = [call.args[0] for call in invoke_hook.call_args_list]
+    assert "transform_llm_output" in hook_names
+    assert "post_llm_call" not in hook_names
+    assert "on_session_end" not in hook_names
 
 
 def test_ordinary_standard_turn_retains_persistent_hooks(monkeypatch):
@@ -116,7 +119,62 @@ def test_ordinary_standard_turn_retains_persistent_hooks(monkeypatch):
 
     agent._sync_external_memory_for_turn.assert_called_once()
     agent._spawn_background_review.assert_called_once()
-    assert invoke_hook.call_args.args == ("on_session_end",)
+    hook_names = [call.args[0] for call in invoke_hook.call_args_list]
+    assert "transform_llm_output" in hook_names
+    assert "post_llm_call" in hook_names
+    assert "on_session_end" in hook_names
+
+
+def test_real_restricted_agent_has_zero_schemas_under_kanban_env(monkeypatch):
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+
+    with patch("gateway.run._resolve_runtime_agent_kwargs") as runtime_kwargs, \
+         patch("gateway.run._resolve_gateway_model", return_value="test/model"), \
+         patch("gateway.run._load_gateway_config", return_value={}), \
+         patch("gateway.run.GatewayRunner._load_reasoning_config", return_value={}), \
+         patch("gateway.run.GatewayRunner._load_fallback_model", return_value=None):
+        runtime_kwargs.return_value = {
+            "api_key": "test-key",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider": "openrouter",
+            "api_mode": None,
+            "command": None,
+            "args": [],
+        }
+        agent = adapter._create_agent(
+            session_id="restricted-kanban",
+            execution_policy="read_only_generation",
+        )
+
+    assert agent.tools == []
+    assert agent.valid_tool_names == set()
+    assert agent._kanban_worker_guidance == ""
+    assert agent._skip_mcp_refresh is True
+
+
+def test_real_ordinary_agent_retains_kanban_schemas(monkeypatch):
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+
+    with patch("gateway.run._resolve_runtime_agent_kwargs") as runtime_kwargs, \
+         patch("gateway.run._resolve_gateway_model", return_value="test/model"), \
+         patch("gateway.run._load_gateway_config", return_value={}), \
+         patch("gateway.run.GatewayRunner._load_reasoning_config", return_value={}), \
+         patch("gateway.run.GatewayRunner._load_fallback_model", return_value=None):
+        runtime_kwargs.return_value = {
+            "api_key": "test-key",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider": "openrouter",
+            "api_mode": None,
+            "command": None,
+            "args": [],
+        }
+        agent = adapter._create_agent(session_id="ordinary-kanban")
+
+    assert "kanban_show" in agent.valid_tool_names
+    assert agent.tools
+    assert agent._skip_mcp_refresh is False
 
 
 def _codex_agent(*, restricted: bool):

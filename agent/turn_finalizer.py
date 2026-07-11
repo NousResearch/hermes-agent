@@ -387,7 +387,8 @@ def finalize_turn(
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync
     # to an external memory system).
-    if final_response and not interrupted:
+    suppress = bool(getattr(agent, "_suppress_persistent_turn_hooks", False))
+    if not suppress and final_response and not interrupted:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _invoke_hook(
@@ -483,8 +484,6 @@ def finalize_turn(
             and "skill_manage" in agent.valid_tool_names):
         _should_review_skills = True
         agent._iters_since_skill = 0
-
-    suppress = bool(getattr(agent, "_suppress_persistent_turn_hooks", False))
 
     # External memory provider: sync the completed turn + queue next prefetch.
     if not suppress:

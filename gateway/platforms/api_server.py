@@ -1394,6 +1394,17 @@ class APIServerAdapter(BasePlatformAdapter):
         agent._suppress_persistent_turn_hooks = (
             execution_policy == _READ_ONLY_GENERATION_POLICY
         )
+        if execution_policy == _READ_ONLY_GENERATION_POLICY:
+            # A Kanban worker environment auto-adds lifecycle tools even when
+            # enabled_toolsets is empty. Enforce the session policy on the
+            # fully-built agent so registry, memory, and context-engine schemas
+            # are all absent, and prevent between-turn MCP refresh from adding
+            # schemas back later.
+            agent.tools = []
+            agent.valid_tool_names = set()
+            agent._context_engine_tool_names = set()
+            agent._kanban_worker_guidance = ""
+            agent._skip_mcp_refresh = True
         return agent
 
     # ------------------------------------------------------------------

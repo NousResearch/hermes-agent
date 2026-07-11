@@ -202,14 +202,49 @@ class TestKeepaliveProbe:
         )
 
         active_task = asyncio.create_task(active_tool_rpc())
-        await rpc_started.wait()
-        await asyncio.wait_for(task._keepalive_probe(), timeout=0.1)
+        try:
+            await rpc_started.wait()
+            await asyncio.wait_for(task._keepalive_probe(), timeout=0.1)
 
-        assert not ping_started.is_set()
+            assert not ping_started.is_set()
+            task.session.send_ping.assert_not_awaited()
+            task.session.list_tools.assert_not_awaited()
+        finally:
+            release_rpc.set()
+            await active_task
 
-        release_rpc.set()
-        await active_task
-        task.session.send_ping.assert_not_awaited()
+    async def test_active_keepalive_serializes_a_user_rpc(self):
+        """A user RPC must wait while keepalive owns the shared session lock."""
+        task = MCPServerTask("test")
+        ping_started = asyncio.Event()
+        release_ping = asyncio.Event()
+        rpc_started = asyncio.Event()
+
+        async def send_ping():
+            ping_started.set()
+            await release_ping.wait()
+
+        async def user_rpc():
+            async with task._rpc_lock:
+                rpc_started.set()
+
+        task.session = SimpleNamespace(
+            list_tools=AsyncMock(),
+            send_ping=AsyncMock(side_effect=send_ping),
+        )
+
+        keepalive_task = asyncio.create_task(task._keepalive_probe())
+        await ping_started.wait()
+        rpc_task = asyncio.create_task(user_rpc())
+        try:
+            await asyncio.sleep(0)
+            assert not rpc_started.is_set()
+        finally:
+            release_ping.set()
+            await keepalive_task
+            await rpc_task
+
+        assert rpc_started.is_set()
 
 
 class TestKeepaliveInterval:

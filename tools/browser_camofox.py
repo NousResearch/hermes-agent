@@ -64,10 +64,9 @@ def _get_command_timeout() -> int:
     Result is cached after the first call.
     """
     global _cached_cmd_timeout, _cmd_timeout_resolved
-    if _cmd_timeout_resolved:
-        return _cached_cmd_timeout  # type: ignore[return-value]
+    if _cmd_timeout_resolved and _cached_cmd_timeout is not None:
+        return _cached_cmd_timeout
 
-    _cmd_timeout_resolved = True
     result = _DEFAULT_TIMEOUT
     try:
         cfg = read_raw_config()
@@ -76,7 +75,11 @@ def _get_command_timeout() -> int:
             result = max(int(val), 5)  # floor at 5s
     except Exception as exc:
         logger.debug("Could not read browser.command_timeout: %s", exc)
+    # Assign the cached value BEFORE flipping the resolved flag so a
+    # concurrent reader cannot observe ``resolved=True`` while the cache
+    # is still ``None`` (see issue #14331).
     _cached_cmd_timeout = result
+    _cmd_timeout_resolved = True
     return result
 
 

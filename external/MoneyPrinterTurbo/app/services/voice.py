@@ -187,6 +187,17 @@ def get_chatterbox_voices() -> list[str]:
     return result
 
 
+def is_minimax_voice(voice_name: str) -> bool:
+    return str(voice_name or "").startswith("minimax:")
+
+
+def parse_minimax_voice_id(voice_name: str) -> str:
+    parts = str(voice_name or "").split(":")
+    if len(parts) < 2 or not parts[1].strip():
+        raise ValueError(f"Invalid minimax voice name format: {voice_name}")
+    return parts[1].strip()
+
+
 _AZURE_VOICES_DATA_FILE = os.path.join(
     os.path.dirname(__file__), "data", "azure_voices.json"
 )
@@ -425,6 +436,13 @@ def tts(
         else:
             logger.error(f"Invalid elevenlabs voice name format: {voice_name}")
             return None
+    elif is_minimax_voice(voice_name):
+        try:
+            voice_id = parse_minimax_voice_id(voice_name)
+        except ValueError as e:
+            logger.error(str(e))
+            return None
+        return minimax_tts(text, voice_id, voice_file, voice_rate, voice_volume)
     elif is_chatterbox_voice(voice_name):
         # 格式: chatterbox:<voice>，voice 可带显示用的 -Female/-Male 后缀
         parts = voice_name.split(":", 1)
@@ -1316,6 +1334,36 @@ def elevenlabs_tts(
             logger.error(f"elevenlabs tts failed: {str(e)}")
 
     return None
+
+
+def minimax_tts(
+    text: str,
+    voice_id: str,
+    voice_file: str,
+    voice_rate: float = 1.0,
+    voice_volume: float = 1.0,
+) -> Union[SubMaker, None]:
+    text = (text or "").strip()
+    if not text:
+        logger.error("MiniMax TTS text is empty")
+        return None
+
+    try:
+        from app.services import minimax
+
+        ensure_file_path_exists(voice_file)
+        minimax.t2a_sync(text, voice_id, voice_file, speed=voice_rate, vol=voice_volume)
+        audio_clip = AudioFileClip(voice_file)
+        audio_duration = audio_clip.duration
+        audio_clip.close()
+        return populate_legacy_submaker_with_full_text(
+            sub_maker=ensure_legacy_submaker_fields(SubMaker()),
+            text=text,
+            audio_duration_seconds=audio_duration,
+        )
+    except Exception as e:
+        logger.error(f"minimax tts failed: {str(e)}")
+        return None
 
 
 def chatterbox_tts(

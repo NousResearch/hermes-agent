@@ -154,6 +154,7 @@ def save_config():
         _cfg["siliconflow"] = siliconflow
         _cfg["elevenlabs"] = elevenlabs
         _cfg["chatterbox"] = chatterbox
+        _cfg["minimax"] = minimax
         _cfg["ui"] = ui
         f.write(toml.dumps(_cfg))
 
@@ -166,6 +167,16 @@ azure = _cfg.get("azure", {})
 siliconflow = _cfg.get("siliconflow", {})
 elevenlabs = _cfg.get("elevenlabs", {})
 chatterbox = _cfg.get("chatterbox", {})
+minimax = _cfg.get(
+    "minimax",
+    {
+        "api_key": app.get("minimax_api_key", ""),
+        "base_url": app.get("minimax_base_url", "https://api.minimaxi.com"),
+        "music_model": "music-2.6-free",
+        "t2a_model": "speech-2.8-hd",
+        "voice_clone_model": "speech-2.8-hd",
+    },
+)
 ui = _cfg.get(
     "ui",
     {

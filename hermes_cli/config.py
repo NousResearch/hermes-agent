@@ -1962,6 +1962,16 @@ DEFAULT_CONFIG = {
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
         },
+        "minimax": {
+            "model": "speech-2.8-hd",
+            "voice_id": "English_expressive_narrator",
+            "base_url": "https://api.minimax.io/v1/t2a_v2",
+            "speed": 1.0,
+            "volume": 1.0,
+            "pitch": 0,
+            "sample_rate": 32000,
+            "bitrate": 128000,
+        },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",
             "voice": "Kore",

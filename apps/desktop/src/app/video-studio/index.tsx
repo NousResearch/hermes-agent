@@ -12,10 +12,18 @@ import { notify, notifyError } from '@/store/notifications'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import {
+  createMiniMaxCloneVoiceId,
+  miniMaxVoiceErrorMessage,
+  miniMaxVoiceName,
+  validateMiniMaxCloneInput
+} from './minimax-voice-workflows'
+import {
   configFormFromSummary,
   defaultMoneyPrinterConfigForm,
   defaultVideoGenerationForm,
   isMoneyPrinterPreviewVideo,
+  type MiniMaxAudioResult,
+  type MiniMaxVoiceRecord,
   type MoneyPrinterAssets,
   moneyprinterClient,
   type MoneyPrinterConfigInput,
@@ -27,6 +35,9 @@ import {
   scriptTextFromResult,
   termsTextFromResult,
   type VideoGenerationForm,
+  type VideoLibraryAsset,
+  videoLibraryClient,
+  type VideoLibraryClip,
   type VideoSource
 } from './moneyprinter-client'
 
@@ -41,16 +52,7 @@ const SOURCE_OPTIONS: { label: string; value: VideoSource }[] = [
   { label: 'Local materials', value: 'local' }
 ]
 
-const PIPELINE_STEPS = [
-  '主题',
-  '文案',
-  '关键词',
-  '语音',
-  '素材',
-  '字幕',
-  '合成',
-  '预览'
-]
+const PIPELINE_STEPS = ['主题', '文案', '关键词', '语音', '素材', '字幕', '合成', '预览']
 
 const VIDEO_STUDIO_DRAFT_KEY = 'hermes-video-studio-moneyprinter-draft-v1'
 
@@ -92,6 +94,10 @@ function savedStateLabel(configured?: boolean): string {
   return configured ? '已保存' : '未配置'
 }
 
+function isVideoFile(file: File): boolean {
+  return file.type.startsWith('video/') || /\.(?:avi|flv|mkv|mov|mp4|webm)$/i.test(file.name)
+}
+
 function storedVideoGenerationForm(): VideoGenerationForm {
   const raw = readKey(VIDEO_STUDIO_DRAFT_KEY)
 
@@ -127,7 +133,11 @@ function fileToDataUrl(file: File): Promise<string> {
   })
 }
 
-export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: VideoStudioViewProps) {
+export function VideoStudioView({
+  className,
+  setStatusbarItemGroup: _setStatusbarItemGroup,
+  ...props
+}: VideoStudioViewProps) {
   const [form, setForm] = useState<VideoGenerationForm>(() => storedVideoGenerationForm())
   const [configForm, setConfigForm] = useState<MoneyPrinterConfigInput>(defaultMoneyPrinterConfigForm)
   const [configSummary, setConfigSummary] = useState<MoneyPrinterConfigSummary | null>(null)
@@ -142,19 +152,47 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
   const [subtitleBusy, setSubtitleBusy] = useState(false)
   const [localMaterials, setLocalMaterials] = useState<MoneyPrinterLocalMaterial[]>([])
   const [localMaterialsBusy, setLocalMaterialsBusy] = useState(false)
+  const [videoLibraryAssets, setVideoLibraryAssets] = useState<VideoLibraryAsset[]>([])
+  const [videoLibraryClips, setVideoLibraryClips] = useState<VideoLibraryClip[]>([])
+  const [videoLibraryBusy, setVideoLibraryBusy] = useState(false)
+  const [videoLibraryActionId, setVideoLibraryActionId] = useState<string | null>(null)
   const [assets, setAssets] = useState<MoneyPrinterAssets>(EMPTY_ASSETS)
   const [assetsBusy, setAssetsBusy] = useState(false)
   const [uploadBusy, setUploadBusy] = useState(false)
   const [bgmUploadBusy, setBgmUploadBusy] = useState(false)
   const [customAudioUploadBusy, setCustomAudioUploadBusy] = useState(false)
   const [serviceBusy, setServiceBusy] = useState(false)
+  const [miniMaxVoices, setMiniMaxVoices] = useState<MiniMaxVoiceRecord[]>([])
+  const [miniMaxExistingVoiceId, setMiniMaxExistingVoiceId] = useState('Korean_GentleBoss')
+
+  const [miniMaxExistingPreviewText, setMiniMaxExistingPreviewText] = useState(
+    '안녕하세요. Hermes 음성 미리듣기입니다.'
+  )
+
+  const [miniMaxExistingPreview, setMiniMaxExistingPreview] = useState<MiniMaxAudioResult | null>(null)
+  const [miniMaxExistingBusy, setMiniMaxExistingBusy] = useState(false)
+  const [miniMaxCloneBusy, setMiniMaxCloneBusy] = useState(false)
+  const [miniMaxCloneFile, setMiniMaxCloneFile] = useState<File | null>(null)
+  const [miniMaxPromptFile, setMiniMaxPromptFile] = useState<File | null>(null)
+  const [miniMaxVoiceId, setMiniMaxVoiceId] = useState(() => createMiniMaxCloneVoiceId())
+  const [miniMaxPromptText, setMiniMaxPromptText] = useState('')
+  const [miniMaxTrialText, setMiniMaxTrialText] = useState('这是 MiniMax 复刻音色试听。')
+  const [miniMaxClonePreview, setMiniMaxClonePreview] = useState<MiniMaxAudioResult | null>(null)
+  const [miniMaxActivateBusy, setMiniMaxActivateBusy] = useState(false)
+  const [miniMaxMusicBusy, setMiniMaxMusicBusy] = useState(false)
+  const [miniMaxLyricsBusy, setMiniMaxLyricsBusy] = useState(false)
+  const [miniMaxMusicPrompt, setMiniMaxMusicPrompt] = useState('适合短视频的现代感背景音乐')
+  const [miniMaxLyrics, setMiniMaxLyrics] = useState('')
 
   const selectedTask = useMemo(
     () => tasks.find(task => task.id === selectedTaskId) ?? tasks[0] ?? null,
     [selectedTaskId, tasks]
   )
 
-  const selectedTaskVideos = useMemo(() => selectedTask?.videos.filter(isMoneyPrinterPreviewVideo) ?? [], [selectedTask])
+  const selectedTaskVideos = useMemo(
+    () => selectedTask?.videos.filter(isMoneyPrinterPreviewVideo) ?? [],
+    [selectedTask]
+  )
 
   useEffect(() => {
     writeKey(VIDEO_STUDIO_DRAFT_KEY, JSON.stringify(form))
@@ -164,9 +202,12 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
     setForm(current => ({ ...current, [key]: value }))
   }, [])
 
-  const updateConfig = useCallback(<K extends keyof MoneyPrinterConfigInput>(key: K, value: MoneyPrinterConfigInput[K]) => {
-    setConfigForm(current => ({ ...current, [key]: value }))
-  }, [])
+  const updateConfig = useCallback(
+    <K extends keyof MoneyPrinterConfigInput>(key: K, value: MoneyPrinterConfigInput[K]) => {
+      setConfigForm(current => ({ ...current, [key]: value }))
+    },
+    []
+  )
 
   const applyConfigSummary = useCallback((summary: MoneyPrinterConfigSummary, clearSecrets = false) => {
     const visibleConfig = configFormFromSummary(summary)
@@ -176,6 +217,7 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
       ...visibleConfig,
       apiKey: clearSecrets ? '' : current.apiKey,
       coverrApiKey: clearSecrets ? '' : current.coverrApiKey,
+      minimaxApiKey: clearSecrets ? '' : current.minimaxApiKey,
       pexelsApiKey: clearSecrets ? '' : current.pexelsApiKey,
       pixabayApiKey: clearSecrets ? '' : current.pixabayApiKey
     }))
@@ -224,19 +266,51 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
     }
   }, [])
 
+  const refreshVideoLibrary = useCallback(async () => {
+    setVideoLibraryBusy(true)
+
+    try {
+      const [assetsResponse, clipsResponse] = await Promise.all([
+        videoLibraryClient.listAssets(),
+        videoLibraryClient.listClips()
+      ])
+
+      if (!assetsResponse.ok || !assetsResponse.data) {
+        notifyError(assetsResponse.error?.message, 'Unable to load video library assets')
+      } else {
+        setVideoLibraryAssets(assetsResponse.data.assets)
+      }
+
+      if (!clipsResponse.ok || !clipsResponse.data) {
+        notifyError(clipsResponse.error?.message, 'Unable to load analyzed video clips')
+      } else {
+        setVideoLibraryClips(clipsResponse.data.clips)
+      }
+    } finally {
+      setVideoLibraryBusy(false)
+    }
+  }, [])
+
   const refreshAssets = useCallback(async () => {
     setAssetsBusy(true)
 
     try {
-      const response = await moneyprinterClient.listAssets()
+      const [response, voicesResponse] = await Promise.all([
+        moneyprinterClient.listAssets(),
+        moneyprinterClient.listMiniMaxVoices()
+      ])
 
       if (!response.ok || !response.data) {
         notifyError(response.error?.message, 'Unable to load MoneyPrinter assets')
-
-        return
+      } else {
+        setAssets(response.data)
       }
 
-      setAssets(response.data)
+      if (!voicesResponse.ok || !voicesResponse.data) {
+        notifyError(voicesResponse.error?.message, 'Unable to load MiniMax voices')
+      } else {
+        setMiniMaxVoices(voicesResponse.data.voices)
+      }
     } finally {
       setAssetsBusy(false)
     }
@@ -246,8 +320,9 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
     void loadConfig()
     void refreshTasks()
     void refreshLocalMaterials()
+    void refreshVideoLibrary()
     void refreshAssets()
-  }, [loadConfig, refreshAssets, refreshLocalMaterials, refreshTasks])
+  }, [loadConfig, refreshAssets, refreshLocalMaterials, refreshTasks, refreshVideoLibrary])
 
   const toggleLocalMaterial = useCallback((file: string, checked: boolean) => {
     setForm(current => {
@@ -299,6 +374,17 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
         const material = response.data.material
         uploadedFiles.push(material.file)
         setLocalMaterials(current => [material, ...current.filter(item => item.file !== material.file)])
+
+        if (sourcePath && isVideoFile(file)) {
+          const libraryResponse = await videoLibraryClient.importAsset(sourcePath)
+
+          if (!libraryResponse.ok || !libraryResponse.data) {
+            notifyError(libraryResponse.error?.message, `Unable to import ${file.name} into the video library`)
+          } else {
+            const importedAsset = libraryResponse.data.asset
+            setVideoLibraryAssets(current => [importedAsset, ...current.filter(item => item.id !== importedAsset.id)])
+          }
+        }
       }
 
       if (uploadedFiles.length > 0) {
@@ -312,6 +398,57 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
     } finally {
       setUploadBusy(false)
       input.value = ''
+    }
+  }, [])
+
+  const analyzeVideoAsset = useCallback(async (assetId: string) => {
+    setVideoLibraryActionId(assetId)
+
+    try {
+      const response = await videoLibraryClient.analyzeAsset(assetId)
+
+      if (!response.ok || !response.data) {
+        notifyError(response.error?.message, 'Unable to split and tag this video')
+
+        return
+      }
+
+      const analysis = response.data
+      setVideoLibraryAssets(current => [analysis.asset, ...current.filter(item => item.id !== assetId)])
+      setVideoLibraryClips(current => [...analysis.clips, ...current.filter(clip => clip.asset_id !== assetId)])
+      notify({
+        kind: 'success',
+        title: '素材分析完成',
+        message: `已切分 ${analysis.clips.length} 个片段并写入技术标签`
+      })
+    } finally {
+      setVideoLibraryActionId(null)
+    }
+  }, [])
+
+  const addLibraryClipToMix = useCallback(async (clip: VideoLibraryClip) => {
+    setVideoLibraryActionId(clip.id)
+
+    try {
+      const filename = clip.file_path.split(/[\\/]/).pop() || `${clip.id}.mp4`
+      const response = await moneyprinterClient.uploadLocalMaterial({ filename, sourcePath: clip.file_path })
+
+      if (!response.ok || !response.data) {
+        notifyError(response.error?.message, 'Unable to add this clip to MoneyPrinter')
+
+        return
+      }
+
+      const material = response.data.material
+      setLocalMaterials(current => [material, ...current.filter(item => item.file !== material.file)])
+      setForm(current => ({
+        ...current,
+        localMaterials: Array.from(new Set([...current.localMaterials, material.file])),
+        videoSource: 'local'
+      }))
+      notify({ kind: 'success', title: '已加入混剪', message: material.name })
+    } finally {
+      setVideoLibraryActionId(null)
     }
   }, [])
 
@@ -413,6 +550,202 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
       input.value = ''
     }
   }, [])
+
+  const previewExistingMiniMaxVoice = useCallback(async () => {
+    const voiceId = miniMaxExistingVoiceId.trim()
+    const text = miniMaxExistingPreviewText.trim()
+
+    if (!voiceId || !text) {
+      notifyError('请填写已有 Voice ID 和试听文本', 'MiniMax existing voice preview is incomplete')
+
+      return
+    }
+
+    setMiniMaxExistingBusy(true)
+
+    try {
+      const response = await moneyprinterClient.generateMiniMaxTts({
+        model: configForm.minimaxT2aModel,
+        text,
+        voiceId
+      })
+
+      if (!response.ok || !response.data) {
+        notifyError(response.error?.message, 'MiniMax existing voice preview failed')
+
+        return
+      }
+
+      setMiniMaxExistingPreview(response.data)
+      notify({ kind: 'success', title: '已有音色试听已生成', message: voiceId })
+    } finally {
+      setMiniMaxExistingBusy(false)
+    }
+  }, [configForm.minimaxT2aModel, miniMaxExistingPreviewText, miniMaxExistingVoiceId])
+
+  const cloneMiniMaxVoice = useCallback(async () => {
+    const voiceId = miniMaxVoiceId.trim()
+
+    const validationError = validateMiniMaxCloneInput({
+      cloneFile: Boolean(miniMaxCloneFile),
+      promptFile: Boolean(miniMaxPromptFile),
+      promptText: miniMaxPromptText,
+      voiceId
+    })
+
+    if (validationError || !miniMaxCloneFile) {
+      notifyError(validationError, 'MiniMax voice clone is incomplete')
+
+      return
+    }
+
+    const toUploadInput = async (file: File) => {
+      let sourcePath = ''
+
+      try {
+        sourcePath = window.hermesDesktop?.getPathForFile?.(file) || ''
+      } catch {
+        sourcePath = ''
+      }
+
+      return {
+        ...(sourcePath ? { sourcePath } : { contentBase64: await fileToDataUrl(file) }),
+        filename: file.name
+      }
+    }
+
+    setMiniMaxCloneBusy(true)
+
+    try {
+      const response = await moneyprinterClient.cloneMiniMaxVoice({
+        activate: false,
+        cloneAudio: await toUploadInput(miniMaxCloneFile),
+        model: configForm.minimaxVoiceCloneModel,
+        ...(miniMaxPromptFile ? { promptAudio: await toUploadInput(miniMaxPromptFile) } : {}),
+        promptText: miniMaxPromptFile ? miniMaxPromptText.trim() : '',
+        trialText: miniMaxTrialText.trim(),
+        voiceId
+      })
+
+      if (!response.ok || !response.data) {
+        notifyError(
+          miniMaxVoiceErrorMessage(response.error?.message),
+          'MiniMax voice clone failed'
+        )
+
+        return
+      }
+
+      setMiniMaxClonePreview(response.data)
+      await refreshAssets()
+      notify({
+        kind: response.data.previewError ? 'warning' : 'success',
+        title: response.data.previewError ? '音色已创建，但试听不可用' : '克隆试听已生成（未激活）',
+        message: response.data.previewError || voiceId
+      })
+    } finally {
+      setMiniMaxCloneBusy(false)
+    }
+  }, [configForm.minimaxVoiceCloneModel, miniMaxCloneFile, miniMaxPromptFile, miniMaxPromptText, miniMaxTrialText, miniMaxVoiceId, refreshAssets])
+
+  const activateClonedMiniMaxVoice = useCallback(async () => {
+    const voiceId = miniMaxVoiceId.trim()
+    const text = miniMaxTrialText.trim()
+
+    if (!miniMaxClonePreview || !voiceId || !text) {
+      notifyError('请先生成克隆试听', 'MiniMax clone activation is incomplete')
+
+      return
+    }
+
+    if (
+      !window.confirm(
+        '首次正式使用克隆音色预计收取一次性 ¥9.9 复刻费，并另计少量 TTS 字符费。是否继续？'
+      )
+    ) {
+      return
+    }
+
+    setMiniMaxActivateBusy(true)
+
+    try {
+      const response = await moneyprinterClient.generateMiniMaxTts({
+        model: configForm.minimaxT2aModel,
+        text,
+        voiceId
+      })
+
+      if (!response.ok || !response.data) {
+        notifyError(response.error?.message, 'MiniMax clone activation failed')
+
+        return
+      }
+
+      setMiniMaxClonePreview(current => ({ ...current, activated: true, audio: response.data?.audio }))
+      updateForm('voiceName', miniMaxVoiceName(voiceId))
+      await refreshAssets()
+      notify({ kind: 'success', title: '克隆音色已正式激活并选用', message: miniMaxVoiceName(voiceId) })
+    } finally {
+      setMiniMaxActivateBusy(false)
+    }
+  }, [configForm.minimaxT2aModel, miniMaxClonePreview, miniMaxTrialText, miniMaxVoiceId, refreshAssets, updateForm])
+
+  const generateMiniMaxLyrics = useCallback(async () => {
+    setMiniMaxLyricsBusy(true)
+
+    try {
+      const response = await moneyprinterClient.generateMiniMaxLyrics({
+        lyrics: miniMaxLyrics,
+        mode: miniMaxLyrics.trim() ? 'edit' : 'write_full_song',
+        prompt: miniMaxMusicPrompt.trim(),
+        title: form.videoSubject.trim()
+      })
+
+      if (!response.ok || !response.data) {
+        notifyError(response.error?.message, 'MiniMax lyrics generation failed')
+
+        return
+      }
+
+      setMiniMaxLyrics(response.data.lyrics || '')
+      notify({ kind: 'success', title: 'MiniMax 歌词已生成', message: '可继续编辑歌词或直接生成音乐。' })
+    } finally {
+      setMiniMaxLyricsBusy(false)
+    }
+  }, [form.videoSubject, miniMaxLyrics, miniMaxMusicPrompt])
+
+  const generateMiniMaxMusic = useCallback(async () => {
+    setMiniMaxMusicBusy(true)
+
+    try {
+      const response = await moneyprinterClient.generateMiniMaxMusic({
+        isInstrumental: !miniMaxLyrics.trim(),
+        lyrics: miniMaxLyrics.trim(),
+        lyricsOptimizer: true,
+        model: configForm.minimaxMusicModel,
+        prompt: miniMaxMusicPrompt.trim(),
+        saveAsBgm: true
+      })
+
+      if (!response.ok || !response.data) {
+        notifyError(response.error?.message, 'MiniMax music generation failed')
+
+        return
+      }
+
+      const bgm = response.data.bgm as { file?: string } | undefined
+
+      if (bgm?.file) {
+        updateForm('bgmFile', bgm.file)
+        updateForm('bgmType', 'custom')
+      }
+
+      await refreshAssets()
+      notify({ kind: 'success', title: 'MiniMax 音乐已保存为 BGM', message: bgm?.file || '' })
+    } finally {
+      setMiniMaxMusicBusy(false)
+    }
+  }, [configForm.minimaxMusicModel, miniMaxLyrics, miniMaxMusicPrompt, refreshAssets, updateForm])
 
   const checkHealth = useCallback(async () => {
     setServiceBusy(true)
@@ -663,7 +996,8 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
               Video Studio
             </div>
             <p className="mt-1 max-w-3xl text-xs leading-5 text-(--ui-text-secondary)">
-              Hermes 原生视频生成工作台。对齐原版 MoneyPrinterTurbo 的精细流程：主题 → 文案草稿 → 人工改稿 → 关键词 → 素材/语音/字幕参数 → 合成 → 预览；页面调用独立 capability API，不进入 Hermes Agent Core。
+              Hermes 原生视频生成工作台。对齐原版 MoneyPrinterTurbo 的精细流程：主题 → 文案草稿 → 人工改稿 → 关键词 →
+              素材/语音/字幕参数 → 合成 → 预览；页面调用独立 capability API，不进入 Hermes Agent Core。
             </p>
           </div>
           <div className="flex gap-2">
@@ -675,7 +1009,7 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
             </Button>
           </div>
         </div>
-        <div className="mt-4 grid gap-2 sm:grid-cols-8">
+        <div className="mt-4 grid grid-cols-4 gap-2 md:grid-cols-8">
           {PIPELINE_STEPS.map((step, index) => (
             <div
               className="rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) px-3 py-2 text-xs text-(--ui-text-secondary)"
@@ -688,15 +1022,22 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
         </div>
       </header>
 
-      <div className="grid h-full min-h-0 flex-1 gap-0 overflow-hidden lg:grid-cols-[minmax(22rem,28rem)_minmax(18rem,1fr)_minmax(20rem,32rem)]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-y-auto xl:h-full xl:grid-cols-[minmax(22rem,28rem)_minmax(18rem,1fr)_minmax(20rem,32rem)] xl:overflow-hidden">
         <form
-          className="h-full min-h-0 overflow-y-auto overscroll-contain border-r border-(--ui-stroke-secondary) p-5"
+          className="min-h-0 overscroll-contain border-b border-(--ui-stroke-secondary) p-5 xl:h-full xl:overflow-y-auto xl:border-r xl:border-b-0"
           onSubmit={event => event.preventDefault()}
         >
           <div className="space-y-5">
             <datalist id="moneyprinter-voices">
               {assets.voices.map(voice => (
                 <option key={voice} value={voice} />
+              ))}
+            </datalist>
+            <datalist id="minimax-provider-voices">
+              {miniMaxVoices.map(voice => (
+                <option key={`${voice.category}:${voice.id}`} value={voice.id}>
+                  {voice.name} · {voice.category}
+                </option>
               ))}
             </datalist>
             <datalist id="moneyprinter-fonts">
@@ -739,15 +1080,22 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
                 </label>
                 <label className="block space-y-2">
                   <span className={fieldLabelClass()}>Model</span>
-                  <Input onChange={event => updateConfig('modelName', event.target.value)} value={configForm.modelName} />
+                  <Input
+                    onChange={event => updateConfig('modelName', event.target.value)}
+                    value={configForm.modelName}
+                  />
                 </label>
               </div>
 
               <label className="mt-3 block space-y-2">
-                <span className={fieldLabelClass()}>Provider API Key · {savedStateLabel(configSummary?.apiKeyConfigured)}</span>
+                <span className={fieldLabelClass()}>
+                  Provider API Key · {savedStateLabel(configSummary?.apiKeyConfigured)}
+                </span>
                 <Input
                   onChange={event => updateConfig('apiKey', event.target.value)}
-                  placeholder={configSummary?.apiKeyConfigured ? '留空则沿用已保存密钥' : 'Paste in UI only; never send it in chat'}
+                  placeholder={
+                    configSummary?.apiKeyConfigured ? '留空则沿用已保存密钥' : 'Paste in UI only; never send it in chat'
+                  }
                   type="password"
                   value={configForm.apiKey}
                 />
@@ -758,18 +1106,96 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
                 <Input onChange={event => updateConfig('baseUrl', event.target.value)} value={configForm.baseUrl} />
               </label>
 
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                <label className="block space-y-2">
+                  <span className={fieldLabelClass()}>
+                    MiniMax API Key · {savedStateLabel(configSummary?.minimax?.apiKeyConfigured)}
+                  </span>
+                  <Input
+                    onChange={event => updateConfig('minimaxApiKey', event.target.value)}
+                    placeholder={
+                      configSummary?.minimax?.apiKeyConfigured ? '留空则沿用已保存密钥' : 'MiniMax voice and music key'
+                    }
+                    type="password"
+                    value={configForm.minimaxApiKey}
+                  />
+                </label>
+                <label className="block space-y-2">
+                  <span className={fieldLabelClass()}>MiniMax API Base URL</span>
+                  <Input
+                    onChange={event => updateConfig('minimaxBaseUrl', event.target.value)}
+                    value={configForm.minimaxBaseUrl}
+                  />
+                </label>
+              </div>
+
               <div className="mt-3 grid grid-cols-3 gap-3">
                 <label className="block space-y-2">
-                  <span className={fieldLabelClass()}>Pexels Key · {savedStateLabel(configSummary?.materialProviders.pexels)}</span>
-                  <Input onChange={event => updateConfig('pexelsApiKey', event.target.value)} type="password" value={configForm.pexelsApiKey} />
+                  <span className={fieldLabelClass()}>MiniMax TTS 模型</span>
+                  <Input
+                    list="minimax-speech-models"
+                    onChange={event => updateConfig('minimaxT2aModel', event.target.value)}
+                    value={configForm.minimaxT2aModel}
+                  />
                 </label>
                 <label className="block space-y-2">
-                  <span className={fieldLabelClass()}>Pixabay Key · {savedStateLabel(configSummary?.materialProviders.pixabay)}</span>
-                  <Input onChange={event => updateConfig('pixabayApiKey', event.target.value)} type="password" value={configForm.pixabayApiKey} />
+                  <span className={fieldLabelClass()}>MiniMax 音色复刻模型</span>
+                  <Input
+                    list="minimax-speech-models"
+                    onChange={event => updateConfig('minimaxVoiceCloneModel', event.target.value)}
+                    value={configForm.minimaxVoiceCloneModel}
+                  />
                 </label>
                 <label className="block space-y-2">
-                  <span className={fieldLabelClass()}>Coverr Key · {savedStateLabel(configSummary?.materialProviders.coverr)}</span>
-                  <Input onChange={event => updateConfig('coverrApiKey', event.target.value)} type="password" value={configForm.coverrApiKey} />
+                  <span className={fieldLabelClass()}>MiniMax 音乐模型</span>
+                  <Input
+                    list="minimax-music-models"
+                    onChange={event => updateConfig('minimaxMusicModel', event.target.value)}
+                    value={configForm.minimaxMusicModel}
+                  />
+                </label>
+              </div>
+              <datalist id="minimax-speech-models">
+                <option value="speech-2.8-hd" />
+                <option value="speech-2.8-turbo" />
+                <option value="speech-2.6-hd" />
+                <option value="speech-2.6-turbo" />
+              </datalist>
+              <datalist id="minimax-music-models">
+                <option value="music-2.6-free" />
+                <option value="music-2.6" />
+              </datalist>
+
+              <div className="mt-3 grid grid-cols-3 gap-3">
+                <label className="block space-y-2">
+                  <span className={fieldLabelClass()}>
+                    Pexels Key · {savedStateLabel(configSummary?.materialProviders.pexels)}
+                  </span>
+                  <Input
+                    onChange={event => updateConfig('pexelsApiKey', event.target.value)}
+                    type="password"
+                    value={configForm.pexelsApiKey}
+                  />
+                </label>
+                <label className="block space-y-2">
+                  <span className={fieldLabelClass()}>
+                    Pixabay Key · {savedStateLabel(configSummary?.materialProviders.pixabay)}
+                  </span>
+                  <Input
+                    onChange={event => updateConfig('pixabayApiKey', event.target.value)}
+                    type="password"
+                    value={configForm.pixabayApiKey}
+                  />
+                </label>
+                <label className="block space-y-2">
+                  <span className={fieldLabelClass()}>
+                    Coverr Key · {savedStateLabel(configSummary?.materialProviders.coverr)}
+                  </span>
+                  <Input
+                    onChange={event => updateConfig('coverrApiKey', event.target.value)}
+                    type="password"
+                    value={configForm.coverrApiKey}
+                  />
                 </label>
               </div>
             </div>
@@ -897,7 +1323,9 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
                 <span className={fieldLabelClass()}>画面比例</span>
                 <select
                   className="h-8 w-full rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) px-2 text-xs"
-                  onChange={event => updateForm('videoAspect', event.target.value as VideoGenerationForm['videoAspect'])}
+                  onChange={event =>
+                    updateForm('videoAspect', event.target.value as VideoGenerationForm['videoAspect'])
+                  }
                   value={form.videoAspect}
                 >
                   <option value="9:16">9:16 竖屏</option>
@@ -955,7 +1383,9 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
                 <span className={fieldLabelClass()}>拼接模式</span>
                 <select
                   className="h-8 w-full rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) px-2 text-xs"
-                  onChange={event => updateForm('videoConcatMode', event.target.value as VideoGenerationForm['videoConcatMode'])}
+                  onChange={event =>
+                    updateForm('videoConcatMode', event.target.value as VideoGenerationForm['videoConcatMode'])
+                  }
                   value={form.videoConcatMode}
                 >
                   <option value="random">random 随机素材</option>
@@ -966,7 +1396,9 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
                 <span className={fieldLabelClass()}>转场</span>
                 <select
                   className="h-8 w-full rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) px-2 text-xs"
-                  onChange={event => updateForm('videoTransitionMode', event.target.value as VideoGenerationForm['videoTransitionMode'])}
+                  onChange={event =>
+                    updateForm('videoTransitionMode', event.target.value as VideoGenerationForm['videoTransitionMode'])
+                  }
                   value={form.videoTransitionMode}
                 >
                   <option value="">none</option>
@@ -989,7 +1421,13 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
                     </div>
                   </div>
                   <div className="flex gap-2">
-                    <Button disabled={localMaterialsBusy} onClick={refreshLocalMaterials} size="xs" type="button" variant="secondary">
+                    <Button
+                      disabled={localMaterialsBusy}
+                      onClick={refreshLocalMaterials}
+                      size="xs"
+                      type="button"
+                      variant="secondary"
+                    >
                       {localMaterialsBusy ? 'Loading…' : 'Refresh'}
                     </Button>
                     <label className="inline-flex h-7 cursor-pointer items-center rounded border border-(--ui-stroke-secondary) px-2 text-xs text-(--ui-text-primary) hover:bg-(--chrome-action-hover)">
@@ -1029,6 +1467,113 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
                     ))}
                   </div>
                 )}
+
+                <div className="mt-4 border-t border-(--ui-stroke-secondary) pt-3">
+                  <div className="mb-3 flex items-start justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-2 text-xs font-semibold text-(--ui-text-primary)">
+                        <Codicon name="library" size="0.875rem" />
+                        视频素材库
+                      </div>
+                      <div className="mt-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
+                        桌面端上传的视频会进入隔离素材库。分析会按镜头切分并写入画幅、时长、清晰度标签。
+                      </div>
+                    </div>
+                    <Button
+                      disabled={videoLibraryBusy}
+                      onClick={refreshVideoLibrary}
+                      size="xs"
+                      type="button"
+                      variant="secondary"
+                    >
+                      <Codicon name="refresh" size="0.75rem" spinning={videoLibraryBusy} />
+                      刷新
+                    </Button>
+                  </div>
+
+                  {videoLibraryAssets.length === 0 ? (
+                    <div className="border border-dashed border-(--ui-stroke-secondary) p-3 text-xs text-(--ui-text-tertiary)">
+                      上传本地视频后，它会显示在这里并等待切分分析。
+                    </div>
+                  ) : (
+                    <div className="max-h-48 space-y-1 overflow-auto pr-1">
+                      {videoLibraryAssets.map(asset => {
+                        const clipCount = videoLibraryClips.filter(clip => clip.asset_id === asset.id).length
+                        const duration = asset.duration_seconds ? `${asset.duration_seconds.toFixed(1)}s` : '--'
+                        const resolution = asset.width && asset.height ? `${asset.width}×${asset.height}` : '--'
+
+                        return (
+                          <div
+                            className="flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-1 py-2 text-xs last:border-b-0"
+                            key={asset.id}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-medium text-(--ui-text-primary)">{asset.original_name}</div>
+                              <div className="mt-1 text-[0.6875rem] text-(--ui-text-tertiary)">
+                                {asset.status} · {duration} · {resolution} · {clipCount} 个片段
+                              </div>
+                            </div>
+                            <Button
+                              disabled={videoLibraryActionId !== null}
+                              onClick={() => void analyzeVideoAsset(asset.id)}
+                              size="xs"
+                              type="button"
+                              variant="outline"
+                            >
+                              <Codicon
+                                name={videoLibraryActionId === asset.id ? 'loading' : 'run-all'}
+                                size="0.75rem"
+                                spinning={videoLibraryActionId === asset.id}
+                              />
+                              {clipCount > 0 ? '重新分析' : '切分分析'}
+                            </Button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+
+                  {videoLibraryClips.length > 0 && (
+                    <div className="mt-3">
+                      <div className="mb-2 text-[0.6875rem] font-semibold text-(--ui-text-secondary)">可用片段</div>
+                      <div className="max-h-56 space-y-1 overflow-auto pr-1">
+                        {videoLibraryClips.map(clip => (
+                          <div
+                            className="flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-1 py-2 text-xs last:border-b-0"
+                            key={clip.id}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="text-(--ui-text-primary)">
+                                #{clip.clip_index + 1} · {clip.start_seconds.toFixed(1)}-{clip.end_seconds.toFixed(1)}s
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {clip.tags.map(tag => (
+                                  <span className="text-[0.625rem] text-(--ui-text-tertiary)" key={tag.id}>
+                                    #{tag.name}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                            <Button
+                              disabled={videoLibraryActionId !== null}
+                              onClick={() => void addLibraryClipToMix(clip)}
+                              size="xs"
+                              type="button"
+                              variant="secondary"
+                            >
+                              <Codicon
+                                name={videoLibraryActionId === clip.id ? 'loading' : 'add'}
+                                size="0.75rem"
+                                spinning={videoLibraryActionId === clip.id}
+                              />
+                              加入混剪
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -1047,33 +1592,177 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
 
               <label className="block space-y-2">
                 <span className={fieldLabelClass()}>语音 / TTS provider voice</span>
-                <Input list="moneyprinter-voices" onChange={event => updateForm('voiceName', event.target.value)} value={form.voiceName} />
+                <Input
+                  list="moneyprinter-voices"
+                  onChange={event => updateForm('voiceName', event.target.value)}
+                  value={form.voiceName}
+                />
               </label>
 
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block space-y-2">
-                <span className={fieldLabelClass()}>语速</span>
-                <Input
-                  max={3}
-                  min={0.2}
-                  onChange={event => updateForm('voiceRate', numberValue(event.target.value, 1))}
-                  step={0.1}
-                  type="number"
-                  value={form.voiceRate}
-                />
-              </label>
-              <label className="block space-y-2">
-                <span className={fieldLabelClass()}>音量</span>
-                <Input
-                  max={3}
-                  min={0}
-                  onChange={event => updateForm('voiceVolume', numberValue(event.target.value, 1))}
-                  step={0.1}
-                  type="number"
-                  value={form.voiceVolume}
-                />
-              </label>
-            </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block space-y-2">
+                  <span className={fieldLabelClass()}>语速</span>
+                  <Input
+                    max={3}
+                    min={0.2}
+                    onChange={event => updateForm('voiceRate', numberValue(event.target.value, 1))}
+                    step={0.1}
+                    type="number"
+                    value={form.voiceRate}
+                  />
+                </label>
+                <label className="block space-y-2">
+                  <span className={fieldLabelClass()}>音量</span>
+                  <Input
+                    max={3}
+                    min={0}
+                    onChange={event => updateForm('voiceVolume', numberValue(event.target.value, 1))}
+                    step={0.1}
+                    type="number"
+                    value={form.voiceVolume}
+                  />
+                </label>
+              </div>
+
+              <div className="mt-3 space-y-3 border-t border-(--ui-stroke-secondary) pt-3">
+                <div>
+                  <div className="text-xs font-semibold text-(--ui-text-primary)">使用已有 MiniMax 音色 ID</div>
+                  <div className="mt-1 text-[0.6875rem] text-(--ui-text-tertiary)">
+                    系统音色或当前账户已有音色直接生成 TTS，不上传复刻音频，也不会产生新的音色复刻费。
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block space-y-2">
+                    <span className={fieldLabelClass()}>Voice ID</span>
+                    <Input
+                      list="minimax-provider-voices"
+                      onChange={event => {
+                        setMiniMaxExistingVoiceId(event.target.value)
+                        setMiniMaxExistingPreview(null)
+                      }}
+                      value={miniMaxExistingVoiceId}
+                    />
+                  </label>
+                  <label className="block space-y-2">
+                    <span className={fieldLabelClass()}>试听文本</span>
+                    <Input
+                      onChange={event => setMiniMaxExistingPreviewText(event.target.value)}
+                      value={miniMaxExistingPreviewText}
+                    />
+                  </label>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    disabled={miniMaxExistingBusy || !miniMaxExistingVoiceId.trim() || !miniMaxExistingPreviewText.trim()}
+                    onClick={previewExistingMiniMaxVoice}
+                    type="button"
+                    variant="outline"
+                  >
+                    {miniMaxExistingBusy ? 'Generating…' : '生成已有音色试听'}
+                  </Button>
+                  <Button
+                    disabled={!miniMaxExistingPreview}
+                    onClick={() => updateForm('voiceName', miniMaxVoiceName(miniMaxExistingVoiceId))}
+                    type="button"
+                    variant="secondary"
+                  >
+                    选择用于视频
+                  </Button>
+                </div>
+                {miniMaxExistingPreview?.audio?.streamUrl ? (
+                  <audio
+                    className="w-full"
+                    controls
+                    src={resolveMoneyPrinterMediaUrl(miniMaxExistingPreview.audio.streamUrl, health?.apiBaseUrl)}
+                  />
+                ) : null}
+              </div>
+
+              <div className="mt-3 space-y-3 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) p-3">
+                <div>
+                  <div className="text-xs font-semibold text-(--ui-text-primary)">上传自己的声音进行复刻</div>
+                  <div className="mt-1 text-[0.6875rem] text-(--ui-text-tertiary)">
+                    克隆试听不会激活音色；只有点击“正式激活并选择”并确认后，才可能收取一次性约 ¥9.9 复刻费。
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block space-y-2">
+                    <span className={fieldLabelClass()}>新的克隆 Voice ID</span>
+                    <Input
+                      onChange={event => {
+                        setMiniMaxVoiceId(event.target.value)
+                        setMiniMaxClonePreview(null)
+                      }}
+                      value={miniMaxVoiceId}
+                    />
+                  </label>
+                  <label className="block space-y-2">
+                    <span className={fieldLabelClass()}>复刻音频（10 秒–5 分钟，≤20 MB）</span>
+                    <Input
+                      accept=".m4a,.mp3,.wav,audio/*"
+                      onChange={event => {
+                        setMiniMaxCloneFile(event.target.files?.[0] || null)
+                        setMiniMaxClonePreview(null)
+                      }}
+                      type="file"
+                    />
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block space-y-2">
+                    <span className={fieldLabelClass()}>参考音频（可选）</span>
+                    <Input
+                      accept=".m4a,.mp3,.wav,audio/*"
+                      onChange={event => setMiniMaxPromptFile(event.target.files?.[0] || null)}
+                      type="file"
+                    />
+                  </label>
+                  <label className="block space-y-2">
+                    <span className={fieldLabelClass()}>参考音频文本</span>
+                    <Input
+                      disabled={!miniMaxPromptFile}
+                      onChange={event => setMiniMaxPromptText(event.target.value)}
+                      value={miniMaxPromptText}
+                    />
+                  </label>
+                </div>
+                <label className="block space-y-2">
+                  <span className={fieldLabelClass()}>克隆试听文本（不会激活音色）</span>
+                  <Textarea onChange={event => setMiniMaxTrialText(event.target.value)} rows={2} value={miniMaxTrialText} />
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    disabled={miniMaxCloneBusy || !miniMaxCloneFile || !miniMaxTrialText.trim()}
+                    onClick={cloneMiniMaxVoice}
+                    type="button"
+                    variant="outline"
+                  >
+                    {miniMaxCloneBusy ? 'Cloning…' : '创建克隆试听（不激活）'}
+                  </Button>
+                  <Button
+                    disabled={!miniMaxClonePreview?.trialAudio || miniMaxActivateBusy || miniMaxClonePreview.activated}
+                    onClick={activateClonedMiniMaxVoice}
+                    type="button"
+                    variant="secondary"
+                  >
+                    {miniMaxActivateBusy
+                      ? 'Activating…'
+                      : miniMaxClonePreview?.activated
+                        ? '已激活并选用'
+                        : '正式激活并选择（约 ¥9.9）'}
+                  </Button>
+                </div>
+                {miniMaxClonePreview?.trialAudio?.streamUrl ? (
+                  <audio
+                    className="w-full"
+                    controls
+                    src={resolveMoneyPrinterMediaUrl(miniMaxClonePreview.trialAudio.streamUrl, health?.apiBaseUrl)}
+                  />
+                ) : null}
+                {miniMaxClonePreview?.previewError ? (
+                  <div className="text-[0.6875rem] text-(--ui-text-danger)">{miniMaxClonePreview.previewError}</div>
+                ) : null}
+              </div>
             </div>
 
             <div className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3">
@@ -1102,7 +1791,9 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
                   <span className={fieldLabelClass()}>字幕位置</span>
                   <select
                     className="h-8 w-full rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) px-2 text-xs"
-                    onChange={event => updateForm('subtitlePosition', event.target.value as VideoGenerationForm['subtitlePosition'])}
+                    onChange={event =>
+                      updateForm('subtitlePosition', event.target.value as VideoGenerationForm['subtitlePosition'])
+                    }
                     value={form.subtitlePosition}
                   >
                     <option value="bottom">bottom</option>
@@ -1126,7 +1817,11 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
               <div className="mt-3 grid grid-cols-2 gap-3">
                 <label className="block space-y-2">
                   <span className={fieldLabelClass()}>字体</span>
-                  <Input list="moneyprinter-fonts" onChange={event => updateForm('fontName', event.target.value)} value={form.fontName} />
+                  <Input
+                    list="moneyprinter-fonts"
+                    onChange={event => updateForm('fontName', event.target.value)}
+                    value={form.fontName}
+                  />
                 </label>
                 <label className="block space-y-2">
                   <span className={fieldLabelClass()}>字号</span>
@@ -1142,7 +1837,10 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
               <div className="mt-3 grid grid-cols-2 gap-3">
                 <label className="block space-y-2">
                   <span className={fieldLabelClass()}>文字色</span>
-                  <Input onChange={event => updateForm('textForeColor', event.target.value)} value={form.textForeColor} />
+                  <Input
+                    onChange={event => updateForm('textForeColor', event.target.value)}
+                    value={form.textForeColor}
+                  />
                 </label>
                 <label className="block space-y-2">
                   <span className={fieldLabelClass()}>背景色 / false / true</span>
@@ -1206,7 +1904,9 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
                     onChange={event => updateForm('bgmFile', event.target.value)}
                     value={form.bgmFile}
                   >
-                    <option value="">{form.bgmType === 'custom' ? '选择 resource/songs/*.mp3' : '留空使用 random'}</option>
+                    <option value="">
+                      {form.bgmType === 'custom' ? '选择 resource/songs/*.mp3' : '留空使用 random'}
+                    </option>
                     {assets.bgms.map(bgm => (
                       <option key={bgm.file} value={bgm.file}>
                         {bgm.name} · {formatBytes(bgm.size)}
@@ -1225,6 +1925,31 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
                     type="file"
                   />
                 </label>
+              </div>
+
+              <div className="mt-3 space-y-3 border-t border-(--ui-stroke-secondary) pt-3">
+                <div className="text-xs font-semibold text-(--ui-text-primary)">MiniMax 音乐生成</div>
+                <label className="block space-y-2">
+                  <span className={fieldLabelClass()}>音乐风格 / 场景提示词</span>
+                  <Input onChange={event => setMiniMaxMusicPrompt(event.target.value)} value={miniMaxMusicPrompt} />
+                </label>
+                <label className="block space-y-2">
+                  <span className={fieldLabelClass()}>歌词（留空生成纯音乐）</span>
+                  <Textarea
+                    onChange={event => setMiniMaxLyrics(event.target.value)}
+                    placeholder="可先点击生成歌词；填写歌词后将生成带人声音乐"
+                    rows={4}
+                    value={miniMaxLyrics}
+                  />
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button disabled={miniMaxLyricsBusy || !miniMaxMusicPrompt.trim()} onClick={generateMiniMaxLyrics} type="button" variant="outline">
+                    {miniMaxLyricsBusy ? 'Generating…' : '生成 / 润色歌词'}
+                  </Button>
+                  <Button disabled={miniMaxMusicBusy || !miniMaxMusicPrompt.trim()} onClick={generateMiniMaxMusic} type="button" variant="outline">
+                    {miniMaxMusicBusy ? 'Generating…' : '生成并选为 BGM'}
+                  </Button>
+                </div>
               </div>
 
               <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-3">
@@ -1271,7 +1996,7 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
           </div>
         </form>
 
-        <section className="h-full min-h-0 overflow-y-auto overscroll-contain border-r border-(--ui-stroke-secondary) p-5">
+        <section className="min-h-72 overscroll-contain border-b border-(--ui-stroke-secondary) p-5 xl:h-full xl:min-h-0 xl:overflow-y-auto xl:border-r xl:border-b-0">
           <div className="mb-3 flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold text-(--ui-text-primary)">任务列表</h2>
             <Button onClick={refreshTasks} size="xs" variant="secondary">
@@ -1301,7 +2026,10 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
                     <span>{task.state}</span>
                   </div>
                   <div className="mt-2 h-1.5 overflow-hidden rounded bg-(--ui-bg-tertiary)">
-                    <div className="h-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, task.progress))}%` }} />
+                    <div
+                      className="h-full bg-primary"
+                      style={{ width: `${Math.max(0, Math.min(100, task.progress))}%` }}
+                    />
                   </div>
                   {task.subject && <div className="mt-2 line-clamp-2">{task.subject}</div>}
                 </button>
@@ -1310,12 +2038,18 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
           </div>
         </section>
 
-        <aside className="h-full min-h-0 overflow-y-auto overscroll-contain p-5">
+        <aside className="min-h-72 overscroll-contain p-5 xl:h-full xl:min-h-0 xl:overflow-y-auto">
           <h2 className="mb-3 text-sm font-semibold text-(--ui-text-primary)">预览</h2>
           {health && (
             <div className="mb-3 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3 text-xs text-(--ui-text-secondary)">
               <div>Service: {health.serviceRunning ? 'running' : 'stopped'}</div>
               <div>Installed: {health.installed ? 'yes' : 'no'}</div>
+              <div>Runtime: {health.runtimeReady ? 'ready' : 'not ready'}</div>
+              {health.runtimePython && <div className="truncate">Python: {health.runtimePython}</div>}
+              {health.missingDependencies && health.missingDependencies.length > 0 && (
+                <div className="text-destructive">Missing: {health.missingDependencies.join(', ')}</div>
+              )}
+              {health.ffmpegPath && <div className="truncate">FFmpeg: {health.ffmpegPath}</div>}
               {health.upstreamCommit && <div>Upstream: {health.upstreamCommit}</div>}
             </div>
           )}
@@ -1348,7 +2082,10 @@ export function VideoStudioView({ className, setStatusbarItemGroup: _setStatusba
                   const downloadUrl = resolveMoneyPrinterMediaUrl(video.downloadUrl, health?.apiBaseUrl)
 
                   return (
-                    <div className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3" key={video.name}>
+                    <div
+                      className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3"
+                      key={video.name}
+                    >
                       <div className="mb-2 text-xs font-medium text-(--ui-text-primary)">{video.name}</div>
                       {streamUrl ? <video className="w-full rounded bg-black" controls src={streamUrl} /> : null}
                       {downloadUrl ? (

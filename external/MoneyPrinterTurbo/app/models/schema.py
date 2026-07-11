@@ -225,6 +225,49 @@ class VideoSocialMetadataRequest(VideoSocialMetadataParams, BaseModel):
     pass
 
 
+class MiniMaxUploadedAsset(BaseModel):
+    contentBase64: str = Field(min_length=1, max_length=28_000_100)
+    filename: str = Field(default="", max_length=255)
+
+    class Config:
+        extra = "forbid"
+
+
+class MiniMaxVoiceCloneRequest(BaseModel):
+    activate: bool = False
+    clone_audio: MiniMaxUploadedAsset
+    model: str = Field(default="", max_length=64)
+    prompt_audio: Optional[MiniMaxUploadedAsset] = None
+    prompt_text: str = Field(default="", max_length=1000)
+    trial_text: str = Field(default="", max_length=10000)
+    voice_id: str = Field(min_length=8, max_length=256)
+
+
+class MiniMaxMusicRequest(BaseModel):
+    is_instrumental: bool = False
+    lyrics: str = Field(default="", max_length=3500)
+    lyrics_optimizer: bool = True
+    model: str = Field(default="", max_length=64)
+    prompt: str = Field(default="", max_length=2000)
+    save_as_bgm: bool = True
+
+
+class MiniMaxTtsRequest(BaseModel):
+    model: str = Field(default="", max_length=64)
+    save_as_custom_audio: bool = True
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    text: str = Field(min_length=1, max_length=10000)
+    voice_id: str = Field(min_length=8, max_length=256)
+    volume: float = Field(default=1.0, ge=0.01, le=10.0)
+
+
+class MiniMaxLyricsRequest(BaseModel):
+    lyrics: str = Field(default="", max_length=3500)
+    mode: str = Field(default="write_full_song", max_length=64)
+    prompt: str = Field(default="", max_length=2000)
+    title: str = Field(default="", max_length=200)
+
+
 ######################################################################################################
 ######################################################################################################
 ######################################################################################################

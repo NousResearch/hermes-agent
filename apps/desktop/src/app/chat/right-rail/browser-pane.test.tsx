@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $browserCurrentState, driveBrowser, resetBrowserRegistryForTests, setBrowserSessionState } from '@/store/browser'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
-import { BrowserPane } from './browser-pane'
+import { browserActionScript, BrowserPane } from './browser-pane'
 
 describe('BrowserPane', () => {
   beforeEach(() => {
@@ -18,13 +18,13 @@ describe('BrowserPane', () => {
     vi.unstubAllGlobals()
   })
 
-  it('renders an isolated browser webview', () => {
+  it('renders a profile-persistent browser webview', () => {
     render(<BrowserPane setTitlebarToolGroup={vi.fn()} />)
 
     const webview = document.querySelector('webview')
 
     expect(webview).toBeInstanceOf(HTMLElement)
-    expect(webview?.getAttribute('partition')).toBe('persist:hermes-browser-session-1')
+    expect(webview?.getAttribute('partition')).toBe('persist:hermes-browser')
     expect(webview?.getAttribute('webpreferences')).toContain('nodeIntegration=no')
     expect(webview?.getAttribute('src')).toBe('about:blank')
   })
@@ -112,6 +112,9 @@ describe('BrowserPane', () => {
 
     await waitFor(() => expect(completeSnapshot).toHaveBeenCalled())
     expect(webview.executeJavaScript).toHaveBeenCalledWith(expect.stringContaining('document.querySelectorAll'), false)
+    const snapshotScript = webview.executeJavaScript.mock.calls[0]?.[0] as string
+    expect(snapshotScript).not.toContain('return element.value')
+    expect(snapshotScript).not.toContain('value: clip(elementValue')
     expect(completeSnapshot).toHaveBeenCalledWith({
       requestId: 'req-1',
       sessionId: 'session-1',
@@ -170,5 +173,59 @@ describe('BrowserPane', () => {
       }),
       sessionId: 'session-1'
     })
+  })
+
+  it('rejects a fingerprint action when the page URL changed after the snapshot', async () => {
+    document.body.innerHTML = '<button>发布</button>'
+
+    const result = await window.eval(
+      browserActionScript({
+        expectedUrl: `${window.location.href}#stale`,
+        kind: 'click',
+        target: { tag: 'button', text: '发布' }
+      })
+    ) as { error?: string; ok: boolean }
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('Page URL changed')
+  })
+
+  it('rejects an ambiguous fingerprint instead of clicking an arbitrary matching button', async () => {
+    document.body.innerHTML = '<button>发布</button><button>发布</button>'
+
+    const result = await window.eval(
+      browserActionScript({
+        expectedUrl: window.location.href,
+        kind: 'click',
+        target: { tag: 'button', text: '发布' }
+      })
+    ) as { error?: string; ok: boolean }
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('ambiguous')
+  })
+
+  it('uses the snapshot hermesRef to disambiguate identical elements', async () => {
+    document.body.innerHTML = [
+      '<button data-hermes-browser-ref="snapshot-1:0">发布</button>',
+      '<button data-hermes-browser-ref="snapshot-1:1">发布</button>'
+    ].join('')
+    const buttons = Array.from(document.querySelectorAll('button'))
+    const firstClick = vi.fn()
+    const secondClick = vi.fn()
+    buttons[0].addEventListener('click', firstClick)
+    buttons[1].addEventListener('click', secondClick)
+
+    const result = await window.eval(
+      browserActionScript({
+        expectedUrl: window.location.href,
+        kind: 'click',
+        target: { hermesRef: 'snapshot-1:0', tag: 'button', text: '发布' }
+      })
+    ) as { error?: string; ok: boolean }
+
+    expect(result.ok).toBe(true)
+    expect(firstClick).toHaveBeenCalledOnce()
+    expect(secondClick).not.toHaveBeenCalled()
   })
 })

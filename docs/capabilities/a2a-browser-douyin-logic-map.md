@@ -1,6 +1,6 @@
 # A2A 多 Agent + 右栏浏览器隔离 + 抖音操控 逻辑地图
 
-> 状态：2026-07-09 实测 + Phase1 落地版  
+> 状态：2026-07-10 同 webview 安全桥实现版
 > 范围：Hermes Desktop Dev 产品（`Hermes Dev/hermes-home`）、右栏 `<webview>` 浏览器、Agent `browser_*` 工具、抖音精选页  
 > 约束：Video Studio / MoneyPrinter 仍见 `docs/capabilities/video-studio-logic-map.md`；本文件补齐 **A2A 编排、浏览器会话隔离、抖音控制能力**。
 
@@ -34,11 +34,11 @@
 | `CAP-004` | 聊天-浏览器绑定 | 一个聊天 session 对应一套右栏浏览器状态 | `PAGE-002`, `DATA-001`, `RULE-001` |
 | `CAP-005` | 登录态持久化（右栏） | Electron `persist:` partition 按 sessionId 存 Cookie | `RULE-002`, `TEST-003` |
 | `CAP-006` | 独立关闭浏览器 | 关闭当前 session 浏览器不影响其他聊天 | `ACT-014`, `RULE-003` |
-| `CAP-007` | Agent 浏览器控制 | `browser_navigate/click/type/snapshot/vision` | `TOOL-010` |
+| `CAP-007` | Agent 浏览器控制 | Desktop 会话中的 `browser_navigate/click/type/snapshot/scroll/back/press` 路由到当前右栏 webview；其它入口仍使用独立 Agent 浏览器栈 | `TOOL-010`, `RULE-005`, `RULE-012` |
 | `CAP-008` | 抖音精选浏览 | 打开 feed、读卡片、关登录墙、汇总指标 | `PAGE-010`, `FLOW-010` |
-| `CAP-009` | 抖音互动（登录后） | 点赞/评论/打开评论区（需持久登录） | `FLOW-011`, `RULE-010` |
+| `CAP-009` | 抖音互动（桥完成，业务验收中） | 同 webview 动作和逐次审批已实现；真实测试账号的点赞/评论/私信、审计和频控尚未完成 | `FLOW-011`, `RULE-010`~`RULE-014` |
 | `CAP-010` | AI 视频生成多模型 | xAI Grok Imagine + FAL 族 | `TOOL-003`, skill `hermes-video-generate` |
-| `CAP-011` | 右栏 ↔ Agent 同步 | gateway `browser.drive` → Desktop 右栏跟随 | `API-003`, `FLOW-020` |
+| `CAP-011` | Desktop-owned 请求/响应桥 | gateway `browser.request/respond` 阻塞式驱动当前 webview；旧 `browser.drive` 只保留非桥接场景的导航同步 | `API-003`~`API-005`, `FLOW-020` |
 
 ---
 
@@ -106,8 +106,8 @@ ACCEPTANCE: ...
 | `ACT-004` | 验收 public_url | 打开/HEAD URL | pass/fail |
 | `ACT-010` | 打开右栏浏览器 | `openBrowserRail` / preload browser API | `DATA-001` 记录 |
 | `ACT-011` | 导航 URL | webview `loadURL` / `driveBrowser(navigate)` | url 更新 |
-| `ACT-012` | Agent browser_navigate | `TOOL-010` | 工具结果 + 可选 `browser.drive` |
-| `ACT-013` | Agent browser_click/type | `TOOL-010` | DOM 交互 |
+| `ACT-012` | Agent browser_navigate | Desktop 回调存在时经 `browser.request` 导航同一 webview；否则使用原 Agent 浏览器 | 工具结果 + 当前页新快照 |
+| `ACT-013` | Agent browser_click/type | ref → fingerprint + expected URL → 同 webview 唯一匹配 | 动作结果 + 当前页新快照 |
 | `ACT-014` | 关闭当前浏览器 session | `closeBrowserRailForSession` | 删除 `DATA-001[sessionId]` |
 | `ACT-020` | 打开抖音精选 | navigate | `PAGE-010` |
 | `ACT-021` | 关闭登录墙 | Esc / 点 X | 恢复 feed 浏览 |
@@ -154,28 +154,32 @@ ACT-020 打开 jingxuan
 
 结论：`ACT-026`/`ACT-027` **可用**；点击卡片会再次触发 `PAGE-011`。
 
-### `FLOW-011` 抖音写互动（登录后）
+### `FLOW-011` 抖音写互动（安全桥已完成，真实账号验收待执行）
 
 ```text
 用户在「目标 session 的右栏浏览器」扫码登录抖音
-  → Cookie 落在 persist:hermes-browser-{sessionId}
-  → ACT-022 打开视频
-  → ACT-023 点赞 / ACT-024 看评论 / ACT-025 评论（可选）
-  → ACT-027 汇总评论区主题
+  → Desktop-owned browser bridge 获取同一 webview 快照（已实现）
+  → Agent 按 fingerprint 选择目标并绑定 expected URL（已实现）
+  → 点赞/提交评论/私信需用户逐次批准（基础审批已实现）
+  → 同一 webview 执行动作并回传结果与新快照（已实现）
+  → 写入持久审计、账号频控和 CRM（未实现）
 ```
 
-**未登录时**：`ACT-023`~`ACT-025` **阻塞**（`RULE-010`）。
+`ACT-023`~`ACT-025` 的代码通道已打通，但尚未在登录测试账号上完成真实副作用验收，因此不能标记为业务可用。禁止恢复旧的跨浏览器 DOM 索引重放。
 
-### `FLOW-020` Agent 工具驱动右栏同步
+### `FLOW-020` Agent 工具驱动当前右栏 webview
 
 ```text
-Agent TOOL-010 browser_navigate 成功
-  → tui_gateway 发 browser.drive (API-003)
-  → Desktop use-preview-routing 仅处理 active session
-  → driveBrowser → BrowserPane webview
+Agent 调用 TOOL-010
+  → AIAgent 检测 desktop_browser_callback
+  → tui_gateway 发 browser.request，阻塞等待
+  → Desktop 只允许 active session 调用 Electron browser API
+  → BrowserPane 在当前 partition 快照/执行 fingerprint 动作
+  → Desktop 发 browser.respond
+  → Agent 获得结果与新快照 refs
 ```
 
-规则：非 active session 的 drive 事件忽略（`RULE-004`）。
+规则：非 active session 的请求立即返回失败；模型 ref 只在最近一次快照 URL 内有效；任何歧义匹配都不得点击。
 
 ---
 
@@ -197,9 +201,11 @@ Agent TOOL-010 browser_navigate 成功
 
 | ID | 接口 | 说明 |
 | --- | --- | --- |
-| `API-001` | `window.hermesDesktop.browser.*` | Desktop preload：open/navigate/reload/back/forward/onDrive |
-| `API-002` | `hermes:browser:drive` IPC | main → renderer 驱动右栏 |
-| `API-003` | gateway event `browser.drive` | Python 工具完成 → Desktop |
+| `API-001` | `window.hermesDesktop.browser.*` | Desktop preload：open/navigate/snapshot/act/reload/back/forward/onDrive |
+| `API-002` | `hermes:browser:drive` IPC | main → renderer 驱动右栏快照和动作 |
+| `API-003` | gateway event `browser.drive` | 非同页桥场景的导航同步；禁止 DOM ref 重放 |
+| `API-004` | gateway event `browser.request` | Python → 当前 Desktop session 的 snapshot/navigate/back/action 请求 |
+| `API-005` | RPC `browser.respond` | Desktop → Python，唤醒阻塞工具调用 |
 | `TOOL-001` | toolset `image_gen` / `image_generate` | 静帧 |
 | `TOOL-002` | toolset `video_gen` | 视频工具集 |
 | `TOOL-003` | `video_generate` | 统一 T2V/I2V |
@@ -225,13 +231,16 @@ Agent TOOL-010 browser_navigate 成功
 | `RULE-002` | **登录持久化（右栏）**：`partition = persist:hermes-browser-{sessionId}` → 同 session 重启 Desktop 后 Cookie 可保留（Electron persist 分区）。 |
 | `RULE-003` | **独立关闭**：`closeBrowserRailForSession(sessionId)` 只删该 key；其它 session 的 `DATA-001`/`DATA-002` 不受影响。 |
 | `RULE-004` | **drive 仅 active session**：非当前聊天的 `browser.drive` 不更新可见右栏。 |
-| `RULE-005` | **双浏览器栈**：右栏 webview（per-session）≠ Agent `browser_*`（Camofox/Browserbase 等，常 **per Hermes profile**）。产品文案需区分「用户看得见的窗」与「Agent 无头/远程浏览器」。 |
+| `RULE-005` | **双浏览器栈仍存在，但 Desktop 优先同页**：Desktop 主会话配置回调后，现有 `browser_*` 路由到右栏 webview；CLI/消息网关等无回调入口仍使用 Camofox/Browserbase。 |
 | `RULE-006` | **Chat 模型 ≠ 媒体模型**：出片走 `video_generate`，不把 session 模型切成 Imagine Video。 |
 | `RULE-007` | **Toolset 变更需新会话**：enable `video_gen` 后 `/reset` 或新 chat。 |
 | `RULE-008` | **子 Agent 交付必须可验证**：`public_url` / path / task_id。 |
 | `RULE-009` | **Dev home 边界**：只动 `Hermes Dev/hermes-home`，不动生产 `~/.hermes`（除非用户明确要求）。 |
 | `RULE-010` | **抖音写操作需登录**：未登录可只读 feed；点赞/评论/完整评论区需用户在**对应 session 右栏**完成登录。 |
 | `RULE-011` | **谨慎自动化互动**：自动点赞/刷评论有平台风控与伦理风险；默认仅分析，写操作需用户明确授权。 |
+| `RULE-012` | **禁止跨 DOM 索引重放**：Desktop `@eN` 仅是最近同页快照到 fingerprint 的临时映射；执行时不发送 raw index。 |
+| `RULE-013` | **过期/歧义失败关闭**：动作必须匹配快照 URL，fingerprint 必须唯一；URL 变化、零匹配、多匹配均拒绝。 |
+| `RULE-014` | **敏感值与副作用边界**：快照不返回表单当前值；抖音非链接控件、已知写操作文案和 Enter 提交必须逐次审批。 |
 
 ---
 
@@ -242,17 +251,17 @@ Agent TOOL-010 browser_navigate 成功
 | 登录信息能否持久化？ | **能（右栏 webview）** | `browserPartitionForSession` → `persist:hermes-browser-…` |
 | 一个聊天框一个浏览器？ | **能（状态 + partition 均按 sessionId）** | `browser.ts` registry + partition 函数 |
 | 关掉一个窗口影响其他聊天？ | **不影响** | `closeBrowserRailForSession` 只删当前 key；`browser.test.ts` 有用例 |
-| Agent 能否控制浏览器？ | **能** | `browser_*` + `browser.drive` 同步右栏（active session） |
-| Agent 栈与右栏是否同一 Cookie 罐？ | **默认否** | Camofox identity 是 **profile 级**；右栏是 **chat session 级** → 抖音登录若在右栏完成，Agent 无头浏览器**不一定**带上同一登录，除非做成同一 partition/adoption（见产品缺口） |
+| Agent 能否控制用户已登录的右栏浏览器？ | **代码通道能；真实抖音写操作尚待测试账号验收** | Desktop 回调将现有 browser 工具路由到当前 session webview |
+| Agent 栈与右栏是否同一 Cookie 罐？ | **Desktop 会话是；其它入口默认否** | Desktop 请求在当前 `persist:` partition 内执行；无 Desktop 回调时仍是独立浏览器栈 |
 
 ### 产品缺口（建议后续）
 
 | Gap | 说明 | 建议 |
 | --- | --- | --- |
-| `GAP-001` | Agent 浏览器与右栏 Cookie 未默认共享 | 方案：Desktop-owned browser 作为唯一可视 shell，Agent 工具驱动同一 webview；或 Camofox adoption 绑定 session |
+| `GAP-001` | 同 webview 桥 | **已完成**：snapshot、fingerprint、URL 校验、action、result、新 snapshot |
 | `GAP-002` | 无视频模型 pill | 镜像 image-generation-pill |
 | `GAP-003` | 专家 profile 工具仍偏宽 | 按 AG 表裁剪 terminal/cron 等 |
-| `GAP-004` | 抖音未登录无法验证点赞/评论路径 | 在目标 session 右栏人工登录后跑 `FLOW-011` |
+| `GAP-004` | 抖音写操作闭环缺失 | 基础逐次审批已完成；补持久审计/频控后在测试账号执行受控验证 |
 
 ---
 
@@ -274,6 +283,11 @@ Agent TOOL-010 browser_navigate 成功
 | `TEST-012` | 右栏登录态（用户截图） | Hermes 右栏 `douyin.com/jingxuan` | **pass**：头像可见、无「登录」按钮；`Agent: Navigate` 徽章可见 |
 | `TEST-013` | Agent `browser_*` 与右栏登录共享 | 同时间点 Agent 再开 jingxuan | **fail**：仍扫码墙 → 坐实 `GAP-001` / `RULE-005` |
 | `TEST-014` | 登录态 feed 只读归纳 | 用户右栏截图 | **pass**：无人之岛 88.0万赞/04:37；西昊挑战 36:22 @我是庄小周；消息角标 10 |
+| `TEST-015` | 禁止跨运行时 DOM replay | `tests/test_tui_gateway_server.py -k browser_drive` | **pass**：click/type/press/scroll 均返回 `None`，navigate 保留 |
+| `TEST-016` | 同 webview snapshot/action 请求响应 | Python + Desktop 定向测试 | **pass**：active session 限制、RPC 唤醒、动作后新快照 |
+| `TEST-017` | fingerprint 安全约束 | `browser-pane.test.tsx` | **pass**：过期 URL 和歧义目标均拒绝 |
+| `TEST-018` | 表单值脱敏边界 | Python + Desktop 快照测试 | **pass**：input/textarea value 不进入模型快照 |
+| `TEST-019` | 抖音写操作审批 | gateway 协议测试 | **pass**：按钮点击/Enter 未批准时不发 action；真实站点待验收 |
 
 ---
 
@@ -302,13 +316,13 @@ Agent TOOL-010 browser_navigate 成功
 | `video-studio` `image_gen`+`video_gen` config | done |
 | `hermes-video-generate` 链到 video-studio skills | done（symlink） |
 | 抖音只读分析 | done |
-| 抖音点赞/评论 | blocked（需用户在目标聊天右栏登录） |
+| 抖音点赞/评论/私信 | bridge done；真实测试账号 E2E、持久审计和频控 blocked |
 
 ---
 
 ## 14. 下一步建议（按优先级）
 
-1. **用户在「要用的那个聊天」右栏打开抖音并扫码登录** → 复跑 `FLOW-011` 验证点赞/评论/评论区抓取。  
-2. 推进 `GAP-001`：让 Agent 控制与右栏 **同一 Cookie 罐**，否则「你看到已登录、Agent 仍未登录」。  
-3. Phase2：裁剪 AG-002/AG-003 工具面 + Desktop 视频 pill。  
-4. 把本逻辑地图挂进 Desktop 产品文档索引（`docs/product/hermes-dev-history-index.md`）。
+1. 增加点赞、评论、私信的持久审批审计、账号级频控和失败熔断。
+2. 只用测试账号和单动作验证 `FLOW-011`，遇到验证码或风控立即停止。
+3. 将公开商家/评论线索写入 typed SQLite CRM，再脱敏增量导出 Obsidian。
+4. Phase2：裁剪 AG-002/AG-003 工具面 + Desktop 视频 pill。

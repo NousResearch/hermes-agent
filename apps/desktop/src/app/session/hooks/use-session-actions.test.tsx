@@ -153,7 +153,7 @@ describe('createBackendSessionForSend profile routing', () => {
       $currentCwd.set('/remote/worktree')
     })
 
-    expect(params).toMatchObject({ cwd: '/remote/worktree' })
+    expect(params).toMatchObject({ cwd: '/remote/worktree', source: 'desktop' })
   })
 })
 

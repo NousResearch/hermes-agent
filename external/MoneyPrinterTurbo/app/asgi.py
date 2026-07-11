@@ -12,6 +12,7 @@ from loguru import logger
 from app.config import config
 from app.models.exception import HttpException
 from app.router import root_api_router
+from app.security import ManagedSidecarAuthMiddleware
 from app.utils import utils
 
 
@@ -51,6 +52,7 @@ def get_application() -> FastAPI:
 
 
 app = get_application()
+app.add_middleware(ManagedSidecarAuthMiddleware)
 
 # Configures the CORS middleware for the FastAPI app
 cors_allowed_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")

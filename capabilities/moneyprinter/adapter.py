@@ -10,11 +10,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+from functools import lru_cache
 import json
 import os
 import re
+import secrets
 import shutil
+import subprocess
 import sys
+import tempfile
+import tomllib
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote, urlparse
@@ -31,6 +36,12 @@ MONEYPRINTER_ROOT = REPO_ROOT / "external" / "MoneyPrinterTurbo"
 UPSTREAM_COMMIT = "63113a3"
 DEFAULT_BASE_URL = os.getenv("HERMES_MONEYPRINTER_URL", "http://127.0.0.1:8080")
 REQUEST_TIMEOUT_SECONDS = 30
+MINIMAX_PROXY_TIMEOUT_SECONDS = {
+    "/api/v1/minimax/lyrics": 90,
+    "/api/v1/minimax/music": 210,
+    "/api/v1/minimax/tts": 180,
+    "/api/v1/minimax/voices/clone": 420,
+}
 CONFIG_PATH = MONEYPRINTER_ROOT / "config.toml"
 CONFIG_EXAMPLE_PATH = MONEYPRINTER_ROOT / "config.example.toml"
 TASKS_DIR = MONEYPRINTER_ROOT / "storage" / "tasks"
@@ -38,6 +49,11 @@ LOCAL_MATERIALS_DIR = MONEYPRINTER_ROOT / "storage" / "local_videos"
 SONGS_DIR = MONEYPRINTER_ROOT / "resource" / "songs"
 FONTS_DIR = MONEYPRINTER_ROOT / "resource" / "fonts"
 CUSTOM_AUDIO_DIR = MONEYPRINTER_ROOT / "storage" / "custom_audio"
+MINIMAX_VOICES_DIR = MONEYPRINTER_ROOT / "storage" / "minimax" / "voices"
+MAX_MINIMAX_AUDIO_BYTES = 20 * 1024 * 1024
+MINIMAX_AUDIO_EXTS = {".m4a", ".mp3", ".wav"}
+SIDECAR_TOKEN_HEADER = "X-Hermes-MoneyPrinter-Token"
+_SIDECAR_TOKEN = secrets.token_urlsafe(32)
 SUPPORTED_LOCAL_MATERIAL_EXTS = {".avi", ".flv", ".jpeg", ".jpg", ".mkv", ".mov", ".mp4", ".png"}
 SUPPORTED_AUDIO_EXTS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}
 SUPPORTED_BGM_EXTS = {".mp3"}
@@ -46,6 +62,15 @@ PUBLIC_VIDEO_OUTPUT_RE = re.compile(r"^(?:combined|final)-\d+\.mp4$", re.IGNOREC
 MEDIA_PROXY_HEADERS = ("content-type", "content-length", "content-disposition", "accept-ranges", "content-range")
 
 _process: Optional[asyncio.subprocess.Process] = None
+
+
+def _media_proxy_request_headers(request: Any = None) -> dict[str, str]:
+    headers = {SIDECAR_TOKEN_HEADER: _SIDECAR_TOKEN}
+    request_headers = getattr(request, "headers", None)
+    range_header = str(request_headers.get("Range") or "").strip() if request_headers is not None else ""
+    if range_header:
+        headers["Range"] = range_header
+    return headers
 
 
 def _envelope(data: Any = None, *, ok: bool = True, error: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -69,10 +94,53 @@ def _service_running() -> bool:
 
 
 def _moneyprinter_python() -> str:
-    venv_python = MONEYPRINTER_ROOT / ".venv" / "bin" / "python"
-    if venv_python.exists():
-        return str(venv_python)
+    for relative_path in (("bin", "python"), ("Scripts", "python.exe")):
+        venv_python = MONEYPRINTER_ROOT / ".venv" / Path(*relative_path)
+        if venv_python.is_file():
+            return str(venv_python)
     return sys.executable
+
+
+@lru_cache(maxsize=4)
+def _moneyprinter_runtime_status() -> dict[str, Any]:
+    python = _moneyprinter_python()
+    required = ("fastapi", "uvicorn", "moviepy", "imageio_ffmpeg")
+    probe = (
+        "import importlib.util,json,os\n"
+        f"required={required!r}\n"
+        "missing=[name for name in required if importlib.util.find_spec(name) is None]\n"
+        "ffmpeg=''\n"
+        "if 'imageio_ffmpeg' not in missing:\n"
+        " import imageio_ffmpeg\n"
+        " try: ffmpeg=imageio_ffmpeg.get_ffmpeg_exe() or ''\n"
+        " except Exception: ffmpeg=''\n"
+        "if not ffmpeg or not os.path.isfile(ffmpeg):\n"
+        " missing.append('ffmpeg')\n"
+        "print(json.dumps({'missing':missing,'ffmpeg':ffmpeg}))\n"
+        "raise SystemExit(0 if not missing else 3)\n"
+    )
+    try:
+        completed = subprocess.run(
+            [python, "-c", probe],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=20,
+        )
+        payload = json.loads((completed.stdout or "").strip() or "{}")
+        missing = payload.get("missing") if isinstance(payload.get("missing"), list) else []
+        ffmpeg_path = str(payload.get("ffmpeg") or "")
+        ready = completed.returncode == 0 and not missing and bool(ffmpeg_path)
+    except Exception:
+        missing = ["python-runtime"]
+        ffmpeg_path = ""
+        ready = False
+    return {
+        "ffmpegPath": ffmpeg_path,
+        "missingDependencies": [str(item) for item in missing],
+        "runtimePython": python,
+        "runtimeReady": ready,
+    }
 
 
 def _build_service_env() -> dict[str, str]:
@@ -119,7 +187,25 @@ def _build_service_env() -> dict[str, str]:
     env["PATH"] = os.pathsep.join(path_parts) if path_parts else "/usr/bin:/bin"
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONNOUSERSITE"] = "1"
+    env["MONEYPRINTER_HERMES_TOKEN"] = _SIDECAR_TOKEN
     return env
+
+
+def _managed_sidecar_command() -> tuple[str, ...]:
+    parsed = urlparse(DEFAULT_BASE_URL)
+    port = parsed.port or 8080
+    return (
+        _moneyprinter_python(),
+        "-m",
+        "uvicorn",
+        "app.asgi:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--log-level",
+        "warning",
+    )
 
 
 def _health_payload(*, service_running: bool, message: str = "") -> dict[str, Any]:
@@ -132,7 +218,51 @@ def _health_payload(*, service_running: bool, message: str = "") -> dict[str, An
         "serviceRunning": service_running,
         "storageWritable": storage.exists() and os.access(storage, os.W_OK),
         "upstreamCommit": UPSTREAM_COMMIT,
+        **_moneyprinter_runtime_status(),
     }
+
+
+def _managed_identity_valid(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("data")
+    return (
+        isinstance(data, dict)
+        and data.get("service") == "moneyprinterturbo"
+        and data.get("managed") is True
+        and data.get("protocol_version") == 1
+    )
+
+
+async def _probe_managed_sidecar() -> bool:
+    if ClientSession is None or ClientTimeout is None:
+        return False
+    try:
+        async with ClientSession() as session:
+            async with session.get(
+                f"{DEFAULT_BASE_URL}/api/v1/hermes/health",
+                headers={SIDECAR_TOKEN_HEADER: _SIDECAR_TOKEN},
+                timeout=ClientTimeout(total=3),
+            ) as response:
+                if response.status != 200:
+                    return False
+                return _managed_identity_valid(await response.json())
+    except Exception:
+        return False
+
+
+async def _sidecar_port_in_use() -> bool:
+    parsed = urlparse(DEFAULT_BASE_URL)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 8080
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=0.75)
+        del reader
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except Exception:
+        return False
 
 
 def _read_config_text() -> str:
@@ -143,22 +273,56 @@ def _read_config_text() -> str:
     return "[app]\n"
 
 
-def _replace_scalar(text: str, key: str, value: str) -> str:
-    escaped = value.replace('"', '\\"')
-    line = f'{key} = "{escaped}"'
-    pattern = re.compile(rf"^{re.escape(key)}\s*=\s*.*$", re.MULTILINE)
-    if pattern.search(text):
-        return pattern.sub(line, text, count=1)
-    return f"{text.rstrip()}\n{line}\n"
+def _insert_config_line(text: str, section: str, line: str) -> str:
+    section_match = re.search(rf"^\[{re.escape(section)}\]\s*$", text, flags=re.MULTILINE)
+    if section_match is None:
+        prefix = text.rstrip()
+        separator = "\n\n" if prefix else ""
+        return f"{prefix}{separator}[{section}]\n{line}\n"
+
+    remaining = text[section_match.end() :]
+    next_section = re.search(r"^\s*\[", remaining, flags=re.MULTILINE)
+    insert_at = section_match.end() + (next_section.start() if next_section else len(remaining))
+    before = text[:insert_at].rstrip()
+    after = text[insert_at:]
+    separator = "\n" if not after.startswith("\n") else ""
+    return f"{before}\n{line}{separator}{after}"
 
 
-def _replace_list(text: str, key: str, values: list[str]) -> str:
-    rendered = ", ".join(f'"{value.replace(chr(34), chr(92) + chr(34))}"' for value in values if value)
+def _replace_config_line(text: str, section: str, key: str, line: str, value_pattern: str) -> str:
+    section_match = re.search(rf"^\[{re.escape(section)}\]\s*$", text, flags=re.MULTILINE)
+    if section_match is None:
+        return _insert_config_line(text, section, line)
+
+    content_start = section_match.end()
+    remaining = text[content_start:]
+    next_section = re.search(r"^\s*\[", remaining, flags=re.MULTILINE)
+    content_end = content_start + (next_section.start() if next_section else len(remaining))
+    section_text = text[content_start:content_end]
+    pattern = re.compile(rf"^{re.escape(key)}\s*=\s*{value_pattern}$", re.MULTILINE)
+    if pattern.search(section_text):
+        replaced = pattern.sub(line, section_text, count=1)
+        return f"{text[:content_start]}{replaced}{text[content_end:]}"
+    return _insert_config_line(text, section, line)
+
+
+def _replace_scalar(text: str, key: str, value: str, *, section: str = "app") -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", key):
+        raise ValueError("config key contains unsupported characters")
+    if re.search(r"[\x00-\x1f\x7f]", value):
+        raise ValueError(f"{key} contains unsupported control characters")
+    line = f"{key} = {json.dumps(value, ensure_ascii=False)}"
+    return _replace_config_line(text, section, key, line, r".*")
+
+
+def _replace_list(text: str, key: str, values: list[str], *, section: str = "app") -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", key):
+        raise ValueError("config key contains unsupported characters")
+    if any(re.search(r"[\x00-\x1f\x7f]", value) for value in values):
+        raise ValueError(f"{key} contains unsupported control characters")
+    rendered = ", ".join(json.dumps(value, ensure_ascii=False) for value in values if value)
     line = f"{key} = [{rendered}]"
-    pattern = re.compile(rf"^{re.escape(key)}\s*=\s*\[.*?\]", re.MULTILINE)
-    if pattern.search(text):
-        return pattern.sub(line, text, count=1)
-    return f"{text.rstrip()}\n{line}\n"
+    return _replace_config_line(text, section, key, line, r"\[.*?\]")
 
 
 def _split_config_list_input(value: Any) -> list[str]:
@@ -191,6 +355,12 @@ def _config_summary() -> dict[str, Any]:
     text = _read_config_text()
     provider = _read_config_scalar(text, "llm_provider", "openai")
     api_key_configured = _has_config_value(text, f"{provider}_api_key")
+    try:
+        parsed_config = tomllib.loads(text)
+    except Exception:
+        parsed_config = {}
+    minimax_config = parsed_config.get("minimax") if isinstance(parsed_config.get("minimax"), dict) else {}
+    minimax_api_key = str(minimax_config.get("api_key") or _read_config_scalar(text, "minimax_api_key")).strip()
     return {
         "apiKeyConfigured": api_key_configured,
         "baseUrl": _read_config_scalar(text, f"{provider}_base_url"),
@@ -201,9 +371,38 @@ def _config_summary() -> dict[str, Any]:
             "pexels": _has_config_value(text, "pexels_api_keys"),
             "pixabay": _has_config_value(text, "pixabay_api_keys"),
         },
+        "minimax": {
+            "apiKeyConfigured": bool(minimax_api_key),
+            "baseUrl": str(
+                minimax_config.get("base_url")
+                or _read_config_scalar(text, "minimax_base_url", "https://api.minimaxi.com")
+            ),
+            "musicModel": str(minimax_config.get("music_model") or "music-2.6-free"),
+            "t2aModel": str(minimax_config.get("t2a_model") or "speech-2.8-hd"),
+            "voiceCloneModel": str(minimax_config.get("voice_clone_model") or "speech-2.8-hd"),
+        },
         "modelConfigured": api_key_configured,
         "modelName": _read_config_scalar(text, f"{provider}_model_name"),
     }
+
+
+def _write_config_text(text: str) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{CONFIG_PATH.name}.",
+        suffix=".tmp",
+        dir=CONFIG_PATH.parent,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fp:
+            fp.write(text)
+            fp.flush()
+            os.fsync(fp.fileno())
+        temporary_path.chmod(0o600)
+        os.replace(temporary_path, CONFIG_PATH)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 async def health() -> Any:
@@ -213,15 +412,24 @@ async def health() -> Any:
     if not _is_installed():
         return _json(_envelope(_health_payload(service_running=False, message="MoneyPrinterTurbo is not vendored.")))
 
-    try:
-        async with ClientSession() as session:
-            async with session.get(f"{DEFAULT_BASE_URL}/docs", timeout=ClientTimeout(total=3)) as response:
-                if response.status < 500:
-                    return _json(_envelope(_health_payload(service_running=True, message="MoneyPrinter API is reachable.")))
-    except Exception:
-        pass
+    if await _probe_managed_sidecar():
+        return _json(
+            _envelope(
+                _health_payload(
+                    service_running=True,
+                    message="Authenticated MoneyPrinter sidecar is reachable.",
+                )
+            )
+        )
 
-    return _json(_envelope(_health_payload(service_running=_service_running(), message="MoneyPrinter API is not reachable yet.")))
+    return _json(
+        _envelope(
+            _health_payload(
+                service_running=False,
+                message="Authenticated MoneyPrinter sidecar is not reachable.",
+            )
+        )
+    )
 
 
 async def get_config() -> Any:
@@ -237,33 +445,46 @@ async def save_config(request: Any) -> Any:
     if not isinstance(body, dict):
         return _json(_error("Config body must be an object", "MONEYPRINTER_INVALID_CONFIG"), status=400)
 
-    if not CONFIG_PATH.exists() and CONFIG_EXAMPLE_PATH.exists():
-        shutil.copyfile(CONFIG_EXAMPLE_PATH, CONFIG_PATH)
-
     text = _read_config_text()
     provider = str(body.get("llmProvider") or "openai").strip()
-    if provider:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", provider):
+        return _json(_error("Invalid LLM provider name", "MONEYPRINTER_INVALID_CONFIG"), status=400)
+
+    try:
         text = _replace_scalar(text, "llm_provider", provider)
 
-    for body_key, config_key in {
-        "apiKey": f"{provider}_api_key",
-        "baseUrl": f"{provider}_base_url",
-        "modelName": f"{provider}_model_name",
-    }.items():
-        value = str(body.get(body_key) or "").strip()
-        if value:
-            text = _replace_scalar(text, config_key, value)
+        for body_key, config_key in {
+            "apiKey": f"{provider}_api_key",
+            "baseUrl": f"{provider}_base_url",
+            "modelName": f"{provider}_model_name",
+        }.items():
+            value = str(body.get(body_key) or "").strip()
+            if value:
+                text = _replace_scalar(text, config_key, value)
 
-    for body_key, config_key in (
-        ("pexelsApiKey", "pexels_api_keys"),
-        ("pixabayApiKey", "pixabay_api_keys"),
-        ("coverrApiKey", "coverr_api_keys"),
-    ):
-        values = _split_config_list_input(body.get(body_key))
-        if values:
-            text = _replace_list(text, config_key, values)
+        for body_key, config_key in {
+            "minimaxApiKey": "api_key",
+            "minimaxBaseUrl": "base_url",
+            "minimaxMusicModel": "music_model",
+            "minimaxT2aModel": "t2a_model",
+            "minimaxVoiceCloneModel": "voice_clone_model",
+        }.items():
+            value = str(body.get(body_key) or "").strip()
+            if value:
+                text = _replace_scalar(text, config_key, value, section="minimax")
 
-    CONFIG_PATH.write_text(text, encoding="utf-8")
+        for body_key, config_key in (
+            ("pexelsApiKey", "pexels_api_keys"),
+            ("pixabayApiKey", "pixabay_api_keys"),
+            ("coverrApiKey", "coverr_api_keys"),
+        ):
+            values = _split_config_list_input(body.get(body_key))
+            if values:
+                text = _replace_list(text, config_key, values)
+    except ValueError as exc:
+        return _json(_error(str(exc), "MONEYPRINTER_INVALID_CONFIG"), status=400)
+
+    _write_config_text(text)
     return _json(_envelope(_config_summary()))
 
 
@@ -273,30 +494,40 @@ async def start_service() -> Any:
     if not _is_installed():
         return _json(_error("external/MoneyPrinterTurbo is missing.", "MONEYPRINTER_NOT_INSTALLED"), status=404)
 
-    if _service_running():
-        return _json(_envelope(_health_payload(service_running=True, message="MoneyPrinter service is already running.")))
+    runtime = _moneyprinter_runtime_status()
+    if not runtime["runtimeReady"]:
+        missing = ", ".join(runtime["missingDependencies"]) or "unknown dependencies"
+        return _json(
+            _error(
+                f"MoneyPrinter runtime is incomplete: {missing}",
+                "MONEYPRINTER_RUNTIME_NOT_READY",
+                details=runtime,
+            ),
+            status=503,
+        )
 
-    # If an external process already owns the API port, treat as running.
-    if ClientSession is not None and ClientTimeout is not None:
-        try:
-            async with ClientSession() as session:
-                async with session.get(f"{DEFAULT_BASE_URL}/docs", timeout=ClientTimeout(total=2)) as response:
-                    if response.status < 500:
-                        return _json(
-                            _envelope(
-                                _health_payload(
-                                    service_running=True,
-                                    message="MoneyPrinter API is already reachable (external process).",
-                                )
-                            )
-                        )
-        except Exception:
-            pass
+    if await _probe_managed_sidecar():
+        return _json(
+            _envelope(
+                _health_payload(
+                    service_running=True,
+                    message="MoneyPrinter service is already running.",
+                )
+            )
+        )
+
+    if await _sidecar_port_in_use():
+        return _json(
+            _error(
+                f"Port {urlparse(DEFAULT_BASE_URL).port or 8080} is occupied by a service that is not this managed MoneyPrinter sidecar.",
+                "MONEYPRINTER_PORT_CONFLICT",
+            ),
+            status=409,
+        )
 
     try:
         _process = await asyncio.create_subprocess_exec(
-            _moneyprinter_python(),
-            "main.py",
+            *_managed_sidecar_command(),
             cwd=str(MONEYPRINTER_ROOT),
             env=_build_service_env(),
             stdout=asyncio.subprocess.DEVNULL,
@@ -305,7 +536,33 @@ async def start_service() -> Any:
     except Exception as exc:
         return _json(_error(str(exc), "MONEYPRINTER_START_FAILED"), status=500)
 
-    return _json(_envelope(_health_payload(service_running=True, message="MoneyPrinter service start requested.")))
+    for _ in range(100):
+        if _process.returncode is not None:
+            return _json(
+                _error(
+                    f"MoneyPrinter process exited during startup with code {_process.returncode}.",
+                    "MONEYPRINTER_START_FAILED",
+                ),
+                status=503,
+            )
+        if await _probe_managed_sidecar():
+            return _json(
+                _envelope(
+                    _health_payload(
+                        service_running=True,
+                        message="MoneyPrinter service is ready.",
+                    )
+                )
+            )
+        await asyncio.sleep(0.1)
+
+    return _json(
+        _error(
+            "MoneyPrinter process started but did not pass its authenticated health check.",
+            "MONEYPRINTER_START_TIMEOUT",
+        ),
+        status=504,
+    )
 
 
 def _normalize_task_state(value: Any) -> str:
@@ -495,6 +752,48 @@ def _custom_audio_relative_path(path: Path) -> str:
     return path.resolve(strict=False).relative_to(MONEYPRINTER_ROOT.resolve(strict=False)).as_posix()
 
 
+def _normalize_minimax_audio_path(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    source = Path(raw).expanduser()
+    if source.is_absolute():
+        try:
+            raw = source.resolve(strict=False).relative_to(
+                MONEYPRINTER_ROOT.resolve(strict=False)
+            ).as_posix()
+        except ValueError:
+            return ""
+    else:
+        raw = raw.lstrip("/")
+    parts = Path(raw).parts
+    allowed_prefixes = (
+        ("storage", "custom_audio"),
+        ("storage", "minimax", "tts"),
+        ("storage", "minimax", "voices"),
+    )
+    if ".." in parts or not any(parts[: len(prefix)] == prefix for prefix in allowed_prefixes):
+        return ""
+    if Path(raw).suffix.lower() not in {".m4a", ".mp3", ".wav"}:
+        return ""
+    return Path(raw).as_posix()
+
+
+def _minimax_audio_descriptor(value: Any) -> dict[str, Any]:
+    media_path = _normalize_minimax_audio_path(value)
+    if not media_path:
+        return {}
+    candidate = MONEYPRINTER_ROOT / media_path
+    return {
+        "downloadUrl": f"/api/capabilities/moneyprinter/download/{media_path}",
+        "file": media_path,
+        "kind": "audio",
+        "name": Path(media_path).name,
+        "size": candidate.stat().st_size if candidate.is_file() else 0,
+        "streamUrl": f"/api/capabilities/moneyprinter/stream/{media_path}",
+    }
+
+
 def _decode_upload_content(value: str) -> bytes:
     content = str(value or "")
     if "," in content and content.lstrip().lower().startswith("data:"):
@@ -503,6 +802,38 @@ def _decode_upload_content(value: str) -> bytes:
         return base64.b64decode(content, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise ValueError("contentBase64 is not valid base64") from exc
+
+
+def _materialize_minimax_audio_asset(value: Any, label: str) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+
+    source_path = str(value.get("sourcePath") or value.get("source_path") or "").strip()
+    requested_name = str(value.get("filename") or value.get("name") or "").strip()
+    if source_path:
+        source = Path(source_path).expanduser().resolve(strict=True)
+        if not source.is_file():
+            raise ValueError(f"{label} sourcePath is not a file")
+        if source.suffix.lower() not in MINIMAX_AUDIO_EXTS:
+            allowed = ", ".join(sorted(MINIMAX_AUDIO_EXTS))
+            raise ValueError(f"unsupported {label} type {source.suffix.lower() or '<none>'}; allowed: {allowed}")
+        if source.stat().st_size > MAX_MINIMAX_AUDIO_BYTES:
+            raise ValueError(f"{label} exceeds the MiniMax 20 MB limit")
+        filename = _sanitize_asset_filename(requested_name or source.name, MINIMAX_AUDIO_EXTS, label)
+        raw = source.read_bytes()
+    else:
+        filename = _sanitize_asset_filename(requested_name, MINIMAX_AUDIO_EXTS, label)
+        content_base64 = value.get("contentBase64") or value.get("content_base64")
+        if not content_base64:
+            raise ValueError(f"{label} contentBase64 is required")
+        raw = _decode_upload_content(str(content_base64))
+        if len(raw) > MAX_MINIMAX_AUDIO_BYTES:
+            raise ValueError(f"{label} exceeds the MiniMax 20 MB limit")
+
+    return {
+        "contentBase64": base64.b64encode(raw).decode("ascii"),
+        "filename": filename,
+    }
 
 
 def _normalize_local_video_materials(value: Any) -> list[dict[str, Any]]:
@@ -558,6 +889,26 @@ def _unwrap_upstream(payload: Any) -> Any:
     if isinstance(payload, dict) and "data" in payload:
         return payload.get("data")
     return payload
+
+
+def _local_minimax_voices() -> list[str]:
+    if not MINIMAX_VOICES_DIR.is_dir():
+        return []
+
+    voices = []
+    for metadata_path in sorted(MINIMAX_VOICES_DIR.glob("*/metadata.json"), key=lambda p: p.parent.name.lower()):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        voice_id = str(metadata.get("voice_id") or metadata_path.parent.name).strip()
+        if not voice_id:
+            continue
+        display_name = str(metadata.get("display_name") or metadata.get("voice_name") or voice_id).strip()
+        voices.append(f"minimax:{voice_id}:{display_name}")
+    return voices
 
 
 def list_local_materials_data() -> tuple[int, dict[str, Any]]:
@@ -652,8 +1003,31 @@ def list_assets_data() -> tuple[int, dict[str, Any]]:
         "mimo:mimo_default-Female",
         "chatterbox:default-Female",
     ]
+    voices.extend(_local_minimax_voices())
 
     return 200, _envelope({"bgms": bgms, "customAudio": custom_audio, "fonts": fonts, "voices": voices})
+
+
+async def list_minimax_voices_data() -> tuple[int, dict[str, Any]]:
+    status, upstream = await _proxy_json("GET", "/api/v1/minimax/voices?voice_type=all")
+    if status >= 400:
+        local = [
+            {
+                "category": "local_preview",
+                "id": value.split(":", 2)[1],
+                "name": value.split(":", 2)[-1],
+                "providerConfirmed": False,
+            }
+            for value in _local_minimax_voices()
+        ]
+        if local:
+            return 200, _envelope({"voices": local})
+        if isinstance(upstream, dict) and upstream.get("ok") is False:
+            return status, upstream
+        return status, _error(str(upstream), "MONEYPRINTER_MINIMAX_VOICES_FAILED")
+    data = _unwrap_upstream(upstream)
+    voices = data.get("voices", []) if isinstance(data, dict) else []
+    return 200, _envelope({"voices": voices})
 
 
 def upload_bgm_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -684,7 +1058,13 @@ def upload_custom_audio_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]]
     return 200, _envelope({"audio": _audio_asset_payload(target, file_value=_custom_audio_relative_path(target))})
 
 
-async def _proxy_json(method: str, upstream_path: str, body: Optional[dict[str, Any]] = None) -> tuple[int, Any]:
+async def _proxy_json(
+    method: str,
+    upstream_path: str,
+    body: Optional[dict[str, Any]] = None,
+    *,
+    timeout_seconds: int = REQUEST_TIMEOUT_SECONDS,
+) -> tuple[int, Any]:
     if ClientSession is None:
         return 503, _error("aiohttp is unavailable", "MONEYPRINTER_AIOHTTP_UNAVAILABLE")
     try:
@@ -692,8 +1072,9 @@ async def _proxy_json(method: str, upstream_path: str, body: Optional[dict[str, 
             async with session.request(
                 method,
                 f"{DEFAULT_BASE_URL}{upstream_path}",
+                headers={SIDECAR_TOKEN_HEADER: _SIDECAR_TOKEN},
                 json=body,
-                timeout=ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
+                timeout=ClientTimeout(total=timeout_seconds),
             ) as response:
                 try:
                     payload = await response.json()
@@ -940,6 +1321,70 @@ async def generate_terms_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]
     return 200, _envelope({"video_terms": data})
 
 
+async def clone_minimax_voice_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    try:
+        payload = dict(body or {})
+        payload["clone_audio"] = _materialize_minimax_audio_asset(payload.get("clone_audio"), "clone audio")
+        if payload.get("prompt_audio"):
+            payload["prompt_audio"] = _materialize_minimax_audio_asset(payload["prompt_audio"], "prompt audio")
+    except (OSError, ValueError) as exc:
+        return 400, _error(str(exc), "MONEYPRINTER_MINIMAX_AUDIO_INVALID")
+
+    return await _proxy_minimax_data(
+        "/api/v1/minimax/voices/clone", payload, "MONEYPRINTER_MINIMAX_CLONE_FAILED"
+    )
+
+
+async def _proxy_minimax_data(
+    path: str, body: dict[str, Any], error_code: str
+) -> tuple[int, dict[str, Any]]:
+    status, upstream = await _proxy_json(
+        "POST",
+        path,
+        body,
+        timeout_seconds=MINIMAX_PROXY_TIMEOUT_SECONDS[path],
+    )
+    if status >= 400:
+        message = str(upstream.get("message") if isinstance(upstream, dict) else upstream)
+        if "voice id duplicate" in message.lower():
+            return 409, _error(
+                "该 ID 已存在；请在已有音色中使用它，或为克隆生成新的 ID。",
+                "MONEYPRINTER_MINIMAX_VOICE_ID_DUPLICATE",
+            )
+        if isinstance(upstream, dict) and upstream.get("ok") is False:
+            return status, upstream
+        return status, _error(str(upstream), error_code)
+    data = _unwrap_upstream(upstream)
+    if isinstance(data, dict):
+        audio = data.get("audio")
+        if isinstance(audio, dict):
+            descriptor = _minimax_audio_descriptor(audio.get("file"))
+            if descriptor:
+                data["audio"] = {**audio, **descriptor}
+        trial_descriptor = _minimax_audio_descriptor(data.get("trialAudioFile"))
+        if trial_descriptor:
+            data["trialAudio"] = trial_descriptor
+    return 200, _envelope(data if isinstance(data, dict) else {"result": data})
+
+
+async def generate_minimax_tts_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    return await _proxy_minimax_data(
+        "/api/v1/minimax/tts", dict(body or {}), "MONEYPRINTER_MINIMAX_TTS_FAILED"
+    )
+
+
+async def generate_minimax_lyrics_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    return await _proxy_minimax_data(
+        "/api/v1/minimax/lyrics", dict(body or {}), "MONEYPRINTER_MINIMAX_LYRICS_FAILED"
+    )
+
+
+async def generate_minimax_music_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    return await _proxy_minimax_data(
+        "/api/v1/minimax/music", dict(body or {}), "MONEYPRINTER_MINIMAX_MUSIC_FAILED"
+    )
+
+
 async def list_outputs_data() -> tuple[int, dict[str, Any]]:
     status, payload = await list_tasks_data()
     if status >= 400 or not payload.get("ok"):
@@ -1116,9 +1561,138 @@ async def generate_terms(request: Any) -> Any:
     return _json(payload, status=status)
 
 
-async def proxy_media(kind: str, file_path: str) -> Any:
-    if ClientSession is None:
-        return _json(_error("aiohttp is unavailable", "MONEYPRINTER_AIOHTTP_UNAVAILABLE"), status=503)
+async def clone_minimax_voice(request: Any) -> Any:
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(_error("Invalid JSON body", "MONEYPRINTER_INVALID_JSON"), status=400)
+    if not isinstance(body, dict):
+        return _json(_error("Body must be an object", "MONEYPRINTER_INVALID_JSON"), status=400)
+    status, payload = await clone_minimax_voice_data(body)
+    return _json(payload, status=status)
+
+
+async def list_minimax_voices() -> Any:
+    status, payload = await list_minimax_voices_data()
+    return _json(payload, status=status)
+
+
+async def generate_minimax_tts(request: Any) -> Any:
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(_error("Invalid JSON body", "MONEYPRINTER_INVALID_JSON"), status=400)
+    if not isinstance(body, dict):
+        return _json(_error("Body must be an object", "MONEYPRINTER_INVALID_JSON"), status=400)
+    status, payload = await generate_minimax_tts_data(body)
+    return _json(payload, status=status)
+
+
+async def generate_minimax_lyrics(request: Any) -> Any:
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(_error("Invalid JSON body", "MONEYPRINTER_INVALID_JSON"), status=400)
+    if not isinstance(body, dict):
+        return _json(_error("Body must be an object", "MONEYPRINTER_INVALID_JSON"), status=400)
+    status, payload = await generate_minimax_lyrics_data(body)
+    return _json(payload, status=status)
+
+
+async def generate_minimax_music(request: Any) -> Any:
+    try:
+        body = await request.json()
+    except Exception:
+        return _json(_error("Invalid JSON body", "MONEYPRINTER_INVALID_JSON"), status=400)
+    if not isinstance(body, dict):
+        return _json(_error("Body must be an object", "MONEYPRINTER_INVALID_JSON"), status=400)
+    status, payload = await generate_minimax_music_data(body)
+    return _json(payload, status=status)
+
+
+def _local_file_response(kind: str, candidate: Path, content_type: str, request: Any = None) -> Any:
+    if web is None:
+        return None
+    if not candidate.is_file():
+        return None
+
+    payload = candidate.read_bytes()
+    total = len(payload)
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(total),
+        "Content-Type": content_type,
+    }
+    if kind == "download":
+        headers["Content-Disposition"] = f'attachment; filename="{candidate.name}"'
+
+    request_headers = getattr(request, "headers", None)
+    range_header = str(request_headers.get("Range") or "").strip() if request_headers is not None else ""
+    if not range_header:
+        return web.Response(body=payload, headers=headers, status=200)
+
+    match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header)
+    if match is None or (not match.group(1) and not match.group(2)) or total == 0:
+        return web.Response(headers={**headers, "Content-Range": f"bytes */{total}"}, status=416)
+
+    if match.group(1):
+        start = int(match.group(1))
+        end = int(match.group(2)) if match.group(2) else total - 1
+    else:
+        suffix_length = int(match.group(2))
+        start = max(total - suffix_length, 0)
+        end = total - 1
+    if start >= total or start > end:
+        return web.Response(headers={**headers, "Content-Range": f"bytes */{total}"}, status=416)
+
+    end = min(end, total - 1)
+    partial = payload[start : end + 1]
+    headers.update(
+        {
+            "Content-Length": str(len(partial)),
+            "Content-Range": f"bytes {start}-{end}/{total}",
+        }
+    )
+    return web.Response(body=partial, headers=headers, status=206)
+
+
+def _local_media_response(kind: str, safe_path: str, request: Any = None) -> Any:
+    parts = Path(safe_path).parts
+    if len(parts) == 2 and PUBLIC_VIDEO_OUTPUT_RE.fullmatch(parts[1]):
+        root = TASKS_DIR.resolve(strict=False)
+        candidate = (root / Path(*parts)).resolve(strict=False)
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None
+        return _local_file_response(kind, candidate, "video/mp4", request)
+
+    audio_roots = {
+        ("storage", "custom_audio"): MONEYPRINTER_ROOT / "storage" / "custom_audio",
+        ("storage", "minimax", "tts"): MONEYPRINTER_ROOT / "storage" / "minimax" / "tts",
+        ("storage", "minimax", "voices"): MONEYPRINTER_ROOT / "storage" / "minimax" / "voices",
+    }
+    for prefix, root_value in audio_roots.items():
+        if parts[: len(prefix)] != prefix or len(parts) <= len(prefix):
+            continue
+        root = root_value.resolve(strict=False)
+        candidate = (root / Path(*parts[len(prefix) :])).resolve(strict=False)
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None
+        content_type = {
+            ".m4a": "audio/mp4",
+            ".mp3": "audio/mpeg",
+            ".wav": "audio/wav",
+        }.get(candidate.suffix.lower())
+        if content_type is None:
+            return None
+        return _local_file_response(kind, candidate, content_type, request)
+    return None
+
+
+async def proxy_media(kind: str, file_path: str, request: Any = None) -> Any:
     if kind not in {"download", "stream"}:
         return _json(_error("Unsupported media proxy kind", "MONEYPRINTER_BAD_MEDIA_KIND"), status=400)
 
@@ -1126,10 +1700,21 @@ async def proxy_media(kind: str, file_path: str) -> Any:
     if not safe_path or ".." in Path(safe_path).parts:
         return _json(_error("Invalid media path", "MONEYPRINTER_INVALID_MEDIA_PATH"), status=400)
 
+    local_response = _local_media_response(kind, safe_path, request)
+    if local_response is not None:
+        return local_response
+
+    if ClientSession is None:
+        return _json(_error("aiohttp is unavailable", "MONEYPRINTER_AIOHTTP_UNAVAILABLE"), status=503)
+
     upstream_path = quote(safe_path, safe="/")
     try:
         async with ClientSession() as session:
-            async with session.get(f"{DEFAULT_BASE_URL}/api/v1/{kind}/{upstream_path}", timeout=None) as response:
+            async with session.get(
+                f"{DEFAULT_BASE_URL}/api/v1/{kind}/{upstream_path}",
+                headers=_media_proxy_request_headers(request),
+                timeout=None,
+            ) as response:
                 body = await response.read()
                 headers = {}
                 for name in MEDIA_PROXY_HEADERS:

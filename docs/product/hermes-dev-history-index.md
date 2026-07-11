@@ -57,6 +57,8 @@ development branch.
 | Video Studio design doc | `docs/capabilities/moneyprinter-video-studio.md` |
 | Video Studio logic map | `docs/capabilities/video-studio-logic-map.md` |
 | A2A + browser isolation + Douyin logic map | `docs/capabilities/a2a-browser-douyin-logic-map.md` |
+| Video material library logic map | `docs/capabilities/video-material-library-logic-map.md` |
+| 2026-07-10 product readiness audit | `docs/product/hermes-agent-product-readiness-2026-07-10.md` |
 
 ## Chronicle Pointers
 

@@ -1,9 +1,28 @@
 # MoneyPrinterTurbo Video Studio 集成专项设计文档
 
-> 状态：Phase 0–3 已落地（adapter API + Desktop + MCP/skill）；高级功能仍待补齐  
+> 状态：Phase 0–3 已落地；2026-07-10 完成 managed sidecar 鉴权、运行时诊断和视频素材库 Phase 1；AI 语义标签与 timeline 渲染仍待补齐
 > 目标阶段：持续完善  
 > 目标读者：Hermes Desktop / Agent / Capability 开发者  
 > 关联原则：`docs/hermes-desktop-capability-architecture.md`
+
+当前可运行边界与后续任务以以下文档为准：
+
+- `docs/capabilities/video-studio-logic-map.md`
+- `docs/capabilities/video-material-library-logic-map.md`
+- `docs/product/hermes-agent-product-readiness-2026-07-10.md`
+
+## MiniMax 音色与音乐集成（2026-07-10）
+
+- MoneyPrinterTurbo 内置 MiniMax client，覆盖 file upload、voice clone、同步 TTS、歌词和音乐生成。
+- 视频表单沿用 `voice_name`，使用 `minimax:<voice_id>`（可附加展示名）触发 MiniMax TTS，不破坏现有 Azure/Edge/ElevenLabs 等 provider。
+- 克隆音色 metadata/试听文件保存到 `storage/minimax/voices/<voice_id>`；生成音乐可直接保存到 `resource/songs` 并进入 BGM 下拉列表。
+- Hermes capability 暴露 `/api/capabilities/moneyprinter/minimax/{voices,voices/clone,tts,lyrics,music}`，Desktop 和 MoneyPrinter MCP 共用该边界。
+- Desktop Video Studio 支持 MiniMax key/base URL、TTS/音色复刻/音乐模型 ID 独立切换、音色复刻、Voice ID 选择、歌词生成/润色和“生成并选为 BGM”。模型输入采用 datalist，可选已知候选或手工输入 MiniMax 后续发布的 model ID。
+- Desktop 将音色操作拆成两条显式链路：已有系统/账户 Voice ID 直接生成 TTS 试听；上传声音使用全新 Voice ID 创建克隆试听。两种试听均提供受鉴权音频播放器。
+- 克隆试听使用 `/v1/voice_clone` 的内置 `text`/`demo_audio`，不会再隐藏调用普通 TTS。正式激活与选择是单独动作，点击前明确提示可能产生一次性约 ¥9.9 复刻费；自动化测试禁止执行真实付费激活。
+- `/minimax/voices` 查询当前 key 的 provider 音色并区分 system、voice_cloning、voice_generation 与本地未激活预览，避免把旧 key 的本地 metadata 当作当前账户已授权音色。
+- 密钥不通过响应回传；MiniMax sidecar 路由继承 managed sidecar token 鉴权。中国区 key 需使用 `https://api.minimaxi.com`，国际区 key 使用 `https://api.minimax.io/v1`。
+- 真实 API smoke 已验证中国区 `speech-2.8-hd` 音色复刻和 TTS；当前测试账户在歌词/音乐调用时返回 `insufficient balance`，因此不能将音乐链路标记为 live 通过。完整数据流和证据见 `video-studio-logic-map.md` 的 `CAP-013` / `FLOW-010` / `TEST-014` / `TEST-015`。
 
 ## 1. 背景与目标
 

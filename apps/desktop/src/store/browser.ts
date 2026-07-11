@@ -16,13 +16,28 @@ export type BrowserDriveAction = 'act' | 'goBack' | 'goForward' | 'navigate' | '
 
 export type BrowserDomActionKind = 'click' | 'press' | 'scroll' | 'select' | 'setValue' | 'type'
 
+export interface BrowserElementFingerprint {
+  ariaLabel?: string
+  hermesRef?: string
+  href?: string
+  id?: string
+  name?: string
+  placeholder?: string
+  role?: string
+  tag?: string
+  text?: string
+  type?: string
+}
+
 export interface BrowserDomActionPayload {
   amount?: number
   direction?: 'down' | 'left' | 'right' | 'up'
+  expectedUrl?: string
   index?: number
   key?: string
   kind: BrowserDomActionKind
   selector?: string
+  target?: BrowserElementFingerprint
   text?: string
   value?: string
 }

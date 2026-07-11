@@ -385,6 +385,31 @@ async def api_moneyprinter_generate_terms(request: Request):
     return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().generate_terms(request))
 
 
+@app.post("/api/capabilities/moneyprinter/minimax/voices/clone")
+async def api_moneyprinter_minimax_clone_voice(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().clone_minimax_voice(request))
+
+
+@app.get("/api/capabilities/moneyprinter/minimax/voices")
+async def api_moneyprinter_minimax_list_voices():
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().list_minimax_voices())
+
+
+@app.post("/api/capabilities/moneyprinter/minimax/tts")
+async def api_moneyprinter_minimax_tts(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().generate_minimax_tts(request))
+
+
+@app.post("/api/capabilities/moneyprinter/minimax/lyrics")
+async def api_moneyprinter_minimax_lyrics(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().generate_minimax_lyrics(request))
+
+
+@app.post("/api/capabilities/moneyprinter/minimax/music")
+async def api_moneyprinter_minimax_music(request: Request):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().generate_minimax_music(request))
+
+
 @app.get("/api/capabilities/moneyprinter/outputs")
 async def api_moneyprinter_list_outputs():
     status, payload = await _moneyprinter_adapter().list_outputs_data()

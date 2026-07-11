@@ -6,6 +6,7 @@ import {
   type BrowserDomActionPayload,
   type BrowserDriveAction,
   type BrowserDrivePayload,
+  type BrowserElementFingerprint,
   driveBrowser
 } from '@/store/browser'
 import {
@@ -69,12 +70,27 @@ function browserDomAction(value: unknown): BrowserDomActionPayload | undefined {
     ...(record.direction === 'down' || record.direction === 'left' || record.direction === 'right' || record.direction === 'up'
       ? { direction: record.direction }
       : {}),
+    ...(typeof record.expectedUrl === 'string' ? { expectedUrl: record.expectedUrl } : {}),
     ...(typeof record.index === 'number' ? { index: record.index } : {}),
     ...(typeof record.key === 'string' ? { key: record.key } : {}),
     ...(typeof record.selector === 'string' ? { selector: record.selector } : {}),
+    ...(browserElementFingerprint(record.target) ? { target: browserElementFingerprint(record.target) } : {}),
     ...(typeof record.text === 'string' ? { text: record.text } : {}),
     ...(typeof record.value === 'string' ? { value: record.value } : {})
   }
+}
+
+function browserElementFingerprint(value: unknown): BrowserElementFingerprint | undefined {
+  const record = asRecord(value)
+  const fingerprint: BrowserElementFingerprint = {}
+
+  for (const key of ['ariaLabel', 'href', 'id', 'name', 'placeholder', 'role', 'tag', 'text', 'type'] as const) {
+    if (typeof record[key] === 'string' && record[key]) {
+      fingerprint[key] = record[key]
+    }
+  }
+
+  return Object.keys(fingerprint).length ? fingerprint : undefined
 }
 
 function browserDrivePayload(payload: unknown): BrowserDrivePayload | null {
@@ -150,6 +166,163 @@ export function usePreviewRouting({
     [activeSessionIdRef, currentCwd, requestGateway]
   )
 
+  const answerBrowserRequest = useCallback(
+    async (event: RpcEvent) => {
+      const request = asRecord(event.payload)
+      const requestId = typeof request.request_id === 'string' ? request.request_id : ''
+
+      if (!requestId) {
+        return
+      }
+
+      const respond = async (result: Record<string, unknown>) => {
+        await requestGateway('browser.respond', {
+          request_id: requestId,
+          text: JSON.stringify(result)
+        })
+      }
+
+      const sessionId = event.session_id || ''
+
+      if (!sessionId || sessionId !== activeSessionIdRef.current) {
+        await respond({
+          error: 'Browser requests can only control the active Desktop session',
+          ok: false
+        })
+
+        return
+      }
+
+      const browser = window.hermesDesktop?.browser
+      const operation = typeof request.operation === 'string' ? request.operation : ''
+      const payload = asRecord(request.payload)
+
+      try {
+        if (!browser) {
+          throw new Error('Desktop browser bridge is unavailable')
+        }
+
+        const settledSnapshot = async ({
+          previousUrl = '',
+          requestedUrl = '',
+          requireUrlChange = false
+        }: {
+          previousUrl?: string
+          requestedUrl?: string
+          requireUrlChange?: boolean
+        } = {}) => {
+          let lastError = 'Desktop browser snapshot failed'
+
+          for (let attempt = 0; attempt < 40; attempt += 1) {
+            await new Promise(resolve => window.setTimeout(resolve, attempt === 0 ? 250 : 200))
+            const state = await browser.getState?.(sessionId)
+
+            if (state?.loading) {
+              continue
+            }
+
+            try {
+              const snapshot = await browser.snapshot?.(sessionId)
+
+              if (snapshot?.ok) {
+                const stillPreviousUrl = Boolean(previousUrl) && snapshot.url === previousUrl
+
+                if (
+                  stillPreviousUrl &&
+                  (requireUrlChange || (Boolean(requestedUrl) && requestedUrl !== previousUrl))
+                ) {
+                  continue
+                }
+
+                return snapshot
+              }
+
+              lastError = snapshot?.error || lastError
+            } catch (error) {
+              lastError = error instanceof Error ? error.message : String(error)
+            }
+          }
+
+          throw new Error(lastError)
+        }
+
+        if (operation === 'snapshot') {
+          if (!browser.snapshot) {
+            throw new Error('Desktop browser snapshot API is unavailable')
+          }
+
+          await respond({ ok: true, snapshot: await browser.snapshot(sessionId) })
+
+          return
+        }
+
+        if (operation === 'navigate') {
+          const url = typeof payload.url === 'string' ? payload.url : ''
+
+          if (!url || !browser.navigate) {
+            throw new Error('Desktop browser navigate request is invalid')
+          }
+
+          const previousState = await browser.getState?.(sessionId)
+          await browser.navigate(url, sessionId)
+          await respond({
+            ok: true,
+            snapshot: await settledSnapshot({ previousUrl: previousState?.url, requestedUrl: url })
+          })
+
+          return
+        }
+
+        if (operation === 'back') {
+          if (!browser.goBack) {
+            throw new Error('Desktop browser back API is unavailable')
+          }
+
+          const previousState = await browser.getState?.(sessionId)
+          await browser.goBack(sessionId)
+          await respond({
+            ok: true,
+            snapshot: await settledSnapshot({ previousUrl: previousState?.url, requireUrlChange: true })
+          })
+
+          return
+        }
+
+        if (operation === 'action') {
+          const action = browserDomAction(payload.action)
+
+          if (!action || !browser.act) {
+            throw new Error('Desktop browser action request is invalid')
+          }
+
+          const actionResult = await browser.act(action, sessionId)
+
+          if (!actionResult?.ok) {
+            await respond({
+              action: actionResult,
+              error: actionResult?.error || 'Desktop browser action failed',
+              ok: false
+            })
+
+            return
+          }
+
+          await respond({ action: actionResult, ok: true, snapshot: await settledSnapshot() })
+
+          return
+        }
+
+        throw new Error(`Unsupported Desktop browser operation: ${operation || '(missing)'}`)
+      } catch (error) {
+        await respond({
+          error: error instanceof Error ? error.message : String(error),
+          ok: false
+        })
+      }
+    },
+    [activeSessionIdRef, requestGateway]
+  )
+
   const handleDesktopGatewayEvent = useCallback<EventHandler>(
     event => {
       baseHandleGatewayEvent(event)
@@ -166,6 +339,8 @@ export function usePreviewRouting({
         if (typeof task_id === 'string' && task_id) {
           progressPreviewServerRestart(task_id, typeof text === 'string' ? text : '')
         }
+      } else if (event.type === 'browser.request') {
+        void answerBrowserRequest(event)
       } else if (event.type === 'browser.drive') {
         if (event.session_id && event.session_id !== activeSessionIdRef.current) {
           return
@@ -189,7 +364,7 @@ export function usePreviewRouting({
         requestPreviewReload()
       }
     },
-    [activeSessionIdRef, baseHandleGatewayEvent]
+    [activeSessionIdRef, answerBrowserRequest, baseHandleGatewayEvent]
   )
 
   return { handleDesktopGatewayEvent, restartPreviewServer }

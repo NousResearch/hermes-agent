@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   configFormFromSummary,
   defaultVideoGenerationForm,
   isMoneyPrinterPreviewVideo,
+  moneyprinterClient,
   resolveMoneyPrinterMediaUrl,
   scriptTextFromResult,
   termsTextFromResult,
@@ -12,8 +13,14 @@ import {
   toGenerateTermsPayload,
   toMiniMaxCloneVoicePayload,
   toMiniMaxMusicPayload,
+  toMiniMaxTtsPayload,
+  videoLibraryApiPath,
   videoStudioApiPath
 } from './moneyprinter-client'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 describe('moneyprinter video studio client mapping', () => {
   it('maps the default form to the MoneyPrinter create-video payload', () => {
@@ -82,6 +89,13 @@ describe('moneyprinter video studio client mapping', () => {
       configExists: true,
       llmProvider: 'openai',
       materialProviders: { coverr: true, pexels: true, pixabay: false },
+      minimax: {
+        apiKeyConfigured: true,
+        baseUrl: 'https://api.minimax.io/v1',
+        musicModel: 'music-2.6-free',
+        t2aModel: 'speech-2.8-hd',
+        voiceCloneModel: 'speech-2.8-hd'
+      },
       modelConfigured: true,
       modelName: 'openrouter/auto'
     })
@@ -91,6 +105,11 @@ describe('moneyprinter video studio client mapping', () => {
       baseUrl: 'https://openrouter.ai/api/v1',
       coverrApiKey: '',
       llmProvider: 'openai',
+      minimaxApiKey: '',
+      minimaxBaseUrl: 'https://api.minimax.io/v1',
+      minimaxMusicModel: 'music-2.6-free',
+      minimaxT2aModel: 'speech-2.8-hd',
+      minimaxVoiceCloneModel: 'speech-2.8-hd',
       modelName: 'openrouter/auto',
       pexelsApiKey: '',
       pixabayApiKey: ''
@@ -108,6 +127,11 @@ describe('moneyprinter video studio client mapping', () => {
     expect(videoStudioApiPath('materials')).toBe('/api/capabilities/moneyprinter/materials')
   })
 
+  it('keeps material-library API paths under the video-library namespace', () => {
+    expect(videoLibraryApiPath('/assets')).toBe('/api/capabilities/video-library/assets')
+    expect(videoLibraryApiPath('clips?tag=\u7ad6\u5c4f')).toBe('/api/capabilities/video-library/clips?tag=\u7ad6\u5c4f')
+  })
+
   it('maps selected local materials to MoneyPrinter video_materials', () => {
     const payload = toCreateVideoPayload({
       ...defaultVideoGenerationForm,
@@ -123,16 +147,18 @@ describe('moneyprinter video studio client mapping', () => {
     ])
   })
 
-  it('rewrites capability media URLs to the MoneyPrinter sidecar API', () => {
+  it('routes capability media URLs through the authenticated Electron media protocol', () => {
     expect(
       resolveMoneyPrinterMediaUrl(
         '/api/capabilities/moneyprinter/stream/task-1/final video.mp4',
         'http://127.0.0.1:8080/'
       )
-    ).toBe('http://127.0.0.1:8080/api/v1/stream/task-1/final%20video.mp4')
+    ).toBe(
+      'hermes-media://gateway/%2Fapi%2Fcapabilities%2Fmoneyprinter%2Fstream%2Ftask-1%2Ffinal%20video.mp4'
+    )
 
     expect(resolveMoneyPrinterMediaUrl('/api/capabilities/moneyprinter/download/task-1/combined-1.mp4')).toBe(
-      'http://127.0.0.1:8080/api/v1/download/task-1/combined-1.mp4'
+      'hermes-media://gateway/%2Fapi%2Fcapabilities%2Fmoneyprinter%2Fdownload%2Ftask-1%2Fcombined-1.mp4'
     )
 
     expect(resolveMoneyPrinterMediaUrl('https://cdn.example/final-1.mp4')).toBe('https://cdn.example/final-1.mp4')
@@ -164,6 +190,44 @@ describe('moneyprinter video studio client mapping', () => {
       trial_text: '试听文本',
       voice_id: 'MiniMaxDemo001'
     })
+  })
+
+  it('maps an existing MiniMax voice preview to TTS payload fields', () => {
+    expect(
+      toMiniMaxTtsPayload({
+        model: 'speech-2.8-turbo',
+        text: '테스트입니다.',
+        voiceId: 'Korean_GentleBoss'
+      })
+    ).toEqual({
+      model: 'speech-2.8-turbo',
+      save_as_custom_audio: true,
+      speed: 1,
+      text: '테스트입니다.',
+      voice_id: 'Korean_GentleBoss',
+      volume: 1
+    })
+  })
+
+  it('uses endpoint-specific timeouts for long MiniMax requests', async () => {
+    const api = vi.fn().mockResolvedValue({ data: { audio: null }, error: null, ok: true })
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api }
+    })
+
+    await moneyprinterClient.generateMiniMaxTts({
+      model: 'speech-2.8-turbo',
+      text: '테스트입니다.',
+      voiceId: 'Korean_GentleBoss'
+    })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/capabilities/moneyprinter/minimax/tts',
+        timeoutMs: 180_000
+      })
+    )
   })
 
   it('maps MiniMax music inputs to adapter payload fields', () => {

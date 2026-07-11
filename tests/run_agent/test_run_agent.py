@@ -143,6 +143,32 @@ def test_persist_user_message_override_preserves_multimodal_turns(agent):
     assert messages == [{"role": "user", "content": multimodal_content}]
 
 
+def test_desktop_browser_tools_use_configured_same_webview_callback(agent):
+    calls = []
+    agent.desktop_browser_callback = lambda name, args: calls.append((name, args)) or {
+        "desktop_browser": True,
+        "snapshot": "same webview",
+        "success": True,
+    }
+
+    result = json.loads(
+        agent._invoke_tool(
+            "browser_snapshot",
+            {"full": False},
+            "desktop-session",
+            pre_tool_block_checked=True,
+            skip_tool_request_middleware=True,
+        )
+    )
+
+    assert calls == [("browser_snapshot", {"full": False})]
+    assert result == {
+        "desktop_browser": True,
+        "snapshot": "same webview",
+        "success": True,
+    }
+
+
 @pytest.fixture()
 def agent_with_memory_tool():
     """Agent whose valid_tool_names includes 'memory'."""

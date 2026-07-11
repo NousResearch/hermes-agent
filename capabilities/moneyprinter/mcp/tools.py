@@ -242,6 +242,201 @@ def moneyprinter_generate_terms(
     return _json_result(payload, status=status)
 
 
+def moneyprinter_minimax_list_voices() -> str:
+    """List MiniMax provider voices plus locally previewed clones."""
+
+    async def _go() -> tuple[int, dict[str, Any]]:
+        from capabilities.moneyprinter import adapter
+
+        return await adapter.list_minimax_voices_data()
+
+    status, payload = _run(_go())
+    return _json_result(payload, status=status)
+
+
+def moneyprinter_minimax_clone_voice(
+    voice_id: str,
+    clone_audio_source_path: str,
+    prompt_audio_source_path: str = "",
+    prompt_text: str = "",
+    trial_text: str = "",
+    model: str = "",
+    activate: bool = False,
+    auto_start: bool = True,
+) -> str:
+    """Clone a MiniMax voice through the MoneyPrinter sidecar."""
+
+    async def _go() -> tuple[int, dict[str, Any]]:
+        from capabilities.moneyprinter import adapter
+
+        if auto_start:
+            await _ensure_service_if_needed()
+        body: dict[str, Any] = {
+            "activate": activate,
+            "clone_audio": {"filename": clone_audio_source_path, "sourcePath": clone_audio_source_path},
+            "model": model,
+            "prompt_text": prompt_text,
+            "trial_text": trial_text,
+            "voice_id": voice_id,
+        }
+        if prompt_audio_source_path:
+            body["prompt_audio"] = {"filename": prompt_audio_source_path, "sourcePath": prompt_audio_source_path}
+        return await adapter.clone_minimax_voice_data(body)
+
+    status, payload = _run(_go())
+    return _json_result(payload, status=status)
+
+
+def moneyprinter_minimax_generate_tts(
+    text: str,
+    voice_id: str,
+    model: str = "",
+    save_as_custom_audio: bool = True,
+    auto_start: bool = True,
+) -> str:
+    """Generate MiniMax TTS audio through the MoneyPrinter sidecar."""
+
+    async def _go() -> tuple[int, dict[str, Any]]:
+        from capabilities.moneyprinter import adapter
+
+        if auto_start:
+            await _ensure_service_if_needed()
+        return await adapter.generate_minimax_tts_data(
+            {
+                "model": model,
+                "save_as_custom_audio": save_as_custom_audio,
+                "text": text,
+                "voice_id": voice_id,
+            }
+        )
+
+    status, payload = _run(_go())
+    return _json_result(payload, status=status)
+
+
+def moneyprinter_minimax_generate_lyrics(
+    prompt: str,
+    mode: str = "write_full_song",
+    lyrics: str = "",
+    title: str = "",
+    auto_start: bool = True,
+) -> str:
+    """Generate or edit song lyrics through the MoneyPrinter MiniMax sidecar."""
+
+    async def _go() -> tuple[int, dict[str, Any]]:
+        from capabilities.moneyprinter import adapter
+
+        if auto_start:
+            await _ensure_service_if_needed()
+        return await adapter.generate_minimax_lyrics_data(
+            {
+                "lyrics": lyrics,
+                "mode": mode,
+                "prompt": prompt,
+                "title": title,
+            }
+        )
+
+    status, payload = _run(_go())
+    return _json_result(payload, status=status)
+
+
+def moneyprinter_minimax_generate_music(
+    prompt: str,
+    is_instrumental: bool = False,
+    lyrics: str = "",
+    lyrics_optimizer: bool = True,
+    model: str = "",
+    save_as_bgm: bool = True,
+    auto_start: bool = True,
+) -> str:
+    """Generate MiniMax music through MoneyPrinter and optionally save it as BGM."""
+
+    async def _go() -> tuple[int, dict[str, Any]]:
+        from capabilities.moneyprinter import adapter
+
+        if auto_start:
+            await _ensure_service_if_needed()
+        return await adapter.generate_minimax_music_data(
+            {
+                "is_instrumental": is_instrumental,
+                "lyrics": lyrics,
+                "lyrics_optimizer": lyrics_optimizer,
+                "model": model,
+                "prompt": prompt,
+                "save_as_bgm": save_as_bgm,
+            }
+        )
+
+    status, payload = _run(_go())
+    return _json_result(payload, status=status)
+
+
+def video_library_import_asset(source_path: str) -> str:
+    """Copy a local video into the managed shot library and return its asset id."""
+    from capabilities.video_library import adapter
+
+    status, payload = adapter.import_asset_data({"sourcePath": source_path})
+    return _json_result(payload, status=status)
+
+
+def video_library_scan_library(library_id: str, dry_run: bool = False) -> str:
+    """Scan one configured video library and index all new or changed videos."""
+    from capabilities.video_library import adapter
+
+    status, payload = adapter.scan_library_data(library_id, {"dryRun": dry_run})
+    return _json_result(payload, status=status)
+
+
+def video_library_analyze_asset(
+    asset_id: str,
+    threshold: float = 0.32,
+    min_clip_seconds: float = 1.0,
+    fallback_clip_seconds: float = 5.0,
+) -> str:
+    """Split one imported video into managed clips, keyframes, and technical tags."""
+    from capabilities.video_library import adapter
+
+    status, payload = adapter.analyze_asset_data(
+        asset_id,
+        {
+            "fallbackClipSeconds": fallback_clip_seconds,
+            "minClipSeconds": min_clip_seconds,
+            "threshold": threshold,
+        },
+    )
+    return _json_result(payload, status=status)
+
+
+def video_library_search_clips(
+    asset_id: str = "",
+    tag: str = "",
+    library_id: str = "",
+    query: str = "",
+) -> str:
+    """Search analyzed clips by named library, text, source asset, or exact tag."""
+    from capabilities.video_library import adapter
+
+    status, payload = adapter.list_clips_data(
+        asset_id=asset_id or None,
+        library_id=library_id or None,
+        query=query or None,
+        tag=tag or None,
+    )
+    return _json_result(payload, status=status)
+
+
+def video_library_create_timeline(
+    clip_ids: list[str],
+    aspect: str = "9:16",
+) -> str:
+    """Create a timeline.json from an ordered list of managed clip ids."""
+    from capabilities.video_library import adapter
+
+    status, payload = adapter.create_timeline_data({"aspect": aspect, "clipIds": clip_ids})
+    return _json_result(payload, status=status)
+
+
 TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "moneyprinter_health_check",
@@ -290,5 +485,55 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "moneyprinter_generate_terms",
         "description": "Generate stock-footage search keywords for a subject/script.",
         "fn": moneyprinter_generate_terms,
+    },
+    {
+        "name": "moneyprinter_minimax_list_voices",
+        "description": "List locally known MiniMax voices saved by MoneyPrinter.",
+        "fn": moneyprinter_minimax_list_voices,
+    },
+    {
+        "name": "moneyprinter_minimax_clone_voice",
+        "description": "Clone a MiniMax voice and save its metadata in MoneyPrinter storage.",
+        "fn": moneyprinter_minimax_clone_voice,
+    },
+    {
+        "name": "moneyprinter_minimax_generate_tts",
+        "description": "Generate TTS audio with a MiniMax voice.",
+        "fn": moneyprinter_minimax_generate_tts,
+    },
+    {
+        "name": "moneyprinter_minimax_generate_lyrics",
+        "description": "Generate or edit lyrics with MiniMax.",
+        "fn": moneyprinter_minimax_generate_lyrics,
+    },
+    {
+        "name": "moneyprinter_minimax_generate_music",
+        "description": "Generate MiniMax music and optionally save it as MoneyPrinter BGM.",
+        "fn": moneyprinter_minimax_generate_music,
+    },
+    {
+        "name": "video_library_import_asset",
+        "description": "Import a local video into the managed shot-level material library.",
+        "fn": video_library_import_asset,
+    },
+    {
+        "name": "video_library_scan_library",
+        "description": "Scan a configured local video library and semantically index new or changed videos.",
+        "fn": video_library_scan_library,
+    },
+    {
+        "name": "video_library_analyze_asset",
+        "description": "Split an imported video into clips, keyframes, and technical tags.",
+        "fn": video_library_analyze_asset,
+    },
+    {
+        "name": "video_library_search_clips",
+        "description": "Search configured video-library clips by free text, source asset, or exact tag.",
+        "fn": video_library_search_clips,
+    },
+    {
+        "name": "video_library_create_timeline",
+        "description": "Create a renderer-neutral timeline.json from ordered clip ids.",
+        "fn": video_library_create_timeline,
     },
 ]

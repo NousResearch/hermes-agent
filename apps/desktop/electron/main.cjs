@@ -41,6 +41,12 @@ const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
 const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
+const {
+  MEDIA_PROTOCOL_PRIVILEGES,
+  buildGatewayMediaHeaders,
+  parseMediaProtocolUrl,
+  proxyGatewayMediaRequest
+} = require('./media-protocol.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const {
   buildDesktopBackendEnv,
@@ -739,22 +745,53 @@ const STREAMABLE_MEDIA_EXTS = new Set([
 protocol.registerSchemesAsPrivileged([
   {
     scheme: MEDIA_PROTOCOL,
-    privileges: {
-      secure: true,
-      standard: true,
-      stream: true,
-      supportFetchAPI: true
-    }
+    privileges: MEDIA_PROTOCOL_PRIVILEGES
   }
 ])
 
 function registerMediaProtocol() {
   protocol.handle(MEDIA_PROTOCOL, async request => {
+    let target
+    try {
+      target = parseMediaProtocolUrl(request.url)
+    } catch {
+      return new Response('Media not found', { status: 404 })
+    }
+
+    if (target.kind === 'gateway') {
+      if (!['GET', 'HEAD'].includes(String(request.method || 'GET').toUpperCase())) {
+        return new Response('Method not allowed', { status: 405 })
+      }
+
+      try {
+        const connection = await ensureBackend()
+        const targetUrl = `${connection.baseUrl}${target.apiPath}`
+        let headers = new Headers(request.headers)
+
+        if (connection.authMode === 'oauth') {
+          const oauthSession = getOauthSession()
+          if (!oauthSession) {
+            return new Response('OAuth session unavailable', { status: 503 })
+          }
+          return oauthSession.fetch(targetUrl, {
+            headers,
+            method: request.method
+          })
+        }
+
+        headers = buildGatewayMediaHeaders(headers, connection.token)
+        return proxyGatewayMediaRequest(targetUrl, {
+          headers,
+          method: request.method
+        })
+      } catch {
+        return new Response('Media gateway unavailable', { status: 502 })
+      }
+    }
+
     let resolvedPath
     try {
-      const url = new URL(request.url)
-      const filePath = decodeURIComponent(url.pathname.replace(/^\/+/, ''))
-      ;({ resolvedPath } = await resolveReadableFileForIpc(filePath, { purpose: 'Media stream' }))
+      ;({ resolvedPath } = await resolveReadableFileForIpc(target.filePath, { purpose: 'Media stream' }))
     } catch {
       return new Response('Media not found', { status: 404 })
     }

@@ -91,6 +91,8 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+MAX_MONEYPRINTER_CLONE_REQUEST_BYTES = 56_100_000  # two 20 MB audio files after base64 encoding
+MONEYPRINTER_CLONE_PATH = "/api/capabilities/moneyprinter/minimax/voices/clone"
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
@@ -646,11 +648,17 @@ if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
         """Reject overly large request bodies early based on Content-Length."""
+        max_bytes = (
+            MAX_MONEYPRINTER_CLONE_REQUEST_BYTES
+            if request.path == MONEYPRINTER_CLONE_PATH
+            else MAX_REQUEST_BYTES
+        )
+        request = request.clone(client_max_size=max_bytes)
         if request.method in {"POST", "PUT", "PATCH"}:
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
+                    if int(cl) > max_bytes:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
@@ -1562,6 +1570,46 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return await moneyprinter_adapter.generate_terms(request)
 
+    async def _handle_moneyprinter_minimax_clone_voice(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.clone_minimax_voice(request)
+
+    async def _handle_moneyprinter_minimax_list_voices(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.list_minimax_voices()
+
+    async def _handle_moneyprinter_minimax_tts(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.generate_minimax_tts(request)
+
+    async def _handle_moneyprinter_minimax_lyrics(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.generate_minimax_lyrics(request)
+
+    async def _handle_moneyprinter_minimax_music(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.moneyprinter import adapter as moneyprinter_adapter
+
+        return await moneyprinter_adapter.generate_minimax_music(request)
+
     async def _handle_moneyprinter_list_outputs(self, request: "web.Request") -> "web.Response":
         auth_err = self._check_auth(request)
         if auth_err:
@@ -1604,7 +1652,140 @@ class APIServerAdapter(BasePlatformAdapter):
         return await moneyprinter_adapter.proxy_media(
             str(request.match_info.get("kind", "")),
             str(request.match_info.get("file_path", "")),
+            request,
         )
+
+    # ------------------------------------------------------------------
+    # /api/capabilities/video-library — shot-level local material API
+    # ------------------------------------------------------------------
+
+    async def _handle_video_library_list_libraries(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.video_library import adapter
+
+        status, payload = await asyncio.to_thread(adapter.list_libraries_data)
+        return web.json_response(payload, status=status)
+
+    async def _handle_video_library_scan_library(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.video_library import adapter
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        status, payload = await asyncio.to_thread(
+            adapter.scan_library_data,
+            str(request.match_info.get("library_id", "")),
+            body if isinstance(body, dict) else {},
+        )
+        return web.json_response(payload, status=status)
+
+    async def _handle_video_library_status(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.video_library import adapter
+
+        status, payload = await asyncio.to_thread(
+            adapter.library_status_data,
+            str(request.match_info.get("library_id", "")),
+        )
+        return web.json_response(payload, status=status)
+
+    async def _handle_video_library_import_asset(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.video_library import adapter
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        status, payload = await asyncio.to_thread(
+            adapter.import_asset_data,
+            body if isinstance(body, dict) else {},
+        )
+        return web.json_response(payload, status=status)
+
+    async def _handle_video_library_list_assets(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.video_library import adapter
+
+        status, payload = await asyncio.to_thread(adapter.list_assets_data)
+        return web.json_response(payload, status=status)
+
+    async def _handle_video_library_analyze_asset(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.video_library import adapter
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        status, payload = await asyncio.to_thread(
+            adapter.analyze_asset_data,
+            str(request.match_info.get("asset_id", "")),
+            body if isinstance(body, dict) else {},
+        )
+        return web.json_response(payload, status=status)
+
+    async def _handle_video_library_list_clips(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.video_library import adapter
+
+        status, payload = await asyncio.to_thread(
+            adapter.list_clips_data,
+            asset_id=request.query.get("asset_id"),
+            library_id=request.query.get("library_id"),
+            query=request.query.get("query"),
+            tag=request.query.get("tag"),
+        )
+        return web.json_response(payload, status=status)
+
+    async def _handle_video_library_replace_clip_tags(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.video_library import adapter
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        status, payload = await asyncio.to_thread(
+            adapter.replace_clip_tags_data,
+            str(request.match_info.get("clip_id", "")),
+            body if isinstance(body, dict) else {},
+        )
+        return web.json_response(payload, status=status)
+
+    async def _handle_video_library_create_timeline(self, request: Any) -> Any:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from capabilities.video_library import adapter
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        status, payload = await asyncio.to_thread(
+            adapter.create_timeline_data,
+            body if isinstance(body, dict) else {},
+        )
+        return web.json_response(payload, status=status)
 
     # ------------------------------------------------------------------
     # /api/sessions — thin client/session resource API
@@ -4727,7 +4908,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
+            self._app = web.Application(middlewares=mws, client_max_size=MAX_MONEYPRINTER_CLONE_REQUEST_BYTES)
             assert self._app is not None
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
@@ -4762,11 +4943,25 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/capabilities/moneyprinter/custom-audio", self._handle_moneyprinter_upload_custom_audio)
             self._app.router.add_post("/api/capabilities/moneyprinter/scripts", self._handle_moneyprinter_generate_script)
             self._app.router.add_post("/api/capabilities/moneyprinter/terms", self._handle_moneyprinter_generate_terms)
+            self._app.router.add_post("/api/capabilities/moneyprinter/minimax/voices/clone", self._handle_moneyprinter_minimax_clone_voice)
+            self._app.router.add_get("/api/capabilities/moneyprinter/minimax/voices", self._handle_moneyprinter_minimax_list_voices)
+            self._app.router.add_post("/api/capabilities/moneyprinter/minimax/tts", self._handle_moneyprinter_minimax_tts)
+            self._app.router.add_post("/api/capabilities/moneyprinter/minimax/lyrics", self._handle_moneyprinter_minimax_lyrics)
+            self._app.router.add_post("/api/capabilities/moneyprinter/minimax/music", self._handle_moneyprinter_minimax_music)
             self._app.router.add_get("/api/capabilities/moneyprinter/outputs", self._handle_moneyprinter_list_outputs)
             self._app.router.add_get("/api/capabilities/moneyprinter/tasks", self._handle_moneyprinter_list_tasks)
             self._app.router.add_get("/api/capabilities/moneyprinter/tasks/{task_id}", self._handle_moneyprinter_get_task)
             self._app.router.add_delete("/api/capabilities/moneyprinter/tasks/{task_id}", self._handle_moneyprinter_delete_task)
             self._app.router.add_get("/api/capabilities/moneyprinter/{kind:stream|download}/{file_path:.*}", self._handle_moneyprinter_media)
+            self._app.router.add_get("/api/capabilities/video-library/libraries", self._handle_video_library_list_libraries)
+            self._app.router.add_post("/api/capabilities/video-library/libraries/{library_id}/scan", self._handle_video_library_scan_library)
+            self._app.router.add_get("/api/capabilities/video-library/libraries/{library_id}/status", self._handle_video_library_status)
+            self._app.router.add_post("/api/capabilities/video-library/assets", self._handle_video_library_import_asset)
+            self._app.router.add_get("/api/capabilities/video-library/assets", self._handle_video_library_list_assets)
+            self._app.router.add_post("/api/capabilities/video-library/assets/{asset_id}/analyze", self._handle_video_library_analyze_asset)
+            self._app.router.add_get("/api/capabilities/video-library/clips", self._handle_video_library_list_clips)
+            self._app.router.add_post("/api/capabilities/video-library/clips/{clip_id}/tags", self._handle_video_library_replace_clip_tags)
+            self._app.router.add_post("/api/capabilities/video-library/timelines", self._handle_video_library_create_timeline)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

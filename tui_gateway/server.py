@@ -3364,67 +3364,23 @@ def _browser_drive_payload_from_tool(
     args: dict | None,
     parsed_result: object,
 ) -> dict[str, object] | None:
-    """Translate agent browser tool completions into desktop rail commands."""
-    if name not in {
-        "browser_back",
-        "browser_click",
-        "browser_navigate",
-        "browser_press",
-        "browser_scroll",
-        "browser_type",
-    }:
+    """Translate safe agent browser completions into desktop navigation.
+
+    Agent browser element references describe a separate DOM and cookie jar.
+    Replaying those references in the authenticated Desktop webview can target
+    a different control, so DOM actions stay disabled until the Agent can read
+    and act against the same Desktop snapshot.
+    """
+    if name not in {"browser_back", "browser_navigate"}:
         return None
 
     result = parsed_result if isinstance(parsed_result, dict) else {}
+    if result.get("desktop_browser") is True:
+        return None
     if result.get("success") is not True:
         return None
 
     tool_args = args or {}
-
-    def ref_index(ref: object) -> int | None:
-        if isinstance(ref, int):
-            return ref if ref >= 0 else None
-        if not isinstance(ref, str):
-            return None
-        raw = ref.strip()
-        if raw.startswith("@e"):
-            raw = raw[2:]
-        if not raw.isdigit():
-            return None
-        index = int(raw)
-        return index if index >= 0 else None
-
-    if name == "browser_click":
-        index = ref_index(tool_args.get("ref"))
-        if index is None:
-            return None
-        return {"action": "act", "domAction": {"index": index, "kind": "click"}}
-
-    if name == "browser_type":
-        index = ref_index(tool_args.get("ref"))
-        text = tool_args.get("text")
-        if index is None or not isinstance(text, str):
-            return None
-        return {
-            "action": "act",
-            "domAction": {"index": index, "kind": "type", "text": text},
-        }
-
-    if name == "browser_scroll":
-        direction = tool_args.get("direction")
-        if direction not in {"down", "up"}:
-            return None
-        return {
-            "action": "act",
-            "domAction": {"amount": 3, "direction": direction, "kind": "scroll"},
-        }
-
-    if name == "browser_press":
-        key = tool_args.get("key")
-        if not isinstance(key, str) or not key:
-            return None
-        return {"action": "act", "domAction": {"key": key, "kind": "press"}}
-
     url = result.get("url")
     if not isinstance(url, str) or not url:
         url = tool_args.get("url")
@@ -3682,8 +3638,166 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             _child_mirrors.pop(child_key, None)
 
 
+def _desktop_browser_request(
+    sid: str,
+    operation: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Send one blocking browser request to the active Desktop renderer."""
+    from tools.desktop_browser_tool import DesktopBrowserProtocolError
+
+    answer = _block(
+        "browser.request",
+        sid,
+        {"operation": operation, "payload": payload or {}},
+        timeout=45,
+    )
+    if not answer:
+        raise DesktopBrowserProtocolError(
+            "Desktop browser did not respond. Keep this session active with the browser rail open and retry."
+        )
+    try:
+        response = json.loads(answer)
+    except (TypeError, ValueError) as exc:
+        raise DesktopBrowserProtocolError(
+            "Desktop browser returned an invalid response"
+        ) from exc
+    if not isinstance(response, dict):
+        raise DesktopBrowserProtocolError(
+            "Desktop browser returned an invalid response"
+        )
+    if response.get("ok") is not True:
+        raise DesktopBrowserProtocolError(
+            str(response.get("error") or "Desktop browser request failed")
+        )
+    return response
+
+
+def _request_desktop_browser_approval(
+    sid: str,
+    action: dict[str, Any],
+    reason: str,
+) -> bool:
+    """Block a risky same-webview action until the user explicitly approves."""
+    session = _sessions.get(sid) or {}
+    session_key = str(session.get("session_key") or sid)
+    target = action.get("target") if isinstance(action.get("target"), dict) else {}
+    label = str(
+        target.get("text")
+        or target.get("ariaLabel")
+        or action.get("key")
+        or action.get("kind")
+        or "browser action"
+    )
+    from urllib.parse import urlsplit
+
+    try:
+        host = urlsplit(str(action.get("expectedUrl") or "")).hostname or "page"
+    except ValueError:
+        host = "page"
+
+    from tools.approval import _await_gateway_decision
+
+    decision = _await_gateway_decision(
+        session_key,
+        lambda data: _emit_approval_request(sid, data),
+        {
+            "allow_permanent": False,
+            "command": f"Desktop browser {action.get('kind')}: {label} ({host})",
+            "description": reason,
+            "pattern_key": f"desktop-browser:{host}:{action.get('kind')}",
+            "pattern_keys": [f"desktop-browser:{host}:{action.get('kind')}"],
+        },
+        surface="desktop_browser",
+    )
+    return bool(
+        decision.get("resolved")
+        and decision.get("choice")
+        and decision.get("choice") != "deny"
+    )
+
+
+def _desktop_browser_agent_callback(
+    sid: str,
+    function_name: str,
+    function_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Execute existing ``browser_*`` tools against this session's webview."""
+    from tools.desktop_browser_tool import (
+        DesktopBrowserProtocolError,
+        build_desktop_browser_action,
+        desktop_browser_approval_reason,
+        normalize_desktop_browser_snapshot,
+        validate_desktop_browser_navigation,
+    )
+
+    args = function_args or {}
+    try:
+        if function_name == "browser_navigate":
+            url, error = validate_desktop_browser_navigation(args.get("url"))
+            if error:
+                raise DesktopBrowserProtocolError(error)
+            response = _desktop_browser_request(sid, "navigate", {"url": url})
+        elif function_name == "browser_back":
+            response = _desktop_browser_request(sid, "back")
+        elif function_name == "browser_snapshot":
+            response = _desktop_browser_request(sid, "snapshot")
+        else:
+            with _sessions_lock:
+                session = _sessions.get(sid) or {}
+                snapshot_state = session.get("desktop_browser_snapshot")
+            action = build_desktop_browser_action(
+                function_name,
+                args,
+                snapshot_state,
+            )
+            if reason := desktop_browser_approval_reason(action):
+                if not _request_desktop_browser_approval(sid, action, reason):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"BLOCKED: Desktop browser action was not approved. {reason}. "
+                            "Do not retry or use another tool to bypass this decision."
+                        ),
+                    }
+            response = _desktop_browser_request(sid, "action", {"action": action})
+            action_result = response.get("action")
+            if not isinstance(action_result, dict) or action_result.get("ok") is not True:
+                raise DesktopBrowserProtocolError(
+                    str(action_result.get("error") or "Desktop browser action failed")
+                    if isinstance(action_result, dict)
+                    else "Desktop browser action returned no result"
+                )
+
+        result, state = normalize_desktop_browser_snapshot(
+            response.get("snapshot"),
+            max_chars=(
+                200_000
+                if function_name == "browser_snapshot" and bool(args.get("full"))
+                else 8_000
+            ),
+        )
+        with _sessions_lock:
+            session = _sessions.get(sid)
+            if session is not None:
+                session["desktop_browser_snapshot"] = state
+        result["desktop_browser"] = True
+        if function_name not in {"browser_back", "browser_navigate", "browser_snapshot"}:
+            result["action"] = {
+                "kind": action.get("kind"),
+                **(
+                    {"target": response["action"].get("target")}
+                    if response["action"].get("target")
+                    else {}
+                ),
+            }
+        return result
+    except DesktopBrowserProtocolError as exc:
+        return {"success": False, "error": str(exc), "desktop_browser": True}
+
+
 def _agent_cbs(sid: str) -> dict:
-    return {
+    callbacks = {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
             sid, tc_id, name, args
         ),
@@ -3734,6 +3848,14 @@ def _agent_cbs(sid: str) -> dict:
             timeout=30,
         ),
     }
+    session = _sessions.get(sid)
+    if _session_source(session) == "desktop" or is_truthy_value(
+        os.environ.get("HERMES_DESKTOP")
+    ):
+        callbacks["desktop_browser_callback"] = (
+            lambda name, args: _desktop_browser_agent_callback(sid, name, args)
+        )
+    return callbacks
 
 
 def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
@@ -9816,6 +9938,12 @@ def _(rid, params: dict) -> dict:
 @method("terminal.read.respond")
 def _(rid, params: dict) -> dict:
     # `text` is a JSON string of the serialized terminal buffer + line metadata.
+    return _respond(rid, params, "text")
+
+
+@method("browser.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is the serialized result from the active Desktop browser webview.
     return _respond(rid, params, "text")
 
 

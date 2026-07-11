@@ -43,11 +43,13 @@ let handleEvent: (event: RpcEvent) => void = () => undefined
 function PreviewRoutingHarness({
   activeSessionId = 'session-1',
   onEvent,
+  requestGateway = vi.fn(),
   routedSessionId = 'session-1',
   selectedStoredSessionId = null
 }: {
   activeSessionId?: string | null
   onEvent: (handler: (event: RpcEvent) => void) => void
+  requestGateway?: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   routedSessionId?: string | null
   selectedStoredSessionId?: string | null
 }) {
@@ -58,7 +60,7 @@ function PreviewRoutingHarness({
     baseHandleGatewayEvent: vi.fn(),
     currentCwd: '/work',
     currentView: 'chat',
-    requestGateway: vi.fn(),
+    requestGateway,
     routedSessionId,
     selectedStoredSessionId
   })
@@ -205,6 +207,137 @@ describe('usePreviewRouting', () => {
       requestId: 'act-1',
       sessionId: 'session-1'
     })
+  })
+
+  it('answers active browser snapshot requests with the live Electron webview result', async () => {
+    const requestGateway = vi.fn().mockResolvedValue({})
+    const snapshot = {
+      capturedAt: 123,
+      elements: [],
+      headings: [],
+      ok: true,
+      sessionId: 'session-1',
+      tables: [],
+      text: '客户消息',
+      title: '抖音',
+      url: 'https://www.douyin.com/'
+    }
+    window.hermesDesktop.browser = {
+      ...window.hermesDesktop.browser,
+      navigate: vi.fn().mockResolvedValue(undefined),
+      open: vi.fn().mockResolvedValue(undefined),
+      snapshot: vi.fn().mockResolvedValue(snapshot)
+    }
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+        requestGateway={requestGateway}
+      />
+    )
+
+    act(() =>
+      handleEvent({
+        payload: { operation: 'snapshot', payload: {}, request_id: 'browser-1' },
+        session_id: 'session-1',
+        type: 'browser.request'
+      })
+    )
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalled())
+    const [, response] = requestGateway.mock.calls[0]
+    expect(requestGateway.mock.calls[0][0]).toBe('browser.respond')
+    expect(response.request_id).toBe('browser-1')
+    expect(JSON.parse(response.text)).toEqual({ ok: true, snapshot })
+  })
+
+  it('rejects browser requests for an inactive session without touching its webview', async () => {
+    const requestGateway = vi.fn().mockResolvedValue({})
+    const snapshot = vi.fn()
+    window.hermesDesktop.browser = {
+      ...window.hermesDesktop.browser,
+      navigate: vi.fn().mockResolvedValue(undefined),
+      open: vi.fn().mockResolvedValue(undefined),
+      snapshot
+    }
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+        requestGateway={requestGateway}
+      />
+    )
+
+    act(() =>
+      handleEvent({
+        payload: { operation: 'snapshot', payload: {}, request_id: 'browser-2' },
+        session_id: 'session-2',
+        type: 'browser.request'
+      })
+    )
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalled())
+    expect(snapshot).not.toHaveBeenCalled()
+    const response = JSON.parse(requestGateway.mock.calls[0][1].text)
+    expect(response.ok).toBe(false)
+    expect(response.error).toContain('active Desktop session')
+  })
+
+  it('does not answer navigation with a snapshot from the previous URL', async () => {
+    const requestGateway = vi.fn().mockResolvedValue({})
+    const oldSnapshot = {
+      capturedAt: 123,
+      elements: [],
+      headings: [],
+      ok: true,
+      sessionId: 'session-1',
+      tables: [],
+      text: 'old page',
+      title: 'Old',
+      url: 'https://old.example/'
+    }
+    const newSnapshot = {
+      ...oldSnapshot,
+      capturedAt: 456,
+      text: 'new page',
+      title: 'New',
+      url: 'https://new.example/'
+    }
+    const snapshot = vi.fn().mockResolvedValueOnce(oldSnapshot).mockResolvedValue(newSnapshot)
+    window.hermesDesktop.browser = {
+      ...window.hermesDesktop.browser,
+      getState: vi.fn().mockResolvedValue({ loading: false, url: 'https://old.example/' }),
+      navigate: vi.fn().mockResolvedValue(undefined),
+      open: vi.fn().mockResolvedValue(undefined),
+      snapshot
+    }
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+        requestGateway={requestGateway}
+      />
+    )
+
+    act(() =>
+      handleEvent({
+        payload: {
+          operation: 'navigate',
+          payload: { url: 'https://new.example/' },
+          request_id: 'browser-nav'
+        },
+        session_id: 'session-1',
+        type: 'browser.request'
+      })
+    )
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalled(), { timeout: 3_000 })
+    const response = JSON.parse(requestGateway.mock.calls[0][1].text)
+    expect(snapshot).toHaveBeenCalledTimes(2)
+    expect(response.snapshot.url).toBe('https://new.example/')
   })
 
   it('closes the browser rail when the active session has no browser record', async () => {

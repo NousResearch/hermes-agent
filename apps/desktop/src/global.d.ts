@@ -225,12 +225,27 @@ export type DesktopBrowserDomActionKind = 'click' | 'press' | 'scroll' | 'select
 export interface DesktopBrowserDomAction {
   amount?: number
   direction?: 'down' | 'left' | 'right' | 'up'
+  expectedUrl?: string
   index?: number
   key?: string
   kind: DesktopBrowserDomActionKind
   selector?: string
+  target?: DesktopBrowserElementFingerprint
   text?: string
   value?: string
+}
+
+export interface DesktopBrowserElementFingerprint {
+  ariaLabel?: string
+  hermesRef?: string
+  href?: string
+  id?: string
+  name?: string
+  placeholder?: string
+  role?: string
+  tag?: string
+  text?: string
+  type?: string
 }
 
 export interface DesktopBrowserDrivePayload {
@@ -254,6 +269,7 @@ export interface DesktopBrowserState {
 
 export interface DesktopBrowserSnapshotElement {
   ariaLabel?: string
+  hermesRef?: string
   href?: string
   id?: string
   index: number
@@ -299,6 +315,7 @@ export interface DesktopBrowserSnapshotResult {
 
 export interface DesktopBrowserActionTarget {
   ariaLabel?: string
+  hermesRef?: string
   id?: string
   index?: number
   name?: string

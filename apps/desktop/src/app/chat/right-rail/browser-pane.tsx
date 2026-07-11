@@ -46,6 +46,7 @@ type BrowserWebview = HTMLElement & {
 
 interface BrowserSnapshotElement {
   ariaLabel?: string
+  hermesRef?: string
   href?: string
   id?: string
   index: number
@@ -85,6 +86,7 @@ interface BrowserSnapshot {
 
 interface BrowserActionTarget {
   ariaLabel?: string
+  hermesRef?: string
   id?: string
   index?: number
   name?: string
@@ -116,9 +118,10 @@ interface BrowserLoadErrorState {
 }
 
 const TITLEBAR_GROUP_ID = 'browser'
+const BROWSER_PARTITION = 'persist:hermes-browser'
 
-function browserPartitionForSession(sessionId: string): string {
-  return `persist:hermes-browser-${encodeURIComponent(sessionId).replaceAll('%', '_')}`
+function browserPartition(): string {
+  return BROWSER_PARTITION
 }
 
 const BROWSER_SNAPSHOT_SCRIPT = String.raw`(() => {
@@ -130,6 +133,7 @@ const BROWSER_SNAPSHOT_SCRIPT = String.raw`(() => {
 
   const clean = value => String(value || '').replace(/\s+/g, ' ').trim()
   const clip = (value, max = 4000) => clean(value).slice(0, max)
+  const snapshotId = globalThis.crypto?.randomUUID?.() || (Date.now().toString(36) + Math.random().toString(36).slice(2))
   const isVisible = element => {
     const style = window.getComputedStyle(element)
     const rect = element.getBoundingClientRect()
@@ -138,17 +142,10 @@ const BROWSER_SNAPSHOT_SCRIPT = String.raw`(() => {
   }
   const elementText = element => {
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      return element.value || element.placeholder || element.getAttribute('aria-label') || ''
+      return element.placeholder || element.getAttribute('aria-label') || ''
     }
 
     return element.innerText || element.textContent || element.getAttribute('aria-label') || ''
-  }
-  const elementValue = element => {
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
-      return element.value || ''
-    }
-
-    return ''
   }
 
   const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
@@ -164,20 +161,25 @@ const BROWSER_SNAPSHOT_SCRIPT = String.raw`(() => {
     document.querySelectorAll('a,button,input,textarea,select,[role],[contenteditable="true"],summary,label')
   )
     .slice(0, MAX_ELEMENTS)
-    .map((element, index) => ({
-      ariaLabel: clip(element.getAttribute('aria-label') || '', 1000) || undefined,
-      href: element instanceof HTMLAnchorElement ? element.href || undefined : undefined,
-      id: element.id || undefined,
-      index,
-      name: element.getAttribute('name') || undefined,
-      placeholder: element.getAttribute('placeholder') || undefined,
-      role: element.getAttribute('role') || undefined,
-      tag: element.tagName.toLowerCase(),
-      text: clip(elementText(element), 2000) || undefined,
-      type: element.getAttribute('type') || undefined,
-      value: clip(elementValue(element), 2000) || undefined,
-      visible: isVisible(element)
-    }))
+    .map((element, index) => {
+      const hermesRef = snapshotId + ':' + index
+      element.setAttribute('data-hermes-browser-ref', hermesRef)
+
+      return {
+        ariaLabel: clip(element.getAttribute('aria-label') || '', 1000) || undefined,
+        hermesRef,
+        href: element instanceof HTMLAnchorElement ? element.href || undefined : undefined,
+        id: element.id || undefined,
+        index,
+        name: element.getAttribute('name') || undefined,
+        placeholder: element.getAttribute('placeholder') || undefined,
+        role: element.getAttribute('role') || undefined,
+        tag: element.tagName.toLowerCase(),
+        text: clip(elementText(element), 2000) || undefined,
+        type: element.getAttribute('type') || undefined,
+        visible: isVisible(element)
+      }
+    })
     .filter(item => item.visible || item.text || item.ariaLabel || item.placeholder)
 
   const tables = Array.from(document.querySelectorAll('table'))
@@ -215,23 +217,45 @@ const BROWSER_SNAPSHOT_SCRIPT = String.raw`(() => {
   }
 })()`
 
-function browserActionScript(action: BrowserDomActionPayload): string {
-  return `(() => {
+export function browserActionScript(action: BrowserDomActionPayload): string {
+  return `(async () => {
   const action = ${JSON.stringify(action)}
   const TARGET_SELECTOR = 'a,button,input,textarea,select,[role],[contenteditable="true"],summary,label'
   const clean = value => String(value || '').replace(/\\s+/g, ' ').trim()
   const clip = (value, max = 2000) => clean(value).slice(0, max)
+  const elementText = element => {
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      return element.placeholder || element.getAttribute('aria-label') || ''
+    }
+
+    return element.innerText || element.textContent || element.getAttribute('aria-label') || ''
+  }
   const targetInfo = (element, index) => ({
     ariaLabel: element.getAttribute('aria-label') || undefined,
+    hermesRef: element.getAttribute('data-hermes-browser-ref') || undefined,
+    href: element instanceof HTMLAnchorElement ? element.href || undefined : undefined,
     id: element.id || undefined,
     index,
     name: element.getAttribute('name') || undefined,
+    placeholder: element.getAttribute('placeholder') || undefined,
     role: element.getAttribute('role') || undefined,
     tag: element.tagName?.toLowerCase?.() || undefined,
-    text: clip(element.innerText || element.textContent || element.getAttribute('aria-label') || element.getAttribute('placeholder') || ''),
-    value: element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ? element.value || '' : undefined
+    text: clip(elementText(element)),
+    type: element.getAttribute('type') || undefined
   })
   const resolveTarget = () => {
+    if (action.target && typeof action.target === 'object') {
+      const fingerprint = Object.entries(action.target).filter(([, value]) => typeof value === 'string' && value)
+      if (!fingerprint.length) return { element: null, error: 'Target fingerprint is empty', index: -1 }
+      const elements = Array.from(document.querySelectorAll(TARGET_SELECTOR))
+      const matches = elements
+        .map((element, index) => ({ element, index, info: targetInfo(element, index) }))
+        .filter(candidate => fingerprint.every(([key, value]) => candidate.info[key] === value))
+      if (matches.length === 0) return { element: null, error: 'Target fingerprint was not found on the current page', index: -1 }
+      if (matches.length > 1) return { element: null, error: 'Target fingerprint is ambiguous on the current page', index: -1 }
+      return matches[0]
+    }
+
     if (typeof action.selector === 'string' && action.selector.trim()) {
       const element = document.querySelector(action.selector)
       const index = Array.from(document.querySelectorAll(TARGET_SELECTOR)).indexOf(element)
@@ -266,6 +290,24 @@ function browserActionScript(action: BrowserDomActionPayload): string {
 
     return false
   }
+  const uploadLocalFile = async value => {
+    const fileInput = document.querySelector('input[type="file"]')
+    if (!(fileInput instanceof HTMLInputElement)) return { error: 'Page has no file input' }
+    const source = String(value || '').trim()
+    const path = String(action.value || '').trim()
+    if (!source.startsWith('data:') || !path.startsWith('/')) return { error: 'Local upload payload is invalid' }
+    const response = await fetch(source)
+    if (!response.ok) return { error: 'Unable to decode local file' }
+    const blob = await response.blob()
+    const mime = blob.type || 'application/octet-stream'
+    const name = path.split('/').filter(Boolean).pop() || 'upload'
+    const file = new File([blob], name, { type: mime })
+    const transfer = new DataTransfer()
+    transfer.items.add(file)
+    fileInput.files = transfer.files
+    emitInput(fileInput)
+    return {}
+  }
   const keyEvent = (type, key) => new KeyboardEvent(type, { bubbles: true, cancelable: true, key })
   const finish = (ok, target, extra = {}) => ({
     action: action.kind,
@@ -277,7 +319,12 @@ function browserActionScript(action: BrowserDomActionPayload): string {
     ...extra
   })
 
-  const { element, index } = resolveTarget()
+  if (typeof action.expectedUrl === 'string' && action.expectedUrl && location.href !== action.expectedUrl) {
+    return finish(false, undefined, { error: 'Page URL changed after the snapshot; take a new browser_snapshot before acting' })
+  }
+
+  const { element, error, index } = resolveTarget()
+  if (error) return finish(false, undefined, { error })
   if (!element) return finish(false, undefined, { error: 'Target element not found' })
 
   element.scrollIntoView?.({ block: 'center', inline: 'center' })
@@ -291,7 +338,22 @@ function browserActionScript(action: BrowserDomActionPayload): string {
 
   if (action.kind === 'type' || action.kind === 'setValue') {
     const next = String(action.text ?? action.value ?? '')
-    if (!setTextValue(element, next)) return finish(false, target, { error: 'Target is not editable' })
+    if (element instanceof HTMLSelectElement) {
+      const option = Array.from(element.options).find(item => item.value === next || clean(item.textContent) === clean(next))
+      if (!option) return finish(false, target, { error: 'Select option was not found' })
+      element.value = option.value
+      emitInput(element)
+      return finish(true, targetInfo(element, index))
+    }
+    if (!setTextValue(element, next)) {
+      const label = clean(elementText(element)).toLowerCase()
+      if (element instanceof HTMLButtonElement && (label.includes('上传') || label.includes('upload'))) {
+        const uploaded = await uploadLocalFile(next)
+        if (uploaded.error) return finish(false, target, { error: uploaded.error })
+        return finish(true, target)
+      }
+      return finish(false, target, { error: 'Target is not editable' })
+    }
     return finish(true, targetInfo(element, index))
   }
 
@@ -522,8 +584,21 @@ export function BrowserPane({ setTitlebarToolGroup }: BrowserPaneProps) {
         } else if (!webview?.executeJavaScript) {
           result = emptyBrowserActionResult(action, sessionId, 'Browser webview action API is unavailable')
         } else {
+          let executableAction = action
+          const uploadLabel = String(action.target?.text || action.target?.ariaLabel || '').toLowerCase()
+          const localPath = String(action.text || '')
+          if (
+            action.kind === 'type' &&
+            action.target?.tag === 'button' &&
+            (uploadLabel.includes('上传') || uploadLabel.includes('upload')) &&
+            localPath.startsWith('/')
+          ) {
+            const dataUrl = await window.hermesDesktop?.readFileDataUrl?.(localPath)
+            if (!dataUrl) throw new Error('Unable to read local upload file')
+            executableAction = { ...action, text: dataUrl, value: localPath }
+          }
           result = normalizeBrowserActionResult(
-            await webview.executeJavaScript(browserActionScript(action), true),
+            await webview.executeJavaScript(browserActionScript(executableAction), true),
             action,
             sessionId
           )
@@ -599,7 +674,7 @@ export function BrowserPane({ setTitlebarToolGroup }: BrowserPaneProps) {
     const initialUrl = $browserCurrentState.get().url
     const webview = document.createElement('webview') as BrowserWebview
     webview.className = 'flex h-full w-full flex-1 bg-white dark:bg-black'
-    webview.setAttribute('partition', browserPartitionForSession(sessionId))
+    webview.setAttribute('partition', browserPartition())
     webview.setAttribute('src', initialUrl)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
 

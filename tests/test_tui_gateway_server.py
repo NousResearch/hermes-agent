@@ -16,6 +16,36 @@ from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "args"),
+    [
+        ("browser_click", {"ref": "@e3"}),
+        ("browser_type", {"ref": "@e3", "text": "hello"}),
+        ("browser_press", {"key": "Enter"}),
+        ("browser_scroll", {"direction": "down"}),
+    ],
+)
+def test_browser_drive_does_not_replay_cross_runtime_dom_actions(tool_name, args):
+    """Camofox element refs are not valid contracts for the Desktop webview."""
+    payload = server._browser_drive_payload_from_tool(tool_name, args, {"success": True})
+
+    assert payload is None
+
+
+def test_browser_drive_keeps_successful_navigation_sync():
+    payload = server._browser_drive_payload_from_tool(
+        "browser_navigate",
+        {"url": "https://example.com"},
+        {"success": True, "title": "Example", "url": "https://example.com/"},
+    )
+
+    assert payload == {
+        "action": "navigate",
+        "title": "Example",
+        "url": "https://example.com/",
+    }
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -408,7 +438,36 @@ def test_browser_tool_complete_emits_desktop_browser_drive(monkeypatch):
     ) in events
 
 
-def test_browser_click_complete_emits_desktop_dom_action(monkeypatch):
+def test_same_webview_browser_completion_does_not_emit_duplicate_legacy_navigation(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "browser-same-webview-test",
+        {"tool_progress_mode": "off", "tool_started_at": {}},
+    )
+
+    server._on_tool_complete(
+        "browser-same-webview-test",
+        "tool-1",
+        "browser_navigate",
+        {"url": "https://example.com"},
+        json.dumps(
+            {
+                "desktop_browser": True,
+                "success": True,
+                "title": "Example",
+                "url": "https://example.com/",
+            }
+        ),
+    )
+
+    assert not [event for event in events if event[0] == "browser.drive"]
+
+
+def test_browser_click_complete_never_replays_cross_runtime_dom_index(monkeypatch):
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
         server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
@@ -427,14 +486,10 @@ def test_browser_click_complete_emits_desktop_dom_action(monkeypatch):
         json.dumps({"success": True}),
     )
 
-    assert (
-        "browser.drive",
-        "browser-sync-test",
-        {"action": "act", "domAction": {"index": 47, "kind": "click"}},
-    ) in events
+    assert not [event for event in events if event[0] == "browser.drive"]
 
 
-def test_browser_type_scroll_and_press_complete_emit_desktop_dom_actions(monkeypatch):
+def test_browser_type_scroll_and_press_never_replay_cross_runtime_dom_actions(monkeypatch):
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
         server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
@@ -467,21 +522,102 @@ def test_browser_type_scroll_and_press_complete_emit_desktop_dom_actions(monkeyp
         json.dumps({"success": True}),
     )
 
-    assert (
-        "browser.drive",
-        "browser-sync-test",
-        {"action": "act", "domAction": {"index": 3, "kind": "type", "text": "你好"}},
-    ) in events
-    assert (
-        "browser.drive",
-        "browser-sync-test",
-        {"action": "act", "domAction": {"amount": 3, "direction": "down", "kind": "scroll"}},
-    ) in events
-    assert (
-        "browser.drive",
-        "browser-sync-test",
-        {"action": "act", "domAction": {"key": "Escape", "kind": "press"}},
-    ) in events
+    assert not [event for event in events if event[0] == "browser.drive"]
+
+
+def _desktop_snapshot(*, text="查看视频", tag="a", href="https://www.douyin.com/video/1"):
+    return {
+        "capturedAt": 123,
+        "elements": [
+            {
+                "href": href,
+                "index": 9,
+                "role": "button" if tag == "button" else None,
+                "tag": tag,
+                "text": text,
+                "visible": True,
+            }
+        ],
+        "headings": [],
+        "ok": True,
+        "tables": [],
+        "text": "抖音页面",
+        "title": "抖音",
+        "url": "https://www.douyin.com/user/example",
+    }
+
+
+def test_desktop_browser_callback_reads_and_acts_against_same_webview(monkeypatch):
+    sid = "desktop-browser-test"
+    monkeypatch.setitem(server._sessions, sid, {"session_key": "desktop-key", "source": "desktop"})
+    requests = []
+
+    def fake_block(event, owner_sid, payload, timeout=300):
+        requests.append((event, owner_sid, dict(payload), timeout))
+        if payload["operation"] == "snapshot":
+            return json.dumps({"ok": True, "snapshot": _desktop_snapshot()})
+        if payload["operation"] == "action":
+            return json.dumps(
+                {
+                    "action": {"action": "click", "ok": True},
+                    "ok": True,
+                    "snapshot": _desktop_snapshot(text="视频详情"),
+                }
+            )
+        raise AssertionError(payload)
+
+    monkeypatch.setattr(server, "_block", fake_block)
+    callback = server._agent_cbs(sid)["desktop_browser_callback"]
+
+    snapshot_result = callback("browser_snapshot", {})
+    action_result = callback("browser_click", {"ref": "@e0"})
+
+    assert snapshot_result["success"] is True
+    assert action_result["success"] is True
+    action_request = next(item for item in requests if item[2]["operation"] == "action")
+    assert action_request[2]["payload"]["action"] == {
+        "expectedUrl": "https://www.douyin.com/user/example",
+        "kind": "click",
+        "target": {
+            "href": "https://www.douyin.com/video/1",
+            "tag": "a",
+            "text": "查看视频",
+        },
+    }
+
+
+def test_desktop_browser_callback_requires_approval_before_douyin_button_click(monkeypatch):
+    sid = "desktop-browser-approval-test"
+    monkeypatch.setitem(server._sessions, sid, {"session_key": "desktop-key", "source": "desktop"})
+    requests = []
+
+    def fake_block(_event, _owner_sid, payload, timeout=300):
+        requests.append(dict(payload))
+        return json.dumps(
+            {
+                "ok": True,
+                "snapshot": _desktop_snapshot(text="发布", tag="button", href=""),
+            }
+        )
+
+    monkeypatch.setattr(server, "_block", fake_block)
+    monkeypatch.setattr(server, "_request_desktop_browser_approval", lambda *_args: False)
+    callback = server._agent_cbs(sid)["desktop_browser_callback"]
+
+    callback("browser_snapshot", {})
+    result = callback("browser_click", {"ref": "@e0"})
+
+    assert result["success"] is False
+    assert "BLOCKED" in result["error"]
+    assert [request["operation"] for request in requests] == ["snapshot"]
+
+
+def test_non_desktop_tui_callbacks_do_not_hijack_browser_tools(monkeypatch):
+    sid = "plain-tui-browser-test"
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.setitem(server._sessions, sid, {"session_key": "tui-key", "source": "tui"})
+
+    assert "desktop_browser_callback" not in server._agent_cbs(sid)
 
 
 def test_dispatch_rejects_non_object_request():
@@ -5244,6 +5380,29 @@ def test_respond_unpacks_sid_tuple_correctly():
     finally:
         server._pending.pop("rid-x", None)
         server._answers.pop("rid-x", None)
+
+
+def test_browser_respond_wakes_the_waiting_same_webview_request():
+    ev = threading.Event()
+    server._pending["browser-rid"] = ("sid_browser", ev)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "browser-response",
+                "method": "browser.respond",
+                "params": {
+                    "request_id": "browser-rid",
+                    "text": json.dumps({"ok": True, "snapshot": {"ok": True}}),
+                },
+            }
+        )
+
+        assert resp.get("result")
+        assert ev.is_set()
+        assert json.loads(server._answers["browser-rid"])["ok"] is True
+    finally:
+        server._pending.pop("browser-rid", None)
+        server._answers.pop("browser-rid", None)
 
 
 # ---------------------------------------------------------------------------

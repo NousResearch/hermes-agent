@@ -18,11 +18,68 @@ export interface MoneyPrinterLocalMaterialUploadInput {
   sourcePath?: string
 }
 
+export interface VideoLibraryAsset {
+  created_at: number
+  duration_seconds?: number | null
+  fps?: number | null
+  height?: number | null
+  id: string
+  managed_path: string
+  original_name: string
+  size_bytes: number
+  source_path: string
+  status: string
+  updated_at: number
+  width?: number | null
+}
+
+export interface VideoLibraryTag {
+  confidence: number
+  id: string
+  name: string
+  source: string
+}
+
+export interface VideoLibraryClip {
+  asset_id: string
+  clip_index: number
+  created_at: number
+  description: string
+  duration_seconds: number
+  end_seconds: number
+  file_path: string
+  id: string
+  keyframe_path?: string
+  start_seconds: number
+  status: string
+  tags: VideoLibraryTag[]
+  updated_at: number
+}
+
+export interface VideoLibraryAnalysisResult {
+  asset: VideoLibraryAsset
+  clips: VideoLibraryClip[]
+  job: {
+    error: string
+    id: string
+    progress: number
+    state: string
+  }
+}
+
+export interface VideoLibraryTimelineResult {
+  id: string
+  path: string
+  timeline: Record<string, unknown>
+}
+
 export interface MoneyPrinterAudioAsset {
+  downloadUrl?: string
   file: string
   kind: 'audio'
   name: string
   size: number
+  streamUrl?: string
   updatedAt?: number
 }
 
@@ -127,9 +184,13 @@ export interface MoneyPrinterHealth {
   apiBaseUrl?: string
   config?: MoneyPrinterConfigSummary
   ffmpeg?: boolean
+  ffmpegPath?: string
   imagemagick?: boolean
   installed: boolean
   message?: string
+  missingDependencies?: string[]
+  runtimePython?: string
+  runtimeReady?: boolean
   serviceRunning: boolean
   storageWritable?: boolean
   upstreamCommit?: string
@@ -145,6 +206,13 @@ export interface MoneyPrinterConfigSummary {
     pexels: boolean
     pixabay: boolean
   }
+  minimax?: {
+    apiKeyConfigured?: boolean
+    baseUrl?: string
+    musicModel?: string
+    t2aModel?: string
+    voiceCloneModel?: string
+  }
   modelConfigured: boolean
   modelName?: string
 }
@@ -154,6 +222,11 @@ export interface MoneyPrinterConfigInput {
   baseUrl: string
   coverrApiKey: string
   llmProvider: string
+  minimaxApiKey: string
+  minimaxBaseUrl: string
+  minimaxMusicModel: string
+  minimaxT2aModel: string
+  minimaxVoiceCloneModel: string
   modelName: string
   pexelsApiKey: string
   pixabayApiKey: string
@@ -168,7 +241,6 @@ export interface MoneyPrinterVideoOutput {
   streamUrl?: string
 }
 
-const DEFAULT_MONEYPRINTER_API_BASE_URL = 'http://127.0.0.1:8080'
 const MONEYPRINTER_CAPABILITY_MEDIA_RE = /^\/api\/capabilities\/moneyprinter\/(download|stream)\/(.+)$/
 const MONEYPRINTER_PUBLIC_VIDEO_RE = /^(?:combined|final)-\d+\.mp4$/i
 
@@ -214,6 +286,90 @@ export interface GenerateTermsResult {
   video_terms?: string[] | string
 }
 
+export interface MiniMaxCloneVoiceInput {
+  activate: boolean
+  cloneAudio: MoneyPrinterLocalMaterialUploadInput
+  model: string
+  promptAudio?: MoneyPrinterLocalMaterialUploadInput
+  promptText: string
+  trialText: string
+  voiceId: string
+}
+
+export interface MiniMaxCloneVoicePayload {
+  activate: boolean
+  clone_audio: MoneyPrinterLocalMaterialUploadInput
+  model: string
+  prompt_audio?: MoneyPrinterLocalMaterialUploadInput
+  prompt_text: string
+  trial_text: string
+  voice_id: string
+}
+
+export interface MiniMaxVoiceRecord {
+  category: 'local_preview' | 'system' | 'voice_cloning' | 'voice_generation'
+  id: string
+  name: string
+  providerConfirmed: boolean
+}
+
+export interface MiniMaxTtsInput {
+  model: string
+  text: string
+  voiceId: string
+}
+
+export interface MiniMaxTtsPayload {
+  model: string
+  save_as_custom_audio: boolean
+  speed: number
+  text: string
+  voice_id: string
+  volume: number
+}
+
+export interface MiniMaxAudioResult {
+  activated?: boolean
+  audio?: MoneyPrinterAudioAsset
+  file?: string
+  previewError?: string
+  trialAudio?: MoneyPrinterAudioAsset
+  trialAudioFile?: string
+  voice_id?: string
+  voiceNameForVideo?: string
+}
+
+export interface MiniMaxMusicInput {
+  isInstrumental: boolean
+  lyrics: string
+  lyricsOptimizer: boolean
+  model: string
+  prompt: string
+  saveAsBgm: boolean
+}
+
+export interface MiniMaxMusicPayload {
+  is_instrumental: boolean
+  lyrics: string
+  lyrics_optimizer: boolean
+  model: string
+  prompt: string
+  save_as_bgm: boolean
+}
+
+export interface MiniMaxLyricsInput {
+  lyrics: string
+  mode: 'edit' | 'write_full_song'
+  prompt: string
+  title: string
+}
+
+export interface MiniMaxLyricsResult {
+  lyrics?: string
+  song_title?: string
+  style_tags?: string[]
+}
+
 export const defaultVideoGenerationForm: VideoGenerationForm = {
   bgmFile: '',
   bgmType: 'random',
@@ -255,6 +411,11 @@ export const defaultMoneyPrinterConfigForm: MoneyPrinterConfigInput = {
   baseUrl: '',
   coverrApiKey: '',
   llmProvider: 'openai',
+  minimaxApiKey: '',
+  minimaxBaseUrl: 'https://api.minimax.io/v1',
+  minimaxMusicModel: 'music-2.6-free',
+  minimaxT2aModel: 'speech-2.8-hd',
+  minimaxVoiceCloneModel: 'speech-2.8-hd',
   modelName: 'gpt-4o-mini',
   pexelsApiKey: '',
   pixabayApiKey: ''
@@ -266,24 +427,10 @@ export function videoStudioApiPath(path: string): string {
   return `/api/capabilities/moneyprinter${suffix}`
 }
 
-function normalizeApiBaseUrl(apiBaseUrl?: string): string {
-  return (apiBaseUrl || DEFAULT_MONEYPRINTER_API_BASE_URL).replace(/\/+$/, '')
-}
+export function videoLibraryApiPath(path: string): string {
+  const suffix = path.startsWith('/') ? path : `/${path}`
 
-function decodePathSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment)
-  } catch {
-    return segment
-  }
-}
-
-function encodeMediaPath(mediaPath: string): string {
-  return mediaPath
-    .split('/')
-    .filter(Boolean)
-    .map(segment => encodeURIComponent(decodePathSegment(segment)))
-    .join('/')
+  return `/api/capabilities/video-library${suffix}`
 }
 
 function mediaPathFromUrl(url: string): string {
@@ -298,22 +445,21 @@ function mediaPathFromUrl(url: string): string {
   }
 }
 
-export function resolveMoneyPrinterMediaUrl(url?: string, apiBaseUrl?: string): string | undefined {
+export function resolveMoneyPrinterMediaUrl(url?: string, _apiBaseUrl?: string): string | undefined {
   const value = String(url || '').trim()
 
   if (!value) {
     return undefined
   }
 
-  const match = mediaPathFromUrl(value).match(MONEYPRINTER_CAPABILITY_MEDIA_RE)
+  const mediaPath = mediaPathFromUrl(value)
+  const match = mediaPath.match(MONEYPRINTER_CAPABILITY_MEDIA_RE)
 
   if (!match) {
     return value
   }
 
-  const [, kind, mediaPath] = match
-
-  return `${normalizeApiBaseUrl(apiBaseUrl)}/api/v1/${kind}/${encodeMediaPath(mediaPath)}`
+  return `hermes-media://gateway/${encodeURIComponent(mediaPath)}`
 }
 
 export function isMoneyPrinterPreviewVideo(video: MoneyPrinterVideoOutput): boolean {
@@ -327,6 +473,11 @@ export function configFormFromSummary(summary: MoneyPrinterConfigSummary): Money
     ...defaultMoneyPrinterConfigForm,
     baseUrl: summary.baseUrl || '',
     llmProvider: summary.llmProvider || defaultMoneyPrinterConfigForm.llmProvider,
+    minimaxBaseUrl: summary.minimax?.baseUrl || defaultMoneyPrinterConfigForm.minimaxBaseUrl,
+    minimaxMusicModel: summary.minimax?.musicModel || defaultMoneyPrinterConfigForm.minimaxMusicModel,
+    minimaxT2aModel: summary.minimax?.t2aModel || defaultMoneyPrinterConfigForm.minimaxT2aModel,
+    minimaxVoiceCloneModel:
+      summary.minimax?.voiceCloneModel || defaultMoneyPrinterConfigForm.minimaxVoiceCloneModel,
     modelName: summary.modelName || defaultMoneyPrinterConfigForm.modelName
   }
 }
@@ -364,7 +515,10 @@ export function termsTextFromResult(result: GenerateTermsResult): string {
   const terms = result.video_terms ?? result.terms ?? []
 
   if (Array.isArray(terms)) {
-    return terms.map(term => String(term).trim()).filter(Boolean).join('\n')
+    return terms
+      .map(term => String(term).trim())
+      .filter(Boolean)
+      .join('\n')
   }
 
   return String(terms || '').trim()
@@ -453,17 +607,58 @@ export function toCreateVideoPayload(form: VideoGenerationForm): CreateVideoPayl
   return payload
 }
 
+export function toMiniMaxCloneVoicePayload(input: MiniMaxCloneVoiceInput): MiniMaxCloneVoicePayload {
+  return {
+    activate: input.activate,
+    clone_audio: input.cloneAudio,
+    model: input.model,
+    ...(input.promptAudio ? { prompt_audio: input.promptAudio } : {}),
+    prompt_text: input.promptText,
+    trial_text: input.trialText,
+    voice_id: input.voiceId
+  }
+}
+
+export function toMiniMaxMusicPayload(input: MiniMaxMusicInput): MiniMaxMusicPayload {
+  return {
+    is_instrumental: input.isInstrumental,
+    lyrics: input.lyrics,
+    lyrics_optimizer: input.lyricsOptimizer,
+    model: input.model,
+    prompt: input.prompt,
+    save_as_bgm: input.saveAsBgm
+  }
+}
+
+export function toMiniMaxTtsPayload(input: MiniMaxTtsInput): MiniMaxTtsPayload {
+  return {
+    model: input.model,
+    save_as_custom_audio: true,
+    speed: 1,
+    text: input.text,
+    voice_id: input.voiceId,
+    volume: 1
+  }
+}
+
 function responseError(message: string, code = 'MONEYPRINTER_DESKTOP_API_UNAVAILABLE'): MoneyPrinterError {
   return { code, message }
 }
 
-async function apiRequest<T>(path: string, init?: { body?: unknown; method?: string }): Promise<MoneyPrinterResponse<T>> {
+async function desktopApiRequest<T>(
+  path: string,
+  init?: { body?: unknown; method?: string; timeoutMs?: number },
+  codes: { request: string; unavailable: string } = {
+    request: 'MONEYPRINTER_REQUEST_FAILED',
+    unavailable: 'MONEYPRINTER_DESKTOP_API_UNAVAILABLE'
+  }
+): Promise<MoneyPrinterResponse<T>> {
   const bridge = typeof window === 'undefined' ? null : window.hermesDesktop
 
   if (!bridge?.api) {
     return {
       data: null,
-      error: responseError('Hermes Desktop API bridge is not available in this renderer context.'),
+      error: responseError('Hermes Desktop API bridge is not available in this renderer context.', codes.unavailable),
       ok: false
     }
   }
@@ -472,14 +667,78 @@ async function apiRequest<T>(path: string, init?: { body?: unknown; method?: str
     return await bridge.api<MoneyPrinterResponse<T>>({
       body: init?.body,
       method: init?.method || 'GET',
-      path: videoStudioApiPath(path)
+      path,
+      timeoutMs: init?.timeoutMs
     })
   } catch (err) {
     return {
       data: null,
-      error: responseError(err instanceof Error ? err.message : String(err), 'MONEYPRINTER_REQUEST_FAILED'),
+      error: responseError(err instanceof Error ? err.message : String(err), codes.request),
       ok: false
     }
+  }
+}
+
+async function apiRequest<T>(
+  path: string,
+  init?: { body?: unknown; method?: string; timeoutMs?: number }
+): Promise<MoneyPrinterResponse<T>> {
+  return desktopApiRequest<T>(videoStudioApiPath(path), init)
+}
+
+async function videoLibraryRequest<T>(
+  path: string,
+  init?: { body?: unknown; method?: string }
+): Promise<MoneyPrinterResponse<T>> {
+  return desktopApiRequest<T>(videoLibraryApiPath(path), init, {
+    request: 'VIDEO_LIBRARY_REQUEST_FAILED',
+    unavailable: 'VIDEO_LIBRARY_DESKTOP_API_UNAVAILABLE'
+  })
+}
+
+export const videoLibraryClient = {
+  analyzeAsset(assetId: string): Promise<MoneyPrinterResponse<VideoLibraryAnalysisResult>> {
+    return videoLibraryRequest<VideoLibraryAnalysisResult>(`/assets/${encodeURIComponent(assetId)}/analyze`, {
+      body: {},
+      method: 'POST'
+    })
+  },
+
+  createTimeline(clipIds: string[], aspect: VideoAspect): Promise<MoneyPrinterResponse<VideoLibraryTimelineResult>> {
+    return videoLibraryRequest<VideoLibraryTimelineResult>('/timelines', {
+      body: { aspect, clipIds },
+      method: 'POST'
+    })
+  },
+
+  importAsset(sourcePath: string): Promise<MoneyPrinterResponse<{ asset: VideoLibraryAsset }>> {
+    return videoLibraryRequest<{ asset: VideoLibraryAsset }>('/assets', {
+      body: { sourcePath },
+      method: 'POST'
+    })
+  },
+
+  listAssets(): Promise<MoneyPrinterResponse<{ assets: VideoLibraryAsset[]; total: number }>> {
+    return videoLibraryRequest<{ assets: VideoLibraryAsset[]; total: number }>('/assets')
+  },
+
+  listClips(assetId?: string): Promise<MoneyPrinterResponse<{ clips: VideoLibraryClip[]; total: number }>> {
+    const query = assetId ? `?asset_id=${encodeURIComponent(assetId)}` : ''
+
+    return videoLibraryRequest<{ clips: VideoLibraryClip[]; total: number }>(`/clips${query}`)
+  },
+
+  replaceClipTags(
+    clipId: string,
+    tags: string[]
+  ): Promise<MoneyPrinterResponse<{ clipId: string; tags: VideoLibraryTag[] }>> {
+    return videoLibraryRequest<{ clipId: string; tags: VideoLibraryTag[] }>(
+      `/clips/${encodeURIComponent(clipId)}/tags`,
+      {
+        body: { tags },
+        method: 'POST'
+      }
+    )
   }
 }
 
@@ -527,6 +786,42 @@ export const moneyprinterClient = {
     })
   },
 
+  cloneMiniMaxVoice(input: MiniMaxCloneVoiceInput): Promise<MoneyPrinterResponse<MiniMaxAudioResult>> {
+    return apiRequest<MiniMaxAudioResult>('/minimax/voices/clone', {
+      body: toMiniMaxCloneVoicePayload(input),
+      method: 'POST',
+      timeoutMs: 180_000
+    })
+  },
+
+  generateMiniMaxTts(input: MiniMaxTtsInput): Promise<MoneyPrinterResponse<MiniMaxAudioResult>> {
+    return apiRequest<MiniMaxAudioResult>('/minimax/tts', {
+      body: toMiniMaxTtsPayload(input),
+      method: 'POST',
+      timeoutMs: 180_000
+    })
+  },
+
+  generateMiniMaxMusic(input: MiniMaxMusicInput): Promise<MoneyPrinterResponse<Record<string, unknown>>> {
+    return apiRequest<Record<string, unknown>>('/minimax/music', {
+      body: toMiniMaxMusicPayload(input),
+      method: 'POST',
+      timeoutMs: 240_000
+    })
+  },
+
+  generateMiniMaxLyrics(input: MiniMaxLyricsInput): Promise<MoneyPrinterResponse<MiniMaxLyricsResult>> {
+    return apiRequest<MiniMaxLyricsResult>('/minimax/lyrics', {
+      body: input,
+      method: 'POST',
+      timeoutMs: 90_000
+    })
+  },
+
+  listMiniMaxVoices(): Promise<MoneyPrinterResponse<{ voices: MiniMaxVoiceRecord[] }>> {
+    return apiRequest<{ voices: MiniMaxVoiceRecord[] }>('/minimax/voices', { timeoutMs: 90_000 })
+  },
+
   getConfig(): Promise<MoneyPrinterResponse<MoneyPrinterConfigSummary>> {
     return apiRequest<MoneyPrinterConfigSummary>('/config')
   },
@@ -567,14 +862,18 @@ export const moneyprinterClient = {
     })
   },
 
-  uploadBgm(input: MoneyPrinterLocalMaterialUploadInput): Promise<MoneyPrinterResponse<{ bgm: MoneyPrinterAudioAsset }>> {
+  uploadBgm(
+    input: MoneyPrinterLocalMaterialUploadInput
+  ): Promise<MoneyPrinterResponse<{ bgm: MoneyPrinterAudioAsset }>> {
     return apiRequest<{ bgm: MoneyPrinterAudioAsset }>('/bgms', {
       body: input,
       method: 'POST'
     })
   },
 
-  uploadCustomAudio(input: MoneyPrinterLocalMaterialUploadInput): Promise<MoneyPrinterResponse<{ audio: MoneyPrinterAudioAsset }>> {
+  uploadCustomAudio(
+    input: MoneyPrinterLocalMaterialUploadInput
+  ): Promise<MoneyPrinterResponse<{ audio: MoneyPrinterAudioAsset }>> {
     return apiRequest<{ audio: MoneyPrinterAudioAsset }>('/custom-audio', {
       body: input,
       method: 'POST'

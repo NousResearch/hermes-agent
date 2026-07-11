@@ -396,6 +396,15 @@ api_key = ""
 # Model: eleven_multilingual_v2 | eleven_flash_v2_5 | eleven_v3
 model_id = "eleven_multilingual_v2"
 
+[minimax]
+# MiniMax speech / voice-clone / music API. Keep the key empty in source control.
+# Get a key at https://platform.minimaxi.com
+api_key = ""
+base_url = "https://api.minimaxi.com"
+t2a_model = "speech-2.8-hd"
+voice_clone_model = "speech-2.8-hd"
+music_model = "music-2.6-free"
+
 [ui]
 # UI related settings
 # 是否隐藏日志信息

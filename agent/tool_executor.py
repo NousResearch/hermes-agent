@@ -47,6 +47,7 @@ from tools.tool_result_storage import (
     enforce_turn_budget,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.desktop_browser_tool import DESKTOP_BROWSER_TOOL_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -1287,6 +1288,31 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_terminal', function_args, tool_duration, result=function_result)}")
+        elif (
+            function_name in DESKTOP_BROWSER_TOOL_NAMES
+            and getattr(agent, "desktop_browser_callback", None) is not None
+        ):
+            def _execute(next_args: dict) -> Any:
+                from tools.desktop_browser_tool import execute_desktop_browser_tool
+
+                return execute_desktop_browser_tool(
+                    function_name,
+                    next_args,
+                    agent.desktop_browser_callback,
+                )
+            function_result, function_args = _run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(
+                    f"  {_get_cute_tool_message_impl(function_name, function_args, tool_duration, result=function_result)}"
+                )
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):

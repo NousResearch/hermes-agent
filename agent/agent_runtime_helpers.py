@@ -37,6 +37,7 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
+from tools.desktop_browser_tool import DESKTOP_BROWSER_TOOL_NAMES
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -2165,6 +2166,21 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     start_line=next_args.get("start_line"),
                     count=next_args.get("count"),
                     callback=getattr(agent, "read_terminal_callback", None),
+                ),
+                next_args,
+            )
+    elif (
+        function_name in DESKTOP_BROWSER_TOOL_NAMES
+        and getattr(agent, "desktop_browser_callback", None) is not None
+    ):
+        def _execute(next_args: dict) -> Any:
+            from tools.desktop_browser_tool import execute_desktop_browser_tool
+
+            return _finish_agent_tool(
+                execute_desktop_browser_tool(
+                    function_name,
+                    next_args,
+                    agent.desktop_browser_callback,
                 ),
                 next_args,
             )

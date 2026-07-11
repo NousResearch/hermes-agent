@@ -287,6 +287,15 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "elevenlabs",
             },
+            {
+                "name": "MiniMax TTS",
+                "badge": "paid · voice cloning",
+                "tag": "High-quality multilingual speech with custom Voice IDs",
+                "env_vars": [
+                    {"key": "MINIMAX_API_KEY", "prompt": "MiniMax API key", "url": "https://platform.minimaxi.com"},
+                ],
+                "tts_provider": "minimax",
+            },
             # Mistral Voxtral TTS — `mistralai` SDK lazy-installs on first use.
             {
                 "name": "Mistral (Voxtral TTS)",

@@ -32,6 +32,18 @@ def test_build_service_env_is_isolated(monkeypatch):
     assert env.get("PYTHONNOUSERSITE") == "1"
     assert env.get("PYTHONUNBUFFERED") == "1"
     assert env.get("HOME") == "/tmp/home"
+    assert env.get("MONEYPRINTER_HERMES_TOKEN") == adapter._SIDECAR_TOKEN
+
+
+def test_managed_sidecar_command_binds_to_loopback(monkeypatch):
+    monkeypatch.setattr(adapter, "DEFAULT_BASE_URL", "http://127.0.0.1:18080")
+    monkeypatch.setattr(adapter, "_moneyprinter_python", lambda: "/tmp/moneyprinter-python")
+
+    command = adapter._managed_sidecar_command()
+
+    assert command[:4] == ("/tmp/moneyprinter-python", "-m", "uvicorn", "app.asgi:app")
+    assert command[command.index("--host") + 1] == "127.0.0.1"
+    assert command[command.index("--port") + 1] == "18080"
 
 
 def test_list_outputs_data_flattens_videos(tmp_path, monkeypatch):
@@ -103,13 +115,68 @@ def test_mcp_tool_specs_cover_phase3_and_phase2_names():
         "moneyprinter_minimax_generate_tts",
         "moneyprinter_minimax_generate_lyrics",
         "moneyprinter_minimax_generate_music",
+        "video_library_import_asset",
+        "video_library_scan_library",
+        "video_library_analyze_asset",
+        "video_library_search_clips",
+        "video_library_create_timeline",
     }
     assert required.issubset(names)
 
 
+def test_mcp_video_library_import_uses_adapter(monkeypatch):
+    from capabilities.video_library import adapter as video_library_adapter
+
+    monkeypatch.setattr(
+        video_library_adapter,
+        "import_asset_data",
+        lambda body: (
+            200,
+            {
+                "ok": True,
+                "data": {"asset": {"id": "asset-1", "source_path": body["sourcePath"]}},
+                "error": None,
+            },
+        ),
+    )
+
+    payload = json.loads(mp_tools.video_library_import_asset("/tmp/source.mp4"))
+
+    assert payload["data"]["asset"] == {"id": "asset-1", "source_path": "/tmp/source.mp4"}
+
+
+def test_mcp_video_library_scan_uses_named_adapter(monkeypatch):
+    from capabilities.video_library import adapter as video_library_adapter
+
+    monkeypatch.setattr(
+        video_library_adapter,
+        "scan_library_data",
+        lambda library_id, body: (
+            200,
+            {
+                "data": {"dry_run": body["dryRun"], "library_id": library_id},
+                "error": None,
+                "ok": True,
+            },
+        ),
+    )
+
+    payload = json.loads(mp_tools.video_library_scan_library("beef-noodle", dry_run=True))
+
+    assert payload["data"] == {"dry_run": True, "library_id": "beef-noodle"}
+
+
 def test_mcp_minimax_generate_music_uses_adapter(monkeypatch):
+    service_started = False
+
+    async def fake_ensure():
+        nonlocal service_started
+        service_started = True
+        return {"ok": True}
+
     async def fake_music(body):
         assert body["prompt"] == "科技感短视频开场"
+        assert body["lyrics_optimizer"] is True
         assert body["save_as_bgm"] is True
         return 200, {
             "ok": True,
@@ -118,9 +185,109 @@ def test_mcp_minimax_generate_music_uses_adapter(monkeypatch):
         }
 
     monkeypatch.setattr(adapter, "generate_minimax_music_data", fake_music)
+    monkeypatch.setattr(mp_tools, "_ensure_service_if_needed", fake_ensure)
 
     raw = mp_tools.moneyprinter_minimax_generate_music(prompt="科技感短视频开场", save_as_bgm=True)
     payload = json.loads(raw)
 
     assert payload["ok"] is True
     assert payload["data"]["bgm"]["file"] == "minimax-music-demo.mp3"
+    assert service_started is True
+
+
+def test_mcp_minimax_list_voices_uses_adapter(monkeypatch):
+    async def fake_list_voices():
+        return 200, {
+            "ok": True,
+            "data": {
+                "voices": [
+                    {
+                        "category": "system",
+                        "id": "Korean_GentleBoss",
+                        "name": "Gentle Boss",
+                        "providerConfirmed": True,
+                    }
+                ]
+            },
+            "error": None,
+        }
+
+    monkeypatch.setattr(
+        adapter,
+        "list_minimax_voices_data",
+        fake_list_voices,
+    )
+
+    payload = json.loads(mp_tools.moneyprinter_minimax_list_voices())
+
+    assert payload["data"]["voices"][0]["id"] == "Korean_GentleBoss"
+
+
+def test_mcp_minimax_clone_voice_uses_local_source_and_configured_model(monkeypatch):
+    service_started = False
+
+    async def fake_ensure():
+        nonlocal service_started
+        service_started = True
+        return {"ok": True}
+
+    async def fake_clone(body):
+        assert body["activate"] is False
+        assert body["clone_audio"] == {"filename": "/tmp/clone.wav", "sourcePath": "/tmp/clone.wav"}
+        assert body["model"] == ""
+        return 200, {"ok": True, "data": {"voice_id": body["voice_id"]}, "error": None}
+
+    monkeypatch.setattr(adapter, "clone_minimax_voice_data", fake_clone)
+    monkeypatch.setattr(mp_tools, "_ensure_service_if_needed", fake_ensure)
+
+    payload = json.loads(
+        mp_tools.moneyprinter_minimax_clone_voice(
+            voice_id="MiniMaxDemo001",
+            clone_audio_source_path="/tmp/clone.wav",
+        )
+    )
+
+    assert payload["data"]["voice_id"] == "MiniMaxDemo001"
+    assert service_started is True
+
+
+def test_mcp_minimax_tts_uses_adapter(monkeypatch):
+    async def fake_ensure():
+        return {"ok": True}
+
+    async def fake_tts(body):
+        assert body == {
+            "model": "",
+            "save_as_custom_audio": True,
+            "text": "Hello Hermes",
+            "voice_id": "MiniMaxDemo001",
+        }
+        return 200, {"ok": True, "data": {"audio": {"file": "tts.mp3"}}, "error": None}
+
+    monkeypatch.setattr(adapter, "generate_minimax_tts_data", fake_tts)
+    monkeypatch.setattr(mp_tools, "_ensure_service_if_needed", fake_ensure)
+
+    payload = json.loads(mp_tools.moneyprinter_minimax_generate_tts("Hello Hermes", "MiniMaxDemo001"))
+
+    assert payload["data"]["audio"]["file"] == "tts.mp3"
+
+
+def test_mcp_minimax_lyrics_uses_adapter(monkeypatch):
+    async def fake_ensure():
+        return {"ok": True}
+
+    async def fake_lyrics(body):
+        assert body == {
+            "lyrics": "",
+            "mode": "write_full_song",
+            "prompt": "A concise technology song",
+            "title": "",
+        }
+        return 200, {"ok": True, "data": {"lyrics": "[Verse]"}, "error": None}
+
+    monkeypatch.setattr(adapter, "generate_minimax_lyrics_data", fake_lyrics)
+    monkeypatch.setattr(mp_tools, "_ensure_service_if_needed", fake_ensure)
+
+    payload = json.loads(mp_tools.moneyprinter_minimax_generate_lyrics("A concise technology song"))
+
+    assert payload["data"]["lyrics"] == "[Verse]"

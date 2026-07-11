@@ -222,6 +222,28 @@ def test_create_task_no_parents_is_ready(kanban_home):
     assert t.workspace_kind == "scratch"
 
 
+def test_create_nontrivial_task_requires_verifiable_by_field(kanban_home, monkeypatch):
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    with kb.connect() as conn, pytest.raises(ValueError, match="Verifiable by"):
+        kb.create_task(
+            conn, title="land decision records",
+            body="Write decision records into Supabase.",
+            assignee="builder", created_by="planner",
+        )
+
+
+def test_create_nontrivial_task_accepts_verifiable_by_field(kanban_home, monkeypatch):
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    body = "Write decision records into Supabase.\n\nVerifiable by: python scripts/readback.py --expect decision_record"
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="land decision records", body=body, assignee="builder", created_by="planner")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.body == body
+
+
 def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
     with kb.connect() as conn:
         p = kb.create_task(conn, title="parent")
@@ -1168,6 +1190,61 @@ def test_complete_records_result(kanban_home):
     assert task.status == "done"
     assert task.result == "done and dusted"
     assert task.completed_at is not None
+
+
+def test_demonstrated_done_blocks_completion_without_receipt(kanban_home, monkeypatch):
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    body = "Build the thing.\n\nVerifiable by: pytest tests/test_thing.py -q"
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="build thing", body=body, created_by="planner")
+        with pytest.raises(kb.DemonstratedDoneError, match="runnable receipt"):
+            kb.complete_task(conn, t, summary="implemented")
+        assert kb.get_task(conn, t).status == "ready"
+        events = kb.list_events(conn, t)
+    assert events[-1].kind == "completion_blocked_demonstrated_done"
+    assert "missing receipt" in events[-1].payload["reason"]
+
+
+def test_demonstrated_done_blocks_t6_absent_table_receipt(kanban_home, monkeypatch):
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    body = "Land decision records into Supabase.\n\nVerifiable by: SELECT id, decision_record FROM decision_records LIMIT 1"
+    receipt = "SELECT id, decision_record FROM decision_records LIMIT 1 -> ERROR no such table: decision_records"
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="land decision records", body=body, created_by="planner")
+        with pytest.raises(kb.DemonstratedDoneError, match="missing table"):
+            kb.complete_task(conn, t, summary="landed", demonstrated_done_receipt=receipt)
+        assert kb.get_task(conn, t).status == "ready"
+        events = kb.list_events(conn, t)
+    assert events[-1].kind == "completion_blocked_demonstrated_done"
+    assert "decision_records" in events[-1].payload["receipt"]
+
+
+def test_demonstrated_done_allows_data_landing_readback_receipt(kanban_home, monkeypatch):
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    body = "Land decision records into Supabase.\n\nVerifiable by: SELECT id, decision_record FROM decision_records LIMIT 1"
+    receipt = "SELECT id, decision_record FROM decision_records LIMIT 1 -> rows=1 shape={id: uuid, decision_record: jsonb}"
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="land decision records", body=body, created_by="planner")
+        assert kb.complete_task(conn, t, summary="landed", demonstrated_done_receipt=receipt)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+    assert task.status == "done"
+    completed = [e for e in events if e.kind == "completed"][-1]
+    assert completed.payload["demonstrated_done_receipt"] == receipt
+
+
+def test_demonstrated_done_rejects_mocked_data_landing_receipt(kanban_home, monkeypatch):
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    body = "Land queue records for downstream processing.\n\nVerifiable by: SELECT id, payload FROM queue_records LIMIT 1"
+    receipt = "pytest tests/test_queue_records.py::test_insert_mocked_supabase -q PASSED"
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="land queue records", body=body, created_by="planner")
+        with pytest.raises(kb.DemonstratedDoneError, match="read-back"):
+            kb.complete_task(conn, t, summary="landed", demonstrated_done_receipt=receipt)
 
 
 def test_block_then_unblock(kanban_home):

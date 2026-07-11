@@ -532,6 +532,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument("--receipt", default=None,
+                            help="Runnable Demonstrated Done receipt required by cards with Verifiable by:")
 
     p_edit = sub.add_parser(
         "edit",
@@ -1900,6 +1902,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 summary=summary,
                 metadata=metadata,
                 expected_run_id=_worker_run_id_for(tid),
+                demonstrated_done_receipt=getattr(args, "receipt", None),
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)

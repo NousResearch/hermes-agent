@@ -61,6 +61,33 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
 
+def test_kanban_complete_schema_exposes_demonstrated_done_receipt(monkeypatch, tmp_path):
+    """Regression: receipt belongs on kanban_complete, never kanban_show."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    invalidate_check_fn_cache()
+    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    by_name = {
+        item["function"]["name"]: item["function"]
+        for item in schema
+        if "function" in item and item["function"].get("name", "").startswith("kanban_")
+    }
+    complete_props = by_name["kanban_complete"]["parameters"]["properties"]
+    show_props = by_name["kanban_show"]["parameters"]["properties"]
+
+    assert "receipt" in complete_props
+    assert "demonstrated_done_receipt" in complete_props
+    assert "receipt" not in show_props
+    assert "demonstrated_done_receipt" not in show_props
+
+
 def test_kanban_worker_env_overrides_profile_toolset_filter(monkeypatch, tmp_path):
     """Dispatcher-spawned workers must get lifecycle tools even when the
     assignee profile restricts enabled toolsets and does not list kanban.

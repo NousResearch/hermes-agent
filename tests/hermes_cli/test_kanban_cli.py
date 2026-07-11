@@ -175,7 +175,10 @@ def test_run_slash_dispatch_dry_run_counts(kanban_home):
 
 
 def test_run_slash_context_output_format(kanban_home):
-    out = kc.run_slash("create 'tech spec' --assignee alice --body 'write an RFC'")
+    out = kc.run_slash(
+        "create 'tech spec' --assignee alice --body "
+        "'write an RFC\n\nVerifiable by: grep -n RFC docs/spec.md'"
+    )
     import re
     tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
     kc.run_slash(f"comment {tid} 'remember to include performance section'")

@@ -2383,6 +2383,64 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+_VERIFIABLE_BY_RE = re.compile(r"(?im)^\s*Verifiable by:\s*(.+?)\s*$")
+_DATA_LANDING_RE = re.compile(
+    r"\b(db|database|supabase|table|migration|insert|select|queue|row|record|data[- ]landing)\b",
+    re.IGNORECASE,
+)
+_READBACK_ROWS_RE = re.compile(r"\b(?:rows?|count)\s*[=:]\s*(\d+)\b", re.IGNORECASE)
+
+
+def _extract_verifiable_by(body: Optional[str]) -> Optional[str]:
+    if not body:
+        return None
+    match = _VERIFIABLE_BY_RE.search(body)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    return value or None
+
+
+def _requires_verifiable_by_on_create(*, body: Optional[str], created_by: Optional[str], triage: bool) -> bool:
+    if triage:
+        return False
+    return bool(created_by and body and body.strip())
+
+
+def _is_data_landing_task(body: Optional[str], verifiable_by: Optional[str]) -> bool:
+    text = "\n".join(part for part in (body, verifiable_by) if part)
+    return bool(_DATA_LANDING_RE.search(text))
+
+
+class DemonstratedDoneError(ValueError):
+    """Raised by ``complete_task`` when a task lacks a valid runnable receipt."""
+
+    def __init__(self, task_id: str, reason: str, *, receipt: Optional[str] = None):
+        self.task_id = task_id
+        self.reason = reason
+        self.receipt = receipt
+        super().__init__(f"DemonstratedDoneError: {reason}")
+
+
+def _validate_demonstrated_done_receipt(*, body: Optional[str], receipt: Optional[str]) -> tuple[bool, Optional[str], Optional[str]]:
+    verifiable_by = _extract_verifiable_by(body)
+    if not verifiable_by:
+        return True, None, None
+    cleaned = (receipt or "").strip()
+    if not cleaned:
+        return False, "missing receipt: attach a runnable receipt before completing", verifiable_by
+    low = cleaned.lower()
+    if any(token in low for token in ("no such table", "missing table", "missing migration")):
+        return False, "missing table/migration in receipt", verifiable_by
+    if _is_data_landing_task(body, verifiable_by):
+        has_readback = "select" in low or "read-back" in low or "readback" in low
+        row_match = _READBACK_ROWS_RE.search(cleaned)
+        rows = int(row_match.group(1)) if row_match else 0
+        if not has_readback or rows < 1 or "mock" in low:
+            return False, "data-landing tasks require real read-back returning >=1 row of the expected shape", verifiable_by
+    return True, None, verifiable_by
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2434,6 +2492,11 @@ def create_task(
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    if _requires_verifiable_by_on_create(body=body, created_by=created_by, triage=triage) and not _extract_verifiable_by(body):
+        raise ValueError(
+            "nontrivial kanban tasks must include a `Verifiable by:` field "
+            "with a runnable receipt command or read-back check"
+        )
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
@@ -3984,6 +4047,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    demonstrated_done_receipt: Optional[str] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4041,6 +4105,30 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    task_row = conn.execute("SELECT body FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    ok, demo_reason, verifiable_by = _validate_demonstrated_done_receipt(
+        body=task_row["body"] if task_row else None,
+        receipt=demonstrated_done_receipt,
+    )
+    if not ok:
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "completion_blocked_demonstrated_done",
+                {
+                    "reason": demo_reason,
+                    "verifiable_by": verifiable_by,
+                    "receipt": (demonstrated_done_receipt or "")[:1000] or None,
+                    "summary_preview": (
+                        (summary or result or "").strip().splitlines()[0][:200]
+                        if (summary or result) else None
+                    ),
+                },
+            )
+        raise DemonstratedDoneError(
+            task_id, demo_reason or "missing demonstrated-done receipt",
+            receipt=demonstrated_done_receipt,
+        )
 
     with write_txn(conn):
         if expected_run_id is None:
@@ -4109,6 +4197,8 @@ def complete_task(
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
+        if demonstrated_done_receipt:
+            completed_payload["demonstrated_done_receipt"] = demonstrated_done_receipt
         # Carry artifact paths in the event payload so the gateway
         # notifier can upload them as native attachments alongside the
         # completion message. Workers pass these via

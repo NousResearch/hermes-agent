@@ -514,10 +514,15 @@ def _handle_complete(args: dict, **kw) -> str:
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
+    demonstrated_done_receipt = args.get("receipt") or args.get("demonstrated_done_receipt")
     if summary:
         summary = redact_sensitive_text(str(summary), force=True)
     if result:
         result = redact_sensitive_text(str(result), force=True)
+    if demonstrated_done_receipt:
+        demonstrated_done_receipt = redact_sensitive_text(
+            str(demonstrated_done_receipt), force=True
+        )
     if metadata is not None and isinstance(metadata, dict):
         meta_json = json.dumps(metadata)
         meta_json = redact_sensitive_text(meta_json, force=True)
@@ -629,6 +634,13 @@ def _handle_complete(args: dict, **kw) -> str:
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    demonstrated_done_receipt=demonstrated_done_receipt,
+                )
+            except kb.DemonstratedDoneError as demo_err:
+                return tool_error(
+                    f"kanban_complete blocked by DemonstratedDoneError: {demo_err.reason}. "
+                    f"Your task is still in-flight (no state change). Attach a runnable receipt "
+                    f"matching the card's Verifiable by field and retry."
                 )
             except kb.HallucinatedCardsError as hall_err:
                 # Structured rejection — surface the phantom ids so the
@@ -1279,6 +1291,22 @@ KANBAN_COMPLETE_SCHEMA = {
                     "are not the deliverable. The path must exist "
                     "on disk when the notifier runs; missing files "
                     "are silently skipped."
+                ),
+            },
+            "receipt": {
+                "type": "string",
+                "description": (
+                    "Runnable Demonstrated Done receipt. Required when the "
+                    "card body contains `Verifiable by:`; data-landing "
+                    "receipts must include a real SELECT/read-back with "
+                    "rows>=1. Alias: demonstrated_done_receipt."
+                ),
+            },
+            "demonstrated_done_receipt": {
+                "type": "string",
+                "description": (
+                    "Alias for receipt. Use this for explicitness when "
+                    "attaching the runnable Demonstrated Done receipt."
                 ),
             },
             "board": _board_schema_prop(),

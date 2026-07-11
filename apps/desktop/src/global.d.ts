@@ -135,6 +135,11 @@ declare global {
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
+      // hc-517 — create a new empty project folder <parentDir>/<name> to bind as
+      // a fresh session's cwd (the picker's "New blank project"). Validates the
+      // name to a single, traversal-free segment and never clobbers an existing
+      // entry. Optional: an older main process may not expose it.
+      createProjectDir?: (parentDir: string, name: string) => Promise<HermesCreateProjectResult>
       settings: {
         getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
@@ -768,6 +773,17 @@ export interface HermesPreviewFileChanged {
   id: string
   path: string
   url: string
+}
+
+// Result of hermesDesktop.createProjectDir(). `ok:true` carries the absolute
+// `path` of the freshly created folder; on failure `code` is a stable marker
+// (invalid-name / invalid-path / ENOENT / ENOTDIR / EEXIST / mkdir-error) and
+// `error` a human message.
+export interface HermesCreateProjectResult {
+  ok: boolean
+  path: null | string
+  error: null | string
+  code: null | string
 }
 
 export interface HermesSelectPathsOptions {

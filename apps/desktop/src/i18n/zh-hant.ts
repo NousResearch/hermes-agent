@@ -1373,6 +1373,26 @@ export const zhHant = defineLocale({
 
   composer: {
     message: '訊息',
+    projectPicker: {
+      label: '專案',
+      select: '選擇專案',
+      searchPlaceholder: '搜尋專案…',
+      recentHeading: '最近專案',
+      noRecent: '尚無專案',
+      noMatches: '沒有相符的專案',
+      useExisting: '使用現有資料夾…',
+      newBlank: '新增空白專案…',
+      newTitle: '新增專案',
+      namePlaceholder: '專案名稱',
+      locationLabel: '位置',
+      chooseParent: '選擇上層資料夾…',
+      create: '建立',
+      back: '返回',
+      useExistingTitle: '選擇專案資料夾',
+      chooseParentTitle: '選擇專案建立位置',
+      pickFailed: '無法開啟資料夾選擇器',
+      createFailed: '無法建立專案資料夾'
+    },
     approvalMode: {
       label: '審批',
       manual: { label: '手動審批', desc: '僅在偵測到危險操作時請求批准' },

@@ -1154,6 +1154,26 @@ export interface Translations {
 
   composer: {
     message: string
+    projectPicker: {
+      label: string
+      select: string
+      searchPlaceholder: string
+      recentHeading: string
+      noRecent: string
+      noMatches: string
+      useExisting: string
+      newBlank: string
+      newTitle: string
+      namePlaceholder: string
+      locationLabel: string
+      chooseParent: string
+      create: string
+      back: string
+      useExistingTitle: string
+      chooseParentTitle: string
+      pickFailed: string
+      createFailed: string
+    }
     approvalMode: {
       label: string
       manual: { label: string; desc: string }

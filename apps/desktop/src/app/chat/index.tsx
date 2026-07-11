@@ -72,6 +72,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onAddContextRef: (refText: string, label?: string, detail?: string) => void
   onAddUrl: (url: string) => void
   onBranchInNewChat: (messageId: string) => void
+  onChangeCwd?: (cwd: string) => Promise<void> | void
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
@@ -265,6 +266,7 @@ export function ChatView({
   onAttachImageBlob,
   onAttachDroppedItems,
   onBranchInNewChat,
+  onChangeCwd,
   maxVoiceRecordingSeconds,
   onPasteClipboardImage,
   onPickFiles,
@@ -472,6 +474,7 @@ export function ChatView({
                 onAttachDroppedItems={onAttachDroppedItems}
                 onAttachImageBlob={onAttachImageBlob}
                 onCancel={onCancel}
+                onChangeCwd={onChangeCwd}
                 onPasteClipboardImage={onPasteClipboardImage}
                 onPickFiles={onPickFiles}
                 onPickFolders={onPickFolders}

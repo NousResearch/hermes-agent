@@ -42,6 +42,9 @@ export interface ChatBarProps {
   sessionId?: string | null
   cwd?: string | null
   onCancel: () => Promise<void> | void
+  /** hc-517 — bind the new-conversation project picker's choice as the session
+   *  cwd. Absent → no project picker chip (feature off / older host). */
+  onChangeCwd?: (cwd: string) => Promise<void> | void
   onAddContextRef?: (refText: string, label?: string, detail?: string) => void
   onAddUrl?: (url: string) => void
   onAttachImageBlob?: (blob: Blob) => Promise<boolean | void> | boolean | void

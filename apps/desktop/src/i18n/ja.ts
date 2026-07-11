@@ -1403,6 +1403,26 @@ export const ja = defineLocale({
 
   composer: {
     message: 'メッセージ',
+    projectPicker: {
+      label: 'プロジェクト',
+      select: 'プロジェクトを選択',
+      searchPlaceholder: 'プロジェクトを検索…',
+      recentHeading: '最近のプロジェクト',
+      noRecent: 'プロジェクトはまだありません',
+      noMatches: '一致するプロジェクトがありません',
+      useExisting: '既存のフォルダを開く…',
+      newBlank: '新しい空のプロジェクト…',
+      newTitle: '新しいプロジェクト',
+      namePlaceholder: 'プロジェクト名',
+      locationLabel: '場所',
+      chooseParent: '親フォルダを選択…',
+      create: '作成',
+      back: '戻る',
+      useExistingTitle: 'プロジェクトフォルダを選択',
+      chooseParentTitle: 'プロジェクトの作成場所を選択',
+      pickFailed: 'フォルダ選択を開けませんでした',
+      createFailed: 'プロジェクトフォルダを作成できませんでした'
+    },
     approvalMode: {
       label: '承認',
       manual: { label: '手動承認', desc: '危険と判定された操作のみ承認を求める' },

@@ -69,6 +69,7 @@ const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
+const { createProjectDirForIpc } = require('./workspace-create.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
 const {
@@ -7986,6 +7987,13 @@ ipcMain.handle('hermes:setting:defaultProjectDir:get', async () => ({
 }))
 
 ipcMain.handle('hermes:workspace:sanitize', async (_event, cwd) => sanitizeWorkspaceCwd(cwd))
+
+// hc-517 — create a new empty project folder <parentDir>/<name> for the desktop
+// project picker's "New blank project" action. Validation + no-clobber live in
+// workspace-create.cjs; this just adapts it to IPC.
+ipcMain.handle('hermes:workspace:createDir', async (_event, parentDir, name) =>
+  createProjectDirForIpc(parentDir, name)
+)
 
 ipcMain.handle('hermes:setting:defaultProjectDir:set', async (_event, dir) => {
   const next = typeof dir === 'string' && dir.trim() ? dir.trim() : null

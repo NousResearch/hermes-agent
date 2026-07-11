@@ -1608,6 +1608,26 @@ export const zh: Translations = {
 
   composer: {
     message: '消息',
+    projectPicker: {
+      label: '项目',
+      select: '选择项目',
+      searchPlaceholder: '搜索项目…',
+      recentHeading: '最近项目',
+      noRecent: '暂无项目',
+      noMatches: '没有匹配的项目',
+      useExisting: '使用现有文件夹…',
+      newBlank: '新建空白项目…',
+      newTitle: '新建项目',
+      namePlaceholder: '项目名称',
+      locationLabel: '位置',
+      chooseParent: '选择上级文件夹…',
+      create: '创建',
+      back: '返回',
+      useExistingTitle: '选择项目文件夹',
+      chooseParentTitle: '选择项目创建位置',
+      pickFailed: '无法打开文件夹选择器',
+      createFailed: '无法创建项目文件夹'
+    },
     approvalMode: {
       label: '审批',
       manual: { label: '手动审批', desc: '仅在检测到危险操作时请求批准' },

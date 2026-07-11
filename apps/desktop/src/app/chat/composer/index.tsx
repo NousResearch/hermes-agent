@@ -83,6 +83,7 @@ import {
   type InlineRefInput,
   insertInlineRefsIntoEditor
 } from './inline-refs'
+import { ProjectPicker } from './project-picker'
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
@@ -168,6 +169,7 @@ export function ChatBar({
   sessionId,
   state,
   onCancel,
+  onChangeCwd,
   onAddUrl,
   onAttachDroppedItems,
   onAttachImageBlob,
@@ -1882,6 +1884,15 @@ export function ChatBar({
             className="pointer-events-none absolute inset-0 rounded-[inherit]"
             style={{ background: COMPOSER_FADE_BACKGROUND }}
           />
+          {/* hc-517 — new-conversation project picker chip, above the composer.
+              Only for a fresh draft (no session id yet); the chosen folder
+              becomes the new session's cwd. Renders nothing when the feature is
+              off / not on a local desktop backend. */}
+          {!sessionId && onChangeCwd && (
+            <div className="relative z-10 mb-1.5 flex px-1">
+              <ProjectPicker cwd={cwd} disabled={inputDisabled} onChangeCwd={onChangeCwd} />
+            </div>
+          )}
           <div className="relative w-full rounded-[inherit]">
             <div
               className={cn(

@@ -588,9 +588,35 @@ class StreamingConfig:
     def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
         if not data:
             return cls()
+
+        # ``mode`` is an ergonomic alias for the transport that ALSO implies
+        # ``enabled``.  A config like ``streaming: {mode: auto}`` reads as
+        # "turn streaming on, transport=auto" — matching the natural intent
+        # of someone enabling streaming without also spelling out
+        # ``enabled: true``.  Without this, ``mode`` was silently ignored and
+        # streaming stayed disabled (``enabled`` defaults to False), which is
+        # a surprising footgun: the whole reply buffers and sends at once.
+        # ``mode: off`` disables streaming; an explicit ``enabled`` key always
+        # wins so callers can force either state.
+        raw_transport = data.get("transport")
+        raw_mode = data.get("mode")
+        transport = raw_transport if raw_transport is not None else raw_mode
+        if transport is None:
+            transport = "auto"
+        transport = str(transport).strip().lower() or "auto"
+
+        if "enabled" in data:
+            enabled = _coerce_bool(data.get("enabled"), False)
+        elif raw_mode is not None or raw_transport is not None:
+            # A mode/transport was given without an explicit enabled flag:
+            # infer enabled from the transport ("off" = disabled, else on).
+            enabled = transport != "off"
+        else:
+            enabled = False
+
         return cls(
-            enabled=_coerce_bool(data.get("enabled"), False),
-            transport=data.get("transport", "auto"),
+            enabled=enabled,
+            transport=transport,
             edit_interval=_coerce_float(
                 data.get("edit_interval"), DEFAULT_STREAMING_EDIT_INTERVAL,
             ),

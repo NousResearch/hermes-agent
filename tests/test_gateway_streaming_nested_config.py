@@ -41,3 +41,71 @@ class TestStreamingConfigNested:
         })
         assert cfg.streaming.enabled is True
         assert cfg.streaming.transport == "edit"
+
+
+class TestStreamingModeAlias:
+    """``streaming: {mode: ...}`` is an alias that also implies ``enabled``.
+
+    Regression for a live config footgun: ``streaming: {mode: auto}`` was
+    silently ignored (mode was never read), so streaming stayed disabled and
+    the whole reply buffered before the first Telegram send.
+    """
+
+    def test_mode_auto_enables_streaming(self):
+        from gateway.config import StreamingConfig
+
+        sc = StreamingConfig.from_dict({"mode": "auto"})
+        assert sc.enabled is True
+        assert sc.transport == "auto"
+
+    def test_mode_edit_enables_streaming(self):
+        from gateway.config import StreamingConfig
+
+        sc = StreamingConfig.from_dict({"mode": "edit"})
+        assert sc.enabled is True
+        assert sc.transport == "edit"
+
+    def test_mode_off_disables_streaming(self):
+        from gateway.config import StreamingConfig
+
+        sc = StreamingConfig.from_dict({"mode": "off"})
+        assert sc.enabled is False
+        assert sc.transport == "off"
+
+    def test_mode_with_extra_keys_still_enables(self):
+        """Real-world block: mode plus unrelated preloader_frames."""
+        from gateway.config import StreamingConfig
+
+        sc = StreamingConfig.from_dict(
+            {"mode": "auto", "preloader_frames": ["a", "b"]}
+        )
+        assert sc.enabled is True
+        assert sc.transport == "auto"
+
+    def test_explicit_enabled_overrides_mode(self):
+        from gateway.config import StreamingConfig
+
+        sc = StreamingConfig.from_dict({"mode": "auto", "enabled": False})
+        assert sc.enabled is False
+        # transport still resolves from mode
+        assert sc.transport == "auto"
+
+    def test_transport_takes_precedence_over_mode(self):
+        from gateway.config import StreamingConfig
+
+        sc = StreamingConfig.from_dict({"mode": "off", "transport": "draft"})
+        assert sc.transport == "draft"
+        assert sc.enabled is True
+
+    def test_empty_block_stays_disabled(self):
+        from gateway.config import StreamingConfig
+
+        sc = StreamingConfig.from_dict({})
+        assert sc.enabled is False
+
+    def test_transport_only_enables(self):
+        from gateway.config import StreamingConfig
+
+        sc = StreamingConfig.from_dict({"transport": "edit"})
+        assert sc.enabled is True
+        assert sc.transport == "edit"

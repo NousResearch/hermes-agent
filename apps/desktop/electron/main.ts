@@ -6846,14 +6846,27 @@ async function startHermes() {
       })
     )
 
-    hermesProcess.stdout.on('data', rememberLog)
-    hermesProcess.stderr.on('data', rememberLog)
     let backendReady = false
     let rejectBackendStart = null
 
     const backendStartFailed = new Promise((_resolve, reject) => {
       rejectBackendStart = reject
     })
+
+    // Set up the port-announcement listener BEFORE rememberLog so we never
+    // miss the HERMES_BACKEND_READY line in the gap between the two listeners.
+    const portPromise = (async () => {
+      const p = await Promise.race([
+        waitForDashboardPortAnnouncement(hermesProcess, { readyFile }),
+        backendStartFailed
+      ])
+      if (readyFile) {
+        fs.unlink(readyFile, () => {})
+      }
+      return p
+    })()
+    hermesProcess.stdout.on('data', rememberLog)
+    hermesProcess.stderr.on('data', rememberLog)
 
     hermesProcess.once('error', error => {
       rememberLog(`Hermes backend failed to start: ${error.message}`)
@@ -6899,14 +6912,7 @@ async function startHermes() {
     await advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
 
     // Discover the ephemeral port the child bound to
-    const port = await Promise.race([
-      waitForDashboardPortAnnouncement(hermesProcess, { readyFile }),
-      backendStartFailed
-    ])
-
-    if (readyFile) {
-      fs.unlink(readyFile, () => {})
-    }
+    const port = await portPromise
 
     const baseUrl = `http://127.0.0.1:${port}`
     await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)

@@ -2251,7 +2251,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 if part.strip():
                     return False
                 continue
-            if isinstance(part, dict) and part.get("type") == "text":
+            if isinstance(part, dict) and part.get("type") in {"text", "input_text"}:
                 text = part.get("text")
                 if isinstance(text, str) and not text.strip():
                     continue
@@ -2282,6 +2282,8 @@ This compaction should PRIORITISE preserving all information related to the focu
         placeholder for a transcript still being assembled.
         """
         indices: set[int] = set()
+        if user_idx < 0:
+            return indices
         idx = user_idx + 1
         while idx < len(messages) and cls._is_blank_user_turn(messages[idx]):
             indices.add(idx)

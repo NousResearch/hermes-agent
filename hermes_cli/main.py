@@ -11826,16 +11826,23 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
     No-ops (so the existing fail-closed ``SystemExit`` remains the backstop)
     when:
-      * the bind is loopback (gate never engages), or
+      * the auth gate never engages — a loopback bind with no allowed-hosts
+        allowlist (a non-empty allowlist DOES engage the gate on loopback,
+        see effective_auth_required), or
       * a provider is already registered, or
       * stdin/stdout isn't a TTY (Docker/s6, CI, piped ``--no-open`` runs).
     """
     host = getattr(args, "host", "127.0.0.1") or "127.0.0.1"
 
     try:
-        from hermes_cli.web_server import should_require_auth
-        if not should_require_auth(host):
-            return  # loopback bind — gate never engages
+        from hermes_cli.web_server import (
+            _resolve_allowed_hosts,
+            effective_auth_required,
+            should_require_auth,
+        )
+        allowed = _resolve_allowed_hosts(getattr(args, "allowed_hosts", None) or [])
+        if not effective_auth_required(host, allowed):
+            return  # gate never engages (loopback bind, no allowlist)
     except Exception:
         return  # if we can't tell, defer to start_server's own gate
 
@@ -11852,14 +11859,25 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
         return
 
     print()
-    print(
-        f"⚠ The dashboard is binding to a non-loopback address ({host}) and "
-        f"needs an auth provider."
-    )
-    print(
-        "  Non-loopback binds always require authentication "
-        "(--insecure no longer bypasses this)."
-    )
+    if not should_require_auth(host):
+        # Loopback bind — the gate engaged only because of the allowlist.
+        print(
+            "⚠ The dashboard has an allowed-hosts allowlist set, which "
+            "requires an auth provider even on a loopback bind."
+        )
+        print(
+            "  Allowlisting an external hostname means requests can arrive "
+            "from beyond this machine."
+        )
+    else:
+        print(
+            f"⚠ The dashboard is binding to a non-loopback address ({host}) "
+            f"and needs an auth provider."
+        )
+        print(
+            "  Non-loopback binds always require authentication "
+            "(--insecure no longer bypasses this)."
+        )
     print()
     print("  How do you want to authenticate the dashboard?")
     print("    [1] Username & password (quickest; for a trusted LAN / VPN)")

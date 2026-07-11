@@ -2008,13 +2008,12 @@ DEFAULT_CONFIG = {
         # ``password_hash`` with
         # ``python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('PW'))"``.
         # Extra Host header values to accept beyond the bound interface
-        # (env: ``HERMES_DASHBOARD_ALLOWED_HOSTS``, comma-separated; CLI:
-        # repeatable ``--allowed-host``). Lets a loopback / Tailscale-IP bind
-        # be reached via its MagicDNS name (e.g. ``box.tailnet.ts.net``)
+        # (CLI: repeatable ``--allowed-host``). Lets a loopback / Tailscale-IP
+        # bind be reached via its MagicDNS name (e.g. ``box.tailnet.ts.net``)
         # without tripping the DNS-rebinding Host guard. Merged as a UNION of
-        # config + env + CLI. Setting ANY entry FORCES the auth gate on
-        # regardless of bind address (an allowlisted external name means
-        # requests arrive from beyond this machine).
+        # this config list + the CLI flags. Setting ANY entry FORCES the auth
+        # gate on regardless of bind address (an allowlisted external name
+        # means requests arrive from beyond this machine).
         "allowed_hosts": [],
         "basic_auth": {
             "username": "",  # blank → plugin no-op (no password provider)

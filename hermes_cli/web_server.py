@@ -412,6 +412,19 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
+def effective_auth_required(host: str, allowed_hosts=frozenset()) -> bool:
+    """The auth-gate condition shared by start_server and the interactive
+    preflight in main.py. A non-empty allowed-hosts allowlist forces the
+    gate on regardless of bind address: allowlisting an external hostname
+    means requests are expected from beyond this machine, and a loopback
+    bind behind a proxy would otherwise serve the unauthenticated
+    dashboard (with its injected session token) to everyone who can reach
+    that proxy. Kept separate from should_require_auth so that function
+    retains its pure bind-address semantics for other callers.
+    """
+    return should_require_auth(host) or bool(allowed_hosts)
+
+
 def _normalize_allowed_host(value: str) -> str:
     """Normalize one allowed-host entry to the ``host_only`` form.
 
@@ -444,19 +457,15 @@ def _normalize_allowed_host(value: str) -> str:
 def _resolve_allowed_hosts(cli_hosts=None) -> "frozenset[str]":
     """Merge the additive allowed-host sources into a normalized set.
 
-    UNION of three sources (any may be empty):
+    UNION of two sources (either may be empty):
       1. ``cli_hosts`` — repeatable ``--allowed-host`` flags.
-      2. ``HERMES_DASHBOARD_ALLOWED_HOSTS`` env var (comma-separated).
-      3. ``dashboard.allowed_hosts`` in config.yaml (a list).
+      2. ``dashboard.allowed_hosts`` in config.yaml (a list).
 
     Every entry is passed through :func:`_normalize_allowed_host`; empties
     are dropped. The result compares equal to the ``host_only`` value
     :func:`_is_accepted_host` derives from an incoming Host header.
     """
     raw: list[str] = list(cli_hosts or [])
-    env_val = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
-    if env_val:
-        raw.extend(env_val.split(","))
     try:
         cfg_hosts = (load_config().get("dashboard") or {}).get("allowed_hosts") or []
         if isinstance(cfg_hosts, list):
@@ -477,9 +486,9 @@ def _is_accepted_host(
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
     - Any host in ``allowed_hosts`` (operator opt-in via --allowed-host /
-      HERMES_DASHBOARD_ALLOWED_HOSTS / config; e.g. a MagicDNS name in front
-      of a loopback `tailscale serve` bind). The empty default keeps every
-      existing caller's behavior unchanged.
+      config; e.g. a MagicDNS name in front of a loopback `tailscale serve`
+      bind). The empty default keeps every existing caller's behavior
+      unchanged.
     """
     if not host_header:
         return False
@@ -501,7 +510,7 @@ def _is_accepted_host(
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
     host_only = host_only.lower()
 
-    # Operator-allowlisted host (union of --allowed-host / env / config).
+    # Operator-allowlisted host (union of --allowed-host / config).
     # Checked before the bind rules so it works for loopback binds too —
     # that is exactly the `tailscale serve` case (loopback bind reached via
     # a MagicDNS name). Setting any entry forces the auth gate on (see
@@ -17057,23 +17066,17 @@ def start_server(
         _log.debug("Nous auth keepalive did not start: %s", exc)
 
     # Resolve the operator allowed-host allowlist (union of the --allowed-host
-    # flags, HERMES_DASHBOARD_ALLOWED_HOSTS, and dashboard.allowed_hosts),
-    # normalized to host_only form for comparison against incoming Host headers.
+    # flags and dashboard.allowed_hosts), normalized to host_only form for
+    # comparison against incoming Host headers.
     allowed_hosts_set = _resolve_allowed_hosts(allowed_hosts)
 
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5
     # uses this to decide whether to refuse the bind, log the gate-on
-    # banner, and enable uvicorn proxy_headers.
-    #
-    # A non-empty allowlist FORCES the gate on regardless of bind address:
-    # allowlisting an external hostname means requests are expected to arrive
-    # from beyond this machine (e.g. through a tailnet proxy), and a loopback
-    # bind would otherwise serve the unauthenticated dashboard — with its
-    # injected session token — to everyone who can reach that proxy. We OR it
-    # in here rather than inside should_require_auth (other callers depend on
-    # its pure host semantics).
-    app.state.auth_required = should_require_auth(host) or bool(allowed_hosts_set)
+    # banner, and enable uvicorn proxy_headers. A non-empty allowlist forces
+    # the gate on even for a loopback bind — see effective_auth_required for
+    # the rationale.
+    app.state.auth_required = effective_auth_required(host, allowed_hosts_set)
 
     # ``--insecure`` no longer disables the auth gate (June 2026 hardening:
     # the hermes-0day MCP-persistence campaign abused unauthenticated public

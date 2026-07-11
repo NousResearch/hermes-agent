@@ -150,45 +150,102 @@ class TestNormalizeAllowedHost:
 
 
 class TestResolveAllowedHosts:
-    """The union resolver merges CLI + env + config and normalizes."""
+    """The union resolver merges CLI + config and normalizes."""
 
-    def test_union_of_cli_env_config(self, monkeypatch):
+    def test_union_of_cli_config(self, monkeypatch):
         import hermes_cli.web_server as ws
 
-        monkeypatch.setenv(
-            "HERMES_DASHBOARD_ALLOWED_HOSTS", "Env-Host.example:9119, ,dup.example"
-        )
         monkeypatch.setattr(
             ws, "load_config", lambda: {"dashboard": {"allowed_hosts": ["Cfg-Host.example."]}}
         )
-        result = ws._resolve_allowed_hosts(["Cli-Host.example", "dup.example"])
+        result = ws._resolve_allowed_hosts(["Cli-Host.example", "dup.example", "dup.example"])
         assert result == frozenset(
-            {"cli-host.example", "env-host.example", "cfg-host.example", "dup.example"}
+            {"cli-host.example", "cfg-host.example", "dup.example"}
         )
 
     def test_empty_sources_give_empty_set(self, monkeypatch):
         import hermes_cli.web_server as ws
 
-        monkeypatch.delenv("HERMES_DASHBOARD_ALLOWED_HOSTS", raising=False)
         monkeypatch.setattr(ws, "load_config", lambda: {"dashboard": {}})
         assert ws._resolve_allowed_hosts(None) == frozenset()
         assert ws._resolve_allowed_hosts([]) == frozenset()
 
     def test_non_empty_forces_auth_gate(self, monkeypatch):
-        """The auth-forcing rule: a non-empty allowlist ORs into auth_required
+        """The auth-forcing rule: a non-empty allowlist forces auth_required
         even on a loopback bind (should_require_auth stays pure)."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.delenv("HERMES_DASHBOARD_ALLOWED_HOSTS", raising=False)
         monkeypatch.setattr(ws, "load_config", lambda: {"dashboard": {}})
 
         allowed = ws._resolve_allowed_hosts(["box.tailnet.ts.net"])
         # Loopback bind: should_require_auth is False, but the allowlist forces it.
         assert ws.should_require_auth("127.0.0.1") is False
-        assert (ws.should_require_auth("127.0.0.1") or bool(allowed)) is True
+        assert ws.effective_auth_required("127.0.0.1", allowed) is True
         # Empty allowlist leaves the loopback bind ungated.
         empty = ws._resolve_allowed_hosts([])
-        assert (ws.should_require_auth("127.0.0.1") or bool(empty)) is False
+        assert ws.effective_auth_required("127.0.0.1", empty) is False
+
+
+class TestPreflightAllowlistGate:
+    """The interactive preflight and start_server must agree on when the
+    auth gate engages — a non-empty allowlist forces it even on loopback."""
+
+    def test_effective_auth_required_helper(self):
+        from hermes_cli.web_server import effective_auth_required
+
+        # Loopback, no allowlist → no gate.
+        assert effective_auth_required("127.0.0.1") is False
+        # Loopback + allowlist → gate forced on.
+        assert effective_auth_required(
+            "127.0.0.1", frozenset({"box.tailnet.ts.net"})
+        ) is True
+        # 0.0.0.0 → gate regardless of allowlist.
+        assert effective_auth_required("0.0.0.0") is True
+        assert effective_auth_required(
+            "0.0.0.0", frozenset({"box.tailnet.ts.net"})
+        ) is True
+
+    def test_loopback_with_allowlist_prompts(self, monkeypatch):
+        """Regression: a loopback bind with a non-empty allowlist must NOT
+        early-return — it should prompt (then here we Cancel → SystemExit)."""
+        import argparse
+
+        import hermes_cli.dashboard_auth as dashboard_auth
+        import hermes_cli.web_server as ws
+        from hermes_cli.main import _maybe_setup_dashboard_auth_interactively
+
+        monkeypatch.setattr(ws, "load_config", lambda: {"dashboard": {}})
+        monkeypatch.setattr(dashboard_auth, "list_providers", lambda: [])
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "3")  # Cancel
+
+        args = argparse.Namespace(
+            host="127.0.0.1", allowed_hosts=["box.tailnet.ts.net"]
+        )
+        with pytest.raises(SystemExit):
+            _maybe_setup_dashboard_auth_interactively(args)
+
+    def test_loopback_without_allowlist_returns_without_prompting(self, monkeypatch):
+        """Control case: loopback + empty allowlist early-returns (no prompt)."""
+        import argparse
+
+        import hermes_cli.dashboard_auth as dashboard_auth
+        import hermes_cli.web_server as ws
+        from hermes_cli.main import _maybe_setup_dashboard_auth_interactively
+
+        monkeypatch.setattr(ws, "load_config", lambda: {"dashboard": {}})
+        monkeypatch.setattr(dashboard_auth, "list_providers", lambda: [])
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+        def _no_prompt(*a, **k):
+            raise AssertionError("should not prompt")
+
+        monkeypatch.setattr("builtins.input", _no_prompt)
+
+        args = argparse.Namespace(host="127.0.0.1", allowed_hosts=[])
+        assert _maybe_setup_dashboard_auth_interactively(args) is None
 
 
 class TestHostHeaderMiddleware:

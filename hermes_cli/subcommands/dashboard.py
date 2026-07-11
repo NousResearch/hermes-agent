@@ -50,7 +50,7 @@ def _add_server_runtime_args(parser) -> None:
             "(repeatable). Lets a loopback / Tailscale-IP bind be reached via "
             "its MagicDNS name (e.g. box.tailnet.ts.net) without tripping the "
             "DNS-rebinding guard. Merged as a union with "
-            "HERMES_DASHBOARD_ALLOWED_HOSTS and dashboard.allowed_hosts. "
+            "dashboard.allowed_hosts in config.yaml. "
             "Setting ANY value FORCES the auth gate on regardless of bind "
             "address (requires an auth provider)."
         ),

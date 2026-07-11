@@ -220,8 +220,8 @@ authorization model, but the rules below apply uniformly.
    the request `Host` header against the bound host to defend against
    DNS rebinding; operators fronting it with a proxy on a different
    hostname (e.g. a Tailscale MagicDNS name) can opt that name in with
-   the `--allowed-host` / `HERMES_DASHBOARD_ALLOWED_HOSTS` /
-   `dashboard.allowed_hosts` allowlist. Any non-empty allowlist
+   the `--allowed-host` / `dashboard.allowed_hosts` allowlist.
+   Any non-empty allowlist
    **forces the auth gate on regardless of bind address** — a
    fail-closed default so a loopback bind fronted by a shared proxy
    cannot serve the unauthenticated dashboard to everyone who can

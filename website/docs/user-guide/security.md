@@ -581,7 +581,7 @@ When on, web tools, the browser, vision URL fetches, and gateway media downloads
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
 
-For the *inbound* side, the web dashboard validates the request `Host` header against the bound host (DNS-rebinding defence); to reach it by an extra hostname such as a Tailscale MagicDNS name, opt that name into the `--allowed-host` / `HERMES_DASHBOARD_ALLOWED_HOSTS` allowlist, which also forces the dashboard auth gate on. See [Web Dashboard](/user-guide/features/web-dashboard#connecting-hermes-desktop-to-a-remote-backend).
+For the *inbound* side, the web dashboard validates the request `Host` header against the bound host (DNS-rebinding defence); to reach it by an extra hostname such as a Tailscale MagicDNS name, opt that name into the `--allowed-host` flag / `dashboard.allowed_hosts` config allowlist, which also forces the dashboard auth gate on. See [Web Dashboard](/user-guide/features/web-dashboard#connecting-hermes-desktop-to-a-remote-backend).
 
 ### Tirith Pre-Exec Security Scanning
 

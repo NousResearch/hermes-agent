@@ -3676,18 +3676,11 @@ async function ensureRuntime(backend, { firstRunGate: firstRunGateEnabled = fals
     // the user already chose install in a prior run (persisted marker) so an
     // interrupted install / unattended relaunch resumes bootstrap directly and
     // the automatic Windows recovery handoff below still runs.
-    if (firstRunGateEnabled && !firstRunInstallChosen()) {
-      const decision = await firstRunGate.waitForDecision()
-
-      if (decision === 'abort') {
-        const abortedError: Error & { firstRunAborted?: boolean } = new Error(
-          'First-run bootstrap aborted: connecting to a remote Hermes backend instead.'
-        )
-
-        abortedError.firstRunAborted = true
-        throw abortedError
-      }
-    }
+    await guardFirstRunBootstrap({
+      gate: firstRunGate,
+      enabled: firstRunGateEnabled,
+      installChosen: firstRunInstallChosen
+    })
 
     if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
       const handoffError: Error & { isBootstrapFailure?: boolean; bootstrapHandedOff?: boolean } = new Error(
@@ -6126,14 +6119,8 @@ function writeDesktopConnectionConfig(config) {
 // uncached — this runs at most once per boot). A recorded install lets the
 // gated ensureRuntime branch skip re-asking after an interrupted install.
 function firstRunInstallChosen() {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(DESKTOP_FIRST_RUN_CONFIG_PATH, 'utf8'))
-
-    return Boolean(parsed && typeof parsed === 'object' && parsed.choice === 'install')
-  } catch {
-    // Missing or malformed → no recorded choice; fall through to asking.
-    return false
-  }
+  // Tolerant marker parse lives in first-run-flow.ts; inject the (uncached) read.
+  return readFirstRunInstallChoice(() => fs.readFileSync(DESKTOP_FIRST_RUN_CONFIG_PATH, 'utf8'))
 }
 
 function writeFirstRunInstallChoice() {
@@ -7264,7 +7251,7 @@ async function startHermes() {
     // re-run legitimately re-parks the gate and the overlay re-appears: correct,
     // the user must still choose. A genuine remote failure takes the latching
     // path below.
-    if (error?.firstRunAborted) {
+    if (isFirstRunAborted(error)) {
       backendConnectionState.clearPromiseForAttempt(connectionAttempt)
 
       return startHermes()
@@ -8153,29 +8140,17 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 // bootstrap proceeds. The remote path does NOT go through here — it flows through
 // connection-config:apply, which calls firstRunGate.abort().
 ipcMain.handle('hermes:first-run:get', async () => firstRunGate.state())
-ipcMain.handle('hermes:first-run:choose', async (_event, choice) => {
-  if (choice === 'install') {
-    // Persist the choice so an interrupted install / unattended relaunch resumes
-    // bootstrap directly instead of re-asking (see firstRunInstallChosen).
-    writeFirstRunInstallChoice()
-
-    // The remote form may have persisted mode:'remote' (via an OAuth sign-in that
-    // saves before the user clicks Connect) while the user was still deciding. If
-    // they then pick Install, rewrite the saved mode back to 'local' so the next
-    // launch spawns the fresh local install instead of dialing a half-configured
-    // remote. Preserve the remote block/profiles so a saved URL/token can be
-    // reused later from Settings.
-    const config = readDesktopConnectionConfig()
-
-    if (modeIsRemoteLike(config.mode)) {
-      writeDesktopConnectionConfig({ ...config, mode: 'local' })
-    }
-
-    firstRunGate.chooseInstall()
-  }
-
-  return firstRunGate.state()
-})
+ipcMain.handle('hermes:first-run:choose', async (_event, choice) =>
+  // Handler body lives in first-run-flow.ts; wire the electron-coupled collaborators.
+  applyFirstRunChoice({
+    choice,
+    gate: firstRunGate,
+    readConnectionConfig: readDesktopConnectionConfig,
+    writeConnectionConfig: writeDesktopConnectionConfig,
+    writeInstallChoice: writeFirstRunInstallChoice,
+    modeIsRemoteLike
+  })
+)
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {

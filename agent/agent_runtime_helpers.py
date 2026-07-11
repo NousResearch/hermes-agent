@@ -2735,6 +2735,25 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         filtered.append(msg)
     messages = filtered
 
+    # --- Demote mid-conversation system messages to user role (#48338) ---
+    # System messages that appear after position 0 (model-switch markers,
+    # personality pivots, verification nudges, continuation prompts) are
+    # persisted with role="system" for correct Desktop rendering, but strict
+    # OpenAI-compatible providers (vLLM, Qwen) reject system messages that are
+    # not at the beginning of the messages array. Demote them to role="user"
+    # on the per-call copy so the stored transcript keeps the correct role
+    # while the wire payload stays provider-compatible.
+    _demoted = 0
+    for _idx, _msg in enumerate(messages):
+        if _idx > 0 and isinstance(_msg, dict) and _msg.get("role") == "system":
+            messages[_idx] = {**_msg, "role": "user"}
+            _demoted += 1
+    if _demoted:
+        _ra().logger.debug(
+            "Pre-call sanitizer: demoted %d mid-conversation system message(s) to user role",
+            _demoted,
+        )
+
     # --- Drop empty / malformed tool_calls arrays on assistant messages ---
     # An assistant message carrying ``tool_calls: []`` (an empty array) — or a
     # non-list value under the key — is semantically identical to an assistant

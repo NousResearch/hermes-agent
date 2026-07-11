@@ -1,10 +1,10 @@
 """Verification-loop synthetic scaffolding must never reach durable session state.
 
-verify_on_stop / pre_verify inject a synthetic user nudge to keep the agent
+verify_on_stop / pre_verify inject a synthetic system nudge to keep the agent
 going one more turn before it can claim completion. The assistant response is
 real content that persists and is emitted to the UI as an interim message.
-Only the nudge (the synthetic user message) is flagged, so only the nudge
-gets stripped from the durable transcript. This test file verifies:
+Only the tagged nudge is flagged, so only the nudge gets stripped from the
+durable transcript. This test file verifies:
 
   - The verification-loop flags remain registered in
     ``_EPHEMERAL_SCAFFOLDING_FLAGS`` (so nudges are stripped).
@@ -36,10 +36,10 @@ def test_verification_flags_registered_as_ephemeral(tmp_path, monkeypatch):
 
     # The nudge messages ARE scaffolding (they carry the synthetic flag).
     assert ra._is_ephemeral_scaffolding(
-        {"role": "user", "content": "[System: run tests]", "_pre_verify_synthetic": True}
+        {"role": "system", "content": "[System: run tests]", "_pre_verify_synthetic": True}
     )
     assert ra._is_ephemeral_scaffolding(
-        {"role": "user", "content": "[System: run tests]", "_verification_stop_synthetic": True}
+        {"role": "system", "content": "[System: run tests]", "_verification_stop_synthetic": True}
     )
     # Real messages (including the assistant candidate) are not.
     assert not ra._is_ephemeral_scaffolding({"role": "user", "content": "hi"})
@@ -77,7 +77,7 @@ def test_db_flush_drops_only_nudge_keeps_candidate(tmp_path, monkeypatch):
         # Assistant candidate — NOT flagged synthetic, persists.
         {"role": "assistant", "content": "premature done"},
         # Nudge — flagged synthetic, gets dropped.
-        {"role": "user", "content": "[System: run tests]", "_verification_stop_synthetic": True},
+        {"role": "system", "content": "[System: run tests]", "_verification_stop_synthetic": True},
         {"role": "assistant", "content": "verified and clean"},
     ]
 
@@ -107,7 +107,7 @@ def test_json_log_drops_only_nudge_keeps_candidate(tmp_path, monkeypatch):
         # Assistant candidate — NOT flagged synthetic, persists.
         {"role": "assistant", "content": "premature done"},
         # Nudge — flagged synthetic, gets dropped.
-        {"role": "user", "content": "[System: run tests]", "_pre_verify_synthetic": True},
+        {"role": "system", "content": "[System: run tests]", "_pre_verify_synthetic": True},
         {"role": "assistant", "content": "verified and clean"},
     ]
 

@@ -2426,7 +2426,7 @@ def run_conversation(
                                     _is_partial_stream_stub, _dropped_tools
                                 )
                                 continue_msg = {
-                                    "role": "user",
+                                    "role": "system",
                                     "content": _continue_content,
                                 }
                                 messages.append(continue_msg)
@@ -6000,7 +6000,7 @@ def run_conversation(
                     agent._emit_interim_assistant_message(interim_msg)
 
                     continue_msg = {
-                        "role": "user",
+                        "role": "system",
                         "content": (
                             "[System: Continue now. Execute the required tool calls and only "
                             "send your final answer after completing the task.]"
@@ -6076,7 +6076,7 @@ def run_conversation(
                     except Exception:
                         logger.debug("verify-on-stop interim flush failed", exc_info=True)
                     messages.append({
-                        "role": "user",
+                        "role": "system",
                         "content": _verify_nudge,
                         "_verification_stop_synthetic": True,
                     })
@@ -6147,7 +6147,7 @@ def run_conversation(
                     except Exception:
                         logger.debug("pre_verify interim flush failed", exc_info=True)
                     messages.append({
-                        "role": "user",
+                        "role": "system",
                         "content": _verify_nudge2,
                         "_pre_verify_synthetic": True,
                     })

@@ -2945,11 +2945,12 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         f"{model}{provider_part}. From this point forward, use this runtime "
         "metadata when answering questions about what model/provider is active.]"
     )
-    # Persist as a user message, not a system message.  The gateway appends
-    # this marker after prior conversation turns, and strict OpenAI-compatible
-    # providers (vLLM, Qwen) reject system messages that are not at the
-    # beginning of the API message list (#48338).
-    entry = {"role": "user", "content": marker, "display_kind": "model_switch"}
+    # Persist as a system message for correct role semantics. The pre-call
+    # sanitizer (sanitize_api_messages) demotes mid-conversation system
+    # messages to role="user" for provider compatibility (#48338), so this
+    # is safe — the stored transcript has the correct role for Desktop
+    # rendering while the wire payload stays provider-compatible.
+    entry = {"role": "system", "content": marker, "display_kind": "model_switch"}
 
     lock = session.get("history_lock")
     if lock is not None:
@@ -2966,7 +2967,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         if db is not None:
             db.append_message(
                 session_id=session_key,
-                role="user",
+                role="system",
                 content=marker,
                 display_kind="model_switch",
             )
@@ -2977,7 +2978,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
             if scoped_db is not None:
                 scoped_db.append_message(
                     session_id=session_key,
-                    role="user",
+                    role="system",
                     content=marker,
                     display_kind="model_switch",
                 )
@@ -4884,7 +4885,7 @@ def _apply_personality_to_session(
                 "From this point forward, respond in your normal default style.]"
             )
         with session["history_lock"]:
-            session["history"].append({"role": "user", "content": marker})
+            session["history"].append({"role": "system", "content": marker})
             session["history_version"] = int(session.get("history_version", 0)) + 1
         info = _session_info(agent)
         _emit("session.info", sid, info)

@@ -5728,11 +5728,11 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
             "Model: anthropic/claude-sonnet-4.6\nProvider: anthropic"
         )
         assert agent._cached_system_prompt == db.system_prompt
-        assert session["history"][-1]["role"] == "user"
+        assert session["history"][-1]["role"] == "system"
         assert "changed to anthropic/claude-sonnet-4.6" in session["history"][-1]["content"]
         assert db.messages[-1] == {
             "session_id": "session-key",
-            "role": "user",
+            "role": "system",
             "content": session["history"][-1]["content"],
         }
         # ...and the shared process env was NOT touched.
@@ -5961,7 +5961,7 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     # History is preserved with a pivot marker appended
     assert len(session["history"]) == 2
     assert session["history"][0] == {"role": "user", "text": "hi"}
-    assert session["history"][1]["role"] == "user"
+    assert session["history"][1]["role"] == "system"
     assert "personality" in session["history"][1]["content"].lower()
     assert "You are helpful." in session["history"][1]["content"]
     assert session["history_version"] == 5

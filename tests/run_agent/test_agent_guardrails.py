@@ -105,6 +105,30 @@ class TestSanitizeApiMessages:
     def test_empty_list_is_safe(self):
         assert AIAgent._sanitize_api_messages([]) == []
 
+    def test_mid_conversation_system_demoted_to_user(self):
+        """System messages after position 0 must be demoted to user role
+        for provider compatibility (#48338). The first system message
+        (the main system prompt) must stay as-is."""
+        msgs = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "system", "content": "[System: model changed]"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["role"] == "system"  # position 0 unchanged
+        assert out[3]["role"] == "user"    # mid-conversation demoted
+        assert out[3]["content"] == "[System: model changed]"
+
+    def test_first_system_message_preserved(self):
+        """A single system message at position 0 is NOT demoted."""
+        msgs = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "hi"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["role"] == "system"
+
     def test_no_tool_messages(self):
         msgs = [
             {"role": "user", "content": "hi"},

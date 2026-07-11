@@ -10355,6 +10355,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         history: List[Dict[str, Any]],
         session_key: Optional[str] = None,
     ) -> Optional[str]:
+        """Prepare inbound text in the source profile's runtime scope."""
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return await self._prepare_inbound_message_text_inner(
+                event=event,
+                source=source,
+                history=history,
+                session_key=session_key,
+            )
+
+        profile_home = self._resolve_profile_home_for_source(source)
+        with _profile_runtime_scope(profile_home):
+            return await self._prepare_inbound_message_text_inner(
+                event=event,
+                source=source,
+                history=history,
+                session_key=session_key,
+            )
+
+    async def _prepare_inbound_message_text_inner(
+        self,
+        *,
+        event: MessageEvent,
+        source: SessionSource,
+        history: List[Dict[str, Any]],
+        session_key: Optional[str] = None,
+    ) -> Optional[str]:
         """Prepare inbound event text for the agent.
 
         Keep the normal inbound path and the queued follow-up path on the same
@@ -10613,6 +10639,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
                 _msg_config_ctx = None
                 _msg_cfg = None
+                _msg_custom_providers = []
                 try:
                     _msg_cfg = _load_gateway_config()
                     _msg_model_cfg = _msg_cfg.get("model", {})
@@ -10620,6 +10647,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _msg_raw_ctx = _msg_model_cfg.get("context_length")
                         if _msg_raw_ctx is not None:
                             _msg_config_ctx = int(_msg_raw_ctx)
+                    try:
+                        from hermes_cli.config import get_compatible_custom_providers
+                        _msg_custom_providers = get_compatible_custom_providers(_msg_cfg)
+                    except Exception:
+                        _raw_custom_providers = _msg_cfg.get("custom_providers")
+                        if isinstance(_raw_custom_providers, list):
+                            _msg_custom_providers = _raw_custom_providers
                 except Exception:
                     pass
                 # Resolve the session's actual model/provider/base_url the
@@ -10634,12 +10668,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key=session_key,
                     user_config=_msg_cfg,
                 )
+                # ``model.context_length`` configures the gateway's default
+                # model. A session or channel override may target a model with
+                # a different window, so do not let the default's explicit
+                # override mask resolution for the active session model.
+                _msg_default_model = _resolve_gateway_model(_msg_cfg)
+                _msg_default_runtime = _resolve_runtime_agent_kwargs()
+                _msg_runtime_changed = (
+                    _msg_runtime.get("provider") != _msg_default_runtime.get("provider")
+                    or str(_msg_runtime.get("base_url") or "").rstrip("/").lower()
+                    != str(_msg_default_runtime.get("base_url") or "").rstrip("/").lower()
+                )
+                if (
+                    _msg_config_ctx is not None
+                    and (_msg_model != _msg_default_model or _msg_runtime_changed)
+                ):
+                    _msg_config_ctx = None
                 _msg_ctx_len = await get_model_context_length_async(
                     _msg_model,
                     base_url=_msg_runtime.get("base_url") or "",
                     api_key=_msg_runtime.get("api_key") or "",
                     config_context_length=_msg_config_ctx,
                     provider=_msg_runtime.get("provider") or "",
+                    custom_providers=_msg_custom_providers,
                 )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,

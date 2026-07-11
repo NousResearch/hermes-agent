@@ -18,6 +18,7 @@ the hygiene-compression block already uses) and must actually reach
 """
 import logging
 import threading
+from contextlib import contextmanager
 
 import pytest
 
@@ -156,6 +157,7 @@ async def test_at_reference_resolves_model_via_session_runtime(monkeypatch):
         captured_runtime_call["base_url"] = base_url
         captured_runtime_call["provider"] = provider
         captured_runtime_call["config_context_length"] = config_context_length
+        captured_runtime_call["custom_providers"] = custom_providers
         return config_context_length or 128000
 
     import agent.model_metadata as model_meta_mod
@@ -185,3 +187,209 @@ async def test_at_reference_resolves_model_via_session_runtime(monkeypatch):
     assert captured_runtime_call.get("model") == "openai/gpt-4.1-mini"
     assert captured_runtime_call.get("base_url") == "https://api.openai.com/v1"
     assert captured_runtime_call.get("provider") == "openai"
+    assert captured_runtime_call.get("custom_providers") == []
+
+
+@pytest.mark.asyncio
+async def test_at_reference_passes_compatible_custom_providers(monkeypatch):
+    runner = _make_runner()
+    source = _source()
+    expected_custom_providers = [
+        {
+            "base_url": "https://custom.example/v1",
+            "models": {"custom-model": {"context_length": 222222}},
+        }
+    ]
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"model": {"default": "custom-model"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.get_compatible_custom_providers",
+        lambda _cfg: expected_custom_providers,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_resolve_session_agent_runtime",
+        lambda **_kwargs: (
+            "custom-model",
+            {
+                "provider": "custom:example",
+                "api_key": "test-key",
+                "base_url": "https://custom.example/v1",
+            },
+        ),
+    )
+
+    captured = {}
+
+    async def _fake_get_ctx_len(model, **kwargs):
+        captured["model"] = model
+        captured.update(kwargs)
+        return 222222
+
+    import agent.model_metadata as model_meta_mod
+    import agent.context_references as ctx_mod
+
+    monkeypatch.setattr(model_meta_mod, "get_model_context_length_async", _fake_get_ctx_len)
+
+    async def _passthrough_preprocess(message, **_kwargs):
+        return ContextReferenceResult(message=message, original_message=message)
+
+    monkeypatch.setattr(ctx_mod, "preprocess_context_references_async", _passthrough_preprocess)
+
+    result = await runner._prepare_inbound_message_text(
+        event=MessageEvent(text="hi @diff", source=source),
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert captured["model"] == "custom-model"
+    assert captured["base_url"] == "https://custom.example/v1"
+    assert captured["provider"] == "custom:example"
+    assert captured["custom_providers"] == expected_custom_providers
+
+
+@pytest.mark.asyncio
+async def test_at_reference_session_model_override_ignores_default_context_length(monkeypatch):
+    runner = _make_runner()
+    source = _source()
+    session_key = "session-with-model-override"
+    _patch_runtime_resolution(monkeypatch)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"model": {"default": "openai/gpt-4.1-mini", "context_length": 111111}},
+    )
+    monkeypatch.setattr(runner, "_rehydrate_session_model_override", lambda _key: None)
+    runner._session_model_overrides[session_key] = {
+        "model": "gpt-4.1",
+        "provider": "openai",
+        "api_key": "override-key",
+        "base_url": "https://api.openai.com/v1",
+        "api_mode": "chat_completions",
+    }
+
+    captured = {}
+
+    async def _fake_get_ctx_len(model, **kwargs):
+        captured["model"] = model
+        captured.update(kwargs)
+        return 1047576
+
+    import agent.model_metadata as model_meta_mod
+    import agent.context_references as ctx_mod
+
+    monkeypatch.setattr(model_meta_mod, "get_model_context_length_async", _fake_get_ctx_len)
+
+    async def _passthrough_preprocess(message, **_kwargs):
+        return ContextReferenceResult(message=message, original_message=message)
+
+    monkeypatch.setattr(ctx_mod, "preprocess_context_references_async", _passthrough_preprocess)
+
+    result = await runner._prepare_inbound_message_text(
+        event=MessageEvent(text="hi @diff", source=source),
+        source=source,
+        history=[],
+        session_key=session_key,
+    )
+
+    assert result is not None
+    assert captured["model"] == "gpt-4.1"
+    assert captured["config_context_length"] is None
+
+
+@pytest.mark.asyncio
+async def test_at_reference_provider_override_ignores_default_context_length(monkeypatch):
+    runner = _make_runner()
+    source = _source()
+    _patch_runtime_resolution(monkeypatch)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"model": {"default": "shared-model", "context_length": 111111}},
+    )
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda _cfg=None: "shared-model")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openai",
+            "api_key": "default-key",
+            "base_url": "https://api.openai.com/v1",
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_resolve_session_agent_runtime",
+        lambda **_kwargs: (
+            "shared-model",
+            {
+                "provider": "custom:channel",
+                "api_key": "channel-key",
+                "base_url": "https://channel.example/v1",
+            },
+        ),
+    )
+
+    captured = {}
+
+    async def _fake_get_ctx_len(model, **kwargs):
+        captured["model"] = model
+        captured.update(kwargs)
+        return 222222
+
+    import agent.model_metadata as model_meta_mod
+    import agent.context_references as ctx_mod
+
+    monkeypatch.setattr(model_meta_mod, "get_model_context_length_async", _fake_get_ctx_len)
+
+    async def _passthrough_preprocess(message, **_kwargs):
+        return ContextReferenceResult(message=message, original_message=message)
+
+    monkeypatch.setattr(ctx_mod, "preprocess_context_references_async", _passthrough_preprocess)
+
+    result = await runner._prepare_inbound_message_text(
+        event=MessageEvent(text="hi @diff", source=source),
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert captured["model"] == "shared-model"
+    assert captured["base_url"] == "https://channel.example/v1"
+    assert captured["provider"] == "custom:channel"
+    assert captured["config_context_length"] is None
+
+
+@pytest.mark.asyncio
+async def test_at_reference_uses_source_profile_runtime_scope(monkeypatch, tmp_path):
+    runner = _make_runner()
+    runner.config.multiplex_profiles = True
+    source = _source()
+    source.profile = "secondary"
+    profile_home = tmp_path / "profiles" / "secondary"
+    entered = []
+
+    @contextmanager
+    def _scope(home):
+        entered.append(home)
+        yield
+
+    async def _inner(**_kwargs):
+        return "prepared"
+
+    monkeypatch.setattr(runner, "_resolve_profile_home_for_source", lambda _source: profile_home)
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", _scope)
+    monkeypatch.setattr(runner, "_prepare_inbound_message_text_inner", _inner)
+
+    result = await runner._prepare_inbound_message_text(
+        event=MessageEvent(text="hi @diff", source=source),
+        source=source,
+        history=[],
+    )
+
+    assert result == "prepared"
+    assert entered == [profile_home]

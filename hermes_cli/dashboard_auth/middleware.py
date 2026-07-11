@@ -355,7 +355,21 @@ async def gated_auth_middleware(
         # one). On success we re-set the rotated cookies on the response and
         # serve the request transparently; on RefreshExpiredError (RT dead /
         # revoked / reuse-detected) we fall through to clear-and-relogin.
-        refreshed = _attempt_refresh(request, refresh_token=_rt)
+        #
+        # ``session_provider`` names the provider that OWNS this session so the
+        # refresh loop can tell "my RT is genuinely dead" (fatal → re-login)
+        # from "a stacked provider doesn't recognise a foreign RT" (keep
+        # trying the rest). We only reach here with ``session is None`` (AT
+        # expired / evicted / invalid), so there's no verified session to read
+        # the provider from, and no long-lived provider cookie to fall back on
+        # — only the short-lived PKCE cookie carries a provider hint and it is
+        # already gone by refresh time. So the owner is unknown (``None``) in
+        # the common AT-evicted case, and the loop tries every provider rather
+        # than aborting on the first one that can't rotate the RT.
+        session_provider = session.provider if session is not None else None
+        refreshed = _attempt_refresh(
+            request, refresh_token=_rt, session_provider=session_provider,
+        )
         if refreshed is not None:
             new_session, refreshing_provider = refreshed
             request.state.session = new_session
@@ -421,12 +435,37 @@ def _expires_in_seconds(session) -> int:
     return max(60, int(session.expires_at) - int(time.time()))
 
 
-def _attempt_refresh(request: Request, *, refresh_token):
+def _attempt_refresh(request: Request, *, refresh_token, session_provider=None):
     """Try to rotate an expired session via the refresh token.
 
     Returns ``(new_session, provider_name)`` on success, or ``None`` if
-    there's no RT or every provider's ``refresh_session`` failed with
-    ``RefreshExpiredError`` (dead/revoked/reuse-detected RT → force re-login).
+    there's no RT or no registered provider could rotate it (dead / revoked /
+    reuse-detected RT → force re-login).
+
+    Provider stacking: a refresh token is issued by — and refreshable by —
+    exactly ONE provider. When several session providers are registered (e.g.
+    ``nous``, ``basic``, ``self_hosted``) a provider handed a *foreign* RT it
+    doesn't recognise raises ``RefreshExpiredError`` — the SAME exception it
+    raises for its own genuinely-dead RT. So a bare ``RefreshExpiredError``
+    cannot be read as "the session is dead, force re-login": from a NON-owning
+    provider it just means "not my token, ask the next provider." We therefore
+    only treat it as fatal when it comes from the provider that ISSUED the
+    session (``session_provider``); from any other provider we continue to the
+    next one. Only if EVERY provider fails to rotate the RT do we give up and
+    force re-login.
+
+    (Previously the loop returned ``None`` on the FIRST ``RefreshExpiredError``,
+    on the assumption "an RT belongs to exactly one provider" — but that aborts
+    the loop when a non-owning provider is iterated first. Concretely: with
+    ``basic`` registered before ``nous``, ``basic`` raised
+    ``RefreshExpiredError`` on a Nous-issued RT it couldn't recognise, so
+    ``nous`` never got to refresh its own live token — logging users out
+    ~every 15 minutes.)
+
+    ``session_provider`` is the ``name`` of the provider that owns the current
+    session, when it can be identified; ``None`` when the access-token cookie
+    was already evicted (the common AT-expiry case) and the owner is unknown.
+    When ``None`` no provider can short-circuit, so every provider is tried.
 
     A ``ProviderError`` (Portal unreachable) is NOT swallowed into a re-login
     here — re-raising would 500 the request; instead we log and return None so
@@ -435,19 +474,28 @@ def _attempt_refresh(request: Request, *, refresh_token):
     """
     if not refresh_token:
         return None
+    saw_refresh_expired = False
     for provider in list_session_providers():
         try:
             new_session = provider.refresh_session(refresh_token=refresh_token)
         except RefreshExpiredError:
-            # This provider owns the RT but it's dead — stop trying others
-            # (an RT belongs to exactly one provider) and force re-login.
-            audit_log(
-                AuditEvent.REFRESH_FAILURE,
-                provider=provider.name,
-                reason="refresh_expired",
-                ip=_client_ip(request),
-            )
-            return None
+            saw_refresh_expired = True
+            if session_provider is not None and provider.name == session_provider:
+                # The provider that ISSUED this session says its RT is dead
+                # (revoked / reuse-detected / genuinely expired). No other
+                # provider can rotate an RT it doesn't own, so stop here and
+                # force re-login.
+                audit_log(
+                    AuditEvent.REFRESH_FAILURE,
+                    provider=provider.name,
+                    reason="refresh_expired",
+                    ip=_client_ip(request),
+                )
+                return None
+            # A NON-owning provider simply doesn't recognise this RT — expected
+            # when providers are stacked. Keep trying the remaining providers so
+            # the owning provider still gets a chance to refresh.
+            continue
         except ProviderError as e:
             _log.warning(
                 "dashboard-auth: provider %r unreachable during refresh: %s",
@@ -462,4 +510,14 @@ def _attempt_refresh(request: Request, *, refresh_token):
             return None
         if new_session is not None:
             return new_session, provider.name
+    if saw_refresh_expired:
+        # Every provider was tried and none could rotate the RT (each either
+        # returned None or raised ``RefreshExpiredError`` for a token it does
+        # not own). The session is genuinely unrefreshable → force re-login.
+        audit_log(
+            AuditEvent.REFRESH_FAILURE,
+            provider=session_provider or "unknown",
+            reason="refresh_expired",
+            ip=_client_ip(request),
+        )
     return None

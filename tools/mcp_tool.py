@@ -1344,23 +1344,33 @@ def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
     return "\n".join(lines)
 
 
-def _affirmative_form_content(schema: dict) -> dict:
-    """Fill a form-mode elicitation's required fields with affirmative answers.
+def _affirmative_form_content(schema: dict) -> dict | None:
+    """Answer a form-mode elicitation's required fields from a binary approval.
 
-    Hermes's consent surface is binary (approve/decline), but servers such as
-    powerbi-modeling-mcp gate writes behind a form whose required field must
-    literally say "Yes" (e.g. {"Confirm the operation": {"enum": ["Yes", "No"]}}).
-    An ``action="accept"`` with empty content reads as unconfirmed and the
-    server refuses the operation -- so once the user has approved on the
-    Hermes surface, answer the form affirmatively on their behalf. Only the
-    accept path calls this; decline/cancel/timeout still return no content.
+    Hermes's consent surface is binary (approve/decline); it cannot collect
+    user-entered values. Servers such as powerbi-modeling-mcp nevertheless
+    gate writes behind a confirm form whose required field must literally
+    carry the affirmative enum value (e.g. {"Confirm the operation":
+    {"enum": ["Yes", "No"]}}) -- an ``action="accept"`` with empty content
+    reads as unconfirmed and the operation is refused.
+
+    Only fields whose affirmative answer is unambiguous are filled:
+
+    - required booleans -> ``True``
+    - required enums with exactly one affirmative option -> that option
+
+    A missing/empty JSON-Schema ``required`` means nothing is required, so
+    the content stays empty (optional fields are never invented). Any other
+    required shape (free text, numbers, objects, ambiguous enums) returns
+    ``None``: the caller declines, because fabricating structured input the
+    user never typed would be worse than failing closed.
     """
     props = schema.get("properties") if isinstance(schema, dict) else None
     if not isinstance(props, dict) or not props:
         return {}
     required = schema.get("required")
     if not isinstance(required, list) or not required:
-        required = list(props.keys())
+        return {}
     affirmatives = ("yes", "y", "confirm", "continue", "accept", "approve", "ok", "true")
     content: dict = {}
     for name in required:
@@ -1368,14 +1378,15 @@ def _affirmative_form_content(schema: dict) -> dict:
         spec = spec if isinstance(spec, dict) else {}
         enum = spec.get("enum")
         if isinstance(enum, list) and enum:
-            content[name] = next(
-                (v for v in enum if str(v).strip().lower() in affirmatives),
-                enum[0],
-            )
-        elif spec.get("type") == "boolean":
+            matches = [v for v in enum if str(v).strip().lower() in affirmatives]
+            if len(matches) == 1:
+                content[name] = matches[0]
+                continue
+            return None
+        if spec.get("type") == "boolean":
             content[name] = True
-        else:
-            content[name] = "Yes"
+            continue
+        return None
     return content
 
 
@@ -1534,8 +1545,17 @@ class ElicitationHandler:
             return ElicitResult(action="decline")
 
         if answer == "accept":
+            content = _affirmative_form_content(schema)
+            if content is None:
+                logger.warning(
+                    "MCP server '%s' elicitation has required fields the binary "
+                    "approval surface cannot answer -- failing closed",
+                    self.server_name,
+                )
+                self.metrics["declined"] += 1
+                return ElicitResult(action="decline")
             self.metrics["accepted"] += 1
-            return ElicitResult(action="accept", content=_affirmative_form_content(schema))
+            return ElicitResult(action="accept", content=content)
         if answer == "cancel":
             self.metrics["errors"] += 1
             return ElicitResult(action="cancel")

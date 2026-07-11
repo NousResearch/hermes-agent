@@ -4997,11 +4997,16 @@ class SessionDB:
         )
         display: List[Dict[str, Any]] = []
 
+        signature_cache: Dict[int, str] = {}
+
         def _signature(msg: Dict[str, Any]) -> str:
+            message_id = msg.get("id")
+            if isinstance(message_id, int) and message_id in signature_cache:
+                return signature_cache[message_id]
             content = msg.get("content")
             if isinstance(content, str):
-                content = sanitize_context(content).strip()
-            return json.dumps(
+                content = sanitize_context(content)
+            signature = json.dumps(
                 {
                     "role": msg.get("role"),
                     "content": content,
@@ -5013,6 +5018,9 @@ class SessionDB:
                 ensure_ascii=False,
                 default=str,
             )
+            if isinstance(message_id, int):
+                signature_cache[message_id] = signature
+            return signature
 
         def _append_sanitized(rows: List[Dict[str, Any]]) -> None:
             for raw in rows:
@@ -5084,6 +5092,89 @@ class SessionDB:
                 _append_sanitized(candidate)
 
         return _strip_background_review_harness(display)
+
+    def get_messages_for_display_page(
+        self,
+        session_id: str,
+        *,
+        limit: int,
+        before: Optional[int] = None,
+        include_ancestors: bool = False,
+    ) -> Dict[str, Any]:
+        """Return one newest-first cursor page of the durable display transcript.
+
+        ``data`` remains chronological within the page. ``before`` is an
+        absolute boundary in the append-only display projection. The opaque
+        cursor therefore stays stable when newer rows are appended while the
+        user is scrolling through older history.
+        """
+        messages = [
+            message
+            for message in self.get_messages_for_display(
+                session_id, include_ancestors=include_ancestors
+            )
+            if message.get("role") in {"user", "assistant"}
+        ]
+        end = len(messages) if before is None else min(before, len(messages))
+        start = max(0, end - limit)
+        page = messages[start:end]
+        has_more = start > 0
+        next_cursor = f"v1:{start}" if has_more else None
+        return {
+            "data": page,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }
+
+    def get_compression_lineage_root(self, session_id: str) -> str:
+        """Return the stable lock/routing key for a compression lineage."""
+        chain = self._compression_lineage_root_to_tip(session_id)
+        return chain[0] if chain else session_id
+
+    def _compression_lineage_root_to_tip(self, session_id: str) -> List[str]:
+        """Return only parent edges created by compression rotation.
+
+        Explicit branches copy their inherited history into the child, so walking
+        every ``parent_session_id`` ancestor would render that copied history a
+        second time. A compression continuation is identified by the same edge
+        conditions used by :meth:`get_compression_tip`.
+        """
+        if not session_id:
+            return [session_id]
+
+        chain: List[str] = []
+        current = session_id
+        seen = set()
+        with self._lock:
+            for _ in range(100):
+                if not current or current in seen:
+                    break
+                seen.add(current)
+                chain.append(current)
+                row = self._conn.execute(
+                    """
+                    SELECT child.parent_session_id
+                    FROM sessions AS child
+                    JOIN sessions AS parent
+                      ON parent.id = child.parent_session_id
+                    WHERE child.id = ?
+                      AND parent.end_reason = 'compression'
+                      AND COALESCE(json_extract(child.model_config, '$._branched_from'), '') = ''
+                      AND COALESCE(json_extract(child.model_config, '$._delegate_from'), '') = ''
+                      AND COALESCE(child.source, '') != 'tool'
+                    """,
+                    (current,),
+                ).fetchone()
+                if row is None:
+                    break
+                current = (
+                    row["parent_session_id"]
+                    if hasattr(row, "keys")
+                    else row[0]
+                )
+
+        chain.reverse()
+        return chain or [session_id]
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
         if not session_id:

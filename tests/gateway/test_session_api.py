@@ -308,6 +308,116 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
 
 
 @pytest.mark.asyncio
+async def test_session_messages_paginate_newest_first_across_compression_lineage(
+    adapter, session_db
+):
+    from agent.context_compressor import SUMMARY_PREFIX
+
+    root_id = session_db.create_session("paged-root", "api_server")
+    session_db.append_message(root_id, "user", "oldest")
+    session_db.append_message(root_id, "assistant", "older reply")
+    session_db.end_session(root_id, "compression")
+    tip_id = session_db.create_session(
+        "paged-tip", "api_server", parent_session_id=root_id
+    )
+    session_db.append_message(tip_id, "user", f"{SUMMARY_PREFIX}\ninternal")
+    session_db.append_message(tip_id, "assistant", "older reply")
+    session_db.append_message(tip_id, "user", "newer question")
+    session_db.append_message(tip_id, "assistant", "newest reply")
+    session_db.append_message(
+        tip_id,
+        "tool",
+        "large tool output hidden by the chat renderer",
+        tool_call_id="call-hidden",
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        latest_response = await cli.get(
+            f"/api/sessions/{root_id}/messages?limit=2"
+        )
+        assert latest_response.status == 200
+        latest = await latest_response.json()
+        # Cursor boundaries are absolute in the append-only display projection,
+        # so a new turn arriving after page one must not shift page two.
+        session_db.append_message(tip_id, "user", "arrived after page one")
+        session_db.append_message(tip_id, "assistant", "new arrival reply")
+        older_response = await cli.get(
+            f"/api/sessions/{root_id}/messages"
+            f"?limit=2&before={latest['next_cursor']}"
+        )
+        assert older_response.status == 200
+        older = await older_response.json()
+
+    assert latest["session_id"] == tip_id
+    assert [m["content"] for m in latest["data"]] == [
+        "newer question",
+        "newest reply",
+    ]
+    assert latest["has_more"] is True
+    assert isinstance(latest["next_cursor"], str)
+    assert [m["content"] for m in older["data"]] == [
+        "oldest",
+        "older reply",
+    ]
+    assert older["has_more"] is False
+    assert older["next_cursor"] is None
+
+@pytest.mark.asyncio
+async def test_session_messages_reject_invalid_pagination(adapter, session_db):
+    session_id = session_db.create_session("paged-invalid", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        too_large = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=501"
+        )
+        bad_cursor = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=50&before=not-a-cursor"
+        )
+        oversized_cursor = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=50&before=v1:"
+            + ("9" * 5000)
+        )
+
+    assert too_large.status == 400
+    assert bad_cursor.status == 400
+    assert oversized_cursor.status == 400
+
+@pytest.mark.asyncio
+async def test_session_messages_do_not_prepend_explicit_branch_parent(
+    adapter, session_db
+):
+    """A branch already carries copied history, so display must not concatenate
+    the parent again merely because it has parent_session_id set."""
+    source_id = session_db.create_session("branch-source", "api_server")
+    session_db.append_message(source_id, "user", "one copy only")
+    branch_id = session_db.create_session(
+        "explicit-branch",
+        "api_server",
+        parent_session_id=source_id,
+        model_config={"_branched_from": source_id},
+    )
+    source_history = session_db.get_messages_as_conversation(source_id)
+    session_db.replace_messages(
+        branch_id,
+        [{**message, "_context_snapshot": True} for message in source_history],
+    )
+    session_db.append_message(branch_id, "assistant", "branch-only reply")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{branch_id}/messages")
+        assert response.status == 200
+        payload = await response.json()
+
+    assert payload["session_id"] == branch_id
+    assert [m["content"] for m in payload["data"]] == [
+        "one copy only",
+        "branch-only reply",
+    ]
+
+@pytest.mark.asyncio
 async def test_session_messages_hide_compaction_handoff_and_deduplicate_snapshot(
     adapter, session_db
 ):

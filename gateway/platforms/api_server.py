@@ -2478,29 +2478,56 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = self._ensure_session_db()
         resolved_id = db.resolve_resume_session_id(session_id)
-        messages = db.get_messages_for_display(resolved_id, include_ancestors=True)
-        # Strip tool-call fields the WebUI doesn't need and the display loader
-        # preserves from durable rows. Keep role, content, finish_reason, reasoning_content.
-        display_messages = []
-        for m in messages:
-            msg = {"role": m["role"], "content": m.get("content", "")}
-            if m.get("finish_reason"):
-                msg["finish_reason"] = m["finish_reason"]
-            if m.get("reasoning_content"):
-                msg["reasoning_content"] = m["reasoning_content"]
-            if m.get("tool_calls"):
-                msg["tool_calls"] = m["tool_calls"]
-            if m.get("tool_call_id"):
-                msg["tool_call_id"] = m["tool_call_id"]
-            if m.get("tool_name"):
-                msg["tool_name"] = m["tool_name"]
-            display_messages.append(msg)
+        limit_raw = request.query.get("limit")
+        before_raw = request.query.get("before")
+        if limit_raw is None and before_raw is None:
+            messages = db.get_messages_for_display(
+                resolved_id, include_ancestors=True
+            )
+            return web.json_response({
+                "object": "list",
+                "session_id": resolved_id,
+                "data": [self._message_response(m) for m in messages],
+            })
+
+        try:
+            limit = int(limit_raw or 50)
+        except (TypeError, ValueError):
+            limit = 0
+        if limit < 1 or limit > 500:
+            return web.json_response(
+                _openai_error(
+                    "limit must be an integer between 1 and 500",
+                    code="invalid_pagination",
+                ),
+                status=400,
+            )
+        before = None
+        if before_raw is not None:
+            match = re.fullmatch(r"v1:(\d{1,20})", before_raw)
+            before = int(match.group(1)) if match else -1
+            if before < 0:
+                return web.json_response(
+                    _openai_error(
+                        "before must be a valid message cursor",
+                        code="invalid_pagination",
+                    ),
+                    status=400,
+                )
+
+        page = db.get_messages_for_display_page(
+            resolved_id,
+            limit=limit,
+            before=before,
+            include_ancestors=True,
+        )
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,
-            "data": [self._message_response(m) for m in display_messages],
+            "data": [self._message_response(m) for m in page["data"]],
+            "has_more": page["has_more"],
+            "next_cursor": page["next_cursor"],
         })
-
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
         auth_err = self._check_auth(request)

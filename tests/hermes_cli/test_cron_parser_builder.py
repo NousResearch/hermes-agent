@@ -70,6 +70,24 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
 
 
+def test_cron_reasoning_effort_options():
+    parser = _build()
+    created = parser.parse_args(
+        ["cron", "create", "30m", "prompt", "--reasoning-effort", "low"]
+    )
+    assert created.reasoning_effort == "low"
+
+    edited = parser.parse_args(
+        ["cron", "edit", "j", "--reasoning-effort", "none"]
+    )
+    assert edited.reasoning_effort == "none"
+    assert edited.clear_reasoning_effort is False
+
+    cleared = parser.parse_args(["cron", "edit", "j", "--clear-reasoning-effort"])
+    assert cleared.reasoning_effort is None
+    assert cleared.clear_reasoning_effort is True
+
+
 def test_cron_dispatch_func_is_injected_handler():
     parser = _build()
     ns = parser.parse_args(["cron", "list"])

@@ -4,6 +4,7 @@ import json
 import pytest
 
 from tools.cronjob_tools import (
+    CRONJOB_SCHEMA,
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
@@ -263,6 +264,61 @@ class TestUnifiedCronjobTool:
         assert listing["count"] == 1
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
+
+    def test_reasoning_effort_create_update_clear_and_schema(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check",
+                schedule="every 1h",
+                reasoning_effort="low",
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["reasoning_effort"] == "low"
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                reasoning_effort="none",
+            )
+        )
+        assert updated["job"]["reasoning_effort"] == "none"
+
+        cleared = json.loads(
+            cronjob(
+                action="update", job_id=created["job_id"], reasoning_effort=""
+            )
+        )
+        assert "reasoning_effort" not in cleared["job"]
+
+        values = CRONJOB_SCHEMA["parameters"]["properties"]["reasoning_effort"]["enum"]
+        assert {"", "none", "xhigh"}.issubset(values)
+
+    def test_invalid_reasoning_effort_fails_without_writing(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check",
+                schedule="every 1h",
+                reasoning_effort="turbo",
+            )
+        )
+        assert created["success"] is False
+        assert json.loads(cronjob(action="list"))["count"] == 0
+
+        good = json.loads(
+            cronjob(action="create", prompt="Check", schedule="every 1h")
+        )
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=good["job_id"],
+                reasoning_effort="turbo",
+            )
+        )
+        assert updated["success"] is False
 
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs

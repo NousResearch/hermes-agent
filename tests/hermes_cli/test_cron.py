@@ -337,10 +337,11 @@ def test_cron_tick_invokes_scheduler_tick_with_verbose(monkeypatch):
 
 
 def test_cron_create_success_prints_job_details(monkeypatch, capsys):
-    monkeypatch.setattr(
-        cron_cli,
-        "_cron_api",
-        lambda **kwargs: {
+    captured = {}
+
+    def fake_cron_api(**kwargs):
+        captured.update(kwargs)
+        return {
             "success": True,
             "job_id": "job-1",
             "name": "Nightly docs",
@@ -351,8 +352,14 @@ def test_cron_create_success_prints_job_details(monkeypatch, capsys):
                 "script": "scripts/build_docs.py",
                 "no_agent": True,
                 "workdir": "/tmp/repo",
+                "reasoning_effort": "low",
             },
-        },
+        }
+
+    monkeypatch.setattr(
+        cron_cli,
+        "_cron_api",
+        fake_cron_api,
     )
     monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
 
@@ -367,6 +374,7 @@ def test_cron_create_success_prints_job_details(monkeypatch, capsys):
         script="scripts/build_docs.py",
         workdir="/tmp/repo",
         no_agent=True,
+        reasoning_effort="low",
     )
 
     rc = cron_cli.cron_create(args)
@@ -378,7 +386,52 @@ def test_cron_create_success_prints_job_details(monkeypatch, capsys):
     assert "Script: scripts/build_docs.py" in out
     assert "Mode: no-agent" in out
     assert "Workdir: /tmp/repo" in out
+    assert "Reasoning: low" in out
     assert "Next run: 2026-06-01T00:00:00Z" in out
+    assert captured["reasoning_effort"] == "low"
+
+
+def test_cron_edit_clear_reasoning_effort(monkeypatch, capsys):
+    captured = {}
+    monkeypatch.setattr(
+        "cron.jobs.resolve_job_ref", lambda _job_id: {"id": "job-1", "skills": []}
+    )
+
+    def fake_cron_api(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "job": {
+                "job_id": "job-1",
+                "name": "Reasoning job",
+                "schedule": "every day",
+                "skills": [],
+            },
+        }
+
+    monkeypatch.setattr(cron_cli, "_cron_api", fake_cron_api)
+    args = SimpleNamespace(
+        job_id="job-1",
+        schedule=None,
+        prompt=None,
+        name=None,
+        deliver=None,
+        repeat=None,
+        skill=None,
+        skills=None,
+        add_skills=None,
+        remove_skills=None,
+        clear_skills=False,
+        script=None,
+        workdir=None,
+        no_agent=None,
+        reasoning_effort=None,
+        clear_reasoning_effort=True,
+    )
+
+    assert cron_cli.cron_edit(args) == 0
+    assert captured["reasoning_effort"] == ""
+    assert "Reasoning:" not in capsys.readouterr().out
 
 
 def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):

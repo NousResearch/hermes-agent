@@ -2864,12 +2864,28 @@ def run_job(
         except Exception:
             pass
 
-        # Reasoning config from config.yaml (raw value — a YAML boolean False
-        # means thinking disabled, see parse_reasoning_effort)
+        # A valid per-job override wins; absent or invalid stored values safely
+        # fall back to config.yaml. Literal "none" explicitly disables reasoning.
         from hermes_constants import parse_reasoning_effort
-        reasoning_config = parse_reasoning_effort(
-            _cfg.get("agent", {}).get("reasoning_effort", "")
+        reasoning_agent_cfg = _cfg.get("agent", {})
+        global_effort = (
+            reasoning_agent_cfg.get("reasoning_effort", "")
+            if isinstance(reasoning_agent_cfg, dict)
+            else ""
         )
+        job_effort = job.get("reasoning_effort")
+        reasoning_config = (
+            parse_reasoning_effort(job_effort)
+            if job_effort not in {None, ""}
+            else parse_reasoning_effort(global_effort)
+        )
+        if job_effort not in {None, ""} and reasoning_config is None:
+            logger.warning(
+                "Job '%s': invalid reasoning_effort %r; falling back to global agent.reasoning_effort",
+                job_id,
+                job_effort,
+            )
+            reasoning_config = parse_reasoning_effort(global_effort)
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is

@@ -125,6 +125,23 @@ When `workdir` is set:
 Jobs with a `workdir` run sequentially on the scheduler tick, not in the parallel pool. This is deliberate: the cron worker applies the job workdir through process-global terminal state, so two workdir jobs running at the same time would corrupt each other's cwd. Workdir-less jobs still run in parallel as before.
 :::
 
+## Tuning reasoning effort per job
+
+Cron jobs inherit the global `agent.reasoning_effort` by default. Override it for one job when scheduled work needs a different latency/cost trade-off:
+
+```bash
+hermes cron create "0 3 * * *" \
+  "Summarize yesterday's low-priority feeds" \
+  --reasoning-effort low
+```
+
+The `cronjob` tool accepts the same `reasoning_effort` field. Valid values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
+
+- Omit the field to inherit global `agent.reasoning_effort`.
+- Use `none` to explicitly disable reasoning for that job.
+- Run `hermes cron edit <job_id> --clear-reasoning-effort` (or update with an empty string through the tool) to restore inheritance.
+- Script-only `no_agent` jobs ignore reasoning effort because they do not create an agent.
+
 ## Editing jobs
 
 You do not need to delete and recreate jobs just to change them.

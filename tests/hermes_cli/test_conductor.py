@@ -212,6 +212,27 @@ def test_glocal_cloud_computer_opt_in_portal() -> None:
     assert result["surface"]["brain"]["opt_in"] is True
 
 
+def test_mesh_qr_pairing_offer_accept() -> None:
+    """+æ://mesh offer emits a QR; the scanned manifest accepts into a live
+    pc://mesh/<name>/local route. Opt-in only; bad payload is rejected."""
+    offer = _dispatch("+æ://mesh offer legion")
+    assert offer["ok"] is True
+    assert offer["surface"]["kind"] == "mesh_offer"
+    assert offer["surface"]["route"] == "pc://mesh/legion/local"
+    manifest = offer["surface"]["manifest"]
+    assert manifest.startswith("ae://peer?host=legion")
+    accept = _dispatch(f"+æ://mesh accept {manifest}")
+    assert accept["ok"] is True
+    peer = _dispatch("pc://mesh/legion/local")
+    assert peer["ok"] is True
+    assert peer["surface"]["address"] == "pc://mesh/legion/local"
+    bad = _dispatch("+æ://mesh accept garbage")
+    assert bad["ok"] is False
+
+
+
+
+
 def test_viewport_scheme_is_the_mandate() -> None:
     """viewport:// is the mandate: the local HTML/CSS/WASM surface is the control
     plane. vscode:// is its host. The v in vscode = viewport, not Visual Studio."""

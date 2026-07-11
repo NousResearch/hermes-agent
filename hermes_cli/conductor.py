@@ -18,6 +18,9 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import json
+import secrets
+import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
 
@@ -283,6 +286,209 @@ def _write_qrcode_image(html: str, raw: str, source: str) -> str:
     img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
     img.save(str(out_path))
     return str(out_path)
+
+
+# ---------------------------------------------------------------------------
+# +æ://mesh  — sovereign LAN mesh pairing via QR handshake (opt-in, no cloud)
+# ---------------------------------------------------------------------------
+# Emitter:  +æ://mesh offer <name>   -> writes a QR PNG encoding a peer manifest
+#           (ae://peer?host=<name>&mesh=pc://mesh/<name>/local&port=<lan>&
+#            token=<ephemeral>&via=wifi). The NEW node emits; the sovereign node
+#           scans + accepts.
+# Receiver: +æ://mesh accept <payload>  -> registers pc://mesh/<name>/local as a
+#           real route. NEVER auto-trusts a scanned code; explicit accept only.
+# Peers persist locally (scoped JSON) — no cloud, no secrets in the code.
+_PEERS_FILE = REPO / "mesh_peers.json"
+_PEER_REGISTRY: dict[str, dict] = {}
+
+
+def _mesh_load_peers() -> None:
+    global _PEER_REGISTRY
+    if _PEER_REGISTRY:
+        return
+    try:
+        txt = _PEERS_FILE.read_text(encoding="utf-8", errors="ignore")
+        _PEER_REGISTRY = json.loads(txt) if txt.strip() else {}
+    except Exception:
+        _PEER_REGISTRY = {}
+
+
+def _mesh_save_peers() -> None:
+    try:
+        _PEERS_FILE.write_text(
+            json.dumps(_PEER_REGISTRY, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def _mesh_local_lan_ip() -> str:
+    """Best-effort LAN IP (ignores loopback). Returns '' if none found."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except Exception:
+        return ""
+    finally:
+        s.close()
+
+
+def _mesh_dispatch(raw: str) -> dict:
+    """+æ://mesh — sovereign LAN mesh pairing via QR handshake.
+
+    +æ://mesh offer <name>  -> emit a QR carrying a peer manifest
+    +æ://mesh accept <pay>  -> register a scanned peer route (explicit, opt-in)
+    """
+    rest = raw.split("+æ://mesh", 1)[1].strip() if "+æ://mesh" in raw else ""
+    if rest.startswith("offer"):
+        return _mesh_offer_dispatch(raw)
+    if rest.startswith("accept"):
+        return _mesh_accept_dispatch(raw)
+    return {
+        "ok": True,
+        "rc": 0,
+        "stdout": (
+            "+æ://mesh — sovereign LAN mesh pairing (QR handshake, opt-in)\n"
+            "  +æ://mesh offer <name>   emit QR carrying peer manifest\n"
+            "  +æ://mesh accept <pay>   register scanned peer as pc://mesh/<name>/local\n"
+        ),
+        "stderr": "",
+        "scheme_detail": "+æ://mesh",
+        "surface": {"kind": "mesh_help"},
+    }
+
+
+def _mesh_offer_dispatch(raw: str) -> dict:
+    """+æ://mesh offer <name> — emit a QR carrying a peer manifest for <name>."""
+    name = raw.split("offer", 1)[1].strip() if "offer" in raw else ""
+    if not name:
+        name = "legion"
+    token = secrets.token_hex(8)
+    lan = _mesh_local_lan_ip() or "0.0.0.0"
+    manifest = (
+        f"ae://peer?host={name}"
+        f"&mesh=pc://mesh/{name}/local"
+        f"&port=11434&token={token}&via=wifi"
+    )
+    qr_path = _write_qrcode_image(manifest, f"mesh_offer_{name}", f"mesh_offer_{name}")
+    route = f"pc://mesh/{name}/local"
+    return {
+        "ok": True,
+        "rc": 0,
+        "stdout": (
+            f"+æ://mesh offer {name}\n"
+            f"  QR     : {qr_path}\n"
+            f"  route  : {route}\n"
+            f"  token  : {token} (ephemeral, shown to scanner only)\n"
+            f"  scan with the sovereign node, then run: +æ://mesh accept <payload>\n"
+        ),
+        "stderr": "",
+        "scheme": "+æ",
+        "scheme_detail": "+æ://mesh offer",
+        "surface": {
+            "kind": "mesh_offer",
+            "route": route,
+            "token": token,
+            "qr_image": qr_path,
+            "manifest": manifest,
+            "lan": lan,
+            "policy": "opt-in; receiver must explicitly accept",
+        },
+    }
+
+
+def _mesh_accept_dispatch(raw: str) -> dict:
+    """+æ://mesh accept <payload> — register a scanned peer route (explicit)."""
+    payload = raw.split("accept", 1)[1].strip() if "accept" in raw else ""
+    if not payload:
+        return {
+            "ok": False,
+            "rc": 2,
+            "stdout": "",
+            "stderr": "missing peer payload — scan a +æ://mesh offer QR first",
+            "scheme_detail": "+æ://mesh accept",
+        }
+    # accept either the full manifest URI or a json blob
+    try:
+        if payload.startswith("ae://peer"):
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(payload).query)
+            name = (q.get("host") or [None])[0]
+            mesh = (q.get("mesh") or [None])[0]
+            token = (q.get("token") or [None])[0]
+        else:
+            blob = json.loads(payload)
+            name = blob.get("host")
+            mesh = blob.get("mesh")
+            token = blob.get("token")
+    except Exception as exc:
+        return {
+            "ok": False,
+            "rc": 2,
+            "stdout": "",
+            "stderr": f"could not parse peer payload: {exc}",
+            "scheme_detail": "+æ://mesh accept",
+        }
+    if not name or not mesh:
+        return {
+            "ok": False,
+            "rc": 2,
+            "stdout": "",
+            "stderr": "peer payload missing host/mesh",
+            "scheme_detail": "+æ://mesh accept",
+        }
+    _mesh_load_peers()
+    _PEER_REGISTRY[name] = {
+        "mesh": mesh,
+        "token": token,
+        "via": "wifi",
+        "accepted_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    _mesh_save_peers()
+    # make it a live, addressable route under its specific name (no generic
+    # pc://mesh/ registration, which would shadow pc://mesh/victus/... nodes)
+    _DISPATCHER.register(f"pc://mesh/{name}/", _mesh_peer_dispatch)
+    return {
+        "ok": True,
+        "rc": 0,
+        "stdout": (
+            f"+æ://mesh accept {name}\n"
+            f"  route registered: {mesh}\n"
+            f"  peer persisted locally (no cloud). Now addressable as {mesh}.\n"
+        ),
+        "stderr": "",
+        "scheme": "+æ",
+        "scheme_detail": "+æ://mesh accept",
+        "surface": {
+            "kind": "mesh_accept",
+            "route": mesh,
+            "peer": name,
+            "policy": "opt-in; explicit accept",
+        },
+    }
+
+
+def _mesh_peer_dispatch(raw: str) -> dict:
+    """Live route for an accepted mesh peer (pc://mesh/<name>/...)."""
+    _mesh_load_peers()
+    name = raw.split("pc://mesh/", 1)[1].split("/", 1)[0]
+    peer = _PEER_REGISTRY.get(name, {})
+    return {
+        "ok": True,
+        "rc": 0,
+        "stdout": f"pc://mesh/{name}/local -> accepted peer ({peer.get('via', 'wifi')})\n",
+        "stderr": "",
+        "scheme": "pc",
+        "scheme_detail": f"pc://mesh/{name}/local",
+        "surface": {
+            "kind": "mesh_peer",
+            "address": f"pc://mesh/{name}/local",
+            "peer": peer,
+        },
+    }
+
 
 
 def _commandprompt_dispatch(raw: str) -> dict:
@@ -1512,6 +1718,7 @@ _DISPATCHER.register("NVIDIA://", _geforce_c2_dispatch)
 _DISPATCHER.register("hermes-superagent://", _hermes_superagent_dispatch)
 _DISPATCHER.register("+æ://victus", _victus_dispatch)
 _DISPATCHER.register("+æ://qrcode", _qrcode_dispatch)
+_DISPATCHER.register("+æ://mesh", _mesh_dispatch)
 _DISPATCHER.register("commandprompt://", _commandprompt_dispatch)
 _DISPATCHER.register("home://", _home_dispatch)
 _DISPATCHER.register("fs://", _fs_dispatch)

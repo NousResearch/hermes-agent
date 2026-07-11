@@ -59,3 +59,7 @@ tools/vlc/
 llm-bench-rig/
 media/
 movies/
+
+# mesh pairing runtime artifacts
+mesh_peers.json
+media/qrcodes/

@@ -1782,4 +1782,45 @@ class TestGatewayRoutingTable:
             scope=restarted._routing_scope()
         )
         assert entry.session_key not in rows
-        restarted._db.close()
+
+
+class TestGatewayOverrideDictCap:
+    """Tests for session override dict LRU capping."""
+
+    def test_model_overrides_capped_at_max(self):
+        """_session_model_overrides should not exceed _session_overrides_max."""
+        from gateway.run import GatewayRunner, _cap_ordered_dict
+        from collections import OrderedDict
+
+        runner = MagicMock(spec=GatewayRunner)
+        runner._session_model_overrides = OrderedDict()
+        runner._session_overrides_max = 512
+
+        # Insert 600 entries — should cap at 512
+        for i in range(600):
+            runner._session_model_overrides[f"session_{i}"] = {
+                "model": "gpt-4", "provider": "openai"
+            }
+            runner._session_model_overrides.move_to_end(f"session_{i}")
+            _cap_ordered_dict(runner._session_model_overrides, runner._session_overrides_max)
+
+        assert len(runner._session_model_overrides) == 512
+        # Oldest keys should have been evicted (session_0 through session_87)
+        assert "session_0" not in runner._session_model_overrides
+        assert "session_599" in runner._session_model_overrides  # most recent
+
+    def test_reasoning_overrides_capped_at_max(self):
+        """_session_reasoning_overrides should not exceed _session_overrides_max."""
+        from gateway.run import GatewayRunner, _cap_ordered_dict
+        from collections import OrderedDict
+
+        runner = MagicMock(spec=GatewayRunner)
+        runner._session_reasoning_overrides = OrderedDict()
+        runner._session_overrides_max = 512
+
+        for i in range(600):
+            runner._session_reasoning_overrides[f"session_{i}"] = {"effort": "high"}
+            runner._session_reasoning_overrides.move_to_end(f"session_{i}")
+            _cap_ordered_dict(runner._session_reasoning_overrides, runner._session_overrides_max)
+
+        assert len(runner._session_reasoning_overrides) == 512

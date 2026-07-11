@@ -7648,3 +7648,68 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+
+class TestTrimSessionMessages:
+    """Tests for _trim_session_messages RAM-saving logic."""
+
+    def test_does_not_trim_below_threshold(self):
+        """Messages under MAX_SESSION_MESSAGES should not be trimmed."""
+        agent = AIAgent(base_url="http://localhost:30000/v1", model="test", api_key="test")
+        messages = [{"role": "user", "content": "hello " * 100}] * 10
+        agent._session_messages = messages
+        agent._trim_session_messages()
+        assert len(agent._session_messages) == 10
+        assert agent._session_messages[0]["content"] == "hello " * 100
+        agent.close()
+
+    def test_trims_old_tool_content_when_over_threshold(self):
+        """Old tool output content should be truncated when over MAX_SESSION_MESSAGES."""
+        agent = AIAgent(base_url="http://localhost:30000/v1", model="test", api_key="test")
+        # Create 510 messages — above the 500 threshold
+        messages = []
+        for i in range(510):
+            if i == 0:
+                messages.append({"role": "system", "content": "You are Hermes. " * 10})
+            elif i < 100:
+                messages.append({"role": "user", "content": f"Early message {i}"})
+            else:
+                # Large tool output beyond the trim window
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": f"call_{i}",
+                    "content": "x" * 10_000,
+                })
+        # Inject one small message near the end that should survive
+        messages.append({"role": "user", "content": "Final question"})
+        agent._session_messages = messages
+        agent._trim_session_messages()
+        # We should still have all messages (structure preserved)
+        assert len(agent._session_messages) == 511
+        # The final message should be untouched
+        assert agent._session_messages[-1]["content"] == "Final question"
+        # Old large tool outputs in the trim window should be trimmed
+        # Trim range is [keep_head=100, len - (MAX - keep_head))
+        # len=511, trim_end=511-(500-100)=111, so indices 100-110 are trimmed
+        for idx in range(100, 111):
+            msg = agent._session_messages[idx]
+            if msg.get("role") == "tool":
+                content = msg.get("content", "")
+                assert len(content) < 500, f"msg[{idx}] was not trimmed ({len(content)} chars)"
+        agent.close()
+
+    def test_preserves_system_and_recent_messages(self):
+        """System prompt and recent messages should never be trimmed."""
+        agent = AIAgent(base_url="http://localhost:30000/v1", model="test", api_key="test")
+        messages = [{"role": "system", "content": "SYSTEM_PROMPT_KEEP" * 50}]
+        for i in range(600):
+            messages.append({"role": "user", "content": f"msg_{i}"})
+        messages.append({"role": "user", "content": "FINAL_KEEP"})
+        agent._session_messages = messages
+        agent._trim_session_messages()
+        # System prompt should be intact (within first 100 keep_head)
+        assert "SYSTEM_PROMPT_KEEP" in agent._session_messages[0]["content"]
+        # Final message should be intact
+        assert agent._session_messages[-1]["content"] == "FINAL_KEEP"
+        agent.close()
+

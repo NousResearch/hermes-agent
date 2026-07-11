@@ -2989,8 +2989,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._teams_pipeline_runtime_error: Optional[str] = None
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
-        self._pending_approvals: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-        self._pending_approvals_max = 256
+        self._pending_approvals: Dict[str, Dict[str, Any]] = {}
 
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}

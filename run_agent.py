@@ -1739,7 +1739,6 @@ class AIAgent:
         # retry/failure sentinels must not survive into the real transcript).
         self._drop_trailing_empty_response_scaffolding(messages)
         self._session_messages = messages
-        self._trim_session_messages()
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
@@ -3577,12 +3576,13 @@ class AIAgent:
         except Exception:
             pass
 
-        # 6. Free conversation history.  Mirrors _release_evicted_agent_soft's
-        # soft-eviction clear — close() is the hard teardown for true session
-        # boundaries (/new, /reset, session expiry), so the message list won't
-        # be reused.  Drops the reference proactively rather than waiting for
-        # the agent object itself to be collected, which matters when a caller
-        # still holds the closed agent (e.g. a draining background task).
+        # 6. Free conversation history — but trim large tool outputs first
+        # to reduce peak memory before clearing. Messages are already persisted
+        # to SQLite at this point, so trimming the live copy is safe.
+        try:
+            self._trim_session_messages()
+        except Exception:
+            pass
         try:
             self._session_messages = []
         except Exception:

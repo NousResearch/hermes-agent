@@ -1190,7 +1190,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     from hermes_state import format_session_db_unavailable
                     return json.dumps({"success": False, "error": format_session_db_unavailable()})
                 from tools.session_search_tool import session_search as _session_search
-                result = _session_search(
+                return _session_search(
                     query=next_args.get("query", ""),
                     role_filter=next_args.get("role_filter"),
                     limit=next_args.get("limit", 3),
@@ -1203,32 +1203,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     db=session_db,
                     current_session_id=agent.session_id,
                 )
-                # Fire transform_tool_result hooks for claude_search plugin injection
-                try:
-                    from hermes_cli.plugins import has_hook, invoke_hook
-                    if has_hook("transform_tool_result"):
-                        hook_results = invoke_hook(
-                            "transform_tool_result",
-                            tool_name="session_search",
-                            args=next_args,
-                            result=result,
-                            task_id=effective_task_id or "",
-                            session_id=agent.session_id or "",
-                            tool_call_id="",
-                            turn_id="",
-                            api_request_id="",
-                            duration_ms=0,
-                            status=None,
-                            error_type=None,
-                            error_message=None,
-                        )
-                        for hook_result in hook_results:
-                            if isinstance(hook_result, str):
-                                result = hook_result
-                                break
-                except Exception:
-                    pass
-                return result
             function_result, function_args = _run_agent_tool_execution_middleware(
                 agent,
                 function_name=function_name,
@@ -1541,6 +1515,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 duration_ms=int(tool_duration * 1000),
                 middleware_trace=list(middleware_trace),
             )
+            # Apply transform_tool_result hooks AFTER post_tool_call
+            # (preserving model_tools.py ordering: post observer → transform).
+            if function_name == "session_search":
+                from agent.agent_runtime_helpers import _apply_transform_tool_result_hook
+                function_result = _apply_transform_tool_result_hook(
+                    "session_search", function_args, function_result, agent)
         if not _execution_blocked:
             function_result = agent._append_guardrail_observation(
                 function_name,

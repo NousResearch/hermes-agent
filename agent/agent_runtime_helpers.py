@@ -28,8 +28,45 @@ import logging
 import re
 import time
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+import sys
+from typing import Any, Dict, Optional
+
+
+def _apply_transform_tool_result_hook(
+    function_name: str,
+    args: dict,
+    result: Any,
+    agent: Any,
+) -> Any:
+    """Shared transform_tool_result hook for agent-runtime direct-dispatch tools.
+
+    Called AFTER _emit_post_tool_call_hook so the established ordering
+    (post observer → transform) in model_tools.py is preserved.
+    """
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook
+        if has_hook("transform_tool_result"):
+            hook_results = invoke_hook(
+                "transform_tool_result",
+                tool_name=function_name,
+                args=args,
+                result=result,
+                task_id="",
+                session_id=getattr(agent, "session_id", "") or "",
+                tool_call_id="",
+                turn_id="",
+                api_request_id="",
+                duration_ms=0,
+                status=None,
+                error_type=None,
+                error_message=None,
+            )
+            for hook_result in hook_results:
+                if isinstance(hook_result, str):
+                    return hook_result
+    except Exception:
+        pass
+    return result
 
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
@@ -2207,32 +2244,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 db=session_db,
                 current_session_id=agent.session_id,
             )
-            # Fire transform_tool_result hooks so claude_search plugin can inject
-            try:
-                from hermes_cli.plugins import has_hook, invoke_hook
-                if has_hook("transform_tool_result"):
-                    hook_results = invoke_hook(
-                        "transform_tool_result",
-                        tool_name="session_search",
-                        args=next_args,
-                        result=result,
-                        task_id="",
-                        session_id=agent.session_id or "",
-                        tool_call_id="",
-                        turn_id="",
-                        api_request_id="",
-                        duration_ms=0,
-                        status=None,
-                        error_type=None,
-                        error_message=None,
-                    )
-                    for hook_result in hook_results:
-                        if isinstance(hook_result, str):
-                            result = hook_result
-                            break
-            except Exception:
-                pass
-            return _finish_agent_tool(result, next_args)
+            # Fire post_tool_call hook FIRST (established ordering),
+            # then apply transform_tool_result hooks.
+            result = _finish_agent_tool(result, next_args)
+            result = _apply_transform_tool_result_hook("session_search", next_args, result, agent)
+            return result
     elif function_name == "memory":
         def _execute(next_args: dict) -> Any:
             target = next_args.get("target", "memory")

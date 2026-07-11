@@ -1,6 +1,6 @@
 # Experiment Design Patterns
 
-Patterns and best practices distilled from running research experiments at scale with the Hermes agent. These cover experiment infrastructure, evaluation protocols, monitoring, and failure recovery.
+Patterns and best practices distilled from running research experiments at scale with the HT AI Agent. These cover experiment infrastructure, evaluation protocols, monitoring, and failure recovery.
 
 ---
 

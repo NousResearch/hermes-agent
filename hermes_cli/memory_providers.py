@@ -83,7 +83,7 @@ HINDSIGHT = MemoryProvider(
             label="Mode",
             kind=KIND_SELECT,
             default="cloud",
-            description="How Hermes connects to Hindsight.",
+            description="How HT AI Agent connects to Hindsight.",
             options=(
                 ProviderFieldOption(
                     "cloud",

@@ -43,14 +43,14 @@ else
     fi
 fi
 
-# ── 3. Ensure Hermes config has twozero_td MCP entry ──
+# ── 3. Ensure HT AI Agent config has twozero_td MCP entry ──
 if [[ ! -f "$HERMES_CFG" ]]; then
-    echo -e " ${FAIL} Hermes config not found at ${HERMES_CFG}"
+    echo -e " ${FAIL} HT AI Agent config not found at ${HERMES_CFG}"
     manual_steps+=("Create ${HERMES_CFG} with twozero_td MCP server entry")
 elif grep -q 'twozero_td' "$HERMES_CFG" 2>/dev/null; then
-    echo -e " ${OK} twozero_td MCP entry exists in Hermes config"
+    echo -e " ${OK} twozero_td MCP entry exists in HT AI Agent config"
 else
-    echo -e " ${WARN} Adding twozero_td MCP entry to Hermes config..."
+    echo -e " ${WARN} Adding twozero_td MCP entry to HT AI Agent config..."
     python3 -c "
 import yaml, sys, copy
 
@@ -72,7 +72,7 @@ if 'twozero_td' not in cfg['mcp_servers']:
 " 2>/dev/null && echo -e " ${OK} twozero_td MCP entry added to config" \
               || { echo -e " ${FAIL} Could not update config (is PyYAML installed?)"; \
                    manual_steps+=("Add twozero_td MCP entry to ${HERMES_CFG} manually"); }
-    manual_steps+=("Restart Hermes session to pick up config change")
+    manual_steps+=("Restart HT AI Agent session to pick up config change")
 fi
 
 # ── 4. Test if MCP port is responding ──

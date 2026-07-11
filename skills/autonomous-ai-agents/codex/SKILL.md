@@ -13,7 +13,7 @@ metadata:
 
 # Codex CLI
 
-Delegate coding tasks to [Codex](https://github.com/openai/codex) via the Hermes terminal. Codex is OpenAI's autonomous coding agent CLI.
+Delegate coding tasks to [Codex](https://github.com/openai/codex) via the HT AI Agent terminal. Codex is OpenAI's autonomous coding agent CLI.
 
 ## When to use
 
@@ -32,7 +32,7 @@ Requires the codex CLI and a git repository.
 - **Must run inside a git repository** — Codex refuses to run outside one
 - Use `pty=true` in terminal calls — Codex is an interactive terminal app
 
-For Hermes itself, `model.provider: openai-codex` uses Hermes-managed Codex
+For HT AI Agent itself, `model.provider: openai-codex` uses HT AI Agent-managed Codex
 OAuth from `~/.hermes/auth.json` after `hermes auth add openai-codex`. For the
 standalone Codex CLI, a valid CLI OAuth session may live under
 `~/.codex/auth.json`; do not treat a missing `OPENAI_API_KEY` alone as proof
@@ -76,9 +76,9 @@ process(action="kill", session_id="<id>")
 | `--yolo` | No sandbox, no approvals (fastest, most dangerous) |
 | `--sandbox danger-full-access` | No Codex sandbox; useful when the host service context breaks bubblewrap |
 
-## Hermes Gateway Caveat
+## HT AI Agent Gateway Caveat
 
-When invoking the Codex CLI from a Hermes gateway/service context (for example,
+When invoking the Codex CLI from a HT AI Agent gateway/service context (for example,
 Telegram-driven agent sessions), Codex `workspace-write` sandboxing may fail even
 when the same command works in the user's interactive shell. A typical symptom is
 bubblewrap/user-namespace errors such as `setting up uid map: Permission denied`

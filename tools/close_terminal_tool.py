@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Close a read-only agent terminal tab in the Hermes desktop GUI.
+"""Close a read-only agent terminal tab in the HT AI Agent desktop GUI.
 
 Each ``terminal(background=true)`` process is mirrored as a read-only tab in the
 desktop's terminal pane. This tool lets the agent drop a tab it no longer needs
@@ -39,7 +39,7 @@ CLOSE_TERMINAL_SCHEMA = {
     "name": "close_terminal",
     "description": (
         "Close the read-only terminal tab for one of your background processes in "
-        "the Hermes desktop GUI (the tabs mirroring terminal(background=true) runs). "
+        "the HT AI Agent desktop GUI (the tabs mirroring terminal(background=true) runs). "
         "This does NOT kill the process — it only drops the tab/view; the output "
         "keeps buffering and the user can reopen it from the status stack. Use it "
         "to tidy up when a background process's live terminal is no longer worth "

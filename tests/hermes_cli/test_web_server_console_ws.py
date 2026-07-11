@@ -80,7 +80,7 @@ def test_console_ws_runs_read_only_command(console_client):
         conn.send_json({"type": "input", "line": "help"})
 
         output = _recv_until(conn, "output")
-        assert "Hermes Console" in output["data"]
+        assert "HT AI Agent Console" in output["data"]
         complete = _recv_until(conn, "complete", status="ok")
         assert complete["prompt"] == "hermes> "
 
@@ -113,7 +113,7 @@ def test_console_ws_uses_hosted_context_for_opt_data_policy(console_client, monk
         conn.send_json({"type": "input", "line": "profile create nope"})
 
         error = _recv_until(conn, "error")
-        assert "hosted Hermes Console" in error["message"]
+        assert "hosted HT AI Agent Console" in error["message"]
 
 
 def test_console_ws_cancel_returns_to_prompt(console_client, monkeypatch):

@@ -36,7 +36,7 @@ def build_parser(
     sub = parser.add_subparsers(dest="project_action")
 
     p_create = sub.add_parser("create", help="Create a new project")
-    p_create.add_argument("name", help="Human name, e.g. 'Hermes Agent'")
+    p_create.add_argument("name", help="Human name, e.g. 'HT AI Agent'")
     p_create.add_argument(
         "folders", nargs="*", help="Folder paths to include (first = primary)"
     )

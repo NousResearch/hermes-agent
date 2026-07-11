@@ -65,6 +65,7 @@ class _FakeAgent:
         self._todo_store = _FakeTodoStore()
         self._tool_guardrails = _FakeGuardrails()
         self._compression_warning = None
+        self._emit_warning = MagicMock()
         self._interrupt_requested = False
         self._memory_write_origin = "assistant_tool"
         self._stream_context_scrubber = None

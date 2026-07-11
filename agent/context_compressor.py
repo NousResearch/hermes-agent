@@ -1226,13 +1226,47 @@ class ContextCompressor(ContextEngine):
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
 
+        Returns ``True`` when compression should run now. For the caller-facing
+        *reason* (e.g. why compression is skipped while still over threshold),
+        see :meth:`should_compress_info`, which returns a ``(bool, reason)``
+        tuple without changing the decision logic here.
+
+        Includes anti-thrashing protection: if the last two compressions
+        each saved less than 10%, skip compression to avoid infinite loops
+        where each pass removes only 1-2 messages.
+        """
+        decision, _reason = self.should_compress_info(prompt_tokens)
+        return decision
+
+    def should_compress_info(
+        self, prompt_tokens: int = None
+    ) -> "tuple[bool, str | None]":
+        """Check if context exceeds the compression threshold.
+
+        Returns a ``(should_compress, reason)`` tuple instead of a bare bool so
+        callers can tell *why* compression is skipped when it is skipped while
+        the context is already over threshold. ``reason`` is ``None`` unless
+        compression is needed but blocked:
+
+        * ``"cooldown:<seconds>"`` — the summary LLM is recovering from a
+          recent 429/transient failure; compression is deferred to avoid the
+          freeze loop described in #11529.
+        * ``"ineffective"`` — anti-thrashing has backed off because the last
+          two compressions each saved <10%.
+
+        When ``reason`` is non-``None`` the session is over its compression
+        threshold yet cannot shrink — callers should surface a warning so the
+        user knows the model may silently stop answering (the context keeps
+        growing until it hits the hard provider limit). Without this signal an
+        over-threshold session fails opaquely.
+
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
-            return False
+            return False, None
         # Do not trigger compression while the summary LLM is in cooldown.
         # On a 429/transient failure _generate_summary() sets a cooldown and
         # returns None; compress() then inserts a static fallback marker and
@@ -1249,7 +1283,7 @@ class ContextCompressor(ContextEngine):
                     "Compression deferred — summary LLM in cooldown for %.0fs more",
                     _cooldown_remaining,
                 )
-            return False
+            return False, f"cooldown:{_cooldown_remaining:.0f}"
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
@@ -1259,8 +1293,8 @@ class ContextCompressor(ContextEngine):
                     "for focused compression.",
                     self._ineffective_compression_count,
                 )
-            return False
-        return True
+            return False, "ineffective"
+        return True, None
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)

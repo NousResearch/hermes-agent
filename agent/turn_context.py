@@ -410,6 +410,8 @@ def build_turn_context(
             lambda: None,
         )()
 
+        _should_compress_now = False
+        _compress_block_reason = None
         if _preflight_deferred:
             logger.info(
                 "Skipping preflight compression: rough estimate ~%s >= %s, "
@@ -425,13 +427,24 @@ def build_turn_context(
                 int(_compression_cooldown.get("remaining_seconds", 0.0)),
                 agent.session_id or "none",
             )
+            # Context is over threshold but compression is blocked by the
+            # summary-LLM cooldown — surface a warning (see block below).
+            _cooldown_secs = _compression_cooldown.get("remaining_seconds", 0.0)
+            _compress_block_reason = f"cooldown:{_cooldown_secs:.0f}"
         elif _codex_native_auto:
             logger.info(
                 "Skipping Hermes preflight compression for codex app-server "
                 "(mode=%s); Hermes will not start thread compaction here.",
                 getattr(agent, "codex_app_server_auto_compaction", "native"),
             )
-        elif _compressor.should_compress(_preflight_tokens):
+        else:
+            _should_compress_now = _compressor.should_compress(_preflight_tokens)
+            if not _should_compress_now:
+                # Context is over threshold but compression is blocked
+                # (summary-LLM cooldown or anti-thrashing). Ask should_compress_info
+                # for the human-readable reason so we can surface a warning below.
+                _compress_block_reason = _compressor.should_compress_info(_preflight_tokens)[1]
+        if _should_compress_now:
             logger.info(
                 "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                 f"{_preflight_tokens:,}",
@@ -474,6 +487,31 @@ def build_turn_context(
                 agent._mute_post_response = False
                 if not _compressor.should_compress(_preflight_tokens):
                     break
+        elif _compress_block_reason:
+            # Context is already over the compression threshold, but compression
+            # is blocked (summary LLM cooldown or anti-thrashing). Without a
+            # signal the session keeps growing until the model silently stops
+            # answering — the conversation hits the hard provider token limit
+            # with no explanation. Surface a deduped warning so the user can
+            # take action (/new or /compress) instead of hitting a silent hang.
+            # Dedup on the *kind* of block (cooldown / ineffective), not the
+            # exact countdown, so a cooldown ticking down 30→29→… doesn't re-fire
+            # the warning every turn.
+            _warn_kind = _compress_block_reason.split(":", 1)[0]
+            _warn_key = ("ctx_overflow_blocked", _warn_kind)
+            if getattr(agent, "_last_ctx_overflow_warn", None) != _warn_key:
+                agent._last_ctx_overflow_warn = _warn_key
+                agent._emit_warning(
+                    f"⚠ Context is over the compression threshold "
+                    f"(~{_preflight_tokens:,} tokens >= {_compressor.threshold_tokens:,}) "
+                    f"but compression is currently blocked ({_compress_block_reason}). "
+                    f"The model may stop responding. Run /new to start a fresh session "
+                    f"or /compress to retry immediately."
+                )
+        else:
+            # Block cleared this turn — allow the warning to fire again next
+            # time the context is over threshold but compression is blocked.
+            agent._last_ctx_overflow_warn = None
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""

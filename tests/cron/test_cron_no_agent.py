@@ -333,48 +333,20 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
 
 # ---------------------------------------------------------------------------
 # Regression coverage for the Windows-only path conversion (#62516)
+#
+# @teknium1 asked for a focused Windows regression test that captures the
+# argv passed to bash and asserts a native C:\... script path is converted
+# to /c/..., while retaining an assertion that POSIX argv is unchanged.
 # ---------------------------------------------------------------------------
 
 
-def test_bash_arg_converts_windows_drive_path_to_msys_form():
-    """A native C:\\... script path must become /c/... for git-bash.
+def test_run_job_script_windows_argv_uses_msys_path(hermes_env, monkeypatch):
+    """On Windows a native C:\\... script path must be passed to bash as /c/...
 
-    Without this, git-bash treats '\\' as an escape and collapses the
-    path to "C:Users..." -> exit 127 (script never found).
-    """
-    from cron.scheduler import _bash_arg_for_script_path
-
-    converted = _bash_arg_for_script_path(
-        "C:\\Users\\filip\\AppData\\Local\\hermes\\scripts\\nightly.sh",
-        platform="win32",
-    )
-    assert converted == "/c/Users/filip/AppData/Local/hermes/scripts/nightly.sh"
-    # No backslashes survive — that is what git-bash would have mangled.
-    assert "\\" not in converted
-
-
-def test_bash_arg_lowercases_windows_drive_letter():
-    """The drive letter must be lowercased in MSYS form (/c, not /C)."""
-    from cron.scheduler import _bash_arg_for_script_path
-
-    assert _bash_arg_for_script_path("D:\jobs\run.bash", platform="win32") == "/d/jobs/run.bash"
-
-
-def test_bash_arg_posix_path_unchanged():
-    """POSIX paths must be passed through untouched (no conversion)."""
-    from cron.scheduler import _bash_arg_for_script_path
-
-    posix_path = "/home/filip/.hermes/scripts/backup.sh"
-    assert _bash_arg_for_script_path(posix_path, platform="linux") == posix_path
-    assert _bash_arg_for_script_path(posix_path, platform="darwin") == posix_path
-
-
-def test_run_job_script_windows_argv_passes_msys_path(hermes_env, monkeypatch):
-    """End-to-end: on Windows the argv handed to bash is /c/... (no backslash).
-
-    Captures subprocess.run so we assert the path actually passed to git-bash,
-    regressing the original exit-127 failure where a native C:\\... path was
-    collapsed to "C:Users...".
+    Regression for the original exit-127 failure: git-bash treats '\\' as an
+    escape char and collapsed ``C:\\Users\\...`` to ``C:Users...`` so the
+    script was never found. Capture subprocess.run and assert the argv handed
+    to git-bash is the MSYS form with no backslashes.
     """
     import subprocess as _subprocess
 
@@ -386,15 +358,14 @@ def test_run_job_script_windows_argv_passes_msys_path(hermes_env, monkeypatch):
     captured = {}
 
     def fake_run(argv, *args, **kwargs):
-        captured["argv"] = argv
-        # Emulate git-bash succeeding on the (converted) path.
-        result = _subprocess.CompletedProcess(argv, 0, "ok\n", "")
-        return result
+        captured["argv"] = list(argv)
+        return _subprocess.CompletedProcess(argv, 0, "ok\n", "")
 
     monkeypatch.setattr(_subprocess, "run", fake_run)
-    # Force the Windows branch regardless of the host platform.
-    monkeypatch.setattr("sys.platform", "win32")
+    # Force the Windows branch regardless of the host platform, and provide a
+    # bash so the test does not depend on a local git-bash install.
     monkeypatch.setattr("cron.scheduler.sys.platform", "win32")
+    monkeypatch.setattr("cron.scheduler.shutil.which", lambda name: "/usr/bin/bash")
 
     ok, output = _run_job_script("nightly.sh")
     assert ok is True
@@ -404,4 +375,41 @@ def test_run_job_script_windows_argv_passes_msys_path(hermes_env, monkeypatch):
     script_arg = argv[1]
     assert script_arg.startswith("/c/")
     assert "\\" not in script_arg
+
+
+def test_run_job_script_posix_argv_unchanged(hermes_env, monkeypatch):
+    """POSIX: the resolved script path is passed to the interpreter untouched.
+
+    The Windows-only backslash/MSYS conversion must NOT run on POSIX, so the
+    path handed to the interpreter is the literal resolved path with no
+    drive-letter or ``/c/`` transformation.
+    """
+    import subprocess as _subprocess
+
+    from cron.scheduler import _run_job_script
+
+    script_path = hermes_env / "scripts" / "nightly.sh"
+    script_path.write_text('printf "ok\\n"\n')
+
+    captured = {}
+
+    def fake_run(argv, *args, **kwargs):
+        captured["argv"] = list(argv)
+        return _subprocess.CompletedProcess(argv, 0, "ok\n", "")
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    # Force the POSIX branch regardless of the host platform, and provide a
+    # bash so the test does not depend on a local git-bash install.
+    monkeypatch.setattr("cron.scheduler.sys.platform", "linux")
+    monkeypatch.setattr("cron.scheduler.shutil.which", lambda name: "/usr/bin/bash")
+
+    ok, output = _run_job_script("nightly.sh")
+    assert ok is True
+    argv = captured["argv"]
+    assert len(argv) == 2
+    # The Windows MSYS conversion (C:\... -> /c/...) must not have been applied.
+    assert not argv[1].startswith("/c/")
+    # The path is passed through verbatim (= the resolved script path).
+    expected = str((hermes_env / "scripts" / "nightly.sh").resolve())
+    assert argv[1] == expected
 

@@ -413,6 +413,7 @@ def _apply_profile_override() -> None:
         "--provider",
         "-t", "--toolsets",
         "-r", "--resume",
+        "--session-id",
         "-s", "--skills",
         "--usage-file",
     }
@@ -2252,8 +2253,33 @@ def cmd_chat(args):
 
     _apply_safe_mode(args)
 
-    # Resolve --continue into --resume with the latest session or by name
+    # Automation may require a strict primary-provider boundary. Set this
+    # before importing ``cli`` so both CLI auth fallback and AIAgent fallback
+    # observe the same process-scoped policy.
+    if getattr(args, "disable_fallback_model", False):
+        os.environ["HERMES_DISABLE_FALLBACK_MODEL"] = "1"
+
+    # A caller-provided ID always creates a fresh classic/headless session. It
+    # must never accidentally resume existing history or disappear into the
+    # separate TUI runtime, which owns its own session lifecycle.
+    requested_session_id = getattr(args, "session_id", None)
     continue_val = getattr(args, "continue_last", None)
+    if requested_session_id and (getattr(args, "resume", None) or continue_val):
+        print(
+            "--session-id creates a new session and cannot be combined with "
+            "--resume or --continue.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if requested_session_id and use_tui:
+        print(
+            "--session-id is supported only by classic/headless chat; pass "
+            "--cli or remove --session-id to use the TUI.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # Resolve --continue into --resume with the latest session or by name
     if continue_val and not getattr(args, "resume", None):
         if isinstance(continue_val, str):
             # -c "session name" — resolve by title or ID
@@ -2419,12 +2445,14 @@ def cmd_chat(args):
         "query": args.query,
         "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),
+        "session_id": getattr(args, "session_id", None),
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
         "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
+        "disable_fallback_model": getattr(args, "disable_fallback_model", False),
         "compact": getattr(args, "compact", False),
     }
     # Filter out None values
@@ -12317,6 +12345,7 @@ _TOP_LEVEL_VALUE_FLAGS = frozenset(
         "--provider",
         "-t", "--toolsets",
         "-r", "--resume",
+        "--session-id",
         "-s", "--skills",
         "--usage-file",
         # ``-c / --continue`` is nargs='?' (optional value). Treat it as
@@ -12423,6 +12452,8 @@ def _prepare_agent_startup(args) -> None:
     # (#60328).
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
+    if getattr(args, "disable_fallback_model", False):
+        os.environ["HERMES_DISABLE_FALLBACK_MODEL"] = "1"
     _apply_safe_mode(args)
 
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
@@ -12506,8 +12537,10 @@ def _set_chat_arg_defaults(args) -> None:
         ("toolsets", None),
         ("verbose", False),
         ("resume", None),
+        ("session_id", None),
         ("continue_last", None),
         ("worktree", False),
+        ("disable_fallback_model", False),
     ]:
         if not hasattr(args, attr):
             setattr(args, attr, default)
@@ -14648,6 +14681,8 @@ def main():
     # value is already False and --yolo silently does nothing.
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
+    if getattr(args, "disable_fallback_model", False):
+        os.environ["HERMES_DISABLE_FALLBACK_MODEL"] = "1"
 
     # Discover Python plugins and register shell hooks once, before any
     # command that can fire lifecycle hooks.  Both are idempotent; gated
@@ -14681,6 +14716,8 @@ def main():
             ("toolsets", None),
             ("verbose", None),
             ("worktree", False),
+            ("session_id", None),
+            ("disable_fallback_model", False),
         ]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
@@ -14696,8 +14733,10 @@ def main():
             ("toolsets", None),
             ("verbose", None),
             ("resume", None),
+            ("session_id", None),
             ("continue_last", None),
             ("worktree", False),
+            ("disable_fallback_model", False),
         ]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)

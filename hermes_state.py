@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
+from agent.session_paths import safe_session_filename_component
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
@@ -811,7 +812,6 @@ CREATE TABLE IF NOT EXISTS compression_locks (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
-CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
@@ -824,6 +824,8 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(
 # existing databases. SCHEMA_SQL above is run by sqlite executescript
 # which would otherwise fail on legacy DBs ("no such column: active").
 DEFERRED_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_sessions_parent
+    ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
@@ -1403,8 +1405,8 @@ class SessionDB:
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
 
-        # Deferred indexes that reference the reconciler-added ``active``
-        # column (idx_messages_session_active) — same ordering constraint.
+        # Deferred indexes that reference reconciler-added columns — creating
+        # them in SCHEMA_SQL makes the initial executescript fail on legacy DBs.
         cursor.executescript(DEFERRED_INDEX_SQL)
 
         # Heal NULL ``active`` rows unconditionally on every startup.
@@ -1735,6 +1737,30 @@ class SessionDB:
         """Create a new session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
+
+    def claim_session(self, session_id: str, source: str) -> bool:
+        """Atomically reserve a caller-supplied session ID.
+
+        Unlike :meth:`create_session`, this method never upserts.  It is the
+        compare-and-swap boundary for automation that chooses an externally
+        meaningful ID: exactly one concurrent caller may claim the row, and a
+        conflicting caller receives ``False`` without modifying the existing
+        session.  The normal ``create_session`` path may subsequently enrich
+        the claimed row with model and prompt metadata.
+        """
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO sessions (id, source, started_at)
+                   VALUES (?, ?, ?)""",
+                (session_id, source, time.time()),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.IntegrityError:
+            return False
+        return True
 
     def record_gateway_session_peer(
         self,
@@ -5357,15 +5383,39 @@ class SessionDB:
         """
         if sessions_dir is None:
             return
-        for suffix in (".json", ".jsonl"):
-            p = sessions_dir / f"{session_id}{suffix}"
-            try:
-                p.unlink(missing_ok=True)
-            except OSError:
-                pass
-        # request_dump files use session_id as a prefix component
+        # Session IDs are persisted data and can predate current CLI
+        # validation.  Never interpolate a path-shaped or control-bearing ID
+        # into an unlink target: ``../victim`` must not escape sessions_dir.
+        raw_component_is_safe = not (
+            not isinstance(session_id, str)
+            or not session_id
+            or session_id in {".", ".."}
+            or "/" in session_id
+            or "\\" in session_id
+            or ":" in session_id
+            or any(ord(char) < 32 or ord(char) == 127 for char in session_id)
+        )
+        if not raw_component_is_safe:
+            logger.warning("Refusing unsafe session transcript cleanup id")
+        else:
+            for suffix in (".json", ".jsonl"):
+                p = sessions_dir / f"{session_id}{suffix}"
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        # request_dump files use session_id as a prefix component. Iterate and
+        # compare literal names rather than feeding persisted IDs to glob,
+        # where metacharacters could delete another session's dumps.
         try:
-            for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
+            safe_id = safe_session_filename_component(session_id)
+            dump_name = re.compile(
+                rf"request_dump_{re.escape(safe_id)}_"
+                rf"(?:\d+|\d{{8}}_\d{{6}}_\d{{6}})\.json\Z"
+            )
+            for p in sessions_dir.iterdir():
+                if dump_name.fullmatch(p.name) is None:
+                    continue
                 try:
                     p.unlink(missing_ok=True)
                 except OSError:

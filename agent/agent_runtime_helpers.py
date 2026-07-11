@@ -61,6 +61,176 @@ AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
 )
 
 
+_TOOL_PAYLOAD_KEYS = frozenset(
+    {"tool_call", "tool_calls", "function_call", "function_calls"}
+)
+_TOOL_PAYLOAD_TYPES = frozenset({"tool_call", "function_call"})
+_LEADING_UNICODE_FORMAT_RE = re.compile(
+    r"^[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]+"
+)
+_LEADING_REASONING_BLOCKS_RE = re.compile(
+    r"^(?:\s*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>"
+    r".*?</(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*)+",
+    flags=re.DOTALL | re.IGNORECASE,
+)
+_LEADING_MARKDOWN_FENCE_RE = re.compile(
+    r"^(?:```|~~~)(?:jsonc?|application/json|xml|html|text)?[ \t]*(?:\r?\n)?",
+    flags=re.IGNORECASE,
+)
+_LEADING_XML_DECLARATION_RE = re.compile(
+    r"^<\?xml\b[^>]*\?>\s*",
+    flags=re.IGNORECASE,
+)
+_LEADING_TOOL_ENVELOPE_RE = re.compile(
+    r"^<[^<>\s>]*(?:tool_calls?|function_calls?)\b[^>]*(?:>|$)",
+    flags=re.IGNORECASE,
+)
+_LEADING_NAMED_INVOCATION_RE = re.compile(
+    r"^<[^<>\s>]*(?:function|invoke)\b(?=[^>]*\bname\s*=)[^>]*(?:>|$)",
+    flags=re.IGNORECASE,
+)
+_TRUNCATED_JSON_TOOL_KEY_RE = re.compile(
+    r'(?<!\\)"(?:tool_calls?|function_calls?)"\s*:',
+    flags=re.IGNORECASE,
+)
+_TRUNCATED_JSON_TOOL_TYPE_RE = re.compile(
+    r'(?<!\\)"type"\s*:\s*"(?:tool_call|function_call)"',
+    flags=re.IGNORECASE,
+)
+_TRUNCATED_JSON_DIRECT_FUNCTION_RE = re.compile(
+    r'(?:^|[\[,:])\s*\{\s*'
+    r'(?=.{0,4096}(?<!\\)"name"\s*:\s*"[^"\\]+")'
+    r'(?=.{0,4096}(?<!\\)"arguments"\s*:)',
+    flags=re.DOTALL | re.IGNORECASE,
+)
+_TRUNCATED_JSON_CANONICAL_FUNCTION_RE = re.compile(
+    r'(?<!\\)"type"\s*:\s*"function"',
+    flags=re.IGNORECASE,
+)
+_TRUNCATED_JSON_LEADING_NAMED_FUNCTION_RE = re.compile(
+    r'^\s*(?:\[\s*)?\{\s*'
+    r'(?<!\\)"name"\s*:\s*"[^"\\]+"(?:\s*,|\s*\Z)',
+    flags=re.DOTALL | re.IGNORECASE,
+)
+
+
+def _unwrap_leading_protocol_wrappers(text: str) -> str:
+    """Remove wrappers that may precede a serialized protocol payload."""
+    for _ in range(4):
+        previous = text
+        text = _LEADING_UNICODE_FORMAT_RE.sub("", text, count=1).lstrip()
+        text = _LEADING_REASONING_BLOCKS_RE.sub("", text, count=1).lstrip()
+        text = _LEADING_MARKDOWN_FENCE_RE.sub("", text, count=1).lstrip()
+        text = _LEADING_XML_DECLARATION_RE.sub("", text, count=1).lstrip()
+        if text == previous:
+            break
+    return text
+
+
+def _json_contains_tool_payload(payload: Any, *, depth: int = 0) -> bool:
+    """Return whether decoded JSON structurally contains a tool invocation."""
+    if depth > 8:
+        return False
+    if isinstance(payload, dict):
+        if _TOOL_PAYLOAD_KEYS.intersection(payload):
+            return True
+        if str(payload.get("type", "")).strip().lower() in _TOOL_PAYLOAD_TYPES:
+            return True
+        # OpenAI serializes an individual tool call as
+        # {"type":"function","function":{"name":...,"arguments":...}}.
+        # Hermes/Gemma providers also emit the inner function object directly
+        # as {"name":...,"arguments":...}.  Do not treat tool *definitions*
+        # as calls: those have ``parameters`` rather than ``arguments``.
+        function = payload.get("function")
+        if (
+            str(payload.get("type", "")).strip().lower() == "function"
+            and isinstance(function, dict)
+            and isinstance(function.get("name"), str)
+            and bool(function["name"].strip())
+            and "arguments" in function
+        ):
+            return True
+        if (
+            isinstance(payload.get("name"), str)
+            and bool(payload["name"].strip())
+            and "arguments" in payload
+        ):
+            return True
+        return any(
+            _json_contains_tool_payload(item, depth=depth + 1)
+            for item in payload.values()
+            if isinstance(item, (dict, list))
+        )
+    if isinstance(payload, list):
+        return any(
+            _json_contains_tool_payload(item, depth=depth + 1)
+            for item in payload
+        )
+    return False
+
+
+def is_incomplete_tool_call_response(value: Any) -> bool:
+    """Return whether a response starts with an unexecuted tool invocation.
+
+    Some OpenAI-compatible providers emit XML/DSML or JSON tool-call payloads
+    in ``content`` while reporting ``finish_reason=stop``. The payload remains
+    protocol state even when the model appends a confident completion claim:
+    no structured call reached the executor. Detection is anchored at the
+    response boundary (after optional reasoning/fence wrappers), so ordinary
+    prose that merely discusses tool-call markup remains valid.
+    """
+    if not isinstance(value, str):
+        return False
+
+    text = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", value).strip()
+    if not text:
+        return False
+    text = _unwrap_leading_protocol_wrappers(text)
+    if not text:
+        return False
+
+    # XML, DSML, and Gemma-style envelopes. Once a structural invocation
+    # leads the response, trailing prose cannot prove that the call executed.
+    # Accept a missing closing angle bracket so truncated/malformed starts are
+    # rejected too.
+    if _LEADING_TOOL_ENVELOPE_RE.match(text):
+        return True
+    if _LEADING_NAMED_INVOCATION_RE.match(text):
+        return True
+
+    # JSON envelopes may be fenced, followed by prose, or truncated after
+    # metadata that precedes the tool_calls field. raw_decode handles a valid
+    # leading JSON value with trailing text; the structural key scan covers
+    # malformed/truncated objects without requiring tool_calls to be key #1.
+    if text.startswith(("{", "[")):
+        try:
+            payload, _ = json.JSONDecoder().raw_decode(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+        else:
+            # A complete leading JSON value is authoritative for its own
+            # shape. Do not scan later explanatory prose for key-looking text.
+            return _json_contains_tool_payload(payload)
+        if _TRUNCATED_JSON_TOOL_KEY_RE.search(text):
+            return True
+        if _TRUNCATED_JSON_TOOL_TYPE_RE.search(text):
+            return True
+        if _TRUNCATED_JSON_DIRECT_FUNCTION_RE.search(text):
+            return True
+        # A malformed leading JSON value cannot be decoded structurally. The
+        # canonical OpenAI call discriminator is nevertheless unambiguous,
+        # even when the provider truncates before ``function`` or
+        # ``arguments``. Direct Hermes/Gemma calls lead with ``name``; only
+        # apply that narrower rule to malformed root/list objects. Complete
+        # JSON is handled above, so ordinary {"name": ...} data remains valid.
+        if _TRUNCATED_JSON_CANONICAL_FUNCTION_RE.search(text):
+            return True
+        if _TRUNCATED_JSON_LEADING_NAMED_FUNCTION_RE.search(text):
+            return True
+
+    return False
+
+
 def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
     """Return True when an agent-level tool path emits its own post hook."""
     if function_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES:
@@ -2116,7 +2286,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     old_norm = (old_provider or "").strip().lower()
     new_norm = (new_provider or "").strip().lower()
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
-    if old_norm and new_norm and old_norm != new_norm:
+    if getattr(agent, "_disable_fallback_model", False) is True:
+        fallback_chain = []
+    elif old_norm and new_norm and old_norm != new_norm:
         fallback_chain = [
             entry for entry in fallback_chain
             if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
@@ -3254,6 +3426,7 @@ def force_close_tcp_sockets(client: Any) -> int:
 
 __all__ = [
     "convert_to_trajectory_format",
+    "is_incomplete_tool_call_response",
     "sanitize_tool_call_arguments",
     "repair_message_sequence",
     "strip_think_blocks",

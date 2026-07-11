@@ -31,6 +31,7 @@ from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.agent_runtime_helpers import is_incomplete_tool_call_response
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
@@ -610,6 +611,7 @@ def run_conversation(
     codex_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
+    incomplete_tool_response_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
@@ -4433,6 +4435,10 @@ def run_conversation(
             
             # Check for tool calls
             if assistant_message.tool_calls:
+                # A real structured tool call breaks any prior malformed-text
+                # streak. Only consecutive serialized tool-only responses may
+                # exhaust the one-retry completion guard.
+                incomplete_tool_response_retries = 0
                 if not agent.quiet_mode:
                     agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
                 
@@ -4801,6 +4807,55 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
+
+                # A length-continuation response is one logical assistant
+                # response split across API calls. Reassemble it before the
+                # raw protocol check; otherwise an opening tool envelope in an
+                # earlier chunk plus a closing tag / false completion claim in
+                # this chunk can evade classification.
+                truncated_part_count = len(truncated_response_parts)
+                if truncated_part_count:
+                    final_response = "".join(truncated_response_parts) + final_response
+                    truncated_response_parts = []
+                    length_continue_retries = 0
+
+                if is_incomplete_tool_call_response(final_response):
+                    # Length continuations append each partial assistant chunk
+                    # and synthetic user continuation to messages. Roll all of
+                    # those pairs back before retrying so the malformed
+                    # envelope neither poisons the next request nor survives in
+                    # the durable transcript.
+                    for _ in range(truncated_part_count):
+                        messages = agent._get_messages_up_to_last_assistant(messages)
+                    if truncated_part_count:
+                        agent._session_messages = messages
+                    incomplete_tool_response_retries += 1
+                    logger.warning(
+                        "Provider returned serialized tool-call content with "
+                        "finish_reason=%s (%d/2); refusing false completion",
+                        finish_reason,
+                        incomplete_tool_response_retries,
+                    )
+                    if incomplete_tool_response_retries < 2:
+                        agent._buffer_status(
+                            "⚠️ Provider returned an incomplete tool call as "
+                            "final text — retrying once"
+                        )
+                        continue
+
+                    failed = True
+                    _turn_exit_reason = "incomplete_tool_response_exhausted"
+                    final_response = (
+                        "I could not complete this turn because the provider "
+                        "returned an incomplete tool call twice instead of a "
+                        "final response.\n"
+                        "finalDisposition: blocked; nextActionOwner: runtime"
+                    )
+                    messages.append({"role": "assistant", "content": final_response})
+                    agent._emit_status(
+                        "❌ Provider returned incomplete tool-call content twice"
+                    )
+                    break
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
@@ -5121,11 +5176,6 @@ def run_conversation(
                     continue
 
                 codex_ack_continuations = 0
-
-                if truncated_response_parts:
-                    final_response = "".join(truncated_response_parts) + final_response
-                    truncated_response_parts = []
-                    length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
                 

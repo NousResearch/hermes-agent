@@ -46,6 +46,8 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+_EXPLICIT_SESSION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
@@ -175,7 +177,7 @@ from hermes_cli.browser_connect import (
     try_launch_chrome_debug,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import base_url_host_matches, fast_safe_load
+from utils import base_url_host_matches, env_var_enabled, fast_safe_load
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -3696,6 +3698,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        session_id: str = None,
+        disable_fallback_model: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -3710,7 +3714,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             verbose: Enable verbose logging
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
+            session_id: Caller-provided ID for a new session (does not load history)
             pass_session_id: Include the session ID in the agent's system prompt
+            disable_fallback_model: Disable configured fallback providers for this CLI instance
         """
         # Initialize Rich console
         self.console = Console()
@@ -3950,7 +3956,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Fallback provider chain — tried in order when primary fails after retries.
         # Merge new ``fallback_providers`` entries with any legacy
         # ``fallback_model`` entries so old configs still participate.
-        self._fallback_model = get_fallback_chain(CLI_CONFIG)
+        self._disable_fallback_model = bool(disable_fallback_model) or env_var_enabled(
+            "HERMES_DISABLE_FALLBACK_MODEL"
+        )
+        self._fallback_model = (
+            [] if self._disable_fallback_model else get_fallback_chain(CLI_CONFIG)
+        )
 
         # Signature of the currently-initialised agent's runtime.  Used to
         # rebuild the agent when provider / model / base_url changes across
@@ -4020,9 +4031,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._pending_title: Optional[str] = None
         
         # Session ID: reuse existing one when resuming, otherwise generate fresh
+        if resume and session_id:
+            raise ValueError(
+                "session_id creates a new session and cannot be combined with resume"
+            )
         if resume:
             self.session_id = resume
             self._resumed = True
+        elif session_id is not None:
+            normalized_session_id = str(session_id).strip()
+            if not normalized_session_id:
+                raise ValueError("session_id must not be empty")
+            if _EXPLICIT_SESSION_ID_RE.fullmatch(normalized_session_id) is None:
+                raise ValueError(
+                    "session_id must be 1-128 ASCII letters, digits, dots, "
+                    "underscores, or hyphens; it must start with a "
+                    "letter or digit"
+                )
+            if self._session_db is None:
+                raise ValueError(
+                    "session_id requires an available session store so the ID "
+                    "can be claimed atomically"
+                )
+            source = os.environ.get("HERMES_SESSION_SOURCE", "cli")
+            if not self._session_db.claim_session(normalized_session_id, source):
+                raise ValueError(
+                    f"session_id '{normalized_session_id}' already exists; "
+                    "use --resume to continue it or choose a new ID"
+                )
+            self.session_id = normalized_session_id
+            self._resumed = False
         else:
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
@@ -15786,6 +15824,8 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    session_id: str = None,
+    disable_fallback_model: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -15806,8 +15846,10 @@ def main(
         list_tools: List available tools and exit
         list_toolsets: List available toolsets and exit
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
+        session_id: Use this ID for a new session without loading prior history
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
+        disable_fallback_model: Disable configured fallback providers for this invocation
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -15918,9 +15960,11 @@ def main(
         verbose=verbose,
         compact=compact,
         resume=resume,
+        session_id=session_id,
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        disable_fallback_model=disable_fallback_model,
     )
 
     if parsed_skills:

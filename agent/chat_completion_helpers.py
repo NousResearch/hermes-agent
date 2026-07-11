@@ -1339,6 +1339,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
+    # A process-scoped hard stop must remain authoritative even if a cached
+    # agent, plugin, or model-switch refresh accidentally repopulates the
+    # chain after initialization. Enforce it at the activation chokepoint so
+    # no later mutation can turn a fail-closed run into provider traffic.
+    if getattr(agent, "_disable_fallback_model", False) is True:
+        agent._fallback_chain = []
+        agent._fallback_model = None
+        agent._fallback_index = 0
+        return False
+
     if reason in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the
@@ -1671,6 +1681,19 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 
+def _normalize_iteration_summary(agent, value: str | None) -> str:
+    """Strip private reasoning and reject serialized tool calls as summaries."""
+    from agent.agent_runtime_helpers import is_incomplete_tool_call_response
+
+    raw_response = value or ""
+    # Classify before the general scrubber: _strip_think_blocks also removes
+    # complete XML tool-call blocks, which would otherwise erase the evidence
+    # and leave a trailing, unverified "Done" claim looking like a valid final.
+    if is_incomplete_tool_call_response(raw_response):
+        return ""
+    return agent._strip_think_blocks(raw_response).strip()
+
+
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
@@ -1853,13 +1876,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _summary_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_summary_result.content or "").strip()
 
+        final_response = _normalize_iteration_summary(agent, final_response)
         if final_response:
-            if "<think>" in final_response:
-                final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
-            if final_response:
-                messages.append({"role": "assistant", "content": final_response})
-            else:
-                final_response = "I reached the iteration limit and couldn't generate a summary."
+            messages.append({"role": "assistant", "content": final_response})
         else:
             # Retry summary generation
             if agent.api_mode == "codex_responses":
@@ -1896,15 +1915,15 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _retry_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_retry_result.content or "").strip()
 
+            final_response = _normalize_iteration_summary(agent, final_response)
             if final_response:
-                if "<think>" in final_response:
-                    final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
-                if final_response:
-                    messages.append({"role": "assistant", "content": final_response})
-                else:
-                    final_response = "I reached the iteration limit and couldn't generate a summary."
+                messages.append({"role": "assistant", "content": final_response})
             else:
-                final_response = "I reached the iteration limit and couldn't generate a summary."
+                final_response = (
+                    "I reached the iteration limit and couldn't generate a final "
+                    "response because the provider returned an incomplete tool call "
+                    "twice.\nfinalDisposition: blocked; nextActionOwner: runtime"
+                )
 
     except Exception as e:
         logger.warning(f"Failed to get summary response: {e}")

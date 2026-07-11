@@ -7,10 +7,12 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
-def _make_agent(fallback_model=None):
+def _make_agent(fallback_model=None, *, disable_fallback_model=False):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=[]),
@@ -24,6 +26,7 @@ def _make_agent(fallback_model=None):
             skip_context_files=True,
             skip_memory=True,
             fallback_model=fallback_model,
+            disable_fallback_model=disable_fallback_model,
         )
         agent.client = MagicMock()
         return agent
@@ -80,6 +83,73 @@ class TestFallbackChainInit:
     def test_invalid_dict_no_provider(self):
         agent = _make_agent(fallback_model={"model": "gpt-4o"})
         assert agent._fallback_chain == []
+
+    def test_explicit_hard_stop_clears_runtime_chain(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openai", "model": "gpt-4o"},
+            disable_fallback_model=True,
+        )
+
+        assert agent._disable_fallback_model is True
+        assert agent._fallback_chain == []
+        assert agent._fallback_model is None
+        assert agent._try_activate_fallback() is False
+
+    def test_hard_stop_rejects_chain_reintroduced_after_initialization(self):
+        agent = _make_agent(disable_fallback_model=True)
+        agent._fallback_chain = [
+            {"provider": "openai", "model": "gpt-4o"},
+        ]
+        agent._fallback_model = agent._fallback_chain[0]
+        agent._fallback_index = 0
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as resolve_provider:
+            assert agent._has_pending_fallback() is False
+            assert agent._try_activate_fallback() is False
+
+        resolve_provider.assert_not_called()
+        assert agent._fallback_chain == []
+        assert agent._fallback_model is None
+        assert agent._fallback_index == 0
+
+    def test_environment_hard_stop_clears_runtime_chain(self):
+        with patch.dict(
+            "os.environ", {"HERMES_DISABLE_FALLBACK_MODEL": "true"}, clear=False
+        ):
+            agent = _make_agent(
+                fallback_model={"provider": "openai", "model": "gpt-4o"}
+            )
+
+        assert agent._disable_fallback_model is True
+        assert agent._fallback_chain == []
+        assert agent._fallback_model is None
+
+    def test_hard_stop_blocks_init_time_credential_fallback(self):
+        fallback = {"provider": "openai", "model": "gpt-4o"}
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(None, None),
+            ) as resolve_provider,
+            pytest.raises(RuntimeError, match="Provider 'minimax'.*no API key"),
+        ):
+            AIAgent(
+                provider="minimax",
+                model="MiniMax-M2.5",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                fallback_model=fallback,
+                disable_fallback_model=True,
+            )
+
+        assert resolve_provider.call_count == 1
+        assert resolve_provider.call_args.args[0] == "minimax"
 
 
 # ── Chain advancement ─────────────────────────────────────────────────────

@@ -3,6 +3,8 @@
 import sqlite3
 import time
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 import hermes_state
@@ -97,6 +99,43 @@ class TestSessionLifecycle:
 
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
+
+    def test_claim_session_is_atomic_across_connections(self, tmp_path):
+        db_path = tmp_path / "atomic_session_claim.db"
+        databases = [SessionDB(db_path=db_path), SessionDB(db_path=db_path)]
+        barrier = threading.Barrier(2)
+
+        def claim(index):
+            barrier.wait(timeout=5)
+            return databases[index].claim_session(
+                "paperclip_run_123", source="paperclip"
+            )
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(claim, range(2)))
+
+            assert sorted(results) == [False, True]
+            session = databases[0].get_session("paperclip_run_123")
+            assert session is not None
+            assert session["source"] == "paperclip"
+        finally:
+            for database in databases:
+                database.close()
+
+    def test_claimed_session_can_be_enriched_by_normal_create(self, db):
+        assert db.claim_session("paperclip_run_123", source="paperclip") is True
+
+        db.create_session(
+            "paperclip_run_123",
+            source="cli",
+            model="test-model",
+            model_config={"max_iterations": 90},
+        )
+
+        session = db.get_session("paperclip_run_123")
+        assert session["source"] == "paperclip"
+        assert session["model"] == "test-model"
 
     def test_create_session_enriches_null_metadata_on_conflict(self, db):
         """Gateway creates a bare row first; the agent's later create_session
@@ -3500,6 +3539,51 @@ class TestSchemaInit:
 
         migrated_db.close()
 
+    def test_parent_index_is_created_after_legacy_column_reconciliation(
+        self, tmp_path
+    ):
+        """A legacy sessions table without parent_session_id must still open.
+
+        The parent index used to live in SCHEMA_SQL, so SQLite attempted to
+        create it before _reconcile_columns() could add parent_session_id and
+        aborted startup with ``no such column: parent_session_id``.
+        """
+        db_path = tmp_path / "legacy_without_parent.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                started_at REAL NOT NULL
+            );
+            INSERT INTO sessions (id, source, started_at)
+            VALUES ('legacy-session', 'cli', 1000.0);
+            """
+        )
+        conn.close()
+
+        migrated_db = SessionDB(db_path=db_path)
+        try:
+            session_columns = {
+                row[1]
+                for row in migrated_db._conn.execute(
+                    "PRAGMA table_info(sessions)"
+                ).fetchall()
+            }
+            indexes = {
+                row[1]
+                for row in migrated_db._conn.execute(
+                    "PRAGMA index_list(sessions)"
+                ).fetchall()
+            }
+
+            assert "parent_session_id" in session_columns
+            assert "idx_sessions_parent" in indexes
+            assert migrated_db.get_session("legacy-session") is not None
+        finally:
+            migrated_db.close()
+
     def test_reconciliation_is_idempotent(self, tmp_path):
         """Opening the same database twice doesn't error or duplicate columns."""
         db_path = tmp_path / "idempotent.db"
@@ -4596,6 +4680,55 @@ class TestAutoMaintenance:
         assert result["pruned"] == 1
         # File stays — caller didn't opt in
         assert (sessions_dir / "old.jsonl").exists()
+
+    def test_empty_session_cleanup_cannot_escape_sessions_dir(self, db, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        victim = tmp_path / "victim.json"
+        victim.write_text("keep")
+        db.create_session(session_id="../victim", source="legacy")
+
+        assert db.delete_session_if_empty("../victim", sessions_dir) is True
+        assert victim.read_text() == "keep"
+
+    def test_empty_session_cleanup_rejects_drive_shaped_id(self, db, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        victim = sessions_dir / "foo.json"
+        victim.write_text("keep")
+        db.create_session(session_id="C:foo", source="legacy")
+
+        assert db.delete_session_if_empty("C:foo", sessions_dir) is True
+        assert victim.read_text() == "keep"
+
+    def test_request_dump_cleanup_treats_session_id_literally(self, db, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        from agent.session_paths import safe_session_filename_component
+
+        safe_id = safe_session_filename_component("star*id")
+        own_dump = sessions_dir / f"request_dump_{safe_id}_001.json"
+        other_dump = sessions_dir / "request_dump_starXid_001.json"
+        own_dump.write_text("own")
+        other_dump.write_text("other")
+        db.create_session(session_id="star*id", source="legacy")
+
+        assert db.delete_session_if_empty("star*id", sessions_dir) is True
+        assert not own_dump.exists()
+        assert other_dump.read_text() == "other"
+
+    def test_request_dump_cleanup_does_not_match_longer_session_id(self, db, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        own_dump = sessions_dir / "request_dump_foo_001.json"
+        other_dump = sessions_dir / "request_dump_foo_bar_001.json"
+        own_dump.write_text("own")
+        other_dump.write_text("other")
+        db.create_session(session_id="foo", source="legacy")
+
+        assert db.delete_session_if_empty("foo", sessions_dir) is True
+        assert not own_dump.exists()
+        assert other_dump.read_text() == "other"
 
     def test_prune_sessions_deletes_files_for_pruned_only(self, db, tmp_path):
         """Active-session transcripts must never be deleted by prune."""

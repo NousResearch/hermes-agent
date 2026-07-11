@@ -3,6 +3,7 @@ that only manifest at runtime (not in mocked unit tests)."""
 
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -48,8 +49,14 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
     with patch.dict(sys.modules, prompt_toolkit_stubs), \
          patch.dict("os.environ", clean_env, clear=False):
         import cli as _cli_mod
+        import hermes_state as _state_mod
         _cli_mod = importlib.reload(_cli_mod)
         with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), \
+             patch.object(
+                 _state_mod,
+                 "DEFAULT_DB_PATH",
+                 Path(os.environ["HERMES_HOME"]) / "state.db",
+             ), \
              patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}):
             return _cli_mod.HermesCLI(**kwargs)
 
@@ -114,6 +121,98 @@ class TestFallbackChainInit:
             {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
             {"provider": "nous", "model": "Hermes-4"},
         ]
+
+    def test_disable_fallback_model_flag_clears_chain(self):
+        cli = _make_cli(
+            config_overrides={
+                "fallback_providers": [
+                    {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-sonnet-4.6",
+                    },
+                ],
+            },
+            disable_fallback_model=True,
+        )
+
+        assert cli._disable_fallback_model is True
+        assert cli._fallback_model == []
+
+    def test_disable_fallback_model_env_clears_chain(self):
+        cli = _make_cli(
+            env_overrides={"HERMES_DISABLE_FALLBACK_MODEL": "1"},
+            config_overrides={
+                "fallback_providers": [
+                    {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-sonnet-4.6",
+                    },
+                ],
+            },
+        )
+
+        assert cli._disable_fallback_model is True
+        assert cli._fallback_model == []
+
+
+class TestSessionIdInit:
+    def test_explicit_session_id_starts_fresh_session_without_resume(self):
+        cli = _make_cli(session_id="paperclip_run_123")
+
+        assert cli.session_id == "paperclip_run_123"
+        assert cli._resumed is False
+        assert cli._session_db.get_session("paperclip_run_123") is not None
+
+    def test_explicit_session_id_is_trimmed(self):
+        cli = _make_cli(session_id="  paperclip_run_123  ")
+
+        assert cli.session_id == "paperclip_run_123"
+
+    def test_empty_explicit_session_id_is_rejected(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="session_id must not be empty"):
+            _make_cli(session_id="   ")
+
+    def test_path_shaped_explicit_session_id_is_rejected(self):
+        import pytest
+
+        for session_id in (
+            "../victim",
+            "folder/session",
+            "folder\\session",
+            "bad\nline",
+            "D:foo",
+        ):
+            with pytest.raises(ValueError, match="session_id must be 1-128 ASCII"):
+                _make_cli(session_id=session_id)
+
+    def test_overlong_explicit_session_id_is_rejected(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="session_id must be 1-128 ASCII"):
+            _make_cli(session_id="a" * 129)
+
+    def test_explicit_session_id_cannot_resume(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="cannot be combined with resume"):
+            _make_cli(resume="existing", session_id="fresh")
+
+    def test_explicit_session_id_must_not_collide_with_existing_session(self):
+        import pytest
+
+        _make_cli(session_id="paperclip_run_123")
+
+        with pytest.raises(ValueError, match="already exists; use --resume"):
+            _make_cli(session_id="paperclip_run_123")
+
+    def test_explicit_session_id_fails_closed_without_session_store(self):
+        import pytest
+
+        with patch("hermes_state.SessionDB", side_effect=RuntimeError("store down")):
+            with pytest.raises(ValueError, match="requires an available session store"):
+                _make_cli(session_id="paperclip_run_123")
 
 
 class TestBusyInputMode:

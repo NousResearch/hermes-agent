@@ -330,6 +330,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    disable_fallback_model: bool = False,
 ):
     """
     Initialize the AI Agent.
@@ -379,8 +380,20 @@ def init_agent(
         load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
             identity even when skip_context_files=True. Project context files from the cwd
             remain skipped.
+        disable_fallback_model (bool): If True, reject all configured init-time and
+            runtime provider fallbacks. Also enabled by HERMES_DISABLE_FALLBACK_MODEL.
     """
     _install_safe_stdio()
+
+    # Fail-closed automation contract: this gate is applied before either the
+    # init-time credential fallback path or the runtime fallback chain is
+    # constructed. Direct AIAgent callers therefore receive the same behavior
+    # as the classic CLI, even when they rely only on the environment variable.
+    agent._disable_fallback_model = bool(disable_fallback_model) or is_truthy_value(
+        os.getenv("HERMES_DISABLE_FALLBACK_MODEL")
+    )
+    if agent._disable_fallback_model:
+        fallback_model = []
 
     agent.model = model
     agent.max_iterations = max_iterations

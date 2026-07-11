@@ -3655,6 +3655,56 @@ class TestHandleMaxIterations:
         assert len(result) > 0
         assert "summary" in result.lower()
 
+    def test_retries_when_summary_is_only_a_dsml_tool_call(self, agent):
+        tool_only = (
+            '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="terminal">'
+            '</｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>'
+        )
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=tool_only),
+            _mock_response(content="Recovered bounded summary."),
+        ]
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Recovered bounded summary."
+        assert agent.client.chat.completions.create.call_count == 2
+        assert messages[-1] == {
+            "role": "assistant",
+            "content": "Recovered bounded summary.",
+        }
+
+    def test_rejects_repeated_tool_only_summaries(self, agent):
+        tool_only = '{"tool_calls":[{"name":"terminal","arguments":{}}]}'
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=tool_only),
+            _mock_response(content=tool_only),
+        ]
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert "incomplete tool call twice" in result
+        assert "finalDisposition: blocked" in result
+        assert tool_only not in result
+        assert all(message.get("content") != tool_only for message in messages)
+
+    def test_summary_strips_reasoning_with_shared_runtime_scrubber(self, agent):
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="<reasoning>private chain</reasoning>Visible summary."
+        )
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}],
+            60,
+        )
+
+        assert result == "Visible summary."
+
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."
@@ -3982,6 +4032,76 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    @pytest.mark.parametrize(
+        "tool_only",
+        [
+            '<tool_calls><invoke name="terminal"></invoke></tool_calls>',
+            (
+                '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="terminal">'
+                '</｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>'
+            ),
+            '{"tool_calls":[{"function":{"name":"terminal","arguments":"{}"}}]}',
+            '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="terminal">',
+        ],
+        ids=["xml", "dsml", "json", "truncated_dsml"],
+    )
+    def test_tool_only_stop_retries_then_recovers(self, agent, tool_only):
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=tool_only, finish_reason="stop"),
+            _mock_response(content="Recovered final answer.", finish_reason="stop"),
+        ]
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Recovered final answer."
+        assert result["completed"] is True
+        assert result["failed"] is False
+        assert result["api_calls"] == 2
+
+    def test_repeated_tool_only_stop_is_a_failed_turn(self, agent):
+        self._setup_agent(agent)
+        tool_only = '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="terminal"></｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>'
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=tool_only, finish_reason="stop"),
+            _mock_response(content=tool_only, finish_reason="stop"),
+        ]
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert result["api_calls"] == 2
+        assert result["turn_exit_reason"] == "incomplete_tool_response_exhausted"
+        assert "incomplete tool call twice" in result["final_response"]
+        assert tool_only not in result["final_response"]
+
+    def test_prose_that_mentions_tool_calls_is_a_valid_final(self, agent):
+        self._setup_agent(agent)
+        final = "The provider emitted <tool_calls> markup, so I repaired the parser."
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content=final,
+            finish_reason="stop",
+        )
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == final
+        assert result["completed"] is True
+        assert result["failed"] is False
 
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)

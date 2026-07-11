@@ -161,6 +161,15 @@ def build_top_level_parser():
         help="Resume a previous session by ID or title",
     )
     parser.add_argument(
+        "--session-id",
+        metavar="SESSION_ID",
+        default=None,
+        help=(
+            "Use a caller-provided ID for a new classic/headless chat session. "
+            "Cannot be combined with --resume, --continue, or the TUI."
+        ),
+    )
+    parser.add_argument(
         "--continue",
         "-c",
         dest="continue_last",
@@ -210,6 +219,16 @@ def build_top_level_parser():
         action="store_true",
         default=False,
         help="Include the session ID in the agent's system prompt",
+    )
+    _inherited_flag(
+        parser,
+        "--disable-fallback-model",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable configured fallback providers for this chat invocation. "
+            "Intended for automation that must hard-stop on primary provider failure."
+        ),
     )
     _inherited_flag(
         parser,
@@ -332,6 +351,15 @@ def build_top_level_parser():
         help="Resume a previous session by ID (shown on exit)",
     )
     chat_parser.add_argument(
+        "--session-id",
+        metavar="SESSION_ID",
+        default=argparse.SUPPRESS,
+        help=(
+            "Use a caller-provided ID for a new classic/headless chat session. "
+            "Cannot be combined with --resume, --continue, or the TUI."
+        ),
+    )
+    chat_parser.add_argument(
         "--continue",
         "-c",
         dest="continue_last",
@@ -385,6 +413,16 @@ def build_top_level_parser():
         action="store_true",
         default=argparse.SUPPRESS,
         help="Include the session ID in the agent's system prompt",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--disable-fallback-model",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "Disable configured fallback providers for this chat invocation. "
+            "Intended for automation that must hard-stop on primary provider failure."
+        ),
     )
     _inherited_flag(
         chat_parser,

@@ -1044,6 +1044,8 @@ class ContextCompressor(ContextEngine):
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
+        proactive_prune_tokens: int = 0,
+        proactive_prune_min_result_chars: int = 8000,
     ):
         self.model = model
         self.base_url = base_url
@@ -1053,6 +1055,19 @@ class ContextCompressor(ContextEngine):
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
+        # Proactive tool-result pruning (cost-oriented; runs INDEPENDENTLY of the
+        # full-compression trigger, via prune_tool_results_only()). 0 = disabled.
+        self.proactive_prune_tokens = int(proactive_prune_tokens or 0)
+        # Floor the summarize threshold at 200 chars (matching
+        # _prune_old_tool_results' dedup floor). Below ~200 a generated summary
+        # can be longer than the floor it replaces, so Pass 2 would re-summarize
+        # its own output every turn (corrupting it and never converging); a
+        # negative value would strip every non-tail tool result outright. A
+        # configured 0 keeps the 8000 default via `or`. Keep the floor well above
+        # typical summary length (default 8000) to stay idempotent.
+        self.proactive_prune_min_result_chars = max(
+            200, int(proactive_prune_min_result_chars or 8000)
+        )
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
         # Output-token reservation: the provider carves max_tokens out of the
@@ -1269,6 +1284,7 @@ class ContextCompressor(ContextEngine):
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None,
+        min_prune_chars: int = 200,
     ) -> tuple[List[Dict[str, Any]], int]:
         """Replace old tool result contents with informative 1-line summaries.
 
@@ -1392,8 +1408,9 @@ class ContextCompressor(ContextEngine):
             # Skip already-deduplicated or previously-summarized results
             if content.startswith("[Duplicate tool output"):
                 continue
-            # Only prune if the content is substantial (>200 chars)
-            if len(content) > 200:
+            # Only prune if the content is substantial (default >200 chars; the
+            # proactive path raises this floor via min_prune_chars).
+            if len(content) > min_prune_chars:
                 call_id = msg.get("tool_call_id", "")
                 tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
                 summary = _summarize_tool_result(tool_name, tool_args, content)
@@ -1427,6 +1444,51 @@ class ContextCompressor(ContextEngine):
                 result[i] = {**msg, "tool_calls": new_tcs}
 
         return result, pruned
+
+    def prune_tool_results_only(
+        self, messages: List[Dict[str, Any]], current_tokens: int | None = None,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Deterministic, no-LLM tool-result prune for the cost-oriented path.
+
+        Runs the Phase-1 prune (``_prune_old_tool_results``) WITHOUT the
+        compression summary phase, gated on ``proactive_prune_tokens`` rather
+        than the (much higher) full-compression threshold. On large-window
+        models ``should_compress()`` (≈50% of the window) rarely fires, so old
+        tool outputs otherwise ride in history and are re-sent verbatim on every
+        subsequent turn; this reclaims them early with no quality-risky LLM
+        summarization.
+
+        Protects the recent tail by message COUNT (``protect_last_n``), never by
+        ``tail_token_budget`` — the latter is derived from the 50% compression
+        threshold (≈100K tokens on a 1M window) and would protect the entire
+        session, pruning nothing.
+
+        ``_prune_old_tool_results`` runs all three deterministic passes:
+        (1) dedup byte-identical tool results — keeps the newest full copy and
+        back-references older exact duplicates ANYWHERE in the list (including
+        the protected tail), so no unique content is ever lost; (2) summarize
+        non-tail tool results larger than ``min_prune_chars``; (3) truncate
+        oversized tool_call arguments on non-tail assistant messages. Only
+        pass (2)'s floor is raised by ``proactive_prune_min_result_chars``;
+        passes (1) and (3) keep their own fixed floors. The recent-tail
+        protection applies to passes (2) and (3); pass (1) is tail-agnostic by
+        design because dedup is lossless.
+
+        Returns ``(messages, 0)`` unchanged when disabled or below the trigger.
+        """
+        if self.proactive_prune_tokens <= 0:
+            return messages, 0
+        if current_tokens is not None and current_tokens < self.proactive_prune_tokens:
+            return messages, 0
+        # Nothing to reclaim until there are messages outside the protected tail.
+        if len(messages) <= self.protect_last_n + self._protect_head_size(messages) + 1:
+            return messages, 0
+        return self._prune_old_tool_results(
+            messages,
+            protect_tail_count=self.protect_last_n,
+            protect_tail_tokens=None,
+            min_prune_chars=self.proactive_prune_min_result_chars,
+        )
 
     # ------------------------------------------------------------------
     # Summarization

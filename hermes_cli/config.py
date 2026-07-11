@@ -1418,6 +1418,19 @@ DEFAULT_CONFIG = {
                                       # set this above 0.75 to override the floor.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "proactive_prune_tokens": 0,  # opt-in trigger (tokens) for the deterministic,
+                                      # no-LLM tool-result prune, run independently of
+                                      # `threshold` above. On large-window models
+                                      # `threshold` (≈50% of the window) rarely fires,
+                                      # so old tool output otherwise rides in history
+                                      # and is re-sent every turn; a low value like
+                                      # 48000 reclaims it early. 0 = off. Recent tail
+                                      # protected by `protect_last_n`. Built-in
+                                      # compressor only (other engines inherit a no-op).
+        "proactive_prune_min_result_chars": 8000,  # the prune's summarize pass only
+                                      # touches tool results larger than this (chars);
+                                      # clamped to >= 200 so a generated summary can't
+                                      # itself be re-summarized.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt

@@ -105,6 +105,27 @@ class ContextEngine(ABC):
                 don't support it may simply ignore this argument.
         """
 
+    # -- Optional: proactive tool-result prune -----------------------------
+
+    def prune_tool_results_only(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int | None = None,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Deterministically trim old tool-result payloads without an LLM call.
+
+        Runs on a low, cost-oriented trigger independent of ``should_compress``
+        so large-window engines can reclaim re-sent tool output long before full
+        compaction would fire. Returns ``(messages, n_pruned)``.
+
+        Default is a safe no-op: the list is returned unchanged with ``0``
+        pruned. Engines that don't implement a cheap prune — and any engine that
+        predates this hook — inherit this default, so the agent loop's
+        post-tool-call prune path never raises ``AttributeError`` on them. The
+        built-in ContextCompressor overrides this with the real implementation.
+        """
+        return messages, 0
+
     # -- Optional: pre-flight check ----------------------------------------
 
     def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:

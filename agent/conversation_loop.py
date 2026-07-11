@@ -4791,6 +4791,31 @@ def run_conversation(
                     conversation_history = conversation_history_after_compression(
                         agent, messages
                     )
+                elif agent.compression_enabled:
+                    # Proactive tool-result prune: reclaim re-sent history on
+                    # large-window models long before should_compress() (≈50% of
+                    # the window) would ever fire. Deterministic, no LLM call;
+                    # protects the recent tail. No-op unless proactive_prune_tokens
+                    # is configured and _real_tokens is above it. See
+                    # ContextCompressor.prune_tool_results_only.
+                    _pruned_msgs, _pruned_n = _compressor.prune_tool_results_only(
+                        messages, current_tokens=_real_tokens
+                    )
+                    if _pruned_n:
+                        # Do NOT rebuild conversation_history here. Unlike the
+                        # compression branch, the prune neither rotates the session
+                        # nor calls archive_and_compact(), so there is no new
+                        # persistence baseline to establish. _prune_old_tool_results
+                        # returns per-message copies that preserve the
+                        # _DB_PERSISTED_MARKER, so the marker-based flush dedup (see
+                        # _flush_messages_to_session_db) already prevents both
+                        # duplicate writes and dropped rows. Calling
+                        # conversation_history_after_compression (a compaction-only
+                        # helper keyed on the _last_compaction_in_place flag) would be
+                        # a no-op at best, and on a stale in-place flag could seed
+                        # this turn's fresh, not-yet-persisted rows into history_ids
+                        # and skip writing them.
+                        messages = _pruned_msgs
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages

@@ -4000,6 +4000,30 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not finalize:
+                # Render streamed preview frames with the same MarkdownV2
+                # conversion the finalize edit applies, so edit-transport
+                # streaming shows formatted output instead of raw ## / ** / |
+                # markdown until the last frame -- parity with send_draft's
+                # per-frame MarkdownV2-then-plain retry.  Only a BadRequest
+                # (malformed mid-stream entities, or MarkdownV2 escapes
+                # inflating the frame past the 4096 limit) falls back to the
+                # plain frame below; flood control and network errors
+                # propagate unchanged to the original handlers.
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=normalize_telegram_chat_id(chat_id),
+                        message_id=int(message_id),
+                        text=self.format_message(content),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                    if _saturated_preview:
+                        self._last_overflow_preview[_preview_key] = content
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as mdv2_err:
+                    if "not modified" in str(mdv2_err).lower():
+                        return SendResult(success=True, message_id=message_id)
+                    if not self._is_bad_request_error(mdv2_err):
+                        raise
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),

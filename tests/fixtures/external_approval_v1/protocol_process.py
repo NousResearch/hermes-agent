@@ -15,7 +15,7 @@ from pathlib import Path
 from tools import approval as approval_module
 
 
-COMMAND = "printf '%s\\n' nls-184-injected-execution"
+COMMAND = "rm -rf /tmp/nls-184-injected-execution"
 MARKER = "nls-184-external-approval-process"
 
 

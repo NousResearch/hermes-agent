@@ -13,7 +13,10 @@ import binascii
 import contextvars
 import copy
 import errno
-import fcntl
+try:
+    import fcntl  # POSIX only; Windows imports stay viable when external mode is off.
+except ImportError:  # pragma: no cover - native Windows
+    fcntl = None  # type: ignore[assignment]
 import fnmatch
 import functools
 import hashlib
@@ -2632,6 +2635,8 @@ _EXTERNAL_SESSION_KEYS = frozenset({"id", "profile"})
 
 
 def _fd_access_mode(fd: int) -> int:
+    if fcntl is None:
+        raise OSError(errno.ENOTSUP, "fcntl is unavailable on this platform")
     return fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE
 
 
@@ -3039,6 +3044,85 @@ def _build_external_receipt(grant: dict) -> dict:
     }
 
 
+def _run_tirith_command_check(command: str) -> dict:
+    """Run Tirith (or synthesize fail-closed warn) for command analysis."""
+    tirith_result = {"action": "allow", "findings": [], "summary": ""}
+    try:
+        from tools.tirith_security import check_command_security
+        return check_command_security(command)
+    except ImportError:
+        # Tirith module not installed.  When tirith_fail_open is True (the
+        # default) we silently allow, matching the pre-existing behaviour.
+        # When tirith_fail_open is False the operator has explicitly opted into
+        # fail-closed; an import failure must not silently grant access, so we
+        # synthesize a warn result that will be surfaced to the user through the
+        # normal approval flow.  Fixes #20733.
+        _tirith_fail_open = True  # safe default if config is unreadable
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            _sec = (_load_cfg() or {}).get("security", {}) or {}
+            _tirith_enabled = _sec.get("tirith_enabled", True)
+            if _tirith_enabled:
+                _tirith_fail_open = _sec.get("tirith_fail_open", True)
+        except Exception:
+            pass
+        if not _tirith_fail_open:
+            return {
+                "action": "warn",
+                "findings": [
+                    {
+                        "rule_id": "tirith-import-error",
+                        "severity": "HIGH",
+                        "title": "Tirith security module unavailable",
+                        "description": (
+                            "The Tirith security scanner could not be imported. "
+                            "Because security.tirith_fail_open is false, this "
+                            "command cannot be silently allowed. Approve only if "
+                            "you have verified the command is safe."
+                        ),
+                    }
+                ],
+                "summary": "Tirith unavailable (fail-closed)",
+            }
+        return tirith_result
+
+
+def _collect_command_approval_warnings(
+    command: str, *, respect_session_approvals: bool = True
+) -> list[tuple[str, str, bool]]:
+    """Return normal approval warnings for *command* (tirith + dangerous patterns).
+
+    Each entry is ``(pattern_key, description, is_tirith)``. Session-approved
+    patterns are omitted in the normal interactive flow. External exact-once
+    passes ``respect_session_approvals=False`` so a prior session grant cannot
+    bypass a new exact-scope authorization.
+    """
+    tirith_result = _run_tirith_command_check(command)
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+
+    warnings: list[tuple[str, str, bool]] = []
+    session_key = get_current_session_key()
+
+    # Tirith block/warn → approvable warning with rich findings.
+    # Previously, tirith "block" was a hard block with no approval prompt.
+    # Now both block and warn go through the approval flow so users can
+    # inspect the explanation and approve if they understand the risk.
+    if tirith_result["action"] in {"block", "warn"}:
+        findings = tirith_result.get("findings") or []
+        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
+        tirith_key = f"tirith:{rule_id}"
+        tirith_desc = _format_tirith_description(tirith_result)
+        if not respect_session_approvals or not is_approved(session_key, tirith_key):
+            warnings.append((tirith_key, tirith_desc, True))
+
+    if is_dangerous and (
+        not respect_session_approvals or not is_approved(session_key, pattern_key)
+    ):
+        warnings.append((pattern_key, description, False))
+
+    return warnings
+
+
 def _external_exact_once_guard(command: str) -> dict:
     from hermes_constants import get_hermes_home
 
@@ -3127,16 +3211,28 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("User deny rule %r blocked command: %s",
                        deny_pattern, command[:200])
         return _user_deny_block_result(deny_pattern)
+
+    # Permanent allowlist shortcuts before external exact-once so allowlisted
+    # host commands never emit request/grant/receipt records.
+    if _command_matches_permanent_allowlist(command):
+        return {"approved": True, "message": None}
+
+    # External exact-once authorizes only commands that normal analysis would
+    # warn on. Safe host commands emit no protocol records. When warnings
+    # exist, exact-once stays enforced even under yolo / approvals.mode=off
+    # and in noninteractive headless CLI.
     if _is_external_exact_once_active():
+        warnings = _collect_command_approval_warnings(
+            command, respect_session_approvals=False
+        )
+        if not warnings:
+            return {"approved": True, "message": None}
         return _external_exact_once_guard(command)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
-        return {"approved": True, "message": None}
-
-    if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
     is_cli = _is_interactive_cli()
@@ -3211,79 +3307,14 @@ def check_all_command_guards(command: str, env_type: str,
                     # else: tirith_fail_open is True — allow as before
         return {"approved": True, "message": None}
 
-    # --- Phase 1: Gather findings from both checks ---
-
-    # Tirith check — wrapper guarantees no raise for expected failures.
-    # Only catch ImportError (module not installed).
-    tirith_result = {"action": "allow", "findings": [], "summary": ""}
-    try:
-        from tools.tirith_security import check_command_security
-        tirith_result = check_command_security(command)
-    except ImportError:
-        # Tirith module not installed.  When tirith_fail_open is True (the
-        # default) we silently allow, matching the pre-existing behaviour.
-        # When tirith_fail_open is False the operator has explicitly opted into
-        # fail-closed; an import failure must not silently grant access, so we
-        # synthesize a warn result that will be surfaced to the user through the
-        # normal approval flow.  Fixes #20733.
-        _tirith_fail_open = True  # safe default if config is unreadable
-        try:
-            from hermes_cli.config import load_config as _load_cfg
-            _sec = (_load_cfg() or {}).get("security", {}) or {}
-            _tirith_enabled = _sec.get("tirith_enabled", True)
-            if _tirith_enabled:
-                _tirith_fail_open = _sec.get("tirith_fail_open", True)
-        except Exception:
-            pass
-        if not _tirith_fail_open:
-            tirith_result = {
-                "action": "warn",
-                "findings": [
-                    {
-                        "rule_id": "tirith-import-error",
-                        "severity": "HIGH",
-                        "title": "Tirith security module unavailable",
-                        "description": (
-                            "The Tirith security scanner could not be imported. "
-                            "Because security.tirith_fail_open is false, this "
-                            "command cannot be silently allowed. Approve only if "
-                            "you have verified the command is safe."
-                        ),
-                    }
-                ],
-                "summary": "Tirith unavailable (fail-closed)",
-            }
-        # else: tirith_fail_open is True — allow as before (tirith_result stays "allow")
-
-    # Dangerous command check (detection only, no approval)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
-
-    # --- Phase 2: Decide ---
-
-    # Collect warnings that need approval
-    warnings = []  # list of (pattern_key, description, is_tirith)
-
-    session_key = get_current_session_key()
-
-    # Tirith block/warn → approvable warning with rich findings.
-    # Previously, tirith "block" was a hard block with no approval prompt.
-    # Now both block and warn go through the approval flow so users can
-    # inspect the explanation and approve if they understand the risk.
-    if tirith_result["action"] in {"block", "warn"}:
-        findings = tirith_result.get("findings") or []
-        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
-        tirith_key = f"tirith:{rule_id}"
-        tirith_desc = _format_tirith_description(tirith_result)
-        if not is_approved(session_key, tirith_key):
-            warnings.append((tirith_key, tirith_desc, True))
-
-    if is_dangerous:
-        if not is_approved(session_key, pattern_key):
-            warnings.append((pattern_key, description, False))
+    # --- Phase 1+2: Gather findings and collect warnings needing approval ---
+    warnings = _collect_command_approval_warnings(command)
 
     # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
+
+    session_key = get_current_session_key()
 
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
@@ -3311,7 +3342,7 @@ def check_all_command_guards(command: str, env_type: str,
             }
         # verdict == "escalate" → fall through to manual prompt
 
-    # --- Phase 3: Approval ---
+    # --- Phase 3: Prompt ---
 
     # Combine descriptions for a single approval prompt
     combined_desc = "; ".join(desc for _, desc, _ in warnings)

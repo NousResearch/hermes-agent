@@ -33,11 +33,10 @@ OPERATION_KIND = "terminal.command"
 TOOL_IDENTITY = "terminal"
 SESSION_ID = "nls-184-session"
 SECRET = "NLS184_CREDENTIAL_MATERIAL_DO_NOT_TRANSPORT"
-# The dynamic bytes here are deliberate: v1 fingerprints every byte exactly.
-COMMAND = (
-    f"printf '%s\\n' '2026-07-11T00:00:00Z /tmp/nls-184-7f9e "
-    f"$(uuidgen) $(uname -s) {SECRET}'"
-)
+# Dangerous host command with dynamic bytes: v1 fingerprints every byte exactly.
+# Exact-once only authorizes commands that normal analysis would warn on.
+COMMAND = f"rm -rf /tmp/nls-184-7f9e-$(uuidgen)-$(uname -s)-{SECRET}"
+SAFE_HOST_COMMAND = "echo nls-184-safe-host-command"
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "external_approval_v1"
 PROCESS_HELPER = FIXTURES / "protocol_process.py"
 PROCESS_MARKER = "nls-184-external-approval-process"
@@ -161,6 +160,15 @@ def external_protocol(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
     monkeypatch.delenv("HERMES_EXTERNAL_APPROVAL_MODE", raising=False)
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    monkeypatch.setattr(
+        approval_module,
+        "_run_tirith_command_check",
+        lambda _command: {"action": "allow", "findings": [], "summary": ""},
+    )
+    monkeypatch.setattr(
+        approval_module, "_command_matches_permanent_allowlist", lambda _command: False
+    )
+    monkeypatch.setattr(approval_module, "is_approved", lambda *_args, **_kwargs: False)
     token = approval_module.set_current_session_key(SESSION_ID)
     approval_module.clear_session(SESSION_ID)
     approval_module.configure_external_approval_fd_protocol(
@@ -182,6 +190,15 @@ def _run_guarded(command: str, executions: list[str]) -> dict:
     if result["approved"]:
         executions.append(command)
     return result
+
+
+def _assert_no_protocol_records(harness: _PipeHarness) -> None:
+    """Fail if the record FD already has bytes (including a partial frame)."""
+    import select
+
+    ready, _, _ = select.select([harness.records_read_fd], [], [], 0)
+    assert not ready, "expected no external protocol records on the record FD"
+    assert harness.record_buffer == bytearray()
 
 
 def _request_then_signed_grant(harness, private_key, executions: list[str]) -> tuple[dict, dict]:
@@ -229,13 +246,13 @@ def test_request_builder_binds_terminal_identity_and_every_raw_command_byte():
 @pytest.mark.parametrize(
     "changed_command",
     (
-        COMMAND.replace("2026-07-11T00:00:00Z", "2026-07-11T00:00:01Z"),
+        COMMAND.replace("NLS184_CREDENTIAL", "NLS184_CHANGED"),
         COMMAND.replace("/tmp/nls-184-7f9e", "/tmp/nls-184-other"),
         COMMAND.replace("$(uuidgen)", "$(uuidgen)-again"),
         COMMAND.replace("$(uname -s)", "$(uname -m)"),
         COMMAND + " ",
     ),
-    ids=("timestamp", "temp-path", "uuid", "shell-substitution", "whitespace"),
+    ids=("credential", "temp-path", "uuid", "shell-substitution", "whitespace"),
 )
 def test_every_dynamic_or_shell_byte_requires_a_new_approval(changed_command):
     original = approval_module.build_external_approval_request(
@@ -548,6 +565,15 @@ def test_config_mode_off_keeps_external_protocol_inactive_even_with_fds(monkeypa
     monkeypatch.setenv("HERMES_HOME", profile_home)
     monkeypatch.delenv("HERMES_EXTERNAL_APPROVAL_MODE", raising=False)
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    monkeypatch.setattr(
+        approval_module,
+        "_run_tirith_command_check",
+        lambda _command: {"action": "allow", "findings": [], "summary": ""},
+    )
+    monkeypatch.setattr(
+        approval_module, "_command_matches_permanent_allowlist", lambda _command: False
+    )
+    monkeypatch.setattr(approval_module, "is_approved", lambda *_args, **_kwargs: False)
     token = approval_module.set_current_session_key(SESSION_ID)
     approval_module.configure_external_approval_fd_protocol(
         grant_input_fd=harness.grant_read_fd,
@@ -1173,3 +1199,150 @@ def test_oversized_unterminated_grant_permanently_fails_closed(external_protocol
     assert result["approved"] is False
     assert len(approval_module._grant_read_buffer) <= 64 * 1024
     assert approval_module._external_fd_protocol_failed is True
+
+
+def test_safe_host_command_emits_no_external_protocol_records(external_protocol):
+    """Safe host commands must not enter the exact-once request/grant/receipt path."""
+    harness, _private_key, _profile_home = external_protocol
+    executions: list[str] = []
+
+    result = _run_guarded(SAFE_HOST_COMMAND, executions)
+
+    assert result["approved"] is True
+    assert result.get("external_approval") is None
+    assert executions == [SAFE_HOST_COMMAND]
+    _assert_no_protocol_records(harness)
+
+
+def test_dangerous_command_exact_once_emits_request_then_consumes_once(external_protocol):
+    """Dangerous commands still require a signed grant and emit request then receipt."""
+    harness, private_key, _profile_home = external_protocol
+    executions: list[str] = []
+
+    first = _run_guarded(COMMAND, executions)
+    assert first["approved"] is False
+    assert first.get("external_approval") == "awaiting_grant"
+    request = harness.take_record()
+    assert request["kind"] == "request"
+    assert request["operation"]["fingerprint"] == _fingerprint(COMMAND)
+    assert executions == []
+
+    harness.send_grant(_sign(private_key, _unsigned_grant(request)))
+    second = _run_guarded(COMMAND, executions)
+    receipt = harness.take_record()
+
+    assert second["approved"] is True
+    assert second.get("external_approval") == "consumed"
+    assert receipt["kind"] == "receipt"
+    assert receipt["approval_id"] == request["approval_id"]
+    assert executions == [COMMAND]
+
+    third = _run_guarded(COMMAND, executions)
+    replay_request = harness.take_record()
+    assert third["approved"] is False
+    assert replay_request["kind"] == "request"
+    assert executions == [COMMAND]
+
+
+def test_permanently_allowlisted_command_emits_no_external_protocol_records(
+    external_protocol, monkeypatch
+):
+    """Permanently allowlisted command text skips exact-once records entirely."""
+    harness, _private_key, _profile_home = external_protocol
+    allowlisted = "bash -c 'echo nls-184-permanently-allowlisted'"
+    monkeypatch.setattr(
+        approval_module,
+        "_command_matches_permanent_allowlist",
+        lambda command: command == allowlisted,
+    )
+    executions: list[str] = []
+
+    result = _run_guarded(allowlisted, executions)
+
+    assert result["approved"] is True
+    assert result.get("external_approval") is None
+    assert executions == [allowlisted]
+    _assert_no_protocol_records(harness)
+
+
+def test_yolo_and_approvals_mode_off_do_not_bypass_external_when_warnings_exist(
+    external_protocol, monkeypatch
+):
+    """Headless exact-once stays enforced even under yolo / approvals.mode=off."""
+    harness, private_key, _profile_home = external_protocol
+    monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+    monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "off")
+    approval_module.enable_session_yolo(SESSION_ID)
+    executions: list[str] = []
+
+    first = _run_guarded(COMMAND, executions)
+    request = harness.take_record()
+    assert first["approved"] is False
+    assert request["kind"] == "request"
+    assert executions == []
+
+    harness.send_grant(_sign(private_key, _unsigned_grant(request)))
+    second = _run_guarded(COMMAND, executions)
+    receipt = harness.take_record()
+    assert second["approved"] is True
+    assert receipt["kind"] == "receipt"
+    assert executions == [COMMAND]
+
+
+def test_approval_module_imports_when_fcntl_unavailable(tmp_path):
+    """Native Windows (no fcntl) must still import approval when external mode is off."""
+    script = tmp_path / "import_without_fcntl.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import builtins",
+                "import sys",
+                "real_import = builtins.__import__",
+                "def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):",
+                "    if name == 'fcntl':",
+                "        raise ImportError('simulated Windows without fcntl')",
+                "    return real_import(name, globals, locals, fromlist, level)",
+                "builtins.__import__ = blocked_import",
+                "sys.modules.pop('fcntl', None)",
+                "for key in list(sys.modules):",
+                "    if key == 'tools.approval' or key.startswith('tools.approval.'):",
+                "        del sys.modules[key]",
+                "import tools.approval as approval",
+                "assert approval.fcntl is None",
+                "assert approval._is_external_exact_once_active() is False",
+                "print('IMPORT_OK')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    completed = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=str(repo_root),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "IMPORT_OK" in completed.stdout
+
+
+def test_configure_external_protocol_fails_closed_when_fcntl_unavailable(
+    external_protocol, monkeypatch
+):
+    """Active exact-once wiring must fail closed when fcntl cannot validate FDs."""
+    harness, _private_key, _profile_home = external_protocol
+    approval_module.clear_external_approval_fd_protocol()
+    monkeypatch.setattr(approval_module, "fcntl", None)
+
+    with pytest.raises(OSError):
+        approval_module.configure_external_approval_fd_protocol(
+            grant_input_fd=harness.grant_read_fd,
+            record_output_fd=harness.records_write_fd,
+        )
+    assert approval_module._is_external_exact_once_active() is False

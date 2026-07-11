@@ -9,7 +9,10 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc -p . --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:workflows": "vite build --config ../plugins/workflows/dashboard/vite.config.js",
+    "test:workflows": "vitest run --config ../plugins/workflows/dashboard/vitest.config.js",
+    "lint:workflows": "cd ../plugins/workflows/dashboard && eslint src --config eslint.config.js"
   },
   "dependencies": {
     "@hermes/shared": "file:../apps/shared",

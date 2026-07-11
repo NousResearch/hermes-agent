@@ -890,7 +890,7 @@ def test_dashboard_bundle_is_syntax_valid_when_node_is_available():
     node = shutil.which("node")
     if not node:
         pytest.skip("node is not installed")
-    bundle = PLUGIN_DIR / "dist" / "index.js"
+    bundle = PLUGIN_DIR / "src" / "app.js"
     result = subprocess.run(
         [node, "--check", str(bundle)],
         text=True,
@@ -901,7 +901,7 @@ def test_dashboard_bundle_is_syntax_valid_when_node_is_available():
 
 
 def test_dashboard_bundle_renders_node_runs_and_linked_worker_tasks():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
 
     assert "node-runs" in bundle
     assert "Linked worker task" in bundle
@@ -910,7 +910,7 @@ def test_dashboard_bundle_renders_node_runs_and_linked_worker_tasks():
 
 
 def test_dashboard_bundle_wires_node_runs_as_execution_drilldown():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     load_node_runs = bundle[
         bundle.index("function loadNodeRuns") : bundle.index("function loadExecution")
     ]
@@ -933,7 +933,7 @@ def test_dashboard_bundle_wires_node_runs_as_execution_drilldown():
 
 
 def test_dashboard_bundle_contains_validation_checklist_and_dispatcher_banner():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
 
     assert "Validation checklist" in bundle
     assert "No unsupported nodes (implemented today)" in bundle
@@ -1006,7 +1006,7 @@ def test_dashboard_feed_input_fields_can_target_continuous_trigger():
 
 
 def test_dashboard_bundle_contains_feed_controls_and_honest_scalar_scope():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
 
     assert "renderInputFeedPanel" in bundle
     assert "Open Continuous Feed" in bundle
@@ -1020,7 +1020,7 @@ def test_dashboard_bundle_contains_feed_controls_and_honest_scalar_scope():
 
 
 def test_dashboard_validation_checklist_waits_for_parsed_spec_before_showing_failures():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     render_body = bundle[
         bundle.index("function renderValidationChecklist") : bundle.index(
             "function renderAdvancedYaml"
@@ -1032,7 +1032,7 @@ def test_dashboard_validation_checklist_waits_for_parsed_spec_before_showing_fai
 
 
 def test_dashboard_initial_load_refreshes_workflow_status_without_waiting_for_it():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     load_status_start = bundle.index("function loadWorkflowStatus")
     load_status_end = bundle.index("function loadWorkflowCapabilities", load_status_start)
     load_status = bundle[load_status_start:load_status_end]
@@ -1061,7 +1061,7 @@ def test_dashboard_initial_load_refreshes_workflow_status_without_waiting_for_it
 
 
 def test_dashboard_bundle_preserves_selected_definition_version():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     helpers = bundle[
         bundle.index("function versionQuery") : bundle.index("function runInputSpec")
     ]
@@ -1097,7 +1097,7 @@ def test_dashboard_bundle_preserves_selected_definition_version():
 
 
 def test_dashboard_validate_keeps_draft_unrunnable_until_deploy():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     validate = bundle[
         bundle.index("function validateDefinition") : bundle.index("function deployDefinition")
     ]
@@ -1113,7 +1113,7 @@ def test_dashboard_validate_keeps_draft_unrunnable_until_deploy():
 
 
 def test_dashboard_bundle_runs_selected_or_active_definition_version():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     selected_run_version = bundle[
         bundle.index("function selectedRunVersion") : bundle.index("function runWorkflow")
     ]
@@ -1132,7 +1132,7 @@ def test_dashboard_bundle_runs_selected_or_active_definition_version():
         
 
 def test_dashboard_execution_timeline_warns_when_stalled():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     warn_start = bundle.index("function renderExecutionStallWarning(")
     warn_end = bundle.index("function renderTimeline(", warn_start)
     warn_body = bundle[warn_start:warn_end]
@@ -1149,7 +1149,7 @@ def test_dashboard_execution_timeline_warns_when_stalled():
 
 
 def test_dashboard_live_refreshes_non_terminal_executions():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
 
     assert "Live-refresh a non-terminal execution" in bundle
     assert "setInterval" in bundle
@@ -1157,7 +1157,7 @@ def test_dashboard_live_refreshes_non_terminal_executions():
 
 
 def test_dashboard_event_status_maps_only_emitted_kinds():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     status_start = bundle.index("function eventStatus(")
     status_end = bundle.index("function statusByNode(", status_start)
     status_body = bundle[status_start:status_end]
@@ -1173,7 +1173,7 @@ def test_dashboard_event_status_maps_only_emitted_kinds():
 
 
 def _dashboard_helper_js() -> str:
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     kind_start = bundle.index("const NODE_KIND_LIST")
     kind_end = bundle.index("const EXAMPLE_DEFINITION", kind_start)
     start = bundle.index("function asArray")
@@ -1941,7 +1941,7 @@ def test_dashboard_input_object_for_fields_rejects_invalid_typed_values():
 
 
 def test_dashboard_bundle_registers_plugin_without_build_scaffolding():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     assert "window.__HERMES_PLUGIN_SDK__" in bundle
     assert "window.__HERMES_PLUGINS__" in bundle
     assert 'REG.register("workflows"' in bundle
@@ -1952,7 +1952,7 @@ def test_dashboard_bundle_registers_plugin_without_build_scaffolding():
 
 
 def test_dashboard_bundle_uses_generated_input_form_for_runs():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
 
     assert "renderRunStartPanel" in bundle
     assert "Start Workflow Run" in bundle
@@ -1963,7 +1963,7 @@ def test_dashboard_bundle_uses_generated_input_form_for_runs():
 
 
 def test_dashboard_topbar_run_opens_start_panel_instead_of_running_silently():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     topbar_pos = bundle.index("function renderTopBar")
     topbar_body = bundle[topbar_pos : bundle.index("function renderSidebar", topbar_pos)]
 
@@ -1972,7 +1972,7 @@ def test_dashboard_topbar_run_opens_start_panel_instead_of_running_silently():
 
 
 def test_dashboard_run_start_panel_builds_typed_inputs_from_trigger_schema():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     panel_pos = bundle.index("function renderRunInputField")
     panel_body = bundle[panel_pos : bundle.index("function renderBottomPanel", panel_pos)]
 
@@ -1984,7 +1984,7 @@ def test_dashboard_run_start_panel_builds_typed_inputs_from_trigger_schema():
 
 
 def test_dashboard_run_workflow_uses_form_values_unless_advanced_json():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     run_pos = bundle.index("function runWorkflow")
     run_body = bundle[run_pos : bundle.index("function draftFromGoal", run_pos)]
     render_pos = bundle.index("function runWorkflow")
@@ -2001,7 +2001,7 @@ def test_dashboard_run_workflow_uses_form_values_unless_advanced_json():
 
 
 def test_dashboard_bundle_clears_run_input_values_when_active_spec_changes():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     load_pos = bundle.index("function loadDefinition")
     load_body = bundle[load_pos : bundle.index("function loadEvents", load_pos)]
     draft_pos = bundle.index("function draftFromGoal")
@@ -2029,7 +2029,7 @@ def test_dashboard_bundle_clears_run_input_values_when_active_spec_changes():
 
 
 def test_dashboard_bundle_clears_run_input_values_when_advanced_yaml_changes():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     advanced = bundle[
         bundle.index("function renderAdvancedYaml") : bundle.index(
             "function renderTimeline"
@@ -2050,7 +2050,7 @@ def test_dashboard_bundle_clears_run_input_values_when_advanced_yaml_changes():
 
 
 def test_dashboard_bundle_is_prompt_first_not_yaml_first():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     render_start = bundle.index('return h("div", { className: "hermes-workflows" }')
     render_tree = bundle[render_start:]
 
@@ -2066,14 +2066,14 @@ def test_dashboard_bundle_is_prompt_first_not_yaml_first():
 
 
 def test_dashboard_bundle_contains_draft_review_and_refine_ui():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
 
     assert "refineWorkflow" in bundle
     assert "Refine" in bundle
 
 
 def test_dashboard_bundle_wires_draft_refine_before_advanced_yaml():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     render_start = bundle.index('return h("div", { className: "hermes-workflows" }')
     render_tree = bundle[render_start:]
 
@@ -2087,7 +2087,7 @@ def test_dashboard_bundle_wires_draft_refine_before_advanced_yaml():
 
 
 def test_dashboard_bundle_draft_review_labels_branch_and_failure_targets():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     rows_pos = bundle.index("function nodeSummaryRows")
     next_function_pos = bundle.index("function statusClass", rows_pos)
     rows_body = bundle[rows_pos:next_function_pos]
@@ -2097,7 +2097,7 @@ def test_dashboard_bundle_draft_review_labels_branch_and_failure_targets():
 
 
 def test_dashboard_bundle_refine_clears_stale_state_before_validation_and_requires_spec():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     refine_pos = bundle.index("function refineWorkflow")
     next_function_pos = bundle.index("function importDefinitionFile", refine_pos)
     refine_body = bundle[refine_pos:next_function_pos]
@@ -2123,7 +2123,7 @@ def test_dashboard_bundle_refine_clears_stale_state_before_validation_and_requir
 
 
 def test_dashboard_bundle_syncs_editor_when_definition_is_selected():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     load_definition_pos = bundle.index("function loadDefinition")
     next_function_pos = bundle.index("function loadEvents", load_definition_pos)
     load_definition_body = bundle[load_definition_pos:next_function_pos]
@@ -2132,7 +2132,7 @@ def test_dashboard_bundle_syncs_editor_when_definition_is_selected():
 
 
 def test_dashboard_bundle_clears_stale_draft_state_before_empty_goal_error():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     draft_pos = bundle.index("function draftFromGoal")
     next_function_pos = bundle.index("function importDefinitionFile", draft_pos)
     draft_body = bundle[draft_pos:next_function_pos]
@@ -2144,7 +2144,7 @@ def test_dashboard_bundle_clears_stale_draft_state_before_empty_goal_error():
 
 
 def test_dashboard_bundle_resets_stale_selection_after_goal_draft():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     draft_pos = bundle.index("function draftFromGoal")
     next_function_pos = bundle.index("function refineWorkflow", draft_pos)
     draft_body = bundle[draft_pos:next_function_pos]
@@ -2162,7 +2162,7 @@ def test_dashboard_bundle_resets_stale_selection_after_goal_draft():
 
 
 def test_dashboard_bundle_keeps_yaml_as_advanced_escape_hatch():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     advanced_pos = bundle.index("function renderAdvancedYaml")
     advanced_body = bundle[advanced_pos : bundle.index("function renderTimeline", advanced_pos)]
 
@@ -2203,7 +2203,7 @@ def test_web_plugin_sdk_exposes_react_flow_to_static_plugins():
 
 
 def test_dashboard_bundle_selects_execution_from_url_query():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
 
     assert "URLSearchParams" in bundle
     assert "location.search" in bundle
@@ -2212,7 +2212,7 @@ def test_dashboard_bundle_selects_execution_from_url_query():
 
 
 def test_dashboard_bundle_contains_visual_editor_markers():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     assert "SDK.ReactFlow" in bundle or "SDK.reactFlow" in bundle
     assert "ReactFlowProvider" in bundle
     for marker in ["Background", "Controls", "MiniMap", "Handle", "Position"]:
@@ -2251,7 +2251,7 @@ def test_dashboard_bundle_contains_visual_editor_markers():
 
 
 def test_dashboard_bundle_contains_text_first_agent_cell_editor_markers():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
 
     for marker in [
         "renderAgentTaskInspector",
@@ -2271,7 +2271,7 @@ def test_dashboard_bundle_contains_text_first_agent_cell_editor_markers():
 
 
 def test_dashboard_bundle_contains_workflow_mvp_api_and_ui_markers():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     for marker in [
         'const API = "/api/plugins/workflows"',
         "/api/plugins/workflows/definitions",
@@ -2676,7 +2676,7 @@ def test_bad_spec_returns_400_with_validation_message(client):
 
 
 def test_dashboard_bundle_clears_draft_metadata_when_selecting_or_importing_definition():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
 
     load_pos = bundle.index("function loadDefinition")
     load_end = bundle.index("function loadEvents", load_pos)
@@ -2700,7 +2700,7 @@ def test_dashboard_bundle_clears_draft_metadata_when_selecting_or_importing_defi
 
 
 def test_dashboard_bundle_summarizes_structured_prompts_for_draft_review():
-    bundle = (PLUGIN_DIR / "dist" / "index.js").read_text(encoding="utf-8")
+    bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     helper = bundle[
         bundle.index("function promptObjectiveText") : bundle.index("function nodeSummaryRows")
     ]

@@ -7948,6 +7948,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
+            # Persist alias-derived credentials so they survive session restarts.
+            # Direct aliases carry explicit base_url and api_mode; persist them
+            # to config.yaml so the runtime picks them up on the next turn.
+            # When switching to a non-alias model, clear stale alias values so
+            # they don't leak into unrelated providers (GitHub #62470).
+            if result.resolved_via_alias:
+                if result.base_url:
+                    save_config_value("model.base_url", result.base_url)
+                if result.api_mode:
+                    save_config_value("model.api_mode", result.api_mode)
+            else:
+                save_config_value("model.base_url", "")
+                save_config_value("model.api_mode", "")
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")

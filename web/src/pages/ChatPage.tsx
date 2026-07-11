@@ -297,6 +297,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
+  // Track profile transitions so the attach token rotates on profile change
+  // (not just on forced-fresh). Without this, the keep-alive registry
+  // reattaches to the old PTY which was spawned under the previous profile.
+  const prevProfileRef = useRef(scopedProfile);
+  const profileChangedRef = useRef(false);
+  if (prevProfileRef.current !== scopedProfile) {
+    profileChangedRef.current = true;
+    prevProfileRef.current = scopedProfile;
+  }
   const channel = useMemo(
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],
@@ -905,9 +914,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (resumeParam) params.resume = resumeParam;
       if (forceFresh) params.fresh = "1";
       // Keep-alive identity: reattach to this tab's living PTY across
-      // refresh/transient drops. A forced-fresh start rotates the token so
-      // the previous keep-alive PTY is not reattached (registry reaps it).
-      params.attach = ptyAttachToken(forceFresh);
+      // refresh/transient drops. A forced-fresh start OR a profile switch
+      // rotates the token so the previous keep-alive PTY is not reattached
+      // (registry reaps it) — the new PTY spawns under the new profile's
+      // HERMES_HOME (see web_server._resolve_chat_argv).
+      params.attach = ptyAttachToken(forceFresh || profileChangedRef.current);
+      profileChangedRef.current = false;
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).

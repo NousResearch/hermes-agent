@@ -156,6 +156,17 @@ def dispatcher_singleton_lock_path() -> Path:
     return _kb.kanban_home() / "kanban" / ".dispatcher.lock"
 
 
+def classify_stuck_streak(results) -> "tuple[bool, str]":
+    """Return whether a zero-spawn streak is only concurrency deferrals."""
+    from hermes_cli import kanban_db as _kb
+    counts = _kb.dispatch_cause_counts(results)
+    causes = ", ".join(
+        f"{cause}={count}"
+        for cause, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+    return _kb.dispatch_causes_capacity_only(counts), causes
+
+
 class DispatcherStuckEscalationState:
     """Pure state machine deciding when to fire the dispatcher-stuck Telegram
     escalation (BUILD-263).
@@ -1569,39 +1580,53 @@ class GatewayKanbanWatchersMixin:
                     bad_ticks = 0
                 if bad_ticks >= HEALTH_WINDOW:
                     now = int(time.time())
-                    causes = _kb.summarize_dispatch_causes(stuck_tick_results)
+                    capacity_only, causes = classify_stuck_streak(stuck_tick_results)
                     causes_suffix = f" causes: {causes}" if causes else ""
-                    if now - last_warn_at >= 300:
-                        logger.warning(
-                            "kanban dispatcher stuck: ready queue non-empty for "
-                            "%d consecutive ticks but 0 workers spawned. Check "
-                            "profile health (venv, PATH, credentials) and "
-                            "`hermes kanban list --status ready`.%s",
-                            bad_ticks, causes_suffix,
-                        )
-                        last_warn_at = now
-                    # Escalation (BUILD-263): once the streak is long enough
-                    # that it's clearly not a transient blip, page via
-                    # Telegram — logs alone went unread for ~6 hours in the
-                    # 2026-07-08 incident. Re-alerts at most hourly while
-                    # still stuck; cleared above the moment a worker spawns.
-                    if stuck_escalation.should_alert(bad_ticks, now):
-                        alert_msg = (
-                            "⚠️ kanban dispatcher stuck: ready queue non-empty "
-                            f"for {bad_ticks} consecutive ticks but 0 workers "
-                            f"spawned.{causes_suffix} Check profile health "
-                            "(venv, PATH, credentials) and "
-                            "`hermes kanban list --status ready`."
-                        )
-                        try:
-                            sent = await self._kanban_dispatcher_stuck_alert(alert_msg)
-                        except Exception:
-                            logger.exception(
-                                "kanban dispatcher: stuck-escalation alert send failed"
+                    if capacity_only:
+                        if now - last_warn_at >= 300:
+                            deferred = sum(
+                                _kb.dispatch_cause_counts(stuck_tick_results).values()
                             )
-                            sent = False
-                        if sent:
-                            stuck_escalation.mark_alerted(now)
+                            logger.info(
+                                "kanban dispatcher at capacity: %d ready task(s) "
+                                "deferred by concurrency caps for %d consecutive "
+                                "ticks (causes: %s) — healthy; drains when a running "
+                                "worker finishes.",
+                                deferred, bad_ticks, causes,
+                            )
+                            last_warn_at = now
+                    else:
+                        if now - last_warn_at >= 300:
+                            logger.warning(
+                                "kanban dispatcher stuck: ready queue non-empty for "
+                                "%d consecutive ticks but 0 workers spawned. Check "
+                                "profile health (venv, PATH, credentials) and "
+                                "`hermes kanban list --status ready`.%s",
+                                bad_ticks, causes_suffix,
+                            )
+                            last_warn_at = now
+                        # Escalation (BUILD-263): once the streak is long enough
+                        # that it's clearly not a transient blip, page via
+                        # Telegram — logs alone went unread for ~6 hours in the
+                        # 2026-07-08 incident. Re-alerts at most hourly while
+                        # still stuck; cleared above the moment a worker spawns.
+                        if stuck_escalation.should_alert(bad_ticks, now):
+                            alert_msg = (
+                                "⚠️ kanban dispatcher stuck: ready queue non-empty "
+                                f"for {bad_ticks} consecutive ticks but 0 workers "
+                                f"spawned.{causes_suffix} Check profile health "
+                                "(venv, PATH, credentials) and "
+                                "`hermes kanban list --status ready`."
+                            )
+                            try:
+                                sent = await self._kanban_dispatcher_stuck_alert(alert_msg)
+                            except Exception:
+                                logger.exception(
+                                    "kanban dispatcher: stuck-escalation alert send failed"
+                                )
+                                sent = False
+                            if sent:
+                                stuck_escalation.mark_alerted(now)
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
                 _release_singleton_lock(self._kanban_dispatcher_lock_handle)

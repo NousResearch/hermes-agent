@@ -277,3 +277,38 @@ def test_summarize_dispatch_causes_skips_none_entries():
         kb.summarize_dispatch_causes([None, res, None])
         == "respawn_guarded(active_pr)=1"
     )
+
+
+def test_dispatch_cause_counts_aggregates_quota_and_skips_none_entries():
+    r1 = kb.DispatchResult(
+        respawn_guarded=[("t1", "blocker_auth"), ("t2", "active_pr")],
+        rate_limited=["t3"],
+        max_in_progress_deferred=2,
+    )
+    r2 = kb.DispatchResult(
+        respawn_guarded=[("t4", "rate_limit_cooldown")],
+        skipped_per_profile_capped=[("t5", "alice", 2)],
+        max_in_progress_deferred=1,
+    )
+
+    assert kb.dispatch_cause_counts([None, r1, r2, None]) == {
+        "quota": 3,
+        "respawn_guarded(active_pr)": 1,
+        "concurrency_cap": 3,
+        "concurrency_cap(per_profile)": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("counts", "expected"),
+    [
+        ({}, False),
+        ({"concurrency_cap": 3}, True),
+        ({"concurrency_cap(per_profile)": 2}, True),
+        ({"concurrency_cap": 1, "concurrency_cap(per_profile)": 2}, True),
+        ({"concurrency_cap": 1, "quota": 1}, False),
+        ({"respawn_guarded(recent_success)": 1}, False),
+    ],
+)
+def test_dispatch_causes_capacity_only(counts, expected):
+    assert kb.dispatch_causes_capacity_only(counts) is expected

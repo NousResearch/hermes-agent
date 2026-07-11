@@ -22,7 +22,9 @@ from gateway.config import HomeChannel, Platform
 from gateway.kanban_watchers import (
     DispatcherStuckEscalationState,
     GatewayKanbanWatchersMixin,
+    classify_stuck_streak,
 )
+from hermes_cli.kanban_db import DispatchResult
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +90,38 @@ def test_escalate_after_ticks_and_realert_seconds_are_clamped_to_at_least_one():
     state = DispatcherStuckEscalationState(escalate_after_ticks=0, realert_seconds=-5)
     assert state.escalate_after_ticks == 1
     assert state.realert_seconds == 1
+
+
+# ---------------------------------------------------------------------------
+# classify_stuck_streak — pure capacity classification
+# ---------------------------------------------------------------------------
+
+
+def test_classify_stuck_streak_recognizes_per_profile_capacity_only():
+    results = [
+        DispatchResult(skipped_per_profile_capped=[("t1", "alice", 2)]),
+        DispatchResult(skipped_per_profile_capped=[("t2", "alice", 2)]),
+    ]
+
+    assert classify_stuck_streak(results) == (
+        True, "concurrency_cap(per_profile)=2",
+    )
+
+
+def test_classify_stuck_streak_rejects_mixed_capacity_and_spawn_exception():
+    results = [DispatchResult(
+        max_in_progress_deferred=1,
+        spawn_errors=[("t1", "boom")],
+    )]
+
+    capacity_only, causes = classify_stuck_streak(results)
+    assert capacity_only is False
+    assert causes == "concurrency_cap=1, spawn_exception=1"
+
+
+@pytest.mark.parametrize("results", [[], [None]])
+def test_classify_stuck_streak_treats_empty_or_none_results_as_suspicious(results):
+    assert classify_stuck_streak(results) == (False, "")
 
 
 # ---------------------------------------------------------------------------

@@ -809,37 +809,45 @@ class SlackAdapter(BasePlatformAdapter):
         """
         formatted = self.format_message(content)
         # Slack's response_url has the same ~40k char limit as chat_postMessage.
-        # Truncate to MAX_MESSAGE_LENGTH and use only the first chunk — the
-        # response_url replaces a single ephemeral ack, so multi-chunk isn't
-        # possible.  Long responses are rare for command replies.
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        text = chunks[0] if chunks else formatted
-        payload = {
-            "response_type": "ephemeral",
-            "replace_original": True,
-            "text": text,
-        }
-        try:
-            async with aiohttp.ClientSession(trust_env=True) as session:
-                async with session.post(
-                    ctx["response_url"],
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 200:
-                        return SendResult(success=True, message_id=None)
-                    body = await resp.text()
-                    logger.warning(
-                        "[Slack] response_url POST returned %s: %s",
-                        resp.status,
-                        body[:200],
-                    )
-        except Exception as e:
-            logger.warning(
-                "[Slack] response_url POST failed: %s",
-                e,
-            )
-        # Non-fatal — the user saw the initial ack already.
+        # response_url only *replaces* the original ack on the FIRST POST —
+        # subsequent POSTs to the same response_url within its ~30min window
+        # append new ephemeral messages instead of replacing (Slack's
+        # documented behavior). So a long reply (e.g. /model's provider list,
+        # which can exceed 4-8k chars once every provider row is included)
+        # now chunks across multiple POSTs instead of silently dropping
+        # everything past the first ~39k-char chunk. See: /model missing
+        # providers like apple-claude on Slack when the list is long.
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH) or [formatted]
+        ok = True
+        for i, chunk in enumerate(chunks):
+            payload = {
+                "response_type": "ephemeral",
+                "replace_original": i == 0,
+                "text": chunk,
+            }
+            try:
+                async with aiohttp.ClientSession(trust_env=True) as session:
+                    async with session.post(
+                        ctx["response_url"],
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status != 200:
+                            ok = False
+                            body = await resp.text()
+                            logger.warning(
+                                "[Slack] response_url POST returned %s: %s",
+                                resp.status,
+                                body[:200],
+                            )
+            except Exception as e:
+                ok = False
+                logger.warning(
+                    "[Slack] response_url POST failed: %s",
+                    e,
+                )
+        # Non-fatal even on partial failure: the user saw the initial ack
+        # already, and Slack drops response_url after ~30min regardless.
         return SendResult(success=True, message_id=None)
 
     def _warn_if_missing_group_dm_scopes(self, auth_response, team_name: str) -> None:

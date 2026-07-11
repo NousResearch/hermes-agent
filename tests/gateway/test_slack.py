@@ -3832,6 +3832,49 @@ class TestSlashEphemeralAck:
         assert len(adapter._slash_command_contexts) == 0
 
     @pytest.mark.asyncio
+    async def test_send_slash_ephemeral_chunks_long_response(self, adapter, monkeypatch):
+        """Long slash-command replies POST every chunk to response_url."""
+        import time
+
+        adapter._slash_command_contexts[("C_LONG", "U_LONG")] = {
+            "response_url": "https://hooks.slack.com/commands/T123/456/long",
+            "ts": time.monotonic(),
+        }
+        monkeypatch.setattr(adapter, "MAX_MESSAGE_LENGTH", 20)
+
+        responses = []
+
+        def make_response():
+            response = AsyncMock()
+            response.status = 200
+            response.__aenter__ = AsyncMock(return_value=response)
+            response.__aexit__ = AsyncMock(return_value=False)
+            responses.append(response)
+            return response
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(side_effect=lambda *args, **kwargs: make_response())
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        content = "First paragraph is long.\n\nSecond paragraph is also long."
+        expected_chunks = adapter.truncate_message(
+            adapter.format_message(content), adapter.MAX_MESSAGE_LENGTH
+        )
+
+        with patch(
+            "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
+        ):
+            result = await adapter.send("C_LONG", content)
+
+        assert result.success is True
+        assert mock_session.post.call_count == len(expected_chunks)
+        payloads = [call.kwargs["json"] for call in mock_session.post.call_args_list]
+        assert [payload["text"] for payload in payloads] == expected_chunks
+        assert payloads[0]["replace_original"] is True
+        assert all(payload["replace_original"] is False for payload in payloads[1:])
+
+    @pytest.mark.asyncio
     async def test_send_falls_through_without_context(self, adapter):
         """send() should use normal chat_postMessage when no slash context exists."""
         mock_result = {"ts": "1234.5678", "ok": True}

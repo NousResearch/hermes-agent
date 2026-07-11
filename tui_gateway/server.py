@@ -2937,6 +2937,8 @@ def _sync_session_key_after_compress(
             pass
         if old_key and old_key not in session.setdefault("_stale_session_keys", []):
             session["_stale_session_keys"].append(old_key)
+            session["_stale_session_keys"] = session["_stale_session_keys"][-8:]
+            # ponytail: cap 8 rotations; older keys' subs are stale enough to abandon
         session["session_key"] = new_session_id
         try:
             yolo_was_on = is_session_yolo_enabled(old_key)
@@ -2961,6 +2963,8 @@ def _sync_session_key_after_compress(
         # don't keep targeting the ended row.
         if old_key and old_key not in session.setdefault("_stale_session_keys", []):
             session["_stale_session_keys"].append(old_key)
+            session["_stale_session_keys"] = session["_stale_session_keys"][-8:]
+            # ponytail: cap 8 rotations; older keys' subs are stale enough to abandon
         session["session_key"] = new_session_id
 
     if clear_pending_title:
@@ -8403,6 +8407,28 @@ TERMINAL_KINDS = (
 
 def _poll_kanban_tui_subs(sid: str, session: dict) -> None:
     """Claim terminal Kanban events addressed to this TUI session."""
+    if session.get("_pending_kanban_turns"):
+        with session["history_lock"]:
+            if not session.get("running"):
+                session["running"] = True
+                pending = session["_pending_kanban_turns"]
+                session["_pending_kanban_turns"] = []
+                text = "\n".join(pending)
+            else:
+                pending = None
+        if pending is not None:
+            try:
+                _emit("message.start", sid)
+                _run_prompt_submit(
+                    f"__kanban__{int(time.time() * 1000)}", sid, session, text
+                )
+            except Exception as exc:
+                logger.warning(
+                    "kanban tui notifier: dispatch failed: %s", exc, exc_info=True
+                )
+                with session["history_lock"]:
+                    session["running"] = False
+
     keys = {
         str(k)
         for k in (session.get("session_key"), *session.get("_stale_session_keys", ()))
@@ -8455,17 +8481,25 @@ def _poll_kanban_tui_subs(sid: str, session: dict) -> None:
                         task = _kb.get_task(conn, sub["task_id"])
                         title = getattr(task, "title", None) or sub["task_id"]
                         for event in events:
-                            summary = ""
-                            if event.run_id is not None:
-                                run = _kb.get_run(conn, int(event.run_id))
-                                summary = getattr(run, "summary", None) or getattr(run, "handoff", None) or ""
-                            text = f"[kanban] {title}: {event.kind}"
-                            if summary:
-                                text += f" — {str(summary)[:500]}"
-                            _emit("status.update", sid, {"kind": "process", "text": text})
-                            emitted = True
+                            try:
+                                summary = ""
+                                if event.run_id is not None:
+                                    run = _kb.get_run(conn, int(event.run_id))
+                                    summary = getattr(run, "summary", None) or getattr(run, "handoff", None) or ""
+                                text = f"[kanban] {title}: {event.kind}"
+                                if summary:
+                                    text += f" — {str(summary)[:500]}"
+                                _emit("status.update", sid, {"kind": "process", "text": text})
+                                emitted = True
+                            except Exception as exc:
+                                logger.warning(
+                                    "kanban tui notifier: event delivery failed: %s", exc,
+                                    exc_info=True,
+                                )
+                                continue
                             with session["history_lock"]:
                                 if session.get("running"):
+                                    session.setdefault("_pending_kanban_turns", []).append(text)
                                     continue
                                 session["running"] = True
                             try:

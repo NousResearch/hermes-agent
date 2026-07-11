@@ -68,13 +68,57 @@ def test_tui_poller_claims_once_emits_and_chains_turn(kanban_home, monkeypatch):
 def test_tui_poller_emits_but_does_not_chain_busy_session(kanban_home, monkeypatch):
     _seed_sub("sess-key-1")
     emitted, submitted = [], []
+    session = _session(running=True)
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
     monkeypatch.setattr(server, "_run_prompt_submit", lambda *args: submitted.append(args))
 
-    server._poll_kanban_tui_subs("sid1", _session(running=True))
+    server._poll_kanban_tui_subs("sid1", session)
 
     assert len([event for event in emitted if event[0] == "status.update"]) == 1
     assert submitted == []
+    assert len(session["_pending_kanban_turns"]) == 1
+
+
+def test_tui_poller_drains_busy_session_turn_when_idle(kanban_home, monkeypatch):
+    _seed_sub("sess-key-1")
+    submitted = []
+    session = _session(running=True)
+    monkeypatch.setattr(server, "_emit", lambda *_args: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *args: submitted.append(args))
+
+    server._poll_kanban_tui_subs("sid1", session)
+    session["running"] = False
+    server._poll_kanban_tui_subs("sid1", session)
+
+    assert len(submitted) == 1
+    assert "[kanban] Desktop completion: completed" in submitted[0][-1]
+    assert session["_pending_kanban_turns"] == []
+
+
+def test_tui_poller_isolates_per_event_delivery_failures(kanban_home, monkeypatch):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="Desktop completion", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="sess-key-1")
+        with kb.write_txn(conn):
+            kb._append_event(conn, task_id, kind="blocked")
+            kb._append_event(conn, task_id, kind="completed")
+    emitted = []
+
+    def _emit(*args):
+        if args[0] == "status.update" and not emitted:
+            emitted.append(("failed", args))
+            raise RuntimeError("first event failed")
+        emitted.append(("ok", args))
+
+    monkeypatch.setattr(server, "_emit", _emit)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *_args: None)
+
+    server._poll_kanban_tui_subs("sid1", _session())
+
+    successful = [args for result, args in emitted if result == "ok" and args[0] == "status.update"]
+    assert len(successful) == 1
+    assert "completed" in successful[0][2]["text"]
+    assert _cursor(task_id, "sess-key-1") > 0
 
 
 def test_tui_poller_accepts_stale_session_key(kanban_home, monkeypatch):
@@ -113,7 +157,34 @@ def test_compression_preserves_old_session_key_for_kanban_poller(monkeypatch):
     assert session["_stale_session_keys"] == ["old-key"]
 
 
-def test_tui_poller_rewinds_cursor_when_delivery_fails_before_emit(kanban_home, monkeypatch):
+def test_compression_caps_stale_session_keys(monkeypatch):
+    session = {
+        "agent": types.SimpleNamespace(session_id="new-key-0"),
+        "session_key": "old-key",
+    }
+    approval = types.SimpleNamespace(
+        disable_session_yolo=lambda *_args: None,
+        enable_session_yolo=lambda *_args: None,
+        is_session_yolo_enabled=lambda *_args: False,
+        register_gateway_notify=lambda *_args: None,
+        unregister_gateway_notify=lambda *_args: None,
+    )
+    monkeypatch.setattr(server, "_transfer_active_session_slot", lambda *_args, **_kwargs: True)
+    old_keys = []
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(sys.modules, "tools.approval", approval)
+        for i in range(10):
+            old_keys.append(session["session_key"])
+            server._sync_session_key_after_compress(
+                "sid1", session, clear_pending_title=False, restart_slash_worker=False
+            )
+            session["agent"].session_id = f"new-key-{i + 1}"
+
+    assert len(session["_stale_session_keys"]) == 8
+    assert session["_stale_session_keys"][-1] == old_keys[-1]
+
+
+def test_tui_poller_consumes_event_when_status_delivery_fails(kanban_home, monkeypatch):
     task_id = _seed_sub("sess-key-1")
 
     def _boom(*_args):
@@ -124,7 +195,7 @@ def test_tui_poller_rewinds_cursor_when_delivery_fails_before_emit(kanban_home, 
 
     server._poll_kanban_tui_subs("sid1", _session())
 
-    assert _cursor(task_id, "sess-key-1") == 0
+    assert _cursor(task_id, "sess-key-1") > 0
 
 
 def test_tui_poller_leaves_foreign_subscription_unclaimed(kanban_home, monkeypatch):

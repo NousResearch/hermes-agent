@@ -204,7 +204,10 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
     assert "idx_tasks_tenant" in indexes
-    assert "idx_tasks_idempotency" in indexes
+    # The idempotency index is now a partial UNIQUE index (live tasks only)
+    # that supersedes the old non-unique idx_tasks_idempotency.
+    assert "idx_tasks_idempotency_unique" in indexes
+    assert "idx_tasks_idempotency" not in indexes
     assert "idx_events_run" in indexes
 
 
@@ -3225,6 +3228,10 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
         CREATE TABLE tasks (
             id INTEGER PRIMARY KEY,
             title TEXT NOT NULL,
+            -- Core v1 columns present in every real DB; the idempotency
+            -- UNIQUE-index migration reads status/created_at.
+            status TEXT NOT NULL DEFAULT 'ready',
+            created_at INTEGER NOT NULL DEFAULT 0,
             tenant TEXT,
             result TEXT,
             idempotency_key TEXT,

@@ -1849,6 +1849,67 @@ def init_db(
     return path
 
 
+def _migrate_unique_idempotency_index(conn: sqlite3.Connection) -> None:
+    """Enforce at-most-one *live* task per non-null ``idempotency_key``.
+
+    Each board is its own SQLite file, so a partial UNIQUE index gives
+    board-scoped idempotency — exactly the scope the create/lookup path keys
+    on. It closes the TOCTOU window where two concurrent creators with the
+    same key both passed the SELECT-before-INSERT check and each inserted a
+    row.
+
+    Scope matches how ``create_task`` looks the key up: ``WHERE
+    idempotency_key = ? AND status != 'archived'``. The index predicate
+    therefore excludes archived rows, so archiving a task frees its key for
+    reuse (the documented "idempotency ignored for archived" behaviour) while
+    still rejecting a duplicate among live tasks.
+
+    Legacy DBs predate the constraint and may hold duplicate live keys (from
+    the pre-index create race). A UNIQUE index can't be built while such
+    duplicates exist, so null out the key on all but the survivor first — the
+    newest non-archived task, which is the row the lookup would return.
+    Nulling a loser's key is non-destructive: the key is only a dedupe marker,
+    not task state. Archived duplicates are left untouched (they're outside
+    the index predicate).
+
+    Runs as plain statements (no ``write_txn``): it executes inside
+    ``connect``'s init critical section, before any explicit transaction, and
+    the ``CREATE UNIQUE INDEX`` DDL commits the dedupe UPDATE. Opening a nested
+    ``BEGIN IMMEDIATE`` here would collide with the migration's pending
+    implicit transaction.
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA index_list(tasks)")}
+    if "idx_tasks_idempotency_unique" in existing:
+        return
+    dupes = conn.execute(
+        "SELECT idempotency_key FROM tasks "
+        "WHERE idempotency_key IS NOT NULL AND status != 'archived' "
+        "GROUP BY idempotency_key HAVING COUNT(*) > 1"
+    ).fetchall()
+    for dupe in dupes:
+        key = dupe["idempotency_key"]
+        survivor = conn.execute(
+            "SELECT id FROM tasks "
+            "WHERE idempotency_key = ? AND status != 'archived' "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (key,),
+        ).fetchone()["id"]
+        conn.execute(
+            "UPDATE tasks SET idempotency_key = NULL "
+            "WHERE idempotency_key = ? AND status != 'archived' AND id != ?",
+            (key, survivor),
+        )
+    # The old non-unique index is redundant once the partial UNIQUE index
+    # exists (equality lookups carry a concrete non-null key), so drop it to
+    # avoid two indexes on one column.
+    conn.execute("DROP INDEX IF EXISTS idx_tasks_idempotency")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_unique "
+        "ON tasks(idempotency_key) "
+        "WHERE idempotency_key IS NOT NULL AND status != 'archived'"
+    )
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -1994,9 +2055,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # is cheap thanks to ``IF NOT EXISTS`` and stays correct on fresh DBs
     # (where the columns already exist from SCHEMA_SQL).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
-    )
+    # Partial UNIQUE index over idempotency_key (replaces the old non-unique
+    # idx_tasks_idempotency). Also dedupes any legacy duplicate keys so the
+    # index builds on existing DBs.
+    _migrate_unique_idempotency_index(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )

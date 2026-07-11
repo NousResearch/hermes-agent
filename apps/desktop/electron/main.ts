@@ -26,7 +26,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 import nodePty from 'node-pty'
 
@@ -441,6 +442,16 @@ const APP_ICON_PATHS = [
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
   path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
+]
+
+// Dedicated macOS menu bar / system tray icon paths
+// Uses a small 16×16 template image designed for the menu bar (no colored
+// background, just a white silhouette with alpha channel). Falls back to the
+// full app icon if the dedicated file is missing.
+const TRAY_ICON_PATHS = [
+  path.join(APP_ROOT, 'public', 'tray-icon-template.png'),
+  path.join(APP_ROOT, 'dist', 'tray-icon-template.png'),
+  path.join(unpackedPathFor(APP_ROOT), 'dist', 'tray-icon-template.png')
 ]
 
 let rendererTitleBarTheme = null
@@ -4561,6 +4572,11 @@ function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
 
+/** Path to the small template-style tray/menu-bar icon, falling back to the full app icon. */
+function getTrayIconPath() {
+  return TRAY_ICON_PATHS.find(fileExists) || getAppIconPath()
+}
+
 function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
@@ -7226,6 +7242,132 @@ function closePetOverlay() {
   petOverlayWindow = null
 }
 
+// ── System Tray / Menu Bar Icon ──────────────────────────────────────────────
+//
+// macOS: a menu-bar icon (NSStatusItem) keeps Hermes alive in the menu bar
+// even when all windows are closed. Click toggles window visibility;
+// right-click shows a context menu. Windows/Linux use the system tray instead.
+let trayIcon = null
+
+/**
+ * Create or recreate the system tray / menu bar icon.
+ * Safe to call before the main window exists — guards against null.
+ *
+ * On macOS the icon is registered as a Template image so macOS
+ * automatically inverts it between light and dark menu bars without
+ * us needing two copies. On Windows/Linux we render the full-color
+ * PNG at the native tray size.
+ */
+function createTray() {
+  const iconPath = getTrayIconPath()
+  if (!iconPath) return
+
+  let trayImage
+  if (IS_MAC) {
+    // macOS Template image: 16×16 with alpha channel.
+    // If we found the dedicated tray-icon-template.png it's already a small
+    // template image; if we fell back to the full app icon we resize it down.
+    trayImage = nativeImage.createFromPath(iconPath)
+    if (trayImage.getSize().width > 32) {
+      trayImage = trayImage.resize({ width: 16, height: 16 })
+    }
+    trayImage.setTemplateImage(true)
+  } else {
+    trayImage = nativeImage.createFromPath(iconPath).resize({ width: 22, height: 22 })
+  }
+
+  if (trayIcon && !trayIcon.isDestroyed()) {
+    try { trayIcon.destroy() } catch { /* ignore */ }
+  }
+
+  trayIcon = new Tray(trayImage)
+  trayIcon.setToolTip(APP_NAME)
+
+  // Left-click (or single-click on Windows): toggle window visibility
+  trayIcon.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow()
+      return
+    }
+
+    if (mainWindow.isVisible()) {
+      // On macOS, hide (Cmd+H-style) rather than minimize
+      if (IS_MAC) {
+        mainWindow.hide()
+      } else {
+        mainWindow.minimize()
+      }
+    } else {
+      focusWindow(mainWindow)
+    }
+  })
+
+  // Right-click context menu
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Show Hermes',
+      click: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) {
+          createWindow()
+        } else {
+          focusWindow(mainWindow)
+        }
+      }
+    },
+    {
+      label: 'Hide Hermes',
+      click: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          if (IS_MAC) {
+            mainWindow.hide()
+          } else {
+            mainWindow.minimize()
+          }
+        }
+      }
+    },
+    { type: 'separator' },
+    {
+      label: `About ${APP_NAME}`,
+      click: () => showAboutPanelFresh()
+    },
+    {
+      label: 'Check for Updates…',
+      click: () => sendOpenUpdatesRequested()
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      accelerator: 'CommandOrControl+Q',
+      click: () => {
+        if (trayIcon && !trayIcon.isDestroyed()) {
+          try { trayIcon.destroy() } catch { /* ignore */ }
+          trayIcon = null
+        }
+        app.quit()
+      }
+    }
+  ])
+
+  trayIcon.setContextMenu(contextMenu)
+
+  // On macOS, make the menu bar icon follow the light/dark appearance
+  if (IS_MAC && trayIcon.on) {
+    try {
+      // macOS Big Sur+ supports dynamic menu bar icons via setIgnoreDoubleClickEvents
+      trayIcon.setIgnoreDoubleClickEvents(true)
+    } catch { /* optional — older Electron */ }
+  }
+}
+
+/** Tear down the tray icon (called during quit/shutdown). */
+function destroyTray() {
+  if (trayIcon && !trayIcon.isDestroyed()) {
+    try { trayIcon.destroy() } catch { /* ignore */ }
+    trayIcon = null
+  }
+}
+
 function createWindow() {
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
@@ -9021,6 +9163,7 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   createWindow()
+  createTray()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
@@ -9065,6 +9208,9 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  // Destroy the tray icon first so it doesn't linger after quit
+  destroyTray()
+
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()

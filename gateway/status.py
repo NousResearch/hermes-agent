@@ -176,6 +176,33 @@ def get_process_start_time(pid: int) -> Optional[int]:
     return _get_process_start_time(pid)
 
 
+def _read_process_environ(pid: int) -> Optional[dict[str, str]]:
+    """Return the process environment as a dict of ``KEY=VALUE`` pairs.
+
+    On Linux, reads ``/proc/<pid>/environ`` directly.  Returns ``None`` on
+    platforms without /proc or when the file is not readable.
+    """
+    environ_path = Path(f"/proc/{pid}/environ")
+    try:
+        raw = environ_path.read_bytes()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    if not raw:
+        return None
+    result: dict[str, str] = {}
+    for entry in raw.split(b"\x00"):
+        if not entry:
+            continue
+        try:
+            decoded = entry.decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        if "=" in decoded:
+            key, _, value = decoded.partition("=")
+            result[key] = value
+    return result
+
+
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string.
 
@@ -289,6 +316,14 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         if i + 1 >= len(filtered):
             return "run"  # bare `hermes gateway` defaults to `run`
         return filtered[i + 1]
+    # When the remaining token is just the bare `hermes`/`hermes.exe` entry-point
+    # binary (no `gateway` subcommand visible — common for systemd-managed
+    # gateways where `--profile` is set via the service file), treat it as a
+    # gateway run process.  Callers validate the profile via
+    # ``_command_line_belongs_to_profile`` (which checks HERMES_HOME in
+    # /proc/PID/environ), preventing false positives.
+    if len(filtered) == 1 and filtered[0] in ("hermes", "hermes.exe"):
+        return "run"
     return None
 
 
@@ -409,9 +444,32 @@ def _record_matches_live_gateway_pid(
         if expected_home is not None and not _command_line_belongs_to_profile(
             live_cmdline, expected_home
         ):
-            return False
+            # Command-line check failed (common for systemd-managed gateways
+            # where --profile is set via the service file, not visible in
+            # /proc/PID/cmdline).  Fall back to checking the process
+            # environment for HERMES_HOME.
+            if not _pid_environ_matches_profile(pid, expected_home):
+                return False
         return True
     return _record_looks_like_gateway(record)
+
+
+def _pid_environ_matches_profile(pid: int, profile_home: Path) -> bool:
+    """Return True when the process environment's HERMES_HOME matches.
+
+    Used as a fallback when the command line carries no profile flag (bare
+    ``hermes`` entry-point binary started by a service manager).
+    """
+    environ = _read_process_environ(pid)
+    if environ is None:
+        return False
+    env_home = environ.get("HERMES_HOME")
+    if env_home is None:
+        return False
+    try:
+        return Path(env_home).resolve() == profile_home.resolve()
+    except OSError:
+        return False
 
 
 def _build_pid_record() -> dict:

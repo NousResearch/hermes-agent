@@ -1059,8 +1059,10 @@ def play_audio_file(file_path: str) -> bool:
         logger.warning("Audio file not found: %s", file_path)
         return False
 
-    # Try sounddevice for WAV files
-    if file_path.endswith(".wav"):
+    # On macOS, skip sounddevice entirely — PortAudio/CoreAudio init triggers
+    # a kTCCServiceMediaLibrary permission prompt even though we don't need it.
+    # afplay handles all formats natively without touching the media stack.
+    if file_path.endswith(".wav") and platform.system() != "Darwin":
         try:
             sd, np = _import_audio()
             with wave.open(file_path, "rb") as wf:

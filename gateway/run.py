@@ -1785,6 +1785,42 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+# Singleton for the tool-call audit log (display.tool_progress: log).
+# One fixed-name Logger + one RotatingFileHandler for the process lifetime:
+# named Loggers are never garbage-collected (they live in
+# logging.Logger.manager.loggerDict forever), so a per-turn name would add
+# one permanent Logger per logged turn; and a single shared handler keeps
+# concurrent turns from double-writing lines, which per-turn handlers on a
+# shared logger would do.
+_tool_call_logger: Optional[logging.Logger] = None
+_tool_call_logger_lock = threading.Lock()
+
+
+def _get_tool_call_logger() -> logging.Logger:
+    global _tool_call_logger
+    with _tool_call_logger_lock:
+        if _tool_call_logger is None:
+            from logging.handlers import RotatingFileHandler
+
+            from agent.redact import RedactingFormatter
+
+            log_dir = _hermes_home / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                log_dir / "tool_calls.log",
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(RedactingFormatter("%(message)s"))
+            tool_logger = logging.getLogger("hermes.tool_calls")
+            tool_logger.setLevel(logging.INFO)
+            tool_logger.propagate = False
+            tool_logger.addHandler(file_handler)
+            _tool_call_logger = tool_logger
+        return _tool_call_logger
+
+
 _OWN_POLICY_OPEN_ENV = {
     Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
     Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
@@ -17492,23 +17528,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             """
             if log_queue is None:
                 return
-            from logging.handlers import RotatingFileHandler
-
-            from agent.redact import RedactingFormatter
-
-            log_dir = _hermes_home / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            file_handler = RotatingFileHandler(
-                log_dir / "tool_calls.log",
-                maxBytes=5 * 1024 * 1024,
-                backupCount=3,
-                encoding="utf-8",
-            )
-            file_handler.setFormatter(RedactingFormatter("%(message)s"))
-            tool_logger = logging.getLogger(f"hermes.tool_calls.{id(log_queue)}")
-            tool_logger.setLevel(logging.INFO)
-            tool_logger.propagate = False
-            tool_logger.addHandler(file_handler)
+            tool_logger = _get_tool_call_logger()
             try:
                 while True:
                     try:
@@ -17521,8 +17541,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except asyncio.CancelledError:
                 pass
             finally:
-                # Drain remaining entries before closing so late tool calls
-                # from the final iteration aren't lost.
+                # Drain remaining entries before exiting so late tool calls
+                # from the final iteration aren't lost. The logger and its
+                # handler are process-wide singletons — nothing to close.
                 while True:
                     try:
                         tool_logger.info("%s", log_queue.get_nowait())
@@ -17530,12 +17551,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         break
                     except Exception:
                         break
-                tool_logger.removeHandler(file_handler)
-                try:
-                    file_handler.flush()
-                    file_handler.close()
-                except Exception:
-                    pass
 
         async def send_progress_messages():
             if not progress_queue:

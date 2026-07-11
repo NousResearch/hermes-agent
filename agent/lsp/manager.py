@@ -60,6 +60,11 @@ logger = logging.getLogger("agent.lsp.manager")
 
 DEFAULT_IDLE_TIMEOUT = 600  # seconds; servers idle for >10min get reaped
 
+# Most per-file diagnostic baselines kept for delta filtering. Insertion-
+# ordered eviction; matches the working-set thinking behind the client's
+# MAX_TRACKED_FILES cap.
+_DELTA_BASELINE_CAP = 256
+
 
 class _BackgroundLoop:
     """A daemon thread that owns one asyncio event loop.
@@ -180,8 +185,16 @@ class LSPService:
         # Delta baseline: file path → snapshot of diagnostics taken
         # immediately before a write.  ``get_diagnostics_sync`` filters
         # out anything in the baseline so the agent only sees errors
-        # introduced by the current edit.
+        # introduced by the current edit.  Bounded via _cap_delta_baseline:
+        # only the most recent write to a path matters, but entries for
+        # paths never written again would otherwise live for the service's
+        # lifetime.
         self._delta_baseline: Dict[str, List[Dict[str, Any]]] = {}
+
+    def _cap_delta_baseline(self) -> None:
+        """Evict oldest baseline entries beyond _DELTA_BASELINE_CAP."""
+        while len(self._delta_baseline) > _DELTA_BASELINE_CAP:
+            self._delta_baseline.pop(next(iter(self._delta_baseline)), None)
 
     @classmethod
     def create_from_config(cls) -> Optional["LSPService"]:
@@ -298,6 +311,7 @@ class LSPService:
             logger.debug("baseline snapshot failed for %s: %s", file_path, e)
             self._mark_broken_for_file(file_path, e)
             self._delta_baseline[os.path.abspath(file_path)] = []
+        self._cap_delta_baseline()
 
     def get_diagnostics_sync(
         self,
@@ -376,6 +390,7 @@ class LSPService:
                 fresh = []
             if fresh:
                 self._delta_baseline[abs_path] = fresh
+                self._cap_delta_baseline()
 
         if diags:
             eventlog.log_diagnostics(server_id, file_path, len(diags))

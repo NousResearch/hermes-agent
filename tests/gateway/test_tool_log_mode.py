@@ -100,6 +100,42 @@ async def test_write_tool_log_writes_and_rotates_handler(tmp_path, monkeypatch):
     await asyncio.sleep(0)  # keep the asyncio marker honest
 
 
+def test_tool_call_logger_is_a_fixed_name_singleton(tmp_path, monkeypatch):
+    """One process-wide Logger, not one per turn.
+
+    Named Loggers live in logging.Logger.manager.loggerDict forever; the
+    old per-turn name (``hermes.tool_calls.<id(log_queue)>``) permanently
+    added one Logger per logged turn. The singleton must hand back the
+    same fixed-name Logger on every call and never grow loggerDict.
+    """
+    import logging
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_tool_call_logger", None)
+    # The named Logger object itself is process-global: shed handlers from
+    # any earlier creation so this test builds (and later removes) its own.
+    logging.getLogger("hermes.tool_calls").handlers.clear()
+
+    try:
+        first = gateway_run._get_tool_call_logger()
+        dict_size = len(logging.Logger.manager.loggerDict)
+        for _ in range(50):
+            assert gateway_run._get_tool_call_logger() is first
+        assert first.name == "hermes.tool_calls"
+        assert len(logging.Logger.manager.loggerDict) == dict_size
+        assert len(first.handlers) == 1
+
+        first.info("%s", '2026-07-11 10:00:00  terminal: "echo hi"')
+        content = (tmp_path / "logs" / "tool_calls.log").read_text(encoding="utf-8")
+        assert "terminal" in content
+    finally:
+        for h in list(first.handlers):
+            first.removeHandler(h)
+            h.close()
+
+
 def test_log_mode_disables_chat_progress():
     """tool_progress_enabled must be False in log mode (silent in chat)."""
     for mode, expected in [("all", True), ("log", False), ("off", False)]:

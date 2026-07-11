@@ -12429,6 +12429,17 @@ def _list_repo_files(root: str) -> list[str]:
             pass
 
     with _fuzzy_cache_lock:
+        # Sweep expired roots while we hold the lock anyway. The TTL is only
+        # consulted on read, so without this a listing is pinned for the
+        # process lifetime once its root stops being queried — worktree flows
+        # (one .worktrees/<task> root per task) pin one full repo listing
+        # each, easily MBs apiece.
+        expired = [
+            r for r, (ts, _) in _fuzzy_cache.items()
+            if now - ts >= _FUZZY_CACHE_TTL_S
+        ]
+        for r in expired:
+            del _fuzzy_cache[r]
         _fuzzy_cache[root] = (now, files)
 
     return files

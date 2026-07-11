@@ -889,6 +889,31 @@ def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
         for rp in resolved_paths:
             task_failures.pop(rp, None)
 
+
+def clear_task_trackers(task_id: str) -> None:
+    """Drop all per-task file-tool tracking state for a finished task.
+
+    ``_read_tracker``, ``_patch_failure_tracker``, ``_last_known_cwd`` and
+    ``_file_ops_cache`` are keyed by task_id and nothing else removes a
+    finished task's entries — the per-task caps below only bound growth
+    *within* one entry. Subagent task ids are unique per delegation
+    (``subagent-<n>-<uuid>``), so a long-running gateway process otherwise
+    accretes dead tracker entries for its whole lifetime.
+
+    Pops only the exact ``task_id`` key: container-resolved aliases (see
+    ``terminal_tool._resolve_container_task_id``) usually collapse to the
+    parent's shared ``"default"`` key, which must survive the child.
+    """
+    if not task_id:
+        return
+    with _read_tracker_lock:
+        _read_tracker.pop(task_id, None)
+    with _patch_failure_lock:
+        _patch_failure_tracker.pop(task_id, None)
+    with _file_ops_lock:
+        _last_known_cwd.pop(task_id, None)
+        _file_ops_cache.pop(task_id, None)
+
 # Per-task bounds for the containers inside each _read_tracker[task_id].
 # A CLI session uses one stable task_id for its lifetime; without these
 # caps, a 10k-read session would accumulate ~1.5MB of dict/set state that

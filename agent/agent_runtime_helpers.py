@@ -1221,6 +1221,17 @@ def restore_primary_runtime(agent) -> bool:
             agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
         )
 
+        from hermes_cli.models import apply_fast_mode_request_overrides
+
+        agent.request_overrides = apply_fast_mode_request_overrides(
+            getattr(agent, "request_overrides", None),
+            service_tier=getattr(agent, "service_tier", None),
+            model_id=agent.model,
+            provider=agent.provider,
+            api_mode=agent.api_mode,
+            base_url=agent.base_url,
+        )
+
         # ── Rebuild client for the primary provider ──
         if agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -1885,6 +1896,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
     # live dict doesn't poison the rollback target.
     _snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
+    _snapshot["request_overrides"] = dict(
+        getattr(agent, "request_overrides", {}) or {}
+    )
     # Snapshot the credential pool reference so a failed client rebuild can
     # restore the original pool (issue #52727: pool reload is part of this
     # switch and must be reversible on rollback).
@@ -2049,6 +2063,17 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 reason="switch_model",
                 shared=True,
             )
+
+        from hermes_cli.models import apply_fast_mode_request_overrides
+
+        agent.request_overrides = apply_fast_mode_request_overrides(
+            getattr(agent, "request_overrides", None),
+            service_tier=getattr(agent, "service_tier", None),
+            model_id=agent.model,
+            provider=agent.provider,
+            api_mode=agent.api_mode,
+            base_url=agent.base_url,
+        )
     except Exception:
         # Rollback every mutated field to the pre-swap snapshot so the agent
         # is left consistent (old model + old provider + old client) and the

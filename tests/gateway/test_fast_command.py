@@ -142,6 +142,31 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_omits_anthropic_fast_on_openrouter_chat_completions():
+    runner = _make_runner()
+    runner._service_tier = "priority"
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://openrouter.ai/api/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "hi",
+        "anthropic/claude-opus-4.6",
+        runtime_kwargs,
+    )
+
+    assert route["runtime"]["provider"] == "openrouter"
+    assert route["runtime"]["api_mode"] == "chat_completions"
+    assert route["request_overrides"] == {}
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()

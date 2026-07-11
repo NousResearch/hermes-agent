@@ -409,6 +409,26 @@ class TestAnthropicFastMode(unittest.TestCase):
         assert route["runtime"]["provider"] == "anthropic"
         assert route["request_overrides"] == {"speed": "fast"}
 
+    def test_turn_route_omits_anthropic_fast_on_openrouter_chat_completions(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="anthropic/claude-opus-4.6",
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            api_mode="chat_completions",
+            acp_command=None,
+            acp_args=[],
+            _credential_pool=None,
+            service_tier="priority",
+        )
+
+        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+
+        assert route["runtime"]["provider"] == "openrouter"
+        assert route["runtime"]["api_mode"] == "chat_completions"
+        assert route["request_overrides"] is None
+
 
 class TestAnthropicFastModeAdapter(unittest.TestCase):
     """Verify build_anthropic_kwargs handles fast_mode parameter."""

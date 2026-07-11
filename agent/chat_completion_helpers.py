@@ -818,6 +818,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
+    from hermes_cli.models import apply_fast_mode_request_overrides
+
+    # Derive Fast/Priority at request time as a final guard against any route
+    # mutation path that did not rebuild request_overrides itself.
+    agent.request_overrides = apply_fast_mode_request_overrides(
+        getattr(agent, "request_overrides", None),
+        service_tier=getattr(agent, "service_tier", None),
+        model_id=agent.model,
+        provider=agent.provider,
+        api_mode=agent.api_mode,
+        base_url=agent.base_url,
+    )
+
     tools_for_api = agent.tools
 
     if agent.api_mode == "anthropic_messages":
@@ -1552,6 +1565,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
+
+        from hermes_cli.models import apply_fast_mode_request_overrides
+
+        agent.request_overrides = apply_fast_mode_request_overrides(
+            getattr(agent, "request_overrides", None),
+            service_tier=getattr(agent, "service_tier", None),
+            model_id=agent.model,
+            provider=agent.provider,
+            api_mode=agent.api_mode,
+            base_url=agent.base_url,
+        )
 
         # Rebind the credential pool to the fallback provider when the provider
         # changes.  Keeping the primary pool attached would make downstream

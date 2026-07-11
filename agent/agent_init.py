@@ -629,7 +629,16 @@ def init_agent(
     agent.max_tokens = max_tokens  # None = use model default
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
     agent.service_tier = service_tier
-    agent.request_overrides = dict(request_overrides or {})
+    from hermes_cli.models import apply_fast_mode_request_overrides
+
+    agent.request_overrides = apply_fast_mode_request_overrides(
+        request_overrides,
+        service_tier=agent.service_tier,
+        model_id=agent.model,
+        provider=agent.provider,
+        api_mode=agent.api_mode,
+        base_url=agent.base_url,
+    )
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
     

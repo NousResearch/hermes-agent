@@ -1317,6 +1317,27 @@ def _build_child_agent(
     if isinstance(child_max_tokens, int):
         child_optional_kwargs["max_tokens"] = child_max_tokens
 
+    # The durable Fast preference is provider-agnostic, but its wire option is
+    # not. Preserve current override semantics (a different configured provider
+    # gets only its own request overrides), then derive the Fast-only key from
+    # the child's complete route so parent-specific keys cannot leak across.
+    child_service_tier = getattr(parent_agent, "service_tier", None)
+    base_request_overrides = (
+        dict(override_request_overrides or {})
+        if override_provider
+        else dict(getattr(parent_agent, "request_overrides", {}) or {})
+    )
+    from hermes_cli.models import apply_fast_mode_request_overrides
+
+    child_request_overrides = apply_fast_mode_request_overrides(
+        base_request_overrides,
+        service_tier=child_service_tier,
+        model_id=effective_model,
+        provider=effective_provider,
+        api_mode=effective_api_mode,
+        base_url=effective_base_url,
+    )
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1347,11 +1368,8 @@ def _build_child_agent(
         provider_sort=child_provider_sort,
         provider_require_parameters=child_provider_require_parameters,
         provider_data_collection=child_provider_data_collection,
-        request_overrides=(
-            dict(override_request_overrides or {})
-            if override_provider
-            else dict(getattr(parent_agent, "request_overrides", {}) or {})
-        ),
+        service_tier=child_service_tier,
+        request_overrides=child_request_overrides,
         openrouter_min_coding_score=child_openrouter_min_coding_score,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent

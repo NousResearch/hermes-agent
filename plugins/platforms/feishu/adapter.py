@@ -52,6 +52,7 @@ import collections
 import concurrent.futures
 import hashlib
 import hmac
+import inspect
 import itertools
 import json
 import logging
@@ -215,6 +216,19 @@ _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
 _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
+
+
+def _supports_keyword_argument(callable_obj: Any, keyword: str) -> bool:
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == keyword:
+            return True
+    return False
 
 _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "approve_once": "once",
@@ -4724,19 +4738,25 @@ class FeishuAdapter(BasePlatformAdapter):
         if loop is None or loop.is_closed():
             raise RuntimeError("adapter loop is not ready")
         await self._hydrate_bot_identity()
-        self._ws_client = FeishuWSClient(
-            app_id=self._app_id,
-            app_secret=self._app_secret,
-            log_level=lark.LogLevel.INFO,
-            event_handler=self._event_handler,
-            domain=domain,
-            # Channel SDK signaling tag: without this UA tag the Feishu
-            # server does not push group @mention events over the WebSocket
-            # transport.  The tag tells the server to use the Channel protocol
-            # which enables group-message routing in addition to P2P DM.
-            # See https://github.com/NousResearch/hermes-agent/issues/50656
-            extra_ua_tags=["channel"],
-        )
+        ws_client_kwargs = {
+            "app_id": self._app_id,
+            "app_secret": self._app_secret,
+            "log_level": lark.LogLevel.INFO,
+            "event_handler": self._event_handler,
+            "domain": domain,
+        }
+        # Channel SDK signaling tag: without this UA tag the Feishu server may
+        # not push group @mention events over the WebSocket transport.  Older
+        # lark_oapi builds do not accept this kwarg, so keep the gateway alive
+        # and let newer SDKs opt into the tag when available.
+        if _supports_keyword_argument(FeishuWSClient, "extra_ua_tags"):
+            ws_client_kwargs["extra_ua_tags"] = ["channel"]
+        else:
+            logger.warning(
+                "[Feishu] lark_oapi.ws.Client does not support extra_ua_tags; "
+                "connecting without Channel UA tag"
+            )
+        self._ws_client = FeishuWSClient(**ws_client_kwargs)
         self._ws_future = loop.run_in_executor(
             None,
             _run_official_feishu_ws_client,

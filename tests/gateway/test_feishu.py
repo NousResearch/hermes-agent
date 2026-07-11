@@ -174,14 +174,13 @@ class TestFeishuMessageNormalization(unittest.TestCase):
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
-    def test_websocket_sdk_accepts_channel_ua_tag(self):
-        """The shipped SDK must support the Channel signaling argument."""
-        import inspect
+    def test_websocket_sdk_channel_ua_tag_capability_is_detectable(self):
+        """The adapter must tolerate SDKs with or without the Channel argument."""
 
         from lark_oapi.ws import Client as FeishuWSClient
+        from plugins.platforms.feishu.adapter import _supports_keyword_argument
 
-        signature = inspect.signature(FeishuWSClient)
-        self.assertIn("extra_ua_tags", signature.parameters)
+        self.assertIsInstance(_supports_keyword_argument(FeishuWSClient, "extra_ua_tags"), bool)
 
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
@@ -482,6 +481,66 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                       "FeishuWSClient must receive extra_ua_tags for group @mention delivery")
         self.assertEqual(call_kwargs["extra_ua_tags"], ["channel"],
                          "extra_ua_tags must be ['channel'] to enable group event routing")
+
+    @patch.dict(os.environ, {
+        "FEISHU_APP_ID": "cli_app",
+        "FEISHU_APP_SECRET": "secret_app",
+    }, clear=True)
+    def test_connect_websocket_omits_channel_ua_tag_for_legacy_sdk(self):
+        """Older lark_oapi.ws.Client builds reject extra_ua_tags."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured_kwargs = {}
+
+        class LegacyFeishuWSClient:
+            def __init__(self, *, app_id, app_secret, log_level, event_handler, domain):
+                captured_kwargs.update(
+                    {
+                        "app_id": app_id,
+                        "app_secret": app_secret,
+                        "log_level": log_level,
+                        "event_handler": event_handler,
+                        "domain": domain,
+                    }
+                )
+
+        with (
+            patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.FEISHU_WEBSOCKET_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.lark",
+                  SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
+            patch("plugins.platforms.feishu.adapter.EventDispatcherHandler") as mock_handler_class,
+            patch("plugins.platforms.feishu.adapter.FeishuWSClient", LegacyFeishuWSClient),
+            patch("plugins.platforms.feishu.adapter._run_official_feishu_ws_client"),
+            patch("plugins.platforms.feishu.adapter.acquire_scoped_lock", return_value=(True, None)),
+            patch("plugins.platforms.feishu.adapter.release_scoped_lock"),
+            patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
+            patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
+        ):
+            _mock_event_dispatcher_builder(mock_handler_class)
+
+            loop = asyncio.new_event_loop()
+            future = loop.create_future()
+            future.set_result(None)
+
+            class _Loop:
+                def run_in_executor(self, *_args, **_kwargs):
+                    return future
+                def is_closed(self):
+                    return False
+
+            try:
+                with patch("plugins.platforms.feishu.adapter.asyncio.get_running_loop",
+                           return_value=_Loop()):
+                    connected = asyncio.run(adapter.connect())
+            finally:
+                loop.close()
+
+        self.assertTrue(connected)
+        self.assertNotIn("extra_ua_tags", captured_kwargs)
+        self.assertEqual(captured_kwargs["app_id"], "cli_app")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_updates_existing_feishu_message(self):

@@ -69,7 +69,7 @@ def check_packages():
         _discord_available = True
         check("discord.py", True, f"v{discord.__version__}")
     except ImportError:
-        check("discord.py", False, "pip install discord.py[voice]")
+        check("discord.py", False, "pip install discord.py")
         ok = False
 
     # PyNaCl
@@ -79,12 +79,17 @@ def check_packages():
         try:
             import nacl.secret
             nacl.secret.Aead(bytes(32))
-            check("PyNaCl", True, f"v{ver}")
+            version_parts = tuple(int(part) for part in ver.split(".") if part.isdigit())
+            if version_parts >= (1, 6, 2):
+                check("PyNaCl", True, f"v{ver}")
+            else:
+                check("PyNaCl", False, f"v{ver} — Discord voice disabled: discord.py currently caps PyNaCl below secure 1.6.2")
+                ok = False
         except (AttributeError, Exception):
-            check("PyNaCl (Aead)", False, f"v{ver} — need >=1.5.0")
+            check("PyNaCl (Aead)", False, f"v{ver} — Discord voice disabled pending PyNaCl>=1.6.2 support")
             ok = False
     except ImportError:
-        check("PyNaCl", False, "pip install PyNaCl>=1.5.0")
+        check("PyNaCl", False, "Discord voice disabled pending upstream support for PyNaCl>=1.6.2")
         ok = False
 
     # davey (DAVE E2EE)

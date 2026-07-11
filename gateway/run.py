@@ -4791,7 +4791,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _load_reasoning_config() -> dict | None:
         """Load reasoning effort from config.yaml.
 
-        Reads agent.reasoning_effort from config.yaml. Valid: "none",
+        Reads agent.reasoning_effort from config.yaml. Valid: "none", "auto",
         "minimal", "low", "medium", "high", "xhigh". Returns None to use
         default (medium).
         """

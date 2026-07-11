@@ -11,15 +11,17 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-SERVER = REPO / "environments" / "gpu_mcp.py"
+# gpu-mcp is a submodule at <REPO>/gpu-mcp; its server runs as `python -m gpu_mcp`
+SUBMODULE = REPO / "gpu-mcp"
 CRATE = REPO / "environments" / "testdata" / "wasm_hello"
 
 
 def _run_mcp(messages: list[dict]) -> list[dict]:
     inp = "\n".join(json.dumps(m) for m in messages) + "\n"
-    p = subprocess.run([sys.executable, str(SERVER)],
+    p = subprocess.run([sys.executable, "-m", "gpu_mcp"],
                        input=inp, capture_output=True, text=True, timeout=120,
-                       cwd=str(REPO), env={**__import__("os").environ, "PYTHONPATH": str(REPO)})
+                       cwd=str(SUBMODULE),
+                       env={**__import__("os").environ, "PYTHONPATH": str(SUBMODULE)})
     out = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
     return out
 

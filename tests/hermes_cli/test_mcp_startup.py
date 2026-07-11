@@ -212,7 +212,7 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     monkeypatch.setattr(
         mcp_startup,
         "wait_for_mcp_discovery",
-        lambda timeout=0.75: waited.__setitem__("done", True),
+        lambda timeout=0.75, single_query=False: waited.__setitem__("done", True),
     )
 
     def _fake_agent(*_a, **_k):
@@ -222,3 +222,30 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
 
     assert cli._init_agent() is True
+
+
+def test_init_agent_passes_single_query_flag_to_discovery_wait(monkeypatch):
+    """Single-query mode forwards single_query=True so the larger MCP cold-start
+    bound is used — the one tool snapshot must wait for slow servers (#51316)."""
+    seen = {}
+
+    cli = cli_mod.HermesCLI(compact=True)
+    cli._session_db = object()
+    cli._resumed = False
+    cli.conversation_history = []
+    cli._install_tool_callbacks = lambda: None
+    cli._ensure_tirith_security = lambda: None
+    cli._ensure_runtime_credentials = lambda: True
+    cli._single_query_mode = True
+
+    monkeypatch.setattr(
+        mcp_startup,
+        "wait_for_mcp_discovery",
+        lambda timeout=0.75, single_query=False: seen.__setitem__(
+            "single_query", single_query
+        ),
+    )
+    monkeypatch.setattr(cli_mod, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
+
+    assert cli._init_agent() is True
+    assert seen.get("single_query") is True

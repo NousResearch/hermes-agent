@@ -296,3 +296,40 @@ def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):
     t0 = time.time()
     mcp_startup.wait_for_mcp_discovery()
     assert time.time() - t0 < 0.2  # never blocks on the bound when nothing's pending
+
+def test_resolve_discovery_timeout_single_query_uses_larger_bound(monkeypatch):
+    """Single-query mode reads the larger mcp_single_query_discovery_timeout (#51316)."""
+    from hermes_cli import mcp_startup
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(
+        cfg,
+        "load_config",
+        lambda: {
+            "mcp_discovery_timeout": 1.5,
+            "mcp_single_query_discovery_timeout": 25.0,
+        },
+    )
+    # Interactive bound unchanged; single-query reads its own larger key.
+    assert mcp_startup._resolve_discovery_timeout(None) == 1.5
+    assert mcp_startup._resolve_discovery_timeout(None, single_query=True) == 25.0
+
+def test_resolve_discovery_timeout_single_query_falls_back(monkeypatch):
+    """Bad/absent single-query value → DEFAULT_CONFIG, never hang or crash (#51316)."""
+    from hermes_cli import mcp_startup
+    import hermes_cli.config as cfg
+
+    default = float(cfg.DEFAULT_CONFIG.get("mcp_single_query_discovery_timeout", 30.0))
+    monkeypatch.setattr(
+        cfg, "load_config", lambda: {"mcp_single_query_discovery_timeout": 0}
+    )
+    assert mcp_startup._resolve_discovery_timeout(None, single_query=True) == default
+
+    monkeypatch.setattr(
+        cfg, "load_config", lambda: {"mcp_single_query_discovery_timeout": "oops"}
+    )
+    assert mcp_startup._resolve_discovery_timeout(None, single_query=True) == default
+
+    # Absent key entirely still resolves to the DEFAULT_CONFIG value.
+    monkeypatch.setattr(cfg, "load_config", lambda: {})
+    assert mcp_startup._resolve_discovery_timeout(None, single_query=True) == default

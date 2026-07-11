@@ -236,7 +236,12 @@ class CLIAgentSetupMixin:
 
         from hermes_cli.mcp_startup import wait_for_mcp_discovery
 
-        wait_for_mcp_discovery()
+        # In single-query mode (`hermes -q/-z "..."`) the between-turns
+        # late-binding refresh never fires, so wait the larger cold-start
+        # bound to let slow MCP servers land in the one tool snapshot (#51316).
+        wait_for_mcp_discovery(
+            single_query=getattr(self, "_single_query_mode", False)
+        )
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:

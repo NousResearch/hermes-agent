@@ -4037,6 +4037,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # These must exist before any direct chat() call because single-query
         # mode does not go through run().
         self._agent_running = False
+        # True while serving a one-shot `hermes -q/-z "..."` query. In this mode
+        # there is only ONE turn, so the between-turns MCP late-binding refresh
+        # never runs and the agent must wait the full MCP cold-start bound
+        # before building its first (and only) tool snapshot. See #51316.
+        self._single_query_mode = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
         # Tracks whether the turn that just finished was interrupted via
@@ -16050,6 +16055,8 @@ def main(
     
     # Handle single query mode
     if query or image:
+        # One-shot mode: no between-turns MCP refresh (#51316).
+        cli._single_query_mode = True
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
             sys.exit(1)
         try:

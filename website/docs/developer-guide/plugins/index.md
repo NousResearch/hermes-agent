@@ -608,6 +608,9 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
+| `telegram:update` | Every inbound Telegram update (incl. types the core doesn't route) | `update, adapter, bot, context` | ignored |
+| `telegram:send` | Telegram adapter sends a message (`send()` entry) | `chat_id, content, reply_to, metadata, adapter` | ignored |
+| `telegram:edit` | Telegram adapter edits a message (`edit_message()` entry) | `chat_id, message_id, content, finalize, metadata, adapter` | ignored |
 
 Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
 

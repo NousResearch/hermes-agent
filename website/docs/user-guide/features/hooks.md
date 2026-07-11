@@ -395,6 +395,9 @@ def register(ctx):
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
 | [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
 | [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
+| [`telegram:update`](#telegramupdate) | Every inbound Telegram update (incl. types the core doesn't route: reactions, edits, chat-member) | ignored |
+| [`telegram:send`](#telegramsend) | Telegram adapter sends a message (`send()` entry) | ignored |
+| [`telegram:edit`](#telegramedit) | Telegram adapter edits a message (`edit_message()` entry) | ignored |
 
 ---
 
@@ -1277,6 +1280,80 @@ def register(ctx):
 ```
 
 The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
+
+### `telegram:update`
+
+Fires for **every inbound** `python-telegram-bot` `Update` the Telegram adapter receives — including update types the core doesn't route (message reactions, edited messages, chat-member changes). Registered as a catch-all `TypeHandler` in a dedicated high handler group, so it observes *alongside* the core handlers without displacing them. Filter inside your callback (e.g. `update.message_reaction`).
+
+**Callback signature:**
+
+```python
+def my_callback(update, adapter, bot, context, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `update` | PTB `Update` | The inbound update. |
+| `adapter` | `TelegramAdapter` | The adapter instance (read-only platform access). |
+| `bot` | `telegram.Bot \| None` | The adapter's bot handle; may be `None` during connect/teardown. |
+| `context` | PTB `CallbackContext` | The handler context passed by PTB. |
+
+**Fires:** In `plugins/platforms/telegram/adapter.py`, via a catch-all `TypeHandler(Update, …)` registered in group 99 — once per inbound update, after the core group-0 handlers.
+
+**Return value:** Ignored. Observer only.
+
+**Use cases:** Reacting to message reactions, observing edited messages / chat-member changes, logging inbound updates the core doesn't route.
+
+**Note:** `bot` is read at fire time and may briefly be `None` during lifecycle transitions — guard before calling it.
+
+### `telegram:send`
+
+Fires at `TelegramAdapter.send()` entry, for every outbound message (after the whitespace-only guard, before the Bot API call).
+
+**Callback signature:**
+
+```python
+def my_callback(chat_id, content, reply_to, metadata, adapter, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `chat_id` | `str` | Target chat. |
+| `content` | `str` | Message text being sent. |
+| `reply_to` | `str \| None` | Message id being replied to, if any. |
+| `metadata` | `dict \| None` | Send metadata (e.g. `thread_id`, `notify`). |
+| `adapter` | `TelegramAdapter` | The adapter instance. |
+
+**Fires:** At `send()` entry.
+
+**Return value:** Ignored. Observer only.
+
+**Note:** Fires per outbound send, including intermediate streaming sends — keep callbacks cheap and debounce heavy work. Do not synchronously trigger a send that re-enters this hook, or it will feedback-loop.
+
+### `telegram:edit`
+
+Fires at `TelegramAdapter.edit_message()` entry, where `message_id` is known (after the not-connected guard).
+
+**Callback signature:**
+
+```python
+def my_callback(chat_id, message_id, content, finalize, metadata, adapter, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `chat_id` | `str` | Target chat. |
+| `message_id` | `str` | The message being edited. |
+| `content` | `str` | New message text. |
+| `finalize` | `bool` | Whether this is the final edit of a streamed reply. |
+| `metadata` | `dict \| None` | Send metadata. |
+| `adapter` | `TelegramAdapter` | The adapter instance. |
+
+**Fires:** At `edit_message()` entry.
+
+**Return value:** Ignored. Observer only.
+
+**Note:** Fires once per streaming-chunk edit — debounce heavy work; the same re-entrancy caveat as `telegram:send` applies.
 
 ---
 

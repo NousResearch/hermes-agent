@@ -12,9 +12,21 @@ through to fallback_providers on the same failure; oneshot must match.
 
 from __future__ import annotations
 
+import logging
+import os
+from pathlib import Path
+
 import pytest
 
 import hermes_cli.oneshot as oneshot
+
+# Imported at module scope ON PURPOSE: runtime_provider snapshots
+# ``hermes_cli.config.load_config`` into its own namespace at import time.
+# If its first import happens inside a test whose fixture has monkeypatched
+# config_mod.load_config, the mock gets baked into runtime_provider and
+# LEAKS past monkeypatch teardown into later tests (the integration test
+# below resolves through the real runtime_provider stack).
+import hermes_cli.runtime_provider  # noqa: F401
 from hermes_cli.auth import AuthError
 
 NVIDIA_RUNTIME = {
@@ -184,3 +196,167 @@ class TestOneshotBootstrapFallback:
         with pytest.raises(ValueError, match="config parse exploded"):
             oneshot._run_agent("hello")
         assert FakeAgent.instances == []
+
+    def test_explicit_model_and_provider_pair_propagates_auth_error(
+        self, monkeypatch, oneshot_env
+    ):
+        # The caller pinned BOTH --model and --provider: that exact pair is
+        # the contract. No fallback may be attempted; AuthError propagates.
+        calls = _patch_resolver(monkeypatch, {"custom:nvidia": NVIDIA_RUNTIME})
+
+        with pytest.raises(AuthError, match="No Codex credentials stored"):
+            oneshot._run_agent(
+                "hello", model="gpt-5.5-codex", provider="openai-codex"
+            )
+
+        assert calls == ["openai-codex"]  # fallback chain never consulted
+        assert FakeAgent.instances == []
+
+    def test_fallback_passes_entry_model_as_target_model(
+        self, monkeypatch, oneshot_env
+    ):
+        # api_mode is derived from target_model inside resolve_runtime_provider,
+        # so each fallback attempt must pass the entry's OWN model — not the
+        # primary's — and the resolved api_mode must reach the agent.
+        seen_kwargs = []
+
+        def fake_resolve(requested=None, **kwargs):
+            seen_kwargs.append({"requested": requested, **kwargs})
+            if not requested or requested in ("openai-codex", "codex"):
+                raise _codex_auth_error()
+            return dict(NVIDIA_RUNTIME)
+
+        import hermes_cli.runtime_provider as rp_mod
+
+        monkeypatch.setattr(rp_mod, "resolve_runtime_provider", fake_resolve)
+
+        oneshot._run_agent("hello")
+
+        assert seen_kwargs[0]["target_model"] == "gpt-5.5-codex"
+        fallback_call = seen_kwargs[1]
+        assert fallback_call["requested"] == "custom:nvidia"
+        assert fallback_call["target_model"] == "moonshotai/kimi-k2.5"
+        agent = FakeAgent.instances[-1]
+        assert agent.kwargs["api_mode"] == "chat_completions"
+
+    @pytest.mark.parametrize("exc_type", [ValueError, TypeError])
+    def test_non_auth_error_inside_fallback_walk_propagates(
+        self, monkeypatch, oneshot_env, exc_type
+    ):
+        # Only AuthError means "try the next entry". A ValueError/TypeError
+        # raised while resolving a fallback is a real bug and must surface.
+        def fake_resolve(requested=None, **kwargs):
+            if not requested or requested in ("openai-codex", "codex"):
+                raise _codex_auth_error()
+            raise exc_type("fallback resolver blew up")
+
+        import hermes_cli.runtime_provider as rp_mod
+
+        monkeypatch.setattr(rp_mod, "resolve_runtime_provider", fake_resolve)
+
+        with pytest.raises(exc_type, match="fallback resolver blew up"):
+            oneshot._run_agent("hello")
+        assert FakeAgent.instances == []
+
+    def test_original_auth_error_identity_and_attributes_preserved(
+        self, monkeypatch, oneshot_env
+    ):
+        # When the whole chain fails, the ORIGINAL AuthError object must
+        # propagate — same instance, attributes intact, no wrapping.
+        sentinel = _codex_auth_error()
+
+        def fake_resolve(requested=None, **kwargs):
+            if not requested or requested in ("openai-codex", "codex"):
+                raise sentinel
+            raise AuthError("no creds", provider=str(requested), code="missing")
+
+        import hermes_cli.runtime_provider as rp_mod
+
+        monkeypatch.setattr(rp_mod, "resolve_runtime_provider", fake_resolve)
+
+        with pytest.raises(AuthError) as excinfo:
+            oneshot._run_agent("hello")
+
+        assert excinfo.value is sentinel
+        assert excinfo.value.provider == "openai-codex"
+        assert excinfo.value.code == "codex_auth_missing"
+        assert excinfo.value.relogin_required is True
+
+    def test_logs_never_contain_auth_error_message(
+        self, monkeypatch, oneshot_env, caplog
+    ):
+        # AuthError messages can embed credential fragments (tokens echoed by
+        # upstream 401 bodies). Only the structured provider/code fields may
+        # be logged — never str(exc).
+        secret = "sk-SUPER-SECRET-TOKEN-12345"
+
+        def fake_resolve(requested=None, **kwargs):
+            if not requested or requested in ("openai-codex", "codex"):
+                raise AuthError(
+                    f"401 from upstream: token {secret} rejected",
+                    provider="openai-codex",
+                    code="codex_auth_missing",
+                )
+            if requested == "custom:nvidia":
+                raise AuthError(
+                    f"key {secret} invalid for nvidia",
+                    provider="custom:nvidia",
+                    code="invalid_key",
+                )
+            return dict(NVIDIA2_RUNTIME)
+
+        import hermes_cli.runtime_provider as rp_mod
+
+        monkeypatch.setattr(rp_mod, "resolve_runtime_provider", fake_resolve)
+
+        with caplog.at_level(logging.DEBUG):
+            oneshot._run_agent("hello")
+
+        assert secret not in caplog.text
+        assert "codex_auth_missing" in caplog.text  # safe code IS logged
+        assert "custom:nvidia2" in caplog.text  # chosen fallback IS logged
+
+
+class TestOneshotBootstrapFallbackIntegration:
+    """End-to-end through the real config stack: a real ``config.yaml`` inside
+    the per-test temp HERMES_HOME (conftest's hermetic fixture), real
+    ``load_config``, real ``get_fallback_chain`` and real
+    ``resolve_runtime_provider``. Only ``AIAgent`` is faked (no network).
+    """
+
+    def test_codex_auth_failure_falls_back_using_real_config(self, monkeypatch):
+        home = Path(os.environ["HERMES_HOME"])
+        (home / "config.yaml").write_text(
+            "\n".join(
+                [
+                    "model:",
+                    "  provider: openai-codex",
+                    "  model: gpt-5.5-codex",
+                    "providers:",
+                    "  nvidia:",
+                    "    base_url: https://integrate.api.nvidia.com/v1",
+                    "    api_key: nvapi-integration-test",
+                    "fallback_providers:",
+                    "  - provider: custom:nvidia",
+                    "    model: moonshotai/kimi-k2.5",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        FakeAgent.instances = []
+        import run_agent as run_agent_mod
+
+        monkeypatch.setattr(run_agent_mod, "AIAgent", FakeAgent)
+
+        # No Codex credentials exist in the temp HERMES_HOME, so the primary
+        # (openai-codex) raises AuthError and the chain must kick in.
+        response, _ = oneshot._run_agent("hello")
+
+        assert response == "ok"
+        agent = FakeAgent.instances[-1]
+        assert agent.kwargs["provider"] == "custom"
+        assert agent.kwargs["base_url"] == "https://integrate.api.nvidia.com/v1"
+        assert agent.kwargs["api_key"] == "nvapi-integration-test"
+        assert agent.kwargs["model"] == "moonshotai/kimi-k2.5"

@@ -367,6 +367,17 @@ def _normalize_board_slug(slug: Optional[str]) -> Optional[str]:
     return s
 
 
+def normalize_board_slug(slug: Optional[str]) -> Optional[str]:
+    """Public entry point for board-slug normalisation/validation.
+
+    Lowercases and strips ``slug``, returns ``None`` for empty input, and
+    raises :class:`ValueError` for a syntactically invalid slug. Exposed so
+    external adapters (e.g. the sanitized REST API) don't reach into the
+    private ``_normalize_board_slug`` helper.
+    """
+    return _normalize_board_slug(slug)
+
+
 def kanban_home() -> Path:
     """Return the shared Hermes root that anchors the kanban board.
 
@@ -2866,6 +2877,62 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
         _append_event(conn, task_id, "assigned", {"assignee": profile})
         return True
+
+
+# Scalar task fields an external editor may set directly. ``assignee`` is
+# excluded on purpose — it has its own running-task guard in ``assign_task``.
+_EDITABLE_TASK_FIELDS = ("title", "body", "priority")
+# States in which content edits are refused: the task is finished and its
+# card text is a historical record.
+_TERMINAL_EDIT_STATES = frozenset({"done", "archived"})
+
+
+def edit_task_fields(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    fields: Iterable[str],
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    priority: Optional[int] = None,
+) -> bool:
+    """Edit mutable scalar fields (``title`` / ``body`` / ``priority``).
+
+    Only the fields named in ``fields`` are written, so a ``None`` value can
+    be stored explicitly (e.g. clearing a body). Records an ``edited`` event
+    naming the changed fields.
+
+    Editing the ``title`` or ``body`` of a task in a terminal state
+    (``done`` / ``archived``) is refused with :class:`RuntimeError` — the
+    finished card text is a historical record. ``priority`` may still be
+    changed (it only affects queue ordering, which is moot once terminal, but
+    is harmless and keeps re-prioritising bulk views working).
+
+    Returns ``True`` on success, ``False`` if the task does not exist.
+    """
+    requested = [f for f in fields if f in _EDITABLE_TASK_FIELDS]
+    if not requested:
+        return get_task(conn, task_id) is not None
+    values = {"title": title, "body": body, "priority": priority}
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        if row["status"] in _TERMINAL_EDIT_STATES and (
+            "title" in requested or "body" in requested
+        ):
+            raise RuntimeError(
+                f"cannot edit the title/body of a {row['status']} task"
+            )
+        assignments = ", ".join(f"{name} = ?" for name in requested)
+        conn.execute(
+            f"UPDATE tasks SET {assignments} WHERE id = ?",
+            [values[name] for name in requested] + [task_id],
+        )
+        _append_event(conn, task_id, "edited", {"fields": list(requested)})
+    return True
 
 
 # ---------------------------------------------------------------------------

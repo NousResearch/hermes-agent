@@ -292,7 +292,29 @@ def _jobs_lock():
                                 break
                             time.sleep(0.1)
                 elif msvcrt is not None:
-                    getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+                    _deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
+                    while True:
+                        try:
+                            lock_fd.seek(0)
+                            getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1)
+                            break
+                        except OSError:
+                            if time.monotonic() >= _deadline:
+                                logger.error(
+                                    "Timed out after %.0fs waiting for the cron "
+                                    "jobs lock (%s) — another process is holding "
+                                    "it. Proceeding with in-process locking only "
+                                    "so the scheduler stays alive (#60703).",
+                                    _JOBS_LOCK_TIMEOUT_SECONDS,
+                                    _jobs_lock_file(),
+                                )
+                                try:
+                                    lock_fd.close()
+                                except OSError:
+                                    pass
+                                lock_fd = None
+                                break
+                            time.sleep(0.1)
             except (OSError, IOError) as e:
                 # Never let a locking failure take down cron writes — fall back to
                 # in-process-only protection (still held via _jobs_file_lock).

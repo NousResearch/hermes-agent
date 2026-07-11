@@ -24,6 +24,12 @@ Config via environment variables:
   HINDSIGHT_RETAIN_USER_PREFIX     — label used before user turns in retained transcripts
   HINDSIGHT_RETAIN_ASSISTANT_PREFIX — label used before assistant turns in retained transcripts
 
+Recall on the first turn of a fresh session is served synchronously (the warm
+prefetch cache is only populated after a turn completes), bounded by a small
+latency budget. Configure via config.json:
+  first_turn_recall          — enable synchronous cold-start recall (default: true)
+  first_turn_recall_timeout  — latency budget in seconds for that recall (default: 3.0)
+
 Or via $HERMES_HOME/hindsight/config.json (profile-scoped), falling back to
 ~/.hindsight/config.json (legacy, shared) for backward compatibility.
 """
@@ -661,6 +667,14 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
+        # Cold-start recall: on the first turn of a fresh session the warm
+        # prefetch cache is empty (it is only populated post-turn by
+        # queue_prefetch), so auto-inject would silently return nothing.
+        # When True, prefetch() falls back to a synchronous, latency-bounded
+        # recall on that first turn so memory context is available from turn 1
+        # without depending on a prompt directive. Reset on every session
+        # switch. Subsequent turns keep the fast warm-prefetch path.
+        self._first_turn_pending = True
         # Single-writer model for retain. sync_turn() enqueues; the writer
         # thread drains sequentially. Avoids spawning ad-hoc threads that
         # can race the interpreter shutdown and emit "cannot schedule new
@@ -695,6 +709,11 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # Recall controls
         self._auto_recall = True
+        # Reliable first-turn recall: when the warm prefetch cache is empty
+        # (cold start / turn 1), perform a synchronous recall bounded by
+        # _first_turn_recall_timeout seconds. Gated on auto_recall.
+        self._first_turn_recall = True
+        self._first_turn_recall_timeout = 3.0
         self._recall_max_tokens = 4096
         # Default to observation-only recall. Observations are Hindsight's
         # consolidated knowledge layer — deduplicated, evidence-grounded
@@ -997,6 +1016,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_tags_match", "description": "Tag matching mode for recall", "default": "any", "choices": ["any", "all", "any_strict", "all_strict"]},
             {"key": "recall_types", "description": "Fact types to surface on recall — applies to both auto-recall and the hindsight_recall tool (comma-separated or list). Defaults to observation-only — observations are Hindsight's consolidated, deduplicated, evidence-grounded knowledge layer; raw world/experience facts are the supporting evidence observations already summarize. Set to e.g. 'observation,world,experience' to also include raw facts.", "default": "observation"},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
+            {"key": "first_turn_recall", "description": "On the first turn of a fresh session (when the warm prefetch cache is empty), do a synchronous recall so memory context is available from turn 1 instead of one turn late", "default": True},
+            {"key": "first_turn_recall_timeout", "description": "Latency budget in seconds for the synchronous first-turn recall; if the backend is slower the turn proceeds without memory context", "default": 3.0},
             {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
@@ -1062,9 +1083,14 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._client = Hindsight(**kwargs)
         return self._client
 
-    def _run_sync(self, coro):
-        """Schedule *coro* on the shared loop using the configured timeout."""
-        return _run_sync(coro, timeout=self._timeout)
+    def _run_sync(self, coro, timeout: float | None = None):
+        """Schedule *coro* on the shared loop using the configured timeout.
+
+        A caller may pass an explicit *timeout* (seconds) to bound a single
+        call more tightly than the default request timeout — used by the
+        synchronous first-turn recall so a slow backend can't stall the turn.
+        """
+        return _run_sync(coro, timeout=timeout if timeout is not None else self._timeout)
 
     def _is_retriable_embedded_connection_error(self, exc: Exception) -> bool:
         """Return True for stale embedded-daemon connection failures."""
@@ -1148,11 +1174,17 @@ class HindsightMemoryProvider(MemoryProvider):
         except Exception as exc:
             logger.debug("Hindsight atexit shutdown failed: %s", exc)
 
-    def _run_hindsight_operation(self, operation):
-        """Run an async Hindsight client operation, retrying once after idle shutdown."""
+    def _run_hindsight_operation(self, operation, *, timeout: float | None = None):
+        """Run an async Hindsight client operation, retrying once after idle shutdown.
+
+        *timeout* (seconds) bounds each scheduled call; ``None`` uses the
+        configured request timeout. Callers on a latency-sensitive path
+        (e.g. synchronous first-turn recall) pass a small budget so a slow
+        backend degrades to "no memory context" instead of stalling.
+        """
         client = self._get_client()
         try:
-            return self._run_sync(operation(client))
+            return self._run_sync(operation(client), timeout=timeout)
         except Exception as exc:
             if not self._is_retriable_embedded_connection_error(exc):
                 raise
@@ -1163,7 +1195,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._client = None
             client = self._get_client()
             self._client = client
-            return self._run_sync(operation(client))
+            return self._run_sync(operation(client), timeout=timeout)
 
     def _probe_url(self) -> str:
         """Return the URL to probe /version on.
@@ -1337,6 +1369,12 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # Recall controls
         self._auto_recall = self._config.get("auto_recall", True)
+        self._first_turn_recall = self._config.get("first_turn_recall", True)
+        self._first_turn_recall_timeout = float(
+            self._config.get("first_turn_recall_timeout", 3.0)
+        )
+        # A fresh initialize() means a fresh session — arm the cold-start recall.
+        self._first_turn_pending = True
         self._recall_max_tokens = int(self._config.get("recall_max_tokens", 4096))
         # Default narrows recall to observation-only; pass an explicit
         # `recall_types` list in config.json to broaden (e.g. include
@@ -1463,6 +1501,53 @@ class HindsightMemoryProvider(MemoryProvider):
             f"hindsight_retain to store facts."
         )
 
+    def _execute_recall(self, query: str, *, timeout: float | None = None) -> str:
+        """Run a recall/reflect for *query* and return formatted result text.
+
+        Shared by the warm background prefetch (queue_prefetch) and the
+        synchronous cold-start recall (prefetch). Returns "" on no results
+        or failure. *timeout* bounds the call; None uses the configured
+        request timeout.
+        """
+        try:
+            if self._prefetch_method == "reflect":
+                logger.debug("Recall: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
+                resp = self._run_hindsight_operation(
+                    lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget),
+                    timeout=timeout,
+                )
+                return resp.text or ""
+            recall_kwargs: dict = {
+                "bank_id": self._bank_id, "query": query,
+                "budget": self._budget, "max_tokens": self._recall_max_tokens,
+            }
+            if self._recall_tags:
+                recall_kwargs["tags"] = self._recall_tags
+                recall_kwargs["tags_match"] = self._recall_tags_match
+            if self._recall_types:
+                recall_kwargs["types"] = self._recall_types
+            logger.debug("Recall: calling recall (bank=%s, query_len=%d, budget=%s)",
+                         self._bank_id, len(query), self._budget)
+            resp = self._run_hindsight_operation(
+                lambda client: client.arecall(**recall_kwargs),
+                timeout=timeout,
+            )
+            num_results = len(resp.results) if resp.results else 0
+            logger.debug("Recall: returned %d results", num_results)
+            return "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+        except Exception as e:
+            logger.debug("Hindsight recall failed: %s", e, exc_info=True)
+            return ""
+
+    def _format_prefetch(self, result: str) -> str:
+        """Wrap recall text with the memory-context header for injection."""
+        header = self._recall_prompt_preamble or (
+            "# Hindsight Memory (persistent cross-session context)\n"
+            "Use this to answer questions about the user and prior sessions. "
+            "Do not call tools to look up information that is already present here."
+        )
+        return f"{header}\n\n{result}"
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             logger.debug("Prefetch: waiting for background thread to complete")
@@ -1470,16 +1555,47 @@ class HindsightMemoryProvider(MemoryProvider):
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""
-        if not result:
-            logger.debug("Prefetch: no results available")
+        if result:
+            logger.debug("Prefetch: returning %d chars of warm context", len(result))
+            self._first_turn_pending = False
+            return self._format_prefetch(result)
+
+        # Cold start (turn 1 of a fresh session): the warm cache is empty
+        # because queue_prefetch only populates it AFTER a turn completes.
+        # Do a synchronous, latency-bounded recall so memory context is
+        # available from the first message, rather than one turn late. Only
+        # fires once per session (first_turn_pending), respects auto_recall,
+        # skips tools-only mode, and never runs during shutdown.
+        if (
+            self._first_turn_pending
+            and self._first_turn_recall
+            and self._auto_recall
+            and self._memory_mode != "tools"
+            and not self._shutting_down.is_set()
+            and query
+            and query.strip()
+        ):
+            self._first_turn_pending = False
+            recall_query = query
+            if self._recall_max_input_chars and len(recall_query) > self._recall_max_input_chars:
+                recall_query = recall_query[:self._recall_max_input_chars]
+            logger.debug("Prefetch: cold-start synchronous recall (budget=%.1fs)",
+                         self._first_turn_recall_timeout)
+            try:
+                text = self._execute_recall(
+                    recall_query, timeout=self._first_turn_recall_timeout
+                )
+            except Exception as e:
+                logger.debug("Prefetch: cold-start recall failed: %s", e, exc_info=True)
+                text = ""
+            if text:
+                logger.debug("Prefetch: cold-start recall returned %d chars", len(text))
+                return self._format_prefetch(text)
+            logger.debug("Prefetch: cold-start recall returned nothing")
             return ""
-        logger.debug("Prefetch: returning %d chars of context", len(result))
-        header = self._recall_prompt_preamble or (
-            "# Hindsight Memory (persistent cross-session context)\n"
-            "Use this to answer questions about the user and prior sessions. "
-            "Do not call tools to look up information that is already present here."
-        )
-        return f"{header}\n\n{result}"
+
+        logger.debug("Prefetch: no results available")
+        return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if self._memory_mode == "tools":
@@ -1496,32 +1612,13 @@ class HindsightMemoryProvider(MemoryProvider):
             query = query[:self._recall_max_input_chars]
 
         def _run():
-            try:
-                if self._prefetch_method == "reflect":
-                    logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                    resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
-                    text = resp.text or ""
-                else:
-                    recall_kwargs: dict = {
-                        "bank_id": self._bank_id, "query": query,
-                        "budget": self._budget, "max_tokens": self._recall_max_tokens,
-                    }
-                    if self._recall_tags:
-                        recall_kwargs["tags"] = self._recall_tags
-                        recall_kwargs["tags_match"] = self._recall_tags_match
-                    if self._recall_types:
-                        recall_kwargs["types"] = self._recall_types
-                    logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
-                                 self._bank_id, len(query), self._budget)
-                    resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                    num_results = len(resp.results) if resp.results else 0
-                    logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
-                if text:
-                    with self._prefetch_lock:
-                        self._prefetch_result = text
-            except Exception as e:
-                logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)
+            text = self._execute_recall(query)
+            if text:
+                with self._prefetch_lock:
+                    self._prefetch_result = text
+                # A warm result is now cached — the next prefetch() will use the
+                # fast path, so the synchronous cold-start recall isn't needed.
+                self._first_turn_pending = False
 
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
         self._prefetch_thread.start()
@@ -1897,6 +1994,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._turn_counter = 0
         self._turn_index = 0
         self._last_retained_turn_count = 0
+        # New session -> re-arm the synchronous cold-start recall so the first
+        # turn after a /new, /reset, /resume, /branch, or compression rotation
+        # gets memory context immediately instead of one turn late.
+        self._first_turn_pending = True
         logger.debug(
             "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
             self._session_id, self._parent_session_id, reset, self._document_id,

@@ -791,7 +791,44 @@ class TestToolHandlers:
 
 class TestPrefetch:
     def test_prefetch_returns_empty_when_no_result(self, provider):
+        # Non-first turn (warm-path): an empty warm cache yields no context.
+        provider._first_turn_pending = False
         assert provider.prefetch("test") == ""
+
+    def test_prefetch_cold_start_synchronous_recall(self, provider):
+        """Turn 1 of a fresh session: warm cache is empty, so prefetch does a
+        synchronous recall so memory context is available immediately."""
+        assert provider._first_turn_pending is True
+        result = provider.prefetch("when is my birthday?")
+        assert "Memory 1" in result and "Memory 2" in result
+        provider._client.arecall.assert_awaited()
+        # One-shot: the flag is consumed so subsequent turns use the warm path.
+        assert provider._first_turn_pending is False
+
+    def test_prefetch_cold_start_disabled_returns_empty(self, provider_with_config):
+        p = provider_with_config(first_turn_recall=False)
+        p._client = _make_mock_client()
+        assert p.prefetch("when is my birthday?") == ""
+        p._client.arecall.assert_not_awaited()
+
+    def test_prefetch_cold_start_respects_auto_recall_off(self, provider_with_config):
+        p = provider_with_config(auto_recall=False)
+        p._client = _make_mock_client()
+        assert p.prefetch("when is my birthday?") == ""
+        p._client.arecall.assert_not_awaited()
+
+    def test_prefetch_cold_start_only_fires_once(self, provider):
+        provider.prefetch("first question")
+        provider._client.arecall.reset_mock()
+        # Second call with empty warm cache must NOT re-run synchronous recall.
+        assert provider.prefetch("second question") == ""
+        provider._client.arecall.assert_not_awaited()
+
+    def test_prefetch_warm_result_takes_precedence_over_cold_start(self, provider):
+        provider._prefetch_result = "- warm memory"
+        result = provider.prefetch("test")
+        assert "- warm memory" in result
+        provider._client.arecall.assert_not_awaited()
 
     def test_prefetch_default_preamble(self, provider):
         provider._prefetch_result = "- some memory"
@@ -1247,8 +1284,17 @@ class TestSessionSwitchBufferFlush:
         provider._prefetch_result = "old-session recall: User likes Rust"
         provider.on_session_switch("new-sid")
         assert provider._prefetch_result == ""
-        # And subsequent prefetch() should now report empty, not the leftover.
+        # And subsequent prefetch() (warm path) should now report empty, not
+        # the leftover. Disable cold-start recall to isolate the warm cache.
+        provider._first_turn_recall = False
         assert provider.prefetch("anything") == ""
+
+    def test_session_switch_rearms_cold_start_recall(self, provider):
+        """A session switch must re-arm the synchronous first-turn recall so
+        the new session gets memory context on its first message."""
+        provider._first_turn_pending = False
+        provider.on_session_switch("new-sid")
+        assert provider._first_turn_pending is True
 
     def test_in_flight_prefetch_thread_drained_on_switch(self, provider, monkeypatch):
         """on_session_switch must wait for an in-flight prefetch from the

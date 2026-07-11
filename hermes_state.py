@@ -711,6 +711,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
+    execution_policy TEXT,
     parent_session_id TEXT,
     started_at REAL NOT NULL,
     ended_at REAL,
@@ -1670,6 +1671,7 @@ class SessionDB:
         model: str = None,
         model_config: Dict[str, Any] = None,
         system_prompt: str = None,
+        execution_policy: str = None,
         user_id: str = None,
         session_key: str = None,
         chat_id: str = None,
@@ -1700,13 +1702,15 @@ class SessionDB:
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, parent_session_id, cwd, started_at
+                   model, model_config, system_prompt, execution_policy,
+                   parent_session_id, cwd, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = COALESCE(sessions.model_config, excluded.model_config),
                        system_prompt = COALESCE(sessions.system_prompt, excluded.system_prompt),
+                       execution_policy = COALESCE(sessions.execution_policy, excluded.execution_policy),
                        session_key = COALESCE(sessions.session_key, excluded.session_key),
                        chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
                        chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
@@ -1724,6 +1728,7 @@ class SessionDB:
                     model,
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
+                    execution_policy,
                     parent_session_id,
                     cwd,
                     time.time(),

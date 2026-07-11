@@ -96,6 +96,8 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+_READ_ONLY_GENERATION_POLICY = "read_only_generation"
+_SUPPORTED_EXECUTION_POLICIES = frozenset({_READ_ONLY_GENERATION_POLICY})
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -1679,7 +1681,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "output_tokens", "cache_read_tokens", "cache_write_tokens",
             "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
             "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id",
+            "execution_policy", "_lineage_root_id",
         )
         payload = {key: session.get(key) for key in safe_keys if key in session}
         # Avoid exposing full system prompts/model_config through the client API;
@@ -1781,7 +1783,25 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
-        db.create_session(session_id, "api_server", model=str(model) if model else None, system_prompt=system_prompt)
+        execution_policy = body.get("execution_policy")
+        if execution_policy is not None and (
+            not isinstance(execution_policy, str)
+            or execution_policy not in _SUPPORTED_EXECUTION_POLICIES
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Unsupported execution policy",
+                    code="invalid_execution_policy",
+                ),
+                status=400,
+            )
+        db.create_session(
+            session_id,
+            "api_server",
+            model=str(model) if model else None,
+            system_prompt=system_prompt,
+            execution_policy=execution_policy,
+        )
         title = body.get("title")
         if title is not None:
             try:
@@ -1890,6 +1910,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "api_server",
             model=source.get("model"),
             system_prompt=source.get("system_prompt"),
+            execution_policy=source.get("execution_policy"),
             parent_session_id=source_id,
         )
         messages = db.get_messages(source_id)

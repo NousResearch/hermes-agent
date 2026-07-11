@@ -170,6 +170,50 @@ async def test_session_crud_and_message_history(adapter, session_db):
 
 
 @pytest.mark.asyncio
+async def test_session_create_persists_execution_policy(adapter, session_db):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post("/api/sessions", json={
+            "id": "restricted",
+            "execution_policy": "read_only_generation",
+        })
+        assert response.status == 201
+        assert (await response.json())["session"]["execution_policy"] == "read_only_generation"
+    assert session_db.get_session("restricted")["execution_policy"] == "read_only_generation"
+
+
+@pytest.mark.asyncio
+async def test_session_create_rejects_invalid_execution_policy(adapter, session_db):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post("/api/sessions", json={
+            "id": "invalid-policy",
+            "execution_policy": "tool_choice_none",
+        })
+        assert response.status == 400
+        assert (await response.json())["error"]["code"] == "invalid_execution_policy"
+    assert session_db.get_session("invalid-policy") is None
+
+
+@pytest.mark.asyncio
+async def test_session_patch_cannot_clear_execution_policy(adapter, session_db):
+    session_db.create_session(
+        "restricted",
+        "api_server",
+        execution_policy="read_only_generation",
+    )
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.patch(
+            "/api/sessions/restricted",
+            json={"execution_policy": None},
+        )
+        assert response.status == 400
+        assert (await response.json())["error"]["code"] == "unsupported_session_field"
+    assert session_db.get_session("restricted")["execution_policy"] == "read_only_generation"
+
+
+@pytest.mark.asyncio
 async def test_session_messages_follow_compression_tip(adapter, session_db):
     source_id = session_db.create_session("source-session", "api_server")
     session_db.append_message(source_id, "user", "before compression")
@@ -209,6 +253,25 @@ async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, se
     assert fork["title"] == "Alternative"
     assert [m["content"] for m in session_db.get_messages(fork["id"])] == ["first path", "answer"]
     assert session_db.get_session(source_id)["end_reason"] == "branched"
+
+
+@pytest.mark.asyncio
+async def test_session_fork_inherits_execution_policy(adapter, session_db):
+    session_db.create_session(
+        "parent",
+        "api_server",
+        execution_policy="read_only_generation",
+    )
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/parent/fork",
+            json={"id": "child", "execution_policy": None},
+        )
+        assert response.status == 201
+        payload = await response.json()
+    assert payload["session"]["execution_policy"] == "read_only_generation"
+    assert session_db.get_session("child")["execution_policy"] == "read_only_generation"
 
 
 @pytest.mark.asyncio

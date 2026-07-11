@@ -278,6 +278,23 @@ class _ThreadedProcessHandle:
 # ---------------------------------------------------------------------------
 
 
+# ── Session-identity vars are EXCLUDED from the persistent env snapshot ──────
+# The snapshot (`export -p` dump, re-sourced by every subsequent command in
+# this environment) outlives a single agent turn, and the gateway's "default"
+# LocalEnvironment is SHARED across sessions. Persisting HERMES_SESSION_* /
+# HERMES_HOME in it lets one session's identity CLOBBER the per-spawn
+# injection of the next session's command (`source` runs after Popen env is
+# applied), producing a coherent foreign identity in subprocess env that
+# self-perpetuates via the re-dump — the 2026-07-10 cross-session misbinding
+# (and a hermetic test's HERMES_HOME leaking into a live shell). These vars
+# are per-spawn-injected (tools/environments/local.py
+# _inject_session_context_env / _inject_context_hermes_home) and must never
+# come from the snapshot. `export -p` emits `declare -x KEY=...` (bash) or
+# `export KEY=...` (some shells); match both.
+_SNAPSHOT_EXCLUDE_PATTERN = r"^(declare -x |export )HERMES_(SESSION_[A-Z0-9_]+|HOME)="
+_SNAPSHOT_EXCLUDE_PATTERN_Q = shlex.quote(_SNAPSHOT_EXCLUDE_PATTERN)
+
+
 def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
@@ -393,10 +410,27 @@ class BaseEnvironment(ABC):
         # and is genuinely unique per writer, which closes the race.  The
         # static path is shlex-quoted (Windows/Git-Bash drive letters, spaces)
         # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
+        #
+        # CRITICAL (Linux CI 2026-07-10): the temp name must be captured in a
+        # parent-shell variable BEFORE any pipeline uses it.  In
+        # ``export -p | grep ... > path.$BASHPID`` the redirect is performed
+        # by grep's pipeline SUBSHELL, whose $BASHPID differs from the parent
+        # — the dump lands at ``path.<grepPID>`` while the later
+        # ``mv path.<parentPID>`` finds nothing, the ``|| rm`` arm silently
+        # eats the failure, and env persistence dies entirely.  (macOS
+        # /bin/bash 3.2 has no $BASHPID — both expand empty and accidentally
+        # agree — so this only manifests on bash>=4, i.e. Linux CI.)
+        # ``__hermes_snap_tmp`` is assigned once in the parent shell;
+        # subshells inherit the VALUE, so every reference names the same file.
+        _snap_tmp_assign = (
+            "__hermes_snap_tmp=" + shlex.quote(self._snapshot_path + ".tmp.")
+            + '"${BASHPID:-$$}"'
+        )
+        _snap_tmp = '"$__hermes_snap_tmp"'
         bootstrap = (
             f"umask 077\n"
-            f"export -p > {_snap_tmp}\n"
+            f"{_snap_tmp_assign}\n"
+            f"export -p | grep -vE {_SNAPSHOT_EXCLUDE_PATTERN_Q} > {_snap_tmp}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
             # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
@@ -478,8 +512,20 @@ class BaseEnvironment(ABC):
         # truncated/half-written file.  ``$BASHPID`` (not ``$$``) is the actual
         # subshell PID — unique per concurrent ``&``-launched writer — so two
         # writers never share a temp name and clobber each other before the mv.
-        # Static path shlex-quoted (Windows/spaces); ``$BASHPID`` left to expand.
-        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # Static path shlex-quoted (Windows/spaces).  The temp name is
+        # captured ONCE in a parent-shell variable: in a pipeline like
+        # ``export -p | grep ... > path.$BASHPID`` the redirect runs in
+        # grep's pipeline subshell whose $BASHPID differs from the parent,
+        # so the dump and the subsequent ``mv`` would name DIFFERENT files
+        # and env persistence silently dies (Linux CI 2026-07-10; macOS
+        # bash 3.2 lacks $BASHPID so both expanded empty and agreed).
+        # ${BASHPID:-$$} keeps per-writer uniqueness on bash>=4 (concurrent
+        # ``&`` subshells) with a $$ fallback on bash 3.2.
+        _snap_tmp_assign = (
+            "__hermes_snap_tmp=" + shlex.quote(self._snapshot_path + ".tmp.")
+            + '"${BASHPID:-$$}"'
+        )
+        _snap_tmp = '"$__hermes_snap_tmp"'
 
         parts = []
 
@@ -512,8 +558,10 @@ class BaseEnvironment(ABC):
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
         if self._snapshot_ready:
+            parts.append(_snap_tmp_assign)
             parts.append(
-                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"{{ export -p | grep -vE {_SNAPSHOT_EXCLUDE_PATTERN_Q} > {_snap_tmp} "
+                f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )
 

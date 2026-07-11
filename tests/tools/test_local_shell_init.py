@@ -193,13 +193,16 @@ class TestSnapshotEndToEnd:
     def test_exported_env_changes_persist_between_commands(self, tmp_path):
         env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
         try:
+            # NOTE: probe var must NOT be named HERMES_SESSION_* — that
+            # namespace is session identity and is deliberately excluded
+            # from the persistent snapshot (see _SNAPSHOT_EXCLUDE_PATTERN).
             first = env.execute(
-                'export HERMES_SESSION_ENV_PROBE="sticky"; '
+                'export HERMES_SHELL_ENV_PROBE="sticky"; '
                 'export PATH="/tmp/hermes-session-bin:$PATH"; '
-                'echo "first=$HERMES_SESSION_ENV_PROBE"'
+                'echo "first=$HERMES_SHELL_ENV_PROBE"'
             )
             second = env.execute(
-                'echo "second=$HERMES_SESSION_ENV_PROBE"; echo "PATH=$PATH"'
+                'echo "second=$HERMES_SHELL_ENV_PROBE"; echo "PATH=$PATH"'
             )
         finally:
             env.cleanup()

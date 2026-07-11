@@ -1417,6 +1417,25 @@ class ContextCompressor(ContextEngine):
     # rationale as the gpt-5.5/Codex 85% autoraise.
     _MIN_CTX_TRIGGER_RATIO = 0.85
 
+    # -- Tool-output prune-first phase (issue #513) ------------------------
+    # Large-context models resolve a high summarization threshold
+    # (context_length * threshold_percent). On a 1M-window model that is
+    # ~800K tokens, so a real coding session that plateaus at ~260K of
+    # context NEVER crosses it — and because the cheap tool-output prune
+    # (_prune_old_tool_results) only runs INSIDE compress(), it stays
+    # dormant too. The bulky, re-sent-every-turn tool results (measured at
+    # 58-86% of a long session's re-read weight) are never reclaimed.
+    #
+    # These constants gate an independent prune-only phase that fires on an
+    # ABSOLUTE token budget, decoupled from the summarization trigger. The
+    # LLM-based conversation summary still waits for threshold_tokens; only
+    # the free (no-LLM) tool-result elision runs early. Both default to a
+    # generous protect window so small/normal sessions are untouched.
+    #
+    # Disabled by default (prune_protect_tokens=None) to preserve historical
+    # behavior; opt in via compression.prune_protect_tokens in config.yaml.
+    _DEFAULT_PRUNE_MINIMUM_TOKENS = 20_000  # only prune if >=20K reclaimable
+
     @staticmethod
     def _coerce_max_tokens(value: Any) -> int | None:
         """Normalize a max_tokens value to a positive int or None.
@@ -1540,6 +1559,8 @@ class ContextCompressor(ContextEngine):
         max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None,
         threshold_tokens_cap: Any = None,
+        prune_protect_tokens: int | None = None,
+        prune_minimum_tokens: int | None = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -1583,6 +1604,32 @@ class ContextCompressor(ContextEngine):
         # When False (default = historical behavior), insert a
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
+
+        # -- Prune-first phase (issue #513) --
+        # prune_protect_tokens: keep the most recent N tokens of tool output
+        # untouched; elide older tool results. None disables the early phase
+        # entirely (historical behavior). A positive int arms it.
+        self.prune_protect_tokens = (
+            int(prune_protect_tokens)
+            if isinstance(prune_protect_tokens, (int, float))
+            and prune_protect_tokens
+            and int(prune_protect_tokens) > 0
+            else None
+        )
+        # Only run the early prune when it would reclaim at least this many
+        # tokens (avoids churning the prompt-cache prefix for a trivial gain).
+        _pmin = (
+            prune_minimum_tokens
+            if isinstance(prune_minimum_tokens, (int, float))
+            and prune_minimum_tokens
+            and int(prune_minimum_tokens) > 0
+            else self._DEFAULT_PRUNE_MINIMUM_TOKENS
+        )
+        self.prune_minimum_tokens = int(_pmin)
+        # Rough running estimate of the tokens the last early-prune reclaimed,
+        # surfaced in logs/status. Not authoritative (uses the same rough
+        # estimator as preflight), just observability.
+        self.last_prune_saved_tokens = 0
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -1894,6 +1941,57 @@ class ContextCompressor(ContextEngine):
                 )
             return True
         return False
+
+    def should_prune_tools(self, prompt_tokens: Optional[int] = None) -> bool:
+        """Return True if the early, LLM-free tool-output prune should fire.
+
+        This is INDEPENDENT of :meth:`should_compress`. The summarization
+        trigger scales with the model window (``threshold_tokens`` =
+        ``context_length * threshold_percent``), which on a large-context
+        model can sit at hundreds of thousands of tokens — high enough that a
+        real session's re-sent tool output never triggers it. The prune-first
+        phase instead fires on an ABSOLUTE budget (``prune_protect_tokens``)
+        so bulky, already-seen tool results get elided long before the
+        window-relative summary threshold is reached (issue #513).
+
+        Returns False when the phase is disarmed (``prune_protect_tokens is
+        None``) so historical behavior is byte-for-byte preserved unless the
+        user opts in via ``compression.prune_protect_tokens``.
+        """
+        if self.prune_protect_tokens is None:
+            return False
+        tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
+        # Fire once the transcript exceeds the protected window PLUS the
+        # minimum reclaimable budget — below that there is nothing old enough
+        # to prune, or too little to be worth churning the cache prefix.
+        trigger_at = self.prune_protect_tokens + self.prune_minimum_tokens
+        return tokens >= trigger_at
+
+    def prune_tools_only(
+        self, messages: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Run the cheap tool-output prune WITHOUT any LLM summarization.
+
+        Reuses :meth:`_prune_old_tool_results` — the same routine
+        :meth:`compress` runs in its Phase 1 — but protects a token-budget
+        tail sized by ``prune_protect_tokens`` rather than the summary
+        tail budget. No conversation turns are summarized or dropped; only
+        old tool *results* (never tool *calls*, user, or assistant text) are
+        replaced with informative one-line stubs. Duplicate tool results are
+        collapsed to a back-reference and oversized tool-call arguments
+        outside the protected tail are truncated.
+
+        Returns ``(messages, pruned_count)``. When the phase is disarmed or
+        nothing qualifies, returns the input unchanged with ``0``.
+        """
+        if self.prune_protect_tokens is None or not messages:
+            return messages, 0
+        pruned_messages, pruned_count = self._prune_old_tool_results(
+            messages,
+            protect_tail_count=self.protect_last_n,
+            protect_tail_tokens=self.prune_protect_tokens,
+        )
+        return pruned_messages, pruned_count
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)

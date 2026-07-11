@@ -1873,6 +1873,25 @@ def init_agent(
                 compression_threshold_tokens = None
         except (TypeError, ValueError):
             compression_threshold_tokens = None
+    # Prune-first phase (issue #513): an independent, LLM-free tool-output
+    # elision that fires on an absolute token budget, decoupled from the
+    # window-relative summarization threshold. Disabled unless
+    # prune_protect_tokens is set to a positive int. Keeps the recent
+    # prune_protect_tokens of tool output verbatim; older tool RESULTS (never
+    # tool calls / user / assistant text) are stubbed. Only acts when it would
+    # reclaim >= prune_minimum_tokens.
+    def _opt_pos_int(_key: str) -> int | None:
+        _raw = _compression_cfg.get(_key)
+        if _raw is None:
+            return None
+        try:
+            _iv = int(_raw)
+        except (TypeError, ValueError):
+            return None
+        return _iv if _iv > 0 else None
+
+    compression_prune_protect_tokens = _opt_pos_int("prune_protect_tokens")
+    compression_prune_minimum_tokens = _opt_pos_int("prune_minimum_tokens")
     # In-place compaction: when True, compress_context() rewrites the message
     # list + rebuilds the system prompt WITHOUT rotating the session id (no
     # parent_session_id chain, no `name #N` renumber). See #38763 and
@@ -2312,6 +2331,8 @@ def init_agent(
             max_tokens=agent.max_tokens,
             model_thresholds=compression_model_thresholds,
             threshold_tokens_cap=compression_threshold_tokens,
+            prune_protect_tokens=compression_prune_protect_tokens,
+            prune_minimum_tokens=compression_prune_minimum_tokens,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

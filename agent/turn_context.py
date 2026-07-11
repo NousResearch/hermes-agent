@@ -29,7 +29,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple, cast
 
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
@@ -741,6 +741,59 @@ def build_turn_context(
             "get_active_compression_failure_cooldown",
             lambda: None,
         )()
+
+        # ── Prune-first phase (issue #513) ──
+        # Independent of the summarization trigger below. On large-context
+        # models the window-relative summary threshold can sit at hundreds of
+        # thousands of tokens, so a real session's re-sent tool output never
+        # trips it — and the cheap tool-output prune that lives inside
+        # compress() stays dormant with it. Run that prune here, gated on an
+        # ABSOLUTE budget (should_prune_tools), so bulky already-seen tool
+        # RESULTS get elided every turn they exceed the budget. This is a
+        # no-LLM string operation: tool calls, user, and assistant text are
+        # untouched, so conversation structure and prompt-cache-relevant head
+        # are preserved. Skipped entirely when disarmed (prune_protect_tokens
+        # is None) or for codex-native auto-compaction threads.
+        _should_prune = getattr(_compressor, "should_prune_tools", None)
+        _prune_only = getattr(_compressor, "prune_tools_only", None)
+        if (
+            not _codex_native_auto
+            and callable(_should_prune)
+            and callable(_prune_only)
+            and _should_prune(_preflight_tokens)
+        ):
+            _pre_prune_tokens = _preflight_tokens
+            _prune_result = cast(
+                "Tuple[List[Dict[str, Any]], int]", _prune_only(messages)
+            )
+            messages, _pruned_count = _prune_result
+            if _pruned_count:
+                _preflight_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=agent.tools or None,
+                )
+                _saved = max(0, _pre_prune_tokens - _preflight_tokens)
+                try:
+                    _compressor.last_prune_saved_tokens = _saved
+                except Exception:
+                    pass
+                conversation_history = conversation_history_after_compression(
+                    agent, messages
+                )
+                logger.info(
+                    "Prune-first: elided %d old tool result(s), ~%s -> ~%s tokens "
+                    "(saved ~%s; protect=%s) — no LLM call",
+                    _pruned_count,
+                    f"{_pre_prune_tokens:,}",
+                    f"{_preflight_tokens:,}",
+                    f"{_saved:,}",
+                    f"{_compressor.prune_protect_tokens:,}",
+                )
+                if not _preflight_deferred:
+                    _last = _compressor.last_prompt_tokens
+                    if _last >= 0 and _preflight_tokens < _last:
+                        _compressor.last_prompt_tokens = _preflight_tokens
 
         if _preflight_deferred:
             logger.info(

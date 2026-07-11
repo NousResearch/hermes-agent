@@ -4484,6 +4484,21 @@ def _make_agent(
 ):
     from run_agent import AIAgent
 
+    # Read the dashboard-authenticated user identity injected by the parent's
+    # PTY spawn (``HERMES_TUI_USER_ID``). When present, thread it into
+    # ``AIAgent(user_id=...)`` so the agent's memory-provider init in
+    # ``agent_init.py`` (line ~1387) passes ``user_id`` into
+    # ``initialize_all(**_init_kwargs)``. Without this hop the agent is built
+    # with ``user_id=None`` and memory providers silently fall back to the
+    # configured default — mixing every dashboard user's memories under one
+    # identity (#62549).
+    #
+    # Only consumed on the dashboard-spawned path: the classic CLI / TUI
+    # stdio never sets the env var, and non-dashboard gateways (Telegram,
+    # Discord, …) populate ``user_id`` through their own ``Source`` plumbing
+    # (``gateway/run.py`` → ``session.py``), not through this IPC bridge.
+    _tui_dashboard_user_id = os.environ.get("HERMES_TUI_USER_ID") or None
+
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell.  The agent snapshots its tool list
     # once here and never re-reads it, so briefly wait for in-flight discovery
@@ -4632,6 +4647,7 @@ def _make_agent(
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),
+        user_id=_tui_dashboard_user_id,
         **_agent_cbs(sid),
     )
 

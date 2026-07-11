@@ -14419,15 +14419,20 @@ def _ws_auth_mode() -> str:
     return "loopback"
 
 
-def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
-    """Validate WS-upgrade auth; return ``(reason, credential)``.
+def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str, Optional[Dict[str, str]]]:
+    """Validate WS-upgrade auth; return ``(reason, credential, info)``.
 
     ``reason`` is None when the credential is accepted, else a short
     machine-parseable token explaining the rejection (``no_credential``,
     ``token_mismatch``, ``ticket_invalid``, ``internal_invalid``).
     ``credential`` names which credential type was presented (``ticket``,
     ``internal``, ``token``, or ``none``) so the accepted path can log *how*
-    a peer authed, not just that it did.
+    a peer authed, not just that it did. ``info`` is the ``{user_id, provider}``
+    dict bound to the credential — present on the accepted ``ticket`` and
+    ``internal`` paths, ``None`` on rejection or the legacy loopback ``?token=``
+    path (which has no embedded identity). The dashboard PTY path consumes
+    ``info`` to thread the authenticated user identity into the spawned TUI
+    child so memory providers can scope per user.
 
     Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
     parameter, constant-time compared.
@@ -14468,8 +14473,8 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         internal = ws.query_params.get("internal", "")
         if internal:
             try:
-                consume_internal_credential(internal)
-                return None, "internal"
+                info = consume_internal_credential(internal)
+                return None, "internal", info
             except TicketInvalid as exc:
                 audit_log(
                     AuditEvent.WS_TICKET_REJECTED,
@@ -14477,15 +14482,15 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                     ip=(ws.client.host if ws.client else ""),
                     path=ws.url.path,
                 )
-                return "internal_invalid", "internal"
+                return "internal_invalid", "internal", None
 
         ticket = ws.query_params.get("ticket", "")
         if not ticket:
-            return "no_credential", "none"
+            return "no_credential", "none", None
 
         try:
-            consume_ticket(ticket)
-            return None, "ticket"
+            info = consume_ticket(ticket)
+            return None, "ticket", info
         except TicketInvalid as exc:
             audit_log(
                 AuditEvent.WS_TICKET_REJECTED,
@@ -14493,14 +14498,14 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                 ip=(ws.client.host if ws.client else ""),
                 path=ws.url.path,
             )
-            return "ticket_invalid", "ticket"
+            return "ticket_invalid", "ticket", None
 
     token = ws.query_params.get("token", "")
     if not token:
-        return "no_credential", "none"
+        return "no_credential", "none", None
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
-        return None, "token"
-    return "token_mismatch", "token"
+        return None, "token", None
+    return "token_mismatch", "token", None
 
 
 def _ws_auth_ok(ws: "WebSocket") -> bool:
@@ -14520,6 +14525,7 @@ def _resolve_chat_argv(
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
     active_session_file: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -14555,6 +14561,12 @@ def _resolve_chat_argv(
     ``HERMES_TUI_GATEWAY_URL`` attach is SKIPPED for scoped chats: the
     dashboard's in-memory gateway runs under the dashboard's own profile,
     so a profile-scoped chat must spawn its own gateway subprocess.
+
+    `user_id` (when set) threads the authenticated dashboard user's identity
+    into the child as ``HERMES_TUI_USER_ID``. ``_make_agent`` reads it and
+    passes it into ``AIAgent(user_id=...)`` so memory providers can scope per
+    user. The classic-CLI / non-dashboard paths leave this unset (``None``),
+    matching the historical "no user identity" default.
     """
     from hermes_cli.main import PROJECT_ROOT, _make_tui_argv
 
@@ -14620,6 +14632,13 @@ def _resolve_chat_argv(
     if profile_dir is None:
         if gateway_ws_url := _build_gateway_ws_url():
             env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
+
+    if user_id:
+        # Internal IPC bridge between the dashboard process and the spawned
+        # TUI child; never read from operator-facing config.yaml. ``_make_agent``
+        # in ``tui_gateway/server.py`` reads this and threads it into
+        # ``AIAgent(user_id=...)`` so memory providers can scope per user.
+        env["HERMES_TUI_USER_ID"] = user_id
 
     return list(argv), str(cwd) if cwd else None, env
 
@@ -14700,6 +14719,7 @@ async def _resolve_chat_argv_async(
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
     active_session_file: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv without blocking the dashboard event loop.
 
@@ -14718,6 +14738,8 @@ async def _resolve_chat_argv_async(
     }
     if active_session_file is not None:
         kwargs["active_session_file"] = active_session_file
+    if user_id is not None:
+        kwargs["user_id"] = user_id
 
     async with _get_chat_argv_lock(app):
         return await asyncio.to_thread(
@@ -15057,7 +15079,7 @@ async def console_ws(ws: WebSocket) -> None:
         await ws.close(code=4404, reason="embedded chat disabled")
         return
 
-    auth_reason, cred = _ws_auth_reason(ws)
+    auth_reason, cred, auth_info = _ws_auth_reason(ws)
     mode = _ws_auth_mode()
     if auth_reason is not None:
         _log.warning(
@@ -15419,7 +15441,7 @@ async def pty_ws(ws: WebSocket) -> None:
     #     browser banner agree on the cause:
     #       4401 bad credential   4403 host/origin mismatch
     #       4408 peer not allowed  4404 chat disabled
-    auth_reason, cred = _ws_auth_reason(ws)
+    auth_reason, cred, auth_info = _ws_auth_reason(ws)
     mode = _ws_auth_mode()
     if auth_reason is not None:
         _log.warning(
@@ -15484,6 +15506,23 @@ async def pty_ws(ws: WebSocket) -> None:
     }
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
+    # Thread the authenticated browser-user identity into the spawned TUI
+    # child via HERMES_TUI_USER_ID so the in-process agent built by
+    # ``_make_agent`` can pass it into ``AIAgent(user_id=...)``. Without
+    # this hop, ``AIAgent`` is constructed without a user_id, ``agent._user_id``
+    # stays ``None``, and memory providers that gate on
+    # ``initialize_all(user_id=...)`` fall back to the configured default
+    # — silently mixing every dashboard user's memories under one identity.
+    #
+    # Skip the internal credential: that path authenticates the server-spawned
+    # child attaching to ``/api/ws``/``/api/pub`` after the PTY spawn, where
+    # ``user_id`` is intentionally ``None`` (no real user, single-process).
+    # Skipping avoids re-injecting "server-internal" into the child when it
+    # will attach back via the same internal credential anyway.
+    if auth_info and auth_info.get("user_id"):
+        from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_USER_ID
+        if auth_info["user_id"] != INTERNAL_USER_ID:
+            resolve_kwargs["user_id"] = auth_info["user_id"]
 
     try:
         argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)

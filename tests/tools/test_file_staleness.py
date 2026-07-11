@@ -292,5 +292,87 @@ class TestCheckFileStalenessHelper(unittest.TestCase):
         self.assertIsNone(_check_file_staleness("/nonexistent/path", "t1"))
 
 
+class TestReadTimeMtimeCapture(unittest.TestCase):
+    """The mtime tracked for a read must reflect the bytes handed to the model.
+
+    If the file is edited between the pre-read snapshot and the returned
+    content, the tracked mtime must stay the pre-read value; otherwise the
+    staleness guard is blinded (silent overwrite of the external edit) and the
+    dedup cache returns an "unchanged" stub for a file that did change.  Both
+    are exercised by editing the file from inside the faked ``read_file`` so
+    the edit lands squarely in the read window.
+    """
+
+    def setUp(self):
+        _read_tracker.clear()
+        file_state.get_registry().clear()
+        self._tmpdir = tempfile.mkdtemp()
+        self._tmpfile = os.path.join(self._tmpdir, "torn_read.txt")
+        with open(self._tmpfile, "w") as f:
+            f.write("original content\n")
+        # Pin a known-old mtime so the mid-read edit is guaranteed to produce
+        # a strictly newer mtime regardless of filesystem timestamp resolution.
+        old = time.time() - 100
+        os.utime(self._tmpfile, (old, old))
+
+    def tearDown(self):
+        _read_tracker.clear()
+        file_state.get_registry().clear()
+        try:
+            os.unlink(self._tmpfile)
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    def _ops_editing_during_read(self):
+        """Fake ops whose read_file edits the file on disk mid-read.
+
+        The returned bytes are the pre-edit content while the file on disk is
+        advanced to a newer mtime — the exact torn-read window.
+        """
+        fake = _make_fake_ops("original content\n", 17)
+
+        def _edit_then_return(path, offset=1, limit=500):
+            with open(self._tmpfile, "w") as f:
+                f.write("changed by a concurrent writer\n")
+            return _FakeReadResult("original content\n", total_lines=1, file_size=17)
+
+        fake.read_file = _edit_then_return
+        return fake
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_staleness_detected_for_edit_during_read(self, mock_ops):
+        """A write after an edit-during-read must still warn (guard not blinded)."""
+        mock_ops.return_value = self._ops_editing_during_read()
+        read_file_tool(self._tmpfile, task_id="torn1")
+
+        result = json.loads(
+            write_file_tool(self._tmpfile, "replacement", task_id="torn1")
+        )
+        self.assertIn("_warning", result)
+        self.assertIn("modified since you last read", result["_warning"])
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_dedup_not_stubbed_for_edit_during_read(self, mock_ops):
+        """A re-read after an edit-during-read must return fresh content, not a stub."""
+        fake = self._ops_editing_during_read()
+        # Second and later reads no longer edit — they just return current bytes.
+        calls = {"n": 0}
+        original = fake.read_file
+
+        def _first_edits_then_plain(path, offset=1, limit=500):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return original(path, offset, limit)
+            return _FakeReadResult(
+                "changed by a concurrent writer\n", total_lines=1, file_size=31
+            )
+
+        fake.read_file = _first_edits_then_plain
+        mock_ops.return_value = fake
+
+        read_file_tool(self._tmpfile, task_id="torn2")
+        second = json.loads(read_file_tool(self._tmpfile, task_id="torn2"))
+        self.assertNotEqual(second.get("status"), "unchanged")
 if __name__ == "__main__":
     unittest.main()

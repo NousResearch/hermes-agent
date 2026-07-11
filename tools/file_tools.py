@@ -1363,6 +1363,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
+        # Snapshot the file's mtime BEFORE reading its bytes so the tracked
+        # timestamp reflects the version handed to the model.  A stat taken
+        # after the read would attribute a newer mtime to older content when
+        # the file is edited mid-read (concurrent subagent, editor, watcher)
+        # — silently blinding the write/patch staleness guard and returning a
+        # stale "unchanged" dedup stub on the next read.
+        try:
+            _mtime_at_read = os.path.getmtime(resolved_str)
+        except OSError:
+            _mtime_at_read = None  # Can't stat — tracking is skipped below.
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
 
@@ -1449,12 +1459,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             # 1. Dedup: skip identical re-reads of unchanged files.
             # 2. Staleness: warn on write/patch if the file changed since
             #    the agent last read it (external edit, concurrent agent, etc.).
-            try:
-                _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
-                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
-            except OSError:
-                pass  # Can't stat — skip tracking for this entry
+            # The pre-read stat keeps the tracked timestamp aligned with the
+            # content the model actually holds; a post-read stat could record
+            # a newer version's mtime and silently defeat both guards.
+            if _mtime_at_read is not None:
+                task_data["dedup"][dedup_key] = _mtime_at_read
+                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_at_read
 
             # Bound the per-task containers so a long CLI session doesn't
             # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.

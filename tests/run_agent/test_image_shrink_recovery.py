@@ -9,17 +9,17 @@ future provider that returns an image-too-large error):
      payload in-place, re-encoding native data: URL image parts to fit
      under 4 MB using vision_tools._resize_image_for_vision.
 
-The end-to-end wiring in the retry loop is not unit-tested here — it's
-covered by the live E2E in the PR description. These tests lock in the
-two pieces that matter independently: the classifier signal and the
-payload rewriter.
+The retry-loop regression uses detached canonical/API payloads to prove the
+repair is persisted before retry and the repaired image is not encoded twice.
 """
 
 from __future__ import annotations
 
 import base64
+import copy
 import sys
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 
 from agent.conversation_loop import _image_error_max_dimension
@@ -162,6 +162,111 @@ def _make_agent():
     agent.provider = "anthropic"
     agent.model = "claude-sonnet-4-6"
     return agent
+
+
+def _make_conversation_agent():
+    """Build an isolated agent capable of exercising the real retry loop."""
+    from run_agent import AIAgent
+
+    tool_defs = [{
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "search",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }]
+    with (
+        patch("run_agent.get_tool_definitions", return_value=tool_defs),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            model="anthropic/claude-sonnet-4.6",
+            provider="openrouter",
+            api_key="unused",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+    agent.client = MagicMock()
+    return agent
+
+
+def _response(content: str):
+    message = SimpleNamespace(content=content, tool_calls=None)
+    choice = SimpleNamespace(message=message, finish_reason="stop")
+    return SimpleNamespace(choices=[choice], model="test/model", usage=None)
+
+
+def _first_image_url(messages) -> str | None:
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "image_url":
+                continue
+            image_url = part.get("image_url")
+            if isinstance(image_url, dict):
+                return image_url.get("url")
+    return None
+
+
+def test_retry_loop_persists_repair_before_reusing_image(monkeypatch):
+    agent = _make_conversation_agent()
+    oversized_url = _big_png_data_url(5000)
+    shrunk_url = "data:image/jpeg;base64," + "S" * 1000
+    resize_calls = []
+    events = []
+
+    def _resize(*args, **kwargs):
+        resize_calls.append((args, kwargs))
+        return shrunk_url
+
+    monkeypatch.setattr(
+        "tools.vision_tools._resize_image_for_vision",
+        _resize,
+        raising=False,
+    )
+
+    error = _FakeApiError(
+        400,
+        "messages.0.content.1.image.source.base64: image exceeds 5 MB maximum",
+    )
+    responses = [error, _response("recovered")]
+
+    def _api_call(api_kwargs):
+        events.append(("api", _first_image_url(api_kwargs["messages"])))
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def _persist(messages, _conversation_history):
+        events.append(("persist", _first_image_url(copy.deepcopy(messages))))
+
+    agent._interruptible_api_call = _api_call
+    agent._persist_session = _persist
+    agent._save_trajectory = lambda *args, **kwargs: None
+    # Prompt caching deep-copies nested content, reproducing the detached API
+    # payload that exposed the production persistence bug.
+    agent._use_prompt_caching = True
+
+    result = agent.run_conversation([{
+        "type": "image_url",
+        "image_url": {"url": oversized_url},
+    }])
+
+    assert result["completed"] is True
+    assert result["final_response"] == "recovered"
+    assert len(resize_calls) == 1
+    assert ("api", oversized_url) in events
+    first_api = events.index(("api", oversized_url))
+    repaired_persist = events.index(("persist", shrunk_url), first_api + 1)
+    repaired_retry = events.index(("api", shrunk_url), repaired_persist + 1)
+    assert first_api < repaired_persist < repaired_retry
 
 
 class TestShrinkImagePartsHelper:

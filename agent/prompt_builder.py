@@ -137,9 +137,10 @@ DEFAULT_AGENT_IDENTITY = (
     "range of tasks including answering questions, writing and editing code, "
     "analyzing information, creative work, and executing actions via your tools. "
     "You communicate clearly, admit uncertainty when appropriate, and prioritize "
-    "being genuinely useful over being verbose unless otherwise directed below. "
-    "Prioritize correctness and verification — producing correct, verified output "
-    "is the most effective form of assistance."
+    "being genuinely useful means producing correct, verified output. "
+    "Verification detail is not verbosity — thoroughness in service of "
+    "correctness is the most effective form of assistance. Never sacrifice "
+    "verification for brevity."
 )
 
 HERMES_AGENT_HELP_GUIDANCE = (
@@ -261,10 +262,10 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "response. Never end your turn with a promise of future action — execute it now.\n"
     "Keep working until the task is actually complete. Do not stop with a summary of "
     "what you plan to do next time. If you have tools available that can accomplish "
-    "the task, use them instead of telling the user what you would do.\n"
-    "Every response should either (a) contain tool calls that make progress, or "
-    "(b) deliver a final result to the user. Responses that only describe intentions "
-    "without acting are not acceptable."
+    "Every response should either (a) contain tool calls that make progress, "
+    "(b) deliver a final verified result to the user, or "
+    "(c) report a specific blocker, missing capability, or verification-in-progress "
+    "that prevents completion. Option (c) is a valid and complete response. "
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.

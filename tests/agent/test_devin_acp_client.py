@@ -336,13 +336,19 @@ class TestAcpProcessReuse(unittest.TestCase):
             procs.append(proc)
             return proc
 
-        with patch.dict("os.environ", {"HERMES_ACP_PROCESS_REUSE": "1"}, clear=False):
+        with patch.dict(
+            "os.environ",
+            {"HERMES_ACP_PROCESS_REUSE": "1", "HERMES_ACP_SESSION_REUSE": "0"},
+            clear=False,
+        ):
             with patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_popen):
                 client = CopilotACPClient(
                     command="fake-acp",
                     args=["--stdio"],
                     acp_cwd="/tmp",
                 )
+                client._reuse_enabled = True
+                client._session_reuse_enabled = False
                 r1, _ = client._run_prompt("first", timeout_seconds=5)
                 r2, _ = client._run_prompt("second", timeout_seconds=5)
                 client.close()
@@ -352,10 +358,56 @@ class TestAcpProcessReuse(unittest.TestCase):
         assert client._spawn_count == 1
         assert len(procs) == 1
         methods = [w.get("method") for w in procs[0].writes]
-        # initialize once; session/new + session/prompt per turn
+        # initialize once; session/new + session/prompt per turn when session reuse off
         assert methods.count("initialize") == 1
         assert methods.count("session/new") == 2
         assert methods.count("session/prompt") == 2
+
+    def test_session_continuity_sends_only_delta(self):
+        from agent.copilot_acp_client import CopilotACPClient
+
+        procs: list[_ScriptedAcpProcess] = []
+
+        def _popen(*_a, **_k):
+            proc = _ScriptedAcpProcess()
+            procs.append(proc)
+            return proc
+
+        with patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_popen):
+            client = CopilotACPClient(
+                command="fake-acp",
+                args=["--stdio"],
+                acp_cwd="/tmp",
+            )
+            client._reuse_enabled = True
+            client._session_reuse_enabled = True
+            m1 = [{"role": "user", "content": "hello"}]
+            c1 = client._create_chat_completion(model="x", messages=m1, timeout=5)
+            m2 = [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": c1.choices[0].message.content},
+                {"role": "user", "content": "follow up"},
+            ]
+            c2 = client._create_chat_completion(model="x", messages=m2, timeout=5)
+            client.close()
+
+        assert c1.choices[0].message.content == "ok-1"
+        assert c2.choices[0].message.content == "ok-1"  # same session seq (no new session)
+        assert client._spawn_count == 1
+        assert client._session_count == 1
+        assert client._session_continues == 1
+        methods = [w.get("method") for w in procs[0].writes]
+        assert methods.count("session/new") == 1
+        assert methods.count("session/prompt") == 2
+        # Second prompt body should be a continuation delta, not full history.
+        prompt_bodies = [
+            w["params"]["prompt"][0]["text"]
+            for w in procs[0].writes
+            if w.get("method") == "session/prompt"
+        ]
+        assert "New messages:" in prompt_bodies[1]
+        assert "follow up" in prompt_bodies[1]
+        assert "Conversation transcript:" not in prompt_bodies[1]
 
     def test_reuse_disabled_spawns_each_prompt(self):
         from agent.copilot_acp_client import CopilotACPClient
@@ -376,6 +428,7 @@ class TestAcpProcessReuse(unittest.TestCase):
                 )
                 # Re-read flag after env patch (constructor captured it).
                 client._reuse_enabled = False
+                client._session_reuse_enabled = False
                 client._run_prompt("first", timeout_seconds=5)
                 client._run_prompt("second", timeout_seconds=5)
 
@@ -392,21 +445,44 @@ class TestAcpProcessReuse(unittest.TestCase):
             procs.append(proc)
             return proc
 
-        with patch.dict("os.environ", {"HERMES_ACP_PROCESS_REUSE": "1"}, clear=False):
-            with patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_popen):
-                client = CopilotACPClient(
-                    command="fake-acp",
-                    args=["--stdio"],
-                    acp_cwd="/tmp",
-                )
-                client._run_prompt("first", timeout_seconds=5)
-                # Simulate crash between turns without going through close().
-                procs[0].returncode = 1
-                client._run_prompt("second", timeout_seconds=5)
-                client.close()
+        with patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_popen):
+            client = CopilotACPClient(
+                command="fake-acp",
+                args=["--stdio"],
+                acp_cwd="/tmp",
+            )
+            client._reuse_enabled = True
+            client._session_reuse_enabled = True
+            client._run_prompt("first", timeout_seconds=5)
+            # Simulate crash between turns without going through close().
+            procs[0].returncode = 1
+            client._run_prompt("second", timeout_seconds=5)
+            client.close()
 
         assert client._spawn_count == 2
         assert len(procs) == 2
+
+    def test_interrupt_terminates_live_process(self):
+        from agent.copilot_acp_client import CopilotACPClient
+
+        procs: list[_ScriptedAcpProcess] = []
+
+        def _popen(*_a, **_k):
+            proc = _ScriptedAcpProcess()
+            procs.append(proc)
+            return proc
+
+        with patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_popen):
+            client = CopilotACPClient(
+                command="fake-acp",
+                args=["--stdio"],
+                acp_cwd="/tmp",
+            )
+            client._reuse_enabled = True
+            client._run_prompt("first", timeout_seconds=5)
+            assert procs[0].poll() is None
+            client.interrupt()
+            assert procs[0].poll() is not None
 
 
 if __name__ == "__main__":

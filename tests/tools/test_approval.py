@@ -82,6 +82,63 @@ class TestDetectDangerousRm:
         assert key is not None
         assert "delete" in desc.lower()
 
+    def test_rm_f_hermes_verify_temp_allowed(self):
+        """Hermes-owned verify temp file cleanup does not require approval."""
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+        cmd = f"rm -f {temp_dir}/hermes-verify-abc123.py"
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_rm_force_hermes_ad_hoc_temp_allowed(self):
+        """Hermes-owned ad-hoc temp file cleanup with long flag does not require approval."""
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+        cmd = f"rm --force {temp_dir}/hermes-ad-hoc-example.sh"
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_rm_f_non_temp_dir_requires_approval(self):
+        """rm -f outside temp directory requires approval."""
+        is_dangerous, key, desc = detect_dangerous_command("rm -f /home/user/file.txt")
+        assert is_dangerous is True
+        assert key is not None
+        assert "delete in root path" == desc
+
+    def test_rm_f_non_hermes_prefix_requires_approval(self):
+        """rm -f for non-Hermes file requires approval."""
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+        cmd = f"rm -f {temp_dir}/other-file.txt"
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True
+        assert key is not None
+        assert "delete in root path" == desc
+
+    def test_rm_recursive_temp_requires_approval(self):
+        """Recursive deletion requires approval even in temp directory."""
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+        cmd = f"rm -rf {temp_dir}/hermes-verify-test"
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True
+        assert key is not None
+        # The -rf flag matches both patterns; delete in root path catches it first
+        assert "delete" in desc.lower()
+
+    def test_rm_f_multiple_operands_requires_approval(self):
+        """rm -f with multiple operands requires approval."""
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+        cmd = f"rm -f {temp_dir}/hermes-verify-1.py {temp_dir}/hermes-verify-2.py"
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True
+        assert key is not None
+
 
 class TestWindowsShellDestructiveCommands:
     def test_cmd_del_requires_approval(self):

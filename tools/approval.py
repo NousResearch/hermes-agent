@@ -14,9 +14,11 @@ import functools
 import hashlib
 import logging
 import os
+import pathlib
 import re
 import shlex
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -1383,12 +1385,73 @@ def _command_detection_variants(command: str):
         yield variant
 
 
+def _is_hermes_temp_cleanup_command(command: str) -> bool:
+    """Check if a command is a safe cleanup of Hermes-owned temp files.
+
+    Returns True only when:
+    - Command is `rm -f` or `rm --force` with exactly one operand
+    - Operand is under the OS temp directory
+    - Filename starts with `hermes-verify-` or `hermes-ad-hoc-`
+
+    This allows verify-on-stop's mandated cleanup without approval,
+    while gating broader deletions.
+    """
+    try:
+        # Parse the command using shlex to handle quotes/escapes
+        parts = shlex.split(command)
+        if len(parts) < 2:
+            return False
+
+        # Check command is `rm` with `-f` or `--force`
+        if parts[0] != "rm":
+            return False
+
+        has_force_flag = False
+        operand_idx = 1
+        while operand_idx < len(parts) and parts[operand_idx].startswith("-"):
+            if parts[operand_idx] in ("-f", "--force"):
+                has_force_flag = True
+            elif parts[operand_idx] in ("-r", "-rf", "-fr", "--recursive"):
+                # Recursive deletions are never safe
+                return False
+            operand_idx += 1
+
+        if not has_force_flag or operand_idx >= len(parts):
+            return False
+
+        # Must have exactly one operand
+        if len(parts) != operand_idx + 1:
+            return False
+
+        target_path = pathlib.Path(parts[operand_idx]).expanduser()
+        target_dir = target_path.parent.resolve()
+        temp_dir = pathlib.Path(tempfile.gettempdir()).resolve()
+
+        # Target must be under temp directory
+        if target_dir != temp_dir:
+            return False
+
+        # Filename must start with allowed prefixes
+        basename = target_path.name
+        if not (basename.startswith("hermes-verify-") or basename.startswith("hermes-ad-hoc-")):
+            return False
+
+        return True
+    except Exception:
+        # On any parsing error, fall back to safe (deny)
+        return False
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
+    # Allow Hermes-owned temp file cleanup without approval
+    if _is_hermes_temp_cleanup_command(command):
+        return (False, None, None)
+
     for command_variant in _command_detection_variants(command):
         command_lower = command_variant.lower()
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:

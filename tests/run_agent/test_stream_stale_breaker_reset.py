@@ -129,6 +129,34 @@ def test_switch_model_failure_does_not_reset_streak():
     assert agent._consecutive_stale_streams == 7
 
 
+def test_switch_model_late_finalization_failure_keeps_stale_streak():
+    """The breaker resets only after every fallible switch step commits."""
+    agent = _make_agent_openrouter()
+    agent._consecutive_stale_streams = 7
+    agent._create_openai_client = MagicMock(return_value=MagicMock(name="NewClient"))
+    agent._close_openai_client = MagicMock()
+
+    class ExplodingFallback:
+        def get(self, *_args, **_kwargs):
+            raise RuntimeError("late fallback finalization failure")
+
+    setattr(agent, "_fallback_chain", [ExplodingFallback()])
+
+    with (
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+        pytest.raises(RuntimeError, match="late fallback finalization failure"),
+    ):
+        agent.switch_model(
+            new_model="Hermes-4-70B",
+            new_provider="nous",
+            api_key="nous-key-new",
+            base_url="https://inference-api.nousresearch.com/v1",
+            api_mode="chat_completions",
+        )
+
+    assert agent._consecutive_stale_streams == 7
+
+
 def test_fallback_activation_resets_stale_streak():
     """Automatic provider fallback swaps to a different backend; the streak
     measured the OLD provider and must not wedge the new one."""

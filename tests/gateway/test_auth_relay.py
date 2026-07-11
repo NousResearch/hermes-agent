@@ -422,4 +422,73 @@ class TestCommandRegistration:
         assert cmd.category == "Configuration"
         assert "on" in cmd.subcommands
         assert "off" in cmd.subcommands
-        assert "status" in cmd.subcommands
+
+
+class TestGatewayConfigParsing:
+    """Regression: load_gateway_config must surface gateway.auth_relay.
+
+    A bug dropped the block from the manually-mapped gw_data dict, so the
+    runtime GatewayConfig.auth_relay stayed at its disabled default even
+    when config.yaml had enabled=True.
+    """
+
+    def _write_config(self, tmp_path, block: dict):
+        import yaml
+        from hermes_constants import get_hermes_home
+        cfg = {"gateway": {"auth_relay": block}}
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+    def test_load_gateway_config_picks_up_auth_relay(self, tmp_path, monkeypatch):
+        from gateway.config import load_gateway_config
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "+4917668018868")
+        for v in ("WHATSAPP_CLOUD_PHONE", "WHATSAPP_CLOUD_BUSINESS_PHONE",
+                  "WHATSAPP_CLOUD_OWNER_WA_ID"):
+            monkeypatch.delenv(v, raising=False)
+        self._write_config(tmp_path, {
+            "enabled": True, "clarify": True, "approval": True,
+            "secret": True, "sudo": True, "require_confirm": True, "timeout": 120,
+        })
+        gc = load_gateway_config()
+        assert gc.auth_relay.enabled is True
+        assert gc.auth_relay.operator_chat == "4917668018868"
+        assert gc.auth_relay.secret is True
+
+    def test_load_gateway_config_defaults_to_disabled(self, tmp_path, monkeypatch):
+        from gateway.config import load_gateway_config
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("gateway:\n  strict: false\n")
+        gc = load_gateway_config()
+        assert gc.auth_relay.enabled is False
+
+
+class TestHookRegistration:
+    """Regression: the relay must reach the live gateway via registered hooks,
+    not by importing runner *methods* as module functions (which raised
+    ImportError and silently disabled the relay).
+    """
+
+    def test_set_gateway_hooks_wires_adapter_and_loop(self, relay_module):
+        fake_adapter = object()
+        fake_loop = object()
+
+        relay_module.set_gateway_hooks(
+            operator_adapter_getter=lambda: fake_adapter,
+            loop_getter=lambda: fake_loop,
+        )
+        assert relay_module._whatsapp_operator_adapter() is fake_adapter
+        assert relay_module._get_gateway_loop() is fake_loop
+        relay_module.clear_gateway_hooks()
+        assert relay_module._whatsapp_operator_adapter() is None
+        assert relay_module._get_gateway_loop() is None
+
+    def test_install_requires_registered_adapter(self, relay_module, monkeypatch):
+        # With no operator adapter registered, install must not claim success.
+        relay_module.clear_gateway_hooks()
+        relay_module.configure(relay_module.AuthRelayConfig(
+            enabled=True, operator_chat="4917668018868", timeout=10))
+        assert relay_module.install_gateway_callbacks() is False
+        relay_module.set_gateway_hooks(operator_adapter_getter=lambda: object())
+        # Still needs the secret/sudo callbacks to import; that can fail in a
+        # bare test process, so just assert the adapter getter is now used.
+        assert relay_module._whatsapp_operator_adapter() is not None

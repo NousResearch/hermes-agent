@@ -369,15 +369,47 @@ def wait_for_response(relay_id: str, timeout: float) -> Optional[str]:
 # send a WhatsApp message to the operator, then block on the relay entry's
 # Event.  The WhatsApp adapter's inbound handler resolves the entry.
 
+# ---------------------------------------------------------------------------
+# Gateway hook registration.  The running GatewayRunner registers callables
+# here at startup so this module can reach the live WhatsApp adapter + event
+# loop WITHOUT importing runner *methods* as if they were module functions
+# (they are not — they're bound methods on the runner instance).  Kept as
+# simple module-level callables so tests can inject fakes.
+# ---------------------------------------------------------------------------
+_operator_adapter_getter = None   # () -> adapter | None
+_gateway_loop_getter = None       # () -> asyncio loop | None
+
+
+def set_gateway_hooks(operator_adapter_getter=None, loop_getter=None) -> None:
+    """Register live-gateway accessors (called by GatewayRunner at startup).
+
+    Passing ``None`` for a getter leaves the existing one untouched; call
+    :func:`clear_gateway_hooks` to tear them down on shutdown.
+    """
+    global _operator_adapter_getter, _gateway_loop_getter
+    if operator_adapter_getter is not None:
+        _operator_adapter_getter = operator_adapter_getter
+    if loop_getter is not None:
+        _gateway_loop_getter = loop_getter
+
+
+def clear_gateway_hooks() -> None:
+    global _operator_adapter_getter, _gateway_loop_getter
+    _operator_adapter_getter = None
+    _gateway_loop_getter = None
+
+
 def _whatsapp_operator_adapter():
     """Best-effort lookup of a connected WhatsApp adapter.
 
-    Imported lazily to avoid a hard dependency on the gateway runner at
-    module import time.  Returns the adapter instance or None.
+    Uses the getter registered by the running gateway
+    (:func:`set_gateway_hooks`).  Returns the adapter instance or None.
     """
+    getter = _operator_adapter_getter
+    if getter is None:
+        return None
     try:
-        from gateway.run import _get_whatsapp_operator_adapter
-        return _get_whatsapp_operator_adapter()
+        return getter()
     except Exception:
         return None
 
@@ -414,9 +446,11 @@ def _send_to_operator(text: str) -> bool:
 
 
 def _get_gateway_loop():
+    getter = _gateway_loop_getter
+    if getter is None:
+        return None
     try:
-        from gateway.run import _get_gateway_event_loop
-        return _get_gateway_event_loop()
+        return getter()
     except Exception:
         return None
 

@@ -7412,8 +7412,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.auth_relay import (
                 configure as _auth_relay_configure,
                 install_gateway_callbacks as _auth_relay_install,
+                set_gateway_hooks as _auth_relay_set_hooks,
             )
             _auth_relay_configure(self.config.auth_relay)
+            # Register live accessors so the relay can reach the running
+            # adapter + event loop without importing *methods* as functions.
+            _auth_relay_set_hooks(
+                operator_adapter_getter=self._get_whatsapp_operator_adapter,
+                loop_getter=self._get_gateway_event_loop,
+            )
             if _auth_relay_install():
                 logger.info("auth_relay: operator WhatsApp relay active")
         except Exception as _ar_exc:

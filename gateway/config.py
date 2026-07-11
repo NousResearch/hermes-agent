@@ -1441,12 +1441,19 @@ def load_gateway_config() -> GatewayConfig:
             e,
         )
 
+    # Auth-relay: copy the gateway.auth_relay (or top-level auth_relay) block
+    # into gw_data so GatewayConfig.from_dict picks it up.  Mirrors the other
+    # gateway.* settings above that are manually mapped from config.yaml.
+    _ar_block = yaml_cfg.get("auth_relay")
+    if not isinstance(_ar_block, dict):
+        _ar_block = (gateway_cfg or {}).get("auth_relay")
+    if isinstance(_ar_block, dict):
+        gw_data["auth_relay"] = _ar_block
+
     config = GatewayConfig.from_dict(gw_data)
 
     # Override with environment variables
     _apply_env_overrides(config)
-    
-    # --- Validate loaded values ---
     _validate_gateway_config(config)
 
     return config

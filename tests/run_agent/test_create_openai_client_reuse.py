@@ -19,6 +19,8 @@ network, so it runs in CI on every PR.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from run_agent import AIAgent
 
 
@@ -225,11 +227,12 @@ def test_force_close_tcp_sockets_descends_httpcore_1_connection_wrapper():
     # httpx worker thread releases the FD, not us.
 
 
-def test_opencode_go_disables_keepalive_pooling():
+@pytest.mark.parametrize("provider", ["opencode-go", "opencode-zen"])
+def test_opencode_go_disables_keepalive_pooling(provider: str):
     """opencode-go / opencode-zen must build its httpx client with
     keepalive_expiry=0.0 so every request opens a fresh connection.
 
-    Regression guard for #61461: opencode-go sits behind a reverse proxy
+    Regression guard for #61461: opencode-go/zen sit behind a reverse proxy
     that drops idle connections at ~30s; httpx's keepalive pool then reuses
     those dead connections and the next request hangs until the proxy's
     timeout fires (~30s). Disabling pooling forces the cold (~3s) path.
@@ -246,7 +249,7 @@ def test_opencode_go_disables_keepalive_pooling():
         api_key="test-key",
         base_url="https://opencode.ai/zen/go/v1",
         model="deepseek-v4-flash",
-        provider="opencode-go",
+        provider=provider,
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
@@ -269,7 +272,7 @@ def test_opencode_go_disables_keepalive_pooling():
 
     assert len(calls) == 1, f"expected 1 keepalive build, got {len(calls)}"
     assert calls[0]["keepalive_expiry"] == 0.0, (
-        f"opencode-go must disable keepalive pooling (keepalive_expiry=0.0), "
+        f"{provider} must disable keepalive pooling (keepalive_expiry=0.0), "
         f"got {calls[0]['keepalive_expiry']}"
     )
 

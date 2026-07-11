@@ -213,7 +213,13 @@ class TestWebExtractTavily:
         }
         mock_response.raise_for_status = MagicMock()
 
-        with patch("tools.web_tools._get_backend", return_value="tavily"), \
+        # Pin extract_backend explicitly rather than relying on
+        # _get_backend()'s legacy walk — with trafilatura registered as a
+        # real bundled plugin (auto-default when nothing else is
+        # configured, see _get_capability_backend), this test must state
+        # its intent (test the Tavily dispatch path) instead of depending
+        # on trafilatura happening not to be registered yet.
+        with patch("tools.web_tools._load_web_config", return_value={"extract_backend": "tavily"}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
              patch("tools.web_tools.httpx.post", return_value=mock_response):
             from tools.web_tools import web_extract_tool

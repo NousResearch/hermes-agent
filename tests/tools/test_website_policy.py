@@ -396,6 +396,17 @@ class TestWebToolPolicy:
         )
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
         # Force the firecrawl plugin to be the active extract provider.
+        # Explicit extract_backend is required now that trafilatura is a
+        # real registered plugin: with nothing explicitly configured,
+        # trafilatura wins the auto-default race (by design — see Option A
+        # in the trafilatura rollout plan) regardless of FIRECRAWL_API_KEY
+        # being set, since it's checked purely via env var for legacy
+        # auto-detect and this test wants firecrawl's own redirect/policy
+        # handling specifically.
+        monkeypatch.setattr(
+            web_tools, "_load_web_config",
+            lambda: {"extract_backend": "firecrawl"},
+        )
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
 
         result = json.loads(await web_tools.web_extract_tool(["https://blocked.test"]))
@@ -442,6 +453,10 @@ class TestWebToolPolicy:
         monkeypatch.setattr(firecrawl_provider, "check_website_access", fake_check)
         monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda: FakeFirecrawlClient())
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+        monkeypatch.setattr(
+            web_tools, "_load_web_config",
+            lambda: {"extract_backend": "firecrawl"},
+        )
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
 
         result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"]))
@@ -486,6 +501,10 @@ class TestWebToolPolicy:
         monkeypatch.setattr(firecrawl_provider, "check_website_access", fake_check)
         monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda: FakeFirecrawlClient())
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+        monkeypatch.setattr(
+            web_tools, "_load_web_config",
+            lambda: {"extract_backend": "firecrawl"},
+        )
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
 
         result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"]))

@@ -932,6 +932,17 @@ async def web_extract_tool(
             results = []
             provider = None  # nothing dispatched — no primary provider to report
         else:
+            # Plugin discovery MUST run before backend resolution: any
+            # plugin-registered backend (e.g. trafilatura) resolves its
+            # availability through the web_search_registry, which is empty
+            # on a cold-start process until this call populates it. Doing
+            # this the other way around (as web_extract_tool used to)
+            # makes _get_extract_backend() silently skip a configured
+            # plugin-registered backend as "unavailable" on every first
+            # call in a fresh process — exactly the case a real gateway
+            # start (or a subprocess agent run) hits every time. See
+            # web_search_tool() above, which already gets this order right.
+            _ensure_web_plugins_loaded()
             backend = _get_extract_backend()
 
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
@@ -941,7 +952,6 @@ async def web_extract_tool(
             # detect coroutine functions and await; sync functions run
             # inline (the policy gate, SSRF re-check, etc. live inside the
             # provider itself for the firecrawl per-URL loop).
-            _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,

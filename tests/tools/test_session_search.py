@@ -762,3 +762,118 @@ class TestProtectedProfile:
         result = json.loads(session_search(session_id="s_bob", profile="bob", db=alice_db))
         assert result["success"] is True
         assert result["mode"] == "read"
+
+
+# =========================================================================
+# Real-HERMES_HOME integration tests (profile resolution via filesystem)
+# =========================================================================
+
+
+class TestProtectedProfileWithRealHome:
+    """Protected profile gating exercised through real HERMES_HOME filesystem
+    layout, avoiding monkeypatched profile helpers.
+
+    This exercises the ``_locate_session_db`` and ``_is_profile_protected``
+    code paths against real ``config.yaml`` files and ``SessionDB`` on disk,
+    verifying the integration boundary that the monkeypatched tests leave
+    untested.
+    """
+
+    def _setup_profiles(self, tmp_path):
+        from hermes_state import SessionDB
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True)
+
+        # Alice profile
+        alice_dir = hermes_home / "profiles" / "alice"
+        alice_dir.mkdir(parents=True)
+        (alice_dir / "config.yaml").write_text("{}\n")
+        alice_db = SessionDB(alice_dir / "state.db")
+        alice_db.create_session("s_alice", source="cli")
+        alice_db.append_message("s_alice", role="user", content="hello from alice")
+
+        # Bob profile — protected
+        bob_dir = hermes_home / "profiles" / "bob"
+        bob_dir.mkdir(parents=True)
+        (bob_dir / "config.yaml").write_text(
+            "session_search:\n  protected: true\n"
+        )
+        bob_db = SessionDB(bob_dir / "state.db")
+        bob_db.create_session("s_bob", source="cli")
+        bob_db.append_message("s_bob", role="user", content="secret thought from bob")
+
+        return hermes_home, alice_dir, bob_dir, alice_db, bob_db
+
+    # ------------------------------------------------------------------
+    # session_search with explicit profile= — reads from filesystem
+    # ------------------------------------------------------------------
+
+    def test_alice_cannot_read_protected_bob_via_explicit_profile(self, tmp_path, monkeypatch):
+        """Alice CANNOT read Bob's session with explicit profile= — bob is protected."""
+        hermes_home, alice_dir, bob_dir, alice_db, bob_db = self._setup_profiles(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from hermes_cli import profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+        monkeypatch.setattr(profiles_mod, "validate_profile_name", lambda n: None)
+
+        result = json.loads(
+            session_search(session_id="s_bob", profile="bob", db=alice_db)
+        )
+        assert result["success"] is False
+        assert "protected" in result.get("error", "")
+
+    def test_alice_cannot_read_protected_bob_through_locate(self, tmp_path, monkeypatch):
+        """Bare lookup (no profile=) on a protected profile must fail
+        via the real _locate_session_db path.
+        """
+        hermes_home, alice_dir, bob_dir, alice_db, bob_db = self._setup_profiles(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from hermes_cli import profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+        monkeypatch.setattr(profiles_mod, "validate_profile_name", lambda n: None)
+        monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "alice")
+
+        result = json.loads(session_search(session_id="s_bob", db=alice_db))
+        assert result["success"] is False
+
+    def test_bob_reads_own_sessions_through_locate(self, tmp_path, monkeypatch):
+        """Protected profile can find own sessions via _locate."""
+        hermes_home, alice_dir, bob_dir, alice_db, bob_db = self._setup_profiles(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from hermes_cli import profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+        monkeypatch.setattr(profiles_mod, "validate_profile_name", lambda n: None)
+        monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "bob")
+
+        # DB that does NOT contain s_bob — forces _locate fallback
+        from hermes_state import SessionDB
+        empty_db = SessionDB(tmp_path / "empty.db")
+
+        result = json.loads(session_search(session_id="s_bob", db=empty_db))
+        assert result["success"] is True
+        assert result.get("profile") == "bob"
+
+    def test_locate_bare_lookup_skips_protected_from_unprotected_active(self, tmp_path, monkeypatch):
+        """Bare lookup from alice must NOT find bob's session
+        through _locate_session_db."""
+        hermes_home, alice_dir, bob_dir, alice_db, bob_db = self._setup_profiles(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from hermes_cli import profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+        monkeypatch.setattr(profiles_mod, "validate_profile_name", lambda n: None)
+        monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "alice")
+
+        from hermes_state import SessionDB
+        empty_db = SessionDB(tmp_path / "empty2.db")
+
+        result = json.loads(session_search(session_id="s_bob", db=empty_db))
+        assert result["success"] is False

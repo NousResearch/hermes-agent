@@ -497,8 +497,9 @@ def run_codex_app_server_turn(
         should_review_skills = True
         agent._iters_since_skill = 0
 
-    # External memory provider sync (mirrors line ~15439). Skipped on
-    # interrupt/error to avoid feeding partial transcripts to memory.
+    # External memory provider sync. The helper applies the explicit policy:
+    # verified always syncs; completed_unverified syncs only when Codex reports
+    # no tool activity and the projected messages contain no tool effects.
     turn_outcome = classify_turn_outcome(
         final_response=turn.final_text,
         failed=turn.error is not None,
@@ -506,7 +507,7 @@ def run_codex_app_server_turn(
         unresolved=getattr(turn, "should_retire", False) and turn.error is None,
         verification_status=getattr(agent, "_turn_verification_status", None),
     )
-    if turn_outcome["outcome"] == "verified":
+    if turn_outcome["outcome"] in {"verified", "completed_unverified"}:
         try:
             agent._sync_external_memory_for_turn(
                 original_user_message=original_user_message,
@@ -514,6 +515,7 @@ def run_codex_app_server_turn(
                 interrupted=turn.interrupted,
                 messages=messages,
                 turn_outcome=turn_outcome["outcome"],
+                turn_had_tool_activity=turn.tool_iterations > 0,
             )
         except Exception:
             logger.debug("external memory sync raised", exc_info=True)

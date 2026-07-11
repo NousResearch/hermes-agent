@@ -71,14 +71,22 @@ class _FinalizerAgent:
         self.background_reviews.append(kwargs)
 
 
-def _finalize(agent, *, final_response="Done.", failed=False, interrupted=False, reason="text_response(finish_reason=stop)"):
+def _finalize(
+    agent,
+    *,
+    final_response="Done.",
+    failed=False,
+    interrupted=False,
+    reason="text_response(finish_reason=stop)",
+    messages=None,
+):
     return finalize_turn(
         agent,
         final_response=final_response,
         api_call_count=1,
         interrupted=interrupted,
         failed=failed,
-        messages=[{"role": "user", "content": "do it"}],
+        messages=messages or [{"role": "user", "content": "do it"}],
         conversation_history=[],
         effective_task_id="task",
         turn_id="turn",
@@ -92,7 +100,6 @@ def _finalize(agent, *, final_response="Done.", failed=False, interrupted=False,
 @pytest.mark.parametrize(
     "outcome, verification_status, kwargs",
     [
-        ("completed_unverified", "unverified", {}),
         ("partial", "passed", {"reason": "max_iterations_reached(90/90)"}),
         ("blocked", "passed", {"reason": "approval_blocked"}),
         ("failed", "passed", {"failed": True, "reason": "provider_failure"}),
@@ -127,5 +134,36 @@ def test_verified_turn_syncs_and_spawns_review(monkeypatch):
     assert len(agent.background_reviews) == 1
 
 
-# completed_unverified is intentionally not durable until a later policy
-# explicitly permits it; this phase only allows the verified outcome.
+def test_completed_unverified_no_tool_turn_syncs_without_background_review(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_k: [])
+    agent = _FinalizerAgent("unverified")
+
+    result = _finalize(agent)
+
+    assert result["outcome"] == "completed_unverified"
+    agent._memory_manager.sync_all.assert_called_once()
+    agent._memory_manager.queue_prefetch_all.assert_called_once()
+    assert agent.background_reviews == []
+
+
+def test_completed_unverified_tool_turn_does_not_sync(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_k: [])
+    agent = _FinalizerAgent("unverified")
+    messages = [
+        {"role": "user", "content": "do it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call-1", "type": "function", "function": {"name": "terminal"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "ok"},
+    ]
+
+    result = _finalize(agent, messages=messages)
+
+    assert result["outcome"] == "completed_unverified"
+    agent._memory_manager.sync_all.assert_not_called()
+    agent._memory_manager.queue_prefetch_all.assert_not_called()
+    assert agent.background_reviews == []

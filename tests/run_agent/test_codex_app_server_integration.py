@@ -213,6 +213,46 @@ class TestRunConversationCodexPath:
         agent._memory_manager.sync_all.assert_called_once()
         assert agent._memory_manager.sync_all.call_args.kwargs["messages"] == result["messages"]
 
+    def test_unverified_no_tool_turn_is_synced_to_external_memory(self, monkeypatch):
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text=f"echo: {user_input}",
+                projected_messages=[{"role": "assistant", "content": f"echo: {user_input}"}],
+                tool_iterations=0,
+                interrupted=False,
+                error=None,
+                turn_id="turn-no-tools-1",
+                thread_id="thread-no-tools-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-no-tools-1"
+        )
+        agent = _make_codex_agent()
+        agent._turn_verification_status = "unverified"
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = ""
+
+        with patch.object(agent, "_spawn_background_review", return_value=None) as spawn:
+            agent.run_conversation("hello")
+
+        agent._memory_manager.sync_all.assert_called_once()
+        agent._memory_manager.queue_prefetch_all.assert_called_once()
+        spawn.assert_not_called()
+
+    def test_unverified_tool_turn_is_not_synced_to_external_memory(self, fake_session):
+        agent = _make_codex_agent()
+        agent._turn_verification_status = "unverified"
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = ""
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        agent._memory_manager.sync_all.assert_not_called()
+        agent._memory_manager.queue_prefetch_all.assert_not_called()
+
     def test_nudge_counters_tick(self, fake_session):
         """The skill nudge counter must accumulate tool_iterations across
         turns. The memory nudge counter is gated on memory being configured

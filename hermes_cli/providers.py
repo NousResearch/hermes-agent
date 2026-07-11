@@ -358,6 +358,7 @@ ALIASES: Dict[str, str] = {
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
+    "local": "custom",  # orphan id (no ProviderDef); a custom alias in-plugin
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "vllm": "custom",
     "llamacpp": "custom",

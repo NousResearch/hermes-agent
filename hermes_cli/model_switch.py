@@ -1254,35 +1254,35 @@ def switch_model(
         direct_hint = ""
         if "/" in raw_input:
             vendor, bare_model = raw_input.split("/", 1)
-            direct_provider = resolve_provider_full(
-                vendor.strip(), user_providers, custom_providers
+            vendor_slug = vendor.strip().lower()
+            vendor_prefix = f"{vendor_slug}-"
+            authenticated = get_authenticated_provider_slugs(
+                current_provider=current_provider,
+                user_providers=user_providers,
+                custom_providers=custom_providers,
             )
-            if direct_provider is None or direct_provider.id == "openrouter":
-                vendor_prefix = f"{vendor.strip().lower()}-"
-                authenticated = get_authenticated_provider_slugs(
-                    current_provider=current_provider,
-                    user_providers=user_providers,
-                    custom_providers=custom_providers,
+            candidates = sorted(
+                authenticated,
+                key=lambda provider: provider != current_provider,
+            )
+            direct_provider = None
+            for candidate in candidates:
+                if candidate != vendor_slug and not candidate.startswith(vendor_prefix):
+                    continue
+                resolved = resolve_provider_full(
+                    candidate, user_providers, custom_providers
                 )
-                candidates = sorted(
-                    authenticated,
-                    key=lambda provider: provider != current_provider,
-                )
-                for candidate in candidates:
-                    if candidate != vendor.strip().lower() and not candidate.startswith(
-                        vendor_prefix
-                    ):
-                        continue
-                    resolved = resolve_provider_full(
-                        candidate, user_providers, custom_providers
-                    )
-                    if resolved is not None and resolved.id != "openrouter":
-                        direct_provider = resolved
-                        break
+                if resolved is not None and resolved.id != "openrouter":
+                    direct_provider = resolved
+                    break
             if direct_provider is not None and direct_provider.id != "openrouter":
                 direct_hint = (
                     f" To use {direct_provider.name} directly, run "
                     f"`/model {bare_model.strip()} --provider {direct_provider.id}`."
+                )
+            else:
+                direct_hint = (
+                    f" No authenticated direct provider for `{vendor_slug}` is available."
                 )
         return ModelSwitchResult(
             success=False,

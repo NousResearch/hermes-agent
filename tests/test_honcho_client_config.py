@@ -123,3 +123,31 @@ class TestLatencyFlagResolution:
         cfg = HonchoClientConfig.from_global_config(config_path=config_path)
         assert cfg.timeout == 5.0
 
+
+class TestHonchoBaseUrlSanitize:
+    def test_clean_base_url_accepted(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('HONCHO_BASE_URL', raising=False)
+        config_path = tmp_path / 'config.json'
+        config_path.write_text(json.dumps({
+            'apiKey': 'k',
+            'baseUrl': 'https://honcho.example.com',
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        assert cfg.base_url == 'https://honcho.example.com'
+
+    def test_nonprintable_base_url_dropped(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('HONCHO_BASE_URL', raising=False)
+        config_path = tmp_path / 'config.json'
+        bad = 'https://honcho.example.com\x1b'
+        config_path.write_text(json.dumps({
+            'apiKey': 'k',
+            'baseUrl': bad,
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        assert cfg.base_url is None
+
+    def test_env_nonprintable_dropped(self, monkeypatch):
+        monkeypatch.setenv('HONCHO_BASE_URL', 'https://x.example\x1b')
+        monkeypatch.delenv('HONCHO_API_KEY', raising=False)
+        cfg = HonchoClientConfig.from_env()
+        assert cfg.base_url is None

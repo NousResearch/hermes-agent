@@ -33,6 +33,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_url(url: str | None) -> str | None:
+    """Return url unchanged, or None if it contains non-printable ASCII characters.
+
+    A stray terminal escape sequence (e.g. \x1b from copy-paste) in a URL can
+    cause upstream SDKs to raise ``Invalid non-printable ASCII character`` at
+    client construction time. Dropping the bad value keeps Honcho disabled with
+    a clear warning rather than poisoning startup.
+    """
+    if url is None:
+        return None
+    if all(0x20 <= ord(c) < 0x7F for c in url):
+        return url
+    logger.warning(
+        "Honcho base_url contains non-printable characters and will be ignored: %r",
+        url,
+    )
+    return None
+
+
 HOST = "hermes"
 
 
@@ -494,7 +514,7 @@ class HonchoClientConfig:
         # behaves the same as from_global_config() when no config file exists.
         # Read straight from os.environ, matching HONCHO_BASE_URL: a base URL
         # is a deployment setting, not a profile-scoped credential.
-        base_url = (
+        base_url = _sanitize_url(
             os.environ.get("HONCHO_BASE_URL", "").strip()
             or os.environ.get("HONCHO_URL", "").strip()
             or None
@@ -574,7 +594,7 @@ class HonchoClientConfig:
             if isinstance(endpoint_block, dict)
             else None
         )
-        base_url = (
+        base_url = _sanitize_url(
             host_block.get("baseUrl")
             or host_block.get("base_url")
             or native_base_url
@@ -1249,7 +1269,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
                 honcho_cfg = hermes_cfg.get("honcho", {})
                 if isinstance(honcho_cfg, dict):
                     if not resolved_base_url:
-                        resolved_base_url = honcho_cfg.get("base_url", "").strip() or None
+                        resolved_base_url = _sanitize_url(honcho_cfg.get("base_url", "").strip() or None)
                     if resolved_timeout is None:
                         resolved_timeout = _resolve_optional_float(
                             honcho_cfg.get("timeout"),

@@ -2333,7 +2333,21 @@ def _start_gateway_memory_monitor() -> None:
         interval = cfg_get(
             cfg, "logging", "memory_monitor", "interval_seconds", default=300
         )
-        start_memory_monitoring(interval_seconds=float(interval))
+        try:
+            interval = float(interval)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Memory monitor interval_seconds=%r is not numeric; using default 300",
+                interval,
+            )
+            interval = 300.0
+        if interval <= 0:
+            logger.warning(
+                "Memory monitor interval_seconds=%s is non-positive; using default 300",
+                interval,
+            )
+            interval = 300.0
+        start_memory_monitoring(interval_seconds=interval)
     except Exception as exc:
         logger.warning("Memory monitor start skipped: %s", exc)
 

@@ -56,3 +56,39 @@ def test_start_helper_never_raises_on_bad_config():
     ) as mock_start:
         run._start_gateway_memory_monitor()  # should swallow and return
     mock_start.assert_not_called()
+
+
+def test_start_helper_logs_warning_on_failure(caplog):
+    """Failure must be visible at WARNING level, not silently debug-logged.
+
+    The entire purpose of the heartbeat is observability. If it fails silently
+    (debug level), the gateway goes dark — the same symptom as the bug (#49773).
+    """
+    import logging
+
+    with patch.object(run, "_load_gateway_config", side_effect=RuntimeError("boom")), patch(
+        "gateway.memory_monitor.start_memory_monitoring"
+    ):
+        with caplog.at_level(logging.WARNING):
+            run._start_gateway_memory_monitor()
+    assert any("Memory monitor start skipped" in r.message for r in caplog.records), (
+        "Failure must be logged at WARNING level, not debug"
+    )
+
+
+def test_gateway_start_calls_memory_monitor():
+    """Regression: GatewayRunner.start() must call _start_gateway_memory_monitor().
+
+    This is the exact failure class of #49773: the helper existed and was
+    tested, but nothing in the runtime called it. If a future refactor removes
+    the call from start(), this test catches it.
+    """
+    import inspect
+
+    from gateway.run import GatewayRunner
+
+    src = inspect.getsource(GatewayRunner.start)
+    assert "_start_gateway_memory_monitor" in src, (
+        "GatewayRunner.start() must call _start_gateway_memory_monitor() — "
+        "regression guard for #49773"
+    )

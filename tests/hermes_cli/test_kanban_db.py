@@ -2039,6 +2039,154 @@ def test_dispatch_respawn_guard_skips_active_pr(
         assert kb.get_task(conn, t).status == "ready"
 
 
+def test_unblock_after_active_pr_allows_one_dispatch_attempt_then_reapplies_guard(
+    kanban_home, all_assignees_spawnable
+):
+    """An operator unblock after a PR is a one-shot retry, not a PR loop."""
+    attempts = []
+
+    def failing_spawn(task, workspace):
+        attempts.append(task.id)
+        raise RuntimeError("worker failed before starting")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-fix", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        assert kb.block_task(conn, t, reason="review requested changes")
+        assert kb.unblock_task(conn, t)
+
+        # The explicit unblock is an operator request to address review feedback.
+        assert kb.check_respawn_guard(conn, t) is None
+        first = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+        assert attempts == [t]
+        assert t not in first.respawn_guarded
+
+        # The claim consumed that override. A failed spawn returns to ready, but
+        # the old PR cannot trigger unbounded duplicate retry attempts.
+        assert kb.get_task(conn, t).status == "ready"
+        second = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+    assert attempts == [t]
+    assert (t, "active_pr") in second.respawn_guarded
+
+
+def test_unblock_with_recent_success_and_active_pr_allows_one_dispatch_attempt(
+    kanban_home, all_assignees_spawnable
+):
+    """One unblock authorizes one claim even when both duplicate guards apply."""
+    attempts = []
+
+    def failing_spawn(task, workspace):
+        attempts.append(task.id)
+        raise RuntimeError("worker failed before starting")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-fix", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        assert kb.block_task(conn, t, reason="review requested changes")
+        assert kb.unblock_task(conn, t)
+
+        assert kb.check_respawn_guard(conn, t) is None
+        kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+        assert attempts == [t]
+        second = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+    assert attempts == [t]
+    assert (t, "recent_success") in second.respawn_guarded
+
+
+def test_unblock_with_active_pr_and_blocker_error_allows_one_dispatch_attempt(
+    kanban_home, all_assignees_spawnable
+):
+    """Unblock retains its one PR override after it clears a blocker error."""
+    attempts = []
+
+    def failing_spawn(task, workspace):
+        attempts.append(task.id)
+        raise RuntimeError("worker failed before starting")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-fix", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        assert kb.block_task(conn, t, reason="review requested changes")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("authentication failed", t),
+        )
+        assert kb.unblock_task(conn, t)
+
+        assert kb.check_respawn_guard(conn, t) is None
+        kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+        assert attempts == [t]
+        second = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+    assert attempts == [t]
+    assert (t, "active_pr") in second.respawn_guarded
+
+
+def test_unblock_after_recent_success_allows_one_dispatch_attempt_then_reapplies_guard(
+    kanban_home, all_assignees_spawnable
+):
+    """A recent-success unblock is consumed by the next claim too."""
+    attempts = []
+
+    def failing_spawn(task, workspace):
+        attempts.append(task.id)
+        raise RuntimeError("worker failed before starting")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="retry-completed-work", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        assert kb.block_task(conn, t, reason="review requested changes")
+        assert kb.unblock_task(conn, t)
+
+        assert kb.check_respawn_guard(conn, t) is None
+        kb.dispatch_once(conn, spawn_fn=failing_spawn)
+        assert attempts == [t]
+
+        second = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+    assert attempts == [t]
+    assert (t, "recent_success") in second.respawn_guarded
+
+
+def test_guarded_only_ready_queue_is_not_health_spawnable(
+    kanban_home, all_assignees_spawnable
+):
+    """Respawn-guarded work is intentionally waiting, not a stuck queue."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="has-pr", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+        assert kb.has_spawnable_ready(conn) is False
+
+
 def test_dispatch_respawn_guard_dry_run_no_auto_block(
     kanban_home, all_assignees_spawnable
 ):

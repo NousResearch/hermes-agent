@@ -4835,6 +4835,11 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     state) holds for the rest of this function's lifetime.
     """
     now = int(time.time())
+    # An explicit unblock can be an operator's response to review feedback.
+    # Snapshot every PR/recent-success guard currently holding this task; a
+    # claim consumes these records, so a failed launch cannot turn them into a
+    # duplicate-PR retry loop.
+    respawn_overrides = _respawn_guard_override_payloads(conn, task_id)
     with write_txn(conn):
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
@@ -4883,9 +4888,13 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        event_payload: dict[str, object] = (
+            {"status": new_status} if new_status != "ready" else {}
+        )
+        if respawn_overrides:
+            event_payload["respawn_overrides"] = respawn_overrides
         _append_event(
-            conn, task_id, "unblocked",
-            {"status": new_status} if new_status != "ready" else None,
+            conn, task_id, "unblocked", event_payload or None,
         )
         return True
 
@@ -6755,6 +6764,99 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _latest_active_pr_comment_id(conn: sqlite3.Connection, task_id: str, cutoff: int) -> Optional[int]:
+    """Return the newest recent comment that carries a GitHub PR URL."""
+    for comment in conn.execute(
+        "SELECT id, body FROM task_comments WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
+        (task_id, cutoff),
+    ).fetchall():
+        if comment["body"] and _RESPAWN_GUARD_PR_URL_RE.search(comment["body"]):
+            return int(comment["id"])
+    return None
+
+
+def _has_unconsumed_respawn_override(
+    conn: sqlite3.Connection, task_id: str, reason: str, evidence_kind: str, evidence_id: int,
+) -> bool:
+    """Whether an operator unblock still authorizes one guarded retry.
+
+    The override is tied to the exact PR comment or successful run which it
+    acknowledged. A later ``claimed`` event consumes it, even if spawning then
+    fails and releases the task back to ``ready``.
+    """
+    events = conn.execute(
+        "SELECT id, payload FROM task_events WHERE task_id = ? AND kind = 'unblocked' "
+        "ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    for event in events:
+        try:
+            payload = json.loads(event["payload"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        # ``respawn_override`` was written by the first version of this
+        # change. Retain compatibility with events persisted before the
+        # plural form started recording every simultaneous guard.
+        overrides = payload.get("respawn_overrides")
+        if not isinstance(overrides, list):
+            overrides = [payload.get("respawn_override")]
+        for override in overrides:
+            evidence = override.get("evidence") if isinstance(override, dict) else None
+            if not (
+                isinstance(override, dict)
+                and override.get("reason") == reason
+                and isinstance(evidence, dict)
+                and evidence.get("kind") == evidence_kind
+                and evidence.get("id") == evidence_id
+            ):
+                continue
+            claimed = conn.execute(
+                "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'claimed' "
+                "AND id > ? LIMIT 1",
+                (task_id, event["id"]),
+            ).fetchone()
+            return claimed is None
+    return False
+
+
+def _respawn_guard_override_payloads(
+    conn: sqlite3.Connection, task_id: str,
+) -> list[dict[str, object]]:
+    """Snapshot all duplicate-guard evidence an unblock may override once."""
+    now = int(time.time())
+    overrides: list[dict[str, object]] = []
+    # Snapshot these duplicate-work guards independently of the priority
+    # result from ``check_respawn_guard``. ``unblock_task`` clears a blocker
+    # error, so a higher-priority auth guard must not hide a concurrent PR
+    # override and turn an operator's explicit retry into a zero-attempt no-op.
+    row = conn.execute(
+        "SELECT id, ended_at FROM task_runs WHERE task_id = ? AND outcome = 'completed' "
+        "AND ended_at >= ? ORDER BY ended_at DESC, id DESC LIMIT 1",
+        (task_id, now - _RESPAWN_GUARD_SUCCESS_WINDOW),
+    ).fetchone()
+    if row is not None:
+        requeued_after = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND created_at >= ? "
+            "AND kind IN ('status', 'promoted', 'reclaimed') LIMIT 1",
+            (task_id, int(row["ended_at"] or 0)),
+        ).fetchone()
+        if not requeued_after:
+            overrides.append({
+                "reason": "recent_success",
+                "evidence": {"kind": "run", "id": int(row["id"])},
+            })
+    comment_id = _latest_active_pr_comment_id(conn, task_id, now - _RESPAWN_GUARD_PR_WINDOW)
+    if comment_id is not None:
+        overrides.append({
+            "reason": "active_pr",
+            "evidence": {"kind": "pr_comment", "id": comment_id},
+        })
+    return overrides
+
+
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -6790,8 +6892,9 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         A completed run exists within ``_RESPAWN_GUARD_SUCCESS_WINDOW``
         seconds.  Useful work already succeeded for this task; wait for
         human review rather than immediately re-spawning. Bypassed when an
-        explicit re-queue event (status change, promote, unblock, reclaim)
-        arrives AFTER that completion — that's a deliberate re-run request.
+        explicit re-queue event (status change, promote, reclaim) arrives
+        AFTER that completion. An explicit unblock is a one-shot operator
+        override and is consumed once the dispatcher claims the task.
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
@@ -6855,37 +6958,40 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     # 3. Completed run within guard window — proof of recent success.
     #    Exception: an explicit re-queue AFTER that success (an operator
-    #    dragging done→ready, a dependency re-promotion, an unblock, a
-    #    reclaim) is a deliberate "run it again" — honor it instead of
-    #    deferring. Without this, a manual done→ready just sits there,
-    #    silently held by the guard, until the window elapses.
+    #    dragging done→ready, a dependency re-promotion, a reclaim) is a
+    #    deliberate "run it again". An unblock is instead recorded as a
+    #    one-shot override tied to the guarded evidence and consumed on claim.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
     recent_completed = conn.execute(
-        "SELECT ended_at FROM task_runs "
+        "SELECT id, ended_at FROM task_runs "
         "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ? "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
         (task_id, cutoff),
     ).fetchone()
     if recent_completed:
         completed_at = int(recent_completed["ended_at"] or 0)
+        # ``unblocked`` is deliberately excluded: its one-shot override is
+        # consumed by the next ``claimed`` event (see above), preventing an
+        # unblock -> failed spawn -> duplicate retry loop.
         requeued_after = conn.execute(
             "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "AND kind IN ('status', 'promoted', 'reclaimed') "
             "LIMIT 1",
             (task_id, completed_at),
         ).fetchone()
-        if not requeued_after:
+        if not requeued_after and not _has_unconsumed_respawn_override(
+            conn, task_id, "recent_success", "run", int(recent_completed["id"]),
+        ):
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    pr_comment_id = _latest_active_pr_comment_id(conn, task_id, pr_cutoff)
+    if pr_comment_id is not None and not _has_unconsumed_respawn_override(
+        conn, task_id, "active_pr", "pr_comment", pr_comment_id,
+    ):
+        return "active_pr"
 
     return None
 
@@ -6905,7 +7011,7 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     the warning still fires in degraded environments.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
@@ -6917,7 +7023,10 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if (
+            profile_exists(row["assignee"])
+            and check_respawn_guard(conn, row["id"]) is None
+        ):
             return True
     return False
 

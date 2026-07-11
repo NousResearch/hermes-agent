@@ -34,6 +34,8 @@ tmp/
 temp_vision_images/
 hermes-*/*
 examples/
+!_bmad-output/planning-artifacts/contracts/workflow-commander/examples/
+!_bmad-output/planning-artifacts/contracts/workflow-commander/examples/**
 tests/quick_test_dataset.jsonl
 tests/sample_dataset.jsonl
 run_datagen_kimik2-thinking.sh

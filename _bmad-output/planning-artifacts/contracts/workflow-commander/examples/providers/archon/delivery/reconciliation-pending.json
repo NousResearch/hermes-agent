@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "workflow-delivery-status.v1",
+  "intendedProducer": "Archon",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "archon",
+  "provider": "archon",
+  "correlationId": "corr_story_1_3a_delivery_reconciliation_pending",
+  "status": "reconciliation-pending",
+  "workflowRunRef": {
+    "provider": "archon",
+    "runId": "archon-run-story-1-3a-001",
+    "workflowName": "bmad-dev-story",
+    "projectRef": "project:workflow-engine"
+  },
+  "eventRef": {
+    "eventId": "evt_corr_story_1_3a_delivery_reconciliation_pending",
+    "eventType": "workflow.completed",
+    "idempotencyKey": "idm_corr_story_1_3a_delivery_reconciliation_pending"
+  },
+  "deliveryAttemptRef": {
+    "attemptId": "attempt_corr_story_1_3a_delivery_reconciliation_pending",
+    "target": "hermes-event-ingress"
+  },
+  "checkedAt": "2026-07-11T11:48:27Z",
+  "blockingWorkflowExecution": false,
+  "attemptCount": 5,
+  "duplicateSafe": false,
+  "reconciliationNeeded": true,
+  "terminal": false,
+  "diagnostic": {
+    "category": "reconciliation",
+    "code": "WAITING_FOR_PROVIDER_STATE_COMPARE",
+    "actionRequired": false
+  },
+  "recovery": {
+    "kind": "provider-state-compare",
+    "safeToRetry": true
+  }
+}

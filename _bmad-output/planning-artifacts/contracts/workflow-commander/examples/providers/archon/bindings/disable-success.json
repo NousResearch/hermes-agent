@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "workflow-provider-binding.v1",
+  "intendedProducer": "Archon",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "archon",
+  "shape": "result",
+  "operation": "disable",
+  "provider": "archon",
+  "name": "workflow-engine-primary",
+  "correlationId": "corr_story_1_3a_binding_disable_success",
+  "bindingRef": {
+    "provider": "archon",
+    "name": "workflow-engine-primary",
+    "bindingId": "wpb_archon_workflow_engine_primary",
+    "projectRef": "project:workflow-engine"
+  },
+  "projectRef": {
+    "id": "workflow-engine",
+    "repositoryPath": "${WORKFLOW_ENGINE_REPOSITORY_PATH}",
+    "defaultBranch": "dev"
+  },
+  "state": "disabled",
+  "observedAt": "2026-07-11T11:48:27Z",
+  "result": {
+    "disabled": true,
+    "activeVersion": 2,
+    "controllerIdentity": {
+      "provider": "archon",
+      "name": "workflow-engine-primary"
+    }
+  }
+}

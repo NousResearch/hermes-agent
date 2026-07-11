@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.oceanlabs.local/workflow-commander/schemas/materialization-case.schema.json",
+  "title": "Workflow Commander Materialization Case",
+  "description": "Schema for Hermes materialization fixtures that describe Project Work Item and Phase Task identity behavior.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "intendedProducer",
+    "intendedConsumer",
+    "owningSubproject",
+    "caseId",
+    "caseKind",
+    "projectBindingRef",
+    "source",
+    "expectedMutationBehavior",
+    "downstreamReadinessExpectations"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "workflow-materialization-case.v1"
+    },
+    "intendedProducer": {
+      "const": "Hermes"
+    },
+    "intendedConsumer": {
+      "const": "Hermes"
+    },
+    "owningSubproject": {
+      "const": "hermes-agent"
+    },
+    "caseId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "caseKind": {
+      "enum": [
+        "new-story",
+        "unchanged-story",
+        "changed-story",
+        "missing-sprint-status",
+        "malformed-sprint-status",
+        "duplicate-phase-task-prevention"
+      ]
+    },
+    "projectBindingRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bindingId", "projectId", "boundProjectCwd"],
+      "properties": {
+        "bindingId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "boundProjectCwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "providerBindingName": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactKind", "artifactPath", "availability"],
+      "properties": {
+        "artifactKind": {
+          "const": "sprint-status"
+        },
+        "artifactPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "availability": {
+          "enum": ["present", "missing", "malformed"]
+        },
+        "bmadEpicId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bmadStoryId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observedStoryStatus": {
+          "type": "string",
+          "minLength": 1
+        },
+        "storyTitle": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contentDigest": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "projectWorkItemIdentity": {
+      "$ref": "#/$defs/machineObject"
+    },
+    "phaseTaskIdentity": {
+      "$ref": "#/$defs/machineObject"
+    },
+    "materializationAttempts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/machineObject"
+      }
+    },
+    "expectedMutationBehavior": {
+      "$ref": "#/$defs/machineObject"
+    },
+    "diagnosticCategory": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recovery": {
+      "$ref": "#/$defs/machineObject"
+    },
+    "downstreamReadinessExpectations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requiresMigrationExpectation",
+        "requiresUniquenessExpectation",
+        "requiresIdempotencyExpectation",
+        "blocksImplementationWhenRelevantExampleMissing",
+        "migrationExpectation",
+        "uniquenessExpectation",
+        "idempotencyExpectation"
+      ],
+      "properties": {
+        "requiresMigrationExpectation": {
+          "type": "boolean"
+        },
+        "requiresUniquenessExpectation": {
+          "type": "boolean"
+        },
+        "requiresIdempotencyExpectation": {
+          "type": "boolean"
+        },
+        "blocksImplementationWhenRelevantExampleMissing": {
+          "type": "boolean"
+        },
+        "migrationExpectation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["recordKinds", "requiredTest"],
+          "properties": {
+            "recordKinds": {
+              "$ref": "#/$defs/nonEmptyUniqueStringArray"
+            },
+            "requiredTest": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "uniquenessExpectation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identityKeys", "requiredTest"],
+          "properties": {
+            "identityKeys": {
+              "$ref": "#/$defs/nonEmptyUniqueStringArray"
+            },
+            "requiredTest": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "idempotencyExpectation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rerunCases", "requiredTest"],
+          "properties": {
+            "rerunCases": {
+              "$ref": "#/$defs/nonEmptyUniqueStringArray"
+            },
+            "requiredTest": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "machineObject": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "nonEmptyUniqueStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

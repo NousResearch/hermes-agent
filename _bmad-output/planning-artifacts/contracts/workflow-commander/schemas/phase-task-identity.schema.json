@@ -1,35 +1,47 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.hermes.local/workflow-commander/phase-task-identity.schema.json",
-  "title": "Phase Task Identity",
+  "$id": "https://contracts.oceanlabs.local/workflow-commander/schemas/phase-task-identity.schema.json",
+  "title": "Workflow Commander Phase Task Identity",
+  "description": "Schema for stable Hermes Phase Task identity derived from Project Work Item identity plus phase kind.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schemaVersion",
-    "projectWorkIdentityKey",
+    "identityKey",
+    "projectWorkItemIdentityKey",
     "phaseKind",
-    "identityKey"
+    "derivedFrom",
+    "identityKeyAlgorithm"
   ],
   "properties": {
     "schemaVersion": {
-      "const": "workflow.phase-task-identity/1"
+      "const": "workflow-phase-task-identity.v1"
     },
-    "projectWorkIdentityKey": {
+    "identityKey": {
       "type": "string",
-      "pattern": "^pwi:[a-zA-Z0-9._:-]+$"
+      "minLength": 1
+    },
+    "projectWorkItemIdentityKey": {
+      "type": "string",
+      "minLength": 1
     },
     "phaseKind": {
       "const": "story_implementation"
     },
-    "identityKey": {
-      "type": "string",
-      "pattern": "^phase:pwi:[a-zA-Z0-9._:-]+:story_implementation$"
+    "derivedFrom": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["projectWorkItemIdentityKey", "phaseKind"]
+      }
     },
-    "gateKind": {
-      "enum": [
-        "none",
-        "done_verification"
-      ]
+    "workflowName": {
+      "const": "bmad-create-and-dev-story"
+    },
+    "identityKeyAlgorithm": {
+      "const": "phase-prefix-project-work-key-phase-kind-v1"
     }
   }
 }

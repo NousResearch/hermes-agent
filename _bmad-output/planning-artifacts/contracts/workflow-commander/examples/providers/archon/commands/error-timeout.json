@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "workflow-command-envelope.v1",
+  "intendedProducer": "Archon",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "archon",
+  "provider": "archon",
+  "command": "workflow.start",
+  "correlationId": "corr_story_1_3a_error_timeout",
+  "issuedAt": "2026-07-11T11:48:27Z",
+  "success": false,
+  "error": {
+    "code": "COMMAND_TIMEOUT",
+    "category": "timeout",
+    "retryable": true,
+    "details": {
+      "timeoutMs": 300000,
+      "elapsedMs": 300001,
+      "phase": "provider-command"
+    }
+  },
+  "execution": {
+    "exitCode": null,
+    "timedOut": true,
+    "durationMs": 300001,
+    "stdoutRedacted": true,
+    "stderrRedacted": true
+  }
+}

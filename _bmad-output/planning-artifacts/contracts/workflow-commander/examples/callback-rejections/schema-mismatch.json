@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "workflow-callback-rejection.v1",
+  "intendedProducer": "Hermes",
+  "intendedConsumer": "Archon",
+  "owningSubproject": "hermes-agent",
+  "caseId": "rejection-schema-mismatch",
+  "rejectionReason": "schema-mismatch",
+  "diagnosticCategory": "provider_contract",
+  "expectedHttpStatus": 400,
+  "expectedMutationBehavior": {
+    "stateMutation": "none",
+    "workflowRunMutation": "none",
+    "bindingMutation": "none",
+    "eventLedgerMutation": "none",
+    "projectWorkItemMutation": "none",
+    "phaseTaskMutation": "none",
+    "hiltGateMutation": "none",
+    "workflowReferenceMutation": "none",
+    "commentMutation": "none",
+    "storyStatusHistoryMutation": "none",
+    "diagnosticEmission": true
+  },
+  "rejectionEvidence": {
+    "failsSchemaValidation": true,
+    "missingRequiredFields": ["schemaVersion", "eventId", "signature"],
+    "checkedBeforeMutation": true
+  },
+  "eventEnvelope": {
+    "intendedProducer": "Archon",
+    "intendedConsumer": "Hermes",
+    "owningSubproject": "archon",
+    "provider": "archon",
+    "eventType": "workflow.run.completed",
+    "occurredAt": "2026-07-11T12:46:00Z",
+    "bindingRef": {
+      "provider": "archon",
+      "name": "workflow-engine-primary",
+      "bindingId": "wpb_archon_workflow_engine_primary",
+      "projectRef": "project:workflow-engine"
+    },
+    "workflowRunRef": {
+      "provider": "archon",
+      "runId": "archon-run-rejection-schema-mismatch",
+      "workflowName": "bmad-dev-story",
+      "projectRef": "project:workflow-engine"
+    },
+    "projectRef": {
+      "id": "workflow-engine",
+      "codebaseRef": "git:OceanLabs/workflow-engine@dev",
+      "repositoryPath": "${WORKFLOW_ENGINE_REPOSITORY_PATH}",
+      "defaultBranch": "dev",
+      "projectBindingId": "project-binding-workflow-engine"
+    },
+    "profileRoute": {
+      "profile": "workflow-engine-primary",
+      "ingressPath": "/p/workflow-engine-primary/webhooks/workflow-events/archon",
+      "bindingName": "workflow-engine-primary",
+      "secretRef": "secret:hermes/workflow-engine-primary/webhook",
+      "expectedProvider": "archon",
+      "routeVersion": "2026-07-11"
+    },
+    "idempotencyKey": "archon:workflow-engine-primary:evt_archon_rejection_schema_mismatch",
+    "payload": {
+      "state": "completed",
+      "result": {
+        "outcome": "accepted"
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "workflow-command-envelope.v1",
+  "intendedProducer": "Archon",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "archon",
+  "provider": "archon",
+  "command": "workflow.reject",
+  "correlationId": "corr_story_1_3a_workflow_reject",
+  "issuedAt": "2026-07-11T11:48:27Z",
+  "success": true,
+  "workflowRunRef": {
+    "provider": "archon",
+    "runId": "archon-run-story-1-3a-001",
+    "workflowName": "bmad-dev-story",
+    "projectRef": "project:workflow-engine"
+  },
+  "result": {
+    "operation": "reject",
+    "state": "running",
+    "decision": {
+      "gateId": "gate_done_verification_001",
+      "outcome": "rejected",
+      "recorded": true
+    },
+    "nextPhase": "fix-loop"
+  }
+}

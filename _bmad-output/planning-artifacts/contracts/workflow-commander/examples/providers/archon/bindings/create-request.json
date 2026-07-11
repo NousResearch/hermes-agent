@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "workflow-provider-binding.v1",
+  "intendedProducer": "Hermes",
+  "intendedConsumer": "Archon",
+  "owningSubproject": "archon",
+  "shape": "request",
+  "operation": "create",
+  "provider": "archon",
+  "name": "workflow-engine-primary",
+  "correlationId": "corr_story_1_3a_binding_create_request",
+  "projectRef": {
+    "id": "workflow-engine",
+    "repositoryPath": "${WORKFLOW_ENGINE_REPOSITORY_PATH}",
+    "defaultBranch": "dev"
+  },
+  "requestedAt": "2026-07-11T11:48:27Z",
+  "request": {
+    "desiredState": "active",
+    "capabilities": ["workflow-control", "event-delivery-status"],
+    "contractPackageRef": "contracts/workflow-commander"
+  }
+}

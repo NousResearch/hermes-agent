@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "workflow-event-envelope.v1",
+  "intendedProducer": "Archon",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "archon",
+  "provider": "archon",
+  "eventId": "evt_archon_workflow_engine_1_3b_002",
+  "eventType": "workflow.run.completed",
+  "occurredAt": "2026-07-11T12:25:00Z",
+  "bindingRef": {
+    "provider": "archon",
+    "name": "workflow-engine-primary",
+    "bindingId": "wpb_archon_workflow_engine_primary",
+    "projectRef": "project:workflow-engine"
+  },
+  "workflowRunRef": {
+    "provider": "archon",
+    "runId": "archon-run-story-1-3b-001",
+    "workflowName": "bmad-dev-story",
+    "projectRef": "project:workflow-engine"
+  },
+  "projectRef": {
+    "id": "workflow-engine",
+    "codebaseRef": "git:OceanLabs/workflow-engine@dev",
+    "repositoryPath": "${WORKFLOW_ENGINE_REPOSITORY_PATH}",
+    "defaultBranch": "dev",
+    "projectBindingId": "project-binding-workflow-engine"
+  },
+  "profileRoute": {
+    "profile": "workflow-engine-primary",
+    "ingressPath": "/p/workflow-engine-primary/webhooks/workflow-events/archon",
+    "bindingName": "workflow-engine-primary",
+    "secretRef": "secret:hermes/workflow-engine-primary/webhook",
+    "expectedProvider": "archon",
+    "routeVersion": "2026-07-11"
+  },
+  "idempotencyKey": "archon:workflow-engine-primary:evt_archon_workflow_engine_1_3b_002",
+  "signature": {
+    "algorithm": "${WORKFLOW_EVENT_SIGNATURE_ALGORITHM}",
+    "keyId": "archon-profile-primary-2026-07",
+    "signedAt": "2026-07-11T12:25:00Z",
+    "signatureHeader": "${WORKFLOW_EVENT_SIGNATURE_HEADER}",
+    "timestampHeader": "${WORKFLOW_EVENT_TIMESTAMP_HEADER}",
+    "signatureInput": ["method", "path", "timestamp", "eventId", "bodyDigest"],
+    "bodyDigest": "sha256:event-completed-redelivery-body-digest",
+    "canonicalization": "${WORKFLOW_EVENT_SIGNATURE_CANONICALIZATION}"
+  },
+  "payload": {
+    "state": "completed",
+    "result": {
+      "outcome": "accepted",
+      "completedAt": "2026-07-11T12:25:00Z",
+      "materializedArtifacts": [
+        {
+          "type": "contract-package",
+          "uri": "file:_bmad-output/planning-artifacts/contracts/workflow-commander/README.md",
+          "digest": "sha256:workflow-commander-contract-readme-digest",
+          "name": "workflow-commander-contract-readme"
+        }
+      ]
+    }
+  },
+  "delivery": {
+    "deliveryId": "delivery_archon_1_3b_002_redelivery_2",
+    "attempt": 2,
+    "receivedAt": "2026-07-11T12:26:03Z"
+  }
+}

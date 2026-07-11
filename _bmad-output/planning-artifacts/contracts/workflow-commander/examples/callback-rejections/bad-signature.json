@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "workflow-callback-rejection.v1",
+  "intendedProducer": "Hermes",
+  "intendedConsumer": "Archon",
+  "owningSubproject": "hermes-agent",
+  "caseId": "rejection-bad-signature",
+  "rejectionReason": "bad-signature",
+  "diagnosticCategory": "security_rejection",
+  "expectedHttpStatus": 401,
+  "expectedMutationBehavior": {
+    "stateMutation": "none",
+    "workflowRunMutation": "none",
+    "bindingMutation": "none",
+    "eventLedgerMutation": "none",
+    "projectWorkItemMutation": "none",
+    "phaseTaskMutation": "none",
+    "hiltGateMutation": "none",
+    "workflowReferenceMutation": "none",
+    "commentMutation": "none",
+    "storyStatusHistoryMutation": "none",
+    "diagnosticEmission": true
+  },
+  "rejectionEvidence": {
+    "signatureVerification": "failed",
+    "bodyDigestMatched": false,
+    "checkedBeforeMutation": true
+  },
+  "eventEnvelope": {
+    "schemaVersion": "workflow-event-envelope.v1",
+    "intendedProducer": "Archon",
+    "intendedConsumer": "Hermes",
+    "owningSubproject": "archon",
+    "provider": "archon",
+    "eventId": "evt_archon_rejection_bad_signature",
+    "eventType": "workflow.run.completed",
+    "occurredAt": "2026-07-11T12:40:00Z",
+    "bindingRef": {
+      "provider": "archon",
+      "name": "workflow-engine-primary",
+      "bindingId": "wpb_archon_workflow_engine_primary",
+      "projectRef": "project:workflow-engine"
+    },
+    "workflowRunRef": {
+      "provider": "archon",
+      "runId": "archon-run-rejection-bad-signature",
+      "workflowName": "bmad-dev-story",
+      "projectRef": "project:workflow-engine"
+    },
+    "projectRef": {
+      "id": "workflow-engine",
+      "codebaseRef": "git:OceanLabs/workflow-engine@dev",
+      "repositoryPath": "${WORKFLOW_ENGINE_REPOSITORY_PATH}",
+      "defaultBranch": "dev",
+      "projectBindingId": "project-binding-workflow-engine"
+    },
+    "profileRoute": {
+      "profile": "workflow-engine-primary",
+      "ingressPath": "/p/workflow-engine-primary/webhooks/workflow-events/archon",
+      "bindingName": "workflow-engine-primary",
+      "secretRef": "secret:hermes/workflow-engine-primary/webhook",
+      "expectedProvider": "archon",
+      "routeVersion": "2026-07-11"
+    },
+    "idempotencyKey": "archon:workflow-engine-primary:evt_archon_rejection_bad_signature",
+    "signature": {
+      "algorithm": "${WORKFLOW_EVENT_SIGNATURE_ALGORITHM}",
+      "keyId": "archon-profile-primary-2026-07",
+      "signedAt": "2026-07-11T12:40:00Z",
+      "signatureHeader": "${WORKFLOW_EVENT_SIGNATURE_HEADER}",
+      "timestampHeader": "${WORKFLOW_EVENT_TIMESTAMP_HEADER}",
+      "signatureInput": ["method", "path", "timestamp", "eventId", "bodyDigest"],
+      "bodyDigest": "sha256:tampered-body-digest",
+      "canonicalization": "${WORKFLOW_EVENT_SIGNATURE_CANONICALIZATION}"
+    },
+    "payload": {
+      "state": "completed",
+      "result": {
+        "outcome": "accepted"
+      }
+    }
+  }
+}

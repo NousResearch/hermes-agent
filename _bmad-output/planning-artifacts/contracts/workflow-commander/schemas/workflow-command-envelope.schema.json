@@ -1,23 +1,33 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.hermes.local/workflow-commander/workflow-command-envelope.schema.json",
+  "$id": "https://contracts.oceanlabs.local/workflow-commander/schemas/workflow-command-envelope.schema.json",
   "title": "Workflow Command Envelope",
+  "description": "Schema for provider command success and error result envelopes consumed by Hermes.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schemaVersion",
-    "success",
+    "intendedProducer",
+    "intendedConsumer",
+    "owningSubproject",
     "provider",
     "command",
     "correlationId",
-    "issuedAt"
+    "issuedAt",
+    "success"
   ],
   "properties": {
     "schemaVersion": {
-      "const": "workflow.command/1"
+      "const": "workflow-command-envelope.v1"
     },
-    "success": {
-      "type": "boolean"
+    "intendedProducer": {
+      "const": "Archon"
+    },
+    "intendedConsumer": {
+      "const": "Hermes"
+    },
+    "owningSubproject": {
+      "const": "archon"
     },
     "provider": {
       "type": "string",
@@ -25,15 +35,17 @@
     },
     "command": {
       "enum": [
-        "binding.create",
-        "binding.status",
         "workflow.start",
         "workflow.status",
         "workflow.approve",
         "workflow.reject",
         "workflow.resume",
         "workflow.retry",
-        "workflow.cancel"
+        "workflow.cancel",
+        "binding.create",
+        "binding.status",
+        "binding.rotate",
+        "binding.disable"
       ]
     },
     "correlationId": {
@@ -44,14 +56,14 @@
       "type": "string",
       "format": "date-time"
     },
-    "cwd": {
-      "type": "string"
-    },
-    "bindingRef": {
-      "$ref": "#/$defs/bindingRef"
+    "success": {
+      "type": "boolean"
     },
     "workflowRunRef": {
       "$ref": "#/$defs/workflowRunRef"
+    },
+    "bindingRef": {
+      "$ref": "#/$defs/bindingRef"
     },
     "result": {
       "type": "object",
@@ -59,6 +71,9 @@
     },
     "error": {
       "$ref": "#/$defs/error"
+    },
+    "execution": {
+      "$ref": "#/$defs/execution"
     }
   },
   "oneOf": [
@@ -68,13 +83,9 @@
           "const": true
         }
       },
-      "required": [
-        "result"
-      ],
+      "required": ["result"],
       "not": {
-        "required": [
-          "error"
-        ]
+        "required": ["error"]
       }
     },
     {
@@ -83,40 +94,59 @@
           "const": false
         }
       },
-      "required": [
-        "error"
-      ]
+      "required": ["error"],
+      "not": {
+        "required": ["result"]
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "if": {
+        "required": ["success", "command"],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "command": {
+            "enum": [
+              "workflow.start",
+              "workflow.status",
+              "workflow.approve",
+              "workflow.reject",
+              "workflow.resume",
+              "workflow.retry",
+              "workflow.cancel"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": ["workflowRunRef"]
+      }
+    },
+    {
+      "if": {
+        "required": ["success", "command"],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "command": {
+            "enum": ["binding.create", "binding.status", "binding.rotate", "binding.disable"]
+          }
+        }
+      },
+      "then": {
+        "required": ["bindingRef"]
+      }
     }
   ],
   "$defs": {
-    "bindingRef": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "provider",
-        "name"
-      ],
-      "properties": {
-        "provider": {
-          "type": "string",
-          "minLength": 1
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
-        "projectRef": {
-          "type": "string"
-        }
-      }
-    },
     "workflowRunRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "provider",
-        "runId"
-      ],
+      "required": ["provider", "runId", "workflowName"],
       "properties": {
         "provider": {
           "type": "string",
@@ -127,27 +157,50 @@
           "minLength": 1
         },
         "workflowName": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
+        },
+        "projectRef": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "bindingRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "name", "bindingId"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bindingId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "projectRef": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
     "error": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "code",
-        "diagnosticCategory",
-        "message"
-      ],
+      "required": ["code", "category", "retryable", "details"],
       "properties": {
         "code": {
           "type": "string",
           "minLength": 1
         },
-        "diagnosticCategory": {
+        "category": {
           "enum": [
             "configuration",
-            "user_decision",
             "external_delay",
             "implementation_defect",
             "provider_contract",
@@ -156,13 +209,35 @@
             "unexpected_state"
           ]
         },
-        "message": {
-          "type": "string",
-          "minLength": 1
+        "retryable": {
+          "type": "boolean"
         },
         "details": {
           "type": "object",
           "additionalProperties": true
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exitCode", "timedOut"],
+      "properties": {
+        "exitCode": {
+          "type": ["integer", "null"]
+        },
+        "timedOut": {
+          "type": "boolean"
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stdoutRedacted": {
+          "type": "boolean"
+        },
+        "stderrRedacted": {
+          "type": "boolean"
         }
       }
     }

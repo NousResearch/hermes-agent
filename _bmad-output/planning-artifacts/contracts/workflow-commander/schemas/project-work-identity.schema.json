@@ -1,43 +1,73 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.hermes.local/workflow-commander/project-work-identity.schema.json",
-  "title": "Project Work Item Identity",
+  "$id": "https://contracts.oceanlabs.local/workflow-commander/schemas/project-work-identity.schema.json",
+  "title": "Workflow Commander Project Work Item Identity",
+  "description": "Schema for stable Hermes Project Work Item identity derived from a bound project cwd, BMAD artifact path, and BMAD epic or story identity.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schemaVersion",
-    "boundProjectCwd",
-    "bmadArtifactPath",
-    "bmadEpicId",
-    "bmadStoryId",
-    "identityKey"
+    "identityKey",
+    "identityInputs",
+    "derivedFrom",
+    "identityKeyAlgorithm"
   ],
   "properties": {
     "schemaVersion": {
-      "const": "workflow.project-work-identity/1"
-    },
-    "boundProjectCwd": {
-      "type": "string",
-      "minLength": 1
-    },
-    "bmadArtifactPath": {
-      "type": "string",
-      "minLength": 1
-    },
-    "bmadEpicId": {
-      "type": "string",
-      "minLength": 1
-    },
-    "bmadStoryId": {
-      "type": "string",
-      "minLength": 1
+      "const": "workflow-project-work-identity.v1"
     },
     "identityKey": {
       "type": "string",
-      "pattern": "^pwi:[a-zA-Z0-9._:-]+$"
+      "minLength": 1
     },
-    "displayName": {
-      "type": "string"
+    "identityInputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["boundProjectCwd", "bmadArtifactPath", "bmadIdentity"],
+      "properties": {
+        "boundProjectCwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bmadArtifactPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bmadIdentity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id"],
+          "properties": {
+            "kind": {
+              "enum": ["epic", "story"]
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "epicId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "storyId": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "derivedFrom": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["boundProjectCwd", "bmadArtifactPath", "bmadIdentity"]
+      }
+    },
+    "identityKeyAlgorithm": {
+      "const": "uri-component-encoded-identity-v1"
     }
   }
 }

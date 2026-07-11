@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "workflow-delivery-status.v1",
+  "intendedProducer": "Archon",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "archon",
+  "provider": "archon",
+  "correlationId": "corr_story_1_3a_delivery_terminal_failure",
+  "status": "terminal-failure",
+  "workflowRunRef": {
+    "provider": "archon",
+    "runId": "archon-run-story-1-3a-001",
+    "workflowName": "bmad-dev-story",
+    "projectRef": "project:workflow-engine"
+  },
+  "eventRef": {
+    "eventId": "evt_corr_story_1_3a_delivery_terminal_failure",
+    "eventType": "workflow.completed",
+    "idempotencyKey": "idm_corr_story_1_3a_delivery_terminal_failure"
+  },
+  "deliveryAttemptRef": {
+    "attemptId": "attempt_corr_story_1_3a_delivery_terminal_failure",
+    "target": "hermes-event-ingress"
+  },
+  "checkedAt": "2026-07-11T11:48:27Z",
+  "blockingWorkflowExecution": false,
+  "attemptCount": 8,
+  "lastAttemptAt": "2026-07-11T11:47:27Z",
+  "duplicateSafe": false,
+  "reconciliationNeeded": true,
+  "terminal": true,
+  "diagnostic": {
+    "category": "delivery_failure",
+    "code": "TERMINAL_DELIVERY_FAILURE",
+    "actionRequired": true
+  },
+  "recovery": {
+    "kind": "manual-reconciliation",
+    "safeToRetry": false
+  }
+}

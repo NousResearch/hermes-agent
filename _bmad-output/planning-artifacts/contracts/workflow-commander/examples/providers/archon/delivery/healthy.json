@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "workflow-delivery-status.v1",
+  "intendedProducer": "Archon",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "archon",
+  "provider": "archon",
+  "correlationId": "corr_story_1_3a_delivery_healthy",
+  "status": "healthy",
+  "workflowRunRef": {
+    "provider": "archon",
+    "runId": "archon-run-story-1-3a-001",
+    "workflowName": "bmad-dev-story",
+    "projectRef": "project:workflow-engine"
+  },
+  "eventRef": {
+    "eventId": "evt_corr_story_1_3a_delivery_healthy",
+    "eventType": "workflow.completed",
+    "idempotencyKey": "idm_corr_story_1_3a_delivery_healthy"
+  },
+  "deliveryAttemptRef": {
+    "attemptId": "attempt_corr_story_1_3a_delivery_healthy",
+    "target": "hermes-event-ingress"
+  },
+  "checkedAt": "2026-07-11T11:48:27Z",
+  "blockingWorkflowExecution": false,
+  "attemptCount": 1,
+  "duplicateSafe": false,
+  "reconciliationNeeded": false,
+  "terminal": false
+}

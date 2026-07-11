@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "workflow-command-envelope.v1",
+  "intendedProducer": "Archon",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "archon",
+  "provider": "archon",
+  "command": "workflow.status",
+  "correlationId": "corr_story_1_3a_workflow_status",
+  "issuedAt": "2026-07-11T11:48:27Z",
+  "success": true,
+  "workflowRunRef": {
+    "provider": "archon",
+    "runId": "archon-run-story-1-3a-001",
+    "workflowName": "bmad-dev-story",
+    "projectRef": "project:workflow-engine"
+  },
+  "result": {
+    "operation": "status",
+    "state": "waiting-for-approval",
+    "phase": "done-verification",
+    "terminal": false,
+    "actionRequired": true,
+    "gateRef": {
+      "gateId": "gate_done_verification_001",
+      "kind": "human-decision"
+    }
+  }
+}

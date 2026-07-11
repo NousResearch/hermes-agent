@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "workflow-command-envelope.v1",
+  "intendedProducer": "Archon",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "archon",
+  "provider": "archon",
+  "command": "workflow.status",
+  "correlationId": "corr_story_1_3a_error_schema_mismatch",
+  "issuedAt": "2026-07-11T11:48:27Z",
+  "success": false,
+  "error": {
+    "code": "SCHEMA_MISMATCH",
+    "category": "provider_contract",
+    "retryable": false,
+    "details": {
+      "schemaVersion": "workflow-command-envelope.v1",
+      "violations": [
+        {
+          "path": "/success",
+          "code": "required"
+        }
+      ]
+    }
+  },
+  "execution": {
+    "exitCode": 65,
+    "timedOut": false,
+    "durationMs": 26,
+    "stdoutRedacted": true,
+    "stderrRedacted": true
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "workflow-provider-binding.v1",
+  "intendedProducer": "Archon",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "archon",
+  "shape": "status",
+  "operation": "status",
+  "provider": "archon",
+  "name": "workflow-engine-primary",
+  "correlationId": "corr_story_1_3a_binding_status_rotated",
+  "bindingRef": {
+    "provider": "archon",
+    "name": "workflow-engine-primary",
+    "bindingId": "wpb_archon_workflow_engine_primary",
+    "projectRef": "project:workflow-engine"
+  },
+  "projectRef": {
+    "id": "workflow-engine",
+    "repositoryPath": "${WORKFLOW_ENGINE_REPOSITORY_PATH}",
+    "defaultBranch": "dev"
+  },
+  "state": "rotated",
+  "observedAt": "2026-07-11T11:48:27Z",
+  "status": {
+    "health": "rotated",
+    "ready": true,
+    "activeVersion": 2
+  }
+}

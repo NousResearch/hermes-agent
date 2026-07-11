@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "workflow-materialization-case.v1",
+  "intendedProducer": "Hermes",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "hermes-agent",
+  "caseId": "materialization-duplicate-phase-task-prevention",
+  "caseKind": "duplicate-phase-task-prevention",
+  "projectBindingRef": {
+    "bindingId": "project-binding-workflow-engine",
+    "projectId": "workflow-engine",
+    "boundProjectCwd": "${WORKFLOW_ENGINE_REPOSITORY_PATH}",
+    "providerBindingName": "workflow-engine-primary"
+  },
+  "source": {
+    "artifactKind": "sprint-status",
+    "artifactPath": "_bmad-output/implementation-artifacts/sprint-status.yaml",
+    "availability": "present",
+    "bmadEpicId": "epic-1",
+    "bmadStoryId": "1-3c-define-materialization-and-phase-identity-contract-examples",
+    "observedStoryStatus": "ready-for-dev",
+    "storyTitle": "Define Materialization And Phase Identity Contract Examples",
+    "contentDigest": "sha256:materialization-new-story-source"
+  },
+  "projectWorkItemIdentity": {
+    "schemaVersion": "workflow-project-work-identity.v1",
+    "identityKey": "pwi:%24%7BWORKFLOW_ENGINE_REPOSITORY_PATH%7D:_bmad-output%2Fimplementation-artifacts%2Fsprint-status.yaml:story:1-3c-define-materialization-and-phase-identity-contract-examples",
+    "identityInputs": {
+      "boundProjectCwd": "${WORKFLOW_ENGINE_REPOSITORY_PATH}",
+      "bmadArtifactPath": "_bmad-output/implementation-artifacts/sprint-status.yaml",
+      "bmadIdentity": {
+        "kind": "story",
+        "id": "1-3c-define-materialization-and-phase-identity-contract-examples",
+        "epicId": "epic-1",
+        "storyId": "1-3c-define-materialization-and-phase-identity-contract-examples"
+      }
+    },
+    "derivedFrom": ["boundProjectCwd", "bmadArtifactPath", "bmadIdentity"],
+    "identityKeyAlgorithm": "uri-component-encoded-identity-v1"
+  },
+  "phaseTaskIdentity": {
+    "schemaVersion": "workflow-phase-task-identity.v1",
+    "identityKey": "phase:pwi:%24%7BWORKFLOW_ENGINE_REPOSITORY_PATH%7D:_bmad-output%2Fimplementation-artifacts%2Fsprint-status.yaml:story:1-3c-define-materialization-and-phase-identity-contract-examples:story_implementation",
+    "projectWorkItemIdentityKey": "pwi:%24%7BWORKFLOW_ENGINE_REPOSITORY_PATH%7D:_bmad-output%2Fimplementation-artifacts%2Fsprint-status.yaml:story:1-3c-define-materialization-and-phase-identity-contract-examples",
+    "phaseKind": "story_implementation",
+    "derivedFrom": ["projectWorkItemIdentityKey", "phaseKind"],
+    "workflowName": "bmad-create-and-dev-story",
+    "identityKeyAlgorithm": "phase-prefix-project-work-key-phase-kind-v1"
+  },
+  "materializationAttempts": [
+    {
+      "attempt": 1,
+      "projectWorkItemIdentityKey": "pwi:%24%7BWORKFLOW_ENGINE_REPOSITORY_PATH%7D:_bmad-output%2Fimplementation-artifacts%2Fsprint-status.yaml:story:1-3c-define-materialization-and-phase-identity-contract-examples",
+      "phaseTaskIdentityKey": "phase:pwi:%24%7BWORKFLOW_ENGINE_REPOSITORY_PATH%7D:_bmad-output%2Fimplementation-artifacts%2Fsprint-status.yaml:story:1-3c-define-materialization-and-phase-identity-contract-examples:story_implementation",
+      "phaseTaskLookupResult": "missing",
+      "phaseTaskMutation": "create"
+    },
+    {
+      "attempt": 2,
+      "projectWorkItemIdentityKey": "pwi:%24%7BWORKFLOW_ENGINE_REPOSITORY_PATH%7D:_bmad-output%2Fimplementation-artifacts%2Fsprint-status.yaml:story:1-3c-define-materialization-and-phase-identity-contract-examples",
+      "phaseTaskIdentityKey": "phase:pwi:%24%7BWORKFLOW_ENGINE_REPOSITORY_PATH%7D:_bmad-output%2Fimplementation-artifacts%2Fsprint-status.yaml:story:1-3c-define-materialization-and-phase-identity-contract-examples:story_implementation",
+      "phaseTaskLookupResult": "found",
+      "phaseTaskMutation": "reuse"
+    }
+  ],
+  "expectedMutationBehavior": {
+    "projectWorkItemMutation": "no-op",
+    "projectWorkItemIdentityKey": "pwi:%24%7BWORKFLOW_ENGINE_REPOSITORY_PATH%7D:_bmad-output%2Fimplementation-artifacts%2Fsprint-status.yaml:story:1-3c-define-materialization-and-phase-identity-contract-examples",
+    "phaseTaskMutation": "reuse",
+    "phaseTaskIdentityKey": "phase:pwi:%24%7BWORKFLOW_ENGINE_REPOSITORY_PATH%7D:_bmad-output%2Fimplementation-artifacts%2Fsprint-status.yaml:story:1-3c-define-materialization-and-phase-identity-contract-examples:story_implementation",
+    "projectWorkItemIdentityStable": true,
+    "phaseTaskIdentityStable": true,
+    "duplicateProjectWorkItemsCreated": 0,
+    "duplicatePhaseTasksCreated": 0,
+    "persistedProjectWorkItemCount": 1,
+    "persistedPhaseTaskCount": 1,
+    "diagnosticEmission": false
+  },
+  "downstreamReadinessExpectations": {
+    "requiresMigrationExpectation": true,
+    "requiresUniquenessExpectation": true,
+    "requiresIdempotencyExpectation": true,
+    "blocksImplementationWhenRelevantExampleMissing": true,
+    "migrationExpectation": {
+      "recordKinds": ["ProjectWorkItem", "PhaseTask"],
+      "requiredTest": "migration creates persistence structures and uniqueness constraints before materialization writes"
+    },
+    "uniquenessExpectation": {
+      "identityKeys": ["projectWorkItemIdentity.identityKey", "phaseTaskIdentity.identityKey"],
+      "requiredTest": "materializing the same BMAD story cannot persist duplicate Project Work Items or Phase Tasks"
+    },
+    "idempotencyExpectation": {
+      "rerunCases": ["unchanged-story", "changed-story", "duplicate-phase-task-prevention"],
+      "requiredTest": "reprocessing supported source snapshots reuses existing records by identity"
+    }
+  }
+}

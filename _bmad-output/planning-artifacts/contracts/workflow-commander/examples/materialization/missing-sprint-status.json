@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "workflow-materialization-case.v1",
+  "intendedProducer": "Hermes",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "hermes-agent",
+  "caseId": "materialization-missing-sprint-status",
+  "caseKind": "missing-sprint-status",
+  "projectBindingRef": {
+    "bindingId": "project-binding-workflow-engine",
+    "projectId": "workflow-engine",
+    "boundProjectCwd": "${WORKFLOW_ENGINE_REPOSITORY_PATH}",
+    "providerBindingName": "workflow-engine-primary"
+  },
+  "source": {
+    "artifactKind": "sprint-status",
+    "artifactPath": "_bmad-output/implementation-artifacts/sprint-status.yaml",
+    "availability": "missing"
+  },
+  "expectedMutationBehavior": {
+    "projectWorkItemMutation": "none",
+    "phaseTaskMutation": "none",
+    "duplicateProjectWorkItemsCreated": 0,
+    "duplicatePhaseTasksCreated": 0,
+    "checkedBeforeMutation": true,
+    "diagnosticEmission": true
+  },
+  "diagnosticCategory": "materialization_source_missing",
+  "recovery": {
+    "safeToRetryAfterSourceRestored": true,
+    "recommendedAction": "restore-or-generate-sprint-status"
+  },
+  "downstreamReadinessExpectations": {
+    "requiresMigrationExpectation": true,
+    "requiresUniquenessExpectation": true,
+    "requiresIdempotencyExpectation": true,
+    "blocksImplementationWhenRelevantExampleMissing": true,
+    "migrationExpectation": {
+      "recordKinds": ["ProjectWorkItem", "PhaseTask"],
+      "requiredTest": "migration creates persistence structures and uniqueness constraints before materialization writes"
+    },
+    "uniquenessExpectation": {
+      "identityKeys": ["projectWorkItemIdentity.identityKey", "phaseTaskIdentity.identityKey"],
+      "requiredTest": "materializing the same BMAD story cannot persist duplicate Project Work Items or Phase Tasks"
+    },
+    "idempotencyExpectation": {
+      "rerunCases": ["missing-sprint-status", "malformed-sprint-status"],
+      "requiredTest": "fail-closed materialization retries do not create Project Work Items or Phase Tasks until source recovery"
+    }
+  }
+}

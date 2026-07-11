@@ -1,0 +1,308 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.oceanlabs.local/workflow-commander/schemas/workflow-provider-binding.schema.json",
+  "title": "Workflow Provider Binding",
+  "description": "Schema for generic provider/name Workflow Provider Binding request, result, status, and error payloads.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "intendedProducer",
+    "intendedConsumer",
+    "owningSubproject",
+    "shape",
+    "operation",
+    "provider",
+    "name",
+    "correlationId"
+  ],
+  "propertyNames": {
+    "$ref": "#/$defs/noForbiddenBindingKey"
+  },
+  "properties": {
+    "schemaVersion": {
+      "const": "workflow-provider-binding.v1"
+    },
+    "intendedProducer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "intendedConsumer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "owningSubproject": {
+      "const": "archon"
+    },
+    "shape": {
+      "enum": ["request", "result", "status", "error"]
+    },
+    "operation": {
+      "enum": ["create", "update", "rotate", "disable", "remove", "status"]
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "correlationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projectRef": {
+      "$ref": "#/$defs/projectRef"
+    },
+    "bindingRef": {
+      "$ref": "#/$defs/bindingRef"
+    },
+    "state": {
+      "enum": [
+        "active",
+        "missing",
+        "stale",
+        "disabled",
+        "rotated",
+        "conflicting",
+        "removed",
+        "malformed"
+      ]
+    },
+    "requestedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "request": {
+      "$ref": "#/$defs/machineObject"
+    },
+    "result": {
+      "$ref": "#/$defs/machineObject"
+    },
+    "status": {
+      "$ref": "#/$defs/machineObject"
+    },
+    "error": {
+      "$ref": "#/$defs/error"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["shape"],
+        "properties": {
+          "shape": {
+            "const": "request"
+          }
+        }
+      },
+      "then": {
+        "required": ["request"],
+        "properties": {
+          "intendedProducer": {
+            "const": "Hermes"
+          },
+          "intendedConsumer": {
+            "const": "Archon"
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": ["result"]
+            },
+            {
+              "required": ["status"]
+            },
+            {
+              "required": ["error"]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["shape"],
+        "properties": {
+          "shape": {
+            "const": "result"
+          }
+        }
+      },
+      "then": {
+        "required": ["bindingRef", "result", "state"],
+        "properties": {
+          "intendedProducer": {
+            "const": "Archon"
+          },
+          "intendedConsumer": {
+            "const": "Hermes"
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": ["request"]
+            },
+            {
+              "required": ["status"]
+            },
+            {
+              "required": ["error"]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["shape"],
+        "properties": {
+          "shape": {
+            "const": "status"
+          }
+        }
+      },
+      "then": {
+        "required": ["bindingRef", "state", "status"],
+        "properties": {
+          "intendedProducer": {
+            "const": "Archon"
+          },
+          "intendedConsumer": {
+            "const": "Hermes"
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": ["request"]
+            },
+            {
+              "required": ["result"]
+            },
+            {
+              "required": ["error"]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["shape"],
+        "properties": {
+          "shape": {
+            "const": "error"
+          }
+        }
+      },
+      "then": {
+        "required": ["error", "state"],
+        "properties": {
+          "intendedProducer": {
+            "const": "Archon"
+          },
+          "intendedConsumer": {
+            "const": "Hermes"
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": ["request"]
+            },
+            {
+              "required": ["result"]
+            },
+            {
+              "required": ["status"]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "noForbiddenBindingKey": {
+      "not": {
+        "enum": ["profile", "agent_name", "agent", "agent_provider"]
+      }
+    },
+    "machineObject": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/noForbiddenBindingKey"
+      },
+      "additionalProperties": true
+    },
+    "projectRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "repositoryPath"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repositoryPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "defaultBranch": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "bindingRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "name", "bindingId"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bindingId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "projectRef": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "category", "retryable", "details"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "enum": ["configuration", "provider_contract", "security_rejection", "unexpected_state"]
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "details": {
+          "$ref": "#/$defs/machineObject"
+        }
+      }
+    }
+  }
+}

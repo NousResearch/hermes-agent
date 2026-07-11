@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "workflow-command-envelope.v1",
+  "intendedProducer": "Archon",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "archon",
+  "provider": "archon",
+  "command": "workflow.resume",
+  "correlationId": "corr_story_1_3a_workflow_resume",
+  "issuedAt": "2026-07-11T11:48:27Z",
+  "success": true,
+  "workflowRunRef": {
+    "provider": "archon",
+    "runId": "archon-run-story-1-3a-001",
+    "workflowName": "bmad-dev-story",
+    "projectRef": "project:workflow-engine"
+  },
+  "result": {
+    "operation": "resume",
+    "previousState": "paused",
+    "state": "running",
+    "resumed": true
+  }
+}

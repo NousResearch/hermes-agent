@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "workflow-delivery-status.v1",
+  "intendedProducer": "Archon",
+  "intendedConsumer": "Hermes",
+  "owningSubproject": "archon",
+  "provider": "archon",
+  "correlationId": "corr_story_1_3a_delivery_retrying",
+  "status": "retrying",
+  "workflowRunRef": {
+    "provider": "archon",
+    "runId": "archon-run-story-1-3a-001",
+    "workflowName": "bmad-dev-story",
+    "projectRef": "project:workflow-engine"
+  },
+  "eventRef": {
+    "eventId": "evt_corr_story_1_3a_delivery_retrying",
+    "eventType": "workflow.completed",
+    "idempotencyKey": "idm_corr_story_1_3a_delivery_retrying"
+  },
+  "deliveryAttemptRef": {
+    "attemptId": "attempt_corr_story_1_3a_delivery_retrying",
+    "target": "hermes-event-ingress"
+  },
+  "checkedAt": "2026-07-11T11:48:27Z",
+  "blockingWorkflowExecution": false,
+  "attemptCount": 3,
+  "lastAttemptAt": "2026-07-11T11:46:27Z",
+  "nextAttemptAt": "2026-07-11T11:51:27Z",
+  "duplicateSafe": false,
+  "reconciliationNeeded": false,
+  "terminal": false,
+  "diagnostic": {
+    "category": "external_delay",
+    "code": "RETRY_BACKOFF_ACTIVE",
+    "actionRequired": false
+  }
+}

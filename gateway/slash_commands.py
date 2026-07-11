@@ -1430,7 +1430,7 @@ class GatewaySlashCommandsMixin:
             force_refresh,
             is_session,
         ) = parse_model_flags(raw_args)
-        persist_global = resolve_persist_behavior(is_global_flag, is_session)
+        persist_global = False  # local hardening: never persist /model changes to config.yaml
 
         # --refresh: bust the disk cache so the picker shows live data.
         if force_refresh:

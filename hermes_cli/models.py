@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.urllib_security import open_credentialed_url
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -28,6 +29,11 @@ COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
 COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
+
+def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float):
+    """Open catalog requests without forwarding headers across origins."""
+    return open_credentialed_url(req, timeout=timeout)
+
 
 LMSTUDIO_UNLOAD_POLICY_ALWAYS = "always"
 LMSTUDIO_UNLOAD_POLICY_NEVER = "never"
@@ -967,7 +973,7 @@ def fetch_nous_recommended_models(
             url,
             headers={"Accept": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
         if not isinstance(data, dict):
             data = {}
@@ -1444,7 +1450,7 @@ def fetch_openrouter_models(
             "https://openrouter.ai/api/v1/models",
             headers={"Accept": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
         return list(_openrouter_catalog_cache or fallback)
@@ -1565,7 +1571,7 @@ def fetch_models_with_pricing(
 
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
         _pricing_cache[cache_key] = {}
@@ -1679,7 +1685,7 @@ def _fetch_novita_pricing(
 
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
         _pricing_cache[cache_key] = {}
@@ -2793,7 +2799,7 @@ def _fetch_anthropic_models(
             _anthropic_models_url(base_url),
             headers=h,
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
 
     try:
@@ -2908,7 +2914,7 @@ def fetch_github_model_catalog(
     for headers in attempts:
         req = urllib.request.Request(COPILOT_MODELS_URL, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
                 items = _payload_items(data)
                 models: list[dict[str, Any]] = []
@@ -3093,7 +3099,7 @@ def _lmstudio_fetch_raw_models(
     headers = _lmstudio_request_headers(api_key)
     request = urllib.request.Request(server_root + "/api/v1/models", headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(request, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
@@ -3264,7 +3270,7 @@ def ensure_lmstudio_model_loaded(
         body = json.dumps({"instance_id": instance_id}).encode()
         unload_headers = dict(headers)
         unload_headers["Content-Type"] = "application/json"
-        with urllib.request.urlopen(
+        with _urlopen_model_catalog_request(
             urllib.request.Request(
                 server_root + "/api/v1/models/unload",
                 data=body,
@@ -3302,7 +3308,7 @@ def ensure_lmstudio_model_loaded(
         load_headers = dict(headers)
         load_headers["Content-Type"] = "application/json"
         try:
-            with urllib.request.urlopen(
+            with _urlopen_model_catalog_request(
                 urllib.request.Request(
                     server_root + "/api/v1/models/load",
                     data=body,
@@ -4004,7 +4010,7 @@ def probe_api_models(
         tried.append(url)
         req = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
                 return {
                     "models": [m.get("id", "") for m in data.get("data", [])],

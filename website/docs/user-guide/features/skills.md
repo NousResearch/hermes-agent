@@ -62,6 +62,26 @@ Every installed skill is automatically available as a slash command:
 /excalidraw
 ```
 
+### Stacking multiple skills in one command
+
+You can invoke several skills in a single message by chaining slash commands
+at the start — every leading `/skill` token (up to 5) is loaded, and the rest
+becomes your instruction:
+
+```bash
+/github-pr-workflow /test-driven-development fix issue #123 and open a PR
+```
+
+Parsing stops at the first token that isn't an installed skill, so arguments
+that happen to start with `/` (like file paths) are never swallowed:
+
+```bash
+/ocr-and-documents /tmp/scan.pdf extract the tables   # loads one skill; /tmp/scan.pdf is the argument
+```
+
+For combinations you use repeatedly, prefer a [skill bundle](#skill-bundles) —
+same effect under one short command.
+
 The bundled `plan` skill is a good example. Running `/plan [request]` loads the skill's instructions, telling Hermes to inspect context if needed, write a markdown implementation plan instead of executing the task, and save the result under `.hermes/plans/` relative to the active workspace/backend working directory.
 
 You can also interact with skills through natural conversation:
@@ -70,6 +90,42 @@ You can also interact with skills through natural conversation:
 hermes chat --toolsets skills -q "What skills do you have?"
 hermes chat --toolsets skills -q "Show me the axolotl skill"
 ```
+
+## Learning a skill from sources (`/learn`)
+
+`/learn` is the fast way to turn something you already know — or a pile of
+reference material — into a reusable skill, without hand-writing the
+`SKILL.md`. It is open-ended: point it at *anything you can describe* and the
+agent gathers the material with the tools it already has, then authors a skill
+that follows the [house authoring standards](#skillmd-format) (≤60-char
+description, the standard section order, Hermes-tool framing, no invented
+commands).
+
+```bash
+# A local SDK or doc directory — read with read_file / search_files
+/learn the REST client in ~/projects/acme-sdk, focus on auth + pagination
+
+# An online doc page — fetched with web_extract
+/learn https://docs.example.com/api/quickstart
+
+# The workflow you just walked the agent through in this conversation
+/learn how I just deployed the staging server
+
+# Pasted notes / a described procedure
+/learn filing an expense: open the portal, New > Expense, attach the receipt, submit
+```
+
+Because the live agent does the sourcing, `/learn` works the same in the CLI,
+the messaging gateway, the TUI, and the dashboard — and on any terminal backend
+(local, Docker, remote), since there is no separate ingestion engine. In the
+**dashboard**, the Skills page has a **Learn a skill** button that opens a panel
+with a directory field, a URL field, and an open-ended text box; it composes a
+`/learn` request and runs it in chat.
+
+There is no model-tool footprint: `/learn` builds a standards-guided prompt and
+hands it to the agent as a normal turn. The agent saves the result with the
+`skill_manage` tool, so the [write-approval gate](#gating-agent-skill-writes-skillswrite_approval)
+applies if you have it on.
 
 ## Progressive Disclosure
 

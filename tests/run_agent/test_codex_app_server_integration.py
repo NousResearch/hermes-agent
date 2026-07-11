@@ -49,7 +49,7 @@ def fake_session(monkeypatch):
     )
 
 
-def _make_codex_agent():
+def _make_codex_agent(**kwargs):
     """Construct an AIAgent in codex_app_server mode without contacting any
     real provider. We pass api_mode explicitly so the constructor takes the
     fast path for direct credentials."""
@@ -61,6 +61,7 @@ def _make_codex_agent():
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
+        **kwargs,
     )
 
 
@@ -133,6 +134,46 @@ class TestRunConversationCodexPath:
         assert agent.context_compressor.last_completion_tokens == 25
         assert agent.context_compressor.last_total_tokens == 130
         assert agent.context_compressor.context_length == 200000
+
+    def test_native_codex_compaction_updates_bookkeeping(self, monkeypatch):
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-compact-1",
+                thread_id="thread-compact-1",
+                compacted=True,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-compact-1"
+        )
+        events = []
+        agent = _make_codex_agent(event_callback=lambda name, payload: events.append((name, payload)))
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert agent.context_compressor.compression_count == 1
+        assert agent.context_compressor.last_prompt_tokens == -1
+        assert agent.context_compressor.awaiting_real_usage_after_compression is True
+        assert events == [
+            (
+                "session:compress",
+                {
+                    "platform": "",
+                    "session_id": agent.session_id,
+                    "old_session_id": "",
+                    "in_place": False,
+                    "compression_count": 1,
+                    "runtime": "codex_app_server",
+                    "thread_id": "thread-compact-1",
+                    "turn_id": "turn-compact-1",
+                },
+            )
+        ]
 
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()
@@ -292,6 +333,169 @@ class TestRunConversationCodexPath:
         ):
             agent.run_conversation("hi")
         assert not client_mock.chat.completions.create.called
+
+    def test_gateway_terminal_cwd_seeds_codex_thread_cwd(self, monkeypatch, tmp_path):
+        """Gateway sessions set TERMINAL_CWD without stamping agent.session_cwd.
+        Codex app-server must still start in that configured workspace instead
+        of falling back to the Hermes daemon process cwd."""
+        from agent.transports.codex_app_server_session import (
+            CodexAppServerSession, TurnResult,
+        )
+
+        captured: dict[str, str] = {}
+
+        def fake_init(self, **kwargs):
+            captured["cwd"] = kwargs["cwd"]
+            self._thread_id = "thread-stub-1"
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                turn_id="turn-stub-1",
+                thread_id="thread-stub-1",
+            )
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        assert not hasattr(agent, "session_cwd")
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+
+        assert captured["cwd"] == str(tmp_path)
+
+    def _capture_routing_agent(self, monkeypatch):
+        """Build a codex agent with a CodexAppServerSession stub that captures
+        the request_routing passed at construction time, so we can assert how
+        the gateway-context approval routing was resolved."""
+        captured: dict = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+            self._thread_id = "thread-stub-1"
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                turn_id="turn-stub-1",
+                thread_id="thread-stub-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-stub-1"
+        )
+        return captured
+
+    def test_approvals_mode_off_auto_approves_codex_server_requests(
+        self, monkeypatch
+    ):
+        """When the user disables Hermes approvals, codex app-server approval
+        requests should not fail closed just because no interactive callback is
+        wired (the typical gateway path). Codex's own sandbox permission
+        profile remains the filesystem boundary."""
+        captured = self._capture_routing_agent(monkeypatch)
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"approvals": {"mode": "off"}},
+        ):
+            agent = _make_codex_agent()
+            with patch.object(
+                agent, "_spawn_background_review", return_value=None
+            ):
+                agent.run_conversation("write something")
+        routing = captured["request_routing"]
+        assert routing.auto_approve_exec is True
+        assert routing.auto_approve_apply_patch is True
+
+    def test_yaml_boolean_false_approval_mode_also_auto_approves(
+        self, monkeypatch
+    ):
+        """YAML 1.1 parses unquoted `off` as False; match the normal approval
+        subsystem's compatibility behavior for codex app-server routing too."""
+        captured = self._capture_routing_agent(monkeypatch)
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"approvals": {"mode": False}},
+        ):
+            agent = _make_codex_agent()
+            with patch.object(
+                agent, "_spawn_background_review", return_value=None
+            ):
+                agent.run_conversation("write something")
+        routing = captured["request_routing"]
+        assert routing.auto_approve_exec is True
+        assert routing.auto_approve_apply_patch is True
+
+    def test_manual_approvals_keep_codex_server_requests_fail_closed(
+        self, monkeypatch
+    ):
+        """Default (manual) approvals must preserve the fail-closed behavior —
+        this fix is a no-op for users who haven't opted out."""
+        captured = self._capture_routing_agent(monkeypatch)
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"approvals": {"mode": "manual"}},
+        ):
+            agent = _make_codex_agent()
+            with patch.object(
+                agent, "_spawn_background_review", return_value=None
+            ):
+                agent.run_conversation("write something")
+        routing = captured["request_routing"]
+        assert routing.auto_approve_exec is False
+        assert routing.auto_approve_apply_patch is False
+
+    def test_frozen_yolo_env_auto_approves_codex_server_requests(
+        self, monkeypatch
+    ):
+        """--yolo / HERMES_YOLO_MODE (frozen into _YOLO_MODE_FROZEN at import
+        time — a prompt-injection-safe process-scoped bypass) should flow
+        through to codex app-server routing so gateway/cron contexts do not
+        fail closed when the user launched with yolo mode."""
+        import tools.approval as _approval
+
+        captured = self._capture_routing_agent(monkeypatch)
+        monkeypatch.setattr(_approval, "_YOLO_MODE_FROZEN", True)
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"approvals": {"mode": "manual"}},
+        ):
+            agent = _make_codex_agent()
+            with patch.object(
+                agent, "_spawn_background_review", return_value=None
+            ):
+                agent.run_conversation("write something")
+        routing = captured["request_routing"]
+        assert routing.auto_approve_exec is True
+        assert routing.auto_approve_apply_patch is True
+
+    def test_session_yolo_auto_approves_codex_server_requests(
+        self, monkeypatch
+    ):
+        """The /yolo session toggle should be honored at Codex session creation
+        time, independent of the startup-time approvals config."""
+        captured = self._capture_routing_agent(monkeypatch)
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"approvals": {"mode": "manual"}},
+        ):
+            agent = _make_codex_agent()
+            with patch(
+                "tools.approval.is_current_session_yolo_enabled",
+                return_value=True,
+            ), patch.object(
+                agent, "_spawn_background_review", return_value=None
+            ):
+                agent.run_conversation("write something")
+        routing = captured["request_routing"]
+        assert routing.auto_approve_exec is True
+        assert routing.auto_approve_apply_patch is True
 
 
 class TestReviewForkApiModeDowngrade:
@@ -477,3 +681,82 @@ class TestSessionRetirementOnRunAgent:
         assert agent._codex_session is None
         assert result["completed"] is False
         assert "codex segfaulted" in result["error"]
+
+
+class TestCodexToolProgressBridge:
+    """#38835: Codex app-server item/started notifications must surface as
+    Hermes tool-progress so gateways show verbose breadcrumbs on this route."""
+
+    def test_mapper_command_execution(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+        note = {"method": "item/started", "params": {"item": {
+            "type": "commandExecution", "command": "ls -la", "cwd": "/tmp"}}}
+        name, preview, args = _codex_note_to_tool_progress(note)
+        assert name == "exec_command"
+        assert preview == "ls -la"
+        assert args == {"command": "ls -la", "cwd": "/tmp"}
+
+    def test_mapper_file_change(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+        note = {"method": "item/started", "params": {"item": {
+            "type": "fileChange",
+            "changes": [{"path": "a.py"}, {"path": "b.py"}]}}}
+        name, preview, args = _codex_note_to_tool_progress(note)
+        assert name == "apply_patch"
+        assert preview == "a.py, b.py"
+
+    def test_mapper_mcp_and_dynamic_tool_calls(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+        mcp = {"method": "item/started", "params": {"item": {
+            "type": "mcpToolCall", "server": "fs", "tool": "read", "arguments": {"p": 1}}}}
+        name, preview, args = _codex_note_to_tool_progress(mcp)
+        assert name == "mcp.fs.read"
+        assert preview == "read"
+        assert args == {"p": 1}
+
+        dyn = {"method": "item/started", "params": {"item": {
+            "type": "dynamicToolCall", "tool": "web_search", "arguments": {"q": "x"}}}}
+        assert _codex_note_to_tool_progress(dyn)[0] == "web_search"
+
+    def test_mapper_ignores_non_tool_items_and_other_methods(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+        # agentMessage / reasoning items are not tool-shaped
+        assert _codex_note_to_tool_progress({"method": "item/started", "params": {
+            "item": {"type": "agentMessage", "text": "hi"}}}) is None
+        # non-item/started methods
+        assert _codex_note_to_tool_progress({"method": "item/completed", "params": {}}) is None
+        assert _codex_note_to_tool_progress({}) is None
+
+    def test_session_wired_with_on_event_that_fires_tool_progress(self, monkeypatch):
+        """The session is constructed with an on_event hook that, when fed an
+        item/started note, calls the agent's tool_progress_callback."""
+        captured_init = {}
+        events = []
+
+        def fake_init(self, **kwargs):
+            captured_init.update(kwargs)
+            # minimal attrs so the rest of run_turn stubs work
+            self._client = None
+
+        def fake_run_turn(self, user_input, **kwargs):
+            # Exercise the wired on_event hook with a real item/started note.
+            on_event = captured_init.get("on_event")
+            if on_event:
+                on_event({"method": "item/started", "params": {"item": {
+                    "type": "commandExecution", "command": "pytest", "cwd": "/repo"}}})
+            return TurnResult(final_text="done", projected_messages=[
+                {"role": "assistant", "content": "done"}], turn_id="t1", thread_id="th1")
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "th1")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        agent.tool_progress_callback = lambda kind, name, preview, args: events.append(
+            (kind, name, preview))
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("run the tests")
+
+        assert "on_event" in captured_init and captured_init["on_event"] is not None
+        assert ("tool.started", "exec_command", "pytest") in events
+

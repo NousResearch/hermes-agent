@@ -20,8 +20,6 @@ def test_timeout_transport_failure_waits_one_retry_before_fallback():
             FailoverReason.timeout,
             retry_count=1,
             credential_pool=_recoverable_rate_limit_pool(),
-            provider="openrouter",
-            base_url="https://openrouter.ai/api/v1",
         )
         is False
     )
@@ -33,8 +31,6 @@ def test_timeout_transport_failure_fallback_after_retry_threshold_even_if_pool_c
             FailoverReason.timeout,
             retry_count=2,
             credential_pool=_recoverable_rate_limit_pool(),
-            provider="openrouter",
-            base_url="https://openrouter.ai/api/v1",
         )
         is True
     )
@@ -46,8 +42,6 @@ def test_overloaded_transport_failure_fallback_after_retry_threshold_even_if_poo
             FailoverReason.overloaded,
             retry_count=2,
             credential_pool=_recoverable_rate_limit_pool(),
-            provider="openrouter",
-            base_url="https://openrouter.ai/api/v1",
         )
         is True
     )
@@ -59,8 +53,6 @@ def test_rate_limit_fallback_still_respects_recoverable_credential_pool():
             FailoverReason.rate_limit,
             retry_count=1,
             credential_pool=_recoverable_rate_limit_pool(),
-            provider="openrouter",
-            base_url="https://openrouter.ai/api/v1",
         )
         is False
     )

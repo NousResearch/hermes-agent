@@ -1098,7 +1098,11 @@ def _compress_context_via_codex_app_server(
             approx_tokens=approx_tokens,
             force=True,
         )
-        if getattr(result, "token_usage_last", None):
+        # An empty usage report must consume the pending post-compaction verdict
+        # rather than leaving preflight deferral armed until some unrelated later
+        # Codex turn supplies usage. Minimal external test engines may not expose
+        # the ContextEngine update hook; preserve their existing bookkeeping.
+        if hasattr(agent.context_compressor, "update_from_response"):
             _record_codex_app_server_usage(agent, result)
     except Exception:
         logger.debug("codex compaction bookkeeping failed", exc_info=True)

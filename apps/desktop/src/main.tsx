@@ -21,8 +21,32 @@ if (import.meta.env.MODE !== 'production') {
   import('./app/chat/perf-probe')
 }
 
-if (new URLSearchParams(window.location.search).get('win') === 'overlay') {
+const windowKind = new URLSearchParams(window.location.search).get('win')
+
+document.documentElement.dataset.windowKind = windowKind ?? 'app'
+document.body.dataset.windowKind = windowKind ?? 'app'
+
+if (windowKind === 'menu-bar-companion') {
+  document.documentElement.style.backgroundColor = 'transparent'
+  document.body.style.backgroundColor = 'transparent'
+}
+
+// Helper windows ride this same bundle but mount small surfaces instead of the
+// full app. Branch before app-shell work so they stay cheap.
+if (windowKind === 'overlay') {
   void import('./app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
+} else if (windowKind === 'menu-bar-companion') {
+  void import('./app/menu-bar-companion/shell').then(({ MenuBarCompanionShell }) => {
+    createRoot(document.getElementById('root')!).render(
+      <StrictMode>
+        <ErrorBoundary label="menu-bar-companion-root">
+          <ThemeProvider>
+            <MenuBarCompanionShell />
+          </ThemeProvider>
+        </ErrorBoundary>
+      </StrictMode>
+    )
+  })
 } else {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

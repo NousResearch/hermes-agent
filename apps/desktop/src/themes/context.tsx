@@ -14,6 +14,7 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 
 import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
+import { broadcastDesktopStateChange, onDesktopStateSync } from '@/lib/desktop-state-sync'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
@@ -349,6 +350,23 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setModeState(modePref.resolve(profileKey))
   }, [profileKey])
 
+  useEffect(
+    () =>
+      onDesktopStateSync(message => {
+        if (
+          message.type !== 'changed' ||
+          message.domain !== 'appearance' ||
+          normalizeProfileKey(message.profile) !== profileKey
+        ) {
+          return
+        }
+
+        setThemeNameState(skinPref.resolve(profileKey))
+        setModeState(modePref.resolve(profileKey))
+      }),
+    [profileKey]
+  )
+
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
   const resolvedMode = resolveMode(mode, systemDark)
   const activeTheme = useMemo(() => deriveTheme(themeName, resolvedMode), [themeName, resolvedMode])
@@ -368,13 +386,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setTheme = useCallback((name: string) => {
     const next = normalizeSkin(name)
+    const profile = liveProfile()
     setThemeNameState(next)
-    skinPref.assign(liveProfile(), next)
+    skinPref.assign(profile, next)
+    broadcastDesktopStateChange('appearance', { profile })
   }, [])
 
   const setMode = useCallback((next: ThemeMode) => {
+    const profile = liveProfile()
     setModeState(next)
-    modePref.assign(liveProfile(), next)
+    modePref.assign(profile, next)
+    broadcastDesktopStateChange('appearance', { profile })
   }, [])
 
   // The light/dark toggle (Shift+X by default) is owned by the keybind runtime

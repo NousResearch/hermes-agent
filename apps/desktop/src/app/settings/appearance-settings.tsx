@@ -5,7 +5,9 @@ import { useEffect, useState } from 'react'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Switch } from '@/components/ui/switch'
 import type { DesktopMarketplaceSearchItem } from '@/global'
+import { useMenuBarCompanion } from '@/hooks/use-menu-bar-companion'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
@@ -14,6 +16,7 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
+import { $menuBarTransparency, setMenuBarTransparency } from '@/store/menu-bar-transparency'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
@@ -250,10 +253,18 @@ export function AppearanceSettings() {
   const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
   const backdrop = useStore($backdrop)
+  const menuBarTransparency = useStore($menuBarTransparency)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
+
+  const { enabled: menuBarCompanionEnabled, setEnabled: setMenuBarCompanionEnabled } = useMenuBarCompanion()
+
+  const toggleMenuBarCompanion = (enabled: boolean) => {
+    triggerHaptic('selection')
+    void setMenuBarCompanionEnabled(enabled).catch(() => undefined)
+  }
 
   const [query, setQuery] = useState('')
 
@@ -455,6 +466,32 @@ export function AppearanceSettings() {
 
           <ListRow
             action={
+              <div className="flex items-center gap-3">
+                <input
+                  aria-label={a.menuBarTransparencyTitle}
+                  className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
+                  max={100}
+                  min={0}
+                  onChange={event => {
+                    triggerHaptic('selection')
+                    setMenuBarTransparency(Number(event.target.value))
+                  }}
+                  step={5}
+                  style={{ accentColor: 'var(--dt-primary)' }}
+                  type="range"
+                  value={menuBarTransparency}
+                />
+                <span className="w-9 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+                  {menuBarTransparency}%
+                </span>
+              </div>
+            }
+            description={a.menuBarTransparencyDesc}
+            title={a.menuBarTransparencyTitle}
+          />
+
+          <ListRow
+            action={
               <SegmentedControl
                 onChange={id => {
                   triggerHaptic('selection')
@@ -513,6 +550,18 @@ export function AppearanceSettings() {
             }
             description={a.embedsDesc}
             title={a.embedsTitle}
+          />
+
+          <ListRow
+            action={
+              <Switch
+                aria-label={a.menuBarCompanionTitle}
+                checked={menuBarCompanionEnabled}
+                onCheckedChange={toggleMenuBarCompanion}
+              />
+            }
+            description={a.menuBarCompanionDesc}
+            title={a.menuBarCompanionTitle}
           />
         </div>
       </div>

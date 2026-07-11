@@ -164,6 +164,10 @@ test('pet overlay opts out of zoom', () => {
   assert.deepEqual(zoomWiringForWindowKind('petOverlay'), { zoom: false })
 })
 
+test('menu bar companion opts out of zoom', () => {
+  assert.deepEqual(zoomWiringForWindowKind('menuBarCompanion'), { zoom: false })
+})
+
 test('unknown window kinds default to chat (zoom enabled)', () => {
   assert.deepEqual(zoomWiringForWindowKind('unknown'), { zoom: true })
   assert.deepEqual(zoomWiringForWindowKind(undefined), { zoom: true })

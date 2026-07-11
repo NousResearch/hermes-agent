@@ -412,8 +412,10 @@ export const en: Translations = {
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
-      translucencyTitle: 'Window Translucency',
-      translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
+      translucencyTitle: 'Desktop Window Transparency',
+      translucencyDesc: 'Adjust how much of your desktop shows through the main Hermes window. macOS and Windows only.',
+      menuBarTransparencyTitle: 'Menu Bar Window Transparency',
+      menuBarTransparencyDesc: 'Adjust the menu-bar glass surface without dimming its text and controls.',
       backdropTitle: 'Chat Backdrop',
       backdropDesc: 'The faint statue image behind the conversation.',
       embedsTitle: 'Inline Embeds',
@@ -422,6 +424,9 @@ export const en: Translations = {
       embedsAsk: 'Ask',
       embedsAlways: 'Always',
       embedsOff: 'Off',
+      menuBarCompanionTitle: 'Menu Bar Companion',
+      menuBarCompanionDesc:
+        'Show the macOS menu-bar companion for slash commands, quick settings, and ecosystem links.',
       embedsReset: (count: number) => `Reset ${count} allowed ${count === 1 ? 'service' : 'services'}`,
       product: 'Product',
       productDesc: 'Human-friendly tool activity with concise summaries.',

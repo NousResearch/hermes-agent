@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openNewSessionWindow: () => ipcRenderer.invoke('hermes:window:openNewSession'),
+  focusMainWindow: () => ipcRenderer.invoke('hermes:window:focusMain'),
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
     // `{ bounds, screen }`; resolves with the screen bounds it actually used.
@@ -87,7 +88,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   settings: {
     getDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:get'),
     setDefaultProjectDir: dir => ipcRenderer.invoke('hermes:setting:defaultProjectDir:set', dir),
-    pickDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:pick')
+    pickDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:pick'),
+    getMenuBarCompanionEnabled: () => ipcRenderer.invoke('hermes:setting:menuBarCompanion:get'),
+    setMenuBarCompanionEnabled: enabled => ipcRenderer.invoke('hermes:setting:menuBarCompanion:set', enabled)
   },
   zoom: {
     // Current zoom of this window, as { level, percent }.

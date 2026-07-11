@@ -98,6 +98,7 @@ export function installZoomReassertOnWindowEvents(win, reassert, platform = proc
  */
 export const ZOOM_WINDOW_CONFIG = {
   chat: { zoom: true },
+  menuBarCompanion: { zoom: false },
   petOverlay: { zoom: false }
 } as const
 

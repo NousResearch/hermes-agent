@@ -25,7 +25,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 import nodePty from 'node-pty'
 
@@ -502,6 +503,7 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
+const DESKTOP_MENU_BAR_COMPANION_CONFIG_PATH = path.join(app.getPath('userData'), 'menu-bar-companion.json')
 // active-profile.json records which Hermes profile the desktop launches its
 // local backend as. When set, startHermes() passes `hermes --profile <name>
 // dashboard …`, which deterministically pins HERMES_HOME (see
@@ -658,6 +660,15 @@ function applyWindowTranslucency(win) {
   }
 
   try {
+    // The companion paints its own fixed dark glass surface. Applying the
+    // Desktop opacity slider here would dim its text and make the carefully
+    // tuned menu-bar transparency vary with an unrelated main-window setting.
+    if (win === menuBarCompanionWindow) {
+      win.setOpacity(1)
+
+      return
+    }
+
     win.setOpacity(windowOpacity())
   } catch (error) {
     rememberLog(`[translucency] apply failed: ${error.message}`)
@@ -4895,6 +4906,14 @@ function installPreviewShortcut(window) {
 // process owns setZoomLevel, so we mirror each change into localStorage and
 // read it back on did-finish-load to re-apply after reloads or crash recovery.
 import {
+  DEFAULT_MENU_BAR_COMPANION_ENABLED,
+  menuBarCompanionEnabledFromConfig
+} from './menu-bar-companion-prefs'
+import {
+  buildMenuBarCompanionWindowUrl,
+  positionMenuBarCompanionWindowBounds
+} from './menu-bar-companion-window'
+import {
   applyZoomLevel,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
@@ -4914,6 +4933,20 @@ function setAndPersistZoomLevel(window, zoomLevel) {
 
   // Primary store: main-process JSON (survives crash recovery — #56726).
   writeZoomState(next)
+
+  // Keep the companion's desktop scale control in sync with main-window zoom.
+  if (
+    window === mainWindow &&
+    menuBarCompanionWindow &&
+    !menuBarCompanionWindow.isDestroyed() &&
+    !menuBarCompanionWindow.webContents.isDestroyed()
+  ) {
+    menuBarCompanionWindow.webContents.send('hermes:zoom:changed', {
+      level: next,
+      percent: zoomLevelToPercent(next)
+    })
+  }
+
   // Secondary mirror: renderer localStorage (legacy store; kept in sync so a
   // downgrade or JSON read failure still finds a sane value).
   window.webContents
@@ -7456,6 +7489,218 @@ function closePetOverlay() {
   petOverlayWindow = null
 }
 
+// ─── Menu Bar Companion (macOS tray control seal) ───────────────────────────
+const MENU_BAR_COMPANION_WINDOW_SIZE = { width: 420, height: 740 }
+let menuBarCompanionTray: Tray | null = null
+let menuBarCompanionWindow: BrowserWindow | null = null
+
+function readMenuBarCompanionEnabled() {
+  try {
+    return menuBarCompanionEnabledFromConfig(
+      JSON.parse(fs.readFileSync(DESKTOP_MENU_BAR_COMPANION_CONFIG_PATH, 'utf8'))
+    )
+  } catch {
+    return DEFAULT_MENU_BAR_COMPANION_ENABLED
+  }
+}
+
+function writeMenuBarCompanionEnabled(enabled: unknown) {
+  const next = enabled !== false
+  fs.mkdirSync(path.dirname(DESKTOP_MENU_BAR_COMPANION_CONFIG_PATH), { recursive: true })
+  writeFileAtomic(DESKTOP_MENU_BAR_COMPANION_CONFIG_PATH, JSON.stringify({ enabled: next }, null, 2))
+
+  return next
+}
+
+function menuBarCompanionWindowUrl() {
+  return buildMenuBarCompanionWindowUrl({
+    devServer: DEV_SERVER,
+    rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+  })
+}
+
+function menuBarCompanionTrayImage() {
+  const candidates = [
+    path.join(APP_ROOT, 'public', 'nous-girl-template.png'),
+    path.join(APP_ROOT, 'dist', 'nous-girl-template.png'),
+    process.resourcesPath ? path.join(process.resourcesPath, 'public', 'nous-girl-template.png') : '',
+    path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
+    path.join(APP_ROOT, 'dist', 'apple-touch-icon.png')
+  ].filter(Boolean)
+
+  for (const iconPath of candidates) {
+    try {
+      if (!fs.existsSync(iconPath)) {
+        continue
+      }
+
+      const image = nativeImage.createFromPath(iconPath).resize({ height: 18, width: 18 })
+      image.setTemplateImage(true)
+
+      return image
+    } catch {
+      // try next
+    }
+  }
+
+  return nativeImage.createEmpty()
+}
+
+function positionMenuBarCompanionWindow() {
+  if (!menuBarCompanionTray || !menuBarCompanionWindow || menuBarCompanionWindow.isDestroyed()) {
+    return
+  }
+
+  const trayBounds = menuBarCompanionTray.getBounds()
+
+  const display = screen.getDisplayNearestPoint({
+    x: Math.round(trayBounds.x + trayBounds.width / 2),
+    y: Math.round(trayBounds.y + trayBounds.height / 2)
+  })
+
+  menuBarCompanionWindow.setBounds(
+    positionMenuBarCompanionWindowBounds({
+      displayBounds: display.bounds,
+      trayBounds,
+      windowSize: MENU_BAR_COMPANION_WINDOW_SIZE
+    })
+  )
+}
+
+function createMenuBarCompanionWindow() {
+  if (menuBarCompanionWindow && !menuBarCompanionWindow.isDestroyed()) {
+    return menuBarCompanionWindow
+  }
+
+  const win = new BrowserWindow({
+    ...MENU_BAR_COMPANION_WINDOW_SIZE,
+    alwaysOnTop: true,
+    backgroundColor: '#00000000',
+    frame: false,
+    fullscreenable: false,
+    hasShadow: true,
+    hiddenInMissionControl: IS_MAC,
+    maximizable: false,
+    minimizable: false,
+    movable: false,
+    resizable: false,
+    show: false,
+    skipTaskbar: true,
+    title: 'Hermes Menu Bar Companion',
+    transparent: true,
+    type: IS_MAC ? 'panel' : undefined,
+    webPreferences: {
+      preload: PRELOAD_PATH,
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      devTools: !IS_PACKAGED,
+      backgroundThrottling: false
+    }
+  })
+
+  menuBarCompanionWindow = win
+  win.setAlwaysOnTop(true, IS_MAC ? 'pop-up-menu' : 'floating')
+  win.setHiddenInMissionControl?.(true)
+
+  try {
+    win.setVisibleOnAllWorkspaces(
+      true,
+      IS_MAC ? { visibleOnFullScreen: true, skipTransformProcessType: true } : undefined
+    )
+  } catch {
+    // Some Electron/macOS combinations do not support the workspace option.
+  }
+
+  win.on('blur', () => {
+    if (!win.isDestroyed()) {
+      win.hide()
+    }
+  })
+  win.on('closed', () => {
+    if (menuBarCompanionWindow === win) {
+      menuBarCompanionWindow = null
+    }
+  })
+
+  // The compact companion owns a fixed 420x740 layout, but still uses the
+  // standard popup denial, navigation confinement, and context-menu wiring.
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('menuBarCompanion'))
+  win.loadURL(menuBarCompanionWindowUrl())
+
+  return win
+}
+
+function showMenuBarCompanionWindow() {
+  if (!IS_MAC) {
+    return
+  }
+
+  const win = createMenuBarCompanionWindow()
+  positionMenuBarCompanionWindow()
+  win.show()
+  win.focus()
+}
+
+function hideMenuBarCompanionWindow() {
+  if (menuBarCompanionWindow && !menuBarCompanionWindow.isDestroyed()) {
+    menuBarCompanionWindow.hide()
+  }
+}
+
+function toggleMenuBarCompanionWindow() {
+  if (!IS_MAC) {
+    return
+  }
+
+  if (menuBarCompanionWindow && !menuBarCompanionWindow.isDestroyed() && menuBarCompanionWindow.isVisible()) {
+    hideMenuBarCompanionWindow()
+  } else {
+    showMenuBarCompanionWindow()
+  }
+}
+
+function createMenuBarCompanionTray() {
+  if (!IS_MAC || menuBarCompanionTray) {
+    return
+  }
+
+  if (!readMenuBarCompanionEnabled()) {
+    return
+  }
+
+  menuBarCompanionTray = new Tray(menuBarCompanionTrayImage())
+  menuBarCompanionTray.setToolTip('Hermes companion')
+  menuBarCompanionTray.on('click', toggleMenuBarCompanionWindow)
+  menuBarCompanionTray.on('right-click', toggleMenuBarCompanionWindow)
+}
+
+function destroyMenuBarCompanionTray() {
+  if (menuBarCompanionWindow && !menuBarCompanionWindow.isDestroyed()) {
+    menuBarCompanionWindow.destroy()
+  }
+
+  menuBarCompanionWindow = null
+
+  if (menuBarCompanionTray) {
+    menuBarCompanionTray.destroy()
+  }
+
+  menuBarCompanionTray = null
+}
+
+function syncMenuBarCompanionTrayWithPreference() {
+  if (!IS_MAC) {
+    return
+  }
+
+  if (readMenuBarCompanionEnabled()) {
+    createMenuBarCompanionTray()
+  } else {
+    destroyMenuBarCompanionTray()
+  }
+}
+
 function createWindow() {
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
@@ -7730,18 +7975,43 @@ ipcMain.handle('hermes:window:openNewSession', async () => {
 
   return { ok: true }
 })
+ipcMain.handle('hermes:window:focusMain', async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+  } else {
+    focusWindow(mainWindow)
+  }
+
+  return { ok: true }
+})
 
 // --- Text size (zoom) -------------------------------------------------------
 // The settings UI drives the same clamped zoom scale as the Ctrl/Cmd
-// shortcuts and the View menu. Reads and writes target the asking window.
+// shortcuts and the View menu. Companion requests deliberately target the
+// primary Desktop window so its Appearance control never resizes the popover.
+function zoomWindowForEvent(event) {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender)
+
+  if (
+    sourceWindow === menuBarCompanionWindow &&
+    mainWindow &&
+    !mainWindow.isDestroyed() &&
+    !mainWindow.webContents.isDestroyed()
+  ) {
+    return mainWindow
+  }
+
+  return sourceWindow
+}
+
 ipcMain.handle('hermes:zoom:get', event => {
-  const window = BrowserWindow.fromWebContents(event.sender)
+  const window = zoomWindowForEvent(event)
   const level = window && !window.isDestroyed() ? window.webContents.getZoomLevel() : 0
 
   return { level, percent: zoomLevelToPercent(level) }
 })
 ipcMain.on('hermes:zoom:set-percent', (event, percent) => {
-  const window = BrowserWindow.fromWebContents(event.sender)
+  const window = zoomWindowForEvent(event)
 
   if (!window || window.isDestroyed()) {
     return
@@ -8473,6 +8743,18 @@ ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
 // settings mount and seeds the value into the picker; writing back persists
 // it via writeDefaultProjectDir so resolveHermesCwd picks it up on the next
 // session spawn (no app restart needed).
+
+ipcMain.handle('hermes:setting:menuBarCompanion:get', async () => ({
+  enabled: readMenuBarCompanionEnabled()
+}))
+
+ipcMain.handle('hermes:setting:menuBarCompanion:set', async (_event, enabled) => {
+  const next = writeMenuBarCompanionEnabled(enabled)
+  syncMenuBarCompanionTrayWithPreference()
+
+  return { enabled: next }
+})
+
 ipcMain.handle('hermes:setting:defaultProjectDir:get', async () => ({
   dir: readDefaultProjectDir(),
   defaultLabel: app.getPath('home'),
@@ -9458,6 +9740,7 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   createWindow()
+  syncMenuBarCompanionTrayWithPreference()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
@@ -9513,6 +9796,8 @@ app.on('before-quit', () => {
       void 0
     }
   }
+
+  destroyMenuBarCompanionTray()
 
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.

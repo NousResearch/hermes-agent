@@ -330,6 +330,8 @@ export interface Translations {
       uiScaleDesc: (percent: number) => string
       translucencyTitle: string
       translucencyDesc: string
+      menuBarTransparencyTitle: string
+      menuBarTransparencyDesc: string
       backdropTitle: string
       backdropDesc: string
       embedsTitle: string
@@ -337,6 +339,8 @@ export interface Translations {
       embedsAsk: string
       embedsAlways: string
       embedsOff: string
+      menuBarCompanionTitle: string
+      menuBarCompanionDesc: string
       embedsReset: (count: number) => string
       product: string
       productDesc: string

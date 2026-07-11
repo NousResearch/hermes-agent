@@ -25,6 +25,7 @@ declare global {
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
       getGatewayWsUrl: (profile?: null | string) => Promise<string>
+      focusMainWindow: () => Promise<{ ok: boolean }>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens
@@ -97,6 +98,8 @@ declare global {
         getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
+        getMenuBarCompanionEnabled?: () => Promise<{ enabled: boolean }>
+        setMenuBarCompanionEnabled?: (enabled: boolean) => Promise<{ enabled: boolean }>
       }
       zoom?: {
         get: () => Promise<{ level: number; percent: number }>

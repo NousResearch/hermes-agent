@@ -5,6 +5,7 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
 import { PetHeartField } from '@/components/chat/vibe-hearts'
+import { onDesktopStateSync } from '@/lib/desktop-state-sync'
 import { persistString, storedString } from '@/lib/storage'
 import {
   $petAtRest,
@@ -203,10 +204,22 @@ export function FloatingPet() {
 
     void pull()
     const timer = window.setInterval(() => void pull(), active ? PET_ACTIVE_REFRESH_MS : PET_POLL_MS)
+
+    const unsubscribe = onDesktopStateSync(message => {
+      if (
+        message.type === 'changed' &&
+        message.domain === 'pet' &&
+        (!message.profile || message.profile === petProfile())
+      ) {
+        void pull()
+      }
+    })
+
     window.addEventListener('focus', pull)
 
     return () => {
       cancelled = true
+      unsubscribe()
       window.removeEventListener('focus', pull)
       window.clearInterval(timer)
     }

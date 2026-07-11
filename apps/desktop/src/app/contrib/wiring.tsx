@@ -96,6 +96,7 @@ import { UpdatesOverlay } from '../updates-overlay'
 import { ContribWiringContext } from './context'
 import { useBackgroundSync } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
+import { useMenuBarCompanionSync } from './hooks/use-menu-bar-companion-sync'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
@@ -425,6 +426,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // invalidateQueries on swap doesn't touch them).
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const lastGatewayProfileRef = useRef(activeGatewayProfile)
+
+  useMenuBarCompanionSync({ activeGatewayProfile, queryClient, refreshCurrentModel, refreshHermesConfig })
 
   useEffect(() => {
     if (activeGatewayProfile === lastGatewayProfileRef.current) {

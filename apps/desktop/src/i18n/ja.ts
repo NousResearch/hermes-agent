@@ -298,8 +298,10 @@ export const ja = defineLocale({
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
-      translucencyTitle: 'ウィンドウの透過',
-      translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
+      translucencyTitle: 'デスクトップウィンドウの透明度',
+      translucencyDesc: 'Hermes のメインウィンドウからデスクトップが見える透明度を調整します。macOS と Windows のみ。',
+      menuBarTransparencyTitle: 'メニューバーウィンドウの透明度',
+      menuBarTransparencyDesc: '文字やコントロールを暗くせずに、メニューバーのガラス面を調整します。',
       backdropTitle: 'チャット背景',
       backdropDesc: '会話の背後に表示される淡い彫像の画像。',
       embedsTitle: 'インライン埋め込み',
@@ -308,6 +310,9 @@ export const ja = defineLocale({
       embedsAsk: '確認',
       embedsAlways: '常に',
       embedsOff: 'オフ',
+      menuBarCompanionTitle: 'メニューバーコンパニオン',
+      menuBarCompanionDesc:
+        'スラッシュコマンド、クイック設定、エコシステムリンク用のmacOSメニューバーコンパニオンを表示します。',
       embedsReset: (count: number) => `許可した${count}件のサービスをリセット`,
       product: 'プロダクト',
       productDesc: '読みやすいツール活動と簡潔な要約を表示します。',

@@ -12,6 +12,7 @@
 
 import { atom } from 'nanostores'
 
+import { broadcastDesktopStateChange, onDesktopStateSync } from '@/lib/desktop-state-sync'
 import { persistString, storedString } from '@/lib/storage'
 
 const KEY = 'hermes.desktop.translucency.v1'
@@ -27,12 +28,20 @@ const read = (): number => {
 export const $translucency = atom<number>(typeof window === 'undefined' ? 0 : read())
 
 export function setTranslucency(intensity: number): void {
-  $translucency.set(clamp(intensity))
+  const next = clamp(intensity)
+  $translucency.set(next)
+  broadcastDesktopStateChange('translucency', { value: next })
 }
 
 if (typeof window !== 'undefined') {
   $translucency.subscribe(intensity => {
     persistString(KEY, String(intensity))
     window.hermesDesktop?.setTranslucency?.({ intensity })
+  })
+
+  onDesktopStateSync(message => {
+    if (message.type === 'changed' && message.domain === 'translucency' && typeof message.value === 'number') {
+      $translucency.set(clamp(message.value))
+    }
   })
 }

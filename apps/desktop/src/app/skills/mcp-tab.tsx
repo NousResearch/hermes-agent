@@ -458,9 +458,9 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     }
   }
 
-  // Seed the editor draft from config exactly once, the first time it lands.
-  // Background refetches thereafter update the list but must not clobber an
-  // in-progress edit — the draft is the user's until they save or reset.
+  // Seed from config on first load, then keep a clean editor synchronized with
+  // external mutations such as the menu-bar companion. A dirty draft remains
+  // the user's until they save or reset.
   const draftSeeded = useRef(false)
 
   useEffect(() => {
@@ -470,30 +470,24 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
       return
     }
 
+    const nextServers = getServers(config)
+    const nextDraft = wrapDoc(nextServers)
+
     if (!draftSeeded.current) {
       draftSeeded.current = true
-      resetDraft(getServers(config))
+      resetDraft(nextServers)
 
       return
     }
 
-    if (dirty || names.length === 0) {
-      return
+    if (!dirty && draft !== nextDraft) {
+      resetDraft(nextServers)
     }
 
-    // Heal the early-boot race: the first config snapshot can land before the
-    // backend has mcp_servers assembled, seeding (and latching) an empty doc
-    // while later refetches fill the list — saving would then wipe the real
-    // servers. A PRISTINE empty draft reseeds when servers arrive; any user
-    // edit (dirty) still always wins.
-    try {
-      if (Object.keys(parseServersDoc(draft)).length === 0) {
-        resetDraft(servers)
-      }
-    } catch {
-      // Mid-edit / invalid JSON — the user's text wins.
-    }
-  }, [config, dirty, draft, names, profilePending, servers])
+    // Config identity changes on backend refreshes and companion writes. The
+    // current dirty draft is sampled at that moment so an in-progress edit wins.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config, profilePending])
 
   // Bumped on every profile switch. Async probe/auth completions capture the
   // epoch at call time and bail if it changed, so a slow profile-A request can't

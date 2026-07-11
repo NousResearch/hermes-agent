@@ -416,12 +416,23 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    result = agent.run_conversation(prompt)
-    # Shut down memory provider to prevent SIGABRT on interpreter shutdown (#60616)
     try:
-        agent.shutdown_memory_provider()
-    except Exception:
-        pass
+        result = agent.run_conversation(prompt)
+    finally:
+        # Shut down memory provider to prevent SIGABRT on interpreter shutdown (#60616)
+        # Forward the agent's own transcript so memory providers' on_session_end hooks
+        # see the real conversation instead of an empty list (a59a98b).
+        # _session_messages is set on AIAgent.__init__ and refreshed every turn via
+        # _persist_session. Fall back to no-arg on test stubs / partially-initialised
+        # agents where the attribute is missing.
+        try:
+            _session_msgs = getattr(agent, "_session_messages", None)
+            if isinstance(_session_msgs, list):
+                agent.shutdown_memory_provider(_session_msgs)
+            else:
+                agent.shutdown_memory_provider()
+        except Exception:
+            pass
     return (result.get("final_response") or "", result)
 
 

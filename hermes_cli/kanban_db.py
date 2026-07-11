@@ -2376,12 +2376,14 @@ def _claimer_id() -> str:
 # ---------------------------------------------------------------------------
 
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
-    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
+    """Return a normalized, filesystem-safe Kanban assignee."""
     if assignee is None:
         return None
-    from hermes_cli.profiles import normalize_profile_name
+    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
 
-    return normalize_profile_name(assignee)
+    normalized = normalize_profile_name(assignee)
+    validate_profile_name(normalized)
+    return normalized
 
 
 def create_task(

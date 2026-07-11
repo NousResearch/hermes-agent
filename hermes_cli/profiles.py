@@ -377,6 +377,10 @@ def profile_exists(name: str) -> bool:
     canon = normalize_profile_name(name)
     if canon == "default":
         return True
+    try:
+        validate_profile_name(canon)
+    except ValueError:
+        return False
     return get_profile_dir(canon).is_dir()
 
 

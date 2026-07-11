@@ -1068,6 +1068,46 @@ def handle_function_call(
         function_args = {}
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
+    # ── Tool Input Repair Layer ───────────────────────────────────────
+    # Validates and repairs tool arguments when schema validation fails.
+    # This runs ONLY when validation detects problems we can fix.
+    # Valid inputs pass through untouched (no side effects).
+    _args_repaired = False
+    _repair_applied = []
+    try:
+        from agent.tool_input_repair import validate_tool_args, repair_tool_args, append_repair_note
+
+        # Validate against schema
+        validation_errors = validate_tool_args(function_name, function_args)
+        if validation_errors:
+            # Validation failed: attempt repair
+            logger.debug(
+                "handle_function_call: %s validation failed: %s; attempting repair",
+                function_name, validation_errors
+            )
+            repaired_args = repair_tool_args(function_name, function_args, validation_errors)
+
+            # Check if repair fixed the issues
+            new_errors = validate_tool_args(function_name, repaired_args)
+            if not new_errors and repaired_args != function_args:
+                # Repair succeeded: use repaired args and track what changed
+                _args_repaired = True
+                # Track which fields were renamed
+                alias_map = None
+                from agent.tool_input_repair import FIELD_ALIAS_MAP
+                alias_map = FIELD_ALIAS_MAP.get(function_name, {})
+                for alias, canonical in alias_map.items():
+                    if alias in function_args and canonical in repaired_args:
+                        _repair_applied.append(f"{alias} → {canonical}")
+                function_args = repaired_args
+                logger.info(
+                    "handle_function_call: %s args repaired: %s",
+                    function_name, ", ".join(_repair_applied)
+                )
+    except Exception as _repair_err:
+        # Repair layer must never break normal tool dispatch
+        logger.debug("handle_function_call: tool_input_repair error: %s", _repair_err)
+
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
     # inline. tool_call is unwrapped to the underlying tool so that every
@@ -1343,6 +1383,14 @@ def handle_function_call(
                         break
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
+
+        # Append repair note if any repairs were applied
+        if _args_repaired and _repair_applied:
+            try:
+                from agent.tool_input_repair import append_repair_note
+                result = append_repair_note(result, _repair_applied)
+            except Exception as _note_err:
+                logger.debug("handle_function_call: append_repair_note error: %s", _note_err)
 
         return result
 

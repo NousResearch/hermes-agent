@@ -29,7 +29,7 @@ import json
 import logging
 import socket
 import threading
-from typing import Any
+from typing import Any, Optional
 
 from tui_gateway import server
 
@@ -280,8 +280,13 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
-async def handle_ws(ws: Any) -> None:
-    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
+async def handle_ws(ws: Any, pty_user_id: Optional[str] = None) -> None:
+    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``.
+
+    ``pty_user_id`` is trusted connection-scoped identity from the dashboard
+    gateway attach URL. Injected into ``session.create`` so the agent build
+    can pass ``user_id=`` to ``AIAgent`` (#62549).
+    """
     peer = _ws_peer_label(ws)
     transport: WSTransport | None = None
     messages = 0
@@ -384,6 +389,12 @@ async def handle_ws(ws: Any) -> None:
             # response dict, which we write here from the loop.
             req_id = req.get("id") if isinstance(req, dict) else None
             req_method = req.get("method") if isinstance(req, dict) else None
+            if (
+                pty_user_id
+                and req_method == "session.create"
+                and isinstance(req.get("params"), dict)
+            ):
+                req["params"].setdefault("pty_user_id", pty_user_id)
             try:
                 resp = await asyncio.to_thread(server.dispatch, req, transport)
             except Exception:

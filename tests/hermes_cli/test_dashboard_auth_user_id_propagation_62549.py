@@ -5,10 +5,11 @@ Three-hop chain, verified at each boundary:
   Hop 1: ``_ws_auth_reason(ws)`` returns ``(reason, credential, info)`` —
          ``info`` carries the ``{user_id, provider}`` bound to the credential.
   Hop 2: ``_resolve_chat_argv(user_id=...)`` injects that identity into the
-         PTY child's environment as ``HERMES_TUI_USER_ID``.
-  Hop 3: ``tui_gateway.server._make_agent`` reads ``HERMES_TUI_USER_ID`` and
-         passes it into ``AIAgent(user_id=...)`` so memory providers can
-         scope per user.
+         trusted gateway attach URL (``&user_id=``) and, for profile-scoped
+         children, into ``HERMES_TUI_USER_ID``.
+  Hop 3: ``gateway_ws`` / ``handle_ws`` inject ``pty_user_id`` into
+         ``session.create``; ``_make_agent`` prefers that connection-scoped
+         identity (env is only a fallback for profile-scoped children).
 
 The legacy ``?token=`` path and the server-spawned internal credential
 path are also covered because both are exercised today and must keep
@@ -129,7 +130,7 @@ class TestResolveChatArgvInjectsUserIdEnv:
         monkeypatch.setattr(
             hermes_cli.main, "_make_tui_argv", lambda *_a, **_k: (["fake-tui"], "/tmp")
         )
-        monkeypatch.setattr(web_server, "_build_gateway_ws_url", lambda: None)
+        monkeypatch.setattr(web_server, "_build_gateway_ws_url", lambda **_k: None)
         argv, cwd, env = web_server._resolve_chat_argv(user_id="alice@example.com")
         assert env["HERMES_TUI_USER_ID"] == "alice@example.com"
 
@@ -139,7 +140,7 @@ class TestResolveChatArgvInjectsUserIdEnv:
         monkeypatch.setattr(
             hermes_cli.main, "_make_tui_argv", lambda *_a, **_k: (["fake-tui"], "/tmp")
         )
-        monkeypatch.setattr(web_server, "_build_gateway_ws_url", lambda: None)
+        monkeypatch.setattr(web_server, "_build_gateway_ws_url", lambda **_k: None)
         argv, cwd, env = web_server._resolve_chat_argv()
         assert "HERMES_TUI_USER_ID" not in env
 
@@ -152,7 +153,7 @@ class TestResolveChatArgvInjectsUserIdEnv:
         monkeypatch.setattr(
             hermes_cli.main, "_make_tui_argv", lambda *_a, **_k: (["fake-tui"], "/tmp")
         )
-        monkeypatch.setattr(web_server, "_build_gateway_ws_url", lambda: None)
+        monkeypatch.setattr(web_server, "_build_gateway_ws_url", lambda **_k: None)
         argv, cwd, env = web_server._resolve_chat_argv(user_id="alice@example.com")
         assert env["HERMES_TUI_DASHBOARD"] == "1"
         assert env["HERMES_TUI_USER_ID"] == "alice@example.com"
@@ -244,3 +245,39 @@ class TestMakeAgentReadsDashboardUserId:
         finally:
             monkeypatch.delenv("HERMES_TUI_USER_ID", raising=False)
         assert captured.get("user_id") is None
+
+    def test_pty_user_id_kwarg_beats_env(self, stubbed_tgs, monkeypatch):
+        tgs, captured = stubbed_tgs
+        monkeypatch.setenv("HERMES_TUI_USER_ID", "from-env@example.com")
+        try:
+            tgs._make_agent("sid-1", "key-1", pty_user_id="from-conn@example.com")
+        finally:
+            monkeypatch.delenv("HERMES_TUI_USER_ID", raising=False)
+        assert captured.get("user_id") == "from-conn@example.com"
+
+    def test_env_fallback_when_no_pty_user_id(self, stubbed_tgs, monkeypatch):
+        tgs, captured = stubbed_tgs
+        monkeypatch.setenv("HERMES_TUI_USER_ID", "from-env@example.com")
+        try:
+            tgs._make_agent("sid-1", "key-1")
+        finally:
+            monkeypatch.delenv("HERMES_TUI_USER_ID", raising=False)
+        assert captured.get("user_id") == "from-env@example.com"
+
+
+class TestBuildGatewayWsUrlCarriesUserId:
+    def test_user_id_appended_to_query(self, monkeypatch):
+        monkeypatch.setattr(web_server, "_resolve_client_ws_host", lambda: "127.0.0.1")
+        monkeypatch.setattr(web_server.app.state, "bound_port", 9999, raising=False)
+        monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+        url = web_server._build_gateway_ws_url(user_id="alice@example.com")
+        assert url is not None
+        assert "user_id=alice%40example.com" in url or "user_id=alice@example.com" in url
+
+    def test_no_user_id_omits_param(self, monkeypatch):
+        monkeypatch.setattr(web_server, "_resolve_client_ws_host", lambda: "127.0.0.1")
+        monkeypatch.setattr(web_server.app.state, "bound_port", 9999, raising=False)
+        monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+        url = web_server._build_gateway_ws_url()
+        assert url is not None
+        assert "user_id=" not in url

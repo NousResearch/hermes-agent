@@ -1379,6 +1379,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
                         kw["reasoning_config_override"] = reasoning
                     if (tier := current.get("create_service_tier_override")) is not None:
                         kw["service_tier_override"] = tier
+                    if uid := current.get("pty_user_id"):
+                        kw["pty_user_id"] = uid
                 agent = _make_agent(sid, key, **kw)
             finally:
                 _clear_session_context(tokens)
@@ -4481,23 +4483,20 @@ def _make_agent(
     reasoning_config_override: dict | None = None,
     service_tier_override: str | None = None,
     platform_override: str | None = None,
+    pty_user_id: str | None = None,
 ):
     from run_agent import AIAgent
 
-    # Read the dashboard-authenticated user identity injected by the parent's
-    # PTY spawn (``HERMES_TUI_USER_ID``). When present, thread it into
-    # ``AIAgent(user_id=...)`` so the agent's memory-provider init in
-    # ``agent_init.py`` (line ~1387) passes ``user_id`` into
-    # ``initialize_all(**_init_kwargs)``. Without this hop the agent is built
-    # with ``user_id=None`` and memory providers silently fall back to the
-    # configured default — mixing every dashboard user's memories under one
-    # identity (#62549).
-    #
-    # Only consumed on the dashboard-spawned path: the classic CLI / TUI
-    # stdio never sets the env var, and non-dashboard gateways (Telegram,
-    # Discord, …) populate ``user_id`` through their own ``Source`` plumbing
-    # (``gateway/run.py`` → ``session.py``), not through this IPC bridge.
-    _tui_dashboard_user_id = os.environ.get("HERMES_TUI_USER_ID") or None
+    # Prefer connection-scoped identity (session.create / gateway attach URL).
+    # Fall back to HERMES_TUI_USER_ID for profile-scoped children that spawn
+    # their own gateway and never hit the dashboard /api/ws path (#62549).
+    _tui_dashboard_user_id = (
+        (str(pty_user_id).strip() or None)
+        if pty_user_id is not None
+        else (os.environ.get("HERMES_TUI_USER_ID") or None)
+    )
+    if _tui_dashboard_user_id == "":
+        _tui_dashboard_user_id = None
 
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell.  The agent snapshots its tool list
@@ -5228,6 +5227,10 @@ def _(rid, params: dict) -> dict:
     # fall back to the profile default service tier rather than forcing normal.
     create_service_tier_override = "priority" if params.get("fast") else None
 
+    # Connection-scoped dashboard identity injected by tui_gateway.ws.handle_ws
+    # from the trusted gateway attach URL (#62549).
+    pty_user_id = str(params.get("pty_user_id") or "").strip() or None
+
     ready = threading.Event()
     now = time.time()
     lease, limit_message = _claim_active_session_slot(
@@ -5261,6 +5264,7 @@ def _(rid, params: dict) -> dict:
             "parent_session_id": parent_session_id,
             "pending_title": title or None,
             "profile_home": str(profile_home) if profile_home is not None else None,
+            "pty_user_id": pty_user_id,
             "running": False,
             "session_key": key,
             "show_reasoning": _load_show_reasoning(),

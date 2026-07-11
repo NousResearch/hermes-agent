@@ -14630,14 +14630,16 @@ def _resolve_chat_argv(
     # attach URL, gatewayClient spawns its own `tui_gateway.entry`, which
     # inherits the profile HERMES_HOME set above.
     if profile_dir is None:
-        if gateway_ws_url := _build_gateway_ws_url():
+        # Carry the ticket identity on the trusted internal gateway URL so the
+        # dashboard-process gateway (_make_agent) can see it. The PTY child
+        # attaches here; env alone is not enough for the unscoped path (#62549).
+        if gateway_ws_url := _build_gateway_ws_url(user_id=user_id):
             env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
 
     if user_id:
-        # Internal IPC bridge between the dashboard process and the spawned
-        # TUI child; never read from operator-facing config.yaml. ``_make_agent``
-        # in ``tui_gateway/server.py`` reads this and threads it into
-        # ``AIAgent(user_id=...)`` so memory providers can scope per user.
+        # Profile-scoped chats spawn their own tui_gateway.entry child and
+        # never attach to the dashboard gateway URL above. Keep the env bridge
+        # for that path so _make_agent still sees the identity.
         env["HERMES_TUI_USER_ID"] = user_id
 
     return list(argv), str(cwd) if cwd else None, env
@@ -14681,7 +14683,7 @@ def _resolve_client_ws_host() -> Optional[str]:
     return host
 
 
-def _build_gateway_ws_url() -> Optional[str]:
+def _build_gateway_ws_url(user_id: Optional[str] = None) -> Optional[str]:
     """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic.
 
     Loopback / ``--insecure``: ``?token=<_SESSION_TOKEN>``.
@@ -14691,6 +14693,11 @@ def _build_gateway_ws_url() -> Optional[str]:
     credential (``?internal=``). It must NOT use a single-use browser ticket:
     the child reads this URL once at startup and reuses it on every reconnect,
     and a 30s-TTL ticket can expire before a slow cold boot even dials.
+
+    ``user_id`` (optional): trusted connection-scoped identity for the
+    dashboard-process gateway. Appended as ``&user_id=`` so ``gateway_ws``
+    can inject it into session.create / _make_agent without relying on the
+    child environment (#62549). Never set for the server-internal identity.
     """
     host = _resolve_client_ws_host()
     port = getattr(app.state, "bound_port", None)
@@ -14707,10 +14714,14 @@ def _build_gateway_ws_url() -> Optional[str]:
     if getattr(app.state, "auth_required", False):
         from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
 
-        qs = urllib.parse.urlencode({"internal": internal_ws_credential()})
+        params = {"internal": internal_ws_credential()}
     else:
-        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
+        params = {"token": _SESSION_TOKEN}
 
+    if user_id:
+        params["user_id"] = user_id
+
+    qs = urllib.parse.urlencode(params)
     return f"ws://{netloc}/api/ws?{qs}"
 
 
@@ -15637,9 +15648,18 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
+    # Trusted connection-scoped identity from _build_gateway_ws_url. The PTY
+    # child re-auths with the process-lifetime internal credential, so the
+    # original ticket identity would otherwise be lost here (#62549).
+    pty_user_id = (ws.query_params.get("user_id") or "").strip() or None
+    if pty_user_id:
+        from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_USER_ID
+        if pty_user_id == INTERNAL_USER_ID:
+            pty_user_id = None
+
     from tui_gateway.ws import handle_ws
 
-    await handle_ws(ws)
+    await handle_ws(ws, pty_user_id=pty_user_id)
 
 
 # ---------------------------------------------------------------------------

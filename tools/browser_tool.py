@@ -4062,6 +4062,19 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{_screenshot_b64}"
 
+        # Proactive aux-LLM pre-flight resize for the non-native path.  Aux
+        # vision providers (Claude Haiku especially) reject payloads over
+        # ~5 MB or 8000px/side with a hard 400.  Full-page screenshots
+        # regularly exceed both — resize BEFORE the first call_llm to
+        # avoid the 3-retry HTTP 400 churn observed in production.
+        # (The native fast-path below does its own embed-cap check.)
+        from tools.vision_tools import (
+            _image_exceeds_dimension as _vt_image_exceeds_dimension,
+            _resize_image_for_vision as _vt_resize_image_for_vision,
+            _AUX_VISION_TARGET_BYTES as _VT_AUX_VISION_TARGET_BYTES,
+            _AUX_VISION_MAX_DIMENSION as _VT_AUX_VISION_MAX_DIMENSION,
+        )
+
         # Fast path: when native image routing is in effect for the active main
         # model, attach the screenshot directly instead of describing it through
         # an auxiliary vision LLM. The model inspects the pixels on its next
@@ -4139,6 +4152,29 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         }
         if vision_model:
             call_kwargs["model"] = vision_model
+
+        # Proactive pre-flight: shrink oversized screenshots BEFORE the first
+        # call_llm.  A 3000x2000 full-page PNG can easily land 6+ MB base64,
+        # and Anthropic aux vision (Claude Haiku) rejects >5 MB with a hard
+        # 400 that burns all retries.  Mirrors vision_analyze_tool.
+        _bv_over_bytes = len(data_url) > _VT_AUX_VISION_TARGET_BYTES
+        _bv_over_dims = _vt_image_exceeds_dimension(
+            screenshot_path, _VT_AUX_VISION_MAX_DIMENSION)
+        if _bv_over_bytes or _bv_over_dims:
+            logger.info(
+                "browser_vision pre-flight: screenshot is %.1f MB / over-dims=%s "
+                "(targets %.1f MB / %dpx); shrinking before first API call...",
+                len(data_url) / (1024 * 1024), _bv_over_dims,
+                _VT_AUX_VISION_TARGET_BYTES / (1024 * 1024),
+                _VT_AUX_VISION_MAX_DIMENSION,
+            )
+            data_url = _vt_resize_image_for_vision(
+                screenshot_path, mime_type="image/png",
+                max_base64_bytes=_VT_AUX_VISION_TARGET_BYTES,
+                max_dimension=_VT_AUX_VISION_MAX_DIMENSION,
+            )
+            call_kwargs["messages"][0]["content"][1]["image_url"]["url"] = data_url
+
         # Try full-size screenshot; on size-related rejection, downscale and retry.
         try:
             response = call_llm(**call_kwargs)

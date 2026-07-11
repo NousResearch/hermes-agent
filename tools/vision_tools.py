@@ -566,8 +566,18 @@ _EMBED_TARGET_BYTES = 4 * 1024 * 1024
 _EMBED_MAX_DIMENSION = 7900
 
 # Target size when auto-resizing on API failure (5 MB).  After a provider
-# rejects an image, we downscale to this target and retry once.
+# rejects an image, we downscale to this target and retry once.  Only used
+# by the reactive retry paths — the proactive paths use _EMBED_TARGET_BYTES.
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
+
+# Aux-LLM byte target — shared by `vision_analyze_tool` and `browser_vision`
+# proactive pre-flight paths.  Set equal to _EMBED_TARGET_BYTES because the
+# same provider constraints apply: aux vision is often Anthropic Claude
+# (Haiku) which enforces the 5 MB per-image ceiling.  Shrinking to 4 MB
+# up front avoids the 3-retry HTTP 400 churn observed in production when
+# oversized screenshots or user-supplied images are sent full-resolution.
+_AUX_VISION_TARGET_BYTES = _EMBED_TARGET_BYTES
+_AUX_VISION_MAX_DIMENSION = _EMBED_MAX_DIMENSION
 
 
 def _is_image_size_error(error: Exception) -> bool:
@@ -1170,15 +1180,38 @@ async def vision_analyze_tool(
             temp_image_path = normalized_path
             should_cleanup = True
 
-        # Convert image to base64 — send at full resolution first.
-        # If the provider rejects it as too large, we auto-resize and retry.
-        # Offloaded to the bounded vision CPU executor so a fan-out of encodes
-        # can't saturate every core and starve the event loop.
+        # Convert image to base64.  Offloaded to the bounded vision CPU executor
+        # so a fan-out of encodes can't saturate every core and starve the event
+        # loop.
         logger.info("Converting image to base64...")
         image_data_url = await _run_encode_on_cpu_executor(
             _image_to_base64_data_url, temp_image_path, mime_type=detected_mime_type)
         data_size_kb = len(image_data_url) / 1024
         logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
+
+        # Proactive aux-LLM pre-flight resize.  Aux vision providers (Claude
+        # Haiku especially) reject payloads over ~5 MB or 8000px/side with a
+        # hard 400 — async_call_llm will burn all retries on unrecoverable
+        # size errors before the reactive shrink below gets a chance.
+        # Mirrors the native fast-path proactive check above.
+        _over_bytes = len(image_data_url) > _AUX_VISION_TARGET_BYTES
+        _over_dims = await _run_encode_on_cpu_executor(
+            _image_exceeds_dimension, temp_image_path, _AUX_VISION_MAX_DIMENSION,
+        )
+        if _over_bytes or _over_dims:
+            logger.info(
+                "Aux-vision pre-flight: image is %.1f MB / over-dims=%s "
+                "(targets %.1f MB / %dpx); shrinking before first API call...",
+                len(image_data_url) / (1024 * 1024), _over_dims,
+                _AUX_VISION_TARGET_BYTES / (1024 * 1024),
+                _AUX_VISION_MAX_DIMENSION,
+            )
+            image_data_url = await _run_encode_on_cpu_executor(
+                _resize_image_for_vision,
+                temp_image_path, mime_type=detected_mime_type,
+                max_base64_bytes=_AUX_VISION_TARGET_BYTES,
+                max_dimension=_AUX_VISION_MAX_DIMENSION,
+            )
 
         # Hard limit (20 MB) — no provider accepts payloads this large.
         if len(image_data_url) > _MAX_BASE64_BYTES:

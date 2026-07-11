@@ -436,40 +436,43 @@ def show_status(args):
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
 
     platforms = {
-        "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
-        "Matrix": ("MATRIX_ACCESS_TOKEN", "MATRIX_HOME_ROOM"),
-        "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
-        "WhatsApp": ("WHATSAPP_ENABLED", None),
-        "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
-        "Slack": ("SLACK_BOT_TOKEN", None),
-        "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
-        "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
-        "DingTalk": ("DINGTALK_CLIENT_ID", None),
-        "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
-        "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
-        "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None),
-        "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
-        "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
-        "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
-        "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
+        "Telegram": (lambda: bool(os.getenv("TELEGRAM_BOT_TOKEN", "")), "TELEGRAM_HOME_CHANNEL"),
+        "Matrix": (
+            lambda: bool(os.getenv("MATRIX_HOMESERVER", ""))
+            and (bool(os.getenv("MATRIX_ACCESS_TOKEN", "")) or bool(os.getenv("MATRIX_PASSWORD", ""))),
+            "MATRIX_HOME_ROOM",
+        ),
+        "Discord": (lambda: bool(os.getenv("DISCORD_BOT_TOKEN", "")), "DISCORD_HOME_CHANNEL"),
+        "WhatsApp": (lambda: bool(os.getenv("WHATSAPP_ENABLED", "")), None),
+        "Signal": (lambda: bool(os.getenv("SIGNAL_HTTP_URL", "")), "SIGNAL_HOME_CHANNEL"),
+        "Slack": (lambda: bool(os.getenv("SLACK_BOT_TOKEN", "")), None),
+        "Email": (lambda: bool(os.getenv("EMAIL_ADDRESS", "")), "EMAIL_HOME_ADDRESS"),
+        "SMS": (lambda: bool(os.getenv("TWILIO_ACCOUNT_SID", "")), "SMS_HOME_CHANNEL"),
+        "DingTalk": (lambda: bool(os.getenv("DINGTALK_CLIENT_ID", "")), None),
+        "Feishu": (lambda: bool(os.getenv("FEISHU_APP_ID", "")), "FEISHU_HOME_CHANNEL"),
+        "WeCom": (lambda: bool(os.getenv("WECOM_BOT_ID", "")), "WECOM_HOME_CHANNEL"),
+        "WeCom Callback": (lambda: bool(os.getenv("WECOM_CALLBACK_CORP_ID", "")), None),
+        "Weixin": (lambda: bool(os.getenv("WEIXIN_ACCOUNT_ID", "")), "WEIXIN_HOME_CHANNEL"),
+        "BlueBubbles": (lambda: bool(os.getenv("BLUEBUBBLES_SERVER_URL", "")), "BLUEBUBBLES_HOME_CHANNEL"),
+        "QQBot": (lambda: bool(os.getenv("QQ_APP_ID", "")), "QQ_HOME_CHANNEL"),
+        "Yuanbao": (lambda: bool(os.getenv("YUANBAO_APP_ID", "")), "YUANBAO_HOME_CHANNEL"),
     }
 
-    for name, (token_var, home_var) in platforms.items():
-        token = os.getenv(token_var, "")
-        has_token = bool(token)
-        
+    for name, (is_configured, home_var) in platforms.items():
+        configured = is_configured()
+
         home_channel = ""
         if home_var:
             home_channel = os.getenv(home_var, "")
         # Back-compat: QQBot home channel was renamed from QQ_HOME_CHANNEL to QQBOT_HOME_CHANNEL
         if not home_channel and home_var == "QQBOT_HOME_CHANNEL":
             home_channel = os.getenv("QQ_HOME_CHANNEL", "")
-        
-        status = "configured" if has_token else "not configured"
+
+        status = "configured" if configured else "not configured"
         if home_channel:
             status += f" (home: {home_channel})"
-        
-        print(f"  {name:<12}  {check_mark(has_token)} {status}")
+
+        print(f"  {name:<12}  {check_mark(configured)} {status}")
 
     # Plugin-registered platforms
     try:

@@ -269,8 +269,8 @@ def _expand_file_reference(
         return f"{ref.raw}: path is not a file", None
     if _is_binary_file(path):
         # A binary file can't be inlined as text, but it IS on disk (the agent's
-        # tools run where this resolves — the local cwd, or the staged copy in a
-        # remote session workspace). Returning a bare "not supported" warning
+        # tools run where this resolves — the local cwd, or the gateway's staged
+        # attachment storage). Returning a bare "not supported" warning
         # with no content was a dead end: the model saw a failure and gave up
         # (told the user the file type wasn't supported). Instead, hand it an
         # actionable block — the path, type, size, and a nudge to use its tools —

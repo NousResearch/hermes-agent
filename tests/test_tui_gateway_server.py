@@ -1933,8 +1933,10 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     assert "post-compression reply" in texts
 
 
-def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
+def test_session_resume_passes_stored_runtime_to_agent(monkeypatch, tmp_path):
     captured = {}
+    hermes_home = tmp_path / "hermes-home"
+    fallback_root = hermes_home / "desktop-attachments" / "remembered"
 
     class FakeDB:
         def get_session(self, target):
@@ -1942,7 +1944,15 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
                 "id": target,
                 "model": "gpt-5.4",
                 "billing_provider": "openai-codex",
-                "model_config": '{"reasoning_config":{"enabled":true,"effort":"high"},"service_tier":"priority","base_url":"https://custom.example/v1","api_mode":"chat_completions"}',
+                "model_config": json.dumps(
+                    {
+                        "reasoning_config": {"enabled": True, "effort": "high"},
+                        "service_tier": "priority",
+                        "base_url": "https://custom.example/v1",
+                        "api_mode": "chat_completions",
+                        "_desktop_attachment_fallback_roots": [str(fallback_root)],
+                    }
+                ),
             }
 
         def reopen_session(self, target):
@@ -1965,13 +1975,17 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         return types.SimpleNamespace(model="gpt-5.4", provider="openai-codex")
 
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model, "provider": agent.provider})
 
-    def fake_init_session(sid, key, agent, history, cols=80, **_kwargs):
+    def fake_init_session(sid, key, agent, history, cols=80, **kwargs):
+        captured["desktop_attachment_fallback_roots"] = kwargs.get(
+            "desktop_attachment_fallback_roots"
+        )
         server._sessions[sid] = {"agent": agent, "session_key": key}
 
     monkeypatch.setattr(server, "_init_session", fake_init_session)
@@ -1993,6 +2007,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert captured["provider_override"] == "openai-codex"
     assert captured["reasoning_config_override"] == {"enabled": True, "effort": "high"}
     assert captured["service_tier_override"] == "priority"
+    assert captured["desktop_attachment_fallback_roots"] == [str(fallback_root)]
     runtime_sid = resp["result"]["session_id"]
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
 
@@ -6563,6 +6578,38 @@ def test_desktop_attachment_fallback_dir_is_session_scoped(monkeypatch, tmp_path
     first_dir = server._desktop_attachment_fallback_dir(first)
     second_dir = server._desktop_attachment_fallback_dir(second)
     assert first_dir != second_dir
+
+
+def test_desktop_attachment_fallback_roots_persist_in_session_metadata(tmp_path):
+    hermes_home = tmp_path / "hermes-home"
+    root = hermes_home / "desktop-attachments" / "remembered"
+    calls = []
+
+    class _DB:
+        def get_session(self, session_key):
+            assert session_key == "session-key"
+            return {"model_config": '{"provider":"openai-codex"}'}
+
+        def update_session_meta(self, session_key, model_config, model):
+            calls.append((session_key, json.loads(model_config), model))
+
+    session = _session(
+        agent=types.SimpleNamespace(_session_db=_DB()),
+        profile_home=str(hermes_home),
+    )
+
+    server._remember_desktop_attachment_fallback_dir(session, root)
+
+    assert calls == [
+        (
+            "session-key",
+            {
+                "provider": "openai-codex",
+                "_desktop_attachment_fallback_roots": [str(root.resolve())],
+            },
+            None,
+        )
+    ]
 
 
 def test_image_attach_appends_local_image(monkeypatch):

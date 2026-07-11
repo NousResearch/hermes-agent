@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any
 
 from plugins.web._common import (
     BaseWebSearchProvider,
@@ -45,32 +45,34 @@ logger = logging.getLogger(__name__)
 _DEFAULT_METHOD = "get"
 
 
-def _searxng_config() -> Dict[str, Any]:
+def _searxng_config() -> dict[str, Any]:
     """Read ``web.searxng`` section from config.yaml. Returns empty dict on miss."""
     try:
         from hermes_cli.config import load_config
 
-        cfg = load_config()
-        return cfg.get("web", {}).get("searxng", {}) or {}
+        cfg = load_config() or {}
+        section = (cfg.get("web") or {}).get("searxng")
     except Exception:
+        logger.debug("searxng: config unavailable", exc_info=True)
         return {}
+    return section if isinstance(section, dict) else {}
 
 
 def _searxng_url() -> str:
     """Resolve the SearXNG URL — config.yaml > .env > process env."""
     try:
-        searxng_cfg = _searxng_config()
-        url = searxng_cfg.get("url", "").strip()
+        url = str(_searxng_config().get("url") or "").strip()
         if url:
             return url
     except Exception:
-        pass
+        logger.debug("searxng: config url unusable", exc_info=True)
 
     try:
         from hermes_cli.config import get_env_value
 
         val = get_env_value("SEARXNG_URL")
     except Exception:
+        logger.debug("searxng: get_env_value unavailable", exc_info=True)
         val = None
 
     if val is None:

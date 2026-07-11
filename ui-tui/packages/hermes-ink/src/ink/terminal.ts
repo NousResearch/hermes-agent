@@ -213,6 +213,11 @@ export function writeDiffToTerminal(
   skipSyncMarkers = false,
   onDrain?: () => void
 ): { bytes: number; backpressure: boolean } {
+  // Suppress output when stdout is not a terminal (e.g., inside a Docker container)
+  if (!terminal.stdout.isTTY) {
+    return { bytes: 0, backpressure: false }
+  }
+
   // No output if there are no patches
   if (diff.length === 0) {
     return { bytes: 0, backpressure: false }

@@ -25,6 +25,7 @@ container as ``http://host.docker.internal:3000``.
 
 from __future__ import annotations
 
+import atexit
 import base64
 import contextvars
 import json
@@ -131,6 +132,7 @@ def _get_instance_pool(camofox_cfg: Dict[str, Any]) -> CamofoxInstancePool:
                     str(camofox_cfg.get("viewer_profile_root") or "~/.camoufox-hermes-thread-viewers")
                 ),
             )
+            atexit.register(_instance_pool.stop_all)
         return _instance_pool
 
 

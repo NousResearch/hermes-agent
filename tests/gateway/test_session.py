@@ -429,6 +429,31 @@ class TestBuildSessionContextPrompt:
         assert '**User:** "Alice"' in prompt
         assert "Multi-user thread" not in prompt
 
+
+    def test_non_thread_group_shows_user_id_when_available(self):
+        """Identity-sensitive lanes need the stable sender ID alongside the
+        display name. The old elif chain dropped the ID whenever a name was
+        present, so group senders (e.g. Feishu) lost their stable id. (#13166)"""
+        config = GatewayConfig(
+            platforms={
+                Platform.FEISHU: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_group",
+            chat_name="Test Group",
+            chat_type="group",
+            user_id="ou_sender_123",
+            user_name="Jc",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**User:** Jc" in prompt
+        assert "**User ID:** ou_sender_123" in prompt
+
+
     def test_shared_non_thread_group_prompt_hides_single_user(self):
         """Shared non-thread group sessions should avoid pinning one user."""
         config = GatewayConfig(

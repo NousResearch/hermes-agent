@@ -13365,7 +13365,10 @@ def _render_distribution_plan(plan) -> None:
                             if key == er.name:
                                 already = True
                                 break
-                    except OSError:
+                    except (OSError, UnicodeDecodeError):
+                        # UnicodeDecodeError is a ValueError, not an OSError, so
+                        # the old guard let a mis-encoded .env abort the whole
+                        # install preview. Skip the pre-check instead.
                         pass
             status = "✓ set" if already else ("needs setting" if er.required else "—")
             line = f"    • {er.name} ({tag}, {status})"

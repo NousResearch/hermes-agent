@@ -5607,8 +5607,65 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
-def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
-    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+def _resolve_parent_worktree_base(
+    conn: sqlite3.Connection, task_id: str
+) -> Optional[str]:
+    """Return a parent's surfaced ``head_sha`` if one exists.
+
+    REQ-034: when a child worktree task is created, branch from the
+    parent's surfaced branch SHA so the child builds on its parent's
+    work. Returns None when there is no done parent with worktree
+    integration facts, or when the parent's head_sha is missing /
+    contains an error. Never raises — failures are swallowed so the
+    claim path is never blocked.
+    """
+    try:
+        parent_rows = conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+            (task_id,),
+        ).fetchall()
+        for row in parent_rows:
+            pid = row["parent_id"]
+            pt = get_task(conn, pid)
+            if not pt or pt.status != "done":
+                continue
+            runs = [r for r in list_runs(conn, pid) if r.outcome == "completed"]
+            runs.sort(key=lambda r: r.started_at, reverse=True)
+            if not runs:
+                continue
+            run = runs[0]
+            if not run.metadata:
+                continue
+            try:
+                meta = json.loads(run.metadata) if isinstance(run.metadata, str) else run.metadata
+            except Exception:
+                continue
+            wt = meta.get("worktree_integration")
+            if not isinstance(wt, dict):
+                continue
+            if "error" in wt:
+                continue
+            head_sha = wt.get("head_sha")
+            if head_sha and isinstance(head_sha, str) and head_sha.strip():
+                return head_sha.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _ensure_git_worktree(
+    repo_root: Path,
+    target: Path,
+    branch_name: str,
+    base_ref: Optional[str] = None,
+) -> None:
+    """Materialize ``target`` as a linked git worktree under ``repo_root``.
+
+    When the branch does not yet exist, ``base_ref`` is used as the
+    starting point.  If omitted (or None), falls back to ``HEAD``.
+    REQ-034: ``base_ref`` is the parent's surfaced ``head_sha`` when
+    available, so child worktrees branch from their parent's work.
+    """
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None:
@@ -5619,9 +5676,10 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     if _git_branch_exists(repo_root, branch_name):
         cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
     else:
+        start = base_ref if base_ref else "HEAD"
         cmd = [
             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
-            str(target), "HEAD",
+            str(target), start,
         ]
     result = subprocess.run(
         cmd,
@@ -5632,13 +5690,33 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     )
     if result.returncode != 0:
         stderr = (result.stderr or result.stdout or "").strip()
+        # REQ-034: if base_ref was provided but is unreachable (e.g.,
+        # parent's branch was garbage-collected), fall back to HEAD.
+        if base_ref and base_ref != "HEAD":
+            fallback_cmd = [
+                "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
+                str(target), "HEAD",
+            ]
+            result = subprocess.run(
+                fallback_cmd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if result.returncode != 0:
+                stderr = (result.stderr or result.stdout or "").strip()
+                raise RuntimeError(
+                    f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
+                )
+            return
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
 
 
 def _resolve_worktree_workspace(
-    task: Task, *, board: Optional[str] = None
+    task: Task, *, board: Optional[str] = None, conn: Optional[sqlite3.Connection] = None
 ) -> tuple[Path, str]:
     """Resolve + materialize a linked git worktree for ``task``.
 
@@ -5649,8 +5727,17 @@ def _resolve_worktree_workspace(
     working directory (which is whatever directory the gateway happened to be
     launched from, e.g. the Hermes checkout). If no anchor is configured
     anywhere, we fail loudly rather than guess.
+
+    REQ-034: when ``conn`` is provided, the worktree is branched from the
+    parent's surfaced ``head_sha`` if one exists, so child cards build on
+    their parent's work. Falls back to ``HEAD`` when no parent facts are
+    available. Never errors the claim path.
     """
     branch_name = (task.branch_name or "").strip() or f"wt/{task.id}"
+    # REQ-034: resolve parent base ref for branching
+    base_ref = None
+    if conn is not None:
+        base_ref = _resolve_parent_worktree_base(conn, task.id)
     if not task.workspace_path:
         # Anchor on the board's configured default_workdir, not Path.cwd().
         # The dispatcher's CWD is incidental (gateway launch dir) and using it
@@ -5677,7 +5764,7 @@ def _resolve_worktree_workspace(
                 f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
             )
         target = repo_root / ".worktrees" / task.id
-        _ensure_git_worktree(repo_root, target, branch_name)
+        _ensure_git_worktree(repo_root, target, branch_name, base_ref=base_ref)
         return target, branch_name
 
     requested = Path(task.workspace_path).expanduser()
@@ -5695,7 +5782,7 @@ def _resolve_worktree_workspace(
     repo_root = _git_toplevel(requested)
     if repo_root is not None and requested_resolved == repo_root:
         target = repo_root / ".worktrees" / task.id
-        _ensure_git_worktree(repo_root, target, branch_name)
+        _ensure_git_worktree(repo_root, target, branch_name, base_ref=base_ref)
         return target, branch_name
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
@@ -5704,11 +5791,13 @@ def _resolve_worktree_workspace(
             f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo "
             "and does not point at a git repo root"
         )
-    _ensure_git_worktree(repo_root, requested, branch_name)
+    _ensure_git_worktree(repo_root, requested, branch_name, base_ref=base_ref)
     return requested, branch_name
 
 
-def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
+def resolve_workspace(
+    task: Task, *, board: Optional[str] = None, conn: Optional[sqlite3.Connection] = None
+) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
     - ``scratch``: a fresh dir under ``<board-root>/workspaces/<id>/``,
@@ -5765,7 +5854,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
-        p, _branch_name = _resolve_worktree_workspace(task, board=board)
+        p, _branch_name = _resolve_worktree_workspace(task, board=board, conn=conn)
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
 
@@ -7482,9 +7571,9 @@ def _dispatch_once_locked(
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board, conn=conn)
             else:
-                workspace = resolve_workspace(claimed, board=board)
+                workspace = resolve_workspace(claimed, board=board, conn=conn)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -7574,9 +7663,9 @@ def _dispatch_once_locked(
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board, conn=conn)
             else:
-                workspace = resolve_workspace(claimed, board=board)
+                workspace = resolve_workspace(claimed, board=board, conn=conn)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",

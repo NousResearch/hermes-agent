@@ -361,7 +361,101 @@ _APPROVAL_AWS_CONFIG_SECRET_RE = re.compile(
     r"(?:aws_access_key_id|aws_secret_access_key|aws_session_token)\s+)"
     r"(?:\"[^\"]*\"|'[^']*'|[^\s]+)"
 )
+_APPROVAL_SECRET_OPTION_NAMES = frozenset(
+    {
+        "--password",
+        "--passwd",
+        "--passphrase",
+        "--token",
+        "--access-token",
+        "--auth-token",
+        "--api-key",
+        "--apikey",
+        "--secret",
+        "--secret-key",
+        "--client-secret",
+        "--credential",
+        "--http-password",
+        "--https-password",
+        "--ftp-password",
+        "--proxy-password",
+        "--user",
+        "-u",
+    }
+)
+_APPROVAL_AWS_SECRET_KEY_RE = re.compile(
+    r"(?i)^(?:profile\.[^.]+\.)?"
+    r"(?:aws_access_key_id|aws_secret_access_key|aws_session_token)$"
+)
 _APPROVAL_PREVIEW_MAX_CHARS = 4096
+
+
+def _redact_shell_equivalent_approval_credentials(text: str) -> str:
+    """Mask credential syntax hidden by valid shell quoting/concatenation."""
+    try:
+        tokens = shlex.split(text, posix=True)
+    except ValueError:
+        return text
+
+    changed = False
+    redact_next = False
+    for index, token in enumerate(tokens):
+        lowered = token.lower()
+        if redact_next:
+            redact_next = False
+            if token != "[REDACTED]":
+                tokens[index] = "[REDACTED]"
+                changed = True
+            continue
+
+        if lowered in _APPROVAL_SECRET_OPTION_NAMES:
+            redact_next = True
+            continue
+        if lowered.startswith("-u") and not lowered.startswith("--") and len(token) > 2:
+            tokens[index] = "-u[REDACTED]"
+            changed = True
+            continue
+
+        matched_option = next(
+            (
+                option
+                for option in _APPROVAL_SECRET_OPTION_NAMES
+                if option.startswith("--") and lowered.startswith(f"{option}=")
+            ),
+            None,
+        )
+        if matched_option is not None:
+            replacement = f"{token[:len(matched_option)]}=[REDACTED]"
+            if token != replacement:
+                tokens[index] = replacement
+                changed = True
+            continue
+
+        if re.match(r"(?i)^(?:https?|wss?)://", token) and "?" in token:
+            prefix, query = token.split("?", 1)
+            query_without_fragment = query.split("#", 1)[0]
+            parts = query_without_fragment.split("&") if query_without_fragment else []
+            already_redacted = bool(parts) and all(
+                part == "[REDACTED]" or part.endswith("=[REDACTED]")
+                for part in parts
+            )
+            if query and not already_redacted:
+                fragment = f"#{query.split('#', 1)[1]}" if "#" in query else ""
+                tokens[index] = f"{prefix}?[REDACTED]{fragment}"
+                changed = True
+
+    for index in range(len(tokens) - 4):
+        if (
+            tokens[index].lower() == "aws"
+            and tokens[index + 1].lower() == "configure"
+            and tokens[index + 2].lower() == "set"
+            and _APPROVAL_AWS_SECRET_KEY_RE.fullmatch(tokens[index + 3])
+            and tokens[index + 4] != "[REDACTED]"
+        ):
+            tokens[index + 4] = "[REDACTED]"
+            changed = True
+
+    return shlex.join(tokens) if changed else text
 
 
 def _redact_approval_command(cmd: "str | None") -> str:
@@ -400,6 +494,7 @@ def _redact_approval_command(cmd: "str | None") -> str:
         lambda match: f"{match.group(1)}[REDACTED]",
         redacted,
     )
+    redacted = _redact_shell_equivalent_approval_credentials(redacted)
     return redacted[:_APPROVAL_PREVIEW_MAX_CHARS]
 
 

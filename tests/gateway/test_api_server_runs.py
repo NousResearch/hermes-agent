@@ -314,6 +314,31 @@ def test_approval_request_event_allowlists_and_redacts_display_fields():
     assert len(event["description"]) <= 1024
     assert len(event["pattern_key"]) <= 256
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl -uuser:{sentinel} https://example.com",
+        "curl '--user' 'user:{sentinel}' https://example.com",
+        "wget '--http-password' '{sentinel}' https://example.com",
+        "deploy --secret-key'='{sentinel}",
+        "aws configure set 'aws_secret_access_key' '{sentinel}'",
+        "aws configure set profile.prod.aws_secret_access_key {sentinel}",
+        "curl 'https://example.com/callback?'\"{sentinel}\"",
+    ],
+)
+def test_approval_request_event_redacts_shell_equivalent_credentials(command):
+    sentinel = "opaque" + "S" * 24
+
+    event = _build_run_approval_request_event(
+        "run_shell_redaction",
+        {
+            "approval_id": "approval_" + "b" * 32,
+            "command": command.format(sentinel=sentinel),
+        },
+    )
+
+    assert sentinel not in json.dumps(event)
+
 
 class TestRunEvents:
     @pytest.mark.asyncio
@@ -461,6 +486,35 @@ class TestRunEvents:
         event = adapter._run_streams[run_id].get_nowait()
         assert event["event"] == "approval.responded"
         assert event["approval_id"] == second.approval_id
+        approval_mod._gateway_queues.pop(run_id, None)
+
+    @pytest.mark.asyncio
+    async def test_approval_status_rechecks_after_concurrent_enqueue(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_status_recheck"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        adapter._run_approval_sessions[run_id] = run_id
+        approval_id = "approval_" + "a" * 32
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch(
+                    "tools.approval.resolve_gateway_approval_by_id",
+                    return_value=1,
+                ),
+                patch(
+                    "tools.approval.has_blocking_approval",
+                    side_effect=[False, True],
+                ) as mock_pending,
+            ):
+                response = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "deny", "approval_id": approval_id},
+                )
+
+        assert response.status == 200
+        assert mock_pending.call_count == 2
+        assert adapter._run_statuses[run_id]["status"] == "waiting_for_approval"
 
     @pytest.mark.asyncio
     async def test_approval_id_errors_never_consume_pending_entry(self, adapter):
@@ -507,6 +561,7 @@ class TestRunEvents:
                 assert approval_mod._gateway_queues[run_id] == [pending]
                 assert pending.result is None
                 assert not pending.event.is_set()
+        approval_mod._gateway_queues.pop(run_id, None)
 
     @pytest.mark.asyncio
     async def test_approval_string_false_does_not_resolve_all(self, adapter):

@@ -101,6 +101,25 @@ class TestRedactApprovalCommand:
 
         assert sentinel not in out
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "curl -uuser:{sentinel} https://example.com",
+            "curl '--user' 'user:{sentinel}' https://example.com",
+            "wget '--http-password' '{sentinel}' https://example.com",
+            "deploy --secret-key'='{sentinel}",
+            "aws configure set 'aws_secret_access_key' '{sentinel}'",
+            "aws configure set profile.prod.aws_secret_access_key {sentinel}",
+            "curl 'https://example.com/callback?'\"{sentinel}\"",
+        ],
+    )
+    def test_redacts_shell_equivalent_credential_forms(self, command):
+        sentinel = "opaque" + "R" * 24
+
+        out = _redact_approval_command(command.format(sentinel=sentinel))
+
+        assert sentinel not in out
+
     def test_bounds_approval_preview(self):
         assert len(_redact_approval_command("x" * 5000)) == 4096
 

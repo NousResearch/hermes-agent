@@ -4698,12 +4698,19 @@ class APIServerAdapter(BasePlatformAdapter):
 
         from tools.approval import has_blocking_approval
 
-        next_status = (
-            "waiting_for_approval"
-            if has_blocking_approval(approval_session_key)
-            else "running"
-        )
+        pending_approval = has_blocking_approval(approval_session_key)
+        next_status = "waiting_for_approval" if pending_approval else "running"
         self._set_run_status(run_id, next_status, last_event="approval.responded")
+        pending_after_write = has_blocking_approval(approval_session_key)
+        if pending_after_write != pending_approval:
+            next_status = (
+                "waiting_for_approval" if pending_after_write else "running"
+            )
+            self._set_run_status(
+                run_id,
+                next_status,
+                last_event="approval.responded",
+            )
         q = self._run_streams.get(run_id)
         if q is not None:
             try:

@@ -26,6 +26,7 @@ import pino from 'pino';
 import path from 'path';
 import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
+import { loadBridgeToken, createBridgeAuthMiddleware } from './bridge_auth.js';
 import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -769,6 +770,12 @@ async function startSocket() {
 // HTTP server
 const app = express();
 app.use(express.json());
+
+// Bearer token authentication — every request to the bridge must present
+// a valid Bearer token loaded from HERMES_WA_BRIDGE_TOKEN or the secrets
+// file. Fails closed if no token is configured.
+const _bridgeToken = loadBridgeToken();
+app.use(createBridgeAuthMiddleware(_bridgeToken));
 
 // Host-header validation — defends against DNS rebinding.
 // The bridge binds loopback-only (127.0.0.1) but a victim browser on

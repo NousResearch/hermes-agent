@@ -409,8 +409,117 @@ async def api_moneyprinter_delete_task(task_id: str):
 
 
 @app.get("/api/capabilities/moneyprinter/{kind}/{file_path:path}")
-async def api_moneyprinter_media(kind: str, file_path: str):
-    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().proxy_media(kind, file_path))
+async def api_moneyprinter_media(request: Request, kind: str, file_path: str):
+    return _fastapi_from_aiohttp_response(await _moneyprinter_adapter().proxy_media(kind, file_path, request))
+
+
+def _video_library_adapter():
+    from capabilities.video_library import adapter as video_library_adapter
+
+    return video_library_adapter
+
+
+@app.get("/api/capabilities/video-library/libraries")
+async def api_video_library_list_libraries():
+    status, payload = await asyncio.to_thread(_video_library_adapter().list_libraries_data)
+    return JSONResponse(payload, status_code=status)
+
+
+@app.post("/api/capabilities/video-library/libraries/{library_id}/scan")
+async def api_video_library_scan_library(library_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    status, payload = await asyncio.to_thread(
+        _video_library_adapter().scan_library_data,
+        library_id,
+        body if isinstance(body, dict) else {},
+    )
+    return JSONResponse(payload, status_code=status)
+
+
+@app.get("/api/capabilities/video-library/libraries/{library_id}/status")
+async def api_video_library_status(library_id: str):
+    status, payload = await asyncio.to_thread(_video_library_adapter().library_status_data, library_id)
+    return JSONResponse(payload, status_code=status)
+
+
+@app.post("/api/capabilities/video-library/assets")
+async def api_video_library_import_asset(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    status, payload = await asyncio.to_thread(
+        _video_library_adapter().import_asset_data,
+        body if isinstance(body, dict) else {},
+    )
+    return JSONResponse(payload, status_code=status)
+
+
+@app.get("/api/capabilities/video-library/assets")
+async def api_video_library_list_assets():
+    status, payload = await asyncio.to_thread(_video_library_adapter().list_assets_data)
+    return JSONResponse(payload, status_code=status)
+
+
+@app.post("/api/capabilities/video-library/assets/{asset_id}/analyze")
+async def api_video_library_analyze_asset(asset_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    status, payload = await asyncio.to_thread(
+        _video_library_adapter().analyze_asset_data,
+        asset_id,
+        body if isinstance(body, dict) else {},
+    )
+    return JSONResponse(payload, status_code=status)
+
+
+@app.get("/api/capabilities/video-library/clips")
+async def api_video_library_list_clips(
+    asset_id: Optional[str] = None,
+    library_id: Optional[str] = None,
+    query: Optional[str] = None,
+    tag: Optional[str] = None,
+):
+    status, payload = await asyncio.to_thread(
+        _video_library_adapter().list_clips_data,
+        asset_id=asset_id,
+        library_id=library_id,
+        query=query,
+        tag=tag,
+    )
+    return JSONResponse(payload, status_code=status)
+
+
+@app.post("/api/capabilities/video-library/clips/{clip_id}/tags")
+async def api_video_library_replace_clip_tags(clip_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    status, payload = await asyncio.to_thread(
+        _video_library_adapter().replace_clip_tags_data,
+        clip_id,
+        body if isinstance(body, dict) else {},
+    )
+    return JSONResponse(payload, status_code=status)
+
+
+@app.post("/api/capabilities/video-library/timelines")
+async def api_video_library_create_timeline(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    status, payload = await asyncio.to_thread(
+        _video_library_adapter().create_timeline_data,
+        body if isinstance(body, dict) else {},
+    )
+    return JSONResponse(payload, status_code=status)
 
 # ---------------------------------------------------------------------------
 # Endpoints that do NOT require the session token.  Everything else under

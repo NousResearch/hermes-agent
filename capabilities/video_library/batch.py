@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .config import VideoLibraryConfig, resolve_source_path
+from .config import VideoLibraryConfig, load_library_configs, resolve_library_config, resolve_source_path
 from .obsidian import ObsidianProjector
 from .semantic import analyze_keyframes
 from .service import VideoLibraryService
@@ -137,3 +137,83 @@ class VideoLibraryBatchRunner:
 
 
 __all__ = ["BatchScanResult", "VideoLibraryBatchRunner"]
+
+
+def build_library_service(library: VideoLibraryConfig) -> VideoLibraryService:
+    store = VideoLibraryStore(
+        root=library.root,
+        db_path=library.database_path,
+        assets_dir=library.metadata_dir / "managed-assets",
+        clips_dir=library.selected_clips_dir,
+        keyframes_dir=library.keyframes_dir,
+    )
+    return VideoLibraryService(store, semantic_analyzer=analyze_keyframes, taxonomy=library.taxonomy)
+
+
+def list_libraries(*, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    if config is None:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    libraries = load_library_configs(config)
+    return {
+        "libraries": [
+            {
+                "id": library.id,
+                "mode": library.mode,
+                "name": library.name,
+                "root": str(library.root),
+                "source_roots": [str(path) for path in library.source_roots],
+                "taxonomy": library.taxonomy,
+            }
+            for library in libraries.values()
+        ]
+    }
+
+
+def scan_library(library_id: str, *, dry_run: bool = False) -> dict[str, Any]:
+    library = resolve_library_config(library_id)
+    return VideoLibraryBatchRunner(library).scan(dry_run=dry_run).to_dict()
+
+
+def library_status(library_id: str) -> dict[str, Any]:
+    library = resolve_library_config(library_id)
+    if not library.database_path.is_file():
+        return {
+            "assets": 0,
+            "clips": 0,
+            "database_exists": False,
+            "library_id": library.id,
+            "root": str(library.root),
+        }
+    service = build_library_service(library)
+    clips = service.store.list_clips()
+    return {
+        "assets": len(service.store.list_assets()),
+        "clips": len(clips),
+        "database_exists": True,
+        "failed": sum(1 for clip in clips if clip.get("status") == "semantic_failed"),
+        "library_id": library.id,
+        "low_confidence": sum(1 for clip in clips if clip.get("status") == "low_confidence"),
+        "root": str(library.root),
+        "unusable": sum(1 for clip in clips if clip.get("status") == "unusable"),
+    }
+
+
+def search_library(library_id: str, query: str, *, tag: str = "", limit: int = 50) -> dict[str, Any]:
+    library = resolve_library_config(library_id)
+    if not library.database_path.is_file():
+        return {"clips": [], "library_id": library.id, "query": query, "total": 0}
+    clips = build_library_service(library).store.search_clips(query, tag=tag or None, limit=limit)
+    return {"clips": clips, "library_id": library.id, "query": query, "total": len(clips)}
+
+
+__all__ = [
+    "BatchScanResult",
+    "VideoLibraryBatchRunner",
+    "build_library_service",
+    "library_status",
+    "list_libraries",
+    "scan_library",
+    "search_library",
+]

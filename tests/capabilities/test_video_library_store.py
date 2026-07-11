@@ -180,3 +180,7 @@ def test_semantic_clip_fields_round_trip(tmp_path):
     assert clip["quality_score"] == 0.91
     assert clip["confidence"] == 0.88
     assert clip["materialized"] is False
+
+    matches = store.search_clips("厨师拉面")
+    assert matches[0]["id"] == clip["id"]
+    assert matches[0]["score"] > 0

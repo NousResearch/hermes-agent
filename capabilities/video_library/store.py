@@ -577,6 +577,37 @@ class VideoLibraryStore:
                 result.append(item)
             return result
 
+    def search_clips(self, query: str, *, tag: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        needle = re.sub(r"\s+", " ", str(query or "")).strip().casefold()
+        if not needle and not tag:
+            return self.list_clips(tag=tag)[: max(1, int(limit))]
+        terms = [term for term in needle.split(" ") if term]
+        ranked: list[dict[str, Any]] = []
+        for clip in self.list_clips(tag=tag):
+            if clip.get("status") == "unusable":
+                continue
+            semantic = clip.get("semantic_json") if isinstance(clip.get("semantic_json"), dict) else {}
+            index = semantic.get("_index") if isinstance(semantic.get("_index"), dict) else {}
+            haystack = " ".join(
+                [
+                    str(clip.get("description") or ""),
+                    str(index.get("search_text") or ""),
+                    " ".join(str(item.get("name") or "") for item in clip.get("tags") or []),
+                ]
+            ).casefold()
+            lexical = 0.0
+            if needle and needle in haystack:
+                lexical += 1.0
+            lexical += sum(0.25 for term in terms if term in haystack)
+            if needle and lexical <= 0:
+                continue
+            score = lexical + (float(clip.get("quality_score") or 0) * 0.2) + (float(clip.get("confidence") or 0) * 0.1)
+            item = dict(clip)
+            item["score"] = round(score, 6)
+            ranked.append(item)
+        ranked.sort(key=lambda item: (-float(item["score"]), -float(item.get("quality_score") or 0), item["id"]))
+        return ranked[: max(1, min(500, int(limit)))]
+
     def create_analysis_job(self, asset_id: str, *, analyzer_version: str) -> dict[str, Any]:
         job_id = f"analysis_{uuid.uuid4().hex}"
         now = _now_ms()

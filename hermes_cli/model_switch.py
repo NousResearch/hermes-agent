@@ -1812,6 +1812,21 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
+        # Local ACP CLIs (copilot-acp / devin-acp): no API key env var — use
+        # the shared external-process status probe (PATH + optional local
+        # credentials file) so Desktop/Accounts + model picker can surface them.
+        if not has_creds and overlay.auth_type == "external_process":
+            try:
+                from hermes_cli.auth import get_external_process_provider_status
+
+                _ext = get_external_process_provider_status(hermes_slug)
+                has_creds = bool(_ext.get("logged_in"))
+            except Exception as exc:
+                logger.debug(
+                    "External process status check failed for %s: %s",
+                    hermes_slug,
+                    exc,
+                )
         if not has_creds:
             continue
 
@@ -1824,6 +1839,11 @@ def list_authenticated_providers(
             # curated list when the live endpoint is unreachable, so this
             # is safe for unauthenticated and offline cases too.
             model_ids = cached_provider_model_ids(hermes_slug)
+        elif overlay.auth_type == "external_process":
+            # ACP backends don't expose a REST /models catalog — use the
+            # curated singleton (e.g. ["devin-acp"]) so the picker has a
+            # selectable row once the local CLI is ready.
+            model_ids = curated.get(hermes_slug, []) or [hermes_slug]
         # For aws_sdk providers (bedrock), use live discovery so the list
         # reflects the active region (eu.*, ap.*) not the static us.* list.
         elif overlay.auth_type == "aws_sdk":

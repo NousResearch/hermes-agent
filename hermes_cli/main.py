@@ -9782,9 +9782,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True,
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
+                # ff-only failed — local and remote have diverged.  If the user
+                # has local commits not present on origin/<branch>, do NOT reset
+                # them away by default. Local operational fixes are often
+                # committed (not merely dirty working-tree edits), and a hard
+                # reset would silently discard them. Use --force as the explicit
+                # escape hatch for the old reset-to-origin behaviour.
+                local_ahead = _count_commits_between(
+                    git_cmd, PROJECT_ROOT, f"origin/{branch}", "HEAD"
+                )
+                if local_ahead > 0 and not getattr(args, "force", False):
+                    print("✗ Fast-forward not possible: local commits would be discarded.")
+                    print(f"  HEAD has {local_ahead} commit(s) not on origin/{branch}.")
+                    print("  Refusing to reset so local fixes are preserved.")
+                    print()
+                    print("  To inspect:")
+                    print(f"    cd {PROJECT_ROOT} && git log --oneline origin/{branch}..HEAD")
+                    print()
+                    print("  To update safely, rebase/cherry-pick these commits onto origin first.")
+                    print("  To intentionally discard them, rerun: hermes update --force")
+                    sys.exit(1)
+
+                # No local commits to preserve, or the user explicitly chose
+                # --force. Reset to match the remote exactly.
                 print(
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )

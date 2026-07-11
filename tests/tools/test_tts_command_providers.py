@@ -217,6 +217,16 @@ class TestConfigGetters:
     def test_voice_compatible_default_off(self):
         assert _is_command_tts_voice_compatible({}) is False
 
+    def test_voice_preference_tri_state(self):
+        from tools.tts_tool import _command_tts_voice_preference
+        # Unset -> None (caller decides by platform).
+        assert _command_tts_voice_preference({}) is None
+        # Explicit values map through.
+        assert _command_tts_voice_preference({"voice_compatible": True}) is True
+        assert _command_tts_voice_preference({"voice_compatible": False}) is False
+        assert _command_tts_voice_preference({"voice_compatible": "yes"}) is True
+        assert _command_tts_voice_preference({"voice_compatible": "off"}) is False
+
 
 # ---------------------------------------------------------------------------
 # _resolve_max_text_length for command providers

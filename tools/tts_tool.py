@@ -635,6 +635,29 @@ def _is_command_tts_voice_compatible(config: Dict[str, Any]) -> bool:
     return bool(value)
 
 
+def _command_tts_voice_preference(config: Dict[str, Any]) -> Optional[bool]:
+    """Return the explicit voice_compatible preference, or None when unset.
+
+    Distinguishes three states so callers can auto-enable voice delivery on
+    platforms that expect it (Telegram) while still honoring an explicit
+    opt-out:
+      * True  — user set ``voice_compatible: true``  (force voice bubble)
+      * False — user set ``voice_compatible: false`` (force document)
+      * None  — key absent (caller decides based on platform)
+    """
+    if "voice_compatible" not in config:
+        return None
+    value = config.get("voice_compatible")
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return None
+    return bool(value)
+
+
 def _shell_quote_context(command_template: str, position: int) -> Optional[str]:
     """Return the shell quote character active right before *position*.
 
@@ -2396,10 +2419,16 @@ def text_to_speech_tool(
         # platform actually needs Opus voice delivery.
         voice_compatible = False
         if command_provider_config is not None:
-            # Command providers are documents by default. Voice-bubble
-            # delivery only kicks in when the user explicitly opts in
-            # via ``voice_compatible: true`` in their provider config.
-            if _is_command_tts_voice_compatible(command_provider_config):
+            # Command providers: deliver as a native voice bubble when the
+            # platform expects one (Telegram wants Opus/OGG), matching what
+            # built-in providers already do via want_opus. An explicit
+            # ``voice_compatible`` in the provider config overrides this:
+            #   true  -> always attempt voice delivery
+            #   false -> always deliver as a document/audio attachment
+            #   unset -> auto: voice on Telegram, document elsewhere
+            _voice_pref = _command_tts_voice_preference(command_provider_config)
+            _deliver_as_voice = _voice_pref if _voice_pref is not None else want_opus
+            if _deliver_as_voice:
                 if not file_str.endswith(".ogg"):
                     opus_path = _convert_to_opus(file_str)
                     if opus_path:

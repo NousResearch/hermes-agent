@@ -219,7 +219,9 @@ source .venv/bin/activate   # or: source venv/bin/activate
 
 `scripts/run_tests.sh` probes `.venv` first, then `venv`, then
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
-main checkout).
+main checkout), and on Windows/Git Bash also checks the managed install venv
+under `%LOCALAPPDATA%\hermes\hermes-agent\venv`. The runner accepts both POSIX
+`bin/python` and Windows `Scripts/python.exe` virtualenv layouts.
 
 ## Project Structure
 

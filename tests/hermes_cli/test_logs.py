@@ -1,12 +1,16 @@
 """Tests for hermes_cli.logs — log viewing and filtering."""
 
+import builtins
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta
 
+import pytest
 
 from hermes_cli.logs import (
     LOG_FILES,
     _extract_level,
     _extract_logger_name,
+    _follow_log,
     _line_matches_component,
     _matches_filters,
     _parse_line_timestamp,
@@ -250,6 +254,166 @@ class TestReadTail:
         result = _read_last_n_lines(log_file, 10)
         assert result == []
 
+
+class _StopFollow(Exception):
+    pass
+
+
+_STOP_FOLLOW = object()
+
+
+def _install_follow_steps(monkeypatch, *steps):
+    remaining = iter(steps)
+
+    def fake_sleep(_seconds):
+        try:
+            step = next(remaining)
+        except StopIteration:
+            pytest.fail("follower performed an unexpected extra poll")
+        if step is _STOP_FOLLOW:
+            raise _StopFollow
+        step()
+
+    monkeypatch.setattr("hermes_cli.logs.time.sleep", fake_sleep)
+
+
+class TestFollowLog:
+    def test_emits_append_once_with_closed_streams(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        log_file = tmp_path / "agent.log"
+        log_file.write_text("historical\n", encoding="utf-8")
+        opened_streams = []
+        real_open = builtins.open
+
+        def tracked_open(*args, **kwargs):
+            stream = real_open(*args, **kwargs)
+            opened_streams.append(stream)
+            return stream
+
+        def append_line():
+            assert opened_streams
+            assert all(stream.closed for stream in opened_streams)
+            with log_file.open("a", encoding="utf-8") as stream:
+                stream.write("new\n")
+
+        def check_streams_closed():
+            assert all(stream.closed for stream in opened_streams)
+
+        monkeypatch.setattr("hermes_cli.logs.open", tracked_open, raising=False)
+        _install_follow_steps(
+            monkeypatch,
+            append_line,
+            check_streams_closed,
+            _STOP_FOLLOW,
+        )
+
+        with pytest.raises(_StopFollow):
+            _follow_log(log_file)
+
+        assert capsys.readouterr().out == "new\n"
+
+    def test_drains_old_generation_before_replacement(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        log_file = tmp_path / "agent.log"
+        rotated_file = tmp_path / "agent.log.1"
+        log_file.write_text("historical\n", encoding="utf-8")
+
+        def rotate_with_unread_line():
+            with log_file.open("a", encoding="utf-8") as stream:
+                stream.write("unread old generation\n")
+            log_file.rename(rotated_file)
+            log_file.write_text("first new generation\n", encoding="utf-8")
+
+        _install_follow_steps(monkeypatch, rotate_with_unread_line, _STOP_FOLLOW)
+
+        with pytest.raises(_StopFollow):
+            _follow_log(log_file)
+
+        assert capsys.readouterr().out == (
+            "unread old generation\n"
+            "first new generation\n"
+        )
+
+    def test_recovers_after_complete_missing_path_poll(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        log_file = tmp_path / "agent.log"
+        rotated_file = tmp_path / "agent.log.1"
+        log_file.write_text("historical\n", encoding="utf-8")
+
+        def remove_active_path():
+            log_file.rename(rotated_file)
+
+        def create_replacement():
+            log_file.write_text("after gap\n", encoding="utf-8")
+
+        _install_follow_steps(
+            monkeypatch,
+            remove_active_path,
+            create_replacement,
+            _STOP_FOLLOW,
+        )
+
+        with pytest.raises(_StopFollow):
+            _follow_log(log_file)
+
+        assert capsys.readouterr().out == "after gap\n"
+
+    def test_reads_from_start_after_initial_missing_path(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        log_file = tmp_path / "agent.log"
+
+        def create_log():
+            log_file.write_text("created during gap\n", encoding="utf-8")
+
+        _install_follow_steps(monkeypatch, create_log, _STOP_FOLLOW)
+
+        with pytest.raises(_StopFollow):
+            _follow_log(log_file)
+
+        assert capsys.readouterr().out == "created during gap\n"
+
+    def test_normalizes_crlf_before_output(self, tmp_path, monkeypatch, capsys):
+        log_file = tmp_path / "agent.log"
+        log_file.write_bytes(b"historical\r\n")
+
+        def append_crlf_line():
+            with log_file.open("ab") as stream:
+                stream.write(b"windows line\r\n")
+
+        _install_follow_steps(monkeypatch, append_crlf_line, _STOP_FOLLOW)
+
+        with pytest.raises(_StopFollow):
+            _follow_log(log_file)
+
+        assert capsys.readouterr().out == "windows line\n"
+
+    def test_broken_pipe_propagates(self, tmp_path, monkeypatch):
+        log_file = tmp_path / "agent.log"
+        log_file.write_text("historical\n", encoding="utf-8")
+
+        def append_line():
+            with log_file.open("a", encoding="utf-8") as stream:
+                stream.write("new\n")
+
+        def unexpected_poll():
+            pytest.fail("BrokenPipeError was swallowed")
+
+        class BrokenStdout:
+            def write(self, _text):
+                raise BrokenPipeError("consumer closed")
+
+            def flush(self):
+                pass
+
+        _install_follow_steps(monkeypatch, append_line, unexpected_poll)
+
+        with redirect_stdout(BrokenStdout()):
+            with pytest.raises(BrokenPipeError, match="consumer closed"):
+                _follow_log(log_file)
 
 # ---------------------------------------------------------------------------
 # LOG_FILES registry

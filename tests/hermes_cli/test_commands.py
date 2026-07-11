@@ -2217,3 +2217,28 @@ class TestPluginCommandEnumeration:
         slack_names = set(slack_subcommand_map())
         assert "status" in tg_names
         assert "status" in slack_names
+
+
+class TestTelegramBotCommandDescriptions:
+    def test_telegram_bot_commands_normalizes_unicode_dashes(self):
+        """Telegram BotFather rejects em/en dashes in command descriptions."""
+        from hermes_cli.commands import CommandDef
+        from hermes_cli import commands as commands_mod
+
+        fake = CommandDef(
+            "zz_dash_test",
+            "Test — with en–dashes",
+            "Info",
+        )
+        original_len = len(commands_mod.COMMAND_REGISTRY)
+        commands_mod.COMMAND_REGISTRY.append(fake)
+        try:
+            pairs = dict(telegram_bot_commands())
+            assert "zz_dash_test" in pairs
+            desc = pairs["zz_dash_test"]
+            assert "—" not in desc
+            assert "–" not in desc
+            assert desc == "Test - with en-dashes"
+        finally:
+            del commands_mod.COMMAND_REGISTRY[original_len:]
+

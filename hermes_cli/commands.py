@@ -533,13 +533,16 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            # Telegram BotFather rejects descriptions with Unicode dashes.
+            desc = cmd.description.replace("—", "-").replace("–", "-")
+            result.append((tg_name, desc))
     for name, description, args_hint in _iter_plugin_command_entries():
         if _requires_argument(args_hint):
             continue
         tg_name = _sanitize_telegram_name(name)
         if tg_name:
-            result.append((tg_name, description))
+            desc = description.replace("—", "-").replace("–", "-")
+            result.append((tg_name, desc))
     return result
 
 

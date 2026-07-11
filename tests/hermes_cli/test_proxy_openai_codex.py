@@ -254,7 +254,7 @@ def test_error_message_content_is_never_persisted(tmp_path, monkeypatch):
     assert "customer@example.com" not in stored
 
 
-def test_proxy_codex_rejects_unknown_client_key_and_attributes_label(
+def test_proxy_codex_rejects_unknown_client_key_without_attribution_logging(
     tmp_path, monkeypatch, caplog
 ):
     aiohttp = pytest.importorskip("aiohttp")
@@ -307,7 +307,10 @@ def test_proxy_codex_rejects_unknown_client_key_and_attributes_label(
     with caplog.at_level(logging.INFO, logger="hermes_cli.proxy.server"):
         asyncio.run(run())
     assert calls == 1
-    assert "agent-a" in caplog.text
+    assert "rejected unauthenticated client" in caplog.text
+    assert "agent-a" not in caplog.text
+    assert "fingerprint=" not in caplog.text
+    assert "model=" not in caplog.text
     assert "client-secret-a" not in caplog.text
     assert "do not log me" not in caplog.text
 

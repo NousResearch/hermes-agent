@@ -12,7 +12,6 @@ or rewrite request/response bodies. It's a credential-attaching forwarder.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import hmac
 import json
 import logging
@@ -165,13 +164,12 @@ def create_app(
         })
 
     async def handle_proxy(request: "web.Request") -> "web.StreamResponse":
-        client_label = "anonymous"
         if client_keys:
-            client_label = (
+            authenticated_client = (
                 _authenticate_client(request.headers.get("Authorization"), client_keys)
                 or ""
             )
-            if not client_label:
+            if not authenticated_client:
                 logger.warning("proxy: rejected unauthenticated client")
                 return _json_error(
                     401, "Invalid proxy client key.", code="invalid_client_key"
@@ -201,13 +199,6 @@ def create_app(
         # need to forward large multipart uploads we'll switch to streaming
         # the request body too.
         body = await request.read()
-        model = "unknown"
-        try:
-            parsed = json.loads(body)
-            if isinstance(parsed, dict) and isinstance(parsed.get("model"), str):
-                model = parsed["model"][:128]
-        except (TypeError, ValueError):
-            pass
 
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300)
 
@@ -351,14 +342,6 @@ def create_app(
             await session.close()
 
         await resp.write_eof()
-        fingerprint = hashlib.sha256(client_label.encode()).hexdigest()[:12]
-        logger.info(
-            "proxy: client=%s fingerprint=%s model=%s status=%s",
-            client_label,
-            fingerprint,
-            model,
-            upstream_resp.status,
-        )
         return resp
 
     # /health doesn't go through the upstream

@@ -8470,11 +8470,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    # Re-bind to the current client transport for this request. This keeps
-    # streaming events on the active websocket even if an earlier disconnect
-    # or fallback moved the session transport to stdio.
-    if (t := current_transport()) is not None:
-        session["transport"] = t
+    # Re-bind accepted idle work to the current client. A busy scoped writer
+    # without conversation.control queues its next turn on this transport but
+    # must not seize the in-flight turn from the currently attached client.
+    t = current_transport()
     with session["history_lock"]:
         if session.get("running"):
             # Don't reject a mid-turn prompt — queue it (and, by default,
@@ -8487,16 +8486,19 @@ def _(rid, params: dict) -> dict:
                 authorization_allows_scope,
             )
 
+            allow_control = authorization_allows_scope(
+                getattr(active_transport, "authorization", None),
+                CONVERSATION_CONTROL_SCOPE,
+            )
+            if t is not None and allow_control:
+                session["transport"] = t
             return _handle_busy_submit(
                 rid,
                 sid,
                 session,
                 text,
                 active_transport,
-                allow_control=authorization_allows_scope(
-                    getattr(active_transport, "authorization", None),
-                    CONVERSATION_CONTROL_SCOPE,
-                ),
+                allow_control=allow_control,
             )
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
@@ -8505,6 +8507,8 @@ def _(rid, params: dict) -> dict:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
             return _err(rid, 4009, "subagent still running — wait for it to finish")
+        if t is not None:
+            session["transport"] = t
         if truncate_user_ordinal is not None:
             try:
                 ordinal = int(truncate_user_ordinal)

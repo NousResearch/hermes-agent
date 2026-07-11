@@ -220,25 +220,28 @@ def test_mobile_contract_keeps_nonessential_or_account_methods_unavailable(metho
     assert response["error"]["data"]["grantable"] is False
 
 
-def test_mobile_contract_rejects_hidden_delete_and_privileged_create_parameters():
-    authorization = _mobile_authorization(
-        "conversation.read",
-        "conversation.write",
-        "conversation.control",
+def test_mobile_dispatch_rejects_hidden_history_deletion():
+    response = server.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": "hidden-delete",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "known",
+                "text": "replace",
+                "truncate_before_user_ordinal": 1,
+            },
+        },
+        RecordingTransport(
+            _mobile_authorization(
+                "conversation.read",
+                "conversation.write",
+                "conversation.control",
+            )
+        ),
     )
 
-    delete_denial = mobile_contract.mobile_method_denial(
-        "prompt.submit",
-        authorization,
-        {"session_id": "known", "text": "replace", "truncate_before_user_ordinal": 1},
-    )
-    profile_denial = mobile_contract.mobile_method_denial(
-        "session.create",
-        authorization,
-        {"profile": "../../outside", "messages": [{"role": "system", "content": "x"}]},
-    )
-
-    assert delete_denial == {
+    assert response["error"]["data"] == {
         "reason": "parameter_not_available_to_mobile",
         "method": "prompt.submit",
         "parameter": "truncate_before_user_ordinal",
@@ -252,10 +255,55 @@ def test_mobile_contract_rejects_hidden_delete_and_privileged_create_parameters(
         ],
         "grantable": False,
     }
-    assert profile_denial["reason"] == "parameter_not_available_to_mobile"
-    assert profile_denial["parameter"] == "messages"
-    assert profile_denial["required_scope"] == "mobile.unavailable"
-    assert profile_denial["grantable"] is False
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [
+        ("close_on_disconnect", True),
+        ("cwd", "/tmp/outside"),
+        ("fast", True),
+        ("messages", [{"role": "system", "content": "override"}]),
+        ("model", "provider/model"),
+        ("parent_session_id", "parent"),
+        ("profile", "../../outside"),
+        ("provider", "custom"),
+        ("reasoning_effort", "high"),
+        ("source", "spoofed-platform"),
+    ],
+)
+def test_mobile_dispatch_rejects_each_privileged_create_parameter(
+    monkeypatch,
+    parameter,
+    value,
+):
+    def fail_if_handler_runs(_profile):
+        raise AssertionError("session.create handler ran before mobile authorization")
+
+    monkeypatch.setattr(server, "_profile_home", fail_if_handler_runs)
+    server._sessions.clear()
+    response = server.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": "privileged-create",
+            "method": "session.create",
+            "params": {parameter: value},
+        },
+        RecordingTransport(
+            _mobile_authorization(
+                "conversation.read",
+                "conversation.write",
+                "conversation.control",
+            )
+        ),
+    )
+
+    denial = response["error"]["data"]
+    assert denial["reason"] == "parameter_not_available_to_mobile"
+    assert denial["parameter"] == parameter
+    assert denial["required_scope"] == "mobile.unavailable"
+    assert denial["grantable"] is False
+    assert server._sessions == {}
 
 
 def test_mobile_write_without_control_queues_a_busy_prompt_without_interrupting(
@@ -268,12 +316,13 @@ def test_mobile_write_without_control_queues_a_busy_prompt_without_interrupting(
             self.interrupted = True
 
     agent = Agent()
+    original_transport = RecordingTransport()
     session = {
         "agent": agent,
         "history_lock": threading.Lock(),
         "queued_prompt": None,
         "running": True,
-        "transport": None,
+        "transport": original_transport,
     }
     server._sessions.clear()
     server._sessions["busy"] = session
@@ -294,7 +343,9 @@ def test_mobile_write_without_control_queues_a_busy_prompt_without_interrupting(
 
     assert response["result"] == {"status": "queued"}
     assert agent.interrupted is False
+    assert session["transport"] is original_transport
     assert session["queued_prompt"]["text"] == "next"
+    assert session["queued_prompt"]["transport"] is transport
 
 
 def test_mobile_scope_grants_require_read_access():

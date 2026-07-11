@@ -160,6 +160,10 @@ class GatewayStreamConsumer:
         # reply that was split across the platform's edit limit while streaming
         # doesn't leave stale fragments above the final message.
         self._preview_message_ids: "set[str]" = set()
+        # IDs from only the active text segment.  A tool boundary preserves
+        # the run-wide set for fresh-final bookkeeping, but a failure recovery
+        # must never delete an earlier finalized preamble/commentary message.
+        self._segment_preview_message_ids: "set[str]" = set()
         self._already_sent = False
         self._edit_supported = True  # Disabled when progressive edits are no longer usable
         self._last_edit_time = 0.0
@@ -173,6 +177,10 @@ class GatewayStreamConsumer:
         # Telegram overflow delivery.  In that case the already-visible prefix
         # is intentional content, not a stale preview to delete.
         self._fallback_preserve_partial_messages = False
+        # Keep fallback recovery responsive. Telegram's adapter already bounds
+        # edit retries at five seconds; a final-delivery fallback must not hold
+        # the stream task through a longer flood cooldown before retrying.
+        self._max_fallback_flood_retry_seconds = 5.0
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
@@ -341,6 +349,7 @@ class GatewayStreamConsumer:
         self._fallback_final_send = False
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
+        self._segment_preview_message_ids = set()
         # #29346: a tool/segment boundary means what we delivered was an interim
         # preamble, not the final answer — clear the flags so a premature setter
         # can't fool the gateway. Safe: got_done returns before any reset, and
@@ -1073,15 +1082,15 @@ class GatewayStreamConsumer:
                 )
                 if result.success:
                     break
-                if attempt == 0 and self._is_flood_error(result):
-                    delay = float(getattr(result, "retry_after", None) or 3.0)
+                retry_delay = self._fallback_flood_retry_delay(result)
+                if attempt == 0 and retry_delay is not None:
                     logger.debug(
                         "Flood control on fallback send, retrying in %.1fs",
-                        delay,
+                        retry_delay,
                     )
-                    await asyncio.sleep(delay)
+                    await asyncio.sleep(retry_delay)
                 else:
-                    break  # non-flood error or second attempt failed
+                    break  # non-flood error, long flood wait, or second failure
 
             if not result or not result.success:
                 if sent_any_chunk:
@@ -1151,7 +1160,10 @@ class GatewayStreamConsumer:
         gateway can safely retry, and ``ambiguous`` when a timeout may have
         reached the platform already.
         """
-        stale_ids = set(self._preview_message_ids)
+        # Tool/segment boundaries intentionally preserve the run-wide preview
+        # IDs for normal fresh-final cleanup.  This recovery replaces only the
+        # active final segment, so never delete an earlier finalized preamble.
+        stale_ids = set(self._segment_preview_message_ids)
         if self._message_id and self._message_id != "__no_edit__":
             stale_ids.add(str(self._message_id))
 
@@ -1173,13 +1185,13 @@ class GatewayStreamConsumer:
 
             if getattr(result, "success", False):
                 break
-            if attempt == 0 and self._is_flood_error(result):
-                delay = float(getattr(result, "retry_after", None) or 3.0)
+            retry_delay = self._fallback_flood_retry_delay(result)
+            if attempt == 0 and retry_delay is not None:
                 logger.debug(
                     "Flood control on empty fallback final send; retrying in %.1fs",
-                    delay,
+                    retry_delay,
                 )
-                await asyncio.sleep(delay)
+                await asyncio.sleep(retry_delay)
                 continue
             return (
                 "ambiguous"
@@ -1202,7 +1214,7 @@ class GatewayStreamConsumer:
                         exc,
                     )
 
-        self._preview_message_ids = set()
+        self._segment_preview_message_ids = set()
         self._message_id = new_message_id or "__no_edit__"
         self._already_sent = True
         self._final_response_sent = True
@@ -1221,6 +1233,22 @@ class GatewayStreamConsumer:
         error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
         name = result_or_exc.__class__.__name__.lower()
         return "timeout" in error or "timed out" in error or "timeout" in name
+
+    def _fallback_flood_retry_delay(self, result: Any) -> float | None:
+        """Return a bounded retry delay for a fallback send, if safe to retry."""
+        if not self._is_flood_error(result):
+            return None
+        try:
+            delay = float(getattr(result, "retry_after", None) or 3.0)
+        except (TypeError, ValueError):
+            delay = 3.0
+        if delay > self._max_fallback_flood_retry_seconds:
+            logger.debug(
+                "Flood control requests %.1fs; leaving final delivery to the gateway",
+                delay,
+            )
+            return None
+        return max(0.0, delay)
 
     def _is_flood_error(self, result) -> bool:
         """Check if a SendResult failure is due to flood control / rate limiting."""
@@ -1441,9 +1469,11 @@ class GatewayStreamConsumer:
         return base
 
     def _track_preview_id(self, message_id: Optional[str]) -> None:
-        """Record a real preview message id for fresh-final cleanup."""
+        """Record a real preview message id for finalization cleanup."""
         if message_id and message_id != "__no_edit__":
-            self._preview_message_ids.add(str(message_id))
+            message_id = str(message_id)
+            self._preview_message_ids.add(message_id)
+            self._segment_preview_message_ids.add(message_id)
 
     def _track_preview_ids_from_result(self, result: Any) -> None:
         """Record every message id a send/edit result exposes: the primary id

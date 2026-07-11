@@ -236,6 +236,8 @@ model:
 
 Hermes reuses the local `devin acp` process across multi-turn chat, continues the ACP session when the message list is a strict extension of the previous request (sending only new messages), and streams `agent_message_chunk` frames into the UI when a display consumer is present. Interrupt / `/stop` terminates the warm subprocess immediately.
 
+**Desktop / dashboard:** Settings → Accounts shows a **Devin CLI ACP** card (`flow: external`). Authenticate with `devin auth login` in a terminal (same pattern as GitHub Copilot ACP). When the CLI is installed and local credentials are detected, Model Picker lists `devin-acp` so you can set it as the active model without using the CLI wizard.
+
 On Windows, install Devin CLI via PowerShell (`irm https://static.devin.ai/cli/setup.ps1 | iex`), then restart the terminal so `devin` is on `PATH`.
 
 ### First-Class API-Key Providers

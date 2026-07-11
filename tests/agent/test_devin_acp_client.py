@@ -293,6 +293,58 @@ class TestAcpToolLoopSession(unittest.TestCase):
         assert methods.count("session/prompt") == 2
 
 
+class TestDevinDesktopUiSupport(unittest.TestCase):
+    def test_oauth_catalog_has_hand_tuned_devin_card(self):
+        from hermes_cli.web_server import _build_oauth_catalog
+
+        cards = {p["id"]: p for p in _build_oauth_catalog()}
+        assert "devin-acp" in cards
+        card = cards["devin-acp"]
+        assert card["flow"] == "external"
+        assert card["cli_command"] == "devin auth login"
+        assert card.get("status_fn") is not None
+        assert "docs.devin.ai" in (card.get("docs_url") or "")
+
+    def test_devin_acp_status_shape(self):
+        from hermes_cli.web_server import _devin_acp_status
+
+        with patch(
+            "hermes_cli.auth.get_external_process_provider_status",
+            return_value={
+                "logged_in": True,
+                "cli_installed": True,
+                "auth_present": True,
+                "resolved_command": "/usr/bin/devin",
+                "command": "devin",
+                "hint": None,
+            },
+        ):
+            st = _devin_acp_status()
+        assert st["logged_in"] is True
+        assert st["source"] == "devin_cli"
+        assert st["token_preview"] is None
+        assert "Devin CLI" in st["source_label"]
+        assert "/usr/bin/devin" in st["source_label"]
+
+    def test_list_authenticated_includes_devin_when_logged_in(self):
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        with patch(
+            "hermes_cli.auth.get_external_process_provider_status",
+            side_effect=lambda pid: {
+                "logged_in": pid == "devin-acp",
+                "cli_installed": pid == "devin-acp",
+                "auth_present": pid == "devin-acp",
+                "configured": pid == "devin-acp",
+            },
+        ):
+            rows = list_authenticated_providers()
+        slugs = {r.get("slug") for r in rows}
+        assert "devin-acp" in slugs
+        devin = next(r for r in rows if r.get("slug") == "devin-acp")
+        assert "devin-acp" in (devin.get("models") or [])
+
+
 class TestAcpErrorClassification(unittest.TestCase):
     def test_missing_cli_is_non_retryable(self):
         from agent.error_classifier import FailoverReason, classify_api_error

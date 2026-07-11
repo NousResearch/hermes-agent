@@ -136,6 +136,43 @@ def test_permissions_run_sanitizes_env(monkeypatch):
     _assert_sanitized(captured)
 
 
+def test_windows_status_hides_every_reachable_subprocess(monkeypatch):
+    """The Desktop status API reaches only version + doctor spawns on Windows.
+
+    The permissions grant subprocess is intentionally excluded: its public
+    entry point returns before spawning anywhere except macOS, where
+    ``CREATE_NO_WINDOW`` is not applicable.
+    """
+    from tools.computer_use import permissions
+
+    binary = r"C:\Program Files\cua-driver\cua-driver.exe"
+    calls = []
+    stdout_by_args = {
+        ("--version",): "cua-driver 1.2.3\n",
+        ("doctor", "--json"): json.dumps({"ok": True, "probes": []}),
+    }
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _fake_completed_process(stdout_by_args[tuple(cmd[1:])])
+
+    monkeypatch.setattr(permissions.sys, "platform", "win32")
+    monkeypatch.setattr(permissions.shutil, "which", lambda command: binary)
+    monkeypatch.setattr(permissions.subprocess, "run", fake_run)
+
+    status = permissions.computer_use_status("cua-driver")
+
+    assert status["version"] == "cua-driver 1.2.3"
+    assert status["ready"] is True
+    assert [cmd[1:] for cmd, _ in calls] == [
+        ["--version"],
+        ["doctor", "--json"],
+    ]
+    assert calls, "Windows status must exercise at least one subprocess boundary"
+    for cmd, kwargs in calls:
+        assert kwargs.get("creationflags") == CREATE_NO_WINDOW, cmd
+
+
 def test_doctor_spawn_sanitizes_env_and_hides_console_on_windows(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")

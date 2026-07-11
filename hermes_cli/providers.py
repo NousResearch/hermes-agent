@@ -94,6 +94,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="acp://copilot",
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "devin-acp": HermesOverlay(
+        transport="openai_chat",
+        auth_type="external_process",
+        base_url_override="acp://devin",
+        base_url_env_var="DEVIN_ACP_BASE_URL",
+        extra_env_vars=("HERMES_DEVIN_ACP_COMMAND", "DEVIN_CLI_PATH", "HERMES_DEVIN_ACP_ARGS"),
+    ),
     "github-copilot": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN"),
@@ -364,6 +371,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "devin-acp": "Devin CLI ACP",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",

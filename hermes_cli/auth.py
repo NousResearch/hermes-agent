@@ -96,6 +96,7 @@ MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_DEVIN_ACP_BASE_URL = "acp://devin"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
@@ -231,6 +232,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
+    ),
+    "devin-acp": ProviderConfig(
+        id="devin-acp",
+        name="Devin CLI ACP",
+        auth_type="external_process",
+        inference_base_url=DEFAULT_DEVIN_ACP_BASE_URL,
+        base_url_env_var="DEVIN_ACP_BASE_URL",
     ),
     "gemini": ProviderConfig(
         id="gemini",
@@ -1664,6 +1672,7 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        "devin": "devin-acp", "devin-cli": "devin-acp", "cognition-devin": "devin-acp",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
@@ -6266,19 +6275,63 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+def _external_process_spec(provider_id: str) -> Dict[str, Any]:
+    """Return command/args defaults for an external-process provider."""
+    specs: Dict[str, Dict[str, Any]] = {
+        "copilot-acp": {
+            "command_env": ("HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH"),
+            "default_command": "copilot",
+            "args_env": "HERMES_COPILOT_ACP_ARGS",
+            "default_args": ["--acp", "--stdio"],
+            "api_key": "copilot-acp",
+            "missing_code": "missing_copilot_cli",
+            "missing_msg": (
+                "Could not find the Copilot CLI command '{command}'. "
+                "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+            ),
+        },
+        "devin-acp": {
+            "command_env": ("HERMES_DEVIN_ACP_COMMAND", "DEVIN_CLI_PATH"),
+            "default_command": "devin",
+            "args_env": "HERMES_DEVIN_ACP_ARGS",
+            "default_args": ["acp"],
+            "api_key": "devin-acp",
+            "missing_code": "missing_devin_cli",
+            "missing_msg": (
+                "Could not find the Devin CLI command '{command}'. "
+                "Install Devin CLI (https://docs.devin.ai/cli), run `devin auth login`, "
+                "or set HERMES_DEVIN_ACP_COMMAND/DEVIN_CLI_PATH."
+            ),
+        },
+    }
+    return dict(specs.get(provider_id) or specs["copilot-acp"])
+
+
+def _resolve_external_process_command_args(provider_id: str) -> tuple[str, list[str]]:
+    """Resolve the binary and args for an external-process provider."""
+    spec = _external_process_spec(provider_id)
+    command = ""
+    for env_name in spec.get("command_env") or ():
+        command = os.getenv(str(env_name), "").strip()
+        if command:
+            break
+    if not command:
+        command = str(spec.get("default_command") or "copilot")
+    raw_args = os.getenv(str(spec.get("args_env") or ""), "").strip()
+    if raw_args:
+        args = shlex.split(raw_args)
+    else:
+        args = list(spec.get("default_args") or ["--acp", "--stdio"])
+    return command, args
+
+
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for providers that run a local subprocess."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command, args = _resolve_external_process_command_args(provider_id)
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
@@ -6313,7 +6366,10 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_qwen_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
-    if target == "copilot-acp":
+    pconfig_for_status = PROVIDER_REGISTRY.get(target)
+    if target in {"copilot-acp", "devin-acp"} or (
+        pconfig_for_status and pconfig_for_status.auth_type == "external_process"
+    ):
         return get_external_process_provider_status(target)
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
@@ -6496,25 +6552,21 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    spec = _external_process_spec(provider_id)
+    command, args = _resolve_external_process_command_args(provider_id)
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            str(spec.get("missing_msg") or "Could not find external process CLI '{command}'.").format(
+                command=command
+            ),
             provider=provider_id,
-            code="missing_copilot_cli",
+            code=str(spec.get("missing_code") or "missing_cli"),
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": str(spec.get("api_key") or provider_id),
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

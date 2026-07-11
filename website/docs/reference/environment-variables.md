@@ -28,6 +28,10 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `HERMES_COPILOT_ACP_COMMAND` | Override Copilot ACP CLI binary path (default: `copilot`) |
 | `COPILOT_CLI_PATH` | Alias for `HERMES_COPILOT_ACP_COMMAND` |
 | `HERMES_COPILOT_ACP_ARGS` | Override Copilot ACP arguments (default: `--acp --stdio`) |
+| `HERMES_DEVIN_ACP_COMMAND` | Override Devin ACP CLI binary path (default: `devin`) |
+| `DEVIN_CLI_PATH` | Alias for `HERMES_DEVIN_ACP_COMMAND` |
+| `HERMES_DEVIN_ACP_ARGS` | Override Devin ACP arguments (default: `acp`) |
+| `DEVIN_ACP_BASE_URL` | Override Devin ACP marker URL (default: `acp://devin`) |
 | `COPILOT_ACP_BASE_URL` | Override Copilot ACP base URL |
 | `COPILOT_API_BASE_URL` | Override the Copilot API base URL (`copilot` provider) |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API key ([z.ai](https://z.ai)) |

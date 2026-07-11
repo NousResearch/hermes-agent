@@ -209,6 +209,28 @@ model:
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
 | `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
 
+**`devin-acp` — Devin CLI ACP backend**. Spawns the local Devin CLI as a subprocess (`devin acp`):
+
+```bash
+hermes chat --provider devin-acp --model devin-acp
+# Requires the Devin CLI in PATH and `devin auth login`
+```
+
+**Permanent config:**
+```yaml
+model:
+  provider: "devin-acp"
+  default: "devin-acp"
+```
+
+| Environment variable | Description |
+|---------------------|-------------|
+| `HERMES_DEVIN_ACP_COMMAND` / `DEVIN_CLI_PATH` | Override the Devin CLI binary path (default: `devin`) |
+| `HERMES_DEVIN_ACP_ARGS` | Override ACP args (default: `acp`) |
+| `DEVIN_ACP_BASE_URL` | Override marker URL (default: `acp://devin`) |
+
+On Windows, install Devin CLI via PowerShell (`irm https://static.devin.ai/cli/setup.ps1 | iex`), then restart the terminal so `devin` is on `PATH`.
+
 ### First-Class API-Key Providers
 
 These providers have built-in support with dedicated provider IDs. Set the API key and use `--provider` to select:
@@ -1472,7 +1494,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `devin-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/user-guide/features/fallback-providers).

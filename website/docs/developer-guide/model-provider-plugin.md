@@ -198,7 +198,7 @@ Set `profile.api_mode` to match the default your provider ships — it acts as a
 | `oauth_external` | User signs in elsewhere, tokens land in `auth.json` | Anthropic OAuth, MiniMax OAuth, Qwen Portal, Nous Portal |
 | `copilot` | GitHub Copilot token refresh cycle | `copilot` plugin only |
 | `aws_sdk` | AWS SDK credential chain (IAM role, profile, env) | `bedrock` plugin only |
-| `external_process` | Auth handled by a subprocess the agent spawns | `copilot-acp` plugin only |
+| `external_process` | Auth handled by a subprocess the agent spawns | `copilot-acp`, `devin-acp` |
 
 `auth_type` gates which codepaths treat your provider as a "simple api-key provider" — if it's not `api_key`, the PluginManager still records the manifest but Hermes' CLI-level automation (doctor checks, `--provider` flag, setup wizard delegation) may skip over it.
 

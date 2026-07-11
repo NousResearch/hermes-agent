@@ -588,21 +588,42 @@ def compress_context(
                 existing = _lock_db.get_compression_lock_holder(_lock_sid)
             except Exception:
                 existing = None
-            logger.warning(
-                "compression skipped: another path is compressing session=%s "
-                "(holder=%s) — returning messages unchanged to avoid session fork",
-                _lock_sid, existing,
-            )
+            if existing is not None:
+                logger.warning(
+                    "compression skipped: another path is compressing session=%s "
+                    "(holder=%s) — returning messages unchanged to avoid session fork",
+                    _lock_sid, existing,
+                )
+                warning_attr = "_last_compression_lock_warning_sid"
+                warning_text = (
+                    "⚠ Skipping concurrent compression — another path "
+                    "is already compressing this session. Will retry "
+                    "after it finishes."
+                )
+            else:
+                # try_acquire_compression_lock() also returns False when its
+                # SQLite transaction fails.  With no diagnostic holder, no
+                # same-session compressor has been confirmed: fail closed, but
+                # describe the state-store contention truthfully instead of
+                # reporting a phantom concurrent path.
+                logger.warning(
+                    "compression deferred: session lock unavailable for session=%s "
+                    "(holder=None) — returning messages unchanged; no concurrent "
+                    "compressor confirmed",
+                    _lock_sid,
+                )
+                warning_attr = "_last_compression_lock_unavailable_warning_sid"
+                warning_text = (
+                    "⚠ Compression deferred — the session lock was temporarily "
+                    "unavailable, likely because state storage was busy. "
+                    "No concurrent compressor was confirmed. Compression will retry later."
+                )
             _lock_holder = None  # don't release a lock we don't own
-            # Surface to the user once — quiet for downstream auto-compress loops
-            if getattr(agent, "_last_compression_lock_warning_sid", None) != _lock_sid:
-                agent._last_compression_lock_warning_sid = _lock_sid
+            # Surface to the user once — quiet for downstream auto-compress loops.
+            if getattr(agent, warning_attr, None) != _lock_sid:
+                setattr(agent, warning_attr, _lock_sid)
                 try:
-                    agent._emit_warning(
-                        "⚠ Skipping concurrent compression — another path "
-                        "is already compressing this session. Will retry "
-                        "after it finishes."
-                    )
+                    agent._emit_warning(warning_text)
                 except Exception:
                     pass
             _existing_sp = getattr(agent, "_cached_system_prompt", None)

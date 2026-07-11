@@ -191,6 +191,7 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     assert held is True
 
     agent = _build_agent_with_db(db, parent_sid)
+    agent._emit_warning = MagicMock()
     messages = [{"role": "user", "content": "m1"}, {"role": "user", "content": "m2"}]
 
     compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
@@ -200,6 +201,44 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     assert agent.session_id == parent_sid
     # Compressor was never called (the skip happens before .compress())
     agent.context_compressor.compress.assert_not_called()
+    assert "another path" in agent._emit_warning.call_args.args[0]
+
+
+def test_lock_backend_contention_does_not_claim_concurrent_compressor(
+    tmp_path: Path,
+) -> None:
+    """A failed lock write without a holder is storage contention, not a race.
+
+    ``try_acquire_compression_lock`` returns ``False`` both when another
+    compressor owns the per-session row and when its SQLite transaction fails.
+    If the diagnostic holder lookup then returns ``None``, Hermes has not
+    confirmed a concurrent same-session compressor and must not tell the user
+    that it has. Compression still fails closed and retries later.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "LOCK_BACKEND_BUSY"
+    db.create_session(parent_sid, source="telegram")
+
+    db.try_acquire_compression_lock = MagicMock(return_value=False)
+    db.get_compression_lock_holder = MagicMock(return_value=None)
+
+    agent = _build_agent_with_db(db, parent_sid)
+    agent._emit_warning = MagicMock()
+    messages = [
+        {"role": "user", "content": "m1"},
+        {"role": "assistant", "content": "m2"},
+    ]
+
+    compressed, _sp = agent._compress_context(
+        messages, "sys", approx_tokens=120_000
+    )
+
+    assert compressed is messages or compressed == messages
+    assert getattr(agent, "session_id", None) == parent_sid
+    getattr(agent, "context_compressor").compress.assert_not_called()
+    warning = agent._emit_warning.call_args.args[0]
+    assert "No concurrent compressor was confirmed" in warning
+    assert "another path" not in warning
 
 
 def test_compression_restores_user_turn_when_compressor_drops_all_users(tmp_path: Path) -> None:

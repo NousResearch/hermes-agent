@@ -2501,7 +2501,7 @@ class SessionDB:
         )
         def _do(conn):
             row = conn.execute(
-                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?",
+                "SELECT model, model_config, billing_provider, api_call_count FROM sessions WHERE id = ?",
                 (session_id,),
             ).fetchone()
             existing_model = row["model"] if row is not None else None
@@ -2510,8 +2510,11 @@ class SessionDB:
 
             # Session creation records the requested primary route before any API
             # call. If it fails and fallback succeeds, the first accounted usage
-            # event is the first authoritative route. After that, preserve the
-            # legacy row: one row cannot represent mixed-provider usage.
+            # event is the first authoritative billing route. Preserve the
+            # requested runtime model in model_config before replacing the legacy
+            # model column so resume still restores the turn-scoped primary route.
+            # After that, preserve the legacy row: one row cannot represent
+            # mixed-provider usage.
             first_accounted_route = (
                 existing_api_calls == 0
                 and bool(model)
@@ -2519,13 +2522,30 @@ class SessionDB:
                 and (existing_model != model or existing_provider != billing_provider)
             )
             if first_accounted_route:
+                try:
+                    raw_runtime_config = row["model_config"] if row is not None else None
+                    runtime_config = json.loads(raw_runtime_config or "{}")
+                    if not isinstance(runtime_config, dict):
+                        runtime_config = {}
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    runtime_config = {}
+                if existing_model:
+                    runtime_config.setdefault("model", existing_model)
                 conn.execute(
                     """UPDATE sessions
                        SET model = ?, billing_provider = ?,
                            billing_base_url = COALESCE(?, billing_base_url),
-                           billing_mode = COALESCE(?, billing_mode)
+                           billing_mode = COALESCE(?, billing_mode),
+                           model_config = ?
                        WHERE id = ?""",
-                    (model, billing_provider, billing_base_url, billing_mode, session_id),
+                    (
+                        model,
+                        billing_provider,
+                        billing_base_url,
+                        billing_mode,
+                        json.dumps(runtime_config),
+                        session_id,
+                    ),
                 )
             conn.execute(sql, params)
         self._execute_write(_do)

@@ -2239,7 +2239,10 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             logger.debug("failed to parse stored session model_config", exc_info=True)
 
     overrides: dict = {}
-    model = str(row.get("model") or model_config.get("model") or "").strip()
+    # model_config is the durable runtime contract. The legacy model column is
+    # also used for first-accounted-route billing attribution, so a first-turn
+    # fallback may intentionally differ from the primary model restored here.
+    model = str(model_config.get("model") or row.get("model") or "").strip()
     # ``billing_provider`` is only the billing bucket — for a custom endpoint it is the
     # bare class ``"custom"``, which agent_init treats as non-routable, so restoring it as
     # the provider override makes ``session.resume`` fail with "No LLM provider configured".
@@ -2250,7 +2253,20 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         model_config.get("billing_provider") or row.get("billing_provider") or ""
     ).strip()
     provider = explicit_provider
-    if not provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
+    # A runtime model preserved in model_config is deliberately separate from
+    # first-accounted billing attribution when it differs from the legacy model
+    # column. Never pair that primary model with the fallback billing provider
+    # when its explicit provider metadata is absent (for example after recovering
+    # malformed legacy JSON); leaving the provider unset makes normal configured-
+    # provider resolution apply. Equal models retain legacy provider fallback.
+    runtime_model = str(model_config.get("model") or "").strip()
+    billing_model = str(row.get("model") or "").strip()
+    has_split_runtime_model = bool(runtime_model and runtime_model != billing_model)
+    if (
+        not provider
+        and not has_split_runtime_model
+        and billing_provider.lower() not in _BARE_BILLING_PROVIDERS
+    ):
         provider = billing_provider
     base_url = str(model_config.get("base_url") or "").strip()
     api_mode = str(model_config.get("api_mode") or "").strip()

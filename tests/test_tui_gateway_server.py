@@ -1340,6 +1340,58 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     assert ov["model_override"]["provider"] == "custom:myendpoint"
 
 
+def test_stored_session_runtime_overrides_prefers_primary_model_config_over_fallback_billing_model():
+    """First-turn fallback attribution must not make TUI resume the fallback route."""
+    ov = server._stored_session_runtime_overrides(
+        {
+            "model": "glm-5.2",
+            "billing_provider": "custom:zai",
+            "model_config": {
+                "model": "gpt-5.6-sol",
+                "provider": "openai-codex",
+            },
+        }
+    )
+
+    assert ov["model_override"] == {
+        "model": "gpt-5.6-sol",
+        "provider": "openai-codex",
+        "base_url": None,
+        "api_mode": None,
+    }
+    assert ov["provider_override"] == "openai-codex"
+
+
+def test_stored_session_runtime_overrides_does_not_pair_runtime_model_with_billing_provider():
+    """Recovered runtime model without provider must use configured resolution, not billing."""
+    ov = server._stored_session_runtime_overrides(
+        {
+            "model": "glm-5.2",
+            "billing_provider": "custom:zai",
+            "model_config": {"model": "gpt-5.6-sol"},
+        }
+    )
+
+    assert ov["model_override"]["model"] == "gpt-5.6-sol"
+    assert ov["model_override"]["provider"] is None
+    assert "provider_override" not in ov
+
+
+def test_stored_session_runtime_overrides_keeps_provider_for_coherent_legacy_model_config():
+    """A model-only legacy config still uses its routable billing provider when models agree."""
+    ov = server._stored_session_runtime_overrides(
+        {
+            "model": "claude-opus-4-6",
+            "billing_provider": "anthropic",
+            "model_config": {"model": "claude-opus-4-6"},
+        }
+    )
+
+    assert ov["model_override"]["model"] == "claude-opus-4-6"
+    assert ov["model_override"]["provider"] == "anthropic"
+    assert ov["provider_override"] == "anthropic"
+
+
 def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
     updates = {}
 

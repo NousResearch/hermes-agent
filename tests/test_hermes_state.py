@@ -291,6 +291,7 @@ class TestSessionLifecycle:
         assert session["billing_provider"] == "custom:zai"
         assert session["billing_base_url"] == "https://api.z.ai/api/coding/paas/v4/"
         assert session["api_call_count"] == 1
+        assert json.loads(session["model_config"])["model"] == "gpt-5.6-sol"
 
     def test_accounted_primary_route_is_not_rewritten_by_later_fallback(self, db):
         """A mixed-provider session keeps its first accounted route in the legacy row."""
@@ -308,6 +309,25 @@ class TestSessionLifecycle:
         assert session["model"] == "gpt-5.6-sol"
         assert session["billing_provider"] == "openai-codex"
         assert session["api_call_count"] == 2
+
+    def test_first_accounted_fallback_recovers_malformed_runtime_config(self, db):
+        """Malformed metadata preserves the primary model without inventing a provider."""
+        db.create_session(session_id="s1", source="cli", model="gpt-5.6-sol")
+        db._execute_write(
+            lambda conn: conn.execute(
+                "UPDATE sessions SET model_config = ? WHERE id = ?", ("{bad", "s1")
+            )
+        )
+
+        db.update_token_counts(
+            "s1", input_tokens=10, output_tokens=5, model="glm-5.2",
+            billing_provider="custom:zai", api_call_count=1,
+        )
+
+        session = db.get_session("s1")
+        assert session["model"] == "glm-5.2"
+        assert session["billing_provider"] == "custom:zai"
+        assert json.loads(session["model_config"]) == {"model": "gpt-5.6-sol"}
 
     def test_update_token_counts_preserves_existing_model(self, db):
         db.create_session(session_id="s1", source="cli", model="anthropic/claude-opus-4.6")

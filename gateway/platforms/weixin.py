@@ -98,12 +98,30 @@ MESSAGE_DEDUP_TTL_SECONDS = 300
 
 def _is_stale_session_ret(
     ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]",
+    *, used_context_token: bool = False,
 ) -> bool:
-    """True when iLink returns ret=-2 / errcode=-2 with 'unknown error',
-    which is a stale-session signal (same as errcode=-14) rather than
-    a genuine rate limit."""
+    """True when iLink returns ret=-2 / errcode=-2, which may indicate a stale session.
+
+    When a context_token is present, any ret=-2/errcode=-2 is treated as a possible
+    stale-session signal (same as errcode=-14) rather than a genuine rate limit.
+    This handles both the original 'unknown error' case and the 'rate limited' case
+    that occurs when tokens expire.
+
+    Args:
+        ret: The return code from iLink API.
+        errcode: The error code from iLink API.
+        errmsg: The error message from iLink API.
+        used_context_token: Whether the request that generated this error used a context_token.
+
+    Returns:
+        True if the error indicates a stale session, False otherwise.
+    """
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
+    # When using a context_token, any ret=-2/errcode=-2 is treated as stale-session
+    if used_context_token:
+        return True
+    # Otherwise, only the original 'unknown error' case is treated as stale-session
     return (errmsg or "").lower() == "unknown error"
 
 
@@ -1357,7 +1375,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 errcode = response.get("errcode", 0)
                 if ret not in {0, None} or errcode not in {0, None}:
                     if (ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE
-                            or _is_stale_session_ret(ret, errcode, response.get("errmsg"))):
+                            or _is_stale_session_ret(ret, errcode, response.get("errmsg"), used_context_token=False)):
                         logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
                         await asyncio.sleep(600)
                         consecutive_failures = 0
@@ -1772,7 +1790,7 @@ class WeixinAdapter(BasePlatformAdapter):
                         is_session_expired = (
                             ret == SESSION_EXPIRED_ERRCODE
                             or errcode == SESSION_EXPIRED_ERRCODE
-                            or _is_stale_session_ret(ret, errcode, resp.get("errmsg"))
+                            or _is_stale_session_ret(ret, errcode, resp.get("errmsg"), used_context_token=(context_token is not None))
                         )
                         # Session expired — strip token and retry once
                         if is_session_expired and not retried_without_token and context_token:

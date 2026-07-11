@@ -236,6 +236,22 @@ _FIDELITY_KIND_PRIORITY = {
     "decision": 2,
     "configuration": 1,
 }
+_FIDELITY_STRUCTURAL_MARKERS = tuple(
+    sorted(
+        {
+            _FIDELITY_LEDGER_START,
+            _FIDELITY_LEDGER_END,
+            SUMMARY_PREFIX,
+            LEGACY_SUMMARY_PREFIX,
+            *_HISTORICAL_SUMMARY_PREFIXES,
+            _SUMMARY_END_MARKER,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+        },
+        key=len,
+        reverse=True,
+    )
+)
 
 # Target explicit language instead of classifying every user turn. False
 # negatives still flow through the normal summarizer; false positives consume
@@ -1601,12 +1617,8 @@ class ContextCompressor(ContextEngine):
     def _normalize_fidelity_text(cls, value: str) -> str:
         """Normalize ledger text and prevent delimiter injection."""
         normalized = redact_sensitive_text(value)
-        normalized = normalized.replace(
-            _FIDELITY_LEDGER_START, "[fidelity marker removed]"
-        )
-        normalized = normalized.replace(
-            _FIDELITY_LEDGER_END, "[fidelity marker removed]"
-        )
+        for marker in _FIDELITY_STRUCTURAL_MARKERS:
+            normalized = normalized.replace(marker, "[compaction marker removed]")
         return re.sub(r"\s+", " ", normalized).strip()[
             :_HIGH_SIGNAL_ANCHOR_MAX_CHARS
         ]

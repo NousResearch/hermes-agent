@@ -2,13 +2,20 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.context_compressor import (
+    LEGACY_SUMMARY_PREFIX,
     SUMMARY_PREFIX,
     ContextCompressor,
     _FIDELITY_LEDGER_END,
     _FIDELITY_LEDGER_MAX_ENTRIES,
     _FIDELITY_LEDGER_START,
     _FIDELITY_LEDGER_TOKEN_BUDGET,
+    _HISTORICAL_SUMMARY_PREFIXES,
+    _MERGED_PRIOR_CONTEXT_HEADER,
+    _MERGED_SUMMARY_DELIMITER,
+    _SUMMARY_END_MARKER,
 )
 from agent.model_metadata import estimate_messages_tokens_rough
 
@@ -58,10 +65,23 @@ def test_invalid_fidelity_ledger_is_left_untouched():
     assert entries == []
 
 
-def test_fidelity_ledger_sanitizes_delimiters_inside_user_text():
+@pytest.mark.parametrize(
+    "marker",
+    [
+        _FIDELITY_LEDGER_START,
+        _FIDELITY_LEDGER_END,
+        SUMMARY_PREFIX,
+        LEGACY_SUMMARY_PREFIX,
+        *_HISTORICAL_SUMMARY_PREFIXES,
+        _SUMMARY_END_MARKER,
+        _MERGED_PRIOR_CONTEXT_HEADER,
+        _MERGED_SUMMARY_DELIMITER,
+    ],
+)
+def test_fidelity_ledger_sanitizes_compaction_markers_inside_user_text(marker: str):
     injected = (
         "We decided to preserve this literal marker: "
-        f"{_FIDELITY_LEDGER_END}"
+        f"{marker}"
     )
 
     merged = ContextCompressor._merge_fidelity_ledger(
@@ -75,10 +95,19 @@ def test_fidelity_ledger_sanitizes_delimiters_inside_user_text():
         (
             "decision",
             "We decided to preserve this literal marker: "
-            "[fidelity marker removed]",
+            "[compaction marker removed]",
         )
     ]
+    assert marker not in restored[0][1]
     assert summary.count(_FIDELITY_LEDGER_END) == 1
+
+    final_handoff = (
+        ContextCompressor._with_summary_prefix(summary)
+        + "\n\n"
+        + _SUMMARY_END_MARKER
+    )
+    assert final_handoff.endswith(_SUMMARY_END_MARKER)
+    assert final_handoff.count(_SUMMARY_END_MARKER) == 1
 
 
 def test_append_replaces_a_valid_ledger_instead_of_nesting_it():
@@ -194,6 +223,9 @@ def test_repeated_compaction_benchmark_retains_all_decisions_without_extra_calls
     assert narrative == "Lossy narrative three."
     assert entries[-1] == ("configuration", "Configure the timeout to 30 seconds.")
     assert summary_body.count(_FIDELITY_LEDGER_START) == 1
+    final_handoff = str(summary_messages[0]["content"])
+    assert final_handoff.endswith(_SUMMARY_END_MARKER)
+    assert final_handoff.count(_SUMMARY_END_MARKER) == 1
 
 
 def test_fallback_merges_prior_ledger_and_truncates_narrative_first():

@@ -743,6 +743,12 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        # Init calibration state for any pre-existing compressor that doesn't
+        # yet carry it (pickling-compat path: anything restored from before
+        # the field was introduced). All new instances get this from the
+        # primary __init__ at line ~1130 below.
+        if not hasattr(self, "rough_to_real_ratio"):
+            self.rough_to_real_ratio = 1.0
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Clear all per-session compaction state at a real session boundary.
@@ -779,6 +785,12 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        # Init calibration state for any pre-existing compressor that doesn't
+        # yet carry it (pickling-compat path: anything restored from before
+        # the field was introduced). All new instances get this from the
+        # primary __init__ at line ~1130 below.
+        if not hasattr(self, "rough_to_real_ratio"):
+            self.rough_to_real_ratio = 1.0
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""
@@ -943,6 +955,12 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.last_compression_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
+        # Init calibration state for any pre-existing compressor that doesn't
+        # yet carry it (pickling-compat path: anything restored from before
+        # the field was introduced). All new instances get this from the
+        # primary __init__ at line ~1130 below.
+        if not hasattr(self, "rough_to_real_ratio"):
+            self.rough_to_real_ratio = 1.0
         self._ineffective_compression_count = 0
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
@@ -1121,6 +1139,22 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        # Init calibration state for any pre-existing compressor that doesn't
+        # yet carry it (pickling-compat path: anything restored from before
+        # the field was introduced). All new instances get this from the
+        # primary __init__ at line ~1130 below.
+        if not hasattr(self, "rough_to_real_ratio"):
+            self.rough_to_real_ratio = 1.0
+        # Calibration ratio between the rough chars/4 estimator and the real
+        # provider-reported prompt_tokens. EMA over recent (real / rough)
+        # pairs so each new response nudges the estimate toward accuracy
+        # without overreacting to a single noisy sample. Used by
+        # ``_calibrate_rough`` and ``should_compress`` to scale up an
+        # underestimating rough estimate BEFORE the threshold check, so
+        # auto-compression fires early enough that the next request fits.
+        # See #62605 — when rough underestimates by 30%, the naive check
+        # fires 3 attempts too late and the provider returns HTTP 400.
+        self.rough_to_real_ratio: float = 1.0
 
         self.summary_model = summary_model_override or ""
         self._session_db: Any = None
@@ -1174,6 +1208,29 @@ class ContextCompressor(ContextEngine):
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens
+            # Calibrate the rough → real ratio when we have a paired sample.
+            # ``last_compression_rough_tokens`` is the estimate that was sent
+            # with the request that produced this response (set by
+            # ``compress()`` and the turn preflight). When it's available
+            # AND the rough estimate came from the calibrated path, blend the
+            # new sample into the EMA so subsequent calls compensate for
+            # systematic underestimate (#62605).
+            if self.last_compression_rough_tokens > 0:
+                sample_ratio = self.last_prompt_tokens / self.last_compression_rough_tokens
+                # EMA weights: 0.5 history + 0.5 new — equal weighting so the
+                # ratio responds within a turn or two, not five. The bug
+                # we're fixing (#62605) is that the rough estimator fires
+                # late by 20-30%; we need calibration to catch up before
+                # the next preflight, so the first calibrated check has
+                # already incorporated the most recent sample.
+                # Capped at 3.0 so a pathological single response (e.g. the
+                # rough estimator undercounted by 5x due to one weird
+                # message) doesn't snowball every future preflight into
+                # firing unconditionally.
+                self.rough_to_real_ratio = min(
+                    3.0,
+                    0.5 * self.rough_to_real_ratio + 0.5 * sample_ratio,
+                )
             if self.last_prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
@@ -1223,14 +1280,53 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = max(baseline, rough_tokens)
         return True
 
+    def _calibrate_rough(self, rough_tokens: int) -> int:
+        """Scale a rough estimate by the learned ``rough_to_real_ratio``.
+
+        Returns ``min(rough * ratio, context_length)`` when history exists,
+        or ``rough`` verbatim when no API response has been observed yet
+        (ratio == 1.0 by construction).
+
+        Capped at ``context_length`` so a runaway ratio from a single noisy
+        sample can't make every future preflight fire unconditionally — the
+        cap also matches the hard limit that would have produced HTTP 400
+        anyway, so calibration can't over-promise.
+
+        Used by ``should_compress`` so the threshold check sees a value
+        that's already adjusted for systematic underestimate in
+        ``estimate_request_tokens_rough`` (#62605).
+        """
+        if self.rough_to_real_ratio <= 1.0:
+            return rough_tokens
+        calibrated = int(rough_tokens * self.rough_to_real_ratio)
+        if calibrated > self.context_length:
+            calibrated = self.context_length
+        return calibrated
+
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
 
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
+
+        When ``prompt_tokens`` is a *rough* estimate (the default for the
+        preflight path), it is first calibrated by the learned
+        ``rough_to_real_ratio`` so a systematically underestimating
+        estimator fires the threshold check at the right time. Without
+        this, payloads that systematically underestimate by 20-30%
+        (schema-heavy / non-English / YAML content — #62605) pass the
+        check, get sent to the provider, and return HTTP 400
+        "total of at least N tokens. Please reduce…" because the real
+        tokens were already past context_length.
         """
-        tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
+        if prompt_tokens is None:
+            tokens = self.last_prompt_tokens
+        else:
+            # Rough path: apply learned calibration. Real-path callers
+            # (post-response update_from_response, manual /compress) pass
+            # the authoritative count and bypass calibration.
+            tokens = self._calibrate_rough(prompt_tokens)
         if tokens < self.threshold_tokens:
             return False
         # Do not trigger compression while the summary LLM is in cooldown.

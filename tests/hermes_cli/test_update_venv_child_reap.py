@@ -138,6 +138,20 @@ def test_snapshot_captures_venv_children_excludes_others_and_backend(_win, tmp_p
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
+def test_snapshot_captures_helpers_with_serve_in_their_name(_win, tmp_path):
+    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
+    mcp = _FakeProc(2000, exe=venv_py, cmdline=[venv_py, "-m", "mcp-server-time"])
+    server = _FakeProc(2001, exe=venv_py, cmdline=[venv_py, "server.py"])
+    gateway = _FakeProc(1000, children=[mcp, server])
+    fake = _fake_psutil({1000: gateway})
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(sys.modules, {"psutil": fake}):
+        captured = cli_main._snapshot_gateway_venv_children([1000])
+
+    assert sorted(pid for pid, _n, _c in captured) == [2000, 2001]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
 def test_snapshot_dedups_across_gateways(_win, tmp_path):
     venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
     shared = _FakeProc(2000, exe=venv_py, cmdline=[venv_py, "mcp.py"])

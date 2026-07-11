@@ -9076,7 +9076,17 @@ def _process_is_desktop_backend(cmdline_low: str) -> bool:
     flow (the venv guard refuses and tells the user to close the app instead).
     Used as a safety exclusion when reaping gateway children.
     """
-    return "serve" in cmdline_low or "dashboard" in cmdline_low
+    try:
+        tokens = [token.strip('"\'').lower() for token in shlex.split(cmdline_low, posix=False)]
+    except ValueError:
+        tokens = cmdline_low.lower().split()
+
+    # Match the module invocation and its immediate subcommand.  Substring
+    # checks misclassify helpers such as ``mcp-server-time`` as ``serve``.
+    for index, token in enumerate(tokens[:-1]):
+        if token == "hermes_cli.main" and tokens[index + 1] in {"serve", "dashboard"}:
+            return True
+    return False
 
 
 def _snapshot_gateway_venv_children(

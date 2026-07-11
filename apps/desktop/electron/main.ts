@@ -236,6 +236,7 @@ import {
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { selectPoolEvictions } from './pool-eviction'
+import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
@@ -9532,6 +9533,21 @@ async function ensureBackend(profile) {
       : connection
   }
 
+  const stopping = poolStopper.inFlight(key)
+
+  if (stopping) {
+    await stopping
+  }
+
+  // A backend for this key may still be dying (idle reap, LRU eviction, a
+  // just-finished delete). Wait for its bounded exit before reusing or
+  // spawning, so two children never share one profile's HERMES_HOME.
+  const stopping = poolStopper.inFlight(key)
+
+  if (stopping) {
+    await stopping
+  }
+
   const existing = backendPool.get(key)
 
   if (existing) {
@@ -9603,6 +9619,12 @@ async function ensureRegistryBackend(connectionId, profile) {
 
     if (localRoute.delegate) {
       return ensureBackend(profile)
+    }
+
+    const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)
+
+    if (stoppingLocal) {
+      await stoppingLocal
     }
 
     const existingLocal = backendPool.get(localRoute.poolKey)
@@ -10024,49 +10046,42 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   }
 }
 
+// Bounded, deduplicated pool teardown (see pool-stop.ts): every stop path —
+// idle reaper, LRU eviction, profile delete/rename, quit — shares one
+// in-flight stop per key and retains the process handle until the bounded
+// SIGTERM -> SIGKILL escalation in waitForBackendExit() resolves. Previously
+// SIGTERM + immediate entry delete dropped the handle and a slow child
+// survived detached under PID 1.
+const poolStopper = createPoolStopper({
+  pool: backendPool,
+  stopChild: child => stopBackendChild(child),
+  waitForExit: child => waitForBackendExit(child)
+})
+
 function stopPoolBackend(profile) {
-  const entry = backendPool.get(profile)
-
-  if (!entry) {
-    return
-  }
-
-  backendPool.delete(profile)
-  stopBackendChild(entry.process)
+  return poolStopper.stop(profile)
 }
 
 async function teardownPoolBackendAndWait(profile) {
-  const entries = localProfilePoolKeys(profile)
-    .map(key => ({ entry: backendPool.get(key), key }))
-    .filter(item => item.entry)
-
-  for (const { entry, key } of entries) {
-    backendPool.delete(key)
-    stopBackendChild(entry.process)
-  }
-
-  await Promise.all(entries.map(({ entry }) => waitForBackendExit(entry.process)))
+  await Promise.all(localProfilePoolKeys(profile).map(key => poolStopper.stop(key)))
 }
 
 function stopAllPoolBackends() {
-  for (const profile of [...backendPool.keys()]) {
-    stopPoolBackend(profile)
-  }
+  return poolStopper.stopAll()
 }
 
 const backendShutdown = createBackendShutdownCoordinator(async () => {
   const primary = backendConnectionState.invalidate()
-  const pooled = [...backendPool.values()].map(entry => entry.process).filter(Boolean)
 
   stopBackendChild(primary)
-  stopAllPoolBackends()
+  const pooledStops = stopAllPoolBackends()
 
   if (poolIdleReaper) {
     clearInterval(poolIdleReaper)
     poolIdleReaper = null
   }
 
-  await Promise.all([waitForBackendExit(primary), ...pooled.map(child => waitForBackendExit(child))])
+  await Promise.all([waitForBackendExit(primary), pooledStops])
 })
 
 async function exitAfterBackendShutdown(code) {

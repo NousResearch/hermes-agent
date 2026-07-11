@@ -7567,6 +7567,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # progress, not work progress.
         else:
             self._clear_restart_replay_marks(session_key)
+            # A turn that did real work is affirmative proof the session is
+            # NOT stuck — reset the stuck-loop restart counter too (the
+            # whole entry).  This restores the original contract of
+            # _clear_restart_failure_count, whose post-turn call site was
+            # lost in the F2-breaker refactor and left it as dead code:
+            # without this, a healthy long-running session that keeps being
+            # *busy* while OTHER sessions restart the shared gateway
+            # accumulates count 1→2→3 across drain-timeout interruptions —
+            # despite completing real turns in between — and
+            # _suspend_stuck_loop_sessions falsely suspends it, which
+            # surfaces to the user as "Session automatically reset ...
+            # history cleared" (2026-07-10 live incident, kanban session
+            # suspended after 3 deploy restarts in a busy evening).
+            try:
+                self._clear_restart_failure_count(session_key)
+            except Exception as exc:
+                logger.debug(
+                    "clear_restart_failure_count failed for %s: %s",
+                    session_key, exc,
+                )
             try:
                 self._resumed_this_boot.discard(session_key)
             except Exception:
@@ -13799,10 +13819,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # compression session_id swap, both of which happen later.  See
             # the call site after the `update_session(...)` write.
 
-            # Successful turn — clear any stuck-loop counter for this session.
-            # This clears the replay-loop breaker window for this session.
-            # The legacy drain-timeout count is independent and is not reset
-            # here.
+            # Successful turn — clear this session's restart-recovery state:
+            # the replay-loop breaker window AND the stuck-loop drain-timeout
+            # counter (a completed real turn is affirmative proof the session
+            # is not stuck; see _apply_post_turn_resume_gate).
             #
             # Also clear the resume_pending flag (set by drain-timeout
             # shutdown) — the turn ran to completion, so recovery

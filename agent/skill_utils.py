@@ -769,13 +769,19 @@ def resolve_skill_config_values(
 
 
 def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
-    """Extract a truncated description from parsed frontmatter."""
+    """Extract a description from parsed frontmatter, capped at 1024 characters.
+
+    The previous 60-character cap truncated most skill descriptions mid-word
+    in the system-prompt skill index, starving the routing model of the
+    detail it needs to pick the right skill. 1024 chars preserves the full
+    intent of typical descriptions while still bounding prompt growth.
+    """
     raw_desc = frontmatter.get("description", "")
     if not raw_desc:
         return ""
     desc = str(raw_desc).strip().strip("'\"")
-    if len(desc) > 60:
-        return desc[:57] + "..."
+    if len(desc) > 1024:
+        return desc[:1021] + "..."
     return desc
 
 

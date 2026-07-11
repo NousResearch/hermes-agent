@@ -8,6 +8,7 @@ from agent.skill_utils import (
     get_external_skills_dirs,
     is_excluded_skill_path,
     is_external_skill_path,
+    extract_skill_description,
     is_skill_support_path,
     iter_skill_index_files,
     resolve_skill_config_values,
@@ -386,3 +387,22 @@ class TestNormalizeSkillLookupName:
         monkeypatch.setattr("agent.skill_utils.get_skills_dir", lambda: tmp_path / "skills")
         outside = str(tmp_path / "outside" / "skill")
         assert normalize_skill_lookup_name(outside) == outside
+
+
+def test_extract_skill_description_cap_allows_up_to_1024_chars():
+    """Skill descriptions feed the system-prompt routing index. The old
+    60-char cap truncated almost everything mid-word; the cap is 1024 now.
+    A 600-char description (well over the old cap) must survive intact."""
+    medium = "x" * 600
+    assert extract_skill_description({"description": medium}) == medium
+
+    # Over 1024 is still truncated with an ellipsis to bound prompt growth.
+    huge = "y" * 2000
+    out = extract_skill_description({"description": huge})
+    assert len(out) == 1024
+    assert out.endswith("...")
+    assert out[:1021] == "y" * 1021
+
+    # Short descriptions are unchanged.
+    assert extract_skill_description({"description": "short"}) == "short"
+    assert extract_skill_description({}) == ""

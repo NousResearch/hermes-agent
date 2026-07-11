@@ -316,7 +316,7 @@ class TestParseSkillFile:
         long_desc = "A" * 100
         skill_file.write_text(f"---\ndescription: {long_desc}\n---\n")
         _, _, desc = _parse_skill_file(skill_file)
-        assert len(desc) <= 60
+        assert len(desc) <= 1024
         assert desc.endswith("...")
 
     def test_nonexistent_file_returns_defaults(self, tmp_path):

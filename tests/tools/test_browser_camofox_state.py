@@ -33,6 +33,21 @@ class TestCamofoxIdentity:
             assert a["user_id"] == b["user_id"]
             assert a["session_key"] != b["session_key"]
 
+    def test_isolated_identity_uses_distinct_users_per_task(self, tmp_path):
+        state = _load_module()
+        with patch.object(state, "get_hermes_home", return_value=tmp_path):
+            a = state.get_camofox_identity("task-a", isolate_task=True)
+            b = state.get_camofox_identity("task-b", isolate_task=True)
+            assert a["user_id"] != b["user_id"]
+            assert a["session_key"] != b["session_key"]
+
+    def test_isolated_identity_is_stable_for_same_task(self, tmp_path):
+        state = _load_module()
+        with patch.object(state, "get_hermes_home", return_value=tmp_path):
+            first = state.get_camofox_identity("task-a", isolate_task=True)
+            second = state.get_camofox_identity("task-a", isolate_task=True)
+            assert first == second
+
     def test_identity_differs_by_profile(self, tmp_path):
         state = _load_module()
         with patch.object(state, "get_hermes_home", return_value=tmp_path / "profile-a"):
@@ -56,7 +71,9 @@ class TestCamofoxConfigDefaults:
         from hermes_cli.config import DEFAULT_CONFIG
 
         browser_cfg = DEFAULT_CONFIG["browser"]
+        assert browser_cfg["camofox"]["mode"] == "standard"
         assert browser_cfg["camofox"]["managed_persistence"] is False
+        assert browser_cfg["camofox"]["isolate_tasks"] is False
         assert browser_cfg["camofox"]["user_id"] == ""
         assert browser_cfg["camofox"]["session_key"] == ""
         assert browser_cfg["camofox"]["adopt_existing_tab"] is False

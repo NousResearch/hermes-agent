@@ -1,0 +1,215 @@
+"""Task-scoped Camofox server process pool.
+
+Each Hermes conversation gets a dedicated Camofox API server.  Because each
+server launches its own Camoufox process and Xvfb display, browser focus,
+contexts, and VNC input cannot cross conversation boundaries.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import signal
+import socket
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Optional
+
+import requests
+
+
+@dataclass
+class CamofoxInstance:
+    task_id: str
+    api_port: int
+    vnc_port: int
+    novnc_port: int
+    process: subprocess.Popen
+    viewer_process: Optional[subprocess.Popen] = None
+
+    @property
+    def api_url(self) -> str:
+        return f"http://127.0.0.1:{self.api_port}"
+
+    @property
+    def viewer_url(self) -> str:
+        return (
+            f"http://127.0.0.1:{self.novnc_port}/vnc.html"
+            "?autoconnect=1&reconnect=1&reconnect_delay=2000&resize=scale"
+        )
+
+
+class CamofoxInstancePool:
+    """Own one independent headed Camofox server per Hermes task."""
+
+    def __init__(
+        self,
+        server_dir: Path,
+        *,
+        port_start: int = 19400,
+        port_end: int = 19999,
+        startup_timeout: float = 60.0,
+        launch_viewer: bool = False,
+        viewer_executable: Path = Path("~/.cache/camoufox/camoufox"),
+        viewer_profile_root: Path = Path("~/.camoufox-hermes-thread-viewers"),
+    ) -> None:
+        self.server_dir = Path(server_dir).expanduser().resolve()
+        self.port_start = port_start
+        self.port_end = port_end
+        self.startup_timeout = startup_timeout
+        self.launch_viewer = launch_viewer
+        self.viewer_executable = Path(viewer_executable).expanduser().resolve()
+        self.viewer_profile_root = Path(viewer_profile_root).expanduser().resolve()
+        self._instances: Dict[str, CamofoxInstance] = {}
+        self._lock = threading.RLock()
+
+    def _ports_for_task(self, task_id: str) -> tuple[int, int, int]:
+        slots = (self.port_end - self.port_start + 1) // 3
+        if slots < 1:
+            raise ValueError("Camofox instance port range must contain at least three ports")
+        initial = int.from_bytes(hashlib.sha256(task_id.encode()).digest()[:4], "big") % slots
+        for offset in range(slots):
+            slot = (initial + offset) % slots
+            ports = tuple(self.port_start + slot * 3 + index for index in range(3))
+            if all(self._port_available(port) for port in ports):
+                return ports  # type: ignore[return-value]
+        raise RuntimeError("No free task-scoped Camofox port triple is available")
+
+    @staticmethod
+    def _port_available(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", port))
+            except OSError:
+                return False
+        return True
+
+    def get_or_start(self, task_id: Optional[str]) -> CamofoxInstance:
+        key = task_id or "default"
+        with self._lock:
+            current = self._instances.get(key)
+            if current and current.process.poll() is None:
+                return current
+            if current:
+                self._instances.pop(key, None)
+
+            if not (self.server_dir / "server.js").is_file():
+                raise RuntimeError(f"Camofox server.js not found under {self.server_dir}")
+
+            api_port, vnc_port, novnc_port = self._ports_for_task(key)
+            env = os.environ.copy()
+            env.update({
+                "CAMOFOX_PORT": str(api_port),
+                "VNC_PORT": str(vnc_port),
+                "NOVNC_PORT": str(novnc_port),
+                "VNC_BIND": "127.0.0.1",
+                "NODE_ENV": "production",
+            })
+            process = subprocess.Popen(
+                ["node", "server.js"],
+                cwd=self.server_dir,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            instance = CamofoxInstance(key, api_port, vnc_port, novnc_port, process)
+            self._instances[key] = instance
+
+        try:
+            self._wait_until_ready(instance)
+        except Exception:
+            self.stop(key)
+            raise
+        return instance
+
+    def ensure_viewer(self, instance: CamofoxInstance) -> None:
+        """Launch the popup only after this instance's noVNC endpoint is live."""
+        if not self.launch_viewer or (
+            instance.viewer_process and instance.viewer_process.poll() is None
+        ):
+            return
+        deadline = time.monotonic() + self.startup_timeout
+        last_error = "not ready"
+        while time.monotonic() < deadline:
+            try:
+                response = requests.get(instance.viewer_url, timeout=1)
+                if response.status_code == 200:
+                    self._launch_viewer(instance)
+                    return
+                last_error = f"HTTP {response.status_code}"
+            except requests.RequestException as exc:
+                last_error = str(exc)
+            time.sleep(0.2)
+        raise RuntimeError(f"Task-scoped Camofox noVNC did not become ready: {last_error}")
+
+    def _launch_viewer(self, instance: CamofoxInstance) -> None:
+        """Open a dedicated native popup showing this instance's VNC display."""
+        if not self.viewer_executable.is_file():
+            raise RuntimeError(f"Camoufox viewer executable not found: {self.viewer_executable}")
+        digest = hashlib.sha256(instance.task_id.encode()).hexdigest()[:16]
+        profile_dir = self.viewer_profile_root / digest
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        instance.viewer_process = subprocess.Popen(
+            [
+                str(self.viewer_executable),
+                "--new-instance",
+                "--profile",
+                str(profile_dir),
+                instance.viewer_url,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    def _wait_until_ready(self, instance: CamofoxInstance) -> None:
+        deadline = time.monotonic() + self.startup_timeout
+        last_error = "not ready"
+        while time.monotonic() < deadline:
+            if instance.process.poll() is not None:
+                raise RuntimeError(
+                    f"Task-scoped Camofox exited during startup ({instance.process.returncode})"
+                )
+            try:
+                response = requests.get(f"{instance.api_url}/health", timeout=1)
+                if response.status_code == 200:
+                    return
+                last_error = f"HTTP {response.status_code}"
+            except requests.RequestException as exc:
+                last_error = str(exc)
+            time.sleep(0.2)
+        raise RuntimeError(f"Task-scoped Camofox did not become ready: {last_error}")
+
+    def stop(self, task_id: Optional[str]) -> None:
+        key = task_id or "default"
+        with self._lock:
+            instance = self._instances.pop(key, None)
+        if not instance or instance.process.poll() is not None:
+            return
+        if instance.viewer_process and instance.viewer_process.poll() is None:
+            os.killpg(os.getpgid(instance.viewer_process.pid), signal.SIGTERM)
+            try:
+                instance.viewer_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(instance.viewer_process.pid), signal.SIGKILL)
+                instance.viewer_process.wait(timeout=5)
+        if instance.process.poll() is None:
+            os.killpg(os.getpgid(instance.process.pid), signal.SIGTERM)
+        try:
+            instance.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(instance.process.pid), signal.SIGKILL)
+            instance.process.wait(timeout=5)
+
+    def stop_all(self) -> None:
+        with self._lock:
+            task_ids = list(self._instances)
+        for task_id in task_ids:
+            self.stop(task_id)

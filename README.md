@@ -58,6 +58,12 @@ If you already have Git installed, the installer detects it and uses that instea
 >
 > **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
 
+### Response guard
+
+Hermes includes a lightweight, built-in **response guard** that detects persuasion-bomb and sycophancy patterns in model output — for example, unqualified certainty, aggressive refusal rhetoric, excessive flattery, or attempts to override system instructions. When the guard triggers, it logs at verbose level and, for moderate-to-severe cases, rewrites the response to a safe fallback before it reaches the user. The guard runs on every assistant response and is designed to add well under a millisecond of overhead for typical message sizes.
+
+The detector lives in `agent/response_guard.py` and is wired into the conversation loop in `agent/conversation_loop.py`. See the module docstring and `tests/agent/test_response_guard.py` for the pattern catalog and behavior.
+
 After installation:
 
 ```bash

@@ -150,9 +150,11 @@ create/update a cron job
       (authenticated with the agent's existing Nous token)
   → at fire time Nous calls the gateway: POST {callback_url}/api/cron/fire
       (authenticated with a short-lived, purpose-scoped Nous-minted JWT)
-  → the gateway verifies the token, claims the job (store compare-and-set so
-    multi-replica deployments fire at-most-once), runs it, and re-arms the next
-    one-shot
+  → the gateway verifies the token, claims the job (store compare-and-set
+    de-duplicates normal retries during the bounded claim window), runs it, and
+    re-arms the next one-shot. Full-run exclusion is only guaranteed between
+    same-host processes sharing a lock-capable local cron store; the claim is
+    not a renewable distributed lease
 ```
 
 Config (all non-secret; on hosted agents Nous sets these at provision time):
@@ -280,7 +282,21 @@ Cron-run sessions have the `cronjob` toolset disabled. This prevents:
 
 ## Locking
 
-The scheduler uses cross-process file-based locking (`fcntl.flock` on Unix, `msvcrt.locking` on Windows) to prevent overlapping ticks from executing the same due-job batch twice — even between the gateway's in-process ticker and a standalone `hermes cron` / manual `tick()` call. If the lock cannot be acquired, `tick()` returns 0 immediately.
+The short-lived tick lock prevents duplicate dispatch scans. Recurring jobs also
+hold a per-job OS advisory lock from **before** `next_run_at` advancement through
+execution, output save, delivery, and `mark_job_run`. Its path is derived from
+the active `cron.jobs` store context, so equal IDs in two profile stores remain
+independent while callers with different runtime homes still contend when they
+address the same store. One-shots continue to use their durable store claim.
+
+This full-run guarantee is deliberately limited to **same-host processes sharing
+the active cron store on a filesystem with normal local advisory-lock semantics**.
+It is not a distributed lease and does not promise correct full-run ownership on
+NFS/SMB or between hosts. Lock contention skips without mutating the schedule;
+lock open/backend/permission failures are logged with the path and fail that
+recurring dispatch closed. On POSIX, inherited descriptors are closed in a bare
+fork child without issuing an unlock; Python's non-inheritable descriptors also
+prevent ownership leaking through subprocess `exec`.
 
 ## CLI Interface
 

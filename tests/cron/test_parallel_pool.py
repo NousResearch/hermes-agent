@@ -82,7 +82,7 @@ class TestRunningJobGuard:
         sched._running_job_ids.add("guard-job")
 
         dispatched = []
-        monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+        monkeypatch.setattr(sched, "get_due_jobs", lambda **_kwargs: [job])
         monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: dispatched.append(j["id"]) or (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
@@ -115,7 +115,7 @@ class TestSyncMode:
             for i in range(3)
         ]
 
-        monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
+        monkeypatch.setattr(sched, "get_due_jobs", lambda **_kwargs: jobs)
         monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
@@ -151,7 +151,7 @@ class TestSyncMode:
             barrier.wait()  # blocks until test thread also waits
             return True, "out", "resp", None
 
-        monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+        monkeypatch.setattr(sched, "get_due_jobs", lambda **_kwargs: [job])
         monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", slow_run)
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
@@ -205,7 +205,7 @@ class TestSequentialPool:
             barrier.wait()
             return True, "out", "resp", None
 
-        monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+        monkeypatch.setattr(sched, "get_due_jobs", lambda **_kwargs: [job])
         monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", slow_run)
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
@@ -247,7 +247,7 @@ class TestSequentialPool:
         sched._running_job_ids.add("guard-seq")
 
         dispatched = []
-        monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+        monkeypatch.setattr(sched, "get_due_jobs", lambda **_kwargs: [job])
         monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: dispatched.append(j["id"]) or (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)

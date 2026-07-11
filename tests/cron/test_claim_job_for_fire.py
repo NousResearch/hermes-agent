@@ -1,8 +1,8 @@
 """Tests for the store-level CAS fire claim (Phase 4C).
 
-`claim_job_for_fire` gives multi-machine at-most-once semantics when an external
-scheduler (Chronos) fires a job: across N gateway replicas, exactly ONE wins the
-claim for a given fire. Single-machine deployments always win (unaffected).
+`claim_job_for_fire` gives bounded retry de-duplication when an external
+scheduler (Chronos) fires a job: one gateway replica wins while the expiring
+store claim remains fresh. It is not a renewable distributed full-run lease.
 
 These exercise the real store against a temp HERMES_HOME (no mocks) per the
 E2E-over-mocks discipline for file-touching code.

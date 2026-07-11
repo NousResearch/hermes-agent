@@ -140,6 +140,17 @@ def use_cron_store(home: Union[str, Path]):
         _cron_store_override.reset(token)
 
 
+def get_cron_store_dir() -> Path:
+    """Return the cron directory for the active profile/store context.
+
+    Scheduler coordination artifacts must use this accessor so they share the
+    exact ContextVar-selected store used by claims, advancement, output, and
+    completion marking. Runtime ``HERMES_HOME`` alone is not sufficient because
+    dashboard/profile calls may temporarily route one process to another store.
+    """
+    return _current_cron_store().cron_dir
+
+
 def get_cron_output_dir() -> Path:
     """Return the output directory for the active cron store context."""
     return _current_cron_store().output_dir
@@ -1655,7 +1666,12 @@ def heartbeat_run_claim(job_id: str, *, expected_owner: str) -> bool:
     return False
 
 
-def advance_next_run(job_id: str) -> bool:
+def advance_next_run(
+    job_id: str,
+    *,
+    expected_next_run_at: Optional[str] = None,
+    expected_schedule_kind: Optional[str] = None,
+) -> bool:
     """Preemptively advance next_run_at for a recurring job before execution.
 
     Call this BEFORE run_job() so that if the process crashes mid-execution,
@@ -1665,13 +1681,27 @@ def advance_next_run(job_id: str) -> bool:
 
     One-shot jobs are left unchanged so they can still retry on restart.
 
-    Returns True if next_run_at was advanced, False otherwise.
+    When expected state is supplied, the transition is compare-and-set: a
+    stale due snapshot, pause/disable, or schedule-kind change returns False
+    without mutating the record. Returns True only when next_run_at advanced.
     """
     with _jobs_lock():
         jobs = load_jobs()
         for job in jobs:
             if job["id"] == job_id:
+                if not job.get("enabled", True) or job.get("state") == "paused":
+                    return False
                 kind = job.get("schedule", {}).get("kind")
+                if (
+                    expected_schedule_kind is not None
+                    and kind != expected_schedule_kind
+                ):
+                    return False
+                if (
+                    expected_next_run_at is not None
+                    and job.get("next_run_at") != expected_next_run_at
+                ):
+                    return False
                 if kind not in {"cron", "interval"}:
                     return False
                 now = _hermes_now().isoformat()
@@ -1701,16 +1731,24 @@ def _machine_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
-def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
-    """Atomically claim a job for a single external 'fire' (multi-machine
-    at-most-once). Returns True iff THIS caller won the claim.
+def claim_job_for_fire(
+    job_id: str,
+    *,
+    claim_ttl_seconds: int = 300,
+    expected_schedule_kind: Optional[str] = None,
+) -> bool:
+    """Atomically claim one external fire for bounded retry de-duplication.
 
-    Used by the external-provider fire path (``CronScheduler.fire_due``) when an
-    external scheduler (Chronos) signals a job is due across N gateway replicas:
-    exactly one wins. Single-machine deployments always win.
+    Used by ``CronScheduler.fire_due`` when an external scheduler signals a job
+    across gateway replicas sharing the active store. Exactly one caller wins
+    while the claim is fresh. This is not a renewable full-run distributed
+    lease: after ``claim_ttl_seconds`` a different host may reclaim a still-live
+    run. Same-host recurring full-run ownership is handled separately by the
+    scheduler's per-job advisory lock.
 
-    Under the file lock: reject if the job is missing/disabled/paused. If a
-    fresh claim (younger than ``claim_ttl_seconds``) already exists, lose.
+    Under the jobs-file lock: reject if the job is missing/disabled/paused or
+    no longer has ``expected_schedule_kind`` (when supplied). If a fresh claim
+    (younger than ``claim_ttl_seconds``) already exists, lose.
     Otherwise stamp a ``fire_claim`` and, for recurring jobs, advance
     ``next_run_at`` (mirrors ``advance_next_run``'s at-most-once bump so a stale
     re-delivery for the old time can't re-fire). One-shots keep ``next_run_at``
@@ -1718,9 +1756,9 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
     ``mark_job_run`` clears the claim on completion so a re-armed recurring job
     is claimable again next fire.
 
-    The stale-claim TTL means a machine that crashed after claiming but before
-    completing doesn't wedge the job forever — after the TTL another fire can
-    reclaim it.
+    The stale-claim TTL prevents a crashed caller from wedging external fires
+    forever, but also bounds the cross-host de-duplication window. It deliberately
+    does not claim full-run distributed ownership.
     """
     with _jobs_lock():
         jobs = load_jobs()
@@ -1728,6 +1766,12 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
             if job["id"] != job_id:
                 continue
             if not job.get("enabled", True) or job.get("state") == "paused":
+                return False
+            kind = job.get("schedule", {}).get("kind")
+            if (
+                expected_schedule_kind is not None
+                and kind != expected_schedule_kind
+            ):
                 return False
             now = _hermes_now()
             existing = job.get("fire_claim")
@@ -1746,7 +1790,6 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
                 except Exception:
                     pass  # malformed claim → overwrite
             job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
-            kind = job.get("schedule", {}).get("kind")
             if kind in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
                 if nxt:
@@ -1756,7 +1799,7 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
         return False
 
 
-def get_due_jobs() -> List[Dict[str, Any]]:
+def get_due_jobs(*, defer_recurring_advance: bool = False) -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now.
 
     For recurring jobs (cron/interval), if the scheduled time is stale (more
@@ -1767,14 +1810,24 @@ def get_due_jobs() -> List[Dict[str, Any]]:
     still fires ONCE now. This prevents the perpetual-defer loop (#33315) where
     a job whose runtime exceeds ``interval + grace`` would be skipped forever.
 
+    ``defer_recurring_advance`` leaves a stale recurring job's persisted
+    ``next_run_at`` untouched while still returning it as due. The scheduler
+    uses this mode so it can acquire per-job run ownership before the atomic
+    advance; callers that only inspect due jobs retain the historical eager
+    fast-forward behavior by default.
+
     Note: firing once on catch-up flows through ``mark_job_run``, so a job with
     a ``repeat.times`` limit consumes one of its runs on that catch-up fire.
     """
     with _jobs_lock():
-        return _get_due_jobs_locked()
+        return _get_due_jobs_locked(
+            defer_recurring_advance=defer_recurring_advance
+        )
 
 
-def _get_due_jobs_locked() -> List[Dict[str, Any]]:
+def _get_due_jobs_locked(
+    *, defer_recurring_advance: bool = False
+) -> List[Dict[str, Any]]:
     """Inner implementation of get_due_jobs(); must be called with _jobs_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
@@ -2001,31 +2054,32 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     # Job is past its catch-up grace window — skip accumulated
                     # missed runs but still execute once now to avoid deferring
                     # indefinitely (e.g. a long-running job just finished).
-                    new_next = compute_next_run(schedule, now.isoformat())
-                    if new_next:
+                    if defer_recurring_advance:
                         logger.info(
                             "Job '%s' missed its scheduled time (%s, grace=%ds). "
-                            "Running now; next run provisionally set to: %s "
-                            "(re-anchored on completion)",
+                            "Running now after per-job ownership advances the schedule",
                             job.get("name", job.get("id", "?")),
                             next_run,
                             grace,
-                            new_next,
                         )
-                        # Persist the fast-forward to storage now (skip accumulated
-                        # slots). In the built-in ticker path this is shortly
-                        # overwritten by advance_next_run + mark_job_run, but it is
-                        # NOT redundant: it (a) protects the crash window between
-                        # here and mark_job_run, and (b) covers the external
-                        # fire_due provider path, which does not call
-                        # advance_next_run. mark_job_run re-anchors next_run_at off
-                        # the actual completion time, so this value is provisional.
-                        for rj in raw_jobs:
-                            if rj["id"] == job["id"]:
-                                rj["next_run_at"] = new_next
-                                needs_save = True
-                                break
-                        # Fall through to due.append(job) — execute once now
+                    else:
+                        new_next = compute_next_run(schedule, now.isoformat())
+                        if new_next:
+                            logger.info(
+                                "Job '%s' missed its scheduled time (%s, grace=%ds). "
+                                "Running now; next run provisionally set to: %s "
+                                "(re-anchored on completion)",
+                                job.get("name", job.get("id", "?")),
+                                next_run,
+                                grace,
+                                new_next,
+                            )
+                            for rj in raw_jobs:
+                                if rj["id"] == job["id"]:
+                                    rj["next_run_at"] = new_next
+                                    needs_save = True
+                                    break
+                    # Fall through to due.append(job) — execute once now.
 
                 # One-shot dispatch-limit guard (issue #38758): a finite one-shot
                 # claimed via claim_dispatch() but whose tick died before

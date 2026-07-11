@@ -338,7 +338,9 @@ def test_fire_due_default_claims_then_runs(monkeypatch):
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
+    monkeypatch.setattr(
+        jobs, "claim_job_for_fire", lambda jid, **_kw: True, raising=False
+    )
     monkeypatch.setattr(jobs, "get_job", lambda jid: {"id": jid, "name": "t"})
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
 

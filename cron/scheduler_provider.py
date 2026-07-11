@@ -19,9 +19,13 @@ selected via the `cron.provider` config key (empty = built-in).
 """
 from __future__ import annotations
 
+import logging
 import threading
 from abc import ABC, abstractmethod
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 class CronScheduler(ABC):
@@ -86,23 +90,71 @@ class CronScheduler(ABC):
         """Run a single job NOW via the shared orchestrator. Called by the
         inbound fire webhook when an external scheduler signals a job is due.
 
-        The default claims the job with a store-level compare-and-set
-        (multi-machine at-most-once), then runs it via the shared
-        ``run_one_job`` body. Built-in never calls this (it has its own tick
-        loop); an external provider routes its inbound fire here.
+        The default uses the store compare-and-set to de-duplicate normal
+        external retries, then runs through the shared ``run_one_job`` body.
+        Recurring jobs first take same-host full-run ownership in the active
+        cron store. The store claim expires after 300 seconds and is not a
+        renewable distributed full-run lease (see the Chronos contract).
 
         Returns True if THIS caller claimed and ran the job, False if the claim
         was lost (another machine/retry won it) or the job no longer exists.
         """
-        from cron.jobs import claim_job_for_fire, get_job
-        from cron.scheduler import run_one_job
+        from cron.jobs import claim_job_for_fire, get_cron_store_dir, get_job
+        from cron.scheduler import (
+            _JobRunLockError,
+            _try_acquire_job_run_lock,
+            run_one_job,
+        )
 
-        if not claim_job_for_fire(job_id):
-            return False  # another machine already claimed this fire
+        # Inspect first so external one-shots retain their durable store-claim
+        # path without depending on the recurring local-lock backend.
         job = get_job(job_id)
         if job is None:
-            return False  # job removed (e.g. repeat-N exhausted) between arm and fire
-        return run_one_job(job, adapters=adapters, loop=loop)
+            return False
+        schedule = job.get("schedule")
+        schedule_kind = schedule.get("kind") if isinstance(schedule, dict) else None
+
+        run_lock = None
+        if schedule_kind in {"cron", "interval"}:
+            # This lock is same-host ownership for processes sharing the active
+            # cron store. The fire_claim CAS still de-dupes normal external
+            # retries, but it is a 300s expiring claim, not a distributed
+            # full-run lease; see docs/chronos-managed-cron-contract.md.
+            try:
+                run_lock = _try_acquire_job_run_lock(job_id)
+            except _JobRunLockError as exc:
+                logger.error(
+                    "External fire for recurring job '%s' refused: %s; "
+                    "same-host ownership cannot be verified",
+                    job_id,
+                    exc,
+                )
+                return False
+            if run_lock is None:
+                logger.info(
+                    "External fire for recurring job '%s' skipped: another "
+                    "same-host process owns it in cron store %s",
+                    job_id,
+                    get_cron_store_dir(),
+                )
+                return False
+
+        try:
+            if not claim_job_for_fire(
+                job_id, expected_schedule_kind=schedule_kind
+            ):
+                return False
+            claimed_job = get_job(job_id)
+            if claimed_job is None:
+                return False
+            return run_one_job(
+                claimed_job, adapters=adapters, loop=loop, _run_lock=run_lock
+            )
+        finally:
+            if run_lock is not None:
+                # run_one_job also releases after delivery/mark. Idempotence
+                # covers claim/get failures before the run body starts.
+                run_lock.release()
 
     def reconcile(self) -> None:
         """Converge the external registry toward jobs.json (the desired state):

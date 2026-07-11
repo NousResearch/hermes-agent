@@ -2108,7 +2108,19 @@ def run_conversation(
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
                     agent.context_compressor.update_from_response(usage_dict)
+                elif getattr(
+                    agent.context_compressor,
+                    "awaiting_real_usage_after_compression",
+                    False,
+                ):
+                    # A response with no usage cannot adjudicate whether the
+                    # prior compaction cleared the threshold. Consume the pending
+                    # verdict now so a much later, unrelated reading is not
+                    # charged to that old compaction, and so preflight deferral
+                    # does not remain latched indefinitely.
+                    agent.context_compressor.update_from_response({})
 
+                if hasattr(response, 'usage') and response.usage:
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed
                     # from the error message), not guessed probe tiers.

@@ -116,15 +116,17 @@ def _resolve_board_id_or_name(value: str) -> str:
 
 
 def _board_counts(slug: str) -> dict[str, int]:
-    kanban_db.init_db(board=slug)
-    conn = kanban_db.connect(board=slug)
-    try:
+    # One connection per board, one GROUP BY query. ``connect`` auto-runs the
+    # schema/migration pass on first open, so the separate ``init_db`` call
+    # (which opened and threw away its own connection) is redundant — dropping
+    # it halves the connections ``list_boards`` opens while enumerating boards.
+    # Boards are separate SQLite files, so per-board counts genuinely need one
+    # connection each; the query itself stays single.
+    with kanban_db.connect_closing(board=slug) as conn:
         rows = conn.execute(
             "SELECT status, COUNT(*) AS count FROM tasks GROUP BY status"
         ).fetchall()
         return {row["status"]: int(row["count"]) for row in rows}
-    finally:
-        conn.close()
 
 
 def _board_dto(meta: dict[str, Any], *, current: str) -> dict[str, Any]:
@@ -507,7 +509,7 @@ def task_events(
 ) -> dict[str, Any]:
     with _connection(board) as conn:
         _require_task(conn, task_id)
-        events = kanban_db.list_events(conn, task_id)[-limit:]
+        events = kanban_db.list_events(conn, task_id, limit=limit)
         items = [
             {
                 "id": event.id,
@@ -529,7 +531,7 @@ def task_runs(
 ) -> dict[str, Any]:
     with _connection(board) as conn:
         _require_task(conn, task_id)
-        runs = kanban_db.list_runs(conn, task_id)[-limit:]
+        runs = kanban_db.list_runs(conn, task_id, limit=limit)
         items = [
             {
                 "id": run.id,

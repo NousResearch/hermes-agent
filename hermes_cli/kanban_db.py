@@ -3202,11 +3202,33 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
     return att
 
 
-def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
-    rows = conn.execute(
-        "SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at ASC, id ASC",
-        (task_id,),
-    ).fetchall()
+def list_events(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    limit: Optional[int] = None,
+) -> list[Event]:
+    """Return events for ``task_id`` in ascending (oldest-first) order.
+
+    When ``limit`` is set, return only the most recent ``limit`` events,
+    still ordered oldest-first. The LIMIT is applied in SQL (newest N, then
+    re-sorted ascending) rather than by slicing a fully materialised list, so
+    long histories don't load every row.
+    """
+    if limit is not None:
+        rows = conn.execute(
+            "SELECT * FROM ("
+            "  SELECT * FROM task_events WHERE task_id = ? "
+            "  ORDER BY created_at DESC, id DESC LIMIT ?"
+            ") ORDER BY created_at ASC, id ASC",
+            (task_id, int(limit)),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM task_events WHERE task_id = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (task_id,),
+        ).fetchall()
     out = []
     for r in rows:
         try:
@@ -8776,6 +8798,7 @@ def list_runs(
     include_active: bool = True,
     state_type: Optional[str] = None,
     state_name: Optional[str] = None,
+    limit: Optional[int] = None,
 ) -> list[Run]:
     """Return all runs for ``task_id`` in start order.
 
@@ -8786,20 +8809,32 @@ def list_runs(
     When ``state_type`` and ``state_name`` are set, restrict to rows
     where that column equals ``state_name`` (``state_type`` is
     ``status`` or ``outcome``). Both must be passed together.
+
+    When ``limit`` is set, return only the most recent ``limit`` runs, still
+    ordered oldest-first. The LIMIT is applied in SQL (newest N, then
+    re-sorted ascending) so long attempt histories don't load every row.
     """
     if (state_type is None) ^ (state_name is None):
         raise ValueError("state_type and state_name must both be set or both omitted")
     if state_type is not None:
         if state_type not in ("status", "outcome"):
             raise ValueError("state_type must be 'status' or 'outcome'")
-    q = "SELECT * FROM task_runs WHERE task_id = ?"
+    where = "WHERE task_id = ?"
     params: list[Any] = [task_id]
     if not include_active:
-        q += " AND ended_at IS NOT NULL"
+        where += " AND ended_at IS NOT NULL"
     if state_type is not None:
-        q += f" AND {state_type} = ?"
+        where += f" AND {state_type} = ?"
         params.append(state_name)
-    q += " ORDER BY started_at ASC, id ASC"
+    if limit is not None:
+        q = (
+            f"SELECT * FROM (SELECT * FROM task_runs {where} "
+            "ORDER BY started_at DESC, id DESC LIMIT ?) "
+            "ORDER BY started_at ASC, id ASC"
+        )
+        params.append(int(limit))
+    else:
+        q = f"SELECT * FROM task_runs {where} ORDER BY started_at ASC, id ASC"
     rows = conn.execute(q, params).fetchall()
     return [Run.from_row(r) for r in rows]
 

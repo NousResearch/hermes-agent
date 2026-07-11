@@ -196,7 +196,7 @@ class TestNonStreamingSibling:
         agent = _make_fallback_agent(fallback_model=[])
         agent._consecutive_stale_streams = 3
 
-        with pytest.raises(RuntimeError, match="unresponsive"):
+        with pytest.raises(TimeoutError, match="unresponsive"):
             agent._interruptible_api_call({})
 
         # The client is never touched on the short-circuit path.

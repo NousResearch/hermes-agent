@@ -228,7 +228,7 @@ def _check_stale_giveup(agent) -> None:
     _giveup = env_int("HERMES_STREAM_STALE_GIVEUP", 5)
     _streak = _stale_streak(agent)
     if _giveup > 0 and _streak >= _giveup:
-        raise RuntimeError(
+        raise TimeoutError(
             "Provider has been unresponsive (no response received) for "
             f"{_streak} consecutive stale attempts — aborting this call to "
             "avoid an indefinite stall. Switch models or start a new "

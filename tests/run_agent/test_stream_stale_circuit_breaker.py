@@ -68,7 +68,7 @@ class TestStreamStaleCircuitBreaker:
         agent._consecutive_stale_streams = 3  # simulate prior wedged turns
 
         # The stream must never be opened on the short-circuit path.
-        with pytest.raises(RuntimeError, match="unresponsive"):
+        with pytest.raises(TimeoutError, match="unresponsive"):
             agent._interruptible_streaming_api_call({})
 
         agent._anthropic_client.messages.stream.assert_not_called()

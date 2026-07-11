@@ -593,6 +593,20 @@ class VideoLibraryStore:
             )
             return dict(conn.execute("SELECT * FROM analysis_jobs WHERE id = ?", (job_id,)).fetchone())
 
+    def latest_analysis_job(self, asset_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return _row(
+                conn.execute(
+                    """
+                    SELECT * FROM analysis_jobs
+                    WHERE asset_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (asset_id,),
+                ).fetchone()
+            )
+
     def update_analysis_job(
         self,
         job_id: str,

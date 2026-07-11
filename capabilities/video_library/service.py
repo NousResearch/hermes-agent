@@ -56,6 +56,7 @@ class VideoLibraryService:
         self.store = store or VideoLibraryStore()
         self.semantic_analyzer = semantic_analyzer
         self.taxonomy = taxonomy
+        self.analyzer_version = ANALYZER_VERSION + ("+semantic-v1" if semantic_analyzer is not None else "")
 
     def import_asset(self, source_path: Path | str) -> dict[str, Any]:
         return self.store.import_asset(source_path)
@@ -98,7 +99,7 @@ class VideoLibraryService:
         asset = self.store.get_asset(asset_id)
         if asset is None:
             raise KeyError(f"unknown video asset: {asset_id}")
-        job = self.store.create_analysis_job(asset_id, analyzer_version=ANALYZER_VERSION)
+        job = self.store.create_analysis_job(asset_id, analyzer_version=self.analyzer_version)
         self.store.update_analysis_job(job["id"], state="running", progress=5)
         source = Path(asset["managed_path"])
         asset_clip_dir = self.store.clips_dir / asset_id

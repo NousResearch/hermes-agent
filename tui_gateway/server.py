@@ -9567,6 +9567,11 @@ def _(rid, params: dict) -> dict:
     inherited_attachment_roots = [
         str(root) for root in _desktop_attachment_allowed_file_roots(session)
     ]
+    branch_model_config = {"_branched_from": old_key}
+    if inherited_attachment_roots:
+        branch_model_config[_DESKTOP_ATTACHMENT_ROOTS_CONFIG_KEY] = (
+            inherited_attachment_roots
+        )
     try:
         if branch_name:
             title = branch_name
@@ -9586,10 +9591,7 @@ def _(rid, params: dict) -> dict:
             # the parent live (no end_reason='branched'), so the legacy
             # end_reason heuristic never matches it — the marker is the only
             # thing that surfaces TUI branches. See issue #20856.
-            model_config={
-                "_branched_from": old_key,
-                _DESKTOP_ATTACHMENT_ROOTS_CONFIG_KEY: inherited_attachment_roots,
-            },
+            model_config=branch_model_config,
             parent_session_id=old_key,
             cwd=_session_cwd(session),
         )

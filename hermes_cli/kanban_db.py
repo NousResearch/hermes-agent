@@ -5738,6 +5738,10 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    interrupted: list[str] = field(default_factory=list)
+    """Task ids requeued after their owning gateway marked the active run for
+    an intentional shutdown. These preserve the existing retry budget and are
+    excluded from systemic-crash fingerprinting."""
     skipped_locked: bool = False
     """True when this tick was skipped because another process already held
     the board's dispatch lock (issue #35240). A losing dispatcher does no
@@ -5823,6 +5827,79 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     except Exception:
         pass
     return ("unknown", None)
+
+
+def mark_gateway_shutdown_workers(
+    conn: sqlite3.Connection,
+    *,
+    claimer: Optional[str] = None,
+) -> list[str]:
+    """Durably mark this dispatcher's active workers before gateway teardown.
+
+    The service manager terminates the gateway and its worker subprocesses in
+    the same shutdown window. The next gateway process cannot observe the old
+    process's in-memory reap registry, so without this marker all dead PIDs
+    collapse to the same ``pid N not alive`` fingerprint and can trip the
+    systemic crash breaker. Mark only the exact ``host:pid`` claimer so an
+    embedded gateway never claims workers owned by an external dispatcher.
+    """
+    owner = claimer or _claimer_id()
+    marked: list[str] = []
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id, worker_pid, claim_lock, current_run_id FROM tasks "
+            "WHERE status = 'running' AND worker_pid IS NOT NULL "
+            "AND claim_lock = ?",
+            (owner,),
+        ).fetchall()
+        for row in rows:
+            pid = int(row["worker_pid"])
+            run_id = row["current_run_id"]
+            latest = conn.execute(
+                "SELECT payload FROM task_events "
+                "WHERE task_id = ? AND kind = 'gateway_shutdown_pending' "
+                "AND run_id IS ? ORDER BY id DESC LIMIT 1",
+                (row["id"], run_id),
+            ).fetchone()
+            if latest:
+                try:
+                    payload = json.loads(latest["payload"] or "{}")
+                except Exception:
+                    payload = {}
+                if payload.get("pid") == pid and payload.get("claimer") == owner:
+                    continue
+            _append_event(
+                conn,
+                row["id"],
+                "gateway_shutdown_pending",
+                {"pid": pid, "claimer": owner},
+                run_id=(int(run_id) if run_id is not None else None),
+            )
+            marked.append(row["id"])
+    return marked
+
+
+def _has_gateway_shutdown_marker(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: Optional[int],
+    pid: int,
+    claimer: str,
+) -> bool:
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'gateway_shutdown_pending' "
+        "AND run_id IS ? ORDER BY id DESC LIMIT 1",
+        (task_id, run_id),
+    ).fetchone()
+    if not row:
+        return False
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except Exception:
+        return False
+    return payload.get("pid") == pid and payload.get("claimer") == claimer
 
 
 def reap_worker_zombies() -> "list[int]":
@@ -6373,6 +6450,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
+    interrupted: list[str] = []
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
@@ -6382,7 +6460,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, claim_lock, current_run_id, started_at FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -6405,7 +6483,28 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
-            if kind == "clean_exit":
+            gateway_shutdown_exit = _has_gateway_shutdown_marker(
+                conn,
+                task_id=row["id"],
+                run_id=row["current_run_id"],
+                pid=pid,
+                claimer=row["claim_lock"] or "",
+            )
+            if gateway_shutdown_exit:
+                protocol_violation = False
+                error_text = (
+                    f"pid {pid} interrupted by intentional gateway shutdown — "
+                    "requeued without counting a failure"
+                )
+                event_kind = "gateway_shutdown"
+                event_payload = {
+                    "pid": pid,
+                    "claimer": row["claim_lock"],
+                    "exit_kind": kind,
+                }
+                if code is not None:
+                    event_payload["exit_code"] = code
+            elif kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
                 # ``kanban_complete`` / ``kanban_block``. Retrying won't
@@ -6466,7 +6565,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                if gateway_shutdown_exit:
+                    _run_outcome = "interrupted"
+                else:
+                    _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
@@ -6478,7 +6580,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload,
                     run_id=run_id,
                 )
-                if rate_limited_exit:
+                if gateway_shutdown_exit:
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = NULL WHERE id = ?",
+                        (row["id"],),
+                    )
+                    interrupted.append(row["id"])
+                elif rate_limited_exit:
                     # Stamp the failure-error column so ``check_respawn_guard``
                     # recognizes this as a quota blocker and defers the
                     # respawn until the window clears — WITHOUT touching
@@ -6537,6 +6645,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Same side-channel for rate-limited requeues — these did NOT count a
     # failure and are NOT crashes, so they stay out of the ``crashed`` return.
     detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_interrupted = interrupted  # type: ignore[attr-defined]
     return crashed
 
 
@@ -7081,6 +7190,11 @@ def _dispatch_once_locked(
     )
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
+    _crash_interrupted = getattr(
+        detect_crashed_workers, "_last_interrupted", []
+    )
+    if _crash_interrupted:
+        result.interrupted.extend(_crash_interrupted)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 

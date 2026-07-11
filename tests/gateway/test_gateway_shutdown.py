@@ -119,6 +119,30 @@ async def test_gateway_stop_drains_running_agents_before_disconnect():
 
 
 @pytest.mark.asyncio
+async def test_gateway_stop_marks_kanban_workers_before_adapter_disconnect():
+    runner, adapter = make_restart_runner()
+    runner._kanban_dispatcher_active = True
+    call_order: list[str] = []
+
+    async def _mark():
+        call_order.append("mark_kanban")
+        return ["t_one"]
+
+    async def _disconnect():
+        call_order.append("disconnect")
+
+    runner._mark_kanban_gateway_shutdown = _mark
+    adapter.disconnect = _disconnect
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    assert call_order.index("mark_kanban") < call_order.index("disconnect")
+
+
+@pytest.mark.asyncio
 async def test_gateway_stop_interrupts_after_drain_timeout():
     runner, adapter = make_restart_runner()
     runner._restart_drain_timeout = 0.05

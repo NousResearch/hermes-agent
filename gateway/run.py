@@ -8122,6 +8122,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running = False
             self._draining = True
 
+            # Persist shutdown causality before the service manager terminates
+            # this gateway's kanban worker subprocesses. The next gateway boot
+            # can then requeue those runs as interrupted instead of treating a
+            # same-window SIGTERM batch as a systemic worker crash (#62457).
+            try:
+                _kanban_interrupted = await asyncio.wait_for(
+                    self._mark_kanban_gateway_shutdown(), timeout=5.0
+                )
+                if _kanban_interrupted:
+                    logger.info(
+                        "Shutdown phase: marked %d kanban worker(s) for restart recovery",
+                        len(_kanban_interrupted),
+                    )
+            except Exception as _e:
+                logger.warning(
+                    "Shutdown phase: failed to mark kanban workers: %s", _e
+                )
+
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
             await self._notify_active_sessions_of_shutdown()

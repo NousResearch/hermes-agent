@@ -118,27 +118,12 @@ def format_duration_compact(*args, **kwargs):
 
 
 def format_token_count_compact(*args, **kwargs):
+    from agent.usage_pricing import (
+        format_token_count_compact as _format_token_count_compact,
+    )
+
     value = int(args[0] if args else kwargs.get("value", 0))
-    abs_value = abs(value)
-    if abs_value < 1_000:
-        return str(value)
-
-    sign = "-" if value < 0 else ""
-    units = ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K"))
-    for threshold, suffix in units:
-        if abs_value >= threshold:
-            scaled = abs_value / threshold
-            if scaled < 10:
-                text = f"{scaled:.2f}"
-            elif scaled < 100:
-                text = f"{scaled:.1f}"
-            else:
-                text = f"{scaled:.0f}"
-            if "." in text:
-                text = text.rstrip("0").rstrip(".")
-            return f"{sign}{text}{suffix}"
-
-    return f"{value:,}"
+    return _format_token_count_compact(value)
 
 
 def is_table_divider(*args, **kwargs):

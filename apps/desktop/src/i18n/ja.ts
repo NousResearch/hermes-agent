@@ -791,6 +791,10 @@ export const ja = defineLocale({
       noProviderKeys: '利用可能なプロバイダー API キーがありません。',
       searchKeys: 'プロバイダーを検索…',
       noKeysMatch: '一致するプロバイダーがありません。',
+      localEndpoint: {
+        title: 'ローカル / カスタムエンドポイント',
+        description: 'OpenAI 互換のエンドポイント（Zyphra、vLLM、llama.cpp、Ollama など）を指定します。'
+      },
       loading: 'プロバイダーを読み込み中...'
     },
     sessions: {

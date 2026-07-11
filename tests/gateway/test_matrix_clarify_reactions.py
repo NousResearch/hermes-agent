@@ -81,6 +81,53 @@ class TestMatrixClarifyReactions:
         assert emojis == _number_emojis(2) + ["✏️"]
 
     @pytest.mark.asyncio
+    async def test_reaction_after_approval_timeout_still_resolves(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._approval_timeout_seconds = 300
+        adapter.send = AsyncMock(
+            return_value=types.SimpleNamespace(success=True, message_id="$clar1")
+        )
+        adapter._send_reaction = AsyncMock(return_value="$r")
+        adapter._redact_bot_clarify_reactions = AsyncMock()
+
+        from tools import clarify_gateway
+
+        clarify_gateway.register(
+            clarify_id="c1",
+            session_key="sess-1",
+            question="Which fruit?",
+            choices=["Apple", "Banana"],
+        )
+        try:
+            with (
+                patch("tools.clarify_gateway.get_clarify_timeout", return_value=3600),
+                patch("plugins.platforms.matrix.adapter.time.monotonic", return_value=1000.0),
+            ):
+                await adapter.send_clarify(
+                    chat_id="!room:example.org",
+                    question="Which fruit?",
+                    choices=["Apple", "Banana"],
+                    clarify_id="c1",
+                    session_key="sess-1",
+                )
+
+            prompt = adapter._clarify_prompts_by_event["$clar1"]
+            assert prompt.expires_at == 4600.0
+
+            # The Matrix prompt must remain live after the approval timeout
+            # (300s) while the gateway clarify waiter (3600s) is still active.
+            event = _reaction_event("@liizfq:liizfq.top", "$clar1", _number_emojis(2)[1])
+            with patch("plugins.platforms.matrix.adapter.time.monotonic", return_value=1301.0):
+                await adapter._on_reaction(event)
+
+            entry = clarify_gateway._entries["c1"]
+            assert entry.response == "Banana"
+            assert entry.event.is_set()
+            assert "$clar1" not in adapter._clarify_prompts_by_event
+        finally:
+            clarify_gateway.clear_session("sess-1")
+
+    @pytest.mark.asyncio
     async def test_reaction_resolves_choice(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         from plugins.platforms.matrix.adapter import _MatrixClarifyPrompt

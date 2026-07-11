@@ -2204,6 +2204,14 @@ class MatrixAdapter(BasePlatformAdapter):
         if not result.success or not result.message_id:
             return result
 
+        # Match the gateway waiter deadline.  Approval/model-picker prompts use
+        # MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300s), but clarify waits on
+        # agent.clarify_timeout via tools.clarify_gateway (default 3600s).
+        # Keeping the reaction controls alive for the same interval prevents a
+        # tap after five minutes from expiring while the agent is still blocked.
+        from tools import clarify_gateway as _clarify_mod
+
+        clarify_timeout = _clarify_mod.get_clarify_timeout()
         prompt = _MatrixClarifyPrompt(
             chat_id=chat_id,
             message_id=result.message_id,
@@ -2213,7 +2221,7 @@ class MatrixAdapter(BasePlatformAdapter):
             emoji_to_index=emoji_to_index,
             other_emoji=other_emoji,
             requester_user_id=str((metadata or {}).get("requester_user_id") or "") or None,
-            expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
+            expires_at=time.monotonic() + max(float(clarify_timeout), 0.0),
         )
         self._clarify_prompts_by_event[result.message_id] = prompt
 

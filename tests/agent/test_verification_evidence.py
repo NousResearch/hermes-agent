@@ -271,6 +271,155 @@ def test_edit_without_prior_evidence_stays_unverified(tmp_path, monkeypatch):
     assert status["changed_paths"] == [str(tmp_path / "src" / "app.ts")]
 
 
+# --- Outcome/shape inference (issue #62728): a test run that the canonical
+# --- verify-command list does not enumerate must still be recognized. ---
+
+
+def _python_project_with_tests(tmp_path: Path) -> None:
+    """A python project whose canonical command list is empty of pytest spellings."""
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n")
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_core.py").write_text("def test_ok():\n    assert True\n")
+
+
+def test_inference_recognizes_venv_pytest_prefix(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project_with_tests(tmp_path)
+
+    evidence = classify_verification_command(
+        ".venv/bin/pytest tests/",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="1 passed",
+    )
+    assert evidence is not None
+    assert evidence.kind == "test"
+    assert evidence.status == "passed"
+    assert evidence.canonical_command == "inferred verification run"
+
+
+def test_inference_recognizes_cargo_go_mix_bun_test(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project_with_tests(tmp_path)
+
+    for cmd in ("cargo test", "go test ./...", "mix test", "bun test"):
+        evidence = classify_verification_command(
+            cmd, cwd=tmp_path, session_id="s1", exit_code=0, output="ok"
+        )
+        assert evidence is not None, cmd
+        assert evidence.kind == "test", cmd
+        assert evidence.canonical_command == "inferred verification run", cmd
+
+
+def test_inference_recognizes_make_verify_target(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project_with_tests(tmp_path)
+    (tmp_path / "Makefile").write_text("verify:\n\techo ok\ncheck-all:\n\t@true\n")
+
+    for cmd in ("make verify", "make check-all"):
+        evidence = classify_verification_command(
+            cmd, cwd=tmp_path, session_id="s1", exit_code=0, output="ok"
+        )
+        assert evidence is not None, cmd
+        assert evidence.kind == "test", cmd
+        assert evidence.canonical_command == "inferred verification run", cmd
+
+
+def test_inference_recognizes_named_smoke_script_in_test_tree(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project_with_tests(tmp_path)
+
+    evidence = classify_verification_command(
+        "python3 smoke_test.py",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="ok",
+    )
+    assert evidence is not None
+    assert evidence.kind == "test"
+    assert evidence.canonical_command == "inferred verification run"
+
+
+def test_inference_requires_test_shape_not_just_keyword(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    # No test tree: a stray ``./check status`` must NOT be inferred.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("print('hi')\n")
+
+    evidence = classify_verification_command(
+        "./check status",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="ok",
+    )
+    assert evidence is None
+
+
+def test_inference_requires_zero_exit_code(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project_with_tests(tmp_path)
+
+    evidence = classify_verification_command(
+        ".venv/bin/pytest tests/",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=1,
+        output="1 failed",
+    )
+    assert evidence is None
+
+
+def test_inference_does_not_mistake_pm_install_for_test(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project_with_tests(tmp_path)
+
+    evidence = classify_verification_command(
+        "pip install pytest",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="ok",
+    )
+    assert evidence is None
+
+
+def test_inference_does_not_mistake_git_commit_of_test_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project_with_tests(tmp_path)
+
+    evidence = classify_verification_command(
+        "git commit tests/test_core.py -m wip",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="ok",
+    )
+    assert evidence is None
+
+
+def test_inferred_run_satisfies_freshness_check(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project_with_tests(tmp_path)
+
+    event = record_terminal_result(
+        command=".venv/bin/pytest tests/test_core.py",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="1 passed",
+    )
+    assert event is not None
+    status = verification_status(session_id="s1", cwd=tmp_path)
+    assert status["status"] == "passed"
+    assert status["evidence"]["kind"] == "test"
+
+
 def test_file_tool_stales_evidence_by_session_id_for_absolute_edit(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)

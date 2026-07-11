@@ -8,6 +8,7 @@ blocks completion, and never upgrades targeted checks into "repo green".
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import sqlite3
@@ -29,6 +30,59 @@ _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
 _SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
+
+# Outcome/shape inference (see classify_verification_command). The canonical
+# verify-command list is incomplete by construction; this layer recognizes a
+# real test run by its command shape and outcome so the verifier stops missing
+# runs like `.venv/bin/pytest`, `cargo test`, `make verify`, or
+# `python3 smoke_test.py`.
+_INFER_TEST_KEYWORDS = ("test", "spec", "check", "verify")
+_INFER_RUNNERS = frozenset(
+    {
+        "pytest", "jest", "vitest", "mocha", "jasmine", "karma",
+        "rspec", "cucumber", "behave", "tox", "nox", "bunx",
+    }
+)
+# Commands whose presence means the invocation is NOT a verification run, even
+# when arguments contain a keyword (e.g. `git commit src/test_util.py`).
+_INFER_DENY_COMMANDS = frozenset(
+    {
+        "git", "hg", "svn", "cp", "mv", "rm", "rmdir", "chmod", "chown",
+        "ln", "ls", "cat", "echo", "grep", "egrep", "fgrep", "sed", "awk",
+        "head", "tail", "sort", "uniq", "wc", "tee", "xargs", "find",
+        "docker", "podman", "kubectl", "helm", "ssh", "scp", "rsync", "tar",
+        "gzip", "gunzip", "unzip", "curl", "wget", "kill", "pkill", "sudo",
+        "doas", "cd", "source", "export", "set", "unset", "alias", "exit",
+        "true", "false", "which", "type", "hash", "pwd", "pushd", "popd",
+        "dirs",
+    }
+)
+# Package managers: an install-like subcommand short-circuits inference so
+# `pip install pytest` is not mistaken for a test run.
+_INFER_PM_COMMANDS = frozenset(
+    {
+        "pip", "pip3", "uv", "poetry", "pipenv", "conda", "npm", "yarn",
+        "pnpm", "bun", "cargo", "mix", "go", "composer", "bundle",
+    }
+)
+_INFER_PM_INSTALL_SUBCOMMANDS = frozenset(
+    {"install", "add", "remove", "uninstall", "update", "upgrade", "i", "rm", "get"}
+)
+_KEYWORD_RE = re.compile(
+    r"(?:^|[^a-z0-9])(test|tests|spec|specs|check|checks|verify|verification)(?:$|[^a-z0-9])",
+    re.IGNORECASE,
+)
+_TEST_FILE_RE = re.compile(
+    r"^(test_|spec_)|(_test\.|_spec\.|\.test\.|\.spec\.)|test\.(py|go|java|rb|rs|ts|tsx|js|jsx)$",
+    re.IGNORECASE,
+)
+_INFER_TEST_DIR_SKIP = frozenset(
+    {
+        ".git", "node_modules", ".venv", "venv", "__pycache__", "dist",
+        "build", ".mypy_cache", ".pytest_cache", "target", "site-packages",
+        ".tox", ".eggs", ".idea", ".next",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -380,6 +434,132 @@ def _prune_old_events(conn: sqlite3.Connection, *, session_id: str, root: str) -
     )
 
 
+def _infer_test_signal(tokens: list[str]) -> int:
+    """Score how strongly ``tokens`` indicate a verification run (0..3).
+
+    Rewards a known test runner, a command name containing a test keyword, and
+    any argument that names a test file/dir. A recognized deny command or a
+    package-manager install suppresses the signal so incidental keyword hits
+    (e.g. ``git commit tests/util.py``) are not mistaken for a test run.
+    """
+    if not tokens:
+        return 0
+    head = tokens[0]
+    if head in _INFER_DENY_COMMANDS:
+        return 0
+    if head in _INFER_PM_COMMANDS and len(tokens) > 1 and tokens[1] in _INFER_PM_INSTALL_SUBCOMMANDS:
+        return 0
+
+    score = 0
+    if head in _INFER_RUNNERS:
+        score += 1
+    if _KEYWORD_RE.search(head):
+        score += 1
+
+    for arg in tokens[1:]:
+        if arg.startswith("-"):
+            continue
+        if _KEYWORD_RE.search(arg) or _TEST_FILE_RE.search(arg) or _looks_like_target(arg):
+            score += 1
+            break
+    return score
+
+
+def _cwd_has_test_files(cwd: str | Path | None) -> bool:
+    """Return True when the working directory tree contains a test file.
+
+    Bounded: stops after 200 dirs / 5000 files so a huge checkout cannot stall
+    the matcher. Vendored/irrelevant dirs are skipped.
+    """
+    if not cwd:
+        return False
+    try:
+        root = Path(cwd).expanduser().resolve()
+        if not root.is_dir():
+            return False
+    except Exception:
+        return False
+
+    dirs_seen = 0
+    files_seen = 0
+    stack = [root]
+    while stack and dirs_seen < 200:
+        current = stack.pop()
+        dirs_seen += 1
+        try:
+            entries = list(current.iterdir())
+        except Exception:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir():
+                    if entry.name in _INFER_TEST_DIR_SKIP:
+                        continue
+                    stack.append(entry)
+                else:
+                    files_seen += 1
+                    if files_seen > 5000:
+                        return True
+                    name = entry.name
+                    if (
+                        name.startswith(("test_", "spec_"))
+                        or name.endswith(
+                            (
+                                "_test.py", "_test.go", "_test.rb", "_test.rs",
+                                "_test.js", "_test.ts", "_test.tsx", "_test.jsx",
+                                ".test.ts", ".test.tsx", ".test.js", ".test.jsx",
+                                ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx",
+                                "_spec.rb", "_spec.go",
+                                "test.go", "test.java", "tests.go",
+                            )
+                        )
+                        or name in {"conftest.py", "pytest.ini", "jest.config.js"}
+                    ):
+                        return True
+            except Exception:
+                continue
+    return False
+
+
+def _should_infer_verification(
+    command: str,
+    *,
+    cwd: str | Path | None = None,
+    exit_code: int = 0,
+) -> Optional[list[str]]:
+    """Classify a command as a test run by shape + outcome, not by name list.
+
+    Returns the command's token list (for scope inference) when the command is
+    a probable test run, else ``None``. The signal is the max over every shell
+    segment of: known test runner OR command-name keyword OR any test-arg
+    keyword/file. Exit code must be 0. When the keyword signal is weak a
+    surrounding test tree confirms it (covers ``python3 smoke_test.py``).
+    """
+    if int(exit_code) != 0:
+        return None
+
+    best_signal = 0
+    best_tokens: list[str] = []
+    for tokens in _split_segment_tokens(command):
+        candidate = _strip_command_prefix(tokens)
+        if not candidate:
+            continue
+        signal = _infer_test_signal(candidate)
+        if signal > best_signal:
+            best_signal = signal
+            best_tokens = candidate
+
+    if best_signal == 0:
+        return None
+    if best_signal >= 2:
+        return best_tokens
+    # Weak (single keyword) signal: require a test tree so we don't treat a
+    # stray ``./check status`` as a verification run.
+    if _cwd_has_test_files(cwd):
+        return best_tokens
+    return None
+
+
 def classify_verification_command(
     command: str,
     *,
@@ -388,7 +568,17 @@ def classify_verification_command(
     exit_code: int = 0,
     output: str = "",
 ) -> Optional[VerificationEvidence]:
-    """Classify a terminal command as verification evidence, if applicable."""
+    """Classify a terminal command as verification evidence, if applicable.
+
+    Classification is two-layered. The canonical ``verifyCommands`` list (a
+    per-project hint the model is told about) is the authoritative match when
+    it hits. When it does not -- it is incomplete by construction -- the matcher
+    falls back to outcome/shape inference: a command whose shape signals a test
+    run (known runner, ``test``/``spec``/``check``/``verify`` in the command
+    name or a test file argument) and which exited 0 is recorded as a probable
+    test run. Both layers satisfy the freshness check, so the verifier stops
+    missing runs that no enumerated spelling covers (issue #62728).
+    """
 
     if not command or not isinstance(command, str):
         return None
@@ -409,14 +599,23 @@ def classify_verification_command(
         if ad_hoc_args is not None:
             match = ("ad-hoc verification script", ad_hoc_args)
             is_ad_hoc = True
+    is_inferred = False
+    if match is None:
+        # Fallback: classify by shape + outcome instead of a name list.
+        inferred_tokens = _should_infer_verification(command, cwd=cwd, exit_code=exit_code)
+        if inferred_tokens is not None:
+            match = ("inferred verification run", inferred_tokens)
+            is_inferred = True
     if match is None:
         return None
 
     canonical, trailing_args = match
+    # Inferred runs are tests by definition; canonical runs keep their kind.
+    kind = _kind_for_command(canonical) if not is_inferred else "test"
     return VerificationEvidence(
         command=command,
         canonical_command=canonical,
-        kind="ad_hoc" if is_ad_hoc else _kind_for_command(canonical),
+        kind="ad_hoc" if is_ad_hoc else kind,
         scope="targeted" if is_ad_hoc else _scope_for_args(trailing_args),
         status="passed" if int(exit_code) == 0 else "failed",
         exit_code=int(exit_code),

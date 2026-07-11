@@ -571,4 +571,73 @@ describe('startUpdatePoller', () => {
 
     expect(checkHermesUpdateSpy).toHaveBeenCalled()
   })
+
+  it('discards a stale in-flight response and re-checks after switching to B before A resolves', async () => {
+    // A's check is still in flight when the switch to B happens — B's
+    // trigger is locked out by $backendUpdateChecking. Once A's (now stale)
+    // response lands it must not overwrite the display with A's result, and
+    // B's own check must still run once the lock clears.
+    checkHermesUpdateSpy.mockReset()
+
+    let resolveA: (value: unknown) => void = () => {}
+
+    const aPending = new Promise(resolve => {
+      resolveA = resolve
+    })
+
+    checkHermesUpdateSpy.mockImplementationOnce(() => aPending)
+    checkHermesUpdateSpy.mockResolvedValueOnce({
+      install_method: 'git',
+      current_version: '0.17.0',
+      behind: 4,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    setConnection({
+      baseUrl: 'http://profile-a:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://profile-a:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+    startUpdatePoller()
+    // A's checkHermesUpdate() call is now in flight (aPending unresolved).
+    // Switch profiles before it settles.
+
+    setConnection({
+      baseUrl: 'http://profile-b:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://profile-b:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+    // Now A's slow response lands.
+    resolveA({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    // Flush the automatic follow-up check queued for B once A's lock cleared.
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkHermesUpdateSpy).toHaveBeenCalledTimes(2)
+    // B's result (behind: 4), not A's stale one (behind: 1).
+    expect($backendUpdateStatus.get()?.behind).toBe(4)
+  })
 })

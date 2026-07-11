@@ -219,3 +219,71 @@ def test_all_bootstrap_mode_preserves_previous_promoted_optional(
     assert "watchers:" in (skills_dir / ".bundled_manifest").read_text(
         encoding="utf-8"
     )
+
+
+def test_curated_bootstrap_gates_macos_only_skills_off_macos(monkeypatch, tmp_path):
+    """Off-macOS, curated mode must not seed the Apple-app automation skills —
+    issue #19986's complaint is exactly these landing on a Linux install."""
+    bundled_dir = tmp_path / "bundled"
+    optional_dir = tmp_path / "optional"
+    _write_skill(bundled_dir, "software-development/plan", "plan")
+    _write_skill(bundled_dir, "apple/imessage", "imessage")
+    sync, skills_dir = _isolated_sync(monkeypatch, tmp_path, bundled_dir, optional_dir)
+
+    monkeypatch.setenv("HERMES_SKILLS_BOOTSTRAP", "curated")
+    monkeypatch.setattr(sync.sys, "platform", "linux")
+    result = sync.sync_skills(quiet=True)
+
+    assert "plan" in result["copied"]
+    assert "imessage" not in result["copied"]
+    assert not (skills_dir / "apple" / "imessage").exists()
+
+
+def test_curated_bootstrap_keeps_macos_skills_on_macos(monkeypatch, tmp_path):
+    """On macOS the Apple-app skills stay in the curated set."""
+    bundled_dir = tmp_path / "bundled"
+    optional_dir = tmp_path / "optional"
+    _write_skill(bundled_dir, "apple/imessage", "imessage")
+    sync, skills_dir = _isolated_sync(monkeypatch, tmp_path, bundled_dir, optional_dir)
+
+    monkeypatch.setenv("HERMES_SKILLS_BOOTSTRAP", "curated")
+    monkeypatch.setattr(sync.sys, "platform", "darwin")
+    result = sync.sync_skills(quiet=True)
+
+    assert "imessage" in result["copied"]
+    assert (skills_dir / "apple" / "imessage" / "SKILL.md").exists()
+
+
+def test_curated_bootstrap_cleans_stale_promoted_optional_from_manifest(
+    monkeypatch,
+    tmp_path,
+):
+    """A promoted optional skill removed from the optional directory upstream
+    must be cleaned from the manifest (the ``source_names`` union covers
+    optional sources), while any local copy on disk is left untouched."""
+    bundled_dir = tmp_path / "bundled"
+    optional_dir = tmp_path / "optional"
+    _write_skill(bundled_dir, "software-development/plan", "plan")
+    sync, skills_dir = _isolated_sync(monkeypatch, tmp_path, bundled_dir, optional_dir)
+    # Previously-seeded promoted optional skill: manifest-tracked local copy
+    # whose upstream optional source has since been removed.
+    watcher_dest = skills_dir / "devops" / "watchers"
+    watcher_dest.mkdir(parents=True, exist_ok=True)
+    (watcher_dest / "SKILL.md").write_text(
+        "---\nname: watchers\n---\n\n# watchers\n",
+        encoding="utf-8",
+    )
+    (skills_dir / ".bundled_manifest").write_text(
+        f"watchers:{sync._dir_hash(watcher_dest)}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_SKILLS_BOOTSTRAP", "curated")
+    result = sync.sync_skills(quiet=True)
+
+    assert "watchers" in result["cleaned"]
+    assert "watchers" not in (skills_dir / ".bundled_manifest").read_text(
+        encoding="utf-8"
+    )
+    # Cleaning is manifest-only: the user's local copy stays on disk.
+    assert (watcher_dest / "SKILL.md").exists()

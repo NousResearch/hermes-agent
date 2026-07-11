@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
@@ -118,6 +119,27 @@ CURATED_BOOTSTRAP_BUNDLED_SKILLS = frozenset({
     "test-driven-development",
     "writing-plans",
 })
+
+
+# Apple-app automation skills only function on macOS. Issue #19986's core
+# complaint is a Linux/Windows user opting into ``curated`` for a lean install
+# and still receiving macOS-only skills, so curated selection gates these on
+# the running platform. The default ``all`` mode is deliberately untouched —
+# it has always seeded everything and stays byte-for-byte compatible.
+MACOS_ONLY_BOOTSTRAP_SKILLS = frozenset({
+    "apple-notes",
+    "apple-reminders",
+    "findmy",
+    "imessage",
+    "macos-computer-use",
+})
+
+
+def _curated_bundled_names() -> frozenset[str]:
+    """Curated bundled-skill names, with macOS-only skills gated off-macOS."""
+    if sys.platform == "darwin":
+        return CURATED_BOOTSTRAP_BUNDLED_SKILLS
+    return CURATED_BOOTSTRAP_BUNDLED_SKILLS - MACOS_ONLY_BOOTSTRAP_SKILLS
 
 
 # Official optional skills promoted into the curated set: vetted search,
@@ -325,12 +347,13 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
     return skills
 
 
-def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
+def _compute_relative_dest(skill_dir: Path, source_root: Path) -> Path:
     """
-    Compute the destination path in SKILLS_DIR preserving the category structure.
+    Compute the destination path in SKILLS_DIR preserving the category
+    structure relative to the source root (bundled or optional skills tree).
     e.g., bundled/skills/mlops/axolotl -> ~/.hermes/skills/mlops/axolotl
     """
-    rel = skill_dir.relative_to(bundled_dir)
+    rel = skill_dir.relative_to(source_root)
     return SKILLS_DIR / rel
 
 
@@ -443,10 +466,6 @@ def _optional_skills_for_curated_bootstrap() -> List[Tuple[str, Path]]:
     return sorted(selected.items(), key=lambda item: item[0])
 
 
-def _skill_dest_for_source(skill_src: Path, source_root: Path) -> Path:
-    return SKILLS_DIR / skill_src.relative_to(source_root)
-
-
 def _prune_unselected_skills(
     manifest: Dict[str, str],
     selected_names: set[str],
@@ -465,7 +484,7 @@ def _prune_unselected_skills(
 
     for name in sorted(set(prunable_sources) - selected_names):
         skill_src, source_root = prunable_sources[name]
-        dest = _skill_dest_for_source(skill_src, source_root)
+        dest = _compute_relative_dest(skill_src, source_root)
         origin_hash = manifest.get(name, "")
 
         if not dest.exists():
@@ -728,7 +747,7 @@ def sync_skills(quiet: bool = False) -> dict:
     else:
         bundled_skills = _filter_skills(
             all_bundled_skills,
-            CURATED_BOOTSTRAP_BUNDLED_SKILLS,
+            _curated_bundled_names(),
         )
         promoted_optional_skills = _optional_skills_for_curated_bootstrap()
 
@@ -773,7 +792,7 @@ def sync_skills(quiet: bool = False) -> dict:
             suppressed_skipped.append(skill_name)
             continue
 
-        dest = _skill_dest_for_source(skill_src, source_root)
+        dest = _compute_relative_dest(skill_src, source_root)
         bundled_hash = _dir_hash(skill_src)
 
         # Recover an orphaned backup before classifying. If a previous

@@ -39,7 +39,11 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 > **Android / Termux：** 已测试的手动安装路径请参考 [Termux 指南](https://hermes-agent.nousresearch.com/docs/getting-started/termux)。在 Termux 上，Hermes 会安装精选的 `.[termux]` 扩展，因为完整的 `.[all]` 扩展会拉取 Android 不兼容的语音依赖。
 >
-> **Windows：** 原生 Windows 不受支持。请安装 [WSL2](https://learn.microsoft.com/zh-cn/windows/wsl/install) 并运行上述命令。
+> **Windows：** 在 PowerShell 中运行：
+> ```powershell
+> iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+> ```
+> 安装完成后，可能需要重启终端，然后运行 `hermes` 开始对话。
 
 安装后：
 

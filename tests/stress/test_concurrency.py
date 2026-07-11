@@ -278,7 +278,7 @@ def main():
     print(f"Lost claim races:  {total_lost_races}  (expected contention; not a bug)")
     print(f"Elapsed:           {elapsed:.2f}s")
     print(f"Throughput:        {NUM_TASKS/elapsed:.1f} tasks/sec")
-    print(f"Per-worker completions:")
+    print("Per-worker completions:")
     for w in sorted(per_worker.keys()):
         print(f"  worker-{w}: {per_worker[w]}")
 

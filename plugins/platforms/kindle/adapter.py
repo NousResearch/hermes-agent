@@ -1,9 +1,8 @@
-"""Kindle Scribe platform adapter — DRAFT for review.
+"""Kindle Scribe platform adapter.
 
 Bridges the "Hermes Agents Guide to the Galaxy" Scribe notebook into the Hermes
-gateway as a first-class platform, so handwriting/typed notes reach the FULL
-desktop Hermes agent (MoA + tools + memory) — exactly like the Telegram/Discord
-bots. Modeled on plugins/platforms/sms/adapter.py.
+gateway as a first-class platform, so handwriting/typed notes reach the desktop
+Hermes agent through the same message pipeline as Telegram and Discord.
 
 Data flow:
     Kindle browser --(LAN)--> diary bridge (Node) --(localhost HTTP)--> THIS adapter
@@ -20,14 +19,14 @@ Env:
   KINDLE_INGEST_TOKEN     shared secret the bridge must send (X-Kindle-Token); required
                           unless KINDLE_INSECURE=true
   KINDLE_INSECURE         (true) skip the token — localhost dev only
-  KINDLE_ALLOWED_USERS    comma-separated user ids allowed (e.g. "jeff")
+  KINDLE_ALLOWED_USERS    comma-separated user ids allowed (e.g. "kindle-user")
   KINDLE_ALLOW_ALL_USERS  (true/false)
   KINDLE_HOME_CHANNEL     chat id for cron/home delivery
   KINDLE_REPLY_TIMEOUT    seconds to wait for the agent (default 360)
 
-STATUS: non-streaming v1 (one request -> one reply). Streaming via send_draft is a
-documented TODO below; the diary already streams to the Kindle, so we can add it
-once the round-trip works.
+This adapter is intentionally request/response for now: one ingest request waits
+for one completed platform reply. The companion bridge can still show local
+progress while the gateway is working.
 """
 
 import asyncio
@@ -360,12 +359,11 @@ def register(ctx) -> None:
         cron_deliver_env_var="KINDLE_HOME_CHANNEL",
         max_message_length=MAX_KINDLE_LENGTH,
         pii_safe=False,  # this channel CAN reach firm tools — treat as sensitive
-        emoji="✍️",  # ✍️
+        emoji="✍️",
         allow_update_command=True,
     )
 
 
-# TODO (session): streaming. Implement supports_draft_streaming()->True and
-# send_draft(); replace the Future with an asyncio.Queue, have _handle_ingest
-# return a StreamResponse that drains the queue, and have the diary bridge proxy
-# that stream into its existing Kindle streaming protocol.
+# Future extension: implement supports_draft_streaming() and send_draft(), then
+# replace the Future with an asyncio.Queue so _handle_ingest can return a
+# StreamResponse that the companion bridge proxies to the Kindle.

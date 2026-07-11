@@ -34,7 +34,7 @@ async def _wait_for_pending(adapter: KindleAdapter, chat_id: str) -> None:
 
 
 def _payload(chat_id: str = "scribe-1", text: str = "hello") -> dict[str, str]:
-    return {"chat_id": chat_id, "user": "jeff", "text": text}
+    return {"chat_id": chat_id, "user": "kindle-user", "text": text}
 
 
 def test_default_reply_timeout_is_kindle_patient(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -16,10 +16,9 @@ messaging platforms.
 
 ## Companion bridge
 
-The reference handwriting UI, two-stage OCR bridge, and deployment guide are in
-[hermes-agents-guide-to-the-galaxy](https://github.com/lEWFkRAD/hermes-agents-guide-to-the-galaxy).
-
-The bridge supports:
+This platform expects a companion bridge process to own the Kindle-specific UI,
+OCR, and remote-browser boundary. The bridge POSTs authenticated notebook turns
+to this adapter's localhost `/ingest` endpoint. A bridge can support:
 
 - Full-page Kindle Scribe pen input.
 - Vision OCR followed by an optional text-model proper-name cleanup pass.
@@ -36,7 +35,7 @@ Set a random bridge-to-adapter secret and restrict the channel to known users:
 
 ```powershell
 $env:KINDLE_INGEST_TOKEN = '<random-secret>'
-$env:KINDLE_ALLOWED_USERS = 'jeff'
+$env:KINDLE_ALLOWED_USERS = 'kindle-user'
 ```
 
 Configure the tools this platform may use:

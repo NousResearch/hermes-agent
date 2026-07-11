@@ -209,9 +209,9 @@ class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
     _ALLOWED_TAGS = {
-        "a", "b", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3",
-        "h4", "h5", "h6", "hr", "i", "li", "ol", "p", "pre", "s", "strike",
-        "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
+        "a", "b", "blockquote", "br", "code", "del", "details", "em", "h1", "h2", "h3",
+        "h4", "h5", "h6", "hr", "i", "li", "ol", "p", "pre", "s", "span", "strike",
+        "strong", "summary", "table", "tbody", "td", "th", "thead", "tr", "ul",
     }
     _VOID_TAGS = {"br", "hr"}
 
@@ -243,6 +243,13 @@ class _MatrixHtmlSanitizer(HTMLParser):
             elif tag == "code" and attr == "class":
                 if re.fullmatch(r"language-[A-Za-z0-9_+.-]{1,64}", raw_value):
                     safe.append(f' class="{_html_escape(raw_value, quote=True)}"')
+            elif tag == "span" and attr == "data-mx-spoiler":
+                # Empty value is valid (reason-less spoiler). Bound reason length.
+                reason = re.sub(r"[\x00-\x1f\x7f]+", "", raw_value)[:80]
+                safe.append(f' data-mx-spoiler="{_html_escape(reason, quote=True)}"')
+            elif tag == "details" and attr == "open":
+                # Boolean attribute; presence means open.
+                safe.append(" open")
         return "".join(safe)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -1657,6 +1664,15 @@ class MatrixAdapter(BasePlatformAdapter):
         for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
 
+            # Gateway tool-progress may supply prebuilt HTML so the plain body
+            # stays notification-friendly while tools render as an always-visible list.
+            # Only apply on the first chunk.
+            if i == 0 and metadata and metadata.get("matrix_formatted_body"):
+                html = _sanitize_matrix_html(str(metadata.get("matrix_formatted_body") or ""))
+                if html:
+                    msg_content["format"] = "org.matrix.custom.html"
+                    msg_content["formatted_body"] = html
+
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 
             try:
@@ -1779,12 +1795,29 @@ class MatrixAdapter(BasePlatformAdapter):
 
 
     async def edit_message(
-        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Edit an existing message (via m.replace)."""
+        """Edit an existing message (via m.replace).
+
+        Returns the *original* target event id on success so gateway progress
+        keeps editing the same root pane. The replacement event id is available
+        under ``raw_response["replacement_event_id"]`` when needed.
+        """
 
         formatted = self.format_message(content)
         new_content = self._build_text_message_content(formatted)
+        # Prefer explicit Matrix HTML payload (always-visible Tool activity list).
+        if metadata and metadata.get("matrix_formatted_body"):
+            html = _sanitize_matrix_html(str(metadata.get("matrix_formatted_body") or ""))
+            if html:
+                new_content["format"] = "org.matrix.custom.html"
+                new_content["formatted_body"] = html
         msg_content: Dict[str, Any] = {
             "msgtype": "m.text",
             "body": f"* {formatted}",
@@ -1794,7 +1827,9 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["m.mentions"] = new_content["m.mentions"]
         if "formatted_body" in new_content:
             msg_content["format"] = "org.matrix.custom.html"
-            msg_content["formatted_body"] = f'* {new_content["formatted_body"]}'
+            # DO NOT prefix HTML with "* ". That breaks <details>/<summary> and
+            # spoiler markup. Plain-text body keeps the Matrix edit convention.
+            msg_content["formatted_body"] = new_content["formatted_body"]
         msg_content["m.relates_to"] = {
             "rel_type": "m.replace",
             "event_id": message_id,
@@ -1806,7 +1841,12 @@ class MatrixAdapter(BasePlatformAdapter):
                 EventType.ROOM_MESSAGE,
                 msg_content,
             )
-            return SendResult(success=True, message_id=str(event_id))
+            # Keep message_id as the original root so progress panes stay sticky.
+            return SendResult(
+                success=True,
+                message_id=str(message_id),
+                raw_response={"replacement_event_id": str(event_id)},
+            )
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 

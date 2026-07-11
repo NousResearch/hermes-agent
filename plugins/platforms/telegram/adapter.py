@@ -1265,43 +1265,13 @@ class TelegramAdapter(BasePlatformAdapter):
     def _should_retry_media_upload(cls, error: Exception) -> bool:
         """Return True when a failed media upload is safe to retry.
 
-        PTB normally wraps httpx transport failures in ``NetworkError``, but
-        tests and custom request transports can surface the original httpx
-        exception. Generic timeouts are deliberately excluded because the
-        upload may already have reached Telegram; connect/pool timeouts are
-        safe because the request was not sent.
+        Only connect and pool timeouts establish that the request was not
+        sent. Read, write, and protocol failures are delivery-ambiguous and
+        must not resend a non-idempotent attachment.
         """
-        if cls._looks_like_connect_timeout(error) or cls._looks_like_pool_timeout(
+        return cls._looks_like_connect_timeout(error) or cls._looks_like_pool_timeout(
             error
-        ):
-            return True
-
-        seen: set[int] = set()
-        stack: list[BaseException] = [error]
-        while stack:
-            cur = stack.pop()
-            ident = id(cur)
-            if ident in seen:
-                continue
-            seen.add(ident)
-            name = cur.__class__.__name__.lower()
-            if name in {
-                "readerror",
-                "writeerror",
-                "connecterror",
-                "remoteprotocolerror",
-            }:
-                return True
-            if name == "timedout":
-                return False
-            cause = getattr(cur, "__cause__", None)
-            context = getattr(cur, "__context__", None)
-            if cause is not None:
-                stack.append(cause)
-            if context is not None:
-                stack.append(context)
-
-        return cls._looks_like_network_error(error)
+        )
 
     async def _send_media_upload_with_retry(
         self,

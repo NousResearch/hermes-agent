@@ -1104,6 +1104,44 @@ def test_gui_repairs_path_before_env_snapshot(tmp_path, monkeypatch):
     assert call_order[:2] == ["ensure_tui_node", "with_hermes_node_path"], call_order
 
 
+def test_gui_rebuild_recovers_node_from_restricted_macos_path(tmp_path, monkeypatch):
+    """Exercise the real PATH repair used by a Finder/launchd rebuild."""
+    root = _make_desktop_tree(tmp_path)
+    helper = root / "scripts" / "lib" / "node-bootstrap.sh"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("ensure_node() { :; }\n", encoding="utf-8")
+
+    node_bin = tmp_path / "managed-node" / "bin"
+    node_bin.mkdir(parents=True)
+    for executable in ("node", "npm"):
+        path = node_bin / executable
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+    bootstrap_ok = subprocess.CompletedProcess(
+        ["bash", "-c", "ensure_node"], 0, stdout=f"{node_bin / 'node'}\n", stderr=""
+    )
+    pack_ok = subprocess.CompletedProcess([str(node_bin / "npm"), "run", "pack"], 0)
+
+    with patch("hermes_cli.main.subprocess.run", side_effect=[bootstrap_ok, pack_ok]) as mock_run, \
+         patch("hermes_cli.main._run_npm_install_deterministic",
+               return_value=subprocess.CompletedProcess([], 0)), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"):
+        cli_main.cmd_gui(_ns(build_only=True, force_build=True))
+
+    build_call = mock_run.call_args_list[1]
+    assert build_call.args[0] == [str(node_bin / "npm"), "run", "pack"]
+    assert build_call.kwargs["env"]["PATH"].split(":")[0] == str(node_bin)
+
+
 def test_gui_skips_path_repair_when_skipping_build(tmp_path, monkeypatch):
     """``--skip-build`` launches a prebuilt app and needs no node/npm, so the
     PATH-repair (which may shell out to node-bootstrap.sh) must not run."""

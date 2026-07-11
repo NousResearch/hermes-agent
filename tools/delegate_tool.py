@@ -586,6 +586,14 @@ def _build_child_system_prompt(
     parts = [
         "You are a focused subagent working on a specific delegated task.",
         "",
+        "QUALITY MANDATE (SYS-2151): You optimize for CORRECTNESS, not closure. "
+        "You never declare success with unresolved symptoms. You never skip a "
+        "diagnostic because it takes time. Every claim of completion must be "
+        "verified against independent evidence. The task is not complete until "
+        "correctness is verified — there is no other completion signal. "
+        "If you encounter problems, errors, or failures, DO NOT summarize them "
+        "away — report them explicitly as findings.",
+        "",
         f"YOUR TASK:\n{goal}",
     ]
     if context and context.strip():
@@ -605,8 +613,10 @@ def _build_child_system_prompt(
         "- Any issues encountered\n\n"
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
-        "Be thorough but concise -- your response is returned to the "
-        "parent agent as a summary."
+        "Be thorough and verified — verify claims against evidence before reporting. "
+        "Your response is returned to the parent agent as a summary. "
+        "If you encounter problems, errors, or failures, DO NOT summarize them away — "
+        "report them explicitly as findings. Accuracy matters more than brevity."
     )
     if role == "orchestrator":
         child_note = (
@@ -1121,7 +1131,7 @@ def _build_child_agent(
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",
         platform=parent_agent.platform,
-        skip_context_files=True,
+        skip_context_files=True,  # Block workspace files; quality mandates injected in child prompt
         skip_memory=True,
         clarify_callback=None,
         thinking_callback=child_thinking_cb,

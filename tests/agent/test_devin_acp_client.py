@@ -231,5 +231,183 @@ class TestOneshotAcpWiring(unittest.TestCase):
         assert captured.get("base_url") == "acp://devin"
 
 
+class _LinePipe:
+    """Thread-safe line pipe used as stdout/stderr stand-in."""
+
+    def __init__(self) -> None:
+        self._lines: list[str] = []
+        self._cond = __import__("threading").Condition()
+        self._closed = False
+
+    def push(self, line: str) -> None:
+        with self._cond:
+            self._lines.append(line)
+            self._cond.notify_all()
+
+    def close(self) -> None:
+        with self._cond:
+            self._closed = True
+            self._cond.notify_all()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> str:
+        with self._cond:
+            while not self._lines and not self._closed:
+                self._cond.wait(timeout=0.05)
+            if self._lines:
+                return self._lines.pop(0)
+            raise StopIteration
+
+
+class _ScriptedAcpProcess:
+    """Minimal Popen stand-in that answers ACP initialize / session RPCs."""
+
+    def __init__(self) -> None:
+        self.stdin = self
+        self.stdout = _LinePipe()
+        self.stderr = _LinePipe()
+        self.returncode = None
+        self.writes: list[dict] = []
+        self.session_seq = 0
+
+    def write(self, data: str) -> int:
+        import json
+
+        line = data.strip()
+        if not line:
+            return 0
+        req = json.loads(line)
+        self.writes.append(req)
+        method = req.get("method")
+        req_id = req.get("id")
+        if method == "initialize":
+            result = {"protocolVersion": 1}
+        elif method == "session/new":
+            self.session_seq += 1
+            result = {"sessionId": f"sess-{self.session_seq}"}
+        elif method == "session/prompt":
+            chunk = {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": f"ok-{self.session_seq}"},
+                    }
+                },
+            }
+            self.stdout.push(json.dumps(chunk) + "\n")
+            result = {"stopReason": "end_turn"}
+        else:
+            result = {}
+        resp = {"jsonrpc": "2.0", "id": req_id, "result": result}
+        self.stdout.push(json.dumps(resp) + "\n")
+        return len(data)
+
+    def flush(self) -> None:
+        return None
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = 0
+        self.stdout.close()
+        self.stderr.close()
+
+    def kill(self) -> None:
+        self.terminate()
+
+    def wait(self, timeout=None) -> int:
+        self.returncode = self.returncode if self.returncode is not None else 0
+        return self.returncode
+
+
+class TestAcpProcessReuse(unittest.TestCase):
+    def test_reuses_process_across_prompts(self):
+        from agent.copilot_acp_client import CopilotACPClient
+
+        procs: list[_ScriptedAcpProcess] = []
+
+        def _popen(*_a, **_k):
+            proc = _ScriptedAcpProcess()
+            procs.append(proc)
+            return proc
+
+        with patch.dict("os.environ", {"HERMES_ACP_PROCESS_REUSE": "1"}, clear=False):
+            with patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_popen):
+                client = CopilotACPClient(
+                    command="fake-acp",
+                    args=["--stdio"],
+                    acp_cwd="/tmp",
+                )
+                r1, _ = client._run_prompt("first", timeout_seconds=5)
+                r2, _ = client._run_prompt("second", timeout_seconds=5)
+                client.close()
+
+        assert r1 == "ok-1"
+        assert r2 == "ok-2"
+        assert client._spawn_count == 1
+        assert len(procs) == 1
+        methods = [w.get("method") for w in procs[0].writes]
+        # initialize once; session/new + session/prompt per turn
+        assert methods.count("initialize") == 1
+        assert methods.count("session/new") == 2
+        assert methods.count("session/prompt") == 2
+
+    def test_reuse_disabled_spawns_each_prompt(self):
+        from agent.copilot_acp_client import CopilotACPClient
+
+        procs: list[_ScriptedAcpProcess] = []
+
+        def _popen(*_a, **_k):
+            proc = _ScriptedAcpProcess()
+            procs.append(proc)
+            return proc
+
+        with patch.dict("os.environ", {"HERMES_ACP_PROCESS_REUSE": "0"}, clear=False):
+            with patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_popen):
+                client = CopilotACPClient(
+                    command="fake-acp",
+                    args=["--stdio"],
+                    acp_cwd="/tmp",
+                )
+                # Re-read flag after env patch (constructor captured it).
+                client._reuse_enabled = False
+                client._run_prompt("first", timeout_seconds=5)
+                client._run_prompt("second", timeout_seconds=5)
+
+        assert client._spawn_count == 2
+        assert len(procs) == 2
+
+    def test_dead_process_respawns_on_next_prompt(self):
+        from agent.copilot_acp_client import CopilotACPClient
+
+        procs: list[_ScriptedAcpProcess] = []
+
+        def _popen(*_a, **_k):
+            proc = _ScriptedAcpProcess()
+            procs.append(proc)
+            return proc
+
+        with patch.dict("os.environ", {"HERMES_ACP_PROCESS_REUSE": "1"}, clear=False):
+            with patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_popen):
+                client = CopilotACPClient(
+                    command="fake-acp",
+                    args=["--stdio"],
+                    acp_cwd="/tmp",
+                )
+                client._run_prompt("first", timeout_seconds=5)
+                # Simulate crash between turns without going through close().
+                procs[0].returncode = 1
+                client._run_prompt("second", timeout_seconds=5)
+                client.close()
+
+        assert client._spawn_count == 2
+        assert len(procs) == 2
+
+
 if __name__ == "__main__":
     unittest.main()

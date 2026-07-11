@@ -236,6 +236,129 @@ def _check_stale_giveup(agent) -> None:
         )
 
 
+def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+    """Run one non-streaming LLM request for the active api_mode and return it.
+
+    Shared by the interrupt-worker path (``interruptible_api_call``) and the
+    inline path (``direct_api_call``) so the per-api_mode dispatch — codex /
+    anthropic / bedrock / MoA / OpenAI-compatible — lives in exactly one place.
+
+    ``make_client(reason)`` builds the per-request OpenAI client for the codex
+    and OpenAI-compatible branches; the worker path uses it to register the
+    client with its stranger-thread abort machinery, the inline path uses it to
+    capture the client for its own ``finally`` close. The anthropic / bedrock /
+    MoA branches manage their own clients and never call it. All interrupt,
+    abort, cancellation, and close semantics stay in the callers — this helper
+    only issues the request.
+    """
+    if agent.api_mode == "codex_responses":
+        request_client = make_client("codex_stream_request")
+        return agent._run_codex_stream(
+            api_kwargs,
+            client=request_client,
+            on_first_delta=getattr(agent, "_codex_on_first_delta", None),
+        )
+    if agent.api_mode == "anthropic_messages":
+        return agent._anthropic_messages_create(api_kwargs)
+    if agent.api_mode == "bedrock_converse":
+        # Bedrock uses boto3 directly — no OpenAI client needed.
+        # normalize_converse_response produces an OpenAI-compatible
+        # SimpleNamespace so the rest of the agent loop can treat
+        # bedrock responses like chat_completions responses.
+        from agent.bedrock_adapter import (
+            _get_bedrock_runtime_client,
+            invalidate_runtime_client,
+            is_stale_connection_error,
+            normalize_converse_response,
+        )
+        region = api_kwargs.pop("__bedrock_region__", "us-east-1")
+        api_kwargs.pop("__bedrock_converse__", None)
+        client = _get_bedrock_runtime_client(region)
+        try:
+            raw_response = client.converse(**api_kwargs)
+        except Exception as _bedrock_exc:
+            # Evict the cached client on stale-connection failures
+            # so the outer retry loop builds a fresh client/pool.
+            if is_stale_connection_error(_bedrock_exc):
+                invalidate_runtime_client(region)
+            raise
+        return normalize_converse_response(raw_response)
+    if agent.provider == "moa":
+        # MoA is a virtual chat-completions provider backed by the
+        # in-process MoAClient facade. Do not rebuild a request-local
+        # OpenAI client from the virtual runtime metadata.
+        return agent.client.chat.completions.create(**api_kwargs)
+    request_client = make_client("chat_completion_request")
+    return request_client.chat.completions.create(**api_kwargs)
+
+
+def should_use_direct_api_call(agent) -> bool:
+    """Whether a cron OpenAI-wire request should skip the interrupt worker.
+
+    Issue #62151 is specific to OpenRouter's chat-completions path inside the
+    gateway cron thread stack. Keep native/Codex/Bedrock/MoA transports on their
+    established workers: their cancellation and client ownership differ, and
+    the report provides no evidence that those paths share the pre-HTTP wedge.
+    """
+    return (
+        getattr(agent, "platform", None) == "cron"
+        and getattr(agent, "api_mode", None) == "chat_completions"
+        and getattr(agent, "provider", None) != "moa"
+    )
+
+
+def direct_api_call(agent, api_kwargs: dict):
+    """Run a non-streaming LLM call inline on the conversation thread.
+
+    Used when ``should_use_direct_api_call`` is True. Skips the interrupt worker
+    (whose only job is interactive-interrupt responsiveness, which this context
+    does not have) so the nested-pool deadlock (#62151) cannot occur. Because the
+    request runs in-flight normally, the per-request OpenAI client's own httpx
+    timeout (provider ``request_timeout_seconds`` / ``HERMES_API_TIMEOUT``) bounds
+    a genuinely hung provider — the same bound interactive calls already rely on.
+    """
+    _check_stale_giveup(agent)
+    agent._touch_activity("waiting for non-streaming API response")
+    request_client_holder = {"client": None}
+    request_client_lock = threading.Lock()
+
+    def _abort_active_request(reason: str) -> None:
+        """Abort the inline request from cron's watchdog/interrupt thread."""
+        with request_client_lock:
+            request_client = request_client_holder["client"]
+        if request_client is not None:
+            agent._abort_request_openai_client(request_client, reason=reason)
+
+    def _make_client(reason: str):
+        client = agent._create_request_openai_client(reason=reason, api_kwargs=api_kwargs)
+        with request_client_lock:
+            request_client_holder["client"] = client
+        agent._active_request_abort = _abort_active_request
+        return client
+
+    try:
+        response = _dispatch_nonstreaming_api_request(
+            agent, api_kwargs, make_client=_make_client
+        )
+    except Exception:
+        if getattr(agent, "_interrupt_requested", False):
+            raise InterruptedError("Agent interrupted during API call") from None
+        raise
+    else:
+        if getattr(agent, "_interrupt_requested", False):
+            raise InterruptedError("Agent interrupted during API call")
+        _reset_stale_streak(agent)
+        return response
+    finally:
+        if getattr(agent, "_active_request_abort", None) is _abort_active_request:
+            agent._active_request_abort = None
+        with request_client_lock:
+            request_client = request_client_holder["client"]
+            request_client_holder["client"] = None
+        if request_client is not None:
+            agent._close_request_openai_client(request_client, reason="request_complete")
+
+
 def interruptible_api_call(agent, api_kwargs: dict):
     """
     Run the API call in a background thread so the main conversation loop
@@ -250,6 +373,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
     the main retry loop can try again with backoff / credential rotation /
     provider fallback.
     """
+    # Cron and other non-interactive, nested-pool contexts must not spawn the
+    # interrupt worker — it wedges before the socket opens on the 2nd+ call
+    # (#62151). Run inline instead. See should_use_direct_api_call.
+    if should_use_direct_api_call(agent):
+        return direct_api_call(agent, api_kwargs)
+
     result = {"response": None, "error": None}
 
     # Cross-turn stale-call circuit breaker (#58962) — non-streaming sibling
@@ -313,56 +442,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
     def _call():
         try:
-            if agent.api_mode == "codex_responses":
-                request_client = _set_request_client(
+            # _set_request_client registers each per-request OpenAI client with
+            # the stranger-thread abort machinery above; the shared dispatch
+            # helper builds it via this callback so the interrupt / stale-call
+            # detectors can force-close the worker's connection.
+            result["response"] = _dispatch_nonstreaming_api_request(
+                agent,
+                api_kwargs,
+                make_client=lambda reason: _set_request_client(
                     agent._create_request_openai_client(
-                        reason="codex_stream_request",
-                        api_kwargs=api_kwargs,
+                        reason=reason, api_kwargs=api_kwargs
                     )
-                )
-                result["response"] = agent._run_codex_stream(
-                    api_kwargs,
-                    client=request_client,
-                    on_first_delta=getattr(agent, "_codex_on_first_delta", None),
-                )
-            elif agent.api_mode == "anthropic_messages":
-                result["response"] = agent._anthropic_messages_create(api_kwargs)
-            elif agent.api_mode == "bedrock_converse":
-                # Bedrock uses boto3 directly — no OpenAI client needed.
-                # normalize_converse_response produces an OpenAI-compatible
-                # SimpleNamespace so the rest of the agent loop can treat
-                # bedrock responses like chat_completions responses.
-                from agent.bedrock_adapter import (
-                    _get_bedrock_runtime_client,
-                    invalidate_runtime_client,
-                    is_stale_connection_error,
-                    normalize_converse_response,
-                )
-                region = api_kwargs.pop("__bedrock_region__", "us-east-1")
-                api_kwargs.pop("__bedrock_converse__", None)
-                client = _get_bedrock_runtime_client(region)
-                try:
-                    raw_response = client.converse(**api_kwargs)
-                except Exception as _bedrock_exc:
-                    # Evict the cached client on stale-connection failures
-                    # so the outer retry loop builds a fresh client/pool.
-                    if is_stale_connection_error(_bedrock_exc):
-                        invalidate_runtime_client(region)
-                    raise
-                result["response"] = normalize_converse_response(raw_response)
-            elif agent.provider == "moa":
-                # MoA is a virtual chat-completions provider backed by the
-                # in-process MoAClient facade. Do not rebuild a request-local
-                # OpenAI client from the virtual runtime metadata.
-                result["response"] = agent.client.chat.completions.create(**api_kwargs)
-            else:
-                request_client = _set_request_client(
-                    agent._create_request_openai_client(
-                        reason="chat_completion_request",
-                        api_kwargs=api_kwargs,
-                    )
-                )
-                result["response"] = request_client.chat.completions.create(**api_kwargs)
+                ),
+            )
         except Exception as e:
             # If the request was cancelled by the main thread's interrupt
             # handler, the transport error is the expected consequence of our
@@ -1872,6 +1964,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     """
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
+
+    # Cron and other non-interactive, nested-pool contexts deadlock on the
+    # spawned worker thread (#62151). They also have no stream consumer, so the
+    # deltas this path produces go nowhere. Delegate to the non-streaming entry
+    # (which runs inline via should_use_direct_api_call) exactly like the codex
+    # branch below — routing through the _interruptible_api_call method keeps the
+    # outer loop's per-request retry/refresh seam intact.
+    if should_use_direct_api_call(agent):
+        return agent._interruptible_api_call(api_kwargs)
 
     if agent.api_mode == "codex_responses":
         # Codex streams internally via _run_codex_stream. The main dispatch

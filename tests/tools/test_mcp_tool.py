@@ -5,6 +5,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -4454,3 +4455,123 @@ class TestMcpParallelToolCalls:
             register_mcp_servers(config_off)
         with _lock:
             assert sanitize_mcp_name_component("toggle_srv") not in _parallel_safe_servers
+
+
+# ---------------------------------------------------------------------------
+# Cross-process MCP discovery lock (issue #62771)
+# ---------------------------------------------------------------------------
+
+
+class TestMCPDiscoveryCrossProcessLock:
+    """Tests for the cross-process MCP discovery guard in discover_mcp_tools()."""
+
+    def test_lock_acquired_path(self, tmp_path):
+        """Lock acquired -> discovery runs normally, lock released at end."""
+        from tools.mcp_tool import (
+            _LockCookie,
+            discover_mcp_tools,
+        )
+
+        # Build a real lock file so the cookie has a real handle
+        lock_file = tmp_path / ".mcp-discovery.lock"
+        fh = open(lock_file, "w", encoding="utf-8")
+        cookie = _LockCookie(fh)
+
+        def mock_acquire():
+            return cookie
+
+        mock_config = {"test_srv": {"command": "echo", "enabled": True}}
+        with patch.object(cookie, "release", wraps=cookie.release) as release_spy:
+            with patch("tools.mcp_tool._try_acquire_mcp_discovery_lock", mock_acquire), \
+                 patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._load_mcp_config", return_value=mock_config), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=["mcp__test_srv__ping"]), \
+                 patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp__test_srv__ping"]) as reg_spy:
+                result = discover_mcp_tools()
+            assert result == ["mcp__test_srv__ping"]
+            release_spy.assert_called_once()
+
+    def test_lock_held_by_another_process(self):
+        """Lock held -> return existing tools without running discovery."""
+        from tools.mcp_tool import (
+            _LOCK_UNAVAILABLE,
+            discover_mcp_tools,
+        )
+
+        mock_config = {"test_srv": {"command": "echo", "enabled": True}}
+        with patch("tools.mcp_tool._try_acquire_mcp_discovery_lock", return_value=None), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=mock_config), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp__test_srv__ping"]) as existing_spy:
+            result = discover_mcp_tools()
+        assert result == ["mcp__test_srv__ping"]
+        existing_spy.assert_called_once()
+
+    def test_lock_unavailable_fallback(self):
+        """Lock unavailable/broken -> run discovery unguarded."""
+        from tools.mcp_tool import (
+            _LOCK_UNAVAILABLE,
+            discover_mcp_tools,
+        )
+
+        mock_config = {"test_srv": {"command": "echo", "enabled": True}}
+        with patch("tools.mcp_tool._try_acquire_mcp_discovery_lock", return_value=_LOCK_UNAVAILABLE), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=mock_config), \
+             patch("tools.mcp_tool.register_mcp_servers") as reg_spy, \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            result = discover_mcp_tools()
+        # Should have called register_mcp_servers (discovery proceeds)
+        reg_spy.assert_called_once_with(mock_config)
+
+    def test_windows_portalocker_handle_lifetime(self):
+        """_LockCookie keeps file handle alive until release()."""
+        import tempfile
+
+        import portalocker
+        from tools.mcp_tool import _LockCookie
+
+        with tempfile.NamedTemporaryFile(prefix="mcp-lock-", suffix=".tmp", delete=False) as tf:
+            lock_path = tf.name
+
+        try:
+            fh = open(lock_path, "w", encoding="utf-8")
+            portalocker.lock(fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
+            cookie = _LockCookie(fh)
+            # Handle is alive while locked
+            assert not fh.closed
+            fno = fh.fileno()
+            assert fno > 0
+            cookie.release()
+            # After release, handle is closed
+            assert fh.closed
+        finally:
+            try:
+                os.unlink(lock_path)
+            except Exception:
+                pass
+
+    def test_double_release_safety(self):
+        """Calling release() twice is safe (no exception)."""
+        import tempfile
+
+        import portalocker
+        from tools.mcp_tool import _LockCookie
+
+        with tempfile.NamedTemporaryFile(prefix="mcp-lock-", suffix=".tmp", delete=False) as tf:
+            lock_path = tf.name
+
+        try:
+            fh = open(lock_path, "w", encoding="utf-8")
+            portalocker.lock(fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
+            cookie = _LockCookie(fh)
+            # First release
+            cookie.release()
+            assert fh.closed
+            # Second release -- must not raise
+            cookie.release()
+        finally:
+            try:
+                os.unlink(lock_path)
+            except Exception:
+                pass

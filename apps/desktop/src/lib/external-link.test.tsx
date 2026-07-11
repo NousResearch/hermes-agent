@@ -129,6 +129,18 @@ describe('external link helpers', () => {
     expect(link.textContent).not.toContain('getyourguide.com')
   })
 
+  it('prefers an explicit fallback label without fetching a title', () => {
+    const bridge = vi.fn().mockResolvedValue('Page not found · GitHub · GitHub')
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+    const url = 'https://github.com/NousResearch/Hermes-Agent/issues/123#issuecomment-456'
+
+    render(<PrettyLink fallbackLabel="maintainer context" href={url} />)
+
+    expect(screen.getByTitle(url).textContent).toBe('maintainer context')
+    expect(bridge).not.toHaveBeenCalled()
+  })
+
   it('shows host/path fallback when title is unavailable', () => {
     installDesktopBridge()
     const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque'
@@ -153,6 +165,19 @@ describe('external link helpers', () => {
     await waitFor(() => {
       expect(link.textContent).toBe('From Fajardo Full Day Cordillera Islands Catamaran Tour')
     })
+  })
+
+  it('ignores not-found fetched titles and falls back to the URL-derived label', async () => {
+    const bridge = vi.fn().mockResolvedValue('Page not found · GitHub · GitHub')
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+    const url = 'https://github.com/NousResearch/Hermes-Agent/issues/123#issuecomment-456'
+
+    expect(await fetchLinkTitle(url)).toBe('')
+
+    render(<PrettyLink href={url} />)
+
+    expect(screen.getByTitle(url).textContent).toBe('Issues')
   })
 
   it('normalizes scheme-less links before opening', () => {

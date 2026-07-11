@@ -103,3 +103,41 @@ def test_named_library_list_and_scan_routes(clients, monkeypatch):
     assert listed.json()["data"]["libraries"][0]["id"] == "beef-noodle"
     assert scanned.status_code == 200
     assert scanned.json()["data"]["dry_run"] is True
+
+
+def test_named_library_clip_query_and_tag_write_are_isolated(clients, monkeypatch):
+    _anonymous, authenticated, default_service = clients
+    from capabilities.video_library import adapter
+
+    named = VideoLibraryService(VideoLibraryStore(root=default_service.store.root.parent / "named"))
+    calls = []
+    monkeypatch.setattr(adapter, "get_named_service", lambda _library_id: named)
+    monkeypatch.setattr(
+        named.store,
+        "search_clips",
+        lambda query, *, tag=None, limit=50: calls.append((query, tag, limit))
+        or [{"id": "named-clip"}],
+    )
+    monkeypatch.setattr(
+        named.store,
+        "replace_clip_tags",
+        lambda clip_id, tags: [{"id": "tag-1", "name": tags[0]["name"]}],
+    )
+
+    listed = authenticated.get(
+        "/api/capabilities/video-library/clips",
+        params={
+            "library_id": "beef-noodle",
+            "limit": 5,
+            "query": "热气牛肉",
+            "tag": "场景/后厨",
+        },
+    )
+    tagged = authenticated.post(
+        "/api/capabilities/video-library/clips/named-clip/tags",
+        json={"libraryId": "beef-noodle", "tags": ["人工确认"]},
+    )
+
+    assert listed.json()["data"]["clips"] == [{"id": "named-clip"}]
+    assert calls == [("热气牛肉", "场景/后厨", 5)]
+    assert tagged.json()["data"]["tags"][0]["name"] == "人工确认"

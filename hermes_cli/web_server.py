@@ -507,6 +507,7 @@ async def api_video_library_analyze_asset(asset_id: str, request: Request):
 async def api_video_library_list_clips(
     asset_id: Optional[str] = None,
     library_id: Optional[str] = None,
+    limit: int = 50,
     query: Optional[str] = None,
     tag: Optional[str] = None,
 ):
@@ -514,6 +515,7 @@ async def api_video_library_list_clips(
         _video_library_adapter().list_clips_data,
         asset_id=asset_id,
         library_id=library_id,
+        limit=limit,
         query=query,
         tag=tag,
     )

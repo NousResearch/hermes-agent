@@ -97,12 +97,17 @@ def list_clips_data(
     *,
     asset_id: str | None = None,
     library_id: str | None = None,
+    limit: int = 50,
     query: str | None = None,
     tag: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     try:
         store = _request_service(library_id).store
-        clips = store.search_clips(query or "", tag=tag) if query else store.list_clips(asset_id=asset_id, tag=tag)
+        clips = (
+            store.search_clips(query or "", tag=tag, limit=limit)
+            if query
+            else store.list_clips(asset_id=asset_id, tag=tag)
+        )
         return 200, _envelope({"clips": clips, "total": len(clips)})
     except Exception as exc:
         return _failure(exc)
@@ -117,7 +122,8 @@ def replace_clip_tags_data(clip_id: str, body: dict[str, Any]) -> tuple[int, dic
             item if isinstance(item, dict) else {"name": str(item), "source": "manual"}
             for item in raw_tags
         ]
-        tags = get_service().store.replace_clip_tags(clip_id, normalized)
+        library_id = str(body.get("libraryId") or body.get("library_id") or "").strip() or None
+        tags = _request_service(library_id).store.replace_clip_tags(clip_id, normalized)
         return 200, _envelope({"clipId": clip_id, "tags": tags})
     except Exception as exc:
         return _failure(exc)

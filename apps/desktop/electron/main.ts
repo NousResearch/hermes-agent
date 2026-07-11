@@ -95,6 +95,7 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { preparePoolBackendLaunch } from './pool-backend-launch'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -6530,39 +6531,26 @@ function startPoolIdleReaper() {
 // local-spawn portion of startHermes() but without the boot-progress UI,
 // bootstrap, or remote handling (those belong to the primary backend only).
 async function spawnPoolBackend(profile, entry) {
-  // A profile may point at its OWN remote backend (connection.json
-  // `profiles[name]`), or inherit the app-wide remote (env / global settings).
-  // In either case there is no local child to spawn — we just verify the
-  // remote is reachable and hand back its connection descriptor. The pool
-  // entry keeps `entry.process === null`, which stopPoolBackend/evict already
-  // tolerate.
-  const remote = await resolveRemoteBackend(profile)
+  const launch = await preparePoolBackendLaunch(profile, {
+    createToken: () => crypto.randomBytes(32).toString('base64url'),
+    ensureRuntime,
+    getBackendArgsForRuntime,
+    resolveHermesBackend,
+    resolveRemoteBackend,
+    waitForHermes,
+    waitForUpdateToFinish
+  })
 
-  if (remote) {
-    await waitForHermes(remote.baseUrl, remote.token)
-
+  if (launch.kind === 'remote') {
     return {
-      ...remote,
+      ...launch.remote,
       profile,
       logs: hermesLog.slice(-80),
       ...getWindowState()
     }
   }
 
-  // Pool backends are local child processes too. On Windows they can lock the
-  // same managed venv files as the primary backend, so they must obey the
-  // update hand-off marker before resolving or spawning the local runtime.
-  // Remote profile backends return above and never touch the install tree.
-  await waitForUpdateToFinish()
-
-  const token = crypto.randomBytes(32).toString('base64url')
-  // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
-  // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
-  // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-  const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
-  const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
-  // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
-  backend.args = getBackendArgsForRuntime(backend)
+  const { backend, token } = launch
   const hermesCwd = resolveHermesCwd()
   const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null

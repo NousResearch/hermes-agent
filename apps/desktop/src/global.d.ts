@@ -109,12 +109,15 @@ declare global {
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
       revealPath?: (path: string) => Promise<boolean>
+      createDirectory?: (parent: string, name: string) => Promise<{ path: string }>
+      createFile?: (parent: string, name: string) => Promise<{ path: string }>
+      movePath?: (source: string, destination: string, browserRoot?: string) => Promise<{ path: string }>
       // Rename a file/folder in place (new base name, same parent dir).
       renamePath?: (path: string, newName: string) => Promise<{ path: string }>
       // Write a small UTF-8 text file (hardened path, parent must exist).
       writeTextFile?: (path: string, content: string) => Promise<{ path: string }>
       // Move a file/folder to the OS trash (recoverable).
-      trashPath?: (path: string) => Promise<boolean>
+      trashPath?: (path: string, browserRoot?: string) => Promise<boolean>
       // Git-driven worktree management for the "Start work" flow.
       git?: {
         worktreeList: (repoPath: string) => Promise<HermesGitWorktree[]>

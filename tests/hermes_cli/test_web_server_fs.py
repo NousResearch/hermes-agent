@@ -182,7 +182,83 @@ def test_fs_endpoints_require_auth(tmp_path):
     list_response = client.get("/api/fs/list", params={"path": str(tmp_path)})
     read_response = client.get("/api/fs/read-text", params={"path": str(target)})
     default_response = client.get("/api/fs/default-cwd")
+    mutation_response = client.post("/api/fs/mkdir", json={"parent": str(tmp_path), "name": "blocked"})
 
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+    assert mutation_response.status_code == 401
+    assert not (tmp_path / "blocked").exists()
+
+
+def test_fs_mutations_create_rename_move_and_delete(client, tmp_path):
+    root = tmp_path / "project"
+    archive = tmp_path / "archive"
+    root.mkdir()
+    archive.mkdir()
+
+    created = client.post("/api/fs/mkdir", json={"parent": str(root), "name": "folder"})
+    assert created.status_code == 200
+    source = root / "note.txt"
+    source.write_text("hello")
+    renamed = client.post("/api/fs/rename", json={"path": str(source), "name": "renamed.txt"})
+    assert renamed.status_code == 200
+    moved = client.post(
+        "/api/fs/move",
+        json={"source": str(root / "renamed.txt"), "destination": str(archive), "browserRoot": str(root)},
+    )
+    assert moved.status_code == 200
+    deleted = client.post(
+        "/api/fs/delete", json={"path": str(archive / "renamed.txt"), "browserRoot": str(root)}
+    )
+    assert deleted.status_code == 200
+    assert not (archive / "renamed.txt").exists()
+
+
+@pytest.mark.parametrize("name", ["", ".", "..", "a/b", "a\\b", "bad\0name"])
+def test_fs_mkdir_rejects_invalid_basename(client, tmp_path, name):
+    response = client.post("/api/fs/mkdir", json={"parent": str(tmp_path), "name": name})
+    assert response.status_code == 400
+
+
+def test_fs_mutations_reject_roots_descendants_collisions_and_sensitive_paths(client, tmp_path):
+    root = tmp_path / "root"
+    source = root / "source"
+    child = source / "child"
+    target = root / "target"
+    child.mkdir(parents=True)
+    target.mkdir()
+    (target / "source").mkdir()
+
+    root_delete = client.post("/api/fs/delete", json={"path": str(root), "browserRoot": str(root)})
+    descendant_move = client.post(
+        "/api/fs/move", json={"source": str(source), "destination": str(child), "browserRoot": str(root)}
+    )
+    collision = client.post(
+        "/api/fs/move", json={"source": str(source), "destination": str(target), "browserRoot": str(root)}
+    )
+    sensitive = root / ".env"
+    sensitive.write_text("secret")
+    sensitive_delete = client.post(
+        "/api/fs/delete", json={"path": str(sensitive), "browserRoot": str(root)}
+    )
+    symlink = root / "symlink"
+    symlink.symlink_to(source, target_is_directory=True)
+    symlink_delete = client.post(
+        "/api/fs/delete", json={"path": str(symlink), "browserRoot": str(root)}
+    )
+    broken_symlink = root / "broken"
+    broken_symlink.symlink_to(root / "missing")
+    broken_create = client.post(
+        "/api/fs/create-file", json={"parent": str(root), "name": broken_symlink.name}
+    )
+
+    assert root_delete.status_code == 400
+    assert descendant_move.status_code == 400
+    assert collision.status_code == 409
+    assert sensitive_delete.status_code == 403
+    assert symlink_delete.status_code == 400
+    assert source.is_dir()
+    assert symlink.is_symlink()
+    assert broken_create.status_code == 409
+    assert broken_symlink.is_symlink()

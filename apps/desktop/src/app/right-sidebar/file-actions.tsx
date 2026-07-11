@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
-import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useRef, useState } from 'react'
+import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   ContextMenu,
@@ -9,6 +10,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { translateNow, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { IS_MAC } from '@/lib/keybinds/combo'
@@ -20,15 +22,28 @@ import {
   closeFileActionDialog,
   copyFilePath,
   executeFileDelete,
+  executeFileMove,
   executeFileRename,
   type FileActionTarget,
   requestFileDelete,
+  requestFileMove,
   revealFile,
   toRelativePath
 } from '@/store/file-actions'
 import { notifyError } from '@/store/notifications'
 
 const IS_WIN = typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent || '')
+
+function normalizeWorkspacePath(value: string): string {
+  return value.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
+}
+
+function parentWorkspacePath(value: string): string {
+  const normalized = normalizeWorkspacePath(value)
+  const slash = normalized.lastIndexOf('/')
+
+  return slash <= 0 ? '/' : normalized.slice(0, slash)
+}
 
 // F2 starts a rename anywhere; Enter starts one when a row is focused (VS Code).
 export function isRenameShortcut(event: KeyboardEvent | ReactKeyboardEvent): boolean {
@@ -42,6 +57,8 @@ export function pickRevealLabel(finder: string, explorer: string, fileManager: s
 }
 
 interface FileEntryContextMenuProps {
+  /** Visible browser/repository root used by destructive-operation guards. */
+  browserRoot?: null | string
   children: ReactNode
   isDirectory: boolean
   /** Display name (basename). */
@@ -53,13 +70,20 @@ interface FileEntryContextMenuProps {
 }
 
 /** Right-click menu shared by both file trees (browser + review/git). */
-export function FileEntryContextMenu({ children, isDirectory, name, path, relativeTo }: FileEntryContextMenuProps) {
+export function FileEntryContextMenu({
+  browserRoot,
+  children,
+  isDirectory,
+  name,
+  path,
+  relativeTo
+}: FileEntryContextMenuProps) {
   const { t } = useI18n()
   const m = t.fileMenu
-  // Reveal / rename / delete need the local filesystem; hide them on a remote
-  // backend (copy-path still works everywhere).
+  // Reveal is the only action that inherently requires a local shell. Remote
+  // rename/move/delete route through the authenticated filesystem API.
   const localFs = !isDesktopFsRemoteMode()
-  const target: FileActionTarget = { isDirectory, name, path }
+  const target: FileActionTarget = { browserRoot: browserRoot ?? relativeTo ?? undefined, isDirectory, name, path }
   const revealLabel = pickRevealLabel(m.revealFinder, m.revealExplorer, m.revealFileManager)
 
   return (
@@ -80,15 +104,12 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
             {m.copyRelativePath}
           </ContextMenuItem>
         )}
-        {localFs && (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuItem onSelect={() => beginInlineRename(path)}>{m.rename}</ContextMenuItem>
-            <ContextMenuItem onSelect={() => requestFileDelete(target)} variant="destructive">
-              {m.delete}
-            </ContextMenuItem>
-          </>
-        )}
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => beginInlineRename(path)}>{m.rename}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => requestFileMove(target)}>{m.move}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => requestFileDelete(target)} variant="destructive">
+          {m.delete}
+        </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   )
@@ -100,21 +121,78 @@ export function FileActionDialogs() {
   const { t } = useI18n()
   const dialog = useStore($fileActionDialog)
   const deleting = dialog?.kind === 'delete'
+  const moving = dialog?.kind === 'move'
+  const [destination, setDestination] = useState('')
+  const sourceParent = moving ? parentWorkspacePath(dialog.path) : ''
+  const destinationUnchanged = moving && normalizeWorkspacePath(destination.trim()) === sourceParent
+
+  useEffect(() => {
+    setDestination(moving ? (dialog.browserRoot ?? '') : '')
+  }, [dialog, moving])
 
   return (
-    <ConfirmDialog
-      confirmLabel={t.fileMenu.delete}
-      description={t.fileMenu.deleteBody}
-      destructive
-      onClose={closeFileActionDialog}
-      onConfirm={() => {
-        if (deleting) {
-          return executeFileDelete(dialog.path)
-        }
-      }}
-      open={deleting}
-      title={deleting ? t.fileMenu.deleteTitle(dialog.name) : ''}
-    />
+    <>
+      <ConfirmDialog
+        confirmLabel={t.fileMenu.delete}
+        description={t.fileMenu.deleteBody}
+        destructive
+        onClose={closeFileActionDialog}
+        onConfirm={() => {
+          if (deleting) {
+            return executeFileDelete(dialog.path, dialog.browserRoot ?? '')
+          }
+        }}
+        open={deleting}
+        title={deleting ? t.fileMenu.deleteTitle(dialog.name) : ''}
+      />
+      <Dialog onOpenChange={open => !open && closeFileActionDialog()} open={moving}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{moving ? t.fileMenu.moveTitle(dialog.name) : ''}</DialogTitle>
+            {moving ? (
+              <p className="truncate font-mono text-[0.7rem] text-(--ui-text-secondary)" title={dialog.path}>
+                {dialog.path}
+              </p>
+            ) : null}
+          </DialogHeader>
+          <label className="grid gap-2 text-xs text-(--ui-text-secondary)">
+            {t.fileMenu.moveLabel}
+            <input
+              aria-label={t.fileMenu.moveLabel}
+              autoCapitalize="off"
+              autoComplete="off"
+              autoCorrect="off"
+              className="h-8 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-input) px-2 text-sm text-foreground outline-none focus:border-(--ui-accent)"
+              onChange={event => setDestination(event.target.value)}
+              spellCheck={false}
+              value={destination}
+            />
+          </label>
+          <DialogFooter>
+            <Button onClick={closeFileActionDialog} variant="secondary">
+              {t.common.cancel}
+            </Button>
+            <Button
+              disabled={!moving || !destination.trim() || destinationUnchanged}
+              onClick={async () => {
+                if (!moving) {
+                  return
+                }
+
+                try {
+                  await executeFileMove(dialog.path, destination.trim(), dialog.browserRoot ?? '')
+                  closeFileActionDialog()
+                } catch (error) {
+                  notifyError(error, translateNow('errors.genericFailure'))
+                }
+              }}
+            >
+              {t.fileMenu.moveConfirm}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 

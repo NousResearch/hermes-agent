@@ -1,7 +1,13 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
-import { copyTextToClipboard, renameDesktopPath, revealDesktopPath, trashDesktopPath } from '@/lib/desktop-fs'
+import {
+  copyTextToClipboard,
+  moveDesktopPath,
+  renameDesktopPath,
+  revealDesktopPath,
+  trashDesktopPath
+} from '@/lib/desktop-fs'
 import { notify, notifyError } from '@/store/notifications'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
@@ -17,16 +23,20 @@ export interface FileActionTarget {
   name: string
   /** Absolute path on disk. */
   path: string
+  /** Visible browser/repository root used by destructive-operation guards. */
+  browserRoot?: string
 }
 
-// Delete routes through a single confirm dialog (rendered once). Rename is
-// INLINE (VS Code style — an input in the row), driven by `$renamingPath`.
-export type FileActionDialog = { kind: 'delete' } & FileActionTarget
+export type FileActionDialog = ({ kind: 'delete' } | { kind: 'move' }) & FileActionTarget
 
 export const $fileActionDialog = atom<FileActionDialog | null>(null)
 
 export function requestFileDelete(target: FileActionTarget): void {
   $fileActionDialog.set({ kind: 'delete', ...target })
+}
+
+export function requestFileMove(target: FileActionTarget): void {
+  $fileActionDialog.set({ kind: 'move', ...target })
 }
 
 export function closeFileActionDialog(): void {
@@ -83,7 +93,12 @@ export async function executeFileRename(path: string, newName: string): Promise<
   notifyWorkspaceChanged()
 }
 
-export async function executeFileDelete(path: string): Promise<void> {
-  await trashDesktopPath(path)
+export async function executeFileDelete(path: string, browserRoot = ''): Promise<void> {
+  await trashDesktopPath(path, browserRoot)
+  notifyWorkspaceChanged()
+}
+
+export async function executeFileMove(source: string, destination: string, browserRoot: string): Promise<void> {
+  await moveDesktopPath(source, destination, browserRoot)
   notifyWorkspaceChanged()
 }

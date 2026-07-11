@@ -65,6 +65,13 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
+import {
+  createDirectoryForIpc,
+  createFileForIpc,
+  deletePathForIpc,
+  movePathForIpc,
+  renamePathForIpc
+} from './fs-workspace-ops'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -8395,28 +8402,12 @@ ipcMain.handle('hermes:fs:reveal', async (_event, targetPath) => {
 // Rename a file/folder in place. The renderer passes the existing path + a new
 // base name; the destination is resolved in the SAME parent dir so a rename can
 // never move the item elsewhere or traverse out. Rejects on a name collision.
-ipcMain.handle('hermes:fs:rename', async (_event, targetPath, newName) => {
-  const src = String(targetPath || '').trim()
-  const name = String(newName || '').trim()
-
-  if (!src || !name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
-    throw new Error('Invalid rename')
-  }
-
-  const dst = path.join(path.dirname(src), name)
-
-  if (dst === src) {
-    return { path: dst }
-  }
-
-  if (fs.existsSync(dst)) {
-    throw new Error(`"${name}" already exists`)
-  }
-
-  await fs.promises.rename(src, dst)
-
-  return { path: dst }
-})
+ipcMain.handle('hermes:fs:rename', async (_event, targetPath, newName) => renamePathForIpc(targetPath, newName))
+ipcMain.handle('hermes:fs:createDirectory', async (_event, parentPath, name) => createDirectoryForIpc(parentPath, name))
+ipcMain.handle('hermes:fs:createFile', async (_event, parentPath, name) => createFileForIpc(parentPath, name))
+ipcMain.handle('hermes:fs:move', async (_event, sourcePath, destinationPath, browserRoot) =>
+  movePathForIpc(sourcePath, destinationPath, browserRoot)
+)
 
 // Write a small UTF-8 text file (e.g. a project's IDEA.md at creation). The path
 // is hardened (resolveRequestedPathForIpc) and the parent must already exist —
@@ -8448,13 +8439,8 @@ ipcMain.handle('hermes:fs:writeText', async (_event, filePath, content) => {
 
 // Move a file/folder to the OS trash (recoverable) — the VS Code "Delete"
 // default. `shell.trashItem` routes to Finder/Explorer/Files trash per platform.
-ipcMain.handle('hermes:fs:trash', async (_event, targetPath) => {
-  const target = String(targetPath || '').trim()
-
-  if (!target) {
-    throw new Error('Invalid delete')
-  }
-
+ipcMain.handle('hermes:fs:trash', async (_event, targetPath, browserRoot) => {
+  const target = await deletePathForIpc(targetPath, browserRoot)
   await shell.trashItem(target)
 
   return true

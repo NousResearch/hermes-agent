@@ -98,9 +98,13 @@ export interface Translations {
     copyPath: string
     copyRelativePath: string
     rename: string
+    move: string
     delete: string
     renameTitle: string
     renameLabel: string
+    moveTitle: (name: string) => string
+    moveLabel: string
+    moveConfirm: string
     deleteTitle: (name: string) => string
     deleteBody: string
     pathCopied: string
@@ -1767,6 +1771,22 @@ export interface Translations {
     remotePickerSelect: string
     folderTip: (cwd: string) => string
     openFolder: string
+    back: string
+    forward: string
+    up: string
+    sessionRoot: string
+    currentLocation: string
+    location: string
+    chooseFolder: string
+    newFile: string
+    newFolder: string
+    fileName: string
+    folderName: string
+    createFile: string
+    createFolder: string
+    couldNotOpenLocation: string
+    createdFile: (name: string) => string
+    createdFolder: (name: string) => string
     refreshTree: string
     collapseAll: string
     previewUnavailable: string

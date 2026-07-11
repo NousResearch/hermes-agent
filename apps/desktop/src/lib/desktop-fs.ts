@@ -127,28 +127,82 @@ export async function revealDesktopPath(path: string): Promise<void> {
   await bridge().revealPath?.(path)
 }
 
-// Rename a file/folder in place; returns the new absolute path. Local only.
+export async function createDesktopFolder(parent: string, name: string): Promise<{ path: string }> {
+  const desktop = bridge()
+
+  if (!isDesktopFsRemoteMode()) {
+    if (!desktop.createDirectory) {
+      throw new Error('Folder creation is not available')
+    }
+
+    return desktop.createDirectory(parent, name)
+  }
+
+  const result = await remoteFsApi<{ path: string }>('/api/fs/mkdir', { name, parent })
+
+  return { path: result.path }
+}
+
+export async function createDesktopFile(parent: string, name: string): Promise<{ path: string }> {
+  const desktop = bridge()
+
+  if (!isDesktopFsRemoteMode()) {
+    if (!desktop.createFile) {
+      throw new Error('File creation is not available')
+    }
+
+    return desktop.createFile(parent, name)
+  }
+
+  const result = await remoteFsApi<{ path: string }>('/api/fs/create-file', { name, parent })
+
+  return { path: result.path }
+}
+
 export async function renameDesktopPath(path: string, newName: string): Promise<string> {
   const desktop = bridge()
 
-  if (!desktop.renamePath) {
-    throw new Error('Rename is not available')
+  if (!isDesktopFsRemoteMode()) {
+    if (!desktop.renamePath) {
+      throw new Error('Rename is not available')
+    }
+
+    return (await desktop.renamePath(path, newName)).path
   }
 
-  const result = await desktop.renamePath(path, newName)
-
-  return result.path
+  return (await remoteFsApi<{ path: string }>('/api/fs/rename', { name: newName, path })).path
 }
 
-// Move a file/folder to the OS trash (recoverable). Local only.
-export async function trashDesktopPath(path: string): Promise<void> {
+export async function moveDesktopPath(source: string, destination: string, browserRoot: string): Promise<string> {
   const desktop = bridge()
 
-  if (!desktop.trashPath) {
-    throw new Error('Delete is not available')
+  if (!isDesktopFsRemoteMode()) {
+    if (!desktop.movePath) {
+      throw new Error('Move is not available')
+    }
+
+    return (await desktop.movePath(source, destination, browserRoot)).path
   }
 
-  await desktop.trashPath(path)
+  return (await remoteFsApi<{ path: string }>('/api/fs/move', { browserRoot, destination, source })).path
+}
+
+export async function trashDesktopPath(path: string, browserRoot = ''): Promise<void> {
+  const desktop = bridge()
+
+  if (!isDesktopFsRemoteMode()) {
+    if (!desktop.trashPath) {
+      throw new Error('Delete is not available')
+    }
+    await desktop.trashPath(path, browserRoot || undefined)
+
+    return
+  }
+
+  if (!browserRoot) {
+    throw new Error('Browser root is required for remote delete')
+  }
+  await remoteFsApi('/api/fs/delete', { browserRoot, path })
 }
 
 export async function copyTextToClipboard(text: string): Promise<void> {

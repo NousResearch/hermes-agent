@@ -1413,7 +1413,7 @@ _FS_MIME_TYPES = {
 }
 
 
-def _fs_path(raw_path: str) -> Path:
+def _fs_path(raw_path: str, *, preserve_leaf_symlink: bool = False) -> Path:
     raw = str(raw_path or "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="Path is required")
@@ -1428,6 +1428,8 @@ def _fs_path(raw_path: str) -> Path:
         candidate = Path(raw).expanduser()
         if not candidate.is_absolute():
             candidate = Path.cwd() / candidate
+        if preserve_leaf_symlink:
+            return candidate.parent.resolve(strict=False) / candidate.name
         return candidate.resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid path")
@@ -2102,6 +2104,183 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
         raise HTTPException(status_code=status_code, detail=f"Could not delete path: {exc}")
 
     return {"ok": True, "path": display_path, **_managed_response_meta(policy)}
+
+
+def _fs_basename(raw_name: str) -> str:
+    name = str(raw_name or "").strip()
+    if not name or name in {".", ".."} or "\0" in name or "/" in name or "\\" in name:
+        raise HTTPException(status_code=400, detail="Invalid name")
+    return name
+
+
+def _fs_mutation_stat(target: Path, *, directory: bool | None = None) -> os.stat_result:
+    try:
+        st = target.lstat()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Path not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Path is not accessible")
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid path")
+    if stat.S_ISLNK(st.st_mode) or not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+        raise HTTPException(status_code=400, detail="Symlinks and special files cannot be mutated")
+    if directory is True and not stat.S_ISDIR(st.st_mode):
+        raise HTTPException(status_code=400, detail="Path is not a directory")
+    return st
+
+
+def _fs_mutation_exists(target: Path) -> bool:
+    """Return true for any existing leaf, including broken symlinks."""
+    try:
+        target.lstat()
+        return True
+    except FileNotFoundError:
+        return False
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Path is not accessible")
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid path")
+
+
+def _fs_guard_mutation_path(target: Path, *, browser_root: Path | None = None) -> None:
+    if target.parent == target:
+        raise HTTPException(status_code=400, detail="Cannot mutate the filesystem root")
+    if browser_root is not None and target == browser_root:
+        raise HTTPException(status_code=400, detail="Cannot mutate the browser root")
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Sensitive paths cannot be mutated")
+
+
+class FsMkdir(BaseModel):
+    parent: str
+    name: str
+
+
+class FsRename(BaseModel):
+    path: str
+    name: str
+
+
+class FsDelete(BaseModel):
+    path: str
+    browserRoot: str
+
+
+class FsMove(BaseModel):
+    source: str
+    destination: str
+    browserRoot: str
+
+
+@app.post("/api/fs/mkdir")
+async def fs_mkdir(payload: FsMkdir):
+    parent = _fs_path(payload.parent)
+    name = _fs_basename(payload.name)
+    _fs_mutation_stat(parent, directory=True)
+    target = _fs_path(str(parent / name), preserve_leaf_symlink=True)
+    _fs_guard_mutation_path(target)
+    if _fs_mutation_exists(target):
+        raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+    try:
+        await asyncio.to_thread(target.mkdir)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Folder is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not create folder: {exc}")
+    return {"ok": True, "path": str(target)}
+
+
+@app.post("/api/fs/create-file")
+async def fs_create_file(payload: FsMkdir):
+    parent = _fs_path(payload.parent)
+    name = _fs_basename(payload.name)
+    _fs_mutation_stat(parent, directory=True)
+    target = _fs_path(str(parent / name), preserve_leaf_symlink=True)
+    _fs_guard_mutation_path(target)
+    if _fs_mutation_exists(target):
+        raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+
+    def create_exclusive() -> None:
+        with target.open("x", encoding="utf-8"):
+            pass
+
+    try:
+        await asyncio.to_thread(create_exclusive)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Folder is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not create file: {exc}")
+    return {"ok": True, "path": str(target)}
+
+
+@app.post("/api/fs/rename")
+async def fs_rename(payload: FsRename):
+    source = _fs_path(payload.path, preserve_leaf_symlink=True)
+    name = _fs_basename(payload.name)
+    _fs_guard_mutation_path(source)
+    _fs_mutation_stat(source)
+    target = _fs_path(str(source.parent / name), preserve_leaf_symlink=True)
+    _fs_guard_mutation_path(target)
+    if source == target:
+        return {"ok": True, "path": str(target)}
+    if _fs_mutation_exists(target):
+        raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+    try:
+        await asyncio.to_thread(source.rename, target)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Path is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not rename path: {exc}")
+    return {"ok": True, "path": str(target)}
+
+
+@app.post("/api/fs/delete")
+async def fs_delete(payload: FsDelete):
+    target = _fs_path(payload.path, preserve_leaf_symlink=True)
+    browser_root = _fs_path(payload.browserRoot, preserve_leaf_symlink=True)
+    _fs_guard_mutation_path(target, browser_root=browser_root)
+    st = _fs_mutation_stat(target)
+    try:
+        if stat.S_ISDIR(st.st_mode):
+            await asyncio.to_thread(shutil.rmtree, target)
+        else:
+            await asyncio.to_thread(target.unlink)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Path is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not delete path: {exc}")
+    return {"ok": True, "path": str(target)}
+
+
+@app.post("/api/fs/move")
+async def fs_move(payload: FsMove):
+    source = _fs_path(payload.source, preserve_leaf_symlink=True)
+    destination = _fs_path(payload.destination)
+    browser_root = _fs_path(payload.browserRoot, preserve_leaf_symlink=True)
+    _fs_guard_mutation_path(source, browser_root=browser_root)
+    source_st = _fs_mutation_stat(source)
+    _fs_mutation_stat(destination, directory=True)
+    if stat.S_ISDIR(source_st.st_mode) and (destination == source or source in destination.parents):
+        raise HTTPException(status_code=400, detail="Cannot move a directory into itself or a descendant")
+    target = _fs_path(str(destination / source.name), preserve_leaf_symlink=True)
+    _fs_guard_mutation_path(target)
+    if _fs_mutation_exists(target):
+        raise HTTPException(status_code=409, detail=f'"{source.name}" already exists')
+    try:
+        await asyncio.to_thread(shutil.move, str(source), str(target))
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail=f'"{source.name}" already exists')
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Path is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not move path: {exc}")
+    return {"ok": True, "path": str(target)}
 
 
 @app.get("/api/fs/list")

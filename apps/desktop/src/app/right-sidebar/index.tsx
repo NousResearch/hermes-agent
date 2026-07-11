@@ -1,21 +1,33 @@
 import { useStore } from '@nanostores/react'
-import type { ComponentProps } from 'react'
+import { type ComponentProps, useEffect, useRef, useState } from 'react'
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
+import { createDesktopFile, createDesktopFolder, readDesktopDir, selectDesktopPaths } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $connection, $currentCwd } from '@/store/session'
+import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
+import {
+  browserBack,
+  browserForward,
+  browserNavigate,
+  browserParentPath,
+  browserSessionRoot,
+  browserUp,
+  useBrowserWorkspace
+} from './files/browser-workspace'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 
@@ -29,12 +41,11 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
   const currentCwd = useStore($currentCwd).trim()
-
-  // The file tree is simply "browse the session's working directory". If the
-  // session has a cwd — a repo, a sibling worktree, or any folder — show it. A
-  // bare/detached chat (resolveNewSessionCwd → '') has none, so it shows the
-  // empty hint instead of whatever dir Hermes happens to run from.
-  const hasWorkspace = Boolean(currentCwd)
+  const connection = useStore($connection)
+  const connectionKey = `${connection?.mode || 'local'}:${connection?.profile || ''}:${connection?.baseUrl || ''}`
+  const workspace = useBrowserWorkspace(currentCwd, connectionKey)
+  const browserCwd = workspace.location
+  const hasWorkspace = Boolean(browserCwd || currentCwd)
 
   const {
     collapseAll,
@@ -47,13 +58,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     rootError,
     rootLoading,
     setNodeOpen
-  } = useProjectTree(hasWorkspace ? currentCwd : '')
-
-  const cwdName =
-    effectiveCwd
-      .split(/[\\/]+/)
-      .filter(Boolean)
-      .pop() ?? effectiveCwd
+  } = useProjectTree(browserCwd)
 
   const canCollapse = Object.values(openState).some(Boolean)
 
@@ -71,6 +76,18 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     }
   }
 
+  const chooseFolder = async () => {
+    try {
+      const [picked] = await selectDesktopPaths({ directories: true, multiple: false })
+
+      if (picked) {
+        browserNavigate(picked)
+      }
+    } catch (error) {
+      notifyError(error, r.couldNotOpenLocation)
+    }
+  }
+
   return (
     <aside
       aria-label={r.aria}
@@ -82,16 +99,17 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
       )}
     >
       <FilesystemTab
+        browserState={workspace}
         canCollapse={canCollapse}
         collapseNonce={collapseNonce}
         cwd={effectiveCwd}
-        cwdName={cwdName}
         data={data}
         error={rootError}
         hasWorkspace={hasWorkspace}
         loading={rootLoading}
         onActivateFile={onActivateFile}
         onActivateFolder={onActivateFolder}
+        onChooseFolder={() => void chooseFolder()}
         onCollapseAll={collapseAll}
         onLoadChildren={loadChildren}
         onNodeOpenChange={setNodeOpen}
@@ -104,31 +122,29 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
 }
 
 interface FilesystemTabProps extends FileTreeBodyProps {
+  browserState: ReturnType<typeof useBrowserWorkspace>
   canCollapse: boolean
-  cwdName: string
   hasWorkspace: boolean
+  onChooseFolder: () => void
   onCollapseAll: () => void
   onRefresh: () => void
 }
 
-// Sidebar palette + hover-reveal: header actions stay reachable while moving
-// from the project label to the action buttons.
 const HEADER_ACTION_CLASS =
   'text-sidebar-foreground/70 hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:ring-sidebar-ring'
 
-const HEADER_ACTION_LABEL_REVEAL = `${HEADER_ACTION_CLASS} pointer-events-none opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100`
-
 function FilesystemTab({
+  browserState,
   canCollapse,
   collapseNonce,
   cwd,
-  cwdName,
   data,
   error,
   hasWorkspace,
   loading,
   onActivateFile,
   onActivateFolder,
+  onChooseFolder,
   onCollapseAll,
   onLoadChildren,
   onNodeOpenChange,
@@ -138,22 +154,46 @@ function FilesystemTab({
 }: FilesystemTabProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
+  const [createKind, setCreateKind] = useState<'file' | 'folder' | null>(null)
 
-  // No working directory (a bare/detached chat) → no tree, just a terse hint.
-  // Switching workspace is a project/worktree action, never a raw folder picker.
   if (!hasWorkspace) {
-    return <PaneEmptyState label={r.noProjectOpen} />
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4">
+        <PaneEmptyState label={r.noProjectOpen} />
+        <Button onClick={onChooseFolder} size="sm" variant="outline">
+          {r.chooseFolder}
+        </Button>
+      </div>
+    )
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <RightSidebarSectionHeader>
-        <div className="flex min-w-0 flex-1">
-          <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
-        </div>
+      <RightSidebarSectionHeader className="gap-0.5 px-1.5">
+        <WorkspaceLocationControls browserState={browserState} cwd={cwd || browserState.location} />
+        <Button
+          aria-label={r.newFile}
+          className={HEADER_ACTION_CLASS}
+          onClick={() => setCreateKind('file')}
+          size="icon-xs"
+          title={r.newFile}
+          variant="ghost"
+        >
+          <Codicon name="new-file" size="0.8125rem" />
+        </Button>
+        <Button
+          aria-label={r.newFolder}
+          className={HEADER_ACTION_CLASS}
+          onClick={() => setCreateKind('folder')}
+          size="icon-xs"
+          title={r.newFolder}
+          variant="ghost"
+        >
+          <Codicon name="new-folder" size="0.8125rem" />
+        </Button>
         <Button
           aria-label={r.refreshTree}
-          className={HEADER_ACTION_LABEL_REVEAL}
+          className={HEADER_ACTION_CLASS}
           disabled={loading}
           onClick={onRefresh}
           size="icon-xs"
@@ -182,13 +222,285 @@ function FilesystemTab({
         loading={loading}
         onActivateFile={onActivateFile}
         onActivateFolder={onActivateFolder}
+        onChooseFolder={onChooseFolder}
         onLoadChildren={onLoadChildren}
         onNodeOpenChange={onNodeOpenChange}
         onPreviewFile={onPreviewFile}
         onRetry={onRefresh}
         openState={openState}
       />
+      <CreateEntryDialog cwd={cwd || browserState.location} kind={createKind} onClose={() => setCreateKind(null)} />
     </div>
+  )
+}
+
+function compactLocation(path: string): string {
+  if (path === '/') {
+    return '/'
+  }
+  const parts = path.split(/[\\/]+/).filter(Boolean)
+
+  return parts.slice(-2).join(' / ') || path
+}
+
+function WorkspaceLocationControls({
+  browserState,
+  cwd
+}: {
+  browserState: ReturnType<typeof useBrowserWorkspace>
+  cwd: string
+}) {
+  const { t } = useI18n()
+  const r = t.rightSidebar
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(cwd)
+  const [validationError, setValidationError] = useState<string | null>(null)
+  const [validating, setValidating] = useState(false)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const parent = browserParentPath(browserState.location)
+
+  const beginEditing = () => {
+    setDraft(cwd)
+    setValidationError(null)
+    setEditing(true)
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
+        event.preventDefault()
+        beginEditing()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => window.removeEventListener('keydown', onKeyDown)
+  })
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus()
+    }
+  }, [editing])
+
+  const commit = async () => {
+    const candidate = draft.trim()
+
+    if (!candidate) {
+      return
+    }
+
+    if (candidate === browserState.location) {
+      setEditing(false)
+
+      return
+    }
+
+    setValidating(true)
+    setValidationError(null)
+
+    try {
+      const result = await readDesktopDir(candidate)
+
+      if (result.error) {
+        throw new Error(result.error)
+      }
+      browserNavigate(candidate)
+      setEditing(false)
+    } catch {
+      setValidationError(r.couldNotOpenLocation)
+    } finally {
+      setValidating(false)
+    }
+  }
+
+  return (
+    <>
+      <Button
+        aria-label={r.back}
+        className={HEADER_ACTION_CLASS}
+        disabled={browserState.back.length === 0}
+        onClick={browserBack}
+        size="icon-xs"
+        title={r.back}
+        variant="ghost"
+      >
+        <Codicon name="arrow-left" size="0.75rem" />
+      </Button>
+      <Button
+        aria-label={r.forward}
+        className={HEADER_ACTION_CLASS}
+        disabled={browserState.forward.length === 0}
+        onClick={browserForward}
+        size="icon-xs"
+        title={r.forward}
+        variant="ghost"
+      >
+        <Codicon name="arrow-right" size="0.75rem" />
+      </Button>
+      <Button
+        aria-label={r.up}
+        className={HEADER_ACTION_CLASS}
+        disabled={!browserState.location || parent === browserState.location}
+        onClick={browserUp}
+        size="icon-xs"
+        title={r.up}
+        variant="ghost"
+      >
+        <Codicon name="arrow-up" size="0.75rem" />
+      </Button>
+      <Button
+        aria-label={r.sessionRoot}
+        className={HEADER_ACTION_CLASS}
+        disabled={!browserState.sessionRoot || browserState.sessionRoot === browserState.location}
+        onClick={browserSessionRoot}
+        size="icon-xs"
+        title={r.sessionRoot}
+        variant="ghost"
+      >
+        <Codicon name="home" size="0.75rem" />
+      </Button>
+      <div className="relative min-w-0 flex-1">
+        {editing ? (
+          <input
+            aria-invalid={Boolean(validationError)}
+            aria-label={r.location}
+            autoCapitalize="off"
+            autoComplete="off"
+            autoCorrect="off"
+            className="h-5 w-full rounded-sm border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) px-1.5 text-[0.66rem] text-foreground outline-none focus:border-primary"
+            disabled={validating}
+            onChange={event => setDraft(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void commit()
+              } else if (event.key === 'Escape') {
+                event.preventDefault()
+                setEditing(false)
+                setValidationError(null)
+              }
+            }}
+            ref={inputRef}
+            spellCheck={false}
+            value={draft}
+          />
+        ) : (
+          <button
+            aria-label={r.currentLocation}
+            className="h-5 w-full truncate rounded-sm px-1 text-left text-[0.66rem] font-medium text-(--ui-text-secondary) hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            onClick={beginEditing}
+            title={cwd}
+            type="button"
+          >
+            {compactLocation(cwd)}
+          </button>
+        )}
+        {validationError && editing ? (
+          <div
+            className="absolute left-0 top-full z-20 mt-1 rounded border border-destructive/30 bg-(--ui-bg-elevated) px-2 py-1 text-[0.65rem] text-destructive shadow-nous"
+            role="alert"
+          >
+            {validationError}
+          </div>
+        ) : null}
+      </div>
+    </>
+  )
+}
+
+function CreateEntryDialog({
+  cwd,
+  kind,
+  onClose
+}: {
+  cwd: string
+  kind: 'file' | 'folder' | null
+  onClose: () => void
+}) {
+  const { t } = useI18n()
+  const r = t.rightSidebar
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (kind) {
+      setName('')
+      setError(null)
+      setBusy(false)
+    }
+  }, [kind])
+
+  const submit = async () => {
+    const nextName = name.trim()
+
+    if (!kind || !nextName || busy) {
+      return
+    }
+    setBusy(true)
+    setError(null)
+
+    try {
+      if (kind === 'file') {
+        await createDesktopFile(cwd, nextName)
+      } else {
+        await createDesktopFolder(cwd, nextName)
+      }
+
+      notifyWorkspaceChanged()
+      notify({ kind: 'success', message: kind === 'file' ? r.createdFile(nextName) : r.createdFolder(nextName) })
+      onClose()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t.errors.genericFailure)
+      setBusy(false)
+    }
+  }
+
+  const label = kind === 'file' ? r.fileName : r.folderName
+  const action = kind === 'file' ? r.createFile : r.createFolder
+
+  return (
+    <Dialog onOpenChange={open => !open && !busy && onClose()} open={Boolean(kind)}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{action}</DialogTitle>
+          <p className="truncate font-mono text-[0.7rem] text-(--ui-text-secondary)" title={cwd}>
+            {cwd}
+          </p>
+        </DialogHeader>
+        <form
+          className="grid gap-3"
+          onSubmit={event => {
+            event.preventDefault()
+            void submit()
+          }}
+        >
+          <input
+            aria-label={label}
+            autoFocus
+            className="h-8 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) px-2 text-sm outline-none focus:border-primary"
+            disabled={busy}
+            onChange={event => setName(event.target.value)}
+            value={name}
+          />
+          {error ? (
+            <div className="text-xs text-destructive" role="alert">
+              {error}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
+              {t.common.cancel}
+            </Button>
+            <Button disabled={busy || !name.trim()} type="submit">
+              {action}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -208,6 +520,7 @@ interface FileTreeBodyProps {
   loading: boolean
   onActivateFile: (path: string) => void
   onActivateFolder: (path: string) => void
+  onChooseFolder?: () => void
   onLoadChildren: (id: string) => void | Promise<void>
   onNodeOpenChange: (id: string, open: boolean) => void
   onPreviewFile?: (path: string) => void
@@ -225,6 +538,7 @@ function FileTreeBody({
   loading,
   onActivateFile,
   onActivateFolder,
+  onChooseFolder,
   onLoadChildren,
   onNodeOpenChange,
   onPreviewFile,
@@ -254,6 +568,11 @@ function FileTreeBody({
             {r.tryAgain}
           </button>
         )}
+        {onChooseFolder && /EACCES|EPERM|permission/i.test(error) ? (
+          <Button onClick={onChooseFolder} size="sm" variant="outline">
+            {r.chooseFolder}
+          </Button>
+        ) : null}
       </div>
     )
   }

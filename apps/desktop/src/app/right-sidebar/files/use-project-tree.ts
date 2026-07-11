@@ -105,8 +105,12 @@ const initialState: ProjectTreeState = {
 
 const inflight = new Set<string>()
 const $projectTree = atom<ProjectTreeState>(initialState)
+const snapshots = new Map<string, ProjectTreeState>()
 let nextRootRequestId = 0
 let lastConnectionKey = ''
+let activeConnectionKey = 'local:'
+let revalidation: Promise<void> | null = null
+let revalidateQueued = false
 
 // While the root is errored (ENOENT during a session's cwd race, a folder that
 // reappears after a checkout, a remote that wasn't ready), keep retrying on a
@@ -114,7 +118,11 @@ let lastConnectionKey = ''
 const ROOT_ERROR_RETRY_MS = 3_000
 
 function setProjectTree(updater: (current: ProjectTreeState) => ProjectTreeState) {
-  $projectTree.set(updater($projectTree.get()))
+  const next = updater($projectTree.get())
+  $projectTree.set(next)
+  if (next.cwd && next.loaded) {
+    snapshots.set(`${activeConnectionKey}:${next.cwd}`, next)
+  }
 }
 
 function clearProjectTree() {
@@ -161,6 +169,14 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
     return
   }
 
+  const cached = snapshots.get(`${activeConnectionKey}:${cwd}`)
+
+  if (!force && current.cwd !== cwd && cached) {
+    $projectTree.set(cached)
+
+    return
+  }
+
   const requestId = nextRootRequestId + 1
   nextRootRequestId = requestId
   inflight.clear()
@@ -172,11 +188,11 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
   $projectTree.set({
     collapseNonce: current.collapseNonce,
     cwd,
-    data: [],
-    loaded: false,
+    data: current.cwd === cwd ? current.data : [],
+    loaded: current.cwd === cwd && current.loaded,
     openState: current.cwd === cwd ? current.openState : {},
     requestId,
-    resolvedCwd: '',
+    resolvedCwd: current.cwd === cwd ? current.resolvedCwd : '',
     rootError: null,
     rootLoading: true
   })
@@ -216,6 +232,9 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
 
 export function resetProjectTreeState() {
   lastConnectionKey = ''
+  snapshots.clear()
+  revalidation = null
+  revalidateQueued = false
   clearProjectTree()
   clearProjectDirCache()
 }
@@ -225,7 +244,7 @@ export function resetProjectTreeState() {
 // and already-loaded subtrees. Unlike `loadRoot({force})` this never collapses
 // the tree, so it's safe to run live as the agent edits — and because node ids
 // (absolute paths) stay stable across merges, rows can animate in/out.
-async function revalidateTree(cwd: string): Promise<void> {
+async function runRevalidateTree(cwd: string): Promise<void> {
   const state = $projectTree.get()
 
   if (!cwd || state.cwd !== cwd || !state.loaded) {
@@ -233,37 +252,55 @@ async function revalidateTree(cwd: string): Promise<void> {
   }
 
   const rootPath = state.resolvedCwd || cwd
+  const requestId = state.requestId
   clearProjectDirCache()
 
   const reconcile = async (dirPath: string, existing: TreeNode[]): Promise<TreeNode[]> => {
     const { entries, error } = await readProjectDir(dirPath, rootPath)
 
     if (error) {
-      return existing // keep the last-known children on a transient read error
+      return existing
     }
 
     const byId = new Map(existing.filter(node => !node.placeholder).map(node => [node.id, node]))
-    const merged: TreeNode[] = []
 
-    for (const entry of entries) {
-      const prev = byId.get(entry.path)
+    return Promise.all(
+      entries.map(async entry => {
+        const prev = byId.get(entry.path)
 
-      if (prev?.isDirectory && prev.children) {
-        // Loaded folder: recurse so deep edits surface without a re-expand.
-        merged.push({ ...prev, children: await reconcile(prev.id, prev.children) })
-      } else if (prev) {
-        merged.push(prev)
-      } else {
-        merged.push(makeNode(entry.path, entry.name, entry.isDirectory))
-      }
-    }
+        if (prev?.isDirectory && prev.children) {
+          return { ...prev, children: await reconcile(prev.id, prev.children) }
+        }
 
-    return merged
+        return prev || makeNode(entry.path, entry.name, entry.isDirectory)
+      })
+    )
   }
 
   const nextData = await reconcile(rootPath, state.data)
 
-  setProjectTree(latest => (latest.cwd === cwd && latest.loaded ? { ...latest, data: nextData } : latest))
+  setProjectTree(latest =>
+    latest.cwd === cwd && latest.requestId === requestId && latest.loaded ? { ...latest, data: nextData } : latest
+  )
+}
+
+async function revalidateTree(cwd: string): Promise<void> {
+  if (revalidation) {
+    revalidateQueued = true
+
+    return revalidation
+  }
+
+  revalidation = runRevalidateTree(cwd).finally(() => {
+    revalidation = null
+
+    if (revalidateQueued) {
+      revalidateQueued = false
+      void revalidateTree($projectTree.get().cwd)
+    }
+  })
+
+  return revalidation
 }
 
 /**
@@ -365,6 +402,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
   }, [workspaceTick, cwd])
 
   useEffect(() => {
+    activeConnectionKey = connectionKey
     const connectionChanged = lastConnectionKey !== '' && lastConnectionKey !== connectionKey
     lastConnectionKey = connectionKey
 

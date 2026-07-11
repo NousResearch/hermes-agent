@@ -44,7 +44,21 @@ and `limit` filters.
 `POST /tasks` accepts an `Idempotency-Key` header or an `idempotency_key` JSON
 field. Repeating a request with the same key returns the existing non-archived
 task with HTTP 200 and `created: false`; a new task returns HTTP 201 and
-`created: true`.
+`created: true`. The guarantee is enforced by a partial `UNIQUE` index on the
+board's store (scoped to live, non-archived tasks), so even two concurrent
+`POST`s with the same key resolve to a single task — the loser of the race is
+answered with the existing task (HTTP 200, `created: false`) rather than
+creating a duplicate. Archiving a task frees its key for reuse.
+
+`PATCH /tasks/{id}` rejects edits to a task's `title` or `body` once the task
+is completed (`done`) or `archived` with **HTTP 409** — the finished card text
+is a historical record. `priority` and `assignee` may still be adjusted (the
+latter subject to its own "not while running" rule).
+
+Linking references two existing tasks: `POST /tasks/{parent}/links/{child}`
+returns **HTTP 404** when either the parent or the child does not exist
+(consistent with unlink), and HTTP 400 only for a genuinely invalid link
+(self-dependency or a cycle).
 
 There is intentionally no endpoint that directly starts a Hermes profile. An
 assigned task becomes eligible through normal Kanban state/dependency rules,

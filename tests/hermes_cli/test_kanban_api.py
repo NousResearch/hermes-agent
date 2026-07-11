@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from hermes_cli import kanban_db
+from hermes_cli import kanban_api, kanban_db
 from hermes_cli.kanban_api import router
 
 
@@ -203,3 +204,180 @@ def test_dashboard_legacy_routes_are_namespaced_after_public_router() -> None:
     assert "/tasks" in paths
     assert "/dashboard/board" in paths
     assert "/dashboard/tasks/{task_id}" in paths
+
+
+def test_idempotency_key_is_unique_among_live_tasks(client: TestClient) -> None:
+    """A duplicate live idempotency_key insert is rejected by the UNIQUE index.
+
+    Simulates the TOCTOU race by inserting a second row directly (bypassing
+    the SELECT-before-INSERT guard) — the partial UNIQUE index must refuse it.
+    """
+    created = _create(client, idempotency_key="race-key")
+    task_id = created["task"]["id"]
+
+    with kanban_db.connect(board="default") as conn:
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        with pytest.raises(sqlite3.IntegrityError):
+            with kanban_db.write_txn(conn):
+                conn.execute(
+                    "INSERT INTO tasks "
+                    "(id, title, status, created_at, workspace_kind, idempotency_key) "
+                    "VALUES (?, ?, ?, ?, 'scratch', ?)",
+                    ("t_duplicate", "dup", row["status"], row["created_at"], "race-key"),
+                )
+
+    # Archiving the live task frees the key: the partial index excludes
+    # archived rows, so a fresh create with the same key is allowed (200/false
+    # is only for a *live* duplicate; here a brand-new task is created).
+    assert client.post(f"/api/plugins/kanban/tasks/{task_id}/archive").status_code == 200
+    reused = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "after archive", "idempotency_key": "race-key"},
+    )
+    assert reused.status_code == 201, reused.text
+    assert reused.json()["created"] is True
+    assert reused.json()["task"]["id"] != task_id
+
+
+def test_create_task_returns_existing_on_idempotency_race(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If create_task loses the UNIQUE-index race, the API returns the winner.
+
+    The pre-INSERT lookup is forced to miss once (as it would if the racing
+    writer hadn't committed yet) and create_task is forced to raise the
+    IntegrityError the index would produce; the handler must re-fetch the
+    winner and answer 200 / created=false rather than 500.
+    """
+    original = _create(client, idempotency_key="winner-key")
+    original_id = original["task"]["id"]
+
+    real_lookup = kanban_api._existing_idempotent_task
+    calls = {"n": 0}
+
+    def flaky_lookup(conn, key):
+        calls["n"] += 1
+        if calls["n"] == 1:  # pre-INSERT check: pretend the winner isn't visible
+            return None
+        return real_lookup(conn, key)
+
+    def boom(*args, **kwargs):
+        raise sqlite3.IntegrityError(
+            "UNIQUE constraint failed: index 'idx_tasks_idempotency_unique'"
+        )
+
+    monkeypatch.setattr(kanban_api, "_existing_idempotent_task", flaky_lookup)
+    monkeypatch.setattr(kanban_db, "create_task", boom)
+
+    raced = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "raced", "idempotency_key": "winner-key"},
+    )
+    assert raced.status_code == 200, raced.text
+    assert raced.json()["created"] is False
+    assert raced.json()["task"]["id"] == original_id
+
+
+def test_link_missing_task_is_404_not_400(client: TestClient) -> None:
+    real_id = _create(client, idempotency_key="link-real")["task"]["id"]
+
+    missing_parent = client.post(
+        f"/api/plugins/kanban/tasks/t_nope/links/{real_id}"
+    )
+    assert missing_parent.status_code == 404, missing_parent.text
+
+    missing_child = client.post(
+        f"/api/plugins/kanban/tasks/{real_id}/links/t_nope"
+    )
+    assert missing_child.status_code == 404, missing_child.text
+
+    # Unlink stays 404 for a missing endpoint (unchanged behaviour).
+    missing_unlink = client.delete(
+        f"/api/plugins/kanban/tasks/{real_id}/links/t_nope"
+    )
+    assert missing_unlink.status_code == 404, missing_unlink.text
+
+
+def test_patch_rejects_edits_to_completed_task(client: TestClient) -> None:
+    task_id = _create(client, idempotency_key="done-edit")["task"]["id"]
+    assert client.post(f"/api/plugins/kanban/tasks/{task_id}/complete").status_code == 200
+
+    rejected = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}", json={"title": "too late"}
+    )
+    assert rejected.status_code == 409, rejected.text
+    # The card text is unchanged.
+    assert client.get(f"/api/plugins/kanban/tasks/{task_id}").json()["task"][
+        "title"
+    ] == "External operation"
+
+
+def test_patch_rejects_edits_to_archived_task(client: TestClient) -> None:
+    task_id = _create(client, idempotency_key="archived-edit")["task"]["id"]
+    assert client.post(f"/api/plugins/kanban/tasks/{task_id}/complete").status_code == 200
+    assert client.post(f"/api/plugins/kanban/tasks/{task_id}/archive").status_code == 200
+
+    rejected = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}", json={"body": "amend history"}
+    )
+    assert rejected.status_code == 409, rejected.text
+
+
+def test_events_and_runs_limit_returns_most_recent_in_order(client: TestClient) -> None:
+    task_id = _create(client, idempotency_key="limit-key")["task"]["id"]
+
+    with kanban_db.connect(board="default") as conn:
+        with kanban_db.write_txn(conn):
+            for i in range(5):
+                conn.execute(
+                    "INSERT INTO task_events "
+                    "(task_id, run_id, kind, payload, created_at) "
+                    "VALUES (?, NULL, ?, NULL, ?)",
+                    (task_id, f"evt{i}", 2_000_000_000 + i),
+                )
+            for i in range(4):
+                conn.execute(
+                    "INSERT INTO task_runs "
+                    "(task_id, status, started_at, ended_at, outcome) "
+                    "VALUES (?, 'done', ?, ?, 'completed')",
+                    (task_id, 2_000_000_000 + i, 2_000_000_000 + i + 1),
+                )
+
+    events = client.get(
+        f"/api/plugins/kanban/tasks/{task_id}/events", params={"limit": 3}
+    )
+    assert events.status_code == 200
+    kinds = [e["kind"] for e in events.json()["events"]]
+    # The three newest events, oldest-first.
+    assert kinds == ["evt2", "evt3", "evt4"]
+    assert events.json()["count"] == 3
+
+    runs = client.get(
+        f"/api/plugins/kanban/tasks/{task_id}/runs", params={"limit": 2}
+    )
+    assert runs.status_code == 200
+    starts = [r["started_at"] for r in runs.json()["runs"]]
+    assert starts == [2_000_000_002, 2_000_000_003]
+    assert runs.json()["count"] == 2
+
+
+def test_error_detail_is_sanitized(client: TestClient) -> None:
+    # An invalid board slug's raw ValueError text (regex description) must not
+    # reach the client; a stable generic detail is returned instead.
+    bad_board = client.get(
+        "/api/plugins/kanban/tasks", params={"board": "Bad Slug!!"}
+    )
+    assert bad_board.status_code == 400, bad_board.text
+    assert bad_board.json()["detail"] == "invalid board id"
+    assert "1-64 chars" not in bad_board.text
+
+    # A known-safe validation message is still surfaced verbatim (useful to
+    # the caller, carries no internal detail).
+    unknown_parent = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "orphan", "parents": ["t_missing"]},
+    )
+    assert unknown_parent.status_code == 400, unknown_parent.text
+    assert "unknown parent task" in unknown_parent.json()["detail"]

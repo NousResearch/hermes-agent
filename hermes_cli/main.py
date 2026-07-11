@@ -4691,7 +4691,8 @@ def _run_with_idle_timeout(
 
     def _reader() -> None:
         nonlocal last_output_ts
-        assert proc.stdout is not None
+        if proc.stdout is None:
+            return
         for line in proc.stdout:
             try:
                 print(f"{indent}{line.rstrip()}", flush=True)

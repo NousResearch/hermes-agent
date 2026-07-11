@@ -1042,7 +1042,8 @@ class BatchRunner:
         with open(combined_file, 'w', encoding='utf-8') as outfile:
             for batch_file in all_batch_files:
                 batch_files_found += 1
-                batch_num = batch_file.stem.split("_")[1]  # Extract batch number for logging
+                parts = batch_file.stem.split("_")
+                batch_num = parts[1] if len(parts) > 1 else "?"  # Extract batch number for logging
                 
                 with open(batch_file, 'r', encoding='utf-8') as infile:
                     for line in infile:

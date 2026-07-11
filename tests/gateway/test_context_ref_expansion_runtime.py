@@ -18,6 +18,7 @@ the hygiene-compression block already uses) and must actually reach
 """
 import logging
 import threading
+from contextlib import contextmanager
 
 import pytest
 
@@ -185,3 +186,94 @@ async def test_at_reference_resolves_model_via_session_runtime(monkeypatch):
     assert captured_runtime_call.get("model") == "openai/gpt-4.1-mini"
     assert captured_runtime_call.get("base_url") == "https://api.openai.com/v1"
     assert captured_runtime_call.get("provider") == "openai"
+
+
+@pytest.mark.asyncio
+async def test_at_reference_uses_routed_profile_scope_when_multiplexed(monkeypatch, tmp_path):
+    """Secondary-profile preprocessing must resolve inside that profile scope."""
+    runner = _make_runner()
+    runner.config.multiplex_profiles = True
+    source = _source()
+    source.profile = "secondary"
+    profile_home = tmp_path / "profiles" / "secondary"
+    seen = []
+
+    @contextmanager
+    def _scope(home):
+        seen.append(("enter", home))
+        try:
+            yield
+        finally:
+            seen.append(("exit", home))
+
+    async def _prepared(**kwargs):
+        seen.append(("prepared", kwargs["source"].profile))
+        return "expanded"
+
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", _scope)
+    monkeypatch.setattr(runner, "_resolve_profile_home_for_source", lambda _source: profile_home)
+    monkeypatch.setattr(runner, "_prepare_inbound_message_text", _prepared)
+
+    result = await runner._prepare_profile_scoped_inbound_message_text(
+        event=MessageEvent(text="@file:note", source=source),
+        source=source,
+        history=[],
+        session_key="agent:secondary:telegram:dm:123",
+    )
+
+    assert result == "expanded"
+    assert seen == [
+        ("enter", profile_home),
+        ("prepared", "secondary"),
+        ("exit", profile_home),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_at_reference_passes_compatible_custom_provider_context(monkeypatch):
+    """Per-model custom-provider limits must bound context-reference injection."""
+    runner = _make_runner()
+    source = _source()
+    captured = {}
+    custom_providers = [{
+        "name": "private",
+        "base_url": "https://private.example/v1",
+        "models": {"private/model": {"context_length": 32768}},
+    }]
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"model": {"default": "private/model"}, "custom_providers": custom_providers},
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_gateway_model",
+        lambda _cfg=None: "private/model",
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"provider": "custom:private", "api_key": "test", "base_url": "https://private.example/v1"},
+    )
+
+    import hermes_cli.config as config_mod
+    import agent.model_metadata as model_meta_mod
+    import agent.context_references as ctx_mod
+
+    monkeypatch.setattr(config_mod, "get_compatible_custom_providers", lambda _cfg: custom_providers)
+
+    async def _fake_get_context(_model, **kwargs):
+        captured["custom_providers"] = kwargs["custom_providers"]
+        return 32768
+
+    async def _passthrough(message, **_kwargs):
+        return ContextReferenceResult(message=message, original_message=message)
+
+    monkeypatch.setattr(model_meta_mod, "get_model_context_length_async", _fake_get_context)
+    monkeypatch.setattr(ctx_mod, "preprocess_context_references_async", _passthrough)
+
+    await runner._prepare_inbound_message_text(
+        event=MessageEvent(text="@file:note", source=source), source=source, history=[]
+    )
+    assert captured["custom_providers"] == custom_providers

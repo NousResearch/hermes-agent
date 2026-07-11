@@ -1167,6 +1167,10 @@ def _build_child_agent(
     # context message and seed the child with it (spec v0.8 D-4 / P0.3). Default
     # False keeps every existing caller byte-identical (INV-5).
     inherit_context: bool = False,
+    # Per-task skill promotion: names re-promoted to full descriptions in the
+    # child's compact skills index (see agent/system_prompt.py). None/empty =
+    # pure names-only index.
+    skills: Optional[List[str]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1492,6 +1496,12 @@ def _build_child_agent(
         iteration_budget=None,  # fresh budget per subagent
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    # Per-task skill promotion (see agent/system_prompt.py): names the brief
+    # wants re-promoted to full descriptions in the child's compact index.
+    # Set BEFORE the first request — the system prompt is built lazily.
+    child._delegate_skills = tuple(
+        s.strip() for s in (skills or []) if isinstance(s, str) and s.strip()
+    )
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
@@ -2656,6 +2666,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     inherit_context: Optional[bool] = None,
+    skills: Optional[List[str]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2758,7 +2769,7 @@ def delegate_task(
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
             {"goal": goal, "context": context, "role": top_role,
-             "inherit_context": inherit_context}
+             "inherit_context": inherit_context, "skills": skills}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2821,6 +2832,7 @@ def delegate_task(
                     if "inherit_context" in t
                     else inherit_context
                 ),
+                skills=(t.get("skills") if "skills" in t else skills),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3711,6 +3723,11 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "boolean",
                             "description": "Per-task boomerang inheritance override. See top-level 'inherit_context'. Defaults to the top-level value when omitted.",
                         },
+                        "skills": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Per-task skill promotion override. See top-level 'skills'.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3743,6 +3760,18 @@ DELEGATE_TASK_SCHEMA = {
                     "into a single background context message the subagent inherits, "
                     "so it sees the current session state without you writing a brief. "
                     "Default false (the subagent starts blank + your goal/context)."
+                ),
+            },
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Skill names to promote in the subagent's skill index. "
+                    "Subagents get a compact names-only index by default; "
+                    "skills named here keep their full descriptions so the "
+                    "child loads them reliably. Pass the skills the task's "
+                    "domain needs (e.g. ['systematic-debugging']). The child "
+                    "can still browse/load ANY skill via skills_list/skill_view."
                 ),
             },
         },
@@ -3805,6 +3834,7 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         inherit_context=args.get("inherit_context"),
+        skills=args.get("skills"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

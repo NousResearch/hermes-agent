@@ -5910,6 +5910,7 @@ class AIAgent:
             role=function_args.get("role"),
             background=(not _is_subagent),
             inherit_context=function_args.get("inherit_context"),
+            skills=function_args.get("skills"),
             parent_agent=self,
         )
 

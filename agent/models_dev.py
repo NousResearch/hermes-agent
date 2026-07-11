@@ -538,9 +538,18 @@ _NOISE_PATTERNS: re.Pattern = re.compile(
 # Gemma models whose TPM quotas are too small for normal Hermes agent traffic.
 # Keep capability metadata available for direct/manual use, but hide these from
 # the Gemini model catalogs we surface in setup and model selection.
-_GOOGLE_HIDDEN_MODELS = frozenset({
-    # Low-TPM Gemma models that trip Google input-token quota walls under
-    # agent-style traffic despite advertising large context windows.
+#
+# Split into two sets because only one of them is a "default for typical
+# users" judgment call the user might reasonably want to override — the
+# other is models.yaml's own filter working correctly around a fact, not a
+# posture, and un-hiding it just breaks the picker.
+
+# Low-TPM Gemma models that trip Google input-token quota walls under
+# agent-style traffic despite advertising large context windows. Hidden by
+# default as a reasonable posture for most users; config.yaml's
+# ``models.show_hidden_google_models`` can override this per user (see
+# _google_show_hidden_overrides below).
+_GOOGLE_LOW_TPM_MODELS = frozenset({
     "gemma-4-31b-it",
     "gemma-4-26b-it",
     "gemma-4-26b-a4b-it",
@@ -554,8 +563,13 @@ _GOOGLE_HIDDEN_MODELS = frozenset({
     "gemma-3-12b-it",
     "gemma-3-27b",
     "gemma-3-27b-it",
-    # Stale/retired Google slugs that still surface through models.dev-backed
-    # Gemini selection but 404 on the current Google endpoints.
+})
+
+# Stale/retired Google slugs that still surface through models.dev-backed
+# Gemini selection but 404 on the current Google endpoints. Not a posture —
+# these don't work, full stop — so they're never eligible for the
+# show_hidden_google_models override.
+_GOOGLE_STALE_MODELS = frozenset({
     "gemini-1.5-flash",
     "gemini-1.5-pro",
     "gemini-1.5-flash-8b",
@@ -563,16 +577,23 @@ _GOOGLE_HIDDEN_MODELS = frozenset({
     "gemini-2.0-flash-lite",
 })
 
+_GOOGLE_HIDDEN_MODELS = _GOOGLE_LOW_TPM_MODELS | _GOOGLE_STALE_MODELS
+
 
 def _google_show_hidden_overrides() -> frozenset:
     """Model IDs the user opted to un-hide via config.yaml's
     ``models.show_hidden_google_models``.
 
     Config-driven so the override survives a `hermes update` — unlike
-    editing _GOOGLE_HIDDEN_MODELS directly, which gets overwritten by the
+    editing _GOOGLE_LOW_TPM_MODELS directly, which gets overwritten by the
     next source update. Any failure to load config (missing file, bad
     config on a first-run path, etc.) just means no overrides, same as an
     empty list — never raises into the caller.
+
+    Only entries that are also in _GOOGLE_LOW_TPM_MODELS take effect — see
+    _should_hide_from_provider_catalog. A stale/retired slug in this list
+    (typo, copy-paste from an old config, whatever) is silently ignored
+    rather than un-hiding a model that 404s.
     """
     try:
         from hermes_cli.config import load_config_readonly
@@ -589,7 +610,13 @@ def _google_show_hidden_overrides() -> frozenset:
 def _should_hide_from_provider_catalog(provider: str, model_id: str) -> bool:
     provider_lower = (provider or "").strip().lower()
     model_lower = (model_id or "").strip().lower()
-    if provider_lower in {"gemini", "google"} and model_lower in _GOOGLE_HIDDEN_MODELS:
+    if provider_lower not in {"gemini", "google"}:
+        return False
+    if model_lower in _GOOGLE_STALE_MODELS:
+        # Always hidden — these 404 on Google's current endpoints regardless
+        # of what the user configures.
+        return True
+    if model_lower in _GOOGLE_LOW_TPM_MODELS:
         return model_lower not in _google_show_hidden_overrides()
     return False
 

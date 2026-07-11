@@ -354,3 +354,77 @@ class TestGeminiModelsDev:
         assert "gemma-3-27b-it" not in result
         assert "gemini-1.5-pro" not in result
         assert "gemini-2.0-flash" not in result
+
+    def test_show_hidden_google_models_unhides_configured_gemma(self):
+        """models.show_hidden_google_models un-hides only the configured
+        low-TPM Gemma id(s) - everything else stays hidden as before."""
+        mock_data = {
+            "google": {
+                "models": {
+                    "gemini-2.5-pro": {},
+                    "gemma-4-31b-it": {},
+                    "gemma-3-27b-it": {},
+                }
+            }
+        }
+        mock_config = {"models": {"show_hidden_google_models": ["gemma-4-31b-it"]}}
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data), \
+             patch("hermes_cli.config.load_config_readonly", return_value=mock_config):
+            from agent.models_dev import list_provider_models
+
+            result = list_provider_models("gemini")
+
+        assert "gemini-2.5-pro" in result
+        assert "gemma-4-31b-it" in result       # un-hidden via override
+        assert "gemma-3-27b-it" not in result   # not in override list - still hidden
+
+    def test_show_hidden_google_models_cannot_unhide_stale_slugs(self):
+        """A stale/retired Google slug in show_hidden_google_models is
+        ignored - these 404 on Google's endpoints regardless of config, so
+        the override only ever applies to the low-TPM Gemma set."""
+        mock_data = {
+            "google": {
+                "models": {
+                    "gemini-2.5-pro": {},
+                    "gemini-1.5-pro": {},
+                    "gemini-2.0-flash": {},
+                    "gemma-4-31b-it": {},
+                }
+            }
+        }
+        mock_config = {
+            "models": {
+                "show_hidden_google_models": [
+                    "gemini-1.5-pro", "gemini-2.0-flash", "gemma-4-31b-it",
+                ]
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data), \
+             patch("hermes_cli.config.load_config_readonly", return_value=mock_config):
+            from agent.models_dev import list_provider_models
+
+            result = list_provider_models("gemini")
+
+        assert "gemini-2.5-pro" in result
+        assert "gemma-4-31b-it" in result        # low-TPM: override applies
+        assert "gemini-1.5-pro" not in result    # stale: override ignored
+        assert "gemini-2.0-flash" not in result  # stale: override ignored
+
+    def test_show_hidden_google_models_empty_by_default(self):
+        """No config.yaml override configured - default behavior unchanged."""
+        mock_data = {
+            "google": {
+                "models": {
+                    "gemini-2.5-pro": {},
+                    "gemma-4-31b-it": {},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data), \
+             patch("hermes_cli.config.load_config_readonly", return_value={}):
+            from agent.models_dev import list_provider_models
+
+            result = list_provider_models("gemini")
+
+        assert "gemini-2.5-pro" in result
+        assert "gemma-4-31b-it" not in result

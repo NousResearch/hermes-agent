@@ -11137,7 +11137,7 @@ def _mcp_install_action_name(name: str) -> str:
     re-click or a second catalog install doesn't overwrite the first's tracked
     process/log while its git clone is still running."""
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48] or "server"
-    digest = hashlib.sha1(name.encode()).hexdigest()[:8]
+    digest = hashlib.sha1(name.encode(), usedforsecurity=False).hexdigest()[:8]
     action = f"mcp-install-{slug}-{digest}"
     _ACTION_LOG_FILES.setdefault(action, f"action-{action}.log")
     return action
@@ -12076,7 +12076,7 @@ def _hub_action_name(verb: str, key: str) -> str:
     (readable) + hash (collision-proof) keys each action to its own row.
     """
     slug = re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:48] or "skill"
-    digest = hashlib.sha1(key.encode()).hexdigest()[:8]
+    digest = hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:8]
     name = f"skills-{verb}-{slug}-{digest}"
     _ACTION_LOG_FILES.setdefault(name, f"action-{name}.log")
     return name

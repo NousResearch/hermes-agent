@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import uuid
 from typing import Any, Callable, Dict, Optional
 
@@ -27,22 +26,6 @@ def _result(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _instance_key(ctx: Optional[Dict[str, Any]]) -> str:
-    """Identité de l'instance pour le rate-limit (clé du token-bucket).
-
-    En job cron, le ``job_context`` porte ``job_id`` / ``department`` (par mission). Hors job
-    (chat libre, Telegram, email entrant), on retombe sur ``HERMES_SESSION_ID`` puis ``"default"``.
-    Le bucket d'une instance est ainsi indépendant de celui d'une autre (isolation par instance).
-    """
-    ctx = ctx or {}
-    return (
-        str(ctx.get("job_id") or "").strip()
-        or str(ctx.get("department") or "").strip()
-        or os.environ.get("HERMES_SESSION_ID", "").strip()
-        or "default"
-    )
-
-
 def make_middleware() -> Callable[..., Any]:
     def jb_outbound_tool_execution(
         *,
@@ -51,7 +34,7 @@ def make_middleware() -> Callable[..., Any]:
         next_call: Callable[[Any], Any],
         **_: Any,
     ) -> Any:
-        from . import classify, config, contributions, http_client, job_context, mapping, rate_limit, store
+        from . import classify, config, contributions, http_client, job_context, mapping, store
 
         # Plugin passif hors box Jean-Billie (JB_DECISION_PUSH_URL non posé) : ne rien changer.
         if not config.enabled():
@@ -113,22 +96,6 @@ def make_middleware() -> Callable[..., Any]:
         if len(contributors) >= 2:
             body["contributors"] = contributors
         contributions.reset()  # un draft = une livraison → on repart propre (Q4)
-
-        # Verrou egress (Lane R) — JUSTE AVANT le POST réel. Gated, défaut OFF : si activé et que
-        # le bucket de l'instance refuse, on REJETTE proprement (rien n'est déposé, l'outil ne
-        # s'exécute pas) au lieu de différer. N'OUVRE jamais un egress : c'est un pur chemin de refus.
-        if rate_limit.enabled() and not rate_limit.make_decision("egress", _instance_key(ctx)):
-            store.mark(jb_id, "rate_limited")
-            return _result(
-                {
-                    "status": "rate_limited",
-                    "id": jb_id,
-                    "message": (
-                        "Je préfère lever le pied : beaucoup d'actions viennent de partir coup sur "
-                        "coup. Rien n'a été envoyé, on reprend dans un instant."
-                    ),
-                }
-            )
 
         try:
             http_client.post_json(config.draft_url(), body)

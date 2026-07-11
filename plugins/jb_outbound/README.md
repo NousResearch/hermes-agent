@@ -89,36 +89,6 @@ tâche apparaît dans le picker « Configure auxiliary models ». Defaults = val
 sur les fallbacks natifs (`provider: auto`, `max_tokens: 4096`, `timeout: 30`) — comportement
 identique avec ou sans plugin.
 
-## Rate-limit « burst » (deux verrous, défaut OFF)
-
-Deux garde-fous de débit **additifs**, activés par `JB_RATE_LIMIT_ENABLED=1` (défaut OFF → comportement
-strictement identique à avant). Le rate-limit n'**ouvre jamais** un envoi : il n'ajoute qu'un **refus
-propre**. `jb_outbound` continue de PROPOSER — rien ne part sans accord.
-
-- **Egress** : un token-bucket par instance, posé dans `middleware.py` JUSTE AVANT le POST réel de la
-  proposition au daemon. Au dépassement, l'outil renvoie `status="rate_limited"` (même forme que
-  `queued_for_approval`), l'outil réel **ne s'exécute pas** et rien n'est déposé.
-- **Tours / re-drive** : même mécanisme (famille `turns`) au seam de re-drive autonome de la flotte
-  (`gateway/run.py::_watchdog_sweep`, AVANT `adapter.handle_message`). Au dépassement, le tour bloqué
-  n'est **pas** relancé pour ce balayage (jamais de file ni de différé).
-
-L'instance est identifiée par `job_id` / `department` (job cron, via `job_context`), sinon
-`HERMES_SESSION_ID`, sinon `"default"` ; côté re-drive, c'est le `conversationId` de la mission.
-L'état (jetons restants) persiste en **JSON atomique** sous `<HERMES_HOME>/jb_rate_limit/buckets.json`
-pour rester correct **cross-process** (CLI / gateway / cron sont des process distincts). **Horloge
-injectable** côté code → tests déterministes.
-
-| Variable | Défaut | Rôle |
-|---|---|---|
-| `JB_RATE_LIMIT_ENABLED` | _(absent)_ | `1` pour activer les deux verrous (sinon tout passe comme avant). |
-| `JB_RATE_LIMIT_EGRESS_RPM` | `30` | Envois sortants autorisés/min par instance. |
-| `JB_RATE_LIMIT_TURNS_RPM` | `20` | Tours re-drivés autorisés/min par mission. |
-| `JB_RATE_LIMIT_BURST_RATIO` | `1.5` | Capacité du seau = `rpm × ratio` (absorbe une rafale ponctuelle). |
-
-**Défauts généreux par dessein** : un usage sain = quelques egress et une dizaine de tours étalés sur
-plusieurs minutes ; ces seuils ne mordent donc qu'un emballement (boucle qui spamme, re-drive en
-tempête), jamais le fonctionnement normal.
-
 ## Règles
 
 - **Fail-closed** : un outil d'envoi composio non répertorié est **bloqué** (jamais auto-envoyé). On
@@ -141,8 +111,7 @@ plugins:
 Endpoints lus dans l'environnement (posés par le bundle Jean-Billie / le `daemon.env`) :
 `JB_DRAFT_ADDR` (défaut `127.0.0.1:8442`), `JB_DECISION_PUSH_URL` (défaut
 `http://127.0.0.1:8444/jb/decision`), `JB_ACTIVITY_EVENTS` (`1` pour activer le fil d'activité,
-défaut OFF), `JB_RATE_LIMIT_ENABLED` + `JB_RATE_LIMIT_*` (rate-limit « burst », défaut OFF — voir
-section dédiée). Sans `JB_DECISION_PUSH_URL`, le plugin reste **passif**.
+défaut OFF). Sans `JB_DECISION_PUSH_URL`, le plugin reste **passif**.
 
 ## Tests
 

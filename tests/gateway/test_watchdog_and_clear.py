@@ -247,12 +247,10 @@ class TestWatchdogSweep:
 
 class TestWatchdogRedriveUnconditional:
     @pytest.mark.asyncio
-    async def test_redrives_every_sweep(self, hermes_home, monkeypatch):
-        """Repeated sweeps of the same stale goal re-drive every time — the throttle
-        path no longer exists (F2 removed the core→plugin rate_limit import; the
-        goal's max_turns budget is the anti-runaway guard). Even a leftover
-        JB_RATE_LIMIT_ENABLED=1 in a box .env must have NO effect on the sweep."""
-        monkeypatch.setenv("JB_RATE_LIMIT_ENABLED", "1")  # inerte par construction
+    async def test_redrives_every_sweep(self, hermes_home):
+        """Repeated sweeps of the same stale goal re-drive every time — no throttle
+        path exists on the sweep (the goal's max_turns budget is the anti-runaway
+        guard, tested above)."""
         _set_goal("mission:stale", status="active", turns_used=1, last_turn_at=_STALE)
 
         adapter = _make_adapter()

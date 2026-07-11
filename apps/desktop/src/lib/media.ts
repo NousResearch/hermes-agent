@@ -37,11 +37,50 @@ function mediaInfo(path: string): MediaInfo | undefined {
 }
 
 export function mediaKind(path: string): MediaKind {
-  return mediaInfo(path)?.kind ?? 'file'
+  const info = mediaInfo(path)
+
+  if (info) {
+    return info.kind
+  }
+
+  // Genuinely extensionless remote (http/https) URLs are almost always images
+  // (e.g. Unsplash `images.unsplash.com/photo-…`, `picsum.photos/200`), and
+  // the extension strip above drops any query string. Treat those as images so
+  // they render inline instead of being misclassified as a generic `file` and
+  // blocked. A remote URL that *does* carry an extension (`.pdf`, `.txt`, …)
+  // stays a `file` — coercing documents to images would bypass
+  // MediaAttachment's file path and fail thumbnail loading.
+  if (/^https?:/i.test(path) && isExtensionlessRemoteUrl(path)) {
+    return 'image'
+  }
+
+  return 'file'
+}
+
+// True only when a remote URL's final path segment has no file extension.
+function isExtensionlessRemoteUrl(path: string): boolean {
+  try {
+    const segment = new URL(path).pathname.split('/').filter(Boolean).pop() ?? ''
+
+    return !segment.includes('.')
+  } catch {
+    return false
+  }
 }
 
 export function mediaMime(path: string): string {
-  return mediaInfo(path)?.mime ?? 'application/octet-stream'
+  const info = mediaInfo(path)
+
+  if (info) {
+    return info.mime
+  }
+
+  // Mirror mediaKind: only genuinely extensionless remote URLs are images.
+  if (/^https?:/i.test(path) && isExtensionlessRemoteUrl(path)) {
+    return 'image/'
+  }
+
+  return 'application/octet-stream'
 }
 
 export function mediaName(path: string): string {
@@ -124,9 +163,6 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
   return readDesktopFileDataUrl(filePathFromMediaPath(path))
 }
 
-// Remote-mode replacement for opening gateway-local file paths with file://.
-// The file lives on the gateway, so fetch it over the authenticated fs bridge
-// and hand the bytes to the local browser shell as a download.
 export async function downloadGatewayMediaFile(path: string): Promise<void> {
   const dataUrl = await readDesktopFileDataUrl(filePathFromMediaPath(path))
 

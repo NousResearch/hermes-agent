@@ -6551,6 +6551,12 @@ def _gateway_command_inner(args):
         gateway_setup()
         return
 
+    if subcmd == "mini-app":
+        from plugins.platforms.telegram.mini_app.cli import command as mini_app_command
+
+        mini_app_command(args)
+        return
+
     # Service management commands
     if subcmd == "install":
         if is_managed():

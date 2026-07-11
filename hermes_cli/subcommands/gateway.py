@@ -213,6 +213,47 @@ def build_gateway_parser(
     # gateway setup
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 
+    # gateway mini-app — hardened Telegram Mini App lifecycle
+    mini_app = gateway_subparsers.add_parser(
+        "mini-app",
+        help="Manage the Telegram Mini App",
+        description=(
+            "Configure and manage the profile-scoped Telegram Mini App. "
+            "Public ingress must be an existing stable HTTPS reverse proxy; "
+            "Hermes never creates or manages a tunnel."
+        ),
+    )
+    mini_app_subparsers = mini_app.add_subparsers(dest="mini_app_command")
+    mini_app_setup = mini_app_subparsers.add_parser(
+        "setup", help="Configure, install, verify, and publish the Mini App button"
+    )
+    mini_app_setup.add_argument(
+        "--public-url",
+        required=True,
+        help="Stable public HTTPS origin that proxies to the loopback listener",
+    )
+    mini_app_setup.add_argument(
+        "--owner",
+        action="append",
+        help="Numeric Telegram user ID authorized to use the Mini App (repeatable)",
+    )
+    mini_app_setup.add_argument(
+        "--listen-port",
+        type=int,
+        default=None,
+        help="Loopback listener port (default: deterministic per profile)",
+    )
+    mini_app_subparsers.add_parser("status", help="Show Mini App service status")
+    mini_app_subparsers.add_parser("start", help="Start the installed Mini App service")
+    mini_app_subparsers.add_parser("stop", help="Stop the Mini App service")
+    mini_app_subparsers.add_parser("restart", help="Restart the Mini App service")
+    mini_app_subparsers.add_parser(
+        "uninstall", help="Remove the Mini App service and dedicated credentials"
+    )
+    mini_app_subparsers.add_parser(
+        "serve", help="Run the Mini App in the foreground on loopback"
+    )
+
     # gateway migrate-legacy
     gateway_migrate_legacy = gateway_subparsers.add_parser(
         "migrate-legacy",

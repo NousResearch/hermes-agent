@@ -165,9 +165,17 @@ describe('useNamedVideoLibrary', () => {
 
   it('automatically matches every segment and creates a timeline without manual confirmation', async () => {
     const client = fakeClient()
-    const secondClip = { ...clip, asset_id: 'asset-2', id: 'clip-2', score: 0.8 }
+    const firstPrimary = { ...clip, asset_id: 'asset-1', id: 'segment-1-primary', score: 1 }
+    const firstExtra = { ...clip, asset_id: 'asset-3', id: 'segment-1-extra', score: 0.7 }
+    const secondPrimary = { ...clip, asset_id: 'asset-2', id: 'segment-2-primary', score: 0.9 }
+    const secondExtra = { ...clip, asset_id: 'asset-4', id: 'segment-2-extra', score: 0.6 }
     vi.mocked(client.listClips).mockImplementation((_libraryId, options) =>
-      ok({ clips: options?.query?.includes('第二段') ? [clip, secondClip] : [clip], total: 2 })
+      ok({
+        clips: options?.query?.includes('第二段')
+          ? [secondExtra, secondPrimary]
+          : [firstExtra, firstPrimary],
+        total: 2
+      })
     )
     const { result } = renderHook(() => useNamedVideoLibrary({ client, script: '第一段。\n\n第二段。' }))
     await waitFor(() => expect(result.current.libraries).toHaveLength(2))
@@ -176,10 +184,19 @@ describe('useNamedVideoLibrary', () => {
 
     await act(() => result.current.createAutomaticTimeline('9:16'))
 
-    expect(client.createTimeline).toHaveBeenCalledWith('beef-noodle', ['clip-1', 'clip-2'], '9:16', [
-      { id: 'segment-1', text: '第一段。' },
-      { id: 'segment-2', text: '第二段。' }
-    ])
+    expect(client.listClips).toHaveBeenCalledWith('beef-noodle', { limit: 12, query: '第一段。' })
+    expect(client.listClips).toHaveBeenCalledWith('beef-noodle', { limit: 12, query: '第二段。' })
+    expect(client.createTimeline).toHaveBeenCalledWith(
+      'beef-noodle',
+      ['segment-1-primary', 'segment-2-primary', 'segment-1-extra', 'segment-2-extra'],
+      '9:16',
+      [
+        { id: 'segment-1', text: '第一段。' },
+        { id: 'segment-2', text: '第二段。' },
+        { id: 'segment-1', text: '第一段。' },
+        { id: 'segment-2', text: '第二段。' }
+      ]
+    )
   })
 
   it('imports and analyzes files only in the selected library', async () => {

@@ -13,15 +13,17 @@ import type {
   VideoLibraryTimelineResult
 } from './moneyprinter-client'
 import {
-  automaticallySelectClips,
   clearLibraryMatches,
   confirmSegmentClip,
   emptyMatchState,
   type NamedLibraryMatchState,
+  planAutomaticClipPool,
   segmentVideoScript,
   setSegmentCandidates,
   setSegmentError
 } from './named-library-matching'
+
+const AUTO_MATCH_CANDIDATE_LIMIT = 12
 
 export interface NamedVideoLibraryClient {
   addSourceRoot(
@@ -347,12 +349,15 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
           const query = [segment.text, terms.trim()].filter(Boolean).join(' ')
 
           let candidates = requireData(
-            await client.listClips(selectedLibraryId, { limit: 5, query }),
+            await client.listClips(selectedLibraryId, { limit: AUTO_MATCH_CANDIDATE_LIMIT, query }),
             '镜头匹配失败'
           ).clips
 
           if (candidates.length === 0) {
-            candidates = requireData(await client.listClips(selectedLibraryId, { limit: 5 }), '镜头回退匹配失败').clips
+            candidates = requireData(
+              await client.listClips(selectedLibraryId, { limit: AUTO_MATCH_CANDIDATE_LIMIT }),
+              '镜头回退匹配失败'
+            ).clips
           }
 
           if (candidates.length === 0) {
@@ -362,10 +367,12 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
           candidatesBySegment[segment.id] = candidates
         }
 
-        const selectedBySegment = automaticallySelectClips(segments, candidatesBySegment)
-        const clipIds = segments.map(segment => selectedBySegment[segment.id]).filter(Boolean)
+        const pool = planAutomaticClipPool(segments, candidatesBySegment)
+        const selectedBySegment = Object.fromEntries(
+          pool.filter(item => item.round === 0).map(item => [item.segment.id, item.clip.id])
+        )
 
-        if (clipIds.length !== segments.length) {
+        if (Object.keys(selectedBySegment).length !== segments.length) {
           throw new Error('AI 无法为全部文案匹配镜头')
         }
 
@@ -378,9 +385,9 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
         const result = requireData(
           await client.createTimeline(
             selectedLibraryId,
-            clipIds,
+            pool.map(item => item.clip.id),
             aspect,
-            segments.map(segment => ({ id: segment.id, text: segment.text }))
+            pool.map(item => ({ id: item.segment.id, text: item.segment.text }))
           ),
           '素材时间线创建失败'
         )

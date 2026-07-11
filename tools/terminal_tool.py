@@ -1340,6 +1340,11 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        # SSH keepalives prevent idle master sockets from being killed by
+        # NAT/firewall idle timeouts (default 60s interval, 3 misses).
+        # Set TERMINAL_SSH_SERVER_ALIVE_INTERVAL=0 to disable keepalives.
+        "ssh_server_alive_interval": _parse_env_var("TERMINAL_SSH_SERVER_ALIVE_INTERVAL", "60"),
+        "ssh_server_alive_count_max": _parse_env_var("TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX", "3"),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
@@ -1530,6 +1535,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             key_path=ssh_config.get("key", ""),
             cwd=cwd,
             timeout=timeout,
+            server_alive_interval=ssh_config.get("server_alive_interval", 60),
+            server_alive_count_max=ssh_config.get("server_alive_count_max", 3),
         )
 
     else:
@@ -2194,6 +2201,8 @@ def terminal_tool(
                                 "user": config.get("ssh_user", ""),
                                 "port": config.get("ssh_port", 22),
                                 "key": config.get("ssh_key", ""),
+                                "server_alive_interval": config.get("ssh_server_alive_interval", 60),
+                                "server_alive_count_max": config.get("ssh_server_alive_count_max", 3),
                                 "persistent": config.get("ssh_persistent", False),
                             }
 

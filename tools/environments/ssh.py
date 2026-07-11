@@ -43,12 +43,25 @@ class SSHEnvironment(BaseEnvironment):
     """
 
     def __init__(self, host: str, user: str, cwd: str = "~",
-                 timeout: int = 60, port: int = 22, key_path: str = ""):
+                 timeout: int = 60, port: int = 22, key_path: str = "",
+                 server_alive_interval: int = 60, server_alive_count_max: int = 3):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host = host
         self.user = user
         self.port = port
         self.key_path = key_path
+        # Keepalives prevent idle master connections from being silently
+        # killed by NAT/firewall idle timeouts (commonly 5-10 min on cloud
+        # and corporate networks).  Without these, a dead ControlMaster
+        # socket is reused by the next tool call, which hangs until the
+        # terminal timeout fires.  Defaults (60s interval, 3 misses) drop
+        # a truly-dead master in ~180s instead of hanging for the full
+        # terminal.timeout.  Set server_alive_interval=0 to disable (matches
+        # ssh interpretation of ServerAliveInterval=0).  Overridable via
+        # env vars for networks with unusual idle policies (see
+        # TERMINAL_SSH_SERVER_ALIVE_*).
+        self.server_alive_interval = server_alive_interval
+        self.server_alive_count_max = server_alive_count_max
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
@@ -88,6 +101,9 @@ class SSHEnvironment(BaseEnvironment):
         cmd.extend(["-o", "BatchMode=yes"])
         cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
         cmd.extend(["-o", "ConnectTimeout=10"])
+        if self.server_alive_interval > 0:
+            cmd.extend(["-o", f"ServerAliveInterval={self.server_alive_interval}"])
+            cmd.extend(["-o", f"ServerAliveCountMax={self.server_alive_count_max}"])
         if self.port != 22:
             cmd.extend(["-p", str(self.port)])
         if self.key_path:

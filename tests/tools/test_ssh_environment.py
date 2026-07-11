@@ -66,6 +66,28 @@ class TestBuildSSHCommand:
         env = SSHEnvironment(host="h", user="u")
         assert env._build_ssh_command()[-1] == "u@h"
 
+    def test_keepalive_defaults_present(self):
+        """Keepalive options are emitted by default (interval=60, count=3)."""
+        env = SSHEnvironment(host="h", user="u")
+        cmd = " ".join(env._build_ssh_command())
+        assert "ServerAliveInterval=60" in cmd
+        assert "ServerAliveCountMax=3" in cmd
+
+    def test_keepalive_custom_values(self):
+        """Custom keepalive values are honored in the generated command."""
+        env = SSHEnvironment(host="h", user="u",
+                             server_alive_interval=30, server_alive_count_max=5)
+        cmd = " ".join(env._build_ssh_command())
+        assert "ServerAliveInterval=30" in cmd
+        assert "ServerAliveCountMax=5" in cmd
+
+    def test_keepalive_disabled_when_interval_zero(self):
+        """server_alive_interval=0 omits both keepalive options (escape hatch)."""
+        env = SSHEnvironment(host="h", user="u", server_alive_interval=0)
+        cmd = " ".join(env._build_ssh_command())
+        assert "ServerAliveInterval" not in cmd
+        assert "ServerAliveCountMax" not in cmd
+
 
 class TestControlSocketPath:
     """Regression tests for issue #11840.

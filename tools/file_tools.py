@@ -1157,6 +1157,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "user": config.get("ssh_user", ""),
                     "port": config.get("ssh_port", 22),
                     "key": config.get("ssh_key", ""),
+                    "server_alive_interval": config.get("ssh_server_alive_interval", 60),
+                    "server_alive_count_max": config.get("ssh_server_alive_count_max", 3),
                     "persistent": config.get("ssh_persistent", False),
                 }
 

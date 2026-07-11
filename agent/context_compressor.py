@@ -2442,6 +2442,36 @@ This compaction should PRIORITISE preserving all information related to the focu
             idx = check
         return idx
 
+    def _protect_active_user_boundary(
+        self, messages: List[Dict[str, Any]], compress_start: int
+    ) -> int:
+        """Keep an in-flight turn's user request outside the summary window.
+
+        A user can land exactly at ``compress_start`` when the protected head
+        ends immediately before a long assistant/tool run.  The tail anchor
+        cannot pull the cut back to that same boundary because that would leave
+        no compressible window, so the old causal-coupling fallback summarized
+        the request with the first tool group.  The resumed model then had no
+        real user instruction to continue.
+
+        When the transcript still ends in tool work, extend the protected head
+        through that user and align past the first complete tool group.  Later
+        tool groups remain compressible, while the active request stays verbatim.
+        Completed turns (a terminal assistant reply) keep the existing boundary.
+        """
+        last_user_idx = self._find_last_user_message_idx(messages, 0)
+        if last_user_idx != compress_start or not messages:
+            return compress_start
+
+        tail = messages[-1]
+        turn_is_in_flight = tail.get("role") == "tool" or (
+            tail.get("role") == "assistant" and bool(tail.get("tool_calls"))
+        )
+        if not turn_is_in_flight:
+            return compress_start
+
+        return self._find_turn_pair_end(messages, last_user_idx)
+
     # ------------------------------------------------------------------
     # Tail protection by token budget
     # ------------------------------------------------------------------
@@ -2783,6 +2813,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         the protected head/tail.
         """
         compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
+        compress_start = self._protect_active_user_boundary(messages, compress_start)
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
         return compress_start < compress_end
 
@@ -2860,6 +2891,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Phase 2: Determine boundaries
         compress_start = self._protect_head_size(messages)
         compress_start = self._align_boundary_forward(messages, compress_start)
+        compress_start = self._protect_active_user_boundary(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
@@ -3164,5 +3196,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # are positional; this single terminal sweep makes it structural so a
         # future copy site cannot re-leak the marker into the child-session flush.
         _strip_persistence_markers(compressed)
+        for message in compressed:
+            message["_context_snapshot"] = True
 
         return compressed

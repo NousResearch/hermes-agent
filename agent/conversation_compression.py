@@ -704,6 +704,11 @@ def compress_context(
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
         _ensure_compressed_has_user_turn(messages, compressed)
+        # Everything assembled for the post-compaction model context is a
+        # replay snapshot. Mark after TODO/user continuity additions so none of
+        # that synthetic state is mistaken for a durable chat turn.
+        for message in compressed:
+            message["_context_snapshot"] = True
 
         agent._invalidate_system_prompt()
         new_system_prompt = agent._build_system_prompt(system_message)

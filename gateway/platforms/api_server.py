@@ -1819,11 +1819,27 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = self._ensure_session_db()
         resolved_id = db.resolve_resume_session_id(session_id)
-        messages = db.get_messages(resolved_id)
+        messages = db.get_messages_for_display(resolved_id, include_ancestors=True)
+        # Strip tool-call fields the WebUI doesn't need and the display loader
+        # preserves from durable rows. Keep role, content, finish_reason, reasoning_content.
+        display_messages = []
+        for m in messages:
+            msg = {"role": m["role"], "content": m.get("content", "")}
+            if m.get("finish_reason"):
+                msg["finish_reason"] = m["finish_reason"]
+            if m.get("reasoning_content"):
+                msg["reasoning_content"] = m["reasoning_content"]
+            if m.get("tool_calls"):
+                msg["tool_calls"] = m["tool_calls"]
+            if m.get("tool_call_id"):
+                msg["tool_call_id"] = m["tool_call_id"]
+            if m.get("tool_name"):
+                msg["tool_name"] = m["tool_name"]
+            display_messages.append(msg)
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "data": [self._message_response(m) for m in display_messages],
         })
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
@@ -1885,8 +1901,10 @@ class APIServerAdapter(BasePlatformAdapter):
         _, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        db = self._ensure_session_db()
+        session_id = db.resolve_resume_session_id(session_id)
         body, err = await self._read_json_body(request)
-        if err:
+        if err is not None:
             return err
         user_message, err = _session_chat_user_message(body)
         if err is not None:
@@ -1929,6 +1947,8 @@ class APIServerAdapter(BasePlatformAdapter):
         _, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        db = self._ensure_session_db()
+        session_id = db.resolve_resume_session_id(session_id)
         body, err = await self._read_json_body(request)
         if err:
             return err

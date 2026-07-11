@@ -21,6 +21,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as Futur
 import concurrent.futures.thread as _threadpool
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -37,8 +38,18 @@ from tools.registry import tool_error
 from .temporal_parse import created_at_in_window, parse_temporal_window
 from . import qmd_recall
 from . import gbrain_recall
+from .rerank_guard import (
+    RERANK_BUILTIN,
+    RERANK_OFF,
+    get_rerank_incident_manager,
+    normalize_rerank_arm,
+)
 
 logger = logging.getLogger(__name__)
+
+# G1/G2 winner: R@1 +0.2192, R@5 +0.0890, exact McNemar p=2.09e-05;
+# added p95 429.574ms under the sha-frozen 8647.167ms blocking budget.
+_RERANK_DEFAULT_DEADLINE_MS = 8647.166891023517
 
 
 class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
@@ -180,7 +191,8 @@ def _load_config() -> dict:
         # background mem0 search (now incl. rerank) before proceeding. Hit = the turn
         # proceeds with whatever memory finished. Behavioral config, not a secret.
         "prefetch_join_timeout_s": float(os.environ.get("MEM0_PREFETCH_JOIN_TIMEOUT_S", "10") or "10"),
-        "rerank": True,
+        "rerank": RERANK_BUILTIN,
+        "rerank_deadline_ms": _RERANK_DEFAULT_DEADLINE_MS,
         "keyword_search": False,
     }
 
@@ -303,7 +315,8 @@ class _DirectRestMem0Client:
         return self._request("POST", "/memories", body=body)
 
     def search(self, query=None, filters=None, rerank=None, top_k=None,
-               keyword_search=None, reference_date=None, **kwargs):
+               keyword_search=None, reference_date=None,
+               rerank_deadline_ms=None, **kwargs):
         # reads scope to user_id only (scope_agent=False): cross-session recall +
         # match historical agent-scoped-without-user memories. Explicit agent_id in
         # filters is still honored by _scope.
@@ -319,6 +332,7 @@ class _DirectRestMem0Client:
             ("keyword_search", keyword_search),
             ("top_k", top_k),
             ("reference_date", reference_date),
+            ("rerank_deadline_ms", rerank_deadline_ms),
         ):
             if _flag_val is not None:
                 body[_flag_key] = _flag_val
@@ -412,14 +426,12 @@ SEARCH_SCHEMA = {
     "name": "mem0_search",
     "description": (
         "Search memories by meaning. Returns relevant facts ranked by similarity. "
-        "Reranking follows the configured profile by default; set rerank=false to "
-        "skip it for a faster, lower-precision search."
+        "Reranking follows the configured profile."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
-            "rerank": {"type": "boolean", "description": "Override reranking for this query (default: the configured rerank profile)."},
             "top_k": {"type": "integer", "description": "Max results (default: 10, max: 50)."},
         },
         "required": ["query"],
@@ -594,7 +606,9 @@ class Mem0MemoryProvider(MemoryProvider):
         self._ca_bundle = ""
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
-        self._rerank = True
+        self._rerank = RERANK_OFF
+        self._rerank_deadline_ms = 0.0
+        self._rerank_incidents = None
         self._temporal_search = False
         self._temporal_tz = _TEMPORAL_DEFAULT_TZ
         self._temporal_overfetch = _TEMPORAL_DEFAULT_OVERFETCH
@@ -664,7 +678,8 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "ca_bundle", "description": "Path to a CA bundle PEM for verifying a self-hosted HTTPS endpoint signed by a private CA (e.g. mem0.ace). Empty = system trust store.", "default": "", "env_var": "MEM0_CA_BUNDLE"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
-            {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
+            {"key": "rerank", "description": "Recall rerank arm", "default": "builtin", "choices": ["off", "builtin"]},
+            {"key": "rerank_deadline_ms", "description": "Single end-to-end local rerank deadline and rolling-p95 budget in milliseconds", "default": str(_RERANK_DEFAULT_DEADLINE_MS)},
             {"key": "capture", "description": "Per-turn auto-capture mode (auto=capture every turn; off=recall-only, no per-turn writes)", "default": "auto", "choices": ["auto", "off"], "env_var": "MEM0_CAPTURE"},
             {"key": "destructive_tools_enabled", "description": "Expose mem0_forget/mem0_delete (Apollo+Aegis ONLY — fail-closed; default off)", "default": "false", "choices": ["true", "false"], "env_var": "MEM0_DESTRUCTIVE_TOOLS"},
         ]
@@ -1123,7 +1138,44 @@ class Mem0MemoryProvider(MemoryProvider):
             self._orig_sender_id = None
             self._orig_lane = None
         self._agent_id = self._config.get("agent_id", "hermes")
-        self._rerank = self._config.get("rerank", True)
+        # G9: only the two shipped arms survive config loading. Legacy booleans and
+        # retired external-provider enums become OFF before lazy client construction.
+        self._rerank = normalize_rerank_arm(self._config.get("rerank", RERANK_OFF))
+        try:
+            deadline_ms = float(self._config.get("rerank_deadline_ms", 0) or 0)
+            self._rerank_deadline_ms = (
+                deadline_ms
+                if math.isfinite(deadline_ms)
+                and 0 < deadline_ms <= _RERANK_DEFAULT_DEADLINE_MS
+                else 0.0
+            )
+        except (TypeError, ValueError):
+            self._rerank_deadline_ms = 0.0
+        if self._rerank == RERANK_BUILTIN and not str(self._config.get("host") or "").strip():
+            # This arm is the self-hosted, container-local cross-encoder. Never send
+            # its private deadline/metadata contract to the unrelated mem0 cloud API.
+            self._rerank = RERANK_OFF
+            logger.warning("mem0 builtin rerank disabled: self-hosted host is required")
+        elif self._rerank == RERANK_BUILTIN and self._rerank_deadline_ms <= 0:
+            self._rerank = RERANK_OFF
+            logger.error(
+                "mem0 rerank disabled: rerank_deadline_ms must be finite, positive, "
+                "and no greater than the frozen budget"
+            )
+        elif self._rerank == RERANK_BUILTIN:
+            try:
+                from hermes_constants import get_hermes_home
+                self._rerank_incidents = get_rerank_incident_manager(
+                    state_path=get_hermes_home() / "state" / "mem0-rerank-alert.json",
+                    latency_budget_ms=self._rerank_deadline_ms,
+                    failure_threshold=3,
+                )
+            except Exception as e:
+                # An enabled arm without its deadline/detector is a fake-green mode.
+                # Fail closed before any client can be constructed.
+                self._rerank = RERANK_OFF
+                self._rerank_incidents = None
+                logger.error("mem0 rerank disabled: incident detector failed to initialize: %s", e)
         # keyword_search: hybrid BM25+semantic toggle. Resolved here at init (config/env
         # floor) and threaded to the client search call at BOTH enumerated call-sites so
         # setting `keyword_search: true` in mem0.json actually reaches the wire (the
@@ -1375,6 +1427,19 @@ class Mem0MemoryProvider(MemoryProvider):
             return response
         return []
 
+    def _observe_rerank_response(self, response: Any, *, requested: bool) -> None:
+        """Feed real server metadata into the always-on incident detector."""
+        if not requested or self._rerank_incidents is None:
+            return
+        metadata = response.get("_rerank") if isinstance(response, dict) else None
+        if not isinstance(metadata, dict):
+            metadata = {
+                "status": "failure",
+                "failure_class": "missing_metadata",
+                "effective_arm": RERANK_OFF,
+            }
+        self._rerank_incidents.observe(metadata)
+
     @staticmethod
     def _is_forgotten(m: Any) -> bool:
         """True if a memory carries the forget tombstone (metadata flag or text sentinel)."""
@@ -1531,17 +1596,16 @@ class Mem0MemoryProvider(MemoryProvider):
                     # auto-revert without a redeploy (INV-8 control surface). An EXPLICIT flag
                     # — one of exactly two enumerated call-sites that send retrieval flags.
                     _pf_rerank = (
-                        self._truthy(self._rerank)
+                        self._rerank == RERANK_BUILTIN
                         and not self._is_exact_token_query(run_query)
                         and not self._rerank_killed()
                     )
-                    results = self._drop_forgotten(self._unwrap_results(client.search(
-                        query=run_query,
-                        filters=self._read_filters(),
-                        rerank=_pf_rerank,
-                        keyword_search=self._keyword_search,
-                        top_k=5,
-                    )))
+                    response = client.search(
+                        query=run_query, filters=self._read_filters(), rerank=_pf_rerank,
+                        rerank_deadline_ms=self._rerank_deadline_ms if _pf_rerank else None,
+                        keyword_search=self._keyword_search, top_k=5)
+                    self._observe_rerank_response(response, requested=_pf_rerank)
+                    results = self._drop_forgotten(self._unwrap_results(response))
                     _floor_outcome = "no_results"
                     _injected = 0
                     # L2 RERANK GATE (PRIMARY, spec 2026-07-07): the cross-encoder's per-row
@@ -1993,21 +2057,14 @@ class Mem0MemoryProvider(MemoryProvider):
             query = args.get("query", "")
             if not query:
                 return tool_error("Missing required parameter: query")
-            # INV-8(ii) rerank profile (the deliberate precision path): when the model
-            # does not pass rerank, fall back to the configured rerank profile
-            # (self._rerank, config-driven + reversible per INV-4), NOT the server
-            # default. The model may still force it per-call. Coerced because the config
-            # value can be a JSON string ("true"/"false") loaded from mem0.json. This is
-            # the SECOND of exactly two enumerated flag-passing call-sites (call-site lint).
-            rerank = args.get("rerank")
-            rerank = self._truthy(self._rerank if rerank is None else rerank)
+            # INV-8(ii) deliberate precision path: the normalized configured arm is
+            # authoritative and reversible; do not inherit the server default or accept
+            # per-call overrides. This is the second enumerated flag-passing call site.
+            rerank = self._rerank == RERANK_BUILTIN
             # W2-RERANK gate: an exact-identifier lookup (IP/port/email/long-id) skips
             # rerank — the cross-encoder demotes the exact match RRF already ranks #1.
-            # A model-explicit rerank=true overrides the exact-token gate (the gate only
-            # suppresses the PROFILE default), but the canary runtime kill-flag below is a
-            # HARD override that wins even over a model-explicit rerank=true (safety > the
-            # model's per-call preference; the canary only trips on a measured regression).
-            if rerank and args.get("rerank") is None and self._is_exact_token_query(query):
+            # The configured arm is authoritative; the model cannot override it per call.
+            if rerank and self._is_exact_token_query(query):
                 rerank = False
             if rerank and self._rerank_killed():
                 rerank = False
@@ -2028,13 +2085,12 @@ class Mem0MemoryProvider(MemoryProvider):
                     window = None
             fetch_k = max(top_k, self._temporal_overfetch) if window else top_k
             try:
-                results = self._drop_forgotten(self._unwrap_results(client.search(
-                    query=query,
-                    filters=self._read_filters(),
-                    rerank=rerank,
-                    keyword_search=self._keyword_search,
-                    top_k=fetch_k,
-                )))
+                response = client.search(
+                    query=query, filters=self._read_filters(), rerank=rerank,
+                    rerank_deadline_ms=self._rerank_deadline_ms if rerank else None,
+                    keyword_search=self._keyword_search, top_k=fetch_k)
+                self._observe_rerank_response(response, requested=rerank)
+                results = self._drop_forgotten(self._unwrap_results(response))
                 self._record_success()
                 if window is not None:
                     results = self._apply_temporal_boost(results, window)

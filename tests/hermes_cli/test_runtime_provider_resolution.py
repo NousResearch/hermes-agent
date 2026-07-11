@@ -45,6 +45,39 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+def test_copilot_pool_runtime_uses_target_model_for_api_mode(monkeypatch):
+    """MoA/delegation targets must not inherit the acting model's API mode."""
+    entry = SimpleNamespace(
+        runtime_api_key="copilot-token",
+        runtime_base_url="https://api.githubcopilot.com",
+        source="copilot-oauth",
+    )
+    model_cfg = {
+        "provider": "copilot",
+        "default": "gpt-5.6-sol",
+        "api_mode": "codex_responses",
+    }
+
+    def fake_copilot_model_api_mode(model_id, *, api_key):
+        assert api_key == "copilot-token"
+        return "chat_completions" if model_id == "gpt-4.1" else "codex_responses"
+
+    monkeypatch.setattr(
+        "hermes_cli.models.copilot_model_api_mode",
+        fake_copilot_model_api_mode,
+    )
+
+    resolved = rp._resolve_runtime_from_pool_entry(
+        provider="copilot",
+        entry=entry,
+        requested_provider="copilot",
+        model_cfg=model_cfg,
+        target_model="gpt-4.1",
+    )
+
+    assert resolved["api_mode"] == "chat_completions"
+
+
 def test_resolve_runtime_provider_nous_pool_uses_env_base_url_override(monkeypatch):
     entry = SimpleNamespace(
         provider="nous",

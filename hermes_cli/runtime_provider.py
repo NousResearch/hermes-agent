@@ -311,13 +311,21 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     return normalized_configured == normalized_provider
 
 
-def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
+def _copilot_runtime_api_mode(
+    model_cfg: Dict[str, Any],
+    api_key: str,
+    target_model: Optional[str] = None,
+) -> str:
     configured_provider = str(model_cfg.get("provider") or "").strip().lower()
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-    if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
+    if (
+        not target_model
+        and configured_mode
+        and _provider_supports_explicit_api_mode("copilot", configured_provider)
+    ):
         return configured_mode
 
-    model_name = str(model_cfg.get("default") or "").strip()
+    model_name = str(target_model or model_cfg.get("default") or "").strip()
     if not model_name:
         return "chat_completions"
 
@@ -443,7 +451,11 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "chat_completions"
         base_url = _nous_inference_base_url_override() or base_url
     elif provider == "copilot":
-        api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
+        api_mode = _copilot_runtime_api_mode(
+            model_cfg,
+            getattr(entry, "runtime_api_key", ""),
+            target_model=target_model,
+        )
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
     elif provider == "azure-foundry":
         # Azure Foundry: read api_mode and base_url from config

@@ -135,6 +135,28 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _parse_request_reasoning_config(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return a normalized request-scoped reasoning override.
+
+    Omission means "use the gateway default." Explicit values are validated
+    here so a malformed client cannot silently run at an unintended effort.
+    """
+    if "reasoning_effort" not in body:
+        return None
+
+    raw_effort = body["reasoning_effort"]
+    if not isinstance(raw_effort, str):
+        raise ValueError("'reasoning_effort' must be a string")
+
+    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+
+    reasoning_config = parse_reasoning_effort(raw_effort)
+    if reasoning_config is None:
+        choices = ", ".join(("none", *VALID_REASONING_EFFORTS))
+        raise ValueError(f"'reasoning_effort' must be one of: {choices}")
+    return reasoning_config
+
+
 def _normalize_chat_content(
     content: Any, *, _max_depth: int = 10, _depth: int = 0,
 ) -> str:
@@ -1270,6 +1292,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        reasoning_config_override: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1290,6 +1313,10 @@ class APIServerAdapter(BasePlatformAdapter):
         routing).  When set — and no session ``/model`` override exists for
         this session — its model/provider/api_key/base_url override the
         global defaults for this agent instance only.
+
+        ``reasoning_config_override`` is normalized at the HTTP boundary and
+        applies only to this agent instance. It never mutates process-global
+        state or the persisted gateway configuration.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -1302,7 +1329,13 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        reasoning_config = GatewayRunner._load_reasoning_config()
+        # Copy the override because an AIAgent may update its own config
+        # in-place; concurrent requests must never share mutable state.
+        reasoning_config = (
+            dict(reasoning_config_override)
+            if reasoning_config_override is not None
+            else GatewayRunner._load_reasoning_config()
+        )
         model = _resolve_gateway_model()
 
         # When the primary provider's auth fails (expired token / 429 quota
@@ -2115,6 +2148,14 @@ class APIServerAdapter(BasePlatformAdapter):
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
 
+        try:
+            reasoning_config_override = _parse_request_reasoning_config(body)
+        except ValueError as exc:
+            return web.json_response(
+                _openai_error(str(exc), param="reasoning_effort"),
+                status=400,
+            )
+
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return web.json_response(
@@ -2319,6 +2360,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                reasoning_config_override=reasoning_config_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2339,11 +2381,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                reasoning_config_override=reasoning_config_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            # Effort changes observable behavior, so it belongs in the
+            # idempotency identity just like model and messages.
+            fp = _make_request_fingerprint(
+                body,
+                keys=["model", "messages", "tools", "tool_choice", "stream", "reasoning_effort"],
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -3259,6 +3307,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        try:
+            reasoning_config_override = _parse_request_reasoning_config(body)
+        except ValueError as exc:
+            return web.json_response(
+                _openai_error(str(exc), param="reasoning_effort"),
+                status=400,
+            )
+
         raw_input = body.get("input")
         if raw_input is None:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
@@ -3406,6 +3462,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                reasoning_config_override=reasoning_config_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -3440,13 +3497,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                reasoning_config_override=reasoning_config_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
             fp = _make_request_fingerprint(
                 body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                keys=[
+                    "input",
+                    "instructions",
+                    "previous_response_id",
+                    "conversation",
+                    "model",
+                    "tools",
+                    "reasoning_effort",
+                ],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -4075,6 +4141,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        reasoning_config_override: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4085,6 +4152,9 @@ class APIServerAdapter(BasePlatformAdapter):
         *route* is an optional ``model_routes`` entry (resolved from the
         request's ``model`` field) that overrides the global model/provider
         for this specific request.
+
+        ``reasoning_config_override`` carries the normalized request setting
+        to the agent factory without consulting or changing shared state.
 
         If *agent_ref* is a one-element list, the AIAgent instance is stored
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
@@ -4111,6 +4181,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    reasoning_config_override=reasoning_config_override,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -4230,6 +4301,14 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        try:
+            reasoning_config_override = _parse_request_reasoning_config(body)
+        except ValueError as exc:
+            return web.json_response(
+                _openai_error(str(exc), param="reasoning_effort"),
+                status=400,
+            )
 
         raw_input = body.get("input")
         if not raw_input:
@@ -4358,6 +4437,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    reasoning_config_override=reasoning_config_override,
                 )
                 self._active_run_agents[run_id] = agent
 

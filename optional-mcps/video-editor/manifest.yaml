@@ -1,0 +1,12 @@
+name: video-editor
+description: |
+  11 tools for conversational video editing via FFmpeg + faster-whisper.
+  Includes: video probe/metadata, speech-to-text transcription, cutting,
+  image overlay, animated captions (karaoke), zoom/pan (Ken Burns),
+  split-screen layouts, final render, transitions (fade/crossfade/wipe),
+  audio mixing (normalize/mute/extract/ducking), and watermarks.
+  Requires ffmpeg >= 6.0 on PATH. faster-whisper needed for transcription.
+command: python
+args:
+  - server.py
+env_vars: []

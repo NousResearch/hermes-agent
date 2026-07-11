@@ -372,3 +372,84 @@ class TestXiaomiAgentInit:
         overlay = HERMES_OVERLAYS["xiaomi"]
         api_mode = TRANSPORT_TO_API_MODE[overlay.transport]
         assert api_mode == "chat_completions"
+
+
+# =============================================================================
+# Native web_search tool injection
+# =============================================================================
+
+
+class TestXiaomiWebSearch:
+    """Test MiMo native web_search tool injection via prepare_tools()."""
+
+    def _get_profile(self):
+        from providers import get_provider_profile
+        return get_provider_profile("xiaomi")
+
+    def test_profile_is_xiaomi_profile(self):
+        """xiaomi profile must be XiaomiProfile subclass."""
+        from plugins.model_providers.xiaomi import XiaomiProfile
+        profile = self._get_profile()
+        assert isinstance(profile, XiaomiProfile)
+
+    def test_prepare_tools_passthrough_when_disabled(self, monkeypatch):
+        """No web_search injected when config absent/disabled."""
+        monkeypatch.setenv("HERMES_CONFIG", "/nonexistent")
+        profile = self._get_profile()
+        tools = [{"type": "function", "function": {"name": "terminal"}}]
+        result = profile.prepare_tools(tools, model="mimo-v2.5-pro")
+        assert result == tools
+        assert len(result) == 1
+
+    def test_prepare_tools_injects_web_search(self, monkeypatch):
+        """web_search injected when config providers.xiaomi.web_search=true."""
+        import json, tempfile, pathlib
+        cfg = {"providers": {"xiaomi": {"web_search": True}}}
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+        # Write as JSON (load_config_readonly handles both)
+        tmp.write(json.dumps(cfg))
+        tmp.flush()
+        tmp.close()
+        # Patch load_config_readonly to return our config
+        from hermes_cli import config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: cfg)
+
+        profile = self._get_profile()
+        tools = [{"type": "function", "function": {"name": "terminal"}}]
+        result = profile.prepare_tools(tools, model="mimo-v2.5-pro")
+        assert len(result) == 2
+        ws = result[1]
+        assert ws["type"] == "web_search"
+        assert ws["max_keyword"] == 3
+        assert ws["force_search"] is False
+        assert "user_location" not in ws  # no location when empty
+
+    def test_prepare_tools_custom_params(self, monkeypatch):
+        """Custom max_keyword, force, location from dict config."""
+        cfg = {"providers": {"xiaomi": {"web_search": {
+            "max_keyword": 5,
+            "force": True,
+            "location": "China",
+        }}}}
+        from hermes_cli import config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: cfg)
+
+        profile = self._get_profile()
+        tools = []
+        result = profile.prepare_tools(tools, model="mimo-v2-pro")
+        ws = result[0]
+        assert ws["max_keyword"] == 5
+        assert ws["force_search"] is True
+        assert ws["user_location"] == {"type": "approximate", "country": "China"}
+
+    def test_prepare_tools_no_duplicate(self, monkeypatch):
+        """Calling prepare_tools twice should not duplicate web_search."""
+        cfg = {"providers": {"xiaomi": {"web_search": True}}}
+        from hermes_cli import config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: cfg)
+
+        profile = self._get_profile()
+        tools = [{"type": "function", "function": {"name": "terminal"}}]
+        result = profile.prepare_tools(tools, model="mimo-v2.5-pro")
+        result2 = profile.prepare_tools(result, model="mimo-v2.5-pro")
+        assert len(result2) == 2  # still terminal + web_search, not 3

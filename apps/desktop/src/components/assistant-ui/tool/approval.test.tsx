@@ -71,6 +71,16 @@ describe('PendingToolApproval', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
+  it('shows description as context on the inline card for dangerous commands', () => {
+    setRequest('rm -rf /tmp/x')
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    // The description ("dangerous command" from setRequest) is rendered.
+    expect(screen.getByText('dangerous command')).toBeTruthy()
+    // The Command toggle is present for real commands.
+    expect(screen.getByRole('button', { name: /Command/ })).toBeTruthy()
+  })
+
   it('sends approval.respond {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
     setRequest()
@@ -95,6 +105,24 @@ describe('PendingToolApproval', () => {
     fireEvent.click(screen.getByRole('button', { name: /Command/ }))
 
     expect(screen.getByText(longCommand)).toBeTruthy()
+  })
+
+  it('renders description on the inline card for plugin approvals', () => {
+    // Plugin approvals set `command` to a synthetic label; the real info is in
+    // `description`. The inline card must surface it so the user can see what
+    // they're approving (issue #62402).
+    $activeSessionId.set('sess-1')
+    setApprovalRequest({
+      command: '<terminal> (plugin approval rule)',
+      description: 'Plugin requires approval: run\npwd',
+      sessionId: 'sess-1'
+    })
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    // Description is rendered as a context line on the inline card.
+    expect(screen.getByText(/Plugin requires approval: run.*pwd/)).toBeTruthy()
+    // The "Command" toggle must NOT appear — the synthetic label is useless.
+    expect(screen.queryByRole('button', { name: /Command/ })).toBeNull()
   })
 
   it('sends choice "deny" on Reject', async () => {

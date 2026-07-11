@@ -7,6 +7,7 @@ It folds explicit event types and structured fields into current case state.
 from __future__ import annotations
 
 from collections import defaultdict
+import json
 from typing import Any, Iterable, Mapping
 
 
@@ -20,7 +21,15 @@ ROUTE_BACK_TERMINAL_TYPES = frozenset({"route_back.sent", "route_back.blocked"})
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        return decoded if isinstance(decoded, Mapping) else {}
+    return {}
 
 
 def _event_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:

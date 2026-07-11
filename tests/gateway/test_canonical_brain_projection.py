@@ -57,6 +57,24 @@ def test_fold_uses_explicit_event_order_not_text_keywords():
     assert cases[0]["route_back"]["receipt"] == {"message_id": "m1"}
 
 
+def test_fold_decodes_cloud_sql_jsonb_strings_mechanically():
+    row = _row(
+        "route_back.sent",
+        "2026-01-01T00:02:00Z",
+        target={"thread_id": "requester"},
+        receipt={"message_id": "m1"},
+    )
+    for field in ("source", "status", "next_action", "payload"):
+        row[field] = json.dumps(row[field])
+
+    case = fold_case_events([row])[0]
+
+    assert case["status"]["state"] == "route_back.sent"
+    assert case["source_refs"][0]["thread_id"] == "source"
+    assert case["route_back"]["target_ref"] == {"thread_id": "requester"}
+    assert case["route_back"]["receipt"] == {"message_id": "m1"}
+
+
 def test_query_requires_exact_case_or_thread(monkeypatch):
     helper = _Helper([_row("case.note", "2026-01-01T00:00:00Z")])
     monkeypatch.setattr(cbt, "_load_helper", lambda: helper)

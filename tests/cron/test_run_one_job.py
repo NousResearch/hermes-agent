@@ -205,6 +205,36 @@ def test_run_one_job_delivers_before_agent_teardown(monkeypatch):
     assert order == ["run_job", "deliver", "agent.close", "cleanup_stale"], order
 
 
+def test_teardown_closes_codex_session_even_if_agent_close_fails(monkeypatch):
+    """The centralized cron teardown always releases the Codex subprocess."""
+    order = []
+
+    class FakeSession:
+        def close(self):
+            order.append("codex.close")
+
+    class FakeAgent:
+        def __init__(self):
+            self._codex_session = FakeSession()
+
+        def close(self):
+            order.append("agent.close")
+            raise RuntimeError("generic teardown failed")
+
+    import agent.auxiliary_client as aux
+    monkeypatch.setattr(
+        aux,
+        "cleanup_stale_async_clients",
+        lambda: order.append("cleanup_stale"),
+    )
+    agent = FakeAgent()
+
+    s._teardown_cron_agent(agent, "job-codex-cleanup")
+
+    assert order == ["agent.close", "codex.close", "cleanup_stale"]
+    assert agent._codex_session is None
+
+
 def test_run_one_job_tears_down_deferred_agent_when_delivery_raises(monkeypatch):
     """Even if _deliver_result raises, the deferred agent is still torn down
     (no fd/client leak — #10200). Teardown lives in a finally around delivery.

@@ -417,6 +417,52 @@ class TestRunTurn:
         assert r.interrupted is True
         assert r.error and "timed out" in r.error
 
+    def test_close_during_turn_retires_without_losing_active_client(self):
+        """Cron timeout teardown may close a session while run_turn is active."""
+        client = FakeClient()
+        s = make_session(client)
+        s.ensure_started()
+
+        def close_during_start(method: str, params: dict):
+            if method == "turn/start":
+                s.close()
+                return {"turn": {"id": "turn-fake-001"}}
+            return {}
+
+        client._request_handler = close_during_start
+
+        result = s.run_turn(
+            "x", turn_timeout=2.0, notification_poll_timeout=0.01
+        )
+
+        assert result.should_retire is True
+        assert result.error and "subprocess exited unexpectedly" in result.error
+
+    def test_deadline_interrupt_tolerates_closed_transport(self):
+        """A close racing turn/interrupt must not hide the timeout result."""
+        client = FakeClient()
+
+        def close_before_interrupt(method: str, params: dict):
+            if method == "thread/start":
+                return {"thread": {"id": "thread-fake-001"}}
+            if method == "turn/start":
+                return {"turn": {"id": "turn-fake-001"}}
+            if method == "turn/interrupt":
+                raise RuntimeError("codex app-server client is closed")
+            return {}
+
+        client._request_handler = close_before_interrupt
+
+        result = make_session(client).run_turn(
+            "never finishes",
+            turn_timeout=0.05,
+            notification_poll_timeout=0.01,
+        )
+
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert result.error and "timed out" in result.error
+
     def test_deadline_uses_monotonic_clock(self):
         client = FakeClient()
         s = make_session(client)

@@ -3133,21 +3133,6 @@ def run_job(
             raise
         finally:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
-            # The codex_app_server runtime spawns a `codex app-server`
-            # subprocess per agent. Cron agents are ephemeral but run inside
-            # the long-lived gateway process, so without an explicit close
-            # every job run leaks one app-server (its reader threads pin the
-            # client object, so GC never closes the pipes). On the
-            # inactivity-timeout path this also kills the hung subprocess,
-            # which is the intended outcome.
-            try:
-                from agent.codex_runtime import close_codex_session
-                close_codex_session(agent)
-            except Exception:
-                logger.debug(
-                    "Job '%s': codex session cleanup failed", job_id,
-                    exc_info=True,
-                )
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.
@@ -3351,6 +3336,15 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
             agent.close()
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
+    # Codex app-server sessions are not currently owned by AIAgent.close().
+    # Close them from this centralized teardown path so both inline teardown
+    # and teardown deferred until after delivery release the subprocess.
+    try:
+        from agent.codex_runtime import close_codex_session
+        if agent is not None:
+            close_codex_session(agent)
+    except (Exception, KeyboardInterrupt) as e:
+        logger.debug("Job '%s': failed to close codex session: %s", job_id, e)
     # Each cron run spins up a short-lived worker thread whose event loop
     # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
     # httpx clients cached under that loop are now unusable — reap them

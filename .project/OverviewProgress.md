@@ -2,9 +2,14 @@
 > อ่านตามลำดับ: plan.md (plan_id: QAQC — active · shortcut Use QA QC) → plan-grd.md (แผน GRD จบแล้ว + คิว GRD-P5..P9) → decisions.md → hermes-standard/REQUIREMENTS.md (บัญชีความต้องการ 66 ข้อ)
 
 # Overview & Progress — Hermes Agent
-อัปเดตล่าสุด: 2026-07-08 (รอบเช้า · เก็บของค้าง) · branch งาน: `feature/p12b-shortcut-guard` · main HEAD `8bd9aa5e0` · ป้าย: [fact] เว้นแต่ระบุ
+อัปเดตล่าสุด: 2026-07-11 (DS พร้อมใช้จริง + relay 72/72 + branch cleanup ใหญ่) · branch งาน: `main` · main HEAD origin/main `0aa176fdc` · ป้าย: [fact] เว้นแต่ระบุ
 
 ## สถานะล่าสุด
+- **2026-07-11: Design System พร้อมใช้จริง + relay tests เขียว 100% + Git graph สะอาด** [fact]
+  - (ก) **DS**: ทำ `contrast-audit-run.mjs` (playwright headless · เอา Codex-review fix เข้า main แก้ 3 bug: NaN false-pass/networkidle-ค้าง/browser-leak) + `ds-adopt.sh` shortcut คำเดียว (`prep`/`check` รันด่านครบ build/ds-check/brand-leak/contrast · exit 1 บล็อก) + `admin-states.html` 5 states + เลิกลอก onemanfleet (brand-leak-check) + path portable (VPS/Mac) → merged PR #18/19/22/24/26
+  - (ข) **relay**: DEC-036 quota/auth ปลอม (stderr ≤250 guard · PR #25) + ซ่อม test timeout ให้ตรงโค้ด Popen (mock subprocess.run ล้าสมัย) → **relay tests 72/72 เขียว**
+  - (ค) **branch cleanup**: merged nat(#28)+shortcut Use Trade-off(#27 · resolve conflict payload) → ลบ merged 25+ branch · **ลบ remote upstream(NousResearch 1,292)+fork ทิ้ง → Git graph 1,300→6** (เหลือ origin/main + vps) · ต้นตอที่เจ้าของเห็น branch เต็ม = upstream ของ NousResearch ไม่ใช่งานเรา
+  - (ง) ยืนยัน **JARVIS อยู่ SaaS repo ครบ + active** (typer งานต่อในนั้น) · Hermes jarvis 4 branch = เศษเก่าก่อนย้าย ลบแล้ว
 - **2026-07-10: shortcut `Use QA QC` v1.1 เปิดใช้แล้ว (active · ทะเบียน 29→30)** — เจ้าของสั่งจบด้วย Fable ไม่รอกรรมการ · ตารางแม่ 16 หมวด/178 หัวข้อ + วินิจฉัย ViberQC อยู่ในคลัง (`AI-Security-Testing/`) · New Chat v2.0 + Close Chat v2.3 ผูกไฟล์กลาง `.project/qaqc-scan.md` แล้ว · branch งาน: `feature/use-qa-qc` (แผน active ใหม่ plan_id: QAQC · GRD ย้ายไป plan-grd.md) [fact]
 - 2026-07-10: ซ่อม relay-call quota ปลอม (คำตอบยาวที่พูดถึง quota โดนตีเป็นโควต้าหมด) — scoped pytest 68/69 (1 แดง = เทสต์ timeout พังก่อนแก้ พิสูจน์แล้ว) · แก้ adapter grok (CLI v1.0.1 ตัด flag เก่า) · **grok headless ต้องมี API key = งานคนค้าง** · กรรมการรีวิวรวบ P1-P4 ยังไม่สำเร็จ (โควต้า/บั๊กวันเดียวกัน 3 ตัว) เลื่อนเป็น hardening [fact]
 - **แผน GRD merged เข้า main แล้ว — PR #16 (`8bd9aa5e0`)** · ระบบกันแผนหาย/กัน AI มั่ว ใช้งานจริงบน main [fact]
@@ -25,12 +30,14 @@
 - ห้ามเขียนความจำทำงานต่อลง `.hermes/` หรือ root — เขียน `.project/` เท่านั้น (Schema v1.2)
 - หลังสร้าง/ย้ายไฟล์ `.project/` ต้องผ่านด่าน `git check-ignore` + `git ls-files` ก่อนบอกเสร็จ
 - **เลขงานต้องขึ้นต้นด้วย plan_id (เช่น GRD-P1-I1) · เลขที่ไม่มีใน plan.md = ห้ามทำ** · หลังตอบคำถามแทรก ต้องเปิด plan.md ทวนเฟสก่อนลงมือ (กติกาเหล็กของแผน GRD)
-- ห้ามแตะ `scripts/jarvis-voice/` + `design-system-standard-v2/` + `.claude/launch.json` (งานเจ้าของค้าง · คนละสาย)
+- ห้ามแตะ `.claude/launch.json` (งานเจ้าของค้าง) · [ปลดล็อก 2026-07-11: `design-system-standard-v2/` เจ้าของสั่งแก้จน DS พร้อมใช้จริง merged main แล้ว · `scripts/jarvis-voice/` ย้ายไป SaaS repo แล้ว = เศษ]
 - ห้าม merge→main / deploy เอง — เจ้าของกด · งานหลายเฟส = 1 PR เดียว
 - สมองแผน GRD = Fable ตามคำสั่งเจ้าของ 2026-07-07 (ข้อยกเว้นจากกติกา relay v2.7 ที่ปกติใช้ Opus) · Codex/Claude เขียน-ตรวจสลับค่ายผ่าน relay-call · **verified = มีแถว gate-run เท่านั้น**
 
 ## งานค้าง/ส่งต่อ
-- รอเจ้าของ: **ตรวจ+กด merge PR #17** (install guard) และ **PR #14** (relay-relogin ที่เปิดค้าง) · ส่งปัญหาชุดสุดท้าย (ปลดล็อก GRD-P6..P8) · rotate GitLab token (ค้างจาก 2026-07-04) · **push คลัง Obsidian ขึ้น GitLab** (commit คลัง 7b52e4b + 614e00a ค้างในเครื่อง 2 ตัว — คนละ repo กับตัวนี้ · AI push main ตรงไม่ได้ ด่านบล็อก) · ติดตั้ง memory-audit รายสัปดาห์ (ถ้าต้องการ): `(crontab -l 2>/dev/null; echo '0 9 * * 1 cd "/Users/rattanasak/Documents/Viber Project/Tech Tools/Hermes Agent" && ./venv/bin/python scripts/memory-audit/memory_audit.py >> ~/.claude/ai-fail-stats/memory-audit.log 2>&1') | crontab -`
+- **2026-07-11: local main pointer เพี้ยน** — `ahead 1` (orphan commit DEC-036 ที่เนื้อหาซ้ำ origin แล้ว) + `behind 10` (งาน merged จริงบน origin) · **งานจริงอยู่ origin/main ครบ ไม่หาย** · New Chat หน้าจะ pull origin ก่อนอยู่แล้ว · sync ด้วย: `git fetch origin && git reset --hard origin/main` (AI reset เองไม่ได้ · classifier กัน destructive) · vps เหลือ 5 branch cache (prune ได้ถ้าอยาก) [fact]
+- ~~รอเจ้าของ: ตรวจ+กด merge PR #17 + PR #14~~ **merged หมดแล้ว 2026-07-11 (PR ค้าง = 0)** [fact]
+- รอเจ้าของ (เดิม): **ตรวจ+กด merge PR #17** (install guard) และ **PR #14** (relay-relogin ที่เปิดค้าง) · ส่งปัญหาชุดสุดท้าย (ปลดล็อก GRD-P6..P8) · rotate GitLab token (ค้างจาก 2026-07-04) · **push คลัง Obsidian ขึ้น GitLab** (commit คลัง 7b52e4b + 614e00a ค้างในเครื่อง 2 ตัว — คนละ repo กับตัวนี้ · AI push main ตรงไม่ได้ ด่านบล็อก) · ติดตั้ง memory-audit รายสัปดาห์ (ถ้าต้องการ): `(crontab -l 2>/dev/null; echo '0 9 * * 1 cd "/Users/rattanasak/Documents/Viber Project/Tech Tools/Hermes Agent" && ./venv/bin/python scripts/memory-audit/memory_audit.py >> ~/.claude/ai-fail-stats/memory-audit.log 2>&1') | crontab -`
 - ~~สั่ง commit ไฟล์ JARVIS untracked~~ **แก้ความจำ 2026-07-08: ไฟล์ JARVIS เข้า git แล้วครบ 9 ไฟล์ (รวม FeatureSpec-jarvis-voice.md) — ไม่ใช่งานค้าง** [fact · ยืนยันด้วย git ls-files]
 - **งานซ่อมแยกรอบ (ใหม่ 2026-07-08): ชุดเทสต์เต็ม repo แดง 683 เคสที่ฐาน main** — ทำให้ gate-run ตัดสิน pass ไม่ได้ทั้ง repo · ควรไล่ซ่อมหรือกำหนด gate ย่อยที่เขียวได้จริง (เสนอดูดเข้า GRD-P8)
 - โควต้า AI คืน 2026-07-08: Codex + Grok ชนโควต้าทั้งคู่ช่วงดึก · Gemini crash ตอนจบแต่เขียนไฟล์สำเร็จ — เช็กโควต้าก่อนเริ่มงานใหญ่รอบถัดไป

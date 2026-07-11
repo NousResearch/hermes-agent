@@ -88,3 +88,14 @@ Observed test evidence:
 - Momus review transport could not start because its configured
   `opus-review-direct.py` path is absent under the Daedalus profile. The task is
   therefore handed off `review-required` rather than self-approved.
+
+## t_64d6a35f — auto-continue interrupted turns
+
+- Implemented the fail-closed `agent.resume_interrupted_turns` enum, schedule-time
+  persisted-tail mutation classification, and the seven-day durable once-ever
+  attempt store keyed by `(session_key, assistant_rowid)`.
+- Added T1–T8 behavior-contract coverage and parameterized the existing F2
+  cross-cycle breaker test over `prompt` and `auto`.
+- Focused resume, breaker, async DB, and state regression matrix is green.
+
+NEXT: Open the fork PR, resolve Greptile/CI, arm auto-merge, then hand off live deployment verification to Apollo.

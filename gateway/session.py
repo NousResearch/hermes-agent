@@ -1084,6 +1084,12 @@ class SessionStore:
         with self._lock:
             self._ensure_loaded_locked()
 
+    def snapshot_entries(self) -> List[SessionEntry]:
+        """Return a lock-consistent snapshot of the current session entries."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            return list(self._entries.values())
+
     def _routing_scope(self) -> str:
         """Namespace for this store's rows in the gateway_routing table.
 

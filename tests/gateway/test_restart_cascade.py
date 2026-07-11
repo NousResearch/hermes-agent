@@ -1333,13 +1333,17 @@ async def test_interrupted_reason_still_records_replay_mark_same_pass(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_interrupted_reason_replay_loop_is_bounded_cross_cycle(tmp_path, monkeypatch):
+@pytest.mark.parametrize("resume_mode", ["prompt", "auto"])
+async def test_interrupted_reason_replay_loop_is_bounded_cross_cycle(
+    tmp_path, monkeypatch, resume_mode
+):
     """AC-2b (CROSS-CYCLE, the pass-3-sharpest gate): a session that self-restarts
     AND is drain-interrupted every cycle (reason=restart_consumed_interrupted) must
     STILL trip F2/suspend within the 300s window — driven as real resume→re-interrupt
     cycles seeding _resumed_this_boot, NOT 3 marks in one pass. A build that failed to
     wire the new reason through the _resumed_this_boot→replay-mark path would loop
     forever and fail this test (fake-gate rejection)."""
+    monkeypatch.setenv("HERMES_RESUME_INTERRUPTED_TURNS", resume_mode)
     monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
     monkeypatch.setenv("HERMES_RESTART_LOOP_WINDOW_SECS", "300")
     runner, _adapter = _runner(tmp_path, monkeypatch)

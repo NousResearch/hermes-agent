@@ -5034,6 +5034,7 @@ class SessionDB:
         include_inactive: bool = False,
         limit: Optional[int] = None,
         offset: int = 0,
+        preserve_unparseable_tool_calls: bool = False,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -5074,7 +5075,16 @@ class SessionDB:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
-                    msg["tool_calls"] = []
+                    # The auto-resume mutation gate must distinguish "no tool
+                    # calls" from corrupt/ambiguous tool-call state. Preserve a
+                    # non-list sentinel for that safety-sensitive caller so its
+                    # conservative classifier fails closed; retain the historic
+                    # [] fallback for every existing caller.
+                    msg["tool_calls"] = (
+                        {"unparseable": True}
+                        if preserve_unparseable_tool_calls
+                        else []
+                    )
             result.append(msg)
         return result
 

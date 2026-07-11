@@ -1172,6 +1172,12 @@ DEFAULT_CONFIG = {
         # default is 1800s) plus runtime slack.  Set to 0 to disable the
         # gate and restore pre-fix behaviour (always inject).
         "gateway_auto_continue_freshness": 3600,
+        # What a messaging-gateway boot does with a restart-interrupted turn.
+        # "prompt" preserves the transcript and asks before continuing (safe
+        # default). "auto" continues once when the persisted tail is mechanically
+        # safe; ambiguous/mutating tails still fail closed to prompt. Read once at
+        # gateway startup, so changing it takes effect after a gateway restart.
+        "resume_interrupted_turns": "prompt",
         # Max seconds the gateway waits for boot auto-resume turns to finish
         # before it releases the startup-restore inbound gate.  While startup
         # restore is in progress the gateway QUEUES every inbound message

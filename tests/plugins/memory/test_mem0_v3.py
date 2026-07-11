@@ -392,7 +392,6 @@ class TestMem0MinScore:
         # No min_score configured anywhere → floor is 0.0, nothing filtered.
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("MEM0_API_KEY", "test-key")
-        monkeypatch.delenv("MEM0_MIN_SCORE", raising=False)
         backend = FakeBackend(search_results=[
             {"id": "m1", "memory": "high", "score": 0.9},
             {"id": "m2", "memory": "low", "score": 0.1},
@@ -417,27 +416,27 @@ class TestMem0MinScore:
     def test_config_from_mem0_json(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("MEM0_API_KEY", "test-key")
-        monkeypatch.delenv("MEM0_MIN_SCORE", raising=False)
         (tmp_path / "mem0.json").write_text('{"min_score": 0.5}')
         provider = Mem0MemoryProvider()
         provider._create_backend = lambda: None  # type: ignore[method-assign]
         provider.initialize("test")
         assert provider._min_score == 0.5
 
-    def test_config_from_env_var(self, monkeypatch, tmp_path):
+    def test_env_var_is_ignored(self, monkeypatch, tmp_path):
+        # min_score is a mem0.json-only setting: a MEM0_MIN_SCORE environment
+        # variable must not configure the floor.
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("MEM0_API_KEY", "test-key")
         monkeypatch.setenv("MEM0_MIN_SCORE", "0.7")
         provider = Mem0MemoryProvider()
         provider._create_backend = lambda: None  # type: ignore[method-assign]
         provider.initialize("test")
-        assert provider._min_score == 0.7
+        assert provider._min_score == 0.0
 
     @pytest.mark.parametrize("bad", ['"not-a-number"', "-0.5", "1.5"])
     def test_invalid_config_falls_back_with_warning(self, monkeypatch, tmp_path, caplog, bad):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("MEM0_API_KEY", "test-key")
-        monkeypatch.delenv("MEM0_MIN_SCORE", raising=False)
         (tmp_path / "mem0.json").write_text('{"min_score": %s}' % bad)
         provider = Mem0MemoryProvider()
         provider._create_backend = lambda: None  # type: ignore[method-assign]

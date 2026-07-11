@@ -30,11 +30,14 @@ setup`):
                        short messages ("ok", "do it") match nothing real, so
                        without a floor the injected block fills with
                        low-relevance noise that reads as authoritative
-                       context; 0.5 is a reasonable starting value.
+                       context; 0.5 is a reasonable starting value. Advanced,
+                       mem0.json-only: `hermes memory setup` does not prompt
+                       for it — add the key to mem0.json by hand (or via the
+                       dashboard provider config).
 
-The matching MEM0_MODE / MEM0_USER_ID / MEM0_AGENT_ID / MEM0_MIN_SCORE
-environment variables are still read as a backward-compatible fallback, but
-mem0.json is the canonical home for these non-secret settings.
+The matching MEM0_MODE / MEM0_USER_ID / MEM0_AGENT_ID environment variables
+are still read as a backward-compatible fallback, but mem0.json is the
+canonical home for these non-secret settings.
 """
 
 from __future__ import annotations
@@ -95,7 +98,6 @@ def _load_config() -> dict:
         "api_key": os.environ.get("MEM0_API_KEY", ""),
         "host": os.environ.get("MEM0_HOST", ""),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
-        "min_score": os.environ.get("MEM0_MIN_SCORE", ""),
         "oss": {},
     }
     # Only carry user_id when the operator explicitly configured one (env or

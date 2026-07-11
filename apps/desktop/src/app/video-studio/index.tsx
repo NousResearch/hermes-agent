@@ -12,17 +12,13 @@ import { notify, notifyError } from '@/store/notifications'
 
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { cacheFilenameForSelection, confirmedTimelineFormPatch, timelineVideoSelections } from './material-cache'
 import {
   createMiniMaxCloneVoiceId,
   miniMaxVoiceErrorMessage,
   miniMaxVoiceName,
   validateMiniMaxCloneInput
 } from './minimax-voice-workflows'
-import {
-  cacheFilenameForSelection,
-  confirmedTimelineFormPatch,
-  timelineVideoSelections
-} from './material-cache'
 import {
   configFormFromSummary,
   defaultMoneyPrinterConfigForm,
@@ -40,7 +36,7 @@ import {
   scriptTextFromResult,
   termsTextFromResult,
   type VideoGenerationForm,
-  videoLibraryClient,
+  videoLibraryClient
 } from './moneyprinter-client'
 import { UnifiedMaterialLibraryPanel } from './unified-material-library-panel'
 import { useNamedVideoLibrary } from './use-named-video-library'
@@ -151,9 +147,8 @@ export function VideoStudioView({
   const [miniMaxVoices, setMiniMaxVoices] = useState<MiniMaxVoiceRecord[]>([])
   const [miniMaxExistingVoiceId, setMiniMaxExistingVoiceId] = useState('Korean_GentleBoss')
 
-  const [miniMaxExistingPreviewText, setMiniMaxExistingPreviewText] = useState(
-    '안녕하세요. Hermes 음성 미리듣기입니다.'
-  )
+  const [miniMaxExistingPreviewText, setMiniMaxExistingPreviewText] =
+    useState('안녕하세요. Hermes 음성 미리듣기입니다.')
 
   const [miniMaxExistingPreview, setMiniMaxExistingPreview] = useState<MiniMaxAudioResult | null>(null)
   const [miniMaxExistingBusy, setMiniMaxExistingBusy] = useState(false)
@@ -169,6 +164,7 @@ export function VideoStudioView({
   const [miniMaxLyricsBusy, setMiniMaxLyricsBusy] = useState(false)
   const [miniMaxMusicPrompt, setMiniMaxMusicPrompt] = useState('适合短视频的现代感背景音乐')
   const [miniMaxLyrics, setMiniMaxLyrics] = useState('')
+
   const namedLibrary = useNamedVideoLibrary({
     client: videoLibraryClient,
     script: form.videoScript,
@@ -284,6 +280,16 @@ export function VideoStudioView({
     [namedLibrary]
   )
 
+  const selectVideoSource = useCallback((videoSource: VideoGenerationForm['videoSource']) => {
+    setForm(current => ({
+      ...current,
+      localMaterials: videoSource === 'local' ? current.localMaterials : [],
+      matchMaterialsToScript: videoSource === 'local',
+      videoConcatMode: videoSource === 'local' ? 'sequential' : current.videoConcatMode,
+      videoSource
+    }))
+  }, [])
+
   const addNamedLibraryFiles = useCallback(async () => {
     const paths = await selectDesktopPaths({
       directories: false,
@@ -291,7 +297,11 @@ export function VideoStudioView({
       multiple: true,
       title: '添加素材到当前资产库'
     })
-    if (paths.length === 0) return
+
+    if (paths.length === 0) {
+      return
+    }
+
     try {
       await namedLibrary.importFiles(paths)
     } catch {
@@ -305,7 +315,11 @@ export function VideoStudioView({
       multiple: false,
       title: '选择当前资产库的素材目录'
     })
-    if (!directory) return
+
+    if (!directory) {
+      return
+    }
+
     try {
       await namedLibrary.addSourceRoot(directory)
     } catch {
@@ -313,25 +327,37 @@ export function VideoStudioView({
     }
   }, [namedLibrary])
 
+  const cacheNamedLibraryTimeline = useCallback(async (timeline: Record<string, unknown>) => {
+    const selections = timelineVideoSelections(timeline)
+
+    if (selections.length === 0) {
+      throw new Error('素材时间线缺少可验证的来源信息')
+    }
+
+    const uploadedFiles: string[] = []
+
+    for (const selection of selections) {
+      const filename = cacheFilenameForSelection(selection)
+
+      const response = await moneyprinterClient.uploadLocalMaterial({
+        filename,
+        sourcePath: selection.file
+      })
+
+      if (!response.ok || !response.data) {
+        throw new Error(response.error?.message || `无法加入镜头 ${filename}`)
+      }
+
+      uploadedFiles.push(response.data.material.file)
+    }
+
+    return uploadedFiles
+  }, [])
+
   const createNamedLibraryTimeline = useCallback(async () => {
     try {
       const result = await namedLibrary.createTimeline(form.videoAspect)
-      const selections = timelineVideoSelections(result.timeline)
-      if (selections.length === 0) throw new Error('素材时间线缺少可验证的来源信息')
-      const uploadedFiles: string[] = []
-
-      for (const selection of selections) {
-        const filename = cacheFilenameForSelection(selection)
-        const response = await moneyprinterClient.uploadLocalMaterial({
-          filename,
-          sourcePath: selection.file
-        })
-        if (!response.ok || !response.data) {
-          throw new Error(response.error?.message || `无法加入镜头 ${filename}`)
-        }
-        const material = response.data.material
-        uploadedFiles.push(material.file)
-      }
+      const uploadedFiles = await cacheNamedLibraryTimeline(result.timeline)
 
       setForm(current => ({
         ...current,
@@ -340,12 +366,12 @@ export function VideoStudioView({
       notify({
         kind: 'success',
         title: '具名资产库时间线已创建',
-        message: `${uploadedFiles.length} 个人工确认镜头已加入本地混剪。`
+        message: `${uploadedFiles.length} 个镜头已加入本地混剪。`
       })
     } catch (reason) {
       notifyError(reason instanceof Error ? reason.message : String(reason), '无法创建素材时间线')
     }
-  }, [form.videoAspect, namedLibrary])
+  }, [cacheNamedLibraryTimeline, form.videoAspect, namedLibrary])
 
   const uploadBgmFiles = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const input = event.currentTarget
@@ -523,10 +549,7 @@ export function VideoStudioView({
       })
 
       if (!response.ok || !response.data) {
-        notifyError(
-          miniMaxVoiceErrorMessage(response.error?.message),
-          'MiniMax voice clone failed'
-        )
+        notifyError(miniMaxVoiceErrorMessage(response.error?.message), 'MiniMax voice clone failed')
 
         return
       }
@@ -541,7 +564,15 @@ export function VideoStudioView({
     } finally {
       setMiniMaxCloneBusy(false)
     }
-  }, [configForm.minimaxVoiceCloneModel, miniMaxCloneFile, miniMaxPromptFile, miniMaxPromptText, miniMaxTrialText, miniMaxVoiceId, refreshAssets])
+  }, [
+    configForm.minimaxVoiceCloneModel,
+    miniMaxCloneFile,
+    miniMaxPromptFile,
+    miniMaxPromptText,
+    miniMaxTrialText,
+    miniMaxVoiceId,
+    refreshAssets
+  ])
 
   const activateClonedMiniMaxVoice = useCallback(async () => {
     const voiceId = miniMaxVoiceId.trim()
@@ -553,11 +584,7 @@ export function VideoStudioView({
       return
     }
 
-    if (
-      !window.confirm(
-        '首次正式使用克隆音色预计收取一次性 ¥9.9 复刻费，并另计少量 TTS 字符费。是否继续？'
-      )
-    ) {
+    if (!window.confirm('首次正式使用克隆音色预计收取一次性 ¥9.9 复刻费，并另计少量 TTS 字符费。是否继续？')) {
       return
     }
 
@@ -851,14 +878,8 @@ export function VideoStudioView({
       return
     }
 
-    if (!namedLibrary.selectedLibraryId) {
+    if (form.videoSource === 'local' && !namedLibrary.selectedLibraryId) {
       notifyError(null, '请先选择一个素材库')
-
-      return
-    }
-
-    if (form.localMaterials.length === 0) {
-      notifyError(null, '请先匹配并人工确认镜头，再创建素材时间线')
 
       return
     }
@@ -866,7 +887,16 @@ export function VideoStudioView({
     setBusy(true)
 
     try {
-      const response = await moneyprinterClient.createVideo(form)
+      let requestForm = form
+
+      if (form.videoSource === 'local') {
+        const result = await namedLibrary.createAutomaticTimeline(form.videoAspect)
+        const uploadedFiles = await cacheNamedLibraryTimeline(result.timeline)
+        requestForm = { ...form, ...confirmedTimelineFormPatch(uploadedFiles) }
+        setForm(requestForm)
+      }
+
+      const response = await moneyprinterClient.createVideo(requestForm)
 
       if (!response.ok || !response.data) {
         notifyError(response.error?.message, 'Unable to create video task')
@@ -878,11 +908,20 @@ export function VideoStudioView({
 
       setTasks(current => [createdTask, ...current.filter(task => task.id !== createdTask.id)])
       setSelectedTaskId(createdTask.id)
-      notify({ kind: 'success', title: 'Video task created', message: createdTask.id })
+      notify({
+        kind: 'success',
+        title: 'AI 自动成片任务已创建',
+        message:
+          form.videoSource === 'local'
+            ? `${createdTask.id} · 已从 ${namedLibrary.selectedLibraryId} 自动匹配镜头`
+            : `${createdTask.id} · 素材来源 ${form.videoSource}`
+      })
+    } catch (reason) {
+      notifyError(reason instanceof Error ? reason.message : String(reason), 'AI 自动成片失败')
     } finally {
       setBusy(false)
     }
-  }, [form, namedLibrary.selectedLibraryId])
+  }, [cacheNamedLibraryTimeline, form, namedLibrary])
 
   return (
     <section
@@ -1265,6 +1304,7 @@ export function VideoStudioView({
             </div>
 
             <UnifiedMaterialLibraryPanel
+              autoBusy={busy}
               error={namedLibrary.error}
               libraries={namedLibrary.libraries}
               loadingLibraries={namedLibrary.loadingLibraries}
@@ -1275,6 +1315,7 @@ export function VideoStudioView({
               matchingSegmentId={namedLibrary.matchingSegmentId}
               migrationResult={namedLibrary.migrationResult}
               onAddFiles={addNamedLibraryFiles}
+              onAutoGenerate={createVideo}
               onConfirmClip={namedLibrary.confirmClip}
               onConfirmScan={namedLibrary.confirmScan}
               onCreateTimeline={createNamedLibraryTimeline}
@@ -1285,12 +1326,14 @@ export function VideoStudioView({
               onRefresh={namedLibrary.refreshSelectedLibrary}
               onSelectDirectory={addNamedLibraryDirectory}
               onSelectLibrary={selectMaterialLibrary}
+              onVideoSourceChange={selectVideoSource}
               scanBusy={namedLibrary.scanBusy}
               scanPreview={namedLibrary.scanPreview}
               segments={namedLibrary.segments}
               selectedLibraryId={namedLibrary.selectedLibraryId}
               status={namedLibrary.status}
               timelineBusy={namedLibrary.timelineBusy}
+              videoSource={form.videoSource}
             />
 
             <div className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3">
@@ -1369,7 +1412,9 @@ export function VideoStudioView({
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button
-                    disabled={miniMaxExistingBusy || !miniMaxExistingVoiceId.trim() || !miniMaxExistingPreviewText.trim()}
+                    disabled={
+                      miniMaxExistingBusy || !miniMaxExistingVoiceId.trim() || !miniMaxExistingPreviewText.trim()
+                    }
                     onClick={previewExistingMiniMaxVoice}
                     type="button"
                     variant="outline"
@@ -1444,7 +1489,11 @@ export function VideoStudioView({
                 </div>
                 <label className="block space-y-2">
                   <span className={fieldLabelClass()}>克隆试听文本（不会激活音色）</span>
-                  <Textarea onChange={event => setMiniMaxTrialText(event.target.value)} rows={2} value={miniMaxTrialText} />
+                  <Textarea
+                    onChange={event => setMiniMaxTrialText(event.target.value)}
+                    rows={2}
+                    value={miniMaxTrialText}
+                  />
                 </label>
                 <div className="flex flex-wrap gap-2">
                   <Button
@@ -1659,10 +1708,20 @@ export function VideoStudioView({
                   />
                 </label>
                 <div className="grid grid-cols-2 gap-2">
-                  <Button disabled={miniMaxLyricsBusy || !miniMaxMusicPrompt.trim()} onClick={generateMiniMaxLyrics} type="button" variant="outline">
+                  <Button
+                    disabled={miniMaxLyricsBusy || !miniMaxMusicPrompt.trim()}
+                    onClick={generateMiniMaxLyrics}
+                    type="button"
+                    variant="outline"
+                  >
                     {miniMaxLyricsBusy ? 'Generating…' : '生成 / 润色歌词'}
                   </Button>
-                  <Button disabled={miniMaxMusicBusy || !miniMaxMusicPrompt.trim()} onClick={generateMiniMaxMusic} type="button" variant="outline">
+                  <Button
+                    disabled={miniMaxMusicBusy || !miniMaxMusicPrompt.trim()}
+                    onClick={generateMiniMaxMusic}
+                    type="button"
+                    variant="outline"
+                  >
                     {miniMaxMusicBusy ? 'Generating…' : '生成并选为 BGM'}
                   </Button>
                 </div>

@@ -11,6 +11,32 @@ export interface NamedLibraryMatchState {
   errorsBySegment: Record<string, string>
 }
 
+function clipRank(clip: VideoLibraryClip): number {
+  return (clip.score ?? 0) * 100 + (clip.quality_score ?? 0) * 10 + (clip.confidence ?? 0)
+}
+
+export function automaticallySelectClips(
+  segments: ScriptSegment[],
+  candidatesBySegment: Record<string, VideoLibraryClip[]>
+): Record<string, string> {
+  const selected: Record<string, string> = {}
+  const usedAssets = new Set<string>()
+
+  for (const segment of segments) {
+    const ranked = [...(candidatesBySegment[segment.id] || [])].sort((left, right) => clipRank(right) - clipRank(left))
+    const clip = ranked.find(candidate => !usedAssets.has(candidate.asset_id)) || ranked[0]
+
+    if (!clip) {
+      continue
+    }
+
+    selected[segment.id] = clip.id
+    usedAssets.add(clip.asset_id)
+  }
+
+  return selected
+}
+
 export function segmentVideoScript(script: string): ScriptSegment[] {
   const sentences = script
     .split(/\n\s*\n/)

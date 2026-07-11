@@ -1,14 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import {
-  clearLibraryMatches,
-  confirmSegmentClip,
-  emptyMatchState,
-  type NamedLibraryMatchState,
-  segmentVideoScript,
-  setSegmentCandidates,
-  setSegmentError
-} from './named-library-matching'
 import type {
   MoneyPrinterResponse,
   VideoAspect,
@@ -21,16 +12,23 @@ import type {
   VideoLibraryStatus,
   VideoLibraryTimelineResult
 } from './moneyprinter-client'
+import {
+  automaticallySelectClips,
+  clearLibraryMatches,
+  confirmSegmentClip,
+  emptyMatchState,
+  type NamedLibraryMatchState,
+  segmentVideoScript,
+  setSegmentCandidates,
+  setSegmentError
+} from './named-library-matching'
 
 export interface NamedVideoLibraryClient {
   addSourceRoot(
     libraryId: string,
     path: string
   ): Promise<MoneyPrinterResponse<{ library_id: string; source_roots: string[] }>>
-  analyzeAsset(
-    libraryId: string,
-    assetId: string
-  ): Promise<MoneyPrinterResponse<VideoLibraryAnalysisResult>>
+  analyzeAsset(libraryId: string, assetId: string): Promise<MoneyPrinterResponse<VideoLibraryAnalysisResult>>
   createTimeline(
     libraryId: string,
     clipIds: string[],
@@ -38,10 +36,7 @@ export interface NamedVideoLibraryClient {
     script?: Array<Record<string, unknown>>
   ): Promise<MoneyPrinterResponse<VideoLibraryTimelineResult>>
   getLibraryStatus(libraryId: string): Promise<MoneyPrinterResponse<VideoLibraryStatus>>
-  importAsset(
-    libraryId: string,
-    sourcePath: string
-  ): Promise<MoneyPrinterResponse<{ asset: VideoLibraryAsset }>>
+  importAsset(libraryId: string, sourcePath: string): Promise<MoneyPrinterResponse<{ asset: VideoLibraryAsset }>>
   listAssets(libraryId?: string): Promise<MoneyPrinterResponse<{ assets: VideoLibraryAsset[]; total: number }>>
   listClips(
     libraryId?: string,
@@ -93,13 +88,13 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
       .listLibraries()
       .then(response => requireData(response, '无法加载视频资产库'))
       .then(data => {
-        if (active) setLibraries(data.libraries)
+        if (active) {setLibraries(data.libraries)}
       })
       .catch(reason => {
-        if (active) setError(reason instanceof Error ? reason.message : String(reason))
+        if (active) {setError(reason instanceof Error ? reason.message : String(reason))}
       })
       .finally(() => {
-        if (active) setLoadingLibraries(false)
+        if (active) {setLoadingLibraries(false)}
       })
 
     return () => {
@@ -108,15 +103,17 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
   }, [client])
 
   const refreshSelectedLibrary = useCallback(async () => {
-    if (!selectedLibraryId) return
+    if (!selectedLibraryId) {return}
     setLoadingLibrary(true)
     setError('')
+
     try {
       const [statusResponse, assetsResponse, clipsResponse] = await Promise.all([
         client.getLibraryStatus(selectedLibraryId),
         client.listAssets(selectedLibraryId),
         client.listClips(selectedLibraryId)
       ])
+
       setStatus(requireData(statusResponse, '无法读取资产库状态'))
       setAssets(requireData(assetsResponse, '无法读取资产').assets)
       setClips(requireData(clipsResponse, '无法读取镜头').clips)
@@ -128,7 +125,7 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
   }, [client, selectedLibraryId])
 
   useEffect(() => {
-    if (selectedLibraryId) void refreshSelectedLibrary()
+    if (selectedLibraryId) {void refreshSelectedLibrary()}
   }, [refreshSelectedLibrary, selectedLibraryId])
 
   const selectLibrary = useCallback((libraryId: string) => {
@@ -145,23 +142,30 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
 
   const matchSegment = useCallback(
     async (segmentId: string) => {
-      if (!selectedLibraryId) throw new Error('请先选择资产库')
+      if (!selectedLibraryId) {throw new Error('请先选择资产库')}
       const segment = segments.find(item => item.id === segmentId)
-      if (!segment) throw new Error('文案片段不存在')
+
+      if (!segment) {throw new Error('文案片段不存在')}
       setMatchingSegmentId(segmentId)
+
       try {
         const query = [segment.text, terms.trim()].filter(Boolean).join(' ')
         const response = await client.listClips(selectedLibraryId, { limit: 5, query })
         const candidates = requireData(response, '镜头匹配失败').clips
+
         if (candidates.length === 0) {
           setMatches(current => setSegmentError(current, segmentId, '未找到合适镜头'))
+
           return []
         }
+
         setMatches(current => setSegmentCandidates(current, segmentId, candidates))
+
         return candidates
       } catch (reason) {
         const message = reason instanceof Error ? reason.message : String(reason)
         setMatches(current => setSegmentError(current, segmentId, message))
+
         return []
       } finally {
         setMatchingSegmentId('')
@@ -171,8 +175,9 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
   )
 
   const matchAll = useCallback(async () => {
-    if (!selectedLibraryId) throw new Error('请先选择资产库')
+    if (!selectedLibraryId) {throw new Error('请先选择资产库')}
     setMatchingAll(true)
+
     try {
       await Promise.allSettled(segments.map(segment => matchSegment(segment.id)))
     } finally {
@@ -185,8 +190,9 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
   }, [])
 
   const scanSelectedLibrary = useCallback(async () => {
-    if (!selectedLibraryId) throw new Error('请先选择资产库')
+    if (!selectedLibraryId) {throw new Error('请先选择资产库')}
     setScanBusy(true)
+
     try {
       const response = await client.scanLibrary(selectedLibraryId, false)
       requireData(response, '资产库扫描失败')
@@ -198,20 +204,20 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
 
   const importFiles = useCallback(
     async (sourcePaths: string[]) => {
-      if (!selectedLibraryId) throw new Error('请先选择资产库')
+      if (!selectedLibraryId) {throw new Error('请先选择资产库')}
       setManagementBusy(true)
       setError('')
+
       try {
         for (const sourcePath of sourcePaths) {
           const imported = requireData(
             await client.importAsset(selectedLibraryId, sourcePath),
             `素材导入失败：${sourcePath}`
           )
-          requireData(
-            await client.analyzeAsset(selectedLibraryId, imported.asset.id),
-            `素材分析失败：${sourcePath}`
-          )
+
+          requireData(await client.analyzeAsset(selectedLibraryId, imported.asset.id), `素材分析失败：${sourcePath}`)
         }
+
         await refreshSelectedLibrary()
       } catch (reason) {
         const message = reason instanceof Error ? reason.message : String(reason)
@@ -226,24 +232,20 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
 
   const addSourceRoot = useCallback(
     async (path: string) => {
-      if (!selectedLibraryId) throw new Error('请先选择资产库')
+      if (!selectedLibraryId) {throw new Error('请先选择资产库')}
       setManagementBusy(true)
       setError('')
+
       try {
-        const rooted = requireData(
-          await client.addSourceRoot(selectedLibraryId, path),
-          '素材目录添加失败'
-        )
+        const rooted = requireData(await client.addSourceRoot(selectedLibraryId, path), '素材目录添加失败')
         setLibraries(current =>
           current.map(library =>
             library.id === selectedLibraryId ? { ...library, source_roots: rooted.source_roots } : library
           )
         )
-        const preview = requireData(
-          await client.scanLibrary(selectedLibraryId, true),
-          '素材目录预扫描失败'
-        )
+        const preview = requireData(await client.scanLibrary(selectedLibraryId, true), '素材目录预扫描失败')
         setScanPreview(preview)
+
         return preview
       } finally {
         setManagementBusy(false)
@@ -253,15 +255,14 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
   )
 
   const confirmScan = useCallback(async () => {
-    if (!selectedLibraryId) throw new Error('请先选择资产库')
+    if (!selectedLibraryId) {throw new Error('请先选择资产库')}
     setScanBusy(true)
+
     try {
-      const result = requireData(
-        await client.scanLibrary(selectedLibraryId, false),
-        '资产库扫描失败'
-      )
+      const result = requireData(await client.scanLibrary(selectedLibraryId, false), '资产库扫描失败')
       setScanPreview(null)
       await refreshSelectedLibrary()
+
       return result
     } finally {
       setScanBusy(false)
@@ -269,14 +270,13 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
   }, [client, refreshSelectedLibrary, selectedLibraryId])
 
   const previewScan = useCallback(async () => {
-    if (!selectedLibraryId) throw new Error('请先选择资产库')
+    if (!selectedLibraryId) {throw new Error('请先选择资产库')}
     setScanBusy(true)
+
     try {
-      const preview = requireData(
-        await client.scanLibrary(selectedLibraryId, true),
-        '资产库预扫描失败'
-      )
+      const preview = requireData(await client.scanLibrary(selectedLibraryId, true), '资产库预扫描失败')
       setScanPreview(preview)
+
       return preview
     } finally {
       setScanBusy(false)
@@ -284,15 +284,14 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
   }, [client, selectedLibraryId])
 
   const migrateLegacyLibrary = useCallback(async () => {
-    if (!selectedLibraryId) throw new Error('请先选择资产库')
+    if (!selectedLibraryId) {throw new Error('请先选择资产库')}
     setManagementBusy(true)
+
     try {
-      const result = requireData(
-        await client.migrateLegacyLibrary(selectedLibraryId),
-        '旧素材库迁移失败'
-      )
+      const result = requireData(await client.migrateLegacyLibrary(selectedLibraryId), '旧素材库迁移失败')
       setMigrationResult(result)
       await refreshSelectedLibrary()
+
       return result
     } finally {
       setManagementBusy(false)
@@ -301,11 +300,13 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
 
   const createTimeline = useCallback(
     async (aspect: VideoAspect) => {
-      if (!selectedLibraryId) throw new Error('请先选择资产库')
+      if (!selectedLibraryId) {throw new Error('请先选择资产库')}
       const confirmedSegments = segments.filter(segment => matches.confirmedBySegment[segment.id])
-      if (confirmedSegments.length === 0) throw new Error('请先人工确认至少一个镜头')
+
+      if (confirmedSegments.length === 0) {throw new Error('请先人工确认至少一个镜头')}
       const clipIds = confirmedSegments.map(segment => matches.confirmedBySegment[segment.id])
       setTimelineBusy(true)
+
       try {
         const response = await client.createTimeline(
           selectedLibraryId,
@@ -313,8 +314,10 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
           aspect,
           confirmedSegments.map(segment => ({ id: segment.id, text: segment.text }))
         )
+
         const result = requireData(response, '素材时间线创建失败')
         setTimeline(result)
+
         return result
       } finally {
         setTimelineBusy(false)
@@ -323,12 +326,86 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
     [client, matches.confirmedBySegment, segments, selectedLibraryId]
   )
 
+  const createAutomaticTimeline = useCallback(
+    async (aspect: VideoAspect) => {
+      if (!selectedLibraryId) {
+        throw new Error('请先选择资产库')
+      }
+
+      if (segments.length === 0) {
+        throw new Error('请先填写视频文案')
+      }
+
+      setMatchingAll(true)
+      setTimelineBusy(true)
+      setError('')
+
+      try {
+        const candidatesBySegment: Record<string, VideoLibraryClip[]> = {}
+
+        for (const segment of segments) {
+          const query = [segment.text, terms.trim()].filter(Boolean).join(' ')
+
+          let candidates = requireData(
+            await client.listClips(selectedLibraryId, { limit: 5, query }),
+            '镜头匹配失败'
+          ).clips
+
+          if (candidates.length === 0) {
+            candidates = requireData(await client.listClips(selectedLibraryId, { limit: 5 }), '镜头回退匹配失败').clips
+          }
+
+          if (candidates.length === 0) {
+            throw new Error('当前素材库没有可用镜头')
+          }
+
+          candidatesBySegment[segment.id] = candidates
+        }
+
+        const selectedBySegment = automaticallySelectClips(segments, candidatesBySegment)
+        const clipIds = segments.map(segment => selectedBySegment[segment.id]).filter(Boolean)
+
+        if (clipIds.length !== segments.length) {
+          throw new Error('AI 无法为全部文案匹配镜头')
+        }
+
+        setMatches({
+          candidatesBySegment,
+          confirmedBySegment: selectedBySegment,
+          errorsBySegment: {}
+        })
+
+        const result = requireData(
+          await client.createTimeline(
+            selectedLibraryId,
+            clipIds,
+            aspect,
+            segments.map(segment => ({ id: segment.id, text: segment.text }))
+          ),
+          '素材时间线创建失败'
+        )
+
+        setTimeline(result)
+
+        return result
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason))
+        throw reason
+      } finally {
+        setMatchingAll(false)
+        setTimelineBusy(false)
+      }
+    },
+    [client, segments, selectedLibraryId, terms]
+  )
+
   return {
     addSourceRoot,
     assets,
     clips,
     confirmClip,
     confirmScan,
+    createAutomaticTimeline,
     createTimeline,
     error,
     importFiles,

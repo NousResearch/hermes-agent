@@ -71,7 +71,11 @@ function fakeClient(): NamedVideoLibraryClient {
   return {
     addSourceRoot: vi.fn((_libraryId, path) => ok({ library_id: 'beef-noodle', source_roots: [path] })),
     analyzeAsset: vi.fn((_libraryId, assetId) =>
-      ok({ asset: { id: assetId } as VideoLibraryAsset, clips: [clip], job: { error: '', id: 'job-1', progress: 100, state: 'complete' } })
+      ok({
+        asset: { id: assetId } as VideoLibraryAsset,
+        clips: [clip],
+        job: { error: '', id: 'job-1', progress: 100, state: 'complete' }
+      })
     ),
     createTimeline: vi.fn((_libraryId, clipIds) =>
       ok({ id: 'timeline-1', path: '/vault/牛肉面资产库/timelines/timeline-1.json', timeline: { clipIds } })
@@ -81,9 +85,7 @@ function fakeClient(): NamedVideoLibraryClient {
       ok({ asset: { id: `asset-${sourcePath.split('/').pop()}` } as VideoLibraryAsset })
     ),
     listAssets: vi.fn(() => ok({ assets: [] as VideoLibraryAsset[], total: 0 })),
-    listClips: vi.fn((_libraryId, options) =>
-      ok({ clips: options?.query ? [clip] : [clip], total: 1 })
-    ),
+    listClips: vi.fn((_libraryId, options) => ok({ clips: options?.query ? [clip] : [clip], total: 1 })),
     listLibraries: vi.fn(() => ok({ libraries })),
     migrateLegacyLibrary: vi.fn(() =>
       ok({ failed: 0, imported: 1, library_id: 'beef-noodle', records: [], skipped: 0, total: 1 })
@@ -128,9 +130,7 @@ describe('useNamedVideoLibrary', () => {
       }
       return ok({ clips: [clip], total: 1 })
     })
-    const { result } = renderHook(() =>
-      useNamedVideoLibrary({ client, script: '第一段。\n\n第二段。' })
-    )
+    const { result } = renderHook(() => useNamedVideoLibrary({ client, script: '第一段。\n\n第二段。' }))
     await waitFor(() => expect(result.current.libraries).toHaveLength(2))
     act(() => result.current.selectLibrary('beef-noodle'))
     await waitFor(() => expect(result.current.status).not.toBeNull())
@@ -143,9 +143,7 @@ describe('useNamedVideoLibrary', () => {
 
   it('creates a timeline with confirmed clips in segment order and the selected library', async () => {
     const client = fakeClient()
-    const { result } = renderHook(() =>
-      useNamedVideoLibrary({ client, script: '第一段。\n\n第二段。' })
-    )
+    const { result } = renderHook(() => useNamedVideoLibrary({ client, script: '第一段。\n\n第二段。' }))
     await waitFor(() => expect(result.current.libraries).toHaveLength(2))
     act(() => result.current.selectLibrary('beef-noodle'))
     await waitFor(() => expect(result.current.status).not.toBeNull())
@@ -157,15 +155,29 @@ describe('useNamedVideoLibrary', () => {
 
     await act(() => result.current.createTimeline('9:16'))
 
-    expect(client.createTimeline).toHaveBeenCalledWith(
-      'beef-noodle',
-      ['clip-1', 'clip-1'],
-      '9:16',
-      [
-        { id: 'segment-1', text: '第一段。' },
-        { id: 'segment-2', text: '第二段。' }
-      ]
+    expect(client.createTimeline).toHaveBeenCalledWith('beef-noodle', ['clip-1', 'clip-1'], '9:16', [
+      { id: 'segment-1', text: '第一段。' },
+      { id: 'segment-2', text: '第二段。' }
+    ])
+  })
+
+  it('automatically matches every segment and creates a timeline without manual confirmation', async () => {
+    const client = fakeClient()
+    const secondClip = { ...clip, asset_id: 'asset-2', id: 'clip-2', score: 0.8 }
+    vi.mocked(client.listClips).mockImplementation((_libraryId, options) =>
+      ok({ clips: options?.query?.includes('第二段') ? [clip, secondClip] : [clip], total: 2 })
     )
+    const { result } = renderHook(() => useNamedVideoLibrary({ client, script: '第一段。\n\n第二段。' }))
+    await waitFor(() => expect(result.current.libraries).toHaveLength(2))
+    act(() => result.current.selectLibrary('beef-noodle'))
+    await waitFor(() => expect(result.current.status).not.toBeNull())
+
+    await act(() => result.current.createAutomaticTimeline('9:16'))
+
+    expect(client.createTimeline).toHaveBeenCalledWith('beef-noodle', ['clip-1', 'clip-2'], '9:16', [
+      { id: 'segment-1', text: '第一段。' },
+      { id: 'segment-2', text: '第二段。' }
+    ])
   })
 
   it('imports and analyzes files only in the selected library', async () => {

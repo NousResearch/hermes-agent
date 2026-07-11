@@ -24,6 +24,7 @@ const baseProps: UnifiedMaterialLibraryPanelProps = {
   matchingSegmentId: '',
   migrationResult: null,
   onAddFiles: vi.fn(),
+  onAutoGenerate: vi.fn(),
   onConfirmClip: vi.fn(),
   onConfirmScan: vi.fn(),
   onCreateTimeline: vi.fn(),
@@ -33,17 +34,28 @@ const baseProps: UnifiedMaterialLibraryPanelProps = {
   onRefresh: vi.fn(),
   onSelectDirectory: vi.fn(),
   onSelectLibrary: vi.fn(),
+  onVideoSourceChange: vi.fn(),
   scanBusy: false,
   scanPreview: null,
   segments: [{ id: 'segment-1', text: '牛骨每天慢火熬制' }],
   selectedLibraryId: '',
   status: null,
-  timelineBusy: false
+  timelineBusy: false,
+  videoSource: 'local'
 }
 
 afterEach(cleanup)
 
 describe('UnifiedMaterialLibraryPanel', () => {
+  it('keeps online providers in the unified material source selector', () => {
+    render(<UnifiedMaterialLibraryPanel {...baseProps} videoSource="pexels" />)
+
+    const source = screen.getByLabelText('素材来源') as HTMLSelectElement
+    expect(Array.from(source.options).map(option => option.value)).toEqual(['local', 'pexels', 'pixabay', 'coverr'])
+    expect(screen.getByRole('button', { name: 'AI 自动匹配并生成视频' })).toBeTruthy()
+    expect(screen.queryByLabelText('视频资产库')).toBeNull()
+  })
+
   it('shows one material library entry and disables ingestion until selection', () => {
     render(<UnifiedMaterialLibraryPanel {...baseProps} />)
 
@@ -88,7 +100,7 @@ describe('UnifiedMaterialLibraryPanel', () => {
     )
 
     const basket = within(screen.getByTestId('selected-shot-basket'))
-    expect(basket.getByText('本次已选镜头')).toBeTruthy()
+    expect(basket.getByText('AI 已选镜头（可精修）')).toBeTruthy()
     expect(basket.getByText('后厨汤锅热气升腾')).toBeTruthy()
     expect(basket.getByText('/vault/material/raw.mp4')).toBeTruthy()
   })

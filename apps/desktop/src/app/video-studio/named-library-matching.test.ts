@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { VideoLibraryClip } from './moneyprinter-client'
 import {
+  automaticallySelectClips,
   clearLibraryMatches,
   confirmSegmentClip,
   emptyMatchState,
@@ -26,6 +27,24 @@ const clip: VideoLibraryClip = {
 }
 
 describe('named library script matching', () => {
+  it('automatically selects the best candidate while avoiding adjacent source repetition', () => {
+    const repeated = { ...clip, id: 'clip-repeat', asset_id: 'asset-1', score: 0.99 }
+    const diverse = { ...clip, id: 'clip-diverse', asset_id: 'asset-2', score: 0.8 }
+
+    expect(
+      automaticallySelectClips(
+        [
+          { id: 'segment-1', text: '第一段' },
+          { id: 'segment-2', text: '第二段' }
+        ],
+        {
+          'segment-1': [clip],
+          'segment-2': [repeated, diverse]
+        }
+      )
+    ).toEqual({ 'segment-1': 'clip-1', 'segment-2': 'clip-diverse' })
+  })
+
   it('splits editable script into stable non-empty segments', () => {
     expect(segmentVideoScript('后厨现煮。\n\n大块牛肉看得见！')).toEqual([
       { id: 'segment-1', text: '后厨现煮。' },

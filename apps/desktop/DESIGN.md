@@ -129,9 +129,11 @@ Notes:
 
 - Every user-facing string goes through `useI18n()` (`src/i18n/context.tsx`).
   No literals in JSX.
-- **Update all locales together** — `en`, `ja`, `zh`, `zh-hant`. A string change
-  in `en.ts` that skips the others is a regression (drifted punctuation,
-  stale labels). Keep trailing-punctuation and tone consistent across all four.
+- **Update all locales together** — `en`, `de`, `ja`, `zh`, `zh-hant`. A string
+  change in `en.ts` that skips the others is a regression (drifted punctuation,
+  stale labels). Keep trailing-punctuation and tone consistent across all five.
+  Partial locales use `defineLocale()` so untranslated keys fall back to English
+  while staying type-checked.
 
 ## State (TypeScript)
 
@@ -163,5 +165,5 @@ Mirrors the repo TS style (see root `AGENTS.md`):
 - [ ] No `className` overriding a primitive's padding / size / radius / chrome?
 - [ ] Overlay uses `shadow-nous` + `border-(--stroke-nous)`, no hard border?
 - [ ] Flat — no card-in-card, no gratuitous row dividers?
-- [ ] All four locales updated for any new/changed string?
+- [ ] All five locales updated for any new/changed string?
 - [ ] `cursor-pointer`, focus ring, and `Esc`-to-close behave?

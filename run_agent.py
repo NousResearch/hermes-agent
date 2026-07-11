@@ -458,6 +458,7 @@ class AIAgent:
         notice_callback: callable = None,
         notice_clear_callback: callable = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
+        reaction_callback: Optional[Callable[[str], None]] = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
@@ -533,6 +534,7 @@ class AIAgent:
             notice_callback=notice_callback,
             notice_clear_callback=notice_clear_callback,
             event_callback=event_callback,
+            reaction_callback=reaction_callback,
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
             service_tier=service_tier,
@@ -3990,17 +3992,18 @@ class AIAgent:
         return create_openai_client(self, client_kwargs, reason=reason, shared=shared)
 
     @staticmethod
-    def _force_close_tcp_sockets(client: Any) -> int:
+    def _force_close_tcp_sockets(client: Any, *, release_fds: bool = False) -> int:
         """Forwarder — see ``agent.agent_runtime_helpers.force_close_tcp_sockets``."""
         from agent.agent_runtime_helpers import force_close_tcp_sockets
-        return force_close_tcp_sockets(client)
+        return force_close_tcp_sockets(client, release_fds=release_fds)
 
     def _close_openai_client(self, client: Any, *, reason: str, shared: bool) -> None:
         if client is None:
             return
-        # Force-close TCP sockets first to prevent CLOSE-WAIT accumulation,
-        # then do the graceful SDK-level close.
-        force_closed = self._force_close_tcp_sockets(client)
+        # Owning-thread dispose: shutdown + release FDs so already-shutdown
+        # sockets don't linger in kernel CLOSED state (#61979). Cross-thread
+        # abort uses _abort_request_openai_client (release_fds=False) instead.
+        force_closed = self._force_close_tcp_sockets(client, release_fds=True)
         try:
             client.close()
             logger.info(

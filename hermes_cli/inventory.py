@@ -340,11 +340,59 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
         if slug == "moa":
             # MoA is a virtual routing mode, not an independently configured
             # provider. Hide it from explicit-only pickers unless it is the
-            # current provider (handled above).
+            # current provider (handled above) or the user explicitly wrote an
+            # enabled MoA preset into config.yaml. Use raw config so the
+            # DEFAULT_CONFIG preset does not make every desktop picker show MoA.
+            if _raw_config_has_enabled_moa_preset():
+                kept.append(row)
             continue
         if is_provider_explicitly_configured(slug):
             kept.append(row)
     return kept
+
+
+def _raw_config_has_enabled_moa_preset() -> bool:
+    """Return True when the user's raw config explicitly enables MoA.
+
+    ``load_config()`` includes ``DEFAULT_CONFIG["moa"].presets.default`` for
+    everyone. Explicit-only model pickers must not treat that default as a user
+    choice, but they should keep MoA visible once the user has saved at least
+    one enabled preset (or an older flat MoA config) in their own config.yaml.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+    except Exception:
+        return False
+
+    if not isinstance(raw, dict):
+        return False
+    moa = raw.get("moa")
+    if not isinstance(moa, dict):
+        return False
+
+    presets = moa.get("presets")
+    if isinstance(presets, dict):
+        for name, preset in presets.items():
+            if not str(name or "").strip():
+                continue
+            if not isinstance(preset, dict):
+                return True
+            if preset.get("enabled", True):
+                return True
+        return False
+
+    legacy_keys = {
+        "reference_models",
+        "aggregator",
+        "reference_temperature",
+        "aggregator_temperature",
+        "max_tokens",
+        "reference_max_tokens",
+        "fanout",
+    }
+    return any(key in moa for key in legacy_keys) and bool(moa.get("enabled", True))
 
 
 def _apply_picker_hints(rows: list[dict]) -> None:

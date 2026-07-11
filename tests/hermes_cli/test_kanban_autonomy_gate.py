@@ -411,6 +411,14 @@ def test_approve_deploy_emits_event_and_unblocks(isolated_kanban_home):
 
 def test_deploy_worker_context_surfaces_protocol(isolated_kanban_home):
     kb, _ = isolated_kanban_home
+    # Distinct, non-overlapping command strings so a substring of one step can't
+    # masquerade as another (real specs may share prefixes, e.g. deploy.sh).
+    spec = {
+        "dry_run": "DRYRUN_CMD",
+        "apply": "APPLY_CMD",
+        "verify": "VERIFY_CMD",
+        "rollback": "ROLLBACK_CMD",
+    }
     with kb.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
         tid = kb.create_task(
@@ -418,13 +426,22 @@ def test_deploy_worker_context_surfaces_protocol(isolated_kanban_home):
             title="deploy",
             assignee="default",
             risk_tier="deploy-A",
-            deploy_spec=_SPEC,
+            deploy_spec=spec,
         )
         ctx = kb.build_worker_context(conn, tid)
+    # REQ-049 mechanical apply-gate: pre-approval the brief shows the dry-run and
+    # the gate, but WITHHOLDS the apply / verify / rollback commands entirely.
     assert "deploy-gate protocol" in ctx
-    assert _SPEC["rollback"] in ctx and _SPEC["verify"] in ctx
-    assert "approval recorded: NO" in ctx  # not yet approved
+    assert "DRYRUN_CMD" in ctx
+    assert "WITHHELD" in ctx and "NOT yet approved" in ctx
+    assert "APPLY_CMD" not in ctx
+    assert "ROLLBACK_CMD" not in ctx
+    assert "VERIFY_CMD" not in ctx
+    # After approval, re-dispatch surfaces the withheld steps.
     with kb.connect_closing() as conn:
         kb.approve_deploy(conn, tid, approver="kevin")
         ctx2 = kb.build_worker_context(conn, tid)
-    assert "approval recorded: YES" in ctx2
+    assert "approved" in ctx2
+    assert "APPLY_CMD" in ctx2
+    assert "ROLLBACK_CMD" in ctx2
+    assert "VERIFY_CMD" in ctx2

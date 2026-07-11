@@ -8694,25 +8694,32 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             )
             if spec.get("dry_run"):
                 lines.append(f"    1. dry-run:  {spec['dry_run']}")
-            lines.append(
-                "    2. APPROVAL GATE: after a clean dry-run, if no "
-                "`deploy_approved` event is recorded on this card, STOP and block "
-                "needs_input ('awaiting deploy approval') — do NOT apply. The "
-                "operator runs `hermes kanban approve-deploy <id>`, which releases "
-                "you to continue."
-            )
-            if spec.get("apply"):
-                lines.append(f"    3. apply:    {spec['apply']}")
-            if spec.get("verify"):
-                lines.append(f"    4. verify:   {spec['verify']}")
-            if spec.get("rollback"):
+            if not approved:
+                # REQ-049 mechanical apply-gate: the apply / verify / rollback
+                # commands are WITHHELD from the brief until a deploy_approved
+                # event exists. The worker is not handed the apply command
+                # pre-approval — it cannot run a command it was never given.
                 lines.append(
-                    f"    5. ON VERIFY FAILURE, roll back: {spec['rollback']} "
-                    "— then block for a human. Never leave a failed deploy applied."
+                    "    2. APPROVAL GATE — NOT yet approved. After a clean "
+                    "dry-run, STOP and block needs_input ('awaiting deploy "
+                    "approval'). The apply / verify / rollback commands are "
+                    "WITHHELD until an operator runs `hermes kanban approve-deploy "
+                    f"{task.id}` — they are deliberately not shown here and you do "
+                    "NOT have them yet, so you cannot and must not deploy. On "
+                    "approval you are re-dispatched with the remaining steps."
                 )
-            lines.append(
-                f"    approval recorded: {'YES — you may apply' if approved else 'NO — stop at the gate'}"
-            )
+            else:
+                lines.append("    2. APPROVAL GATE — approved ✓, proceed:")
+                if spec.get("apply"):
+                    lines.append(f"    3. apply:    {spec['apply']}")
+                if spec.get("verify"):
+                    lines.append(f"    4. verify:   {spec['verify']}")
+                if spec.get("rollback"):
+                    lines.append(
+                        f"    5. ON VERIFY FAILURE, roll back: {spec['rollback']} "
+                        "— then block for a human. Never leave a failed deploy "
+                        "applied."
+                    )
     lines.append("")
 
     if task.body and task.body.strip():

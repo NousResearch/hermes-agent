@@ -109,6 +109,13 @@ def _bar_for(facts):
     return format_route_depth_bar(receipt)
 
 
+def _assert_coordination(bar: str, expected: str) -> None:
+    fields = bar.split("｜")
+    assert [field for field in fields if field.startswith("协同 Agent ")] == [expected]
+    assert not any(field.startswith("agents ") for field in fields)
+    assert not any(field.startswith("subagents ") for field in fields)
+
+
 def test_moa_client_reports_all_successful_references_compact_and_evidence_ok(monkeypatch, tmp_path) -> None:
     client, _calls = _install_fake_moa(
         monkeypatch,
@@ -134,6 +141,7 @@ def test_moa_client_reports_all_successful_references_compact_and_evidence_ok(mo
     bar = _bar_for(facts)
     assert "MoA 4+1" in bar
     assert "MoA 4/4+1" not in bar
+    _assert_coordination(bar, "协同 Agent 5")
     assert receipt.evidence_status == "ok"
     assert "证据 ✓" in bar
 
@@ -157,6 +165,7 @@ def test_moa_client_reports_success_total_and_failed_references_as_partial(monke
     receipt = _receipt_for(facts)
     bar = _bar_for(facts)
     assert "MoA 2/3+1" in bar
+    _assert_coordination(bar, "协同 Agent 3")
     assert receipt.evidence_status == "partial"
     assert "证据 partial" in bar
 
@@ -180,6 +189,7 @@ def test_moa_client_reports_zero_references_when_all_refs_fail_but_aggregator_su
     receipt = _receipt_for(facts)
     bar = _bar_for(facts)
     assert "MoA 0/2+1" in bar
+    _assert_coordination(bar, "协同 Agent 1")
     assert receipt.evidence_status == "partial"
     assert "证据 partial" in bar
 
@@ -212,6 +222,7 @@ def test_moa_runtime_facts_builder_counts_explicit_skipped_reference_output_as_f
     receipt = _receipt_for(facts)
     bar = _bar_for(facts)
     assert "MoA 1/2+1" in bar
+    _assert_coordination(bar, "协同 Agent 2")
     assert receipt.evidence_status == "partial"
     assert "证据 partial" in bar
 
@@ -236,6 +247,7 @@ def test_moa_client_no_configured_references_keeps_aggregator_only_not_partial(m
     bar = _bar_for(facts)
     assert "MoA 0+1" in bar
     assert "MoA 0/0+1" not in bar
+    _assert_coordination(bar, "协同 Agent 1")
     assert receipt.evidence_status == "ok"
     assert "证据 ✓" in bar
 

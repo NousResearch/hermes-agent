@@ -37,8 +37,15 @@ def _mechanism_fields(receipt: TurnReceipt) -> list[str]:
     return [str(segment).strip() for segment in receipt.mechanism_segments if str(segment).strip()]
 
 
-def _count_field(label: str, value: int | None) -> str:
-    return f"{label} unknown" if value is None else f"{label} {value}"
+def _coordination_field(receipt: TurnReceipt) -> str:
+    value = getattr(receipt, "coordination_count", 0)
+    if value is None:
+        return "协同 Agent unknown"
+    try:
+        count = max(0, int(value))
+    except Exception:
+        return "协同 Agent unknown"
+    return f"协同 Agent {count}"
 
 
 def _opencode_field(state: str) -> str:
@@ -86,8 +93,7 @@ def format_route_depth_bar(receipt: TurnReceipt) -> str:
         *_mechanism_fields(receipt),
         _opencode_field(receipt.opencode_state),
         _tool_field(receipt),
-        _count_field("agents", receipt.agents_count),
-        _count_field("subagents", receipt.subagents_count),
+        _coordination_field(receipt),
         _human_field(receipt.human_language_state),
         _elapsed_field(receipt),
         _evidence_field(receipt.evidence_status),

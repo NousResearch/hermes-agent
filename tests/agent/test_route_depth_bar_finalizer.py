@@ -222,7 +222,9 @@ def test_finalizer_applies_moa_client_mechanism_facts(monkeypatch) -> None:
     first = result["final_response"].splitlines()[0]
     assert "路径：moa" in first
     assert "MoA 4+1" in first
-    assert "subagents 0" in first
+    assert "协同 Agent 5" in first
+    assert "agents " not in first
+    assert "subagents " not in first
 
 
 def test_finalizer_does_not_trust_omo_schema_markers_in_tool_output_or_assistant_prose(monkeypatch) -> None:
@@ -304,4 +306,6 @@ def test_finalizer_applies_runtime_owned_omo_turn_facts(monkeypatch) -> None:
     first = result["final_response"].splitlines()[0]
     assert "路径：omo" in first
     assert "OMO 1+2" in first
-    assert "subagents 0" in first
+    assert "协同 Agent 3" in first
+    assert "agents " not in first
+    assert "subagents " not in first
